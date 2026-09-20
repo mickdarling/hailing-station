@@ -1,0 +1,30 @@
+# Strict mode in CI: warnings fail the build (#24).
+included: [Sources, Tests, Apps]
+excluded: [.build, docs, fixtures]
+opt_in_rules:
+  - force_unwrapping
+  - implicitly_unwrapped_optional
+  - empty_count
+  - closure_spacing
+  - explicit_init
+  - first_where
+  - last_where
+  - redundant_nil_coalescing
+  - unneeded_parentheses_in_closure_argument
+  - vertical_whitespace_closing_braces
+  - fatal_error_message
+  - legacy_random
+  - discouraged_optional_boolean
+  - todo
+file_length: { warning: 200, error: 250 }
+function_body_length: { warning: 40, error: 60 }
+type_body_length: { warning: 150, error: 200 }
+cyclomatic_complexity: { warning: 10, error: 12 }
+function_parameter_count: { warning: 5, error: 6 }
+line_length: { warning: 120, error: 140, ignores_comments: true, ignores_urls: true }
+identifier_name: { min_length: 2, excluded: [id, x, y, to, at] }
+nesting: { type_level: 2 }
+force_cast: error
+force_try: error
+force_unwrapping: error
+todo: error

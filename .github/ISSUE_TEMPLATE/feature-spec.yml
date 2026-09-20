@@ -1,0 +1,32 @@
+name: Feature spec
+description: The canonical specification for a feature. Must be implementable from this issue alone.
+title: "feature: "
+labels: ["type:feature", "status:needs-spec"]
+body:
+  - type: textarea
+    id: intent
+    attributes: { label: Intent, description: Who needs this and why. One paragraph. }
+    validations: { required: true }
+  - type: textarea
+    id: behavior
+    attributes: { label: Behavior, description: Numbered list of observable behaviors. }
+    validations: { required: true }
+  - type: textarea
+    id: acceptance
+    attributes: { label: Acceptance criteria, description: Checkbox list; each item must be testable., value: "- [ ] " }
+    validations: { required: true }
+  - type: textarea
+    id: components
+    attributes: { label: Component mapping, description: Modules and protocol seams touched (docs/architecture-sketch.md; new seam = ADR). New seam = ADR. }
+    validations: { required: true }
+  - type: textarea
+    id: tests
+    attributes: { label: Test expectations, description: Named tests per criterion. }
+    validations: { required: true }
+  - type: textarea
+    id: out
+    attributes: { label: Out of scope }
+    validations: { required: true }
+  - type: input
+    id: deps
+    attributes: { label: Dependencies, placeholder: "#12, #14 or none" }

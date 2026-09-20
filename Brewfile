@@ -1,0 +1,5 @@
+brew "xcodegen"
+brew "swiftlint"
+brew "shellcheck"
+brew "actionlint"
+brew "xcbeautify"

@@ -1,0 +1,54 @@
+# XcodeGen spec. `xcodegen generate` produces HailingStation.xcodeproj (gitignored). Never hand-edit the project.
+# Entitlements are declared here; xcodegen regenerates the .entitlements file from `entitlements.properties`.
+name: HailingStation
+options:
+  bundleIdPrefix: com.mickdarling
+  deploymentTarget:
+    iOS: "18.0"
+  createIntermediateGroups: true
+settings:
+  base:
+    SWIFT_VERSION: "6.0"
+    SWIFT_STRICT_CONCURRENCY: complete
+    SWIFT_UPCOMING_FEATURE_EXISTENTIAL_ANY: YES
+    SWIFT_TREAT_WARNINGS_AS_ERRORS: YES
+    MARKETING_VERSION: "0.1.0"
+    CURRENT_PROJECT_VERSION: "1"
+    CODE_SIGN_STYLE: Automatic
+    # 10-character Apple Team ID for device builds. Empty = simulator and CI only (#32).
+    DEVELOPMENT_TEAM: ""
+    TARGETED_DEVICE_FAMILY: "1,2"
+packages:
+  Hail:
+    path: .
+targets:
+  Hail-iOS:
+    type: application
+    platform: iOS
+    sources:
+      - Apps/Hail-iOS
+    dependencies:
+      - package: Hail
+        products: [HailCore, HailProtocol]
+    info:
+      path: Apps/Hail-iOS/Info.plist
+      properties:
+        CFBundleDisplayName: Hailing Station
+        CFBundleShortVersionString: $(MARKETING_VERSION)
+        CFBundleVersion: $(CURRENT_PROJECT_VERSION)
+        UILaunchScreen: {}
+        UIBackgroundModes: [audio]
+        NSMicrophoneUsageDescription: Hailing Station captures speech to send it to a host you choose.
+        NSSpeechRecognitionUsageDescription: Hailing Station transcribes speech on this device.
+        UISupportedInterfaceOrientations: [UIInterfaceOrientationPortrait, UIInterfaceOrientationLandscapeLeft, UIInterfaceOrientationLandscapeRight]
+        UISupportedInterfaceOrientations~ipad: [UIInterfaceOrientationPortrait, UIInterfaceOrientationPortraitUpsideDown, UIInterfaceOrientationLandscapeLeft, UIInterfaceOrientationLandscapeRight]
+    entitlements:
+      path: Apps/Hail-iOS/Hail.entitlements
+      properties: {}
+schemes:
+  Hail-iOS:
+    build:
+      targets:
+        Hail-iOS: all
+    run:
+      config: Debug

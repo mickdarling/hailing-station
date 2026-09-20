@@ -1,0 +1,2 @@
+# Byte-for-byte fixture comparisons depend on LF and the trailing newline (#28).
+fixtures/** -text eol=lf

@@ -1,0 +1,24 @@
+# Auto-label security-critical paths (#48).
+security:critical:
+  - changed-files:
+      - any-glob-to-any-file:
+          - Sources/HailProtocol/Sealed/**
+          - Sources/HailCore/Identity/**
+          - Sources/HailCore/Security/**
+          - Sources/HailDaemonKit/Identity/**
+          - Sources/HailDaemonKit/Listener/**
+          - Sources/HailDaemonKit/Policy/**
+          - Sources/HailDaemonKit/Sanitize/**
+          - Sources/HailDaemonKit/Audit/**
+          - Sources/HailDaemonKit/Lockdown/**
+          - Sources/HailDaemonKit/PushEndpoint/**
+          - bin/hail-install
+          - .github/**
+          - CODEOWNERS
+          - scripts/**
+          - Package.swift
+          - Package.resolved
+          - Brewfile
+          - project.yml
+          - docs/security/**
+          - .gitattributes

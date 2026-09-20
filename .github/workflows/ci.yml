@@ -1,0 +1,110 @@
+# One required status, `gate`, needs every job below (#24). Both lanes run scripts/verify.sh.
+name: CI
+
+on:
+  pull_request:
+    # labeled/unlabeled so applying protocol:compatible re-runs the version rule (a full CI re-run, accepted)
+    types: [opened, synchronize, reopened, labeled, unlabeled]
+  push:
+    branches: [main]
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ci-${{ github.ref }}
+  # Cancel superseded PR runs only; every push to main keeps its own gate result.
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+
+jobs:
+  verify:
+    name: verify
+    runs-on: macos-26
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+      - name: Select Xcode
+        run: sudo xcode-select -s "$(find /Applications -maxdepth 1 -name 'Xcode_26*.app' | sort -V | tail -1)"
+      - name: Install tools
+        run: brew bundle --file=Brewfile
+      - name: Cache SwiftPM
+        uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6
+        with:
+          path: .build
+          key: spm-${{ runner.os }}-${{ hashFiles('Package.swift', 'Package.resolved') }}
+          restore-keys: spm-${{ runner.os }}-
+      - name: Verify
+        run: scripts/verify.sh all
+
+  simulator:
+    name: simulator
+    runs-on: macos-26
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+      - name: Select Xcode
+        run: sudo xcode-select -s "$(find /Applications -maxdepth 1 -name 'Xcode_26*.app' | sort -V | tail -1)"
+      - name: Install tools
+        run: brew bundle --file=Brewfile
+      - name: Simulator build
+        run: scripts/verify.sh sim
+
+  protocol:
+    # Conformance (#28): fixtures and schema must not drift, negatives must fail, and a HailProtocol type
+    # change needs a ProtocolVersion bump or the protocol:compatible label. Required through gate.
+    name: protocol
+    runs-on: macos-26
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+        with:
+          fetch-depth: 0
+      - name: Select Xcode
+        run: sudo xcode-select -s "$(find /Applications -maxdepth 1 -name 'Xcode_26*.app' | sort -V | tail -1)"
+      - name: Regenerate fixtures and schema
+        run: swift run hail-protocol-gen
+      - name: Fail on drift
+        run: |
+          git add -N fixtures
+          if ! git diff --exit-code -- fixtures; then
+            echo "::error::fixtures or schema drifted; run 'swift run hail-protocol-gen' and commit"; exit 1
+          fi
+      - name: Schema checker unit tests
+        run: python3 -m unittest scripts/tests/test_check_schema.py
+      - name: Validate fixtures against the schema
+        run: python3 scripts/check_schema.py
+      - name: Version bump rule
+        if: github.event_name == 'pull_request'
+        env:
+          BASE_REF: ${{ github.event.pull_request.base.ref }}
+          LABELS: ${{ join(github.event.pull_request.labels.*.name, ',') }}
+        run: |
+          base="origin/$BASE_REF"
+          types_changed=$(git diff --name-only "$base"...HEAD -- Sources/HailProtocol | grep -v -E 'Schema.swift' || true)
+          extract() { git show "$1:Sources/HailProtocol/ProtocolVersion.swift" 2>/dev/null | sed -nE 's/.*static let current = ([0-9]+).*/\1/p' | head -1; }
+          before=$(extract "$base"); after=$(extract HEAD)
+          if ! [[ "$before" =~ ^[0-9]+$ && "$after" =~ ^[0-9]+$ ]]; then
+            echo "::error::ProtocolVersion.current not found as an integer on base ('$before') or head ('$after')"; exit 1
+          fi
+          compatible=false; echo ",$LABELS," | grep -q ',protocol:compatible,' && compatible=true
+          if [ -n "$types_changed" ] && [ "$after" -le "$before" ] && [ "$compatible" = false ]; then
+            echo "::error::HailProtocol types changed without a ProtocolVersion bump ($before -> $after); bump it or label the PR protocol:compatible with a reviewer note"; exit 1
+          fi
+          if [ "$after" -lt "$before" ]; then echo "::error::ProtocolVersion went backwards ($before -> $after)"; exit 1; fi
+          echo "version rule: ok ($before -> $after, compatible=$compatible)"
+
+  gate:
+    name: gate
+    runs-on: ubuntu-latest
+    needs: [verify, simulator, protocol]
+    if: always()
+    permissions: {}
+    steps:
+      - name: Require every need to have succeeded
+        env:
+          VERIFY: ${{ needs.verify.result }}
+          SIMULATOR: ${{ needs.simulator.result }}
+          PROTOCOL: ${{ needs.protocol.result }}
+        run: |
+          echo "verify=$VERIFY simulator=$SIMULATOR protocol=$PROTOCOL"
+          test "$VERIFY" = success && test "$SIMULATOR" = success && test "$PROTOCOL" = success

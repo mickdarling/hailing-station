@@ -1,0 +1,38 @@
+# Every named test in the spec's "Test expectations" must exist in the PR (#27).
+# pull_request_target: runs the BASE branch's copy of this workflow and checker. The PR's tree is
+# checked out to a side directory and only read, never executed.
+name: traceability
+
+on:
+  pull_request_target:
+    types: [opened, edited, synchronize, reopened]
+
+permissions:
+  contents: read
+  pull-requests: read
+  issues: read
+
+jobs:
+  trace:
+    name: traceability
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - name: Check out the base branch (the checker and its tests)
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+        with:
+          ref: ${{ github.event.pull_request.base.ref }} # branch tip, not the PR's frozen base sha
+          persist-credentials: false
+      - name: Unit tests for the checker
+        run: python3 -m unittest scripts/tests/test_trace.py
+      - name: Check out the PR tree to a side directory (read only, never executed)
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+        with:
+          ref: ${{ github.event.pull_request.head.sha }}
+          path: pr-tree
+          persist-credentials: false
+      - name: Trace spec to tests
+        env:
+          GH_TOKEN: ${{ github.token }}
+          PR_NUMBER: ${{ github.event.pull_request.number }}
+        run: python3 scripts/spec_trace.py --tree pr-tree

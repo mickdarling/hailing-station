@@ -1,0 +1,1 @@
+{"id":"0B0B0B0B-0000-4000-8000-000000000007","payload":{"command":"targets","targets":[{"alive":true,"id":"tmux:claude-hail","kind":"tmux","name":"Claude: hail"},{"alive":false,"id":"tmux:codex-hail","kind":"tmux","name":"codex-hail"}]},"source":"host","ts":1758200000050,"type":"control","v":1}

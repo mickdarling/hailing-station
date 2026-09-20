@@ -1,0 +1,19 @@
+# Security-critical paths (#48). A PR touching any of these is labelled security:critical and needs two review records.
+Sources/HailProtocol/Sealed/          @mickdarling
+Sources/HailCore/Identity/            @mickdarling
+Sources/HailCore/Security/            @mickdarling
+Sources/HailDaemonKit/Identity/       @mickdarling
+Sources/HailDaemonKit/Listener/       @mickdarling
+Sources/HailDaemonKit/Policy/         @mickdarling
+Sources/HailDaemonKit/Sanitize/       @mickdarling
+Sources/HailDaemonKit/Audit/          @mickdarling
+Sources/HailDaemonKit/Lockdown/       @mickdarling
+Sources/HailDaemonKit/PushEndpoint/   @mickdarling
+.github/                              @mickdarling
+CODEOWNERS                            @mickdarling
+scripts/                              @mickdarling
+Package.swift                         @mickdarling
+Brewfile                              @mickdarling
+project.yml                           @mickdarling
+docs/                                 @mickdarling
+.gitattributes                        @mickdarling

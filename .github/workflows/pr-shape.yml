@@ -1,0 +1,30 @@
+# PR contract (#25, #48): size limit, spec link, review records. Re-runs when the body or labels change.
+name: pr-shape
+
+# pull_request_target: the check runs the BASE branch's copy of this workflow and script, so a PR cannot
+# weaken its own gate. Nothing from the PR head is checked out or executed.
+on:
+  pull_request_target:
+    types: [opened, edited, synchronize, labeled, unlabeled, reopened]
+
+permissions:
+  contents: read
+  pull-requests: read
+  issues: read
+
+jobs:
+  shape:
+    name: pr-shape
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+        with:
+          # base.ref, not base.sha: the sha is frozen at the PR's last sync and predates later gate changes on main
+          ref: ${{ github.event.pull_request.base.ref }}
+          persist-credentials: false
+      - name: Check PR shape
+        env:
+          GH_TOKEN: ${{ github.token }}
+          PR_NUMBER: ${{ github.event.pull_request.number }}
+        run: python3 scripts/pr-shape.py
