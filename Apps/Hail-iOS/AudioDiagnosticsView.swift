@@ -5,6 +5,8 @@ struct AudioDiagnosticsView: View {
     let controller: any AudioSessionDiagnosticsProviding
 
     @State private var diagnostics = AudioSessionDiagnostics.inactive
+    @State private var inputs: [AudioPort] = []
+    @State private var preferredInput: AudioPort?
     @State private var status = "Inactive"
 
     var body: some View {
@@ -20,13 +22,48 @@ struct AudioDiagnosticsView: View {
                 .buttonStyle(.bordered)
             }
             Section("Input") {
-                portRow(diagnostics.input, empty: "No input")
+                Menu {
+                    if inputs.isEmpty {
+                        Text("No microphones available")
+                    } else {
+                        ForEach(inputs) { input in
+                            Button {
+                                Task { await select(input) }
+                            } label: {
+                                if input.id == preferredInput?.id {
+                                    Label(input.name, systemImage: "checkmark")
+                                } else {
+                                    Text(input.name)
+                                }
+                            }
+                        }
+                    }
+                } label: {
+                    routeControlLabel(
+                        title: "Microphone",
+                        value: diagnostics.input?.name ?? "No input",
+                        systemImage: "mic"
+                    )
+                }
+                .disabled(!diagnostics.isActive || inputs.isEmpty)
+                .accessibilityLabel(inputAccessibilityLabel)
+
+                if let preferredInput, preferredInput.id != diagnostics.input?.id {
+                    LabeledContent("Preferred", value: preferredStateDescription)
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
+                }
             }
             Section("Output") {
-                if diagnostics.outputs.isEmpty {
-                    Text("No output").foregroundStyle(.secondary)
-                } else {
-                    ForEach(diagnostics.outputs) { portRow($0, empty: "") }
+                HStack {
+                    routeControlLabel(
+                        title: "Output",
+                        value: outputName,
+                        systemImage: "speaker.wave.2"
+                    )
+                    Spacer()
+                    AudioOutputRoutePicker()
+                        .frame(width: 44, height: 44)
                 }
             }
             Section("Preference") {
@@ -38,25 +75,43 @@ struct AudioDiagnosticsView: View {
         .task { await observe() }
         .onDisappear { Task { await controller.deactivate() } }
     }
+}
 
+private extension AudioDiagnosticsView {
     private var sampleRate: String {
         diagnostics.sampleRate == 0 ? "—" : "\(Int(diagnostics.sampleRate)) Hz"
     }
 
-    @ViewBuilder
-    private func portRow(_ port: AudioPort?, empty: String) -> some View {
-        if let port {
-            LabeledContent(port.name, value: port.kind.rawValue)
-        } else {
-            Text(empty).foregroundStyle(.secondary)
+    private var outputName: String {
+        let names = diagnostics.outputs.map(\.name)
+        return names.isEmpty ? "No output" : names.joined(separator: ", ")
+    }
+
+    private var inputAccessibilityLabel: String {
+        let active = diagnostics.input?.name ?? "no active microphone"
+        guard let preferredInput, preferredInput.id != diagnostics.input?.id else {
+            return "Microphone, \(active). Choose microphone."
         }
+        return "Microphone, \(active). Preferred \(preferredStateDescription). Choose microphone."
+    }
+
+    private func routeControlLabel(title: String, value: String, systemImage: String) -> some View {
+        Label {
+            VStack(alignment: .leading, spacing: 2) {
+                Text(title).font(.headline)
+                Text(value).font(.subheadline).foregroundStyle(.secondary)
+            }
+        } icon: {
+            Image(systemName: systemImage)
+        }
+        .frame(maxWidth: .infinity, alignment: .leading)
     }
 
     private func activate() async {
         do {
             try await controller.activate()
-            diagnostics = await controller.diagnostics
-            status = "Preferred input applied"
+            await refresh()
+            status = activeInputStatus
         } catch {
             diagnostics = await controller.diagnostics
             status = "Activation failed: \(error.localizedDescription)"
@@ -65,22 +120,59 @@ struct AudioDiagnosticsView: View {
 
     private func deactivate() async {
         await controller.deactivate()
-        diagnostics = await controller.diagnostics
+        await refresh()
         status = "Inactive"
     }
 
+    private func select(_ input: AudioPort) async {
+        do {
+            try await controller.selectInput(id: input.id)
+            await refresh()
+            status = "Using \(input.name)"
+        } catch {
+            await refresh()
+            status = "Could not select \(input.name): \(error.localizedDescription)"
+        }
+    }
+
     private func observe() async {
-        diagnostics = await controller.diagnostics
+        await refresh()
         for await event in await controller.events {
-            diagnostics = await controller.diagnostics
+            await refresh()
             switch event {
             case .routeChanged:
-                status = "Route changed; preferred input reapplied"
+                status = routeChangeStatus
             case .interruptionBegan:
                 status = "Interrupted"
             case .interruptionEnded(let resumed):
                 status = resumed ? "Resumed after interruption" : "Interruption ended; inactive"
             }
         }
+    }
+
+    private func refresh() async {
+        diagnostics = await controller.diagnostics
+        inputs = await controller.availableInputs
+        preferredInput = await controller.preferredInput
+    }
+
+    private var routeChangeStatus: String {
+        guard let preferredInput, preferredInput.id != diagnostics.input?.id else {
+            return "Route changed"
+        }
+        return "Route changed; preferred \(preferredInput.name) is not active"
+    }
+
+    private var preferredStateDescription: String {
+        guard let preferredInput else { return "Automatic" }
+        let availability = inputs.contains { $0.id == preferredInput.id }
+        return "\(preferredInput.name) · \(availability ? "not active" : "unavailable")"
+    }
+
+    private var activeInputStatus: String {
+        guard let preferredInput, preferredInput.id != diagnostics.input?.id else {
+            return diagnostics.input.map { "Using \($0.name)" } ?? "Active with no microphone"
+        }
+        return "Active; preferred \(preferredStateDescription)"
     }
 }

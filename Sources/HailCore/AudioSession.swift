@@ -1,98 +1,23 @@
-import Foundation
-
-public enum AudioInputKind: String, Sendable, CaseIterable {
-    case usb
-    case wired
-    case bluetoothHFP
-    case builtIn
-    case other
-}
-
-public struct AudioPort: Sendable, Equatable, Identifiable {
-    public let id: String
-    public let name: String
-    public let kind: AudioInputKind
-
-    public init(id: String, name: String, kind: AudioInputKind) {
-        self.id = id
-        self.name = name
-        self.kind = kind
-    }
-}
-
-public struct AudioSessionDiagnostics: Sendable, Equatable {
-    public let isActive: Bool
-    public let input: AudioPort?
-    public let outputs: [AudioPort]
-    public let sampleRate: Double
-
-    public init(isActive: Bool, input: AudioPort?, outputs: [AudioPort], sampleRate: Double) {
-        self.isActive = isActive
-        self.input = input
-        self.outputs = outputs
-        self.sampleRate = sampleRate
-    }
-
-    public static let inactive = AudioSessionDiagnostics(isActive: false, input: nil, outputs: [], sampleRate: 0)
-}
-
-public enum AudioSessionEvent: Sendable, Equatable {
-    case routeChanged(AudioSessionDiagnostics)
-    case interruptionBegan
-    case interruptionEnded(resumed: Bool)
-}
-
-public struct AudioInputPreferences: Sendable, Equatable {
-    public var order: [AudioInputKind]
-    public var allowsBluetoothHFP: Bool
-
-    public init(
-        order: [AudioInputKind] = [.usb, .wired, .builtIn],
-        allowsBluetoothHFP: Bool = false
-    ) {
-        self.order = order
-        self.allowsBluetoothHFP = allowsBluetoothHFP
-    }
-
-    public func resolve(from inputs: [AudioPort]) -> AudioPort? {
-        order.lazy.compactMap { kind in
-            guard kind != .bluetoothHFP || allowsBluetoothHFP else { return nil }
-            return inputs.first { $0.kind == kind }
-        }.first
-    }
-}
-
-public enum AudioSessionBackendEvent: Sendable, Equatable {
-    case routeChanged
-    case interruptionBegan
-    case interruptionEnded(shouldResume: Bool)
-}
-public protocol AudioSessionBackend: Sendable {
-    func configure(allowsBluetoothHFP: Bool) async throws
-    func setActive(_ active: Bool) async throws
-    func availableInputs() async -> [AudioPort]
-    func selectInput(id: AudioPort.ID?) async throws
-    func diagnostics(isActive: Bool) async -> AudioSessionDiagnostics
-    func eventStream() async -> AsyncStream<AudioSessionBackendEvent>
-}
-
-public protocol AudioSessionDiagnosticsProviding: AudioSessionController {
-    var diagnostics: AudioSessionDiagnostics { get async }
-    var events: AsyncStream<AudioSessionEvent> { get async }
-}
-
 public actor ManagedAudioSession: AudioSessionDiagnosticsProviding {
     private let backend: any AudioSessionBackend
     private let preferences: AudioInputPreferences
+    private let preferenceStore: any AudioInputPreferenceStoring
     private let eventPair = AsyncStream<AudioSessionEvent>.makeStream(bufferingPolicy: .bufferingNewest(16))
     private var backendTask: Task<Void, Never>?
     private var latestDiagnostics = AudioSessionDiagnostics.inactive
+    private var savedPreferredInput: AudioPort?
+    private var loadedPreference = false
     private var wantsActive = false
     private var sessionActive = false
 
-    public init(backend: any AudioSessionBackend, preferences: AudioInputPreferences = AudioInputPreferences()) {
+    public init(
+        backend: any AudioSessionBackend,
+        preferences: AudioInputPreferences = AudioInputPreferences(),
+        preferenceStore: any AudioInputPreferenceStoring = UserDefaultsAudioInputPreferenceStore()
+    ) {
         self.backend = backend
         self.preferences = preferences
+        self.preferenceStore = preferenceStore
     }
 
     deinit {
@@ -108,9 +33,23 @@ public actor ManagedAudioSession: AudioSessionDiagnosticsProviding {
         eventPair.stream
     }
 
+    public var availableInputs: [AudioPort] {
+        get async {
+            await backend.availableInputs().filter(isSelectable)
+        }
+    }
+
+    public var preferredInput: AudioPort? {
+        get async {
+            await loadPreferenceIfNeeded()
+            return savedPreferredInput
+        }
+    }
+
     public func activate() async throws {
         wantsActive = true
         do {
+            await loadPreferenceIfNeeded()
             try await backend.configure(allowsBluetoothHFP: preferences.allowsBluetoothHFP)
             try await backend.setActive(true)
             sessionActive = true
@@ -137,6 +76,26 @@ public actor ManagedAudioSession: AudioSessionDiagnosticsProviding {
         latestDiagnostics = await backend.diagnostics(isActive: false)
     }
 
+    public func selectInput(id: AudioPort.ID) async throws {
+        guard sessionActive else { throw AudioInputSelectionError.sessionInactive }
+        let inputs = await backend.availableInputs().filter(isSelectable)
+        guard let selected = inputs.first(where: { $0.id == id }) else {
+            throw AudioInputSelectionError.unavailable(id)
+        }
+
+        try await backend.selectInput(id: selected.id)
+        let diagnostics = await backend.diagnostics(isActive: true)
+        guard diagnostics.input?.id == selected.id else {
+            latestDiagnostics = diagnostics
+            throw AudioInputSelectionError.routeMismatch(expected: selected, actual: diagnostics.input)
+        }
+
+        savedPreferredInput = selected
+        await preferenceStore.save(selected)
+        latestDiagnostics = diagnostics
+        eventPair.continuation.yield(.routeChanged(diagnostics))
+    }
+
     func handle(_ event: AudioSessionBackendEvent) async {
         switch event {
         case .routeChanged:
@@ -149,7 +108,9 @@ public actor ManagedAudioSession: AudioSessionDiagnosticsProviding {
             await handleInterruptionEnd(shouldResume: shouldResume)
         }
     }
+}
 
+private extension ManagedAudioSession {
     private func startBackendEventsIfNeeded() {
         guard backendTask == nil else { return }
         let backend = backend
@@ -163,10 +124,23 @@ public actor ManagedAudioSession: AudioSessionDiagnosticsProviding {
     }
 
     private func selectPreferredInput() async throws {
-        let input = preferences.resolve(from: await backend.availableInputs())
+        await loadPreferenceIfNeeded()
+        let inputs = await backend.availableInputs()
+        let input = inputs.first { $0.id == savedPreferredInput?.id && isSelectable($0) }
+            ?? preferences.resolve(from: inputs)
         let current = await backend.diagnostics(isActive: sessionActive).input
         guard input?.id != current?.id else { return }
         try await backend.selectInput(id: input?.id)
+    }
+
+    private func loadPreferenceIfNeeded() async {
+        guard !loadedPreference else { return }
+        savedPreferredInput = await preferenceStore.load()
+        loadedPreference = true
+    }
+
+    private func isSelectable(_ port: AudioPort) -> Bool {
+        port.kind != .bluetoothHFP || preferences.allowsBluetoothHFP
     }
 
     private func handleRouteChange() async {

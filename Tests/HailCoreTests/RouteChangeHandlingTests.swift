@@ -93,7 +93,7 @@ private enum FakeAudioError: Error {
     case selectionFailed
 }
 
-private actor FakeAudioSessionBackend: AudioSessionBackend {
+actor FakeAudioSessionBackend: AudioSessionBackend {
     static let usb = AudioPort(id: "usb", name: "Wireless Mic Rx", kind: .usb)
     static let builtIn = AudioPort(id: "built-in", name: "iPad Microphone", kind: .builtIn)
 
@@ -151,7 +151,7 @@ private actor FakeAudioSessionBackend: AudioSessionBackend {
     }
 }
 
-private extension AudioPort {
+extension AudioPort {
     static let usb = AudioPort(id: "usb", name: "Wireless Mic Rx", kind: .usb)
     static let builtIn = AudioPort(id: "built-in", name: "iPad Microphone", kind: .builtIn)
 }
