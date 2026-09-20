@@ -30,6 +30,12 @@ The first supported environment is:
 
 Windows, Linux, Android, and browser terminals are outside the initial scope.
 
+## How work is managed
+
+[GitHub Issues](https://github.com/mickdarling/hailing-station/issues) are the project's source of truth for feature and process management. They serve the same role as tickets, stories, bugs, spikes, and decision records in systems such as Jira, without requiring ritualized wording such as “As a user…” or “As a developer…”.
+
+A useful issue states the intent and boundaries of the work, adds testable acceptance criteria, and records dependencies or evidence when those matter. Pull requests link the issue they advance and say accurately whether they close the whole issue or only deliver one part of it. Small implementation details may stay in a pull request, but planned behavior and follow-up work belong in issues so they remain visible after the pull request is merged.
+
 ## Build and verify
 
 Requirements include a current Xcode toolchain, Swift 6, and XcodeGen for generating the application project.
