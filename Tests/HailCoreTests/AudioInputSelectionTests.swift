@@ -44,6 +44,20 @@ struct AudioInputSelectionTests {
             try await controller.selectInput(id: "missing")
         }
     }
+
+    @Test func selfInducedRouteEventCannotRestoreTheOldPreference() async throws {
+        let backend = FakeAudioSessionBackend(inputs: [.usb, .builtIn])
+        let store = FakeAudioInputPreferenceStore(initial: .usb)
+        let controller = ManagedAudioSession(backend: backend, preferenceStore: store)
+        try await controller.activate()
+        await backend.emitRouteChangeOnFutureSelections()
+
+        try await controller.selectInput(id: AudioPort.builtIn.id)
+
+        #expect(await backend.selectedInput == .builtIn)
+        #expect(await controller.preferredInput == .builtIn)
+        #expect(await backend.selectionCount == 2)
+    }
 }
 
 private actor FakeAudioInputPreferenceStore: AudioInputPreferenceStoring {

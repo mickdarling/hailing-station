@@ -122,6 +122,7 @@ public actor UserDefaultsAudioInputPreferenceStore: AudioInputPreferenceStoring 
 
 public enum AudioInputSelectionError: Error, Sendable, Equatable, LocalizedError {
     case sessionInactive
+    case superseded
     case unavailable(AudioPort.ID)
     case routeMismatch(expected: AudioPort, actual: AudioPort?)
 
@@ -129,6 +130,8 @@ public enum AudioInputSelectionError: Error, Sendable, Equatable, LocalizedError
         switch self {
         case .sessionInactive:
             "Activate the audio session before choosing a microphone."
+        case .superseded:
+            "A newer microphone selection replaced this request."
         case .unavailable:
             "That microphone is no longer available."
         case .routeMismatch(let expected, let actual):

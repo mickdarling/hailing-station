@@ -99,10 +99,12 @@ actor FakeAudioSessionBackend: AudioSessionBackend {
 
     private var inputs: [AudioPort]
     private var selectionFails: Bool
+    private var emitsRouteChangeOnSelection = false
     private(set) var selectedInput: AudioPort?
     private(set) var selectionCount = 0
     private(set) var activationHistory: [Bool] = []
     private var active = false
+    private let eventPair = AsyncStream<AudioSessionBackendEvent>.makeStream(bufferingPolicy: .bufferingNewest(16))
 
     init(inputs: [AudioPort], selectionFails: Bool = false) {
         self.inputs = inputs
@@ -124,6 +126,10 @@ actor FakeAudioSessionBackend: AudioSessionBackend {
         if selectionFails { throw FakeAudioError.selectionFailed }
         selectionCount += 1
         selectedInput = inputs.first { $0.id == id }
+        if emitsRouteChangeOnSelection {
+            eventPair.continuation.yield(.routeChanged)
+            await Task.yield()
+        }
     }
 
     func diagnostics(isActive: Bool) async -> AudioSessionDiagnostics {
@@ -136,7 +142,7 @@ actor FakeAudioSessionBackend: AudioSessionBackend {
     }
 
     func eventStream() async -> AsyncStream<AudioSessionBackendEvent> {
-        AsyncStream { _ in }
+        eventPair.stream
     }
 
     func replaceInputs(_ inputs: [AudioPort]) {
@@ -148,6 +154,10 @@ actor FakeAudioSessionBackend: AudioSessionBackend {
 
     func failFutureSelections() {
         selectionFails = true
+    }
+
+    func emitRouteChangeOnFutureSelections() {
+        emitsRouteChangeOnSelection = true
     }
 }
 
