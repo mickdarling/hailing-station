@@ -30,6 +30,7 @@ extension LocalReplyEndpoint {
             return
         }
         if let newline = request.firstIndex(of: UInt8(ascii: "\n")) {
+            frameCompleted(client.id)
             guard newline == request.index(before: request.endIndex) else {
                 await respond(.init(delivered: 0, error: "one frame per connection"), to: client)
                 return
@@ -74,6 +75,7 @@ extension LocalReplyEndpoint {
     }
 
     func retire(_ id: UUID) {
+        awaitingFrames.remove(id)
         connections.removeValue(forKey: id)?.cancel()
     }
 }
