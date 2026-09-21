@@ -50,6 +50,7 @@ private struct PCMReplyContext {
     var streamID: UUID
     var descriptor: ReplyDescriptor
     var socket: URL
+    var frameLimit: Int
 }
 
 func reply(_ arguments: ArraySlice<String>) async throws {
@@ -58,6 +59,7 @@ func reply(_ arguments: ArraySlice<String>) async throws {
     let descriptor = ReplyDescriptor(
         id: UUID(), hostID: options.host, targetID: options.target, audioStreamID: streamID
     )
+    let audioFrameLimit = LocalReplyEndpoint.maxFramesPerMinute - (options.text == nil ? 0 : 1)
     var frames = 0
     var deliveries = 0
     if let text = options.text {
@@ -70,7 +72,8 @@ func reply(_ arguments: ArraySlice<String>) async throws {
     }
     if let file = options.pcm16, let streamID {
         let context = PCMReplyContext(
-            sampleRate: options.sampleRate, streamID: streamID, descriptor: descriptor, socket: options.socket
+            sampleRate: options.sampleRate, streamID: streamID, descriptor: descriptor,
+            socket: options.socket, frameLimit: audioFrameLimit
         )
         let result = try await sendPCM(file, context: context)
         frames += result.frames
@@ -78,7 +81,8 @@ func reply(_ arguments: ArraySlice<String>) async throws {
     }
     if let spoken = options.say, let streamID {
         let context = PCMReplyContext(
-            sampleRate: options.sampleRate, streamID: streamID, descriptor: descriptor, socket: options.socket
+            sampleRate: options.sampleRate, streamID: streamID, descriptor: descriptor,
+            socket: options.socket, frameLimit: audioFrameLimit
         )
         let result = try await streamVBSay(spoken, context: context)
         frames += result.frames
@@ -123,12 +127,15 @@ private func sendPCMFile(
 ) async throws -> (frames: Int, deliveries: Int) {
     let attributes = try FileManager.default.attributesOfItem(atPath: url.path)
     let size = (attributes[.size] as? NSNumber)?.intValue ?? 0
-    guard size > 0, size <= 32 * 1_024 * 1_024, size.isMultiple(of: 2) else {
-        throw ReplyCommandError.invalid("PCM16 input must be nonempty, even-length, and at most 32 MiB")
+    let segmentBytes = 48 * 1_024
+    let segments = (size + segmentBytes - 1) / segmentBytes
+    let usableLimit = context.frameLimit - (marksFinal ? 0 : 1)
+    guard size > 0, size.isMultiple(of: 2),
+          startingSequence + segments <= usableLimit else {
+        throw ReplyCommandError.invalid("PCM16 reply exceeds the endpoint frame budget")
     }
     let handle = try FileHandle(forReadingFrom: url)
     defer { try? handle.close() }
-    let segmentBytes = 48 * 1_024
     var current = try handle.read(upToCount: segmentBytes) ?? Data()
     var sequence = startingSequence
     var deliveries = 0
@@ -150,6 +157,8 @@ private func sendPCMFile(
     return (sequence - startingSequence, deliveries)
 }
 
+// Generation, incremental publication, finalization, and child cleanup form one failure boundary.
+// swiftlint:disable:next function_body_length
 private func streamVBSay(
     _ text: String, context: PCMReplyContext
 ) async throws -> (frames: Int, deliveries: Int) {
@@ -159,42 +168,59 @@ private func streamVBSay(
     try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: false)
     defer { try? FileManager.default.removeItem(at: directory) }
     let process = try startVBSay(text, outputDirectory: directory)
+    defer {
+        if process.isRunning {
+            process.terminate()
+            process.waitUntilExit()
+        }
+    }
 
     var observed: [URL: Int] = [:]
     var sent: Set<URL> = []
     var sequence = 0, deliveries = 0
-    while process.isRunning {
-        let result = try await sendStableVBSayFiles(
-            in: directory, observed: &observed, sent: &sent, sequence: sequence,
-            context: context
-        )
-        sequence += result.frames
-        deliveries += result.deliveries
-        try await Task.sleep(for: .milliseconds(100))
+    do {
+        while process.isRunning {
+            let result = try await sendStableVBSayFiles(
+                in: directory, observed: &observed, sent: &sent, sequence: sequence,
+                context: context
+            )
+            sequence += result.frames
+            deliveries += result.deliveries
+            try await Task.sleep(for: .milliseconds(100))
+        }
+        process.waitUntilExit()
+        guard process.terminationStatus == 0 else {
+            throw ReplyCommandError.invalid("vbsay exited with status \(process.terminationStatus)")
+        }
+        // A file can complete between the final poll and process exit; two passes establish stability.
+        for _ in 0..<2 {
+            let result = try await sendStableVBSayFiles(
+                in: directory, observed: &observed, sent: &sent, sequence: sequence,
+                context: context
+            )
+            sequence += result.frames
+            deliveries += result.deliveries
+        }
+        guard !sent.isEmpty else { throw ReplyCommandError.invalid("vbsay produced no PCM audio") }
+    } catch {
+        if sequence > 0, sequence < context.frameLimit {
+            _ = try? await sendFinalPCM(sequence: sequence, context: context)
+        }
+        throw error
     }
-    process.waitUntilExit()
-    guard process.terminationStatus == 0 else {
-        throw ReplyCommandError.invalid("vbsay exited with status \(process.terminationStatus)")
-    }
-    // A file can complete between the final poll and process exit; two passes establish stability.
-    for _ in 0..<2 {
-        let result = try await sendStableVBSayFiles(
-            in: directory, observed: &observed, sent: &sent, sequence: sequence,
-            context: context
-        )
-        sequence += result.frames
-        deliveries += result.deliveries
-    }
-    guard !sent.isEmpty else { throw ReplyCommandError.invalid("vbsay produced no PCM audio") }
+    deliveries += try await sendFinalPCM(sequence: sequence, context: context)
+    return (sequence + 1, deliveries)
+}
+
+private func sendFinalPCM(sequence: Int, context: PCMReplyContext) async throws -> Int {
     let final = AudioPayload(
         codec: .pcm16, sampleRate: context.sampleRate, channels: 1, sequence: sequence,
         streamID: context.streamID, isFinal: true, bytes: Data([0, 0]), reply: context.descriptor
     )
-    deliveries += try await LocalReplyClient.submit(Frame(
+    return try await LocalReplyClient.submit(Frame(
         timestamp: replyTimestamp(), target: context.descriptor.targetID, source: context.descriptor.hostID,
         payload: .audio(final)
     ), socketURL: context.socket)
-    return (sequence + 1, deliveries)
 }
 
 private func startVBSay(_ text: String, outputDirectory: URL) throws -> Process {

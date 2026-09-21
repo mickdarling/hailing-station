@@ -49,7 +49,8 @@ private final class LocalReplyTransaction: @unchecked Sendable {
             lock.withLock { self.continuation = continuation }
             connection.stateUpdateHandler = { [weak self] state in self?.changed(state, request: request) }
             connection.start(queue: queue)
-            queue.asyncAfter(deadline: .now() + 5) { [weak self] in
+            // The endpoint allows ten seconds for publication; retain overhead for connect and response.
+            queue.asyncAfter(deadline: .now() + 15) { [weak self] in
                 self?.finish(.failure(LocalReplyClientError.timeout))
             }
         }
