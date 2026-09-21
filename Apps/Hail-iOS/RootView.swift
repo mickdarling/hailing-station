@@ -17,7 +17,9 @@ struct RootView: View {
     @State var isRestoringSelection = false
     @State var selectionAuthorizedForReadyConnection = false
     @State var selectionRevision: UInt = 0
+    @State private var showingDestinations = false
     @Environment(\.scenePhase) private var scenePhase
+    @Environment(\.horizontalSizeClass) private var horizontalSizeClass
 
     init(selectionStore: any DestinationSelectionStoring = UserDefaultsDestinationSelectionStore()) {
         self.selectionStore = selectionStore
@@ -104,25 +106,21 @@ struct RootView: View {
 
     @ViewBuilder
     private var destinationMenu: some View {
-        Menu {
-            if availableDestinations.isEmpty {
-                Text("No ready targets")
-            }
-            ForEach(availableDestinations) { option in
-                Button {
-                    Task { await select(option) }
-                } label: {
-                    if destination?.id == option.id {
-                        Label(option.label, systemImage: "checkmark")
-                    } else {
-                        Text(option.label)
-                    }
-                }
-            }
+        Button {
+            showingDestinations = true
         } label: {
             Label("Target", systemImage: "scope")
         }
         .buttonStyle(.bordered)
+        .popover(isPresented: $showingDestinations) {
+            DestinationBrowser(
+                hosts: connections.hosts,
+                selected: destination,
+                usesPopoverLayout: horizontalSizeClass == .regular,
+                onSelect: { option in Task { await select(option) } }
+            )
+            .presentationCompactAdaptation(.sheet)
+        }
     }
 
     @MainActor
