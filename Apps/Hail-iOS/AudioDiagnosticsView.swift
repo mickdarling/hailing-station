@@ -184,7 +184,7 @@ private extension AudioDiagnosticsView {
         return "Active; preferred \(preferredStateDescription)"
     }
 }
-private struct AudioOutputRoutePicker: UIViewRepresentable {
+struct AudioOutputRoutePicker: UIViewRepresentable {
     func makeUIView(context: Context) -> AVRoutePickerView {
         let picker = AVRoutePickerView()
         picker.prioritizesVideoDevices = false
