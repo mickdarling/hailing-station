@@ -5,6 +5,7 @@ import HailProtocol
 public enum WebSocketListenerError: Error, Sendable, Equatable {
     case invalidArguments
     case invalidBindAddress(String)
+    case invalidReply
     case stoppedBeforeReady
     case failed(String)
 }
@@ -34,16 +35,16 @@ public actor WebSocketListener {
     private let networkListener: NWListener
     private let host: HailHost
     private let authorizer: any HostSessionAuthorizing
-    private let hostName: String
+    let hostName: String
     private let maxConnections: Int
     private let helloTimeout: Duration
     private let log: @Sendable (WebSocketListenerEvent) -> Void
-    private var peers: [UUID: WebSocketPeer] = [:]
+    var peers: [UUID: WebSocketPeer] = [:]
     private var readyWaiters: [CheckedContinuation<UInt16, any Error>] = []
     private var stopWaiters: [CheckedContinuation<Void, Never>] = []
-    private var readyResult: Result<UInt16, WebSocketListenerError>?
+    var readyResult: Result<UInt16, WebSocketListenerError>?
     private var started = false
-    private var stopped = false
+    var stopped = false
 
     public init(
         bindAddress: String, port: UInt16, host: HailHost,

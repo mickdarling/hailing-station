@@ -31,7 +31,7 @@ public struct ConnectionProbeAuthorizer: HostSessionAuthorizing {
 /// and literal Escape in addition to the probe operations; the default listener remains read-only.
 public struct PersonalTerminalAuthorizer: HostSessionAuthorizing {
     public init() {}
-    public let capabilities = ["list_targets", "ping", "select_target", "send_text", "escape"]
+    public let capabilities = ["list_targets", "ping", "select_target", "send_text", "escape", "receive_replies"]
 
     public func authorize(_ frame: Frame) async -> HostSessionAuthorization {
         switch frame.payload {
@@ -117,6 +117,19 @@ public actor HostSession {
                 return failure(.unauthorized, "terminal action is not authorized", close: false, version: version)
             }
             return await route(frame, version: version)
+        }
+    }
+
+    /// Host-originated replies are pushed only after negotiation and only to the target this terminal selected.
+    /// Reply identity/provenance has already been validated by the listener's publication boundary.
+    func acceptsHostReply(_ frame: Frame) -> Bool {
+        guard case .ready(let version) = state,
+              frame.version == version,
+              frame.target == selectedTarget else { return false }
+        return switch frame.payload {
+        case .text(let text): text.isFinal && text.reply != nil
+        case .audio(let audio): audio.reply != nil
+        default: false
         }
     }
 
