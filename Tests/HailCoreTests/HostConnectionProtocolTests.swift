@@ -95,6 +95,59 @@ import Testing
         }
     }
 
+    @Test func negotiatedTerminalPublishesValidatedReplyFrames() async throws {
+        let endpoint = try endpoint()
+        let socket = ScriptedSocket()
+        let connector = ScriptedConnector()
+        let replies = ReplyEvents()
+        await connector.enqueue(.socket(socket), for: endpoint.url)
+        let connection = HostConnection(
+            endpoint: endpoint, connector: connector,
+            replyObserver: { await replies.append($0) }
+        )
+
+        await connection.connect()
+        try await waitUntil { await connection.currentSnapshot().state == .negotiating }
+        try await socket.push(.hello(HelloInfo(
+            versions: [ProtocolVersion.current], capabilities: ["receive_replies"], deviceName: "Mac"
+        )))
+        try await waitUntil { await connection.currentSnapshot().state == .ready }
+        let descriptor = ReplyDescriptor(id: UUID(), hostID: "main-mac", targetID: "tmux:codex")
+        let frame = Frame(
+            timestamp: 1, target: descriptor.targetID, source: descriptor.hostID,
+            payload: .text(TextPayload(text: "finished", reply: descriptor))
+        )
+        try await socket.push(FrameCoding.encode(frame))
+        try await waitUntil { await replies.values.count == 1 }
+
+        #expect(await replies.values == [HostReplyEvent(endpointID: endpoint.id, frame: frame)])
+        await connection.disconnect()
+    }
+
+    @Test func replyRequiresNegotiatedCapability() async throws {
+        let endpoint = try endpoint()
+        let socket = ScriptedSocket()
+        let connector = ScriptedConnector()
+        await connector.enqueue(.socket(socket), for: endpoint.url)
+        let connection = HostConnection(endpoint: endpoint, connector: connector)
+        await connection.connect()
+        try await waitUntil { await connection.currentSnapshot().state == .negotiating }
+        try await socket.push(.hello(HelloInfo(
+            versions: [ProtocolVersion.current], capabilities: [], deviceName: "Mac"
+        )))
+        try await waitUntil { await connection.currentSnapshot().state == .ready }
+        let reply = ReplyDescriptor(id: UUID(), hostID: "main-mac", targetID: "tmux:codex")
+        try await socket.push(FrameCoding.encode(Frame(
+            timestamp: 1, target: reply.targetID, source: reply.hostID,
+            payload: .text(TextPayload(text: "finished", reply: reply))
+        )))
+        try await waitUntil {
+            if case .failed = await connection.currentSnapshot().state { return true }
+            return false
+        }
+        await connection.disconnect()
+    }
+
     private func incompatibleHello() throws -> Data {
         let frame = Frame(
             version: 99, timestamp: 1, source: "haild",
@@ -102,4 +155,9 @@ import Testing
         )
         return try FrameCoding.encode(frame)
     }
+}
+
+private actor ReplyEvents {
+    private(set) var values: [HostReplyEvent] = []
+    func append(_ event: HostReplyEvent) { values.append(event) }
 }

@@ -14,6 +14,7 @@ public enum HostConnectionFailure: Error, Equatable, Sendable {
 public actor HostConnection {
     public static let subprotocolName = "hail.v1"
     public typealias Observer = @Sendable (HostConnectionSnapshot) async -> Void
+    public typealias ReplyObserver = @Sendable (HostReplyEvent) async -> Void
     public typealias Sleep = @Sendable (Duration) async throws -> Void
     public typealias Jitter = @Sendable () -> Double
     public typealias DeadlineScheduler = @Sendable (Duration, @escaping @Sendable () -> Void) -> Void
@@ -26,6 +27,7 @@ public actor HostConnection {
     let sleep: Sleep
     let jitter: Jitter
     let observer: Observer
+    let replyObserver: ReplyObserver
     let pongTimeout: Duration
     let negotiationTimeout: Duration
     let deadlineSleep: Sleep
@@ -59,7 +61,8 @@ public actor HostConnection {
         },
         sleep: @escaping Sleep = { try await Task.sleep(for: $0) },
         jitter: @escaping Jitter = { Double.random(in: 0...1) },
-        observer: @escaping Observer = { _ in }
+        observer: @escaping Observer = { _ in },
+        replyObserver: @escaping ReplyObserver = { _ in }
     ) {
         self.snapshot = HostConnectionSnapshot(endpoint: endpoint)
         self.connector = connector
@@ -78,6 +81,7 @@ public actor HostConnection {
         self.sleep = sleep
         self.jitter = jitter
         self.observer = observer
+        self.replyObserver = replyObserver
     }
 
     public func currentSnapshot() -> HostConnectionSnapshot { snapshot }
