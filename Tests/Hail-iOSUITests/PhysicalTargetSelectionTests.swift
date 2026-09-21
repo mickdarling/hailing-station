@@ -14,6 +14,9 @@ final class PhysicalTargetSelectionTests: XCTestCase {
 
     @MainActor
     func testBootstrapsHostAndSelectsConfiguredPhysicalTarget() throws {
+        if ProcessInfo.processInfo.environment["SIMULATOR_UDID"] != nil {
+            throw XCTSkip("The host bootstrap test requires a physical iPhone or iPad.")
+        }
         guard let hostName = ProcessInfo.processInfo.environment["HAIL_UI_HOST_NAME"],
               let hostURL = ProcessInfo.processInfo.environment["HAIL_UI_HOST_URL"],
               let targetLabel = ProcessInfo.processInfo.environment["HAIL_UI_TARGET_LABEL"] else {
@@ -47,7 +50,7 @@ final class PhysicalTargetSelectionTests: XCTestCase {
         XCTAssertTrue(host.waitForExistence(timeout: 10))
         host.buttons["Connect"].tap()
         allowLocalNetworkIfRequested()
-        XCTAssertTrue(app.staticTexts["ready"].waitForExistence(timeout: 30))
+        XCTAssertTrue(host.staticTexts["ready"].waitForExistence(timeout: 30))
         app.navigationBars["Connectivity Lab"].buttons.firstMatch.tap()
         selectTarget(targetLabel, in: app)
         XCTAssertEqual(app.state, .runningForeground)
