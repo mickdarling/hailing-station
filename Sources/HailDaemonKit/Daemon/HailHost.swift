@@ -1,3 +1,5 @@
+// The host's policy transaction helpers intentionally remain beside the actor state they protect.
+// swiftlint:disable file_length
 import Foundation
 public import HailProtocol
 public enum HostError: Error, Equatable, Sendable {
@@ -96,6 +98,18 @@ public actor HailHost {
             delivered.append(line)
         }
         return .delivered(delivered)
+    }
+    /// Sends one literal Escape to an allowed, still-bound target. Escape is a safety control rather
+    /// than content delivery, so an explicit tap remains available at the confirm tier; locked targets
+    /// and host lockdown still refuse it.
+    public func escape(_ id: String) async throws {
+        try requireSendPreflight()
+        let listed = try await listed(id)
+        guard let allowed = policy.targets[id] else { throw HostError.denied(.notAllowed(id)) }
+        guard let binding = listed.binding, !binding.isEmpty else { throw HostError.denied(.unbound(id)) }
+        guard allowed.binding == binding else { throw HostError.denied(.rebound(id)) }
+        guard allowed.tier != .locked else { throw HostError.denied(.locked(id)) }
+        try await registry.escape(id, binding: binding)
     }
     /// Drops a read-back the user declined, so "cancel" ends it now rather than at the window (#41 item 2).
     @discardableResult
