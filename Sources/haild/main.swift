@@ -4,12 +4,11 @@ import HailDaemonKit
 // haild: the host daemon's command line (#10 item 1, #41). `run` starts with the read-only connection
 // probe (#98); the push endpoint, LaunchAgent, and `pair` arrive with their slices. Exit codes: 2 unknown
 // target, 3 refused by the sanitizer, 4 adapter
-// unavailable or adapter error, 5 unbound, 6 partial, 7 denied by policy, 8 confirmation needed or
-// cancelled, 9 policy file unusable, 64 usage.
+// unavailable or adapter error, 5 unbound, 6 partial, 7 denied by policy, 8 confirmation needed or cancelled,
+// 9 policy file unusable, 64 usage.
 
 let tmuxPath = ProcessInfo.processInfo.environment["HAIL_TMUX"] ?? "tmux"
 let standardError = FileHandle.standardError
-
 func makeHost() async throws -> HailHost {
     let registry = Registry()
     try await registry.register(TmuxAdapter(runner: ProcessCommandRunner(), tmux: tmuxPath))
@@ -26,6 +25,7 @@ func usage() -> Never {
            haild status
            haild audit verify|tail|today
            haild run --bind <address> --port <port> --connection-probe
+           haild run --bind <address> --port <port> --personal-terminal
 
     """.utf8))
     exit(64)
