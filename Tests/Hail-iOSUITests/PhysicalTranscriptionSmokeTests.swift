@@ -17,6 +17,7 @@ final class PhysicalTranscriptionSmokeTests: XCTestCase {
         let app = XCUIApplication()
         installPermissionHandler()
         app.launch()
+        XCTAssertTrue(app.staticTexts["Hailing Station"].waitForExistence(timeout: 10))
 
         let labsLink = app.buttons["Labs"]
         XCTAssertTrue(labsLink.waitForExistence(timeout: 10))
