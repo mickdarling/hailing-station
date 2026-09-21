@@ -35,9 +35,19 @@ extension HostConnection {
         guard frame.version == snapshot.negotiatedVersion else {
             throw HostConnectionFailure.incompatibleVersion
         }
-        guard case .control(let control) = frame.payload else {
-            throw HostConnectionFailure.malformed("unexpected non-control frame")
+        switch frame.payload {
+        case .control(let control):
+            try await process(control)
+        case .text(let text) where text.isFinal && text.reply != nil:
+            try await publishReply(frame)
+        case .audio(let audio) where audio.reply != nil:
+            try await publishReply(frame)
+        default:
+            throw HostConnectionFailure.malformed("unexpected host frame")
         }
+    }
+
+    private func process(_ control: ControlPayload) async throws {
         switch control {
         case .pong(let nonce):
             guard let began = pendingPings.removeValue(forKey: nonce) else { return }
@@ -54,6 +64,13 @@ extension HostConnection {
         default:
             throw HostConnectionFailure.malformed("unexpected control frame")
         }
+    }
+
+    private func publishReply(_ frame: Frame) async throws {
+        guard snapshot.capabilities.contains("receive_replies") else {
+            throw HostConnectionFailure.unsupportedCapability("receive_replies")
+        }
+        await replyObserver(HostReplyEvent(endpointID: snapshot.id, frame: frame))
     }
 
     func sendPing(generation token: UInt64, requiresDeadline: Bool = false) async throws {

@@ -5,8 +5,12 @@ public import Observation
 @MainActor
 @Observable
 public final class HostConnectionStore {
+    public static let replyFrameLimit = 256
     public private(set) var snapshots: [HostEndpoint.Identifier: HostConnectionSnapshot] = [:]
     public private(set) var order: [HostEndpoint.Identifier] = []
+    /// A bounded ingress history for the playback coordinator. Audio is not associated by arrival order;
+    /// consumers group these frames by the reply and stream identities carried in every frame.
+    public private(set) var replyFrames: [HostReplyEvent] = []
 
     @ObservationIgnored private var connections: [HostEndpoint.Identifier: HostConnection] = [:]
     @ObservationIgnored private var tokens: [HostEndpoint.Identifier: UUID] = [:]
@@ -75,6 +79,8 @@ public final class HostConnectionStore {
             jitter: jitter
         ) { [weak self] snapshot in
             await self?.receive(snapshot, token: token)
+        } replyObserver: { [weak self] event in
+            await self?.receive(event, token: token)
         }
         connections[endpoint.id] = connection
     }
@@ -110,5 +116,13 @@ public final class HostConnectionStore {
     private func receive(_ snapshot: HostConnectionSnapshot, token: UUID) {
         guard tokens[snapshot.id] == token else { return }
         snapshots[snapshot.id] = snapshot
+    }
+
+    private func receive(_ event: HostReplyEvent, token: UUID) {
+        guard tokens[event.endpointID] == token else { return }
+        replyFrames.append(event)
+        if replyFrames.count > Self.replyFrameLimit {
+            replyFrames.removeFirst(replyFrames.count - Self.replyFrameLimit)
+        }
     }
 }
