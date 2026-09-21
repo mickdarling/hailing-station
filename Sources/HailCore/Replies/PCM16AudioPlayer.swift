@@ -65,11 +65,11 @@ public final class PCM16AudioPlayer: ReplyAudioPlaying {
             // Replies may arrive without a preceding capture session. Configure a complete route
             // here as well as in AVAudioSessionBackend so playAndRecord does not default to the
             // receiver, while still allowing a user-selected A2DP output such as AirPods.
-            try session.setCategory(
-                .playAndRecord,
-                mode: .default,
-                options: [.allowBluetoothA2DP, .defaultToSpeaker]
-            )
+            var options: AVAudioSession.CategoryOptions = [.allowBluetoothA2DP, .defaultToSpeaker]
+            if session.categoryOptions.contains(.allowBluetoothHFP) {
+                options.insert(.allowBluetoothHFP)
+            }
+            try session.setCategory(.playAndRecord, mode: .default, options: options)
             didConfigureAudioSession = true
         }
         try session.setActive(true)
@@ -79,17 +79,20 @@ public final class PCM16AudioPlayer: ReplyAudioPlaying {
 
     func buffer(_ payload: AudioPayload) throws -> AVAudioPCMBuffer {
         guard payload.codec == .pcm16, payload.channels == 1,
-              Double(payload.sampleRate) == sourceFormat.sampleRate,
               !payload.bytes.isEmpty,
-              payload.bytes.count.isMultiple(of: MemoryLayout<Int16>.size),
-              sourceFormat.commonFormat == .pcmFormatFloat32,
-              !sourceFormat.isInterleaved else { throw ReplyAudioPlayerError.unsupportedFormat }
+              payload.bytes.count.isMultiple(of: MemoryLayout<Int16>.size) else {
+            throw ReplyAudioPlayerError.unsupportedFormat
+        }
         let count = payload.bytes.count / MemoryLayout<Int16>.size
         guard count <= Int(AVAudioFrameCount.max),
-              let buffer = AVAudioPCMBuffer(
-                  pcmFormat: sourceFormat, frameCapacity: AVAudioFrameCount(count)
+              let inputFormat = AVAudioFormat(
+                  commonFormat: .pcmFormatInt16, sampleRate: Double(payload.sampleRate),
+                  channels: 1, interleaved: false
               ),
-              let destination = buffer.floatChannelData?.pointee else {
+              let input = AVAudioPCMBuffer(
+                  pcmFormat: inputFormat, frameCapacity: AVAudioFrameCount(count)
+              ),
+              let destination = input.int16ChannelData?.pointee else {
             throw ReplyAudioPlayerError.invalidBuffer
         }
         payload.bytes.withUnsafeBytes { raw in
@@ -97,10 +100,36 @@ public final class PCM16AudioPlayer: ReplyAudioPlaying {
             for index in 0..<count {
                 let offset = index * MemoryLayout<Int16>.size
                 let bits = UInt16(source[offset]) | UInt16(source[offset + 1]) << 8
-                destination[index] = Float(Int16(bitPattern: bits)) / 32_768
+                destination[index] = Int16(bitPattern: bits)
             }
         }
-        buffer.frameLength = AVAudioFrameCount(count)
-        return buffer
+        input.frameLength = AVAudioFrameCount(count)
+        return try convert(input)
+    }
+
+    private func convert(_ input: AVAudioPCMBuffer) throws -> AVAudioPCMBuffer {
+        guard let converter = AVAudioConverter(from: input.format, to: sourceFormat) else {
+            throw ReplyAudioPlayerError.unsupportedFormat
+        }
+        let ratio = sourceFormat.sampleRate / input.format.sampleRate
+        let capacity = AVAudioFrameCount((Double(input.frameLength) * ratio).rounded(.up)) + 1
+        guard let output = AVAudioPCMBuffer(pcmFormat: sourceFormat, frameCapacity: capacity) else {
+            throw ReplyAudioPlayerError.invalidBuffer
+        }
+        let converterInput = ConverterInput(input)
+        var conversionError: NSError?
+        let status = converter.convert(to: output, error: &conversionError) { _, inputStatus in
+            guard !converterInput.wasSupplied else {
+                inputStatus.pointee = .endOfStream
+                return nil
+            }
+            converterInput.wasSupplied = true
+            inputStatus.pointee = .haveData
+            return converterInput.buffer
+        }
+        guard status != .error, conversionError == nil, output.frameLength > 0 else {
+            throw ReplyAudioPlayerError.invalidBuffer
+        }
+        return output
     }
 }
