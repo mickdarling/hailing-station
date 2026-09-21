@@ -20,7 +20,9 @@ public protocol Transcriber: Sendable {
     var results: AsyncStream<TranscriptionResult> { get }
     func start() async throws
     func consume(_ buffer: AudioCaptureBuffer) async throws
-    func stop() async
+    /// Finalizes the current utterance and returns the same final text published through `results`.
+    /// Returning it closes the race between UI observation and immediate audio-first delivery.
+    func stop() async -> String
 }
 
 public enum SpeechAnalyzerTranscriberError: LocalizedError, Sendable, Equatable {
@@ -53,6 +55,8 @@ public actor SpeechAnalyzerTranscriber: Transcriber {
     private var analyzerFormat: AVAudioFormat?
     private var converter: AVAudioConverter?
     private var resultTask: Task<Void, Never>?
+    private var utteranceFinalText = ""
+    private var utteranceVolatileText = ""
 
     public init(localeIdentifier: String = "en-US") {
         self.localeIdentifier = localeIdentifier
@@ -69,6 +73,8 @@ public actor SpeechAnalyzerTranscriber: Transcriber {
 
     public func start() async throws {
         guard analyzer == nil else { return }
+        utteranceFinalText = ""
+        utteranceVolatileText = ""
         let (transcriber, format) = try await prepareTranscriber()
         let modules: [any SpeechModule] = [transcriber]
         let pair = AsyncStream<AnalyzerInput>.makeStream(bufferingPolicy: .unbounded)
@@ -79,9 +85,17 @@ public actor SpeechAnalyzerTranscriber: Transcriber {
             do {
                 for try await result in transcriber.results {
                     guard !Task.isCancelled else { return }
-                    resultContinuation.yield(
-                        TranscriptionResult(text: String(result.text.characters), isFinal: result.isFinal)
-                    )
+                    let text = String(result.text.characters).trimmingCharacters(in: .whitespacesAndNewlines)
+                    if result.isFinal {
+                        if !text.isEmpty {
+                            self.utteranceFinalText = [self.utteranceFinalText, text]
+                                .filter { !$0.isEmpty }.joined(separator: " ")
+                        }
+                        self.utteranceVolatileText = ""
+                    } else {
+                        self.utteranceVolatileText = text
+                    }
+                    resultContinuation.yield(TranscriptionResult(text: text, isFinal: result.isFinal))
                 }
             } catch {
                 // Feed and setup errors are reported to the caller. Result-stream failures end this utterance.
@@ -129,8 +143,8 @@ public actor SpeechAnalyzerTranscriber: Transcriber {
         analyzerInput.yield(AnalyzerInput(buffer: converted))
     }
 
-    public func stop() async {
-        guard let analyzer else { return }
+    public func stop() async -> String {
+        guard let analyzer else { return "" }
         analyzerInput?.finish()
         do {
             try await analyzer.finalizeAndFinishThroughEndOfInput()
@@ -138,7 +152,9 @@ public actor SpeechAnalyzerTranscriber: Transcriber {
             await analyzer.cancelAndFinishNow()
         }
         await resultTask?.value
+        let text = [utteranceFinalText, utteranceVolatileText].filter { !$0.isEmpty }.joined(separator: " ")
         reset()
+        return text
     }
 
     private func convert(_ buffer: AVAudioPCMBuffer, to format: AVAudioFormat) throws -> AVAudioPCMBuffer {
@@ -177,14 +193,5 @@ public actor SpeechAnalyzerTranscriber: Transcriber {
         analyzerFormat = nil
         converter = nil
         resultTask = nil
-    }
-}
-
-private final class ConverterInput: @unchecked Sendable {
-    let buffer: AVAudioPCMBuffer
-    var wasSupplied = false
-
-    init(_ buffer: AVAudioPCMBuffer) {
-        self.buffer = buffer
     }
 }
