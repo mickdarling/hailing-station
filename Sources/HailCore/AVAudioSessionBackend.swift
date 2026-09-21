@@ -26,7 +26,7 @@ public final class AVAudioSessionBackend: AudioSessionBackend {
     }
 
     public func configure(allowsBluetoothHFP: Bool) async throws {
-        var options: AVAudioSession.CategoryOptions = [.allowBluetoothA2DP]
+        var options: AVAudioSession.CategoryOptions = [.allowBluetoothA2DP, .defaultToSpeaker]
         if allowsBluetoothHFP {
             options.insert(.allowBluetoothHFP)
         }
