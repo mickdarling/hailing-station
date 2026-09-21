@@ -1,5 +1,6 @@
 import Foundation
 import HailProtocol
+import Network
 import Testing
 @testable import HailDaemonKit
 
