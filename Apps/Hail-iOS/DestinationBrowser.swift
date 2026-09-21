@@ -8,6 +8,7 @@ struct DestinationBrowser: View {
     let selected: Destination?
     let onSelect: @MainActor (Destination) -> Void
     @Environment(\.dismiss) private var dismiss
+    @Environment(\.horizontalSizeClass) private var horizontalSizeClass
 
     var body: some View {
         NavigationStack {
@@ -35,7 +36,12 @@ struct DestinationBrowser: View {
                 }
             }
         }
-        .frame(minWidth: 340, idealWidth: 420, minHeight: 360, idealHeight: 520)
+        .frame(
+            minWidth: horizontalSizeClass == .regular ? 340 : nil,
+            idealWidth: horizontalSizeClass == .regular ? 420 : nil,
+            minHeight: 360,
+            idealHeight: 520
+        )
     }
 
     @ViewBuilder
