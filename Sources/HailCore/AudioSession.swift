@@ -13,6 +13,7 @@ public actor ManagedAudioSession: AudioSessionDiagnosticsProviding {
     var preferenceSaveTail: Task<Void, Never>?
     var latestQueuedPreferenceGeneration = 0
     var routeReconciliationNeeded = false
+    var diagnosticsRevision = 0
     var wantsActive = false
     var sessionActive = false
 
@@ -92,6 +93,12 @@ public actor ManagedAudioSession: AudioSessionDiagnosticsProviding {
 }
 
 extension ManagedAudioSession {
+    func publish(_ diagnostics: AudioSessionDiagnostics) {
+        diagnosticsRevision &+= 1
+        latestDiagnostics = diagnostics
+        eventPair.continuation.yield(.routeChanged(diagnostics))
+    }
+
     func validateRouteApplication(_ generation: Int?) throws {
         guard let generation else { return }
         guard generation == inputSelectionGeneration,
@@ -140,10 +147,11 @@ private extension ManagedAudioSession {
             await reconcileRouteWhenIdle()
         }
         let generation = inputSelectionGeneration
+        let revision = diagnosticsRevision
         let diagnostics = await backend.diagnostics(isActive: sessionActive)
-        guard generation == inputSelectionGeneration else { return }
-        latestDiagnostics = diagnostics
-        eventPair.continuation.yield(.routeChanged(latestDiagnostics))
+        guard generation == inputSelectionGeneration,
+              revision == diagnosticsRevision else { return }
+        publish(diagnostics)
     }
 
     private func handleInterruptionEnd(shouldResume: Bool) async {

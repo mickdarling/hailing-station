@@ -39,6 +39,29 @@ struct AudioInputSelectionPublicationTests {
         #expect(await backend.selectedInput == .builtIn)
         #expect(await controller.diagnostics.input == .builtIn)
     }
+
+    @Test func sameGenerationReconciliationInvalidatesAnOlderRouteSnapshot() async throws {
+        let backend = FakeAudioSessionBackend(inputs: [.builtIn])
+        let store = HoldingAudioInputPreferenceStore()
+        let controller = ManagedAudioSession(backend: backend, preferenceStore: store)
+        try await controller.activate()
+        await store.holdNextSaveCall()
+
+        let selection = Task { try await controller.selectInput(id: nil) }
+        await store.waitUntilSaveIsHeld()
+        await backend.replaceInputs([.usb, .builtIn])
+        await backend.holdDiagnosticsCall(after: 0)
+        let routeChange = Task { await controller.handle(.routeChanged) }
+        await backend.waitUntilDiagnosticsIsHeld()
+
+        await store.releaseHeldSave()
+        try await selection.value
+        await backend.releaseHeldDiagnostics()
+        await routeChange.value
+
+        #expect(await backend.selectedInput == .usb)
+        #expect(await controller.diagnostics.input == .usb)
+    }
 }
 
 private actor HoldingAudioInputPreferenceStore: AudioInputPreferenceStoring {

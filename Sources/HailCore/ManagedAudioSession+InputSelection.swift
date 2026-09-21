@@ -188,9 +188,4 @@ private extension ManagedAudioSession {
         guard generation == inputSelectionGeneration else { return }
         publish(diagnostics)
     }
-
-    func publish(_ diagnostics: AudioSessionDiagnostics) {
-        latestDiagnostics = diagnostics
-        eventPair.continuation.yield(.routeChanged(diagnostics))
-    }
 }
