@@ -9,12 +9,26 @@ public enum ReplyAudioPlayerError: Error, Equatable, Sendable {
 /// AVAudioEngine renderer for the raw signed 16-bit, mono stream produced by the current vbsay bridge.
 @MainActor
 public final class PCM16AudioPlayer: ReplyAudioPlaying {
+    static let sourceSampleRate = 24_000.0
+
     private let engine = AVAudioEngine()
     private let node = AVAudioPlayerNode()
+    private let sourceFormat: AVAudioFormat
+    #if os(iOS)
+    private var didConfigureAudioSession = false
+    #endif
 
     public init() {
+        guard let sourceFormat = AVAudioFormat(
+            standardFormatWithSampleRate: Self.sourceSampleRate, channels: 1
+        ) else {
+            preconditionFailure("Hailing Station PCM playback format is unavailable")
+        }
+        self.sourceFormat = sourceFormat
         engine.attach(node)
-        engine.connect(node, to: engine.mainMixerNode, format: nil)
+        // Player buffers must match this output format. The mixer owns conversion to the current
+        // hardware route (normally 48 kHz and possibly stereo on iPhone/iPad).
+        engine.connect(node, to: engine.mainMixerNode, format: sourceFormat)
     }
 
     public func schedule(_ payload: AudioPayload) throws {
@@ -46,27 +60,45 @@ public final class PCM16AudioPlayer: ReplyAudioPlaying {
 
     private func prepare() throws {
         #if os(iOS)
-        try AVAudioSession.sharedInstance().setActive(true)
+        let session = AVAudioSession.sharedInstance()
+        if !didConfigureAudioSession {
+            // Replies may arrive without a preceding capture session. Configure a complete route
+            // here as well as in AVAudioSessionBackend so playAndRecord does not default to the
+            // receiver, while still allowing a user-selected A2DP output such as AirPods.
+            try session.setCategory(
+                .playAndRecord,
+                mode: .default,
+                options: [.allowBluetoothA2DP, .defaultToSpeaker]
+            )
+            didConfigureAudioSession = true
+        }
+        try session.setActive(true)
         #endif
         if !engine.isRunning { try engine.start() }
     }
 
-    private func buffer(_ payload: AudioPayload) throws -> AVAudioPCMBuffer {
+    func buffer(_ payload: AudioPayload) throws -> AVAudioPCMBuffer {
         guard payload.codec == .pcm16, payload.channels == 1,
+              Double(payload.sampleRate) == sourceFormat.sampleRate,
+              !payload.bytes.isEmpty,
               payload.bytes.count.isMultiple(of: MemoryLayout<Int16>.size),
-              let format = AVAudioFormat(
-                  commonFormat: .pcmFormatInt16, sampleRate: Double(payload.sampleRate),
-                  channels: 1, interleaved: false
-              ) else { throw ReplyAudioPlayerError.unsupportedFormat }
+              sourceFormat.commonFormat == .pcmFormatFloat32,
+              !sourceFormat.isInterleaved else { throw ReplyAudioPlayerError.unsupportedFormat }
         let count = payload.bytes.count / MemoryLayout<Int16>.size
         guard count <= Int(AVAudioFrameCount.max),
-              let buffer = AVAudioPCMBuffer(pcmFormat: format, frameCapacity: AVAudioFrameCount(count)),
-              let destination = buffer.int16ChannelData?.pointee else {
+              let buffer = AVAudioPCMBuffer(
+                  pcmFormat: sourceFormat, frameCapacity: AVAudioFrameCount(count)
+              ),
+              let destination = buffer.floatChannelData?.pointee else {
             throw ReplyAudioPlayerError.invalidBuffer
         }
         payload.bytes.withUnsafeBytes { raw in
-            guard let source = raw.bindMemory(to: Int16.self).baseAddress else { return }
-            destination.update(from: source, count: count)
+            let source = raw.bindMemory(to: UInt8.self)
+            for index in 0..<count {
+                let offset = index * MemoryLayout<Int16>.size
+                let bits = UInt16(source[offset]) | UInt16(source[offset + 1]) << 8
+                destination[index] = Float(Int16(bitPattern: bits)) / 32_768
+            }
         }
         buffer.frameLength = AVAudioFrameCount(count)
         return buffer
