@@ -44,6 +44,8 @@ public protocol Adapter: Sendable {
     /// Deliver `text` literally to the target named `target` (adapter-local name, not the id). With a
     /// `binding` from an earlier listing, the adapter delivers only if the target still has that binding.
     func deliver(_ text: String, to target: String, binding: String?) async throws
+    /// Send the target a literal Escape key. Adapters that cannot represent it fail closed.
+    func escape(_ target: String, binding: String?) async throws
     /// The visible tail of the target's output, trimmed.
     func capture(_ target: String) async throws -> String
     var events: AsyncStream<TargetEvent> { get }
@@ -57,5 +59,9 @@ extension Adapter {
     /// Unbound delivery, for callers that have no listing in hand. Policy (#41) always passes a binding.
     public func deliver(_ text: String, to target: String) async throws {
         try await deliver(text, to: target, binding: nil)
+    }
+
+    public func escape(_ target: String, binding: String?) async throws {
+        throw AdapterError.deliveryFailed("adapter does not support Escape")
     }
 }

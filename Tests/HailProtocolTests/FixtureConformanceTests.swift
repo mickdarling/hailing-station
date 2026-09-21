@@ -31,7 +31,8 @@ import HailProtocolFixtures
 
     @Test func everyControlCommandHasAFixture() {
         let expected: Set<String> = [
-            "hello", "listTargets", "targets", "select", "subscribe", "unsubscribe", "ping", "pong", "error"
+            "hello", "listTargets", "targets", "select", "subscribe", "unsubscribe", "escape", "ping", "pong",
+            "error"
         ]
         #expect(Fixtures.controlCommandsCovered == expected)
     }

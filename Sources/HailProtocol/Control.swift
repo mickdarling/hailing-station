@@ -80,6 +80,9 @@ public enum ControlPayload: Sendable, Equatable {
     case select(targetID: String)
     case subscribe(targetID: String)
     case unsubscribe(targetID: String)
+    /// Send one literal Escape key to the selected target. This is intentionally narrower than a
+    /// generic remote-key command so the fast cancellation path cannot become arbitrary input.
+    case escape(targetID: String)
     case ping(nonce: String)
     case pong(nonce: String)
     case error(code: ErrorCode, message: String)
@@ -91,9 +94,11 @@ extension ControlPayload: Codable {
     }
 
     private enum Command: String, Codable {
-        case hello, listTargets = "list_targets", targets, select, subscribe, unsubscribe, ping, pong, error
+        case hello, listTargets = "list_targets", targets, select, subscribe, unsubscribe, escape, ping, pong, error
     }
 
+    // A closed wire enum is clearest as one exhaustive switch.
+    // swiftlint:disable:next cyclomatic_complexity
     public init(from decoder: any Decoder) throws {
         let container = try decoder.container(keyedBy: CodingKeys.self)
         switch try container.decode(Command.self, forKey: .command) {
@@ -103,6 +108,7 @@ extension ControlPayload: Codable {
         case .select: self = .select(targetID: try container.decode(String.self, forKey: .targetID))
         case .subscribe: self = .subscribe(targetID: try container.decode(String.self, forKey: .targetID))
         case .unsubscribe: self = .unsubscribe(targetID: try container.decode(String.self, forKey: .targetID))
+        case .escape: self = .escape(targetID: try container.decode(String.self, forKey: .targetID))
         case .ping: self = .ping(nonce: try container.decode(String.self, forKey: .nonce))
         case .pong: self = .pong(nonce: try container.decode(String.self, forKey: .nonce))
         case .error:
@@ -136,6 +142,9 @@ extension ControlPayload: Codable {
             try container.encode(id, forKey: .targetID)
         case .unsubscribe(let id):
             try container.encode(Command.unsubscribe, forKey: .command)
+            try container.encode(id, forKey: .targetID)
+        case .escape(let id):
+            try container.encode(Command.escape, forKey: .command)
             try container.encode(id, forKey: .targetID)
         case .ping(let nonce):
             try container.encode(Command.ping, forKey: .command)

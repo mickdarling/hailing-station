@@ -30,6 +30,18 @@ import Testing
         ])
     }
 
+    @Test func escapeIsOneLiteralKeyToTheBoundPane() async throws {
+        let runner = FakeCommandRunner.serving(SessionListing(twoSessions))
+        let adapter = TmuxAdapter(runner: runner, pollInterval: nil)
+
+        try await adapter.escape("codex", binding: "$2@1758230001/%2:502")
+
+        #expect(await runner.calls == [
+            ["tmux", "list-sessions", "-F", TmuxAdapter.listFormat],
+            ["tmux", "send-keys", "-t", "%2", "Escape"]
+        ])
+    }
+
     @Test func unknownNamePrefixAndLineBreaksAreRefusedBeforeAnySend() async throws {
         let runner = FakeCommandRunner.serving(SessionListing(twoSessions))
         let adapter = TmuxAdapter(runner: runner, pollInterval: nil)

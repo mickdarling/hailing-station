@@ -59,6 +59,42 @@ import Testing
         }
     }
 
+    @Test func readyTerminalSelectsSendsFinalTextAndEscapes() async throws {
+        let endpoint = try endpoint()
+        let socket = ScriptedSocket()
+        let connector = ScriptedConnector()
+        await connector.enqueue(.socket(socket), for: endpoint.url)
+        let connection = HostConnection(endpoint: endpoint, connector: connector, deviceName: "Mick's iPad")
+
+        await connection.connect()
+        try await waitUntil { await connection.currentSnapshot().state == .negotiating }
+        try await socket.push(.hello(HelloInfo(
+            versions: [ProtocolVersion.current],
+            capabilities: ["select_target", "send_text", "escape"], deviceName: "Mac"
+        )))
+        try await waitUntil { await connection.currentSnapshot().state == .ready }
+
+        try await connection.selectTarget("tmux:codex")
+        try await connection.sendFinalText("run the tests", to: "tmux:codex")
+        try await connection.sendEscape(to: "tmux:codex")
+
+        let frames = try await socket.sentFrames()
+        #expect(frames.contains { $0.payload == .control(.select(targetID: "tmux:codex")) })
+        #expect(frames.contains {
+            $0.target == "tmux:codex" && $0.source == "Mick's iPad"
+                && $0.payload == .text(TextPayload(text: "run the tests", isFinal: true))
+        })
+        #expect(frames.contains { $0.payload == .control(.escape(targetID: "tmux:codex")) })
+        await connection.disconnect()
+    }
+
+    @Test func terminalActionsRequireReadyAdvertisedCapabilities() async throws {
+        let connection = HostConnection(endpoint: try endpoint())
+        await #expect(throws: HostConnectionFailure.notReady) {
+            try await connection.sendFinalText("hello", to: "tmux:a")
+        }
+    }
+
     private func incompatibleHello() throws -> Data {
         let frame = Frame(
             version: 99, timestamp: 1, source: "haild",

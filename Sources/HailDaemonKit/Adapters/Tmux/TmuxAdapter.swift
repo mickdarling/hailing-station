@@ -67,6 +67,11 @@ public actor TmuxAdapter: Adapter {
         try await delivery.value
     }
 
+    public func escape(_ target: String, binding: String?) async throws {
+        let session = try await verified(target, binding: binding)
+        try await tmux(["send-keys", "-t", session.paneID, "Escape"], failure: AdapterError.deliveryFailed)
+    }
+
     private func performDelivery(_ text: String, to target: String, binding: String?) async throws {
         let session = try await verified(target, binding: binding)
         for chunk in Self.chunks(text, size: chunkSize) {

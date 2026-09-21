@@ -18,7 +18,11 @@ final class PhysicalTranscriptionSmokeTests: XCTestCase {
         installPermissionHandler()
         app.launch()
 
-        let transcriptionLink = app.buttons["Live transcription (#6)"]
+        let labsLink = app.buttons["Labs"]
+        XCTAssertTrue(labsLink.waitForExistence(timeout: 10))
+        labsLink.tap()
+
+        let transcriptionLink = app.buttons["Live transcription"]
         XCTAssertTrue(transcriptionLink.waitForExistence(timeout: 10))
         transcriptionLink.tap()
 

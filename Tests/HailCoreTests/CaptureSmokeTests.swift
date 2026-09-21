@@ -36,7 +36,7 @@ import Testing
 
         await transcriber.start()
         await transcriber.consume(owned)
-        await transcriber.stop()
+        _ = await transcriber.stop()
 
         #expect(await transcriber.consumedBuffers == 1)
         #expect(await !transcriber.isRunning)

@@ -51,6 +51,8 @@ extension HostConnectionFailure {
         case .malformed(let reason): reason
         case .incompatibleVersion: "no compatible Hail protocol version"
         case .remote(let reason): "host error: \(reason)"
+        case .notReady: "host is not ready"
+        case .unsupportedCapability(let capability): "host does not support \(capability)"
         }
     }
 }

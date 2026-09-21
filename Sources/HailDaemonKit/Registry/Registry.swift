@@ -86,6 +86,11 @@ public actor Registry {
         try await adapter.deliver(text, to: name, binding: binding)
     }
 
+    package func escape(_ id: String, binding: String?) async throws {
+        let (adapter, name) = try resolve(id)
+        try await adapter.escape(name, binding: binding)
+    }
+
     package func capture(_ id: String) async throws -> String {
         let (adapter, name) = try resolve(id)
         return try await adapter.capture(name)

@@ -114,7 +114,10 @@ public enum Schema {
         "type": .string("object"), "required": .array([.string("command")]),
         "properties": .object([
             "command": .object(["enum": .array(
-                ["hello", "list_targets", "targets", "select", "subscribe", "unsubscribe", "ping", "pong", "error"]
+                [
+                    "hello", "list_targets", "targets", "select", "subscribe", "unsubscribe", "escape", "ping", "pong",
+                    "error"
+                ]
                     .map(JSONValue.string)
             )]),
             "hello": requiring(["versions", "capabilities", "deviceName"], [
@@ -147,6 +150,7 @@ public enum Schema {
             commandRule("select", requires: ["target"]),
             commandRule("subscribe", requires: ["target"]),
             commandRule("unsubscribe", requires: ["target"]),
+            commandRule("escape", requires: ["target"]),
             commandRule("ping", requires: ["nonce"]),
             commandRule("pong", requires: ["nonce"]),
             commandRule("error", requires: ["code", "message"])
