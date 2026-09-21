@@ -51,7 +51,7 @@ extension HostConnection {
     private func run(token: UInt64, reconnectAttempt initialAttempt: Int) async {
         var reconnectAttempt = initialAttempt
         while isCurrent(token), wantsConnection, !Task.isCancelled {
-            snapshot.connectionGeneration &+= 1
+            snapshot.connectionGeneration = UUID()
             await publish(.connecting, token: token)
             guard isCurrent(token), wantsConnection, !Task.isCancelled else { return }
             do {

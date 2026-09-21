@@ -89,7 +89,7 @@ public enum HostConnectionState: Equatable, Sendable {
 /// Observable data emitted by a connection. It contains diagnostics and target metadata, never transcript content.
 public struct HostConnectionSnapshot: Equatable, Identifiable, Sendable {
     public var endpoint: HostEndpoint
-    public var connectionGeneration: UInt64
+    public var connectionGeneration: UUID
     public var state: HostConnectionState
     public var negotiatedVersion: Int?
     public var capabilities: [String]
@@ -101,7 +101,7 @@ public struct HostConnectionSnapshot: Equatable, Identifiable, Sendable {
 
     public init(
         endpoint: HostEndpoint,
-        connectionGeneration: UInt64 = 0,
+        connectionGeneration: UUID = UUID(),
         state: HostConnectionState = .disconnected,
         negotiatedVersion: Int? = nil,
         capabilities: [String] = [],

@@ -62,6 +62,7 @@ import Testing
         await store.upsert(original)
         await store.connect(original.id)
         try await waitUntil { try await oldSocket.sentFrames().count == 1 }
+        let originalGeneration = try #require(store.snapshots[original.id]?.connectionGeneration)
         await store.upsert(replacement)
         await store.connect(replacement.id)
         try await waitUntil { try await newSocket.sentFrames().count == 1 }
@@ -72,6 +73,7 @@ import Testing
 
         #expect(store.snapshots[replacement.id]?.endpoint == replacement)
         #expect(store.snapshots[replacement.id]?.state == .ready)
+        #expect(store.snapshots[replacement.id]?.connectionGeneration != originalGeneration)
         await store.disconnect(replacement.id)
     }
 

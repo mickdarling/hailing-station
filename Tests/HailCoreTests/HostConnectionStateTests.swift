@@ -33,7 +33,7 @@ import Testing
         let reconnects = states.filter { if case .reconnecting = $0 { true } else { false } }
         #expect(reconnects == [.reconnecting(attempt: 1, nextDelay: 1), .reconnecting(attempt: 1, nextDelay: 1)])
         #expect(await sleeps.durations == [.seconds(1), .seconds(1)])
-        #expect(await connection.currentSnapshot().connectionGeneration > readyGeneration)
+        #expect(await connection.currentSnapshot().connectionGeneration != readyGeneration)
         await connection.disconnect()
         #expect(await connection.currentSnapshot().state == .disconnected)
     }
