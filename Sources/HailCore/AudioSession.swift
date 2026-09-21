@@ -9,7 +9,8 @@ public actor ManagedAudioSession: AudioSessionDiagnosticsProviding {
     var pendingPreferredInput: AudioPort?
     var loadedPreference = false
     var inputSelectionGeneration = 0
-    var inputSelectionsInFlight: Set<Int> = []
+    var activeInputSelectionGeneration: Int?
+    var preferenceSaveTail: Task<Void, Never>?
     var routeReconciliationNeeded = false
     var wantsActive = false
     var sessionActive = false
@@ -60,7 +61,7 @@ public actor ManagedAudioSession: AudioSessionDiagnosticsProviding {
         wantsActive = false
         sessionActive = false
         inputSelectionGeneration &+= 1
-        inputSelectionsInFlight.removeAll()
+        activeInputSelectionGeneration = nil
         pendingPreferredInput = nil
         routeReconciliationNeeded = false
         do {
@@ -78,7 +79,7 @@ public actor ManagedAudioSession: AudioSessionDiagnosticsProviding {
         case .interruptionBegan:
             sessionActive = false
             inputSelectionGeneration &+= 1
-            inputSelectionsInFlight.removeAll()
+            activeInputSelectionGeneration = nil
             pendingPreferredInput = nil
             routeReconciliationNeeded = false
             latestDiagnostics = await backend.diagnostics(isActive: false)
@@ -104,11 +105,8 @@ private extension ManagedAudioSession {
 
     private func handleRouteChange() async {
         if wantsActive {
-            if inputSelectionsInFlight.isEmpty {
-                try? await selectPreferredInput()
-            } else {
-                routeReconciliationNeeded = true
-            }
+            routeReconciliationNeeded = true
+            await reconcileRouteWhenIdle()
         }
         latestDiagnostics = await backend.diagnostics(isActive: sessionActive)
         eventPair.continuation.yield(.routeChanged(latestDiagnostics))

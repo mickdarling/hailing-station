@@ -19,9 +19,7 @@ public extension ManagedAudioSession {
             let request = try await resolveSelection(id: id, generation: generation)
             try await backend.selectInput(id: request.port.id)
             let diagnostics = try await verifiedDiagnostics(for: request)
-            savedPreferredInput = request.preference
-            await preferenceStore.save(request.preference)
-            try validateSelection(request.generation)
+            try await persistPreference(for: request)
             pendingPreferredInput = nil
             let final = try await reconcileRouteIfNeeded(generation: request.generation) ?? diagnostics
             try verify(final, matches: request)
@@ -34,14 +32,17 @@ public extension ManagedAudioSession {
 }
 
 extension ManagedAudioSession {
-    func selectPreferredInput() async throws {
+    func selectPreferredInput(expectedGeneration: Int? = nil) async throws {
         await loadPreferenceIfNeeded()
         let inputs = await backend.availableInputs()
+        try validateRouteApplication(expectedGeneration)
         let input = inputs.first { $0.id == savedPreferredInput?.id && isSelectable($0) }
             ?? preferences.resolve(from: inputs)
         let current = await backend.diagnostics(isActive: sessionActive).input
+        try validateRouteApplication(expectedGeneration)
         guard input?.id != current?.id else { return }
         try await backend.selectInput(id: input?.id)
+        try validateRouteApplication(expectedGeneration)
     }
 
     func loadPreferenceIfNeeded() async {
@@ -52,6 +53,20 @@ extension ManagedAudioSession {
 
     func isSelectable(_ port: AudioPort) -> Bool {
         port.kind != .bluetoothHFP || preferences.allowsBluetoothHFP
+    }
+
+    func reconcileRouteWhenIdle() async {
+        while routeReconciliationNeeded, activeInputSelectionGeneration == nil, wantsActive, sessionActive {
+            routeReconciliationNeeded = false
+            let generation = inputSelectionGeneration
+            do {
+                try await selectPreferredInput(expectedGeneration: generation)
+            } catch AudioInputSelectionError.superseded {
+                routeReconciliationNeeded = true
+            } catch {
+                return
+            }
+        }
     }
 }
 
@@ -66,7 +81,7 @@ private extension ManagedAudioSession {
         guard sessionActive else { throw AudioInputSelectionError.sessionInactive }
         inputSelectionGeneration &+= 1
         let generation = inputSelectionGeneration
-        inputSelectionsInFlight.insert(generation)
+        activeInputSelectionGeneration = generation
         pendingPreferredInput = nil
         return generation
     }
@@ -89,7 +104,22 @@ private extension ManagedAudioSession {
     }
 
     func finishSelection(_ generation: Int) {
-        inputSelectionsInFlight.remove(generation)
+        if activeInputSelectionGeneration == generation {
+            activeInputSelectionGeneration = nil
+        }
+    }
+
+    func persistPreference(for request: InputSelectionRequest) async throws {
+        let previous = preferenceSaveTail
+        let store = preferenceStore
+        let save = Task {
+            await previous?.value
+            await store.save(request.preference)
+        }
+        preferenceSaveTail = save
+        await save.value
+        try validateSelection(request.generation)
+        savedPreferredInput = request.preference
     }
 
     func verifiedDiagnostics(for request: InputSelectionRequest) async throws -> AudioSessionDiagnostics {
@@ -114,18 +144,34 @@ private extension ManagedAudioSession {
         guard sessionActive else { throw AudioInputSelectionError.sessionInactive }
     }
 
+    func validateRouteApplication(_ generation: Int?) throws {
+        guard let generation else { return }
+        guard generation == inputSelectionGeneration,
+              activeInputSelectionGeneration == nil,
+              wantsActive,
+              sessionActive else {
+            throw AudioInputSelectionError.superseded
+        }
+    }
+
     func reconcileRouteIfNeeded(generation: Int) async throws -> AudioSessionDiagnostics? {
         guard routeReconciliationNeeded else { return nil }
-        routeReconciliationNeeded = false
-        if wantsActive { try? await selectPreferredInput() }
-        try validateSelection(generation)
+        repeat {
+            routeReconciliationNeeded = false
+            if wantsActive { try? await selectPreferredInput() }
+            try validateSelection(generation)
+        } while routeReconciliationNeeded
         let diagnostics = await backend.diagnostics(isActive: sessionActive)
         try validateSelection(generation)
         return diagnostics
     }
 
     func recoverFromFailedSelection(_ generation: Int) async {
-        guard generation == inputSelectionGeneration else { return }
+        guard generation == inputSelectionGeneration else {
+            routeReconciliationNeeded = true
+            await reconcileRouteWhenIdle()
+            return
+        }
         pendingPreferredInput = nil
         if let diagnostics = try? await reconcileRouteIfNeeded(generation: generation) {
             publish(diagnostics)
