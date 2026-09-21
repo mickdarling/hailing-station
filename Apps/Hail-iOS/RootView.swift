@@ -7,6 +7,7 @@ struct RootView: View {
     private static let savedHostsKey = "hailing-station.host-endpoints.v1"
     @State private var connections = HostConnectionStore()
     @State private var audioSession = ManagedAudioSession(backend: AVAudioSessionBackend())
+    @State private var playback = ReplyPlaybackController(player: PCM16AudioPlayer())
     @State private var selectedHostID: HostEndpoint.Identifier?
     @State private var selectedTargetID: String?
     @State private var didRestoreHosts = false
@@ -19,6 +20,9 @@ struct RootView: View {
         .onChange(of: scenePhase) { _, phase in
             guard phase == .active else { return }
             Task { await connections.sceneBecameActive() }
+        }
+        .onChange(of: connections.replyFrames) { _, frames in
+            for frame in frames { playback.ingest(frame) }
         }
         .task { await restoreHostsOnce() }
     }
@@ -64,6 +68,10 @@ struct RootView: View {
                     systemImage: "dot.radiowaves.left.and.right",
                     description: Text("Connect to your Mac, then choose an allowed target.")
                 )
+            }
+
+            if let reply = playback.latest {
+                ReplyPlaybackView(reply: reply, playback: playback)
             }
 
             HStack {
