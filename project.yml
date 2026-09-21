@@ -45,6 +45,18 @@ targets:
     entitlements:
       path: Apps/Hail-iOS/Hail.entitlements
       properties: {}
+  Hail-iOSUITests:
+    type: bundle.ui-testing
+    platform: iOS
+    sources:
+      - Tests/Hail-iOSUITests
+    dependencies:
+      - target: Hail-iOS
+    settings:
+      base:
+        GENERATE_INFOPLIST_FILE: YES
+        PRODUCT_BUNDLE_IDENTIFIER: com.mickdarling.Hail-iOSUITests
+        TEST_TARGET_NAME: Hail-iOS
 schemes:
   Hail-iOS:
     build:
@@ -52,3 +64,7 @@ schemes:
         Hail-iOS: all
     run:
       config: Debug
+    test:
+      config: Debug
+      targets:
+        - Hail-iOSUITests

@@ -41,9 +41,9 @@ scripts_() {
 audit_cli() { echo "== audit CLI"; scripts/tests/test-audit-cli.sh; }
 
 sim() {
-  echo "== simulator build (Hail-iOS)"
+  echo "== simulator build-for-testing (Hail-iOS)"
   xcodegen generate --quiet
-  xcodebuild build -project HailingStation.xcodeproj -scheme Hail-iOS \
+  xcodebuild build-for-testing -project HailingStation.xcodeproj -scheme Hail-iOS \
     -destination 'generic/platform=iOS Simulator' CODE_SIGNING_ALLOWED=NO 2>&1 | pretty
 }
 
