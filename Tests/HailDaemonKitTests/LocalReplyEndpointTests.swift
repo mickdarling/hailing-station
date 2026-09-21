@@ -7,6 +7,8 @@ import Testing
 // Socket security, deadline, and full delivery proofs intentionally share their integration helpers.
 // swiftlint:disable file_length
 
+// The serialized suite owns one endpoint at a time and deliberately shares its socket test harness.
+// swiftlint:disable:next type_body_length
 @Suite(.serialized) struct LocalReplyEndpointTests {
     @Test func refusesSocketBelowOtherWritableAncestor() async throws {
         let scratch = FileManager.default.temporaryDirectory.appendingPathComponent(
@@ -54,6 +56,29 @@ import Testing
             refused = true
         }
         #expect(refused)
+    }
+
+    @Test func refusesWritableACLAncestor() async throws {
+        let scratch = FileManager.default.temporaryDirectory.appendingPathComponent(
+            "hs-acl-\(UUID().uuidString.prefix(8))", isDirectory: true
+        )
+        defer { try? FileManager.default.removeItem(at: scratch) }
+        try FileManager.default.createDirectory(at: scratch, withIntermediateDirectories: true)
+        let chmod = Process()
+        chmod.executableURL = URL(fileURLWithPath: "/bin/chmod")
+        chmod.arguments = ["+a", "everyone allow add_file", scratch.path]
+        try chmod.run()
+        chmod.waitUntilExit()
+        #expect(chmod.terminationStatus == 0)
+        let listener = try await testListener()
+        let socket = scratch.appendingPathComponent("private", isDirectory: true)
+            .appendingPathComponent(LocalReplyEndpoint.socketName)
+        #expect(throws: LocalReplyEndpointError.self) {
+            _ = try LocalReplyEndpoint(
+                socketURL: socket, destination: listener,
+                audit: AuditLog(directory: scratch.appendingPathComponent("audit"))
+            )
+        }
     }
 
     @Test func incompleteConnectionExpires() async throws {
