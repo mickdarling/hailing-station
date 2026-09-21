@@ -13,8 +13,10 @@ public extension ManagedAudioSession {
     }
 
     func selectInput(id: AudioPort.ID?) async throws {
-        let request = try await beginSelection(id: id)
+        let generation = try startSelection()
+        defer { finishSelection(generation) }
         do {
+            let request = try await resolveSelection(id: id, generation: generation)
             try await backend.selectInput(id: request.port.id)
             let diagnostics = try await verifiedDiagnostics(for: request)
             savedPreferredInput = request.preference
@@ -22,9 +24,10 @@ public extension ManagedAudioSession {
             try validateSelection(request.generation)
             pendingPreferredInput = nil
             let final = try await reconcileRouteIfNeeded(generation: request.generation) ?? diagnostics
+            try verify(final, matches: request)
             publish(final)
         } catch {
-            await recoverFromFailedSelection(request.generation)
+            await recoverFromFailedSelection(generation)
             throw error
         }
     }
@@ -59,10 +62,16 @@ private extension ManagedAudioSession {
         let preference: AudioPort?
     }
 
-    func beginSelection(id: AudioPort.ID?) async throws -> InputSelectionRequest {
+    func startSelection() throws -> Int {
         guard sessionActive else { throw AudioInputSelectionError.sessionInactive }
         inputSelectionGeneration &+= 1
         let generation = inputSelectionGeneration
+        inputSelectionsInFlight.insert(generation)
+        pendingPreferredInput = nil
+        return generation
+    }
+
+    func resolveSelection(id: AudioPort.ID?, generation: Int) async throws -> InputSelectionRequest {
         let inputs = await backend.availableInputs().filter(isSelectable)
         try validateSelection(generation)
         if let id {
@@ -79,15 +88,23 @@ private extension ManagedAudioSession {
         return InputSelectionRequest(generation: generation, port: port, preference: nil)
     }
 
+    func finishSelection(_ generation: Int) {
+        inputSelectionsInFlight.remove(generation)
+    }
+
     func verifiedDiagnostics(for request: InputSelectionRequest) async throws -> AudioSessionDiagnostics {
         try validateSelection(request.generation)
         let diagnostics = await backend.diagnostics(isActive: true)
         try validateSelection(request.generation)
+        try verify(diagnostics, matches: request)
+        return diagnostics
+    }
+
+    func verify(_ diagnostics: AudioSessionDiagnostics, matches request: InputSelectionRequest) throws {
         guard diagnostics.input?.id == request.port.id else {
             latestDiagnostics = diagnostics
             throw AudioInputSelectionError.routeMismatch(expected: request.port, actual: diagnostics.input)
         }
-        return diagnostics
     }
 
     func validateSelection(_ generation: Int) throws {

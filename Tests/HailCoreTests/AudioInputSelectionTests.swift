@@ -78,6 +78,27 @@ struct AudioInputSelectionTests {
         #expect(await store.load() == .usb)
     }
 
+    @Test func failedNewerLookupClearsTheSupersededPendingSelection() async throws {
+        let backend = FakeAudioSessionBackend(inputs: [.usb, .builtIn])
+        let store = FakeAudioInputPreferenceStore(initial: .usb)
+        let controller = ManagedAudioSession(backend: backend, preferenceStore: store)
+        try await controller.activate()
+        await backend.holdNextSelectionCall()
+
+        let earlier = Task { try await controller.selectInput(id: AudioPort.builtIn.id) }
+        await backend.waitUntilSelectionIsHeld()
+        await #expect(throws: AudioInputSelectionError.unavailable("missing")) {
+            try await controller.selectInput(id: "missing")
+        }
+        await backend.releaseHeldSelection()
+
+        await #expect(throws: AudioInputSelectionError.superseded) {
+            try await earlier.value
+        }
+        #expect(await controller.preferredInput == .usb)
+        #expect(await store.load() == .usb)
+    }
+
     @Test func unplugDuringSelectionReconcilesToTheSavedPreference() async throws {
         let backend = FakeAudioSessionBackend(inputs: [.usb, .builtIn])
         let store = FakeAudioInputPreferenceStore(initial: .usb)
@@ -91,6 +112,25 @@ struct AudioInputSelectionTests {
 
         #expect(await backend.selectedInput == .usb)
         #expect(await controller.preferredInput == .usb)
+    }
+
+    @Test func unplugDuringPreferencePersistenceReportsTheReconciledRoute() async throws {
+        let backend = FakeAudioSessionBackend(inputs: [.usb, .builtIn])
+        let store = FakeAudioInputPreferenceStore(initial: .usb)
+        let controller = ManagedAudioSession(backend: backend, preferenceStore: store)
+        try await controller.activate()
+        await store.holdNextSaveCall()
+
+        let selection = Task { try await controller.selectInput(id: AudioPort.builtIn.id) }
+        await store.waitUntilSaveIsHeld()
+        await backend.replaceInputs([.usb])
+        await controller.handle(.routeChanged)
+        await store.releaseHeldSave()
+
+        await #expect(throws: AudioInputSelectionError.routeMismatch(expected: .builtIn, actual: .usb)) {
+            try await selection.value
+        }
+        #expect(await backend.selectedInput == .usb)
     }
 
     @Test func automaticSelectionClearsTheConcretePreference() async throws {
@@ -110,6 +150,8 @@ struct AudioInputSelectionTests {
 
 private actor FakeAudioInputPreferenceStore: AudioInputPreferenceStoring {
     private var stored: AudioPort?
+    private var holdNextSave = false
+    private var heldSave: CheckedContinuation<Void, Never>?
 
     init(initial: AudioPort? = nil) {
         stored = initial
@@ -119,7 +161,27 @@ private actor FakeAudioInputPreferenceStore: AudioInputPreferenceStoring {
         stored
     }
 
-    func save(_ port: AudioPort?) {
+    func save(_ port: AudioPort?) async {
+        if holdNextSave {
+            holdNextSave = false
+            await withCheckedContinuation { continuation in
+                heldSave = continuation
+            }
+        }
         stored = port
+    }
+
+    func holdNextSaveCall() { holdNextSave = true }
+
+    func waitUntilSaveIsHeld() async {
+        while heldSave == nil {
+            await Task.yield()
+        }
+    }
+
+    func releaseHeldSave() {
+        let continuation = heldSave
+        heldSave = nil
+        continuation?.resume()
     }
 }
