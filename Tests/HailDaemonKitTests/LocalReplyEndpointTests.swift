@@ -4,7 +4,51 @@ import Network
 import Testing
 @testable import HailDaemonKit
 
+// Socket security, deadline, and full delivery proofs intentionally share their integration helpers.
+// swiftlint:disable file_length
+
 @Suite(.serialized) struct LocalReplyEndpointTests {
+    @Test func refusesSocketBelowOtherWritableAncestor() async throws {
+        let scratch = FileManager.default.temporaryDirectory.appendingPathComponent(
+            "hs-unsafe-\(UUID().uuidString.prefix(8))", isDirectory: true
+        )
+        defer { try? FileManager.default.removeItem(at: scratch) }
+        try FileManager.default.createDirectory(at: scratch, withIntermediateDirectories: true)
+        #expect(chmod(scratch.path, 0o777) == 0)
+        let listener = try await testListener()
+        let socket = scratch.appendingPathComponent("private", isDirectory: true)
+            .appendingPathComponent(LocalReplyEndpoint.socketName)
+        #expect(throws: LocalReplyEndpointError.self) {
+            _ = try LocalReplyEndpoint(
+                socketURL: socket, destination: listener,
+                audit: AuditLog(directory: scratch.appendingPathComponent("audit"))
+            )
+        }
+    }
+
+    @Test func incompleteConnectionExpires() async throws {
+        let scratch = FileManager.default.temporaryDirectory.appendingPathComponent(
+            "hs-timeout-\(UUID().uuidString.prefix(8))", isDirectory: true
+        )
+        defer { try? FileManager.default.removeItem(at: scratch) }
+        let listener = try await testListener()
+        let socket = scratch.appendingPathComponent("config", isDirectory: true)
+            .appendingPathComponent(LocalReplyEndpoint.socketName)
+        let endpoint = try LocalReplyEndpoint(
+            socketURL: socket, destination: listener,
+            audit: AuditLog(directory: scratch.appendingPathComponent("audit")),
+            requestTimeout: .milliseconds(50)
+        )
+        try await endpoint.start()
+        let idle = NWConnection(to: .unix(path: socket.path), using: .tcp)
+        idle.start(queue: DispatchQueue(label: "hail.local-reply-idle-test"))
+        try await waitUntil { await endpoint.activeConnectionCount == 1 }
+        try await Task.sleep(for: .milliseconds(100))
+        #expect(await endpoint.activeConnectionCount == 0)
+        idle.cancel()
+        await endpoint.stop()
+    }
+
     // The full socket-to-terminal proof deliberately keeps setup, assertion, and teardown in one scope.
     // swiftlint:disable:next function_body_length
     @Test func privateLocalSubmissionReachesSelectedTerminalAndIsAudited() async throws {
@@ -61,6 +105,22 @@ import Testing
         await listener.stop(reason: "test complete")
         #expect(!FileManager.default.fileExists(atPath: socket.path))
     }
+}
+
+private func testListener() async throws -> WebSocketListener {
+    let (host, _) = try await sessionHost()
+    return try WebSocketListener(
+        bindAddress: "127.0.0.1", port: 0, host: host,
+        authorizer: PersonalTerminalAuthorizer(), hostName: "mac-main"
+    )
+}
+
+private func waitUntil(_ predicate: @escaping @Sendable () async -> Bool) async throws {
+    for _ in 0..<100 {
+        if await predicate() { return }
+        try await Task.sleep(for: .milliseconds(10))
+    }
+    throw LocalReplyEndpointError.failed("condition timed out")
 }
 
 private func terminalClient(port: UInt16) throws -> (URLSession, URLSessionWebSocketTask) {
