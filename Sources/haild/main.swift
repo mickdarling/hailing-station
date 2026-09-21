@@ -1,6 +1,9 @@
 import Foundation
 import HailDaemonKit
 
+// Command handlers stay in focused companion files; this composition and error-mapping surface is one line over time.
+// swiftlint:disable file_length
+
 // haild: the host daemon's command line (#10 item 1, #41). `run` starts with the read-only connection
 // probe (#98); the push endpoint, LaunchAgent, and `pair` arrive with their slices. Exit codes: 2 unknown
 // target, 3 refused by the sanitizer, 4 adapter
@@ -22,10 +25,12 @@ func usage() -> Never {
            haild targets deny <target-id>
            haild targets tier <target-id> <open|confirm|locked>
            haild send <target-id> <text>      (text is one argument; quote it)
+           haild reply <target-id> [--host <host-id>] [--text <text>] [--pcm16 <path>]
+                       [--sample-rate <hz>] [--socket <path>]
            haild status
            haild audit verify|tail|today
            haild run --bind <address> --port <port> --connection-probe
-           haild run --bind <address> --port <port> --personal-terminal
+           haild run --bind <address> --port <port> --personal-terminal [--reply-socket <path>]
 
     """.utf8))
     exit(64)
@@ -169,6 +174,7 @@ do {
         guard arguments.count == 3 else { usage() }
         try await send(try await makeHost(), id: arguments[1], text: arguments[2])
     case "status": try await status(try await makeHost())
+    case "reply": try await reply(arguments.dropFirst())
     case "audit": try audit(arguments.dropFirst())
     case "run":
         try await ConnectionProbeDaemon.run(
@@ -195,6 +201,8 @@ do {
     fail("policy: \(error)", code: 9)
 } catch let error as AdapterError {
     fail("\(error)", code: 4)
+} catch ReplyCommandError.usage {
+    usage()
 } catch {
     fail("\(error)")
 }
