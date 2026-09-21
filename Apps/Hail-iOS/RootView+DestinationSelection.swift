@@ -74,27 +74,44 @@ extension RootView {
         }
         guard !selectionAuthorizedForReadyConnection else { return }
 
+        await authorizeRememberedSelection(rememberedSelection, host: host, target: target)
+    }
+
+    @MainActor
+    private func authorizeRememberedSelection(
+        _ rememberedSelection: DestinationSelection,
+        host: HostConnectionSnapshot,
+        target: TargetInfo
+    ) async {
         isRestoringSelection = true
-        defer { isRestoringSelection = false }
         let revision = selectionRevision
+        let connectionGeneration = host.connectionGeneration
         do {
             try await connections.selectTarget(host: host.id, targetID: target.id)
-            guard selectionRevision == revision,
-                  self.rememberedSelection == rememberedSelection,
-                  let current = connections.hosts.first(where: { $0.id == host.id }),
-                  current.state == .ready,
-                  current.targets.contains(where: {
-                      rememberedSelection.matches(endpoint: current.endpoint, target: $0)
-                  }) else { return }
-            selectedHostID = host.id
-            selectedTargetID = target.id
-            selectionAuthorizedForReadyConnection = true
         } catch {
+            isRestoringSelection = false
             guard selectionRevision == revision else { return }
             selectedHostID = nil
             selectedTargetID = nil
             selectionAuthorizedForReadyConnection = false
+            return
         }
+        isRestoringSelection = false
+        guard selectionRevision == revision,
+              self.rememberedSelection == rememberedSelection else { return }
+        guard let current = connections.hosts.first(where: { $0.id == host.id }),
+              current.state == .ready,
+              current.connectionGeneration == connectionGeneration,
+              current.targets.contains(where: {
+                  rememberedSelection.matches(endpoint: current.endpoint, target: $0)
+              }) else {
+            selectionAuthorizedForReadyConnection = false
+            Task { await reconcileRememberedSelection() }
+            return
+        }
+        selectedHostID = host.id
+        selectedTargetID = target.id
+        selectionAuthorizedForReadyConnection = true
     }
 
     @MainActor

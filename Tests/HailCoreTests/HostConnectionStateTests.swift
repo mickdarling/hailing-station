@@ -24,17 +24,16 @@ import Testing
         try await waitUntil { await connection.currentSnapshot().state == .negotiating }
         try await socket.push(hostHello())
         try await waitUntil { await connection.currentSnapshot().state == .ready }
+        let readyGeneration = await connection.currentSnapshot().connectionGeneration
         await socket.fail()
         try await waitUntil { await connection.currentSnapshot().state == .negotiating }
 
         let states = await snapshots.states()
-        let expected: [HostConnectionState] = [
-            .connecting, .reconnecting(attempt: 1, nextDelay: 1), .connecting, .negotiating, .ready
-        ]
-        #expect(states.starts(with: expected))
+        #expect(states.starts(with: initialReconnectStates))
         let reconnects = states.filter { if case .reconnecting = $0 { true } else { false } }
         #expect(reconnects == [.reconnecting(attempt: 1, nextDelay: 1), .reconnecting(attempt: 1, nextDelay: 1)])
         #expect(await sleeps.durations == [.seconds(1), .seconds(1)])
+        #expect(await connection.currentSnapshot().connectionGeneration > readyGeneration)
         await connection.disconnect()
         #expect(await connection.currentSnapshot().state == .disconnected)
     }
@@ -168,6 +167,10 @@ import Testing
         #expect(await stalled.closeCount == 1)
     }
 }
+
+private let initialReconnectStates: [HostConnectionState] = [
+    .connecting, .reconnecting(attempt: 1, nextDelay: 1), .connecting, .negotiating, .ready
+]
 
 private func expectReplacementStillNegotiating(
     _ socket: ScriptedSocket, _ connector: ScriptedConnector,
