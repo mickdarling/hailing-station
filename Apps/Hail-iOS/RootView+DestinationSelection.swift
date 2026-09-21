@@ -94,6 +94,9 @@ extension RootView {
             selectedHostID = nil
             selectedTargetID = nil
             selectionAuthorizedForReadyConnection = false
+            if connections.snapshots[host.id]?.connectionGeneration != connectionGeneration {
+                Task { await reconcileRememberedSelection() }
+            }
             return
         }
         isRestoringSelection = false
