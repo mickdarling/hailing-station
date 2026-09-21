@@ -97,9 +97,10 @@ final class PhysicalTargetSelectionTests: XCTestCase {
         app.launch()
 
         XCTAssertTrue(
-            app.staticTexts[targetLabel].waitForExistence(timeout: 30),
+            destinationButton(in: app).waitForExistence(timeout: 30),
             "The remembered target did not restore after relaunch. Current UI: \(app.debugDescription)"
         )
+        XCTAssertEqual(destinationButton(in: app).value as? String, targetLabel)
         XCTAssertEqual(app.state, .runningForeground)
     }
 
@@ -123,8 +124,9 @@ final class PhysicalTargetSelectionTests: XCTestCase {
 
     @MainActor
     private func selectTarget(_ label: String, in app: XCUIApplication) {
-        let targetButton = app.buttons["Target"]
+        let targetButton = destinationButton(in: app)
         XCTAssertTrue(targetButton.waitForExistence(timeout: 30))
+        if targetButton.value as? String == label { return }
         targetButton.tap()
 
         let target = app.buttons[label]
@@ -133,7 +135,13 @@ final class PhysicalTargetSelectionTests: XCTestCase {
             "Configured target was unavailable. Current UI: \(app.debugDescription)"
         )
         target.tap()
-        XCTAssertTrue(app.staticTexts[label].waitForExistence(timeout: 10))
+        XCTAssertTrue(targetButton.waitForExistence(timeout: 10))
+        XCTAssertEqual(targetButton.value as? String, label)
+    }
+
+    @MainActor
+    private func destinationButton(in app: XCUIApplication) -> XCUIElement {
+        app.buttons["station.destination"]
     }
 
     @MainActor
