@@ -1,1 +1,1 @@
-{"id":"0B0B0B0B-0000-4000-8000-000000000003","payload":{"bytes":"T2dnUwACAAA=","channels":1,"codec":"opus","sampleRate":48000,"sequence":0},"source":"tmux:claude-hail","target":"tmux:claude-hail","ts":1758200004000,"type":"audio","v":1}
+{"id":"0B0B0B0B-0000-4000-8000-000000000003","payload":{"bytes":"T2dnUwACAAA=","channels":1,"codec":"opus","final":true,"sampleRate":48000,"sequence":0},"source":"tmux:claude-hail","target":"tmux:claude-hail","ts":1758200004000,"type":"audio","v":1}

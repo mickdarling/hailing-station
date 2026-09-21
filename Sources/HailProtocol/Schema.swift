@@ -1,3 +1,5 @@
+// The generated schema mirrors every payload in one auditable value.
+// swiftlint:disable type_body_length
 /// JSON Schema (draft 2020-12) for the frame envelope and payloads, emitted by `hail-protocol-gen` so
 /// non-Swift implementers (#15) and the CI drift check (#28) have a machine-readable reference. Maintained
 /// beside the Codable types; the conformance job fails when a fixture stops validating.
@@ -22,7 +24,8 @@ public enum Schema {
         ]),
         "allOf": .array(FrameType.allCases.map(payloadRule)),
         "$defs": .object([
-            "text": text, "audio": audio, "image": image, "frame": screenFrame, "control": control
+            "text": text, "audio": audio, "reply": reply, "image": image, "frame": screenFrame,
+            "control": control
         ])
     ])
 
@@ -70,9 +73,28 @@ public enum Schema {
         "type": .string("object"), "required": .array([.string("text"), .string("final")]),
         "properties": .object([
             "text": .object(["type": .string("string"), "maxLength": .integer(Int64(PayloadLimits.maxTextBytes))]),
-            "final": .object(["type": .string("boolean")])
+            "final": .object(["type": .string("boolean")]),
+            "reply": .object(["$ref": .string("#/$defs/reply")])
         ])
     ])
+
+    private static let reply: JSONValue = requiring(
+        ["id", "host", "target", "priority", "interruption"],
+        [
+            "id": .object(["type": .string("string"), "format": .string("uuid")]),
+            "host": .object([
+                "type": .string("string"), "minLength": .integer(1),
+                "maxLength": .integer(Int64(ReplyLimits.maxIdentifierBytes))
+            ]),
+            "target": .object([
+                "type": .string("string"), "minLength": .integer(1),
+                "maxLength": .integer(Int64(ReplyLimits.maxIdentifierBytes))
+            ]),
+            "audioStream": .object(["type": .string("string"), "format": .string("uuid")]),
+            "priority": .object(["enum": .array(ReplyPriority.allCases.map { .string($0.rawValue) })]),
+            "interruption": .object(["enum": .array(ReplyInterruption.allCases.map { .string($0.rawValue) })])
+        ]
+    )
 
     private static let audio: JSONValue = .object([
         "type": .string("object"),
@@ -82,7 +104,16 @@ public enum Schema {
             "sampleRate": integer(PayloadLimits.sampleRates),
             "channels": integer(PayloadLimits.channels),
             "sequence": .object(["type": .string("integer"), "minimum": .integer(0)]),
-            "bytes": bytesField(max: PayloadLimits.maxAudioBytes)
+            "streamId": .object(["type": .string("string"), "format": .string("uuid")]),
+            "final": .object(["type": .string("boolean")]),
+            "bytes": bytesField(max: PayloadLimits.maxAudioBytes),
+            "reply": .object(["$ref": .string("#/$defs/reply")])
+        ]),
+        "allOf": .array([
+            .object([
+                "if": .object(["required": .array([.string("reply")])]),
+                "then": .object(["required": .array([.string("streamId"), .string("final")])])
+            ])
         ])
     ])
 
@@ -157,3 +188,4 @@ public enum Schema {
         ])
     ])
 }
+// swiftlint:enable type_body_length

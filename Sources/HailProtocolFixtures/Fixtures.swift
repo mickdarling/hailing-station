@@ -1,6 +1,8 @@
 public import Foundation
 public import HailProtocol
 
+// Canonical examples stay in one list so coverage and stale-file checks remain exhaustive.
+// swiftlint:disable type_body_length
 /// The canonical example frames. Both ends' test targets decode and re-encode every one of these and
 /// compare bytes to `fixtures/frames/<name>.json`; a change here without regenerating fails CI (#2, #28).
 /// The JSON copies ship in this module's resource bundle so tests find them from any host or app bundle.
@@ -65,6 +67,65 @@ public enum Fixtures {
             id: id(3), timestamp: 1_758_200_004_000, target: "tmux:claude-hail", source: "tmux:claude-hail",
             payload: .audio(AudioPayload(
                 codec: .opus, sampleRate: 48_000, channels: 1, sequence: 0, bytes: audioBytes
+            ))
+        )),
+        Example(name: "reply-main-one-text", frame: Frame(
+            id: id(19), timestamp: 1_758_200_040_000, target: "tmux:codex-hail", source: "mac-main",
+            payload: .text(TextPayload(
+                text: "The build is green.",
+                reply: ReplyDescriptor(
+                    id: id(101), hostID: "mac-main", targetID: "tmux:codex-hail", audioStreamID: id(201)
+                )
+            ))
+        )),
+        Example(name: "reply-main-one-audio", frame: Frame(
+            id: id(20), timestamp: 1_758_200_040_010, target: "tmux:codex-hail", source: "mac-main",
+            payload: .audio(AudioPayload(
+                codec: .pcm16, sampleRate: 24_000, channels: 1, sequence: 0,
+                streamID: id(201), isFinal: true, bytes: audioBytes,
+                reply: ReplyDescriptor(
+                    id: id(101), hostID: "mac-main", targetID: "tmux:codex-hail", audioStreamID: id(201)
+                )
+            ))
+        )),
+        Example(name: "reply-main-two-text", frame: Frame(
+            id: id(21), timestamp: 1_758_200_040_005, target: "tmux:codex-hail", source: "mac-main",
+            payload: .text(TextPayload(
+                text: "One warning remains.",
+                reply: ReplyDescriptor(
+                    id: id(102), hostID: "mac-main", targetID: "tmux:codex-hail", audioStreamID: id(202),
+                    priority: .urgent, interruption: .duck
+                )
+            ))
+        )),
+        Example(name: "reply-main-two-audio", frame: Frame(
+            id: id(22), timestamp: 1_758_200_040_015, target: "tmux:codex-hail", source: "mac-main",
+            payload: .audio(AudioPayload(
+                codec: .pcm16, sampleRate: 24_000, channels: 1, sequence: 0,
+                streamID: id(202), isFinal: true, bytes: audioBytes,
+                reply: ReplyDescriptor(
+                    id: id(102), hostID: "mac-main", targetID: "tmux:codex-hail", audioStreamID: id(202),
+                    priority: .urgent, interruption: .duck
+                )
+            ))
+        )),
+        Example(name: "reply-ziggy-text", frame: Frame(
+            id: id(23), timestamp: 1_758_200_040_007, target: "tmux:codex-hail", source: "ziggy",
+            payload: .text(TextPayload(
+                text: "Ziggy has a result too.",
+                reply: ReplyDescriptor(
+                    id: id(103), hostID: "ziggy", targetID: "tmux:codex-hail", audioStreamID: id(203)
+                )
+            ))
+        )),
+        Example(name: "reply-ziggy-audio", frame: Frame(
+            id: id(24), timestamp: 1_758_200_040_017, target: "tmux:codex-hail", source: "ziggy",
+            payload: .audio(AudioPayload(
+                codec: .pcm16, sampleRate: 24_000, channels: 1, sequence: 0,
+                streamID: id(203), isFinal: true, bytes: audioBytes,
+                reply: ReplyDescriptor(
+                    id: id(103), hostID: "ziggy", targetID: "tmux:codex-hail", audioStreamID: id(203)
+                )
             ))
         )),
         Example(name: "image-reserved", frame: Frame(
@@ -136,3 +197,4 @@ public enum Fixtures {
         ))
     ]
 }
+// swiftlint:enable type_body_length
