@@ -4,7 +4,7 @@ import Testing
 struct RouteChangeHandlingTests {
     @Test func routeChangeReappliesPreferenceAndPublishesDiagnostics() async throws {
         let backend = FakeAudioSessionBackend(inputs: [.usb, .builtIn])
-        let controller = ManagedAudioSession(backend: backend)
+        let controller = ManagedAudioSession(backend: backend, preferenceStore: VolatileAudioInputPreferenceStore())
         try await controller.activate()
         #expect(await backend.selectedInput == .usb)
 
@@ -18,7 +18,7 @@ struct RouteChangeHandlingTests {
 
     @Test func outputOnlyRouteChangeDoesNotReselectTheCurrentInput() async throws {
         let backend = FakeAudioSessionBackend(inputs: [.usb])
-        let controller = ManagedAudioSession(backend: backend)
+        let controller = ManagedAudioSession(backend: backend, preferenceStore: VolatileAudioInputPreferenceStore())
         try await controller.activate()
         #expect(await backend.selectionCount == 1)
 
@@ -30,7 +30,7 @@ struct RouteChangeHandlingTests {
 
     @Test func interruptionResumesOnlyWhenTheSystemAllowsIt() async throws {
         let backend = FakeAudioSessionBackend(inputs: [.usb])
-        let controller = ManagedAudioSession(backend: backend)
+        let controller = ManagedAudioSession(backend: backend, preferenceStore: VolatileAudioInputPreferenceStore())
         try await controller.activate()
 
         await controller.handle(.interruptionBegan)
@@ -43,7 +43,7 @@ struct RouteChangeHandlingTests {
 
     @Test func routeChangeDuringInterruptionRemainsInactive() async throws {
         let backend = FakeAudioSessionBackend(inputs: [.usb])
-        let controller = ManagedAudioSession(backend: backend)
+        let controller = ManagedAudioSession(backend: backend, preferenceStore: VolatileAudioInputPreferenceStore())
         try await controller.activate()
 
         await controller.handle(.interruptionBegan)
@@ -54,7 +54,7 @@ struct RouteChangeHandlingTests {
 
     @Test func deactivatedSessionDoesNotResumeAfterInterruption() async throws {
         let backend = FakeAudioSessionBackend(inputs: [.builtIn])
-        let controller = ManagedAudioSession(backend: backend)
+        let controller = ManagedAudioSession(backend: backend, preferenceStore: VolatileAudioInputPreferenceStore())
         try await controller.activate()
         await controller.deactivate()
         await controller.handle(.interruptionEnded(shouldResume: true))
@@ -65,7 +65,7 @@ struct RouteChangeHandlingTests {
 
     @Test func failedPreferenceSelectionDeactivatesTheSession() async {
         let backend = FakeAudioSessionBackend(inputs: [.usb], selectionFails: true)
-        let controller = ManagedAudioSession(backend: backend)
+        let controller = ManagedAudioSession(backend: backend, preferenceStore: VolatileAudioInputPreferenceStore())
 
         await #expect(throws: FakeAudioError.selectionFailed) {
             try await controller.activate()
@@ -76,7 +76,7 @@ struct RouteChangeHandlingTests {
 
     @Test func failedSelectionWhileResumingDeactivatesTheSession() async throws {
         let backend = FakeAudioSessionBackend(inputs: [.usb])
-        let controller = ManagedAudioSession(backend: backend)
+        let controller = ManagedAudioSession(backend: backend, preferenceStore: VolatileAudioInputPreferenceStore())
         try await controller.activate()
         await controller.handle(.interruptionBegan)
         await backend.replaceInputs([.builtIn])

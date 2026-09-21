@@ -129,7 +129,10 @@ private extension ManagedAudioSession {
             routeReconciliationNeeded = true
             await reconcileRouteWhenIdle()
         }
-        latestDiagnostics = await backend.diagnostics(isActive: sessionActive)
+        let generation = inputSelectionGeneration
+        let diagnostics = await backend.diagnostics(isActive: sessionActive)
+        guard generation == inputSelectionGeneration else { return }
+        latestDiagnostics = diagnostics
         eventPair.continuation.yield(.routeChanged(latestDiagnostics))
     }
 

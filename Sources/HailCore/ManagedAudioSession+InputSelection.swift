@@ -23,10 +23,10 @@ public extension ManagedAudioSession {
             let final = try await reconcileRouteIfNeeded(generation: request.generation) ?? diagnostics
             try verify(final, matches: request)
             publish(final)
-            await finishSelection(generation)
+            try await finishSelection(generation, expectedPort: request.preference)
         } catch {
             await recoverFromFailedSelection(generation)
-            await finishSelection(generation)
+            try? await finishSelection(generation, expectedPort: nil)
             throw error
         }
     }
@@ -90,16 +90,18 @@ private extension ManagedAudioSession {
         return InputSelectionRequest(generation: generation, port: port, preference: nil)
     }
 
-    func finishSelection(_ generation: Int) async {
+    func finishSelection(_ generation: Int, expectedPort: AudioPort?) async throws {
         if activeInputSelectionGeneration == generation {
             activeInputSelectionGeneration = nil
         }
-        guard await reconcileRouteWhenIdle() else { return }
-        let diagnosticGeneration = inputSelectionGeneration
+        let reconciled = await reconcileRouteWhenIdle()
+        try validateSelection(generation)
+        guard reconciled else { return }
         let diagnostics = await backend.diagnostics(isActive: sessionActive)
-        guard diagnosticGeneration == inputSelectionGeneration,
-              activeInputSelectionGeneration == nil else { return }
+        try validateSelection(generation)
         publish(diagnostics)
+        guard let expectedPort, diagnostics.input?.id != expectedPort.id else { return }
+        throw AudioInputSelectionError.routeMismatch(expected: expectedPort, actual: diagnostics.input)
     }
 
     func persistPreference(for request: InputSelectionRequest) async throws {

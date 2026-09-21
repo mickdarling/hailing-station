@@ -72,6 +72,12 @@ actor FakeAudioSessionBackend: AudioSessionBackend {
     }
 
     func diagnostics(isActive: Bool) async -> AudioSessionDiagnostics {
+        let snapshot = AudioSessionDiagnostics(
+            isActive: isActive,
+            input: selectedInput,
+            outputs: [AudioPort(id: "speaker", name: "Speaker", kind: .other)],
+            sampleRate: 48_000
+        )
         if let calls = diagnosticsCallsBeforeHold {
             if calls == 0 {
                 diagnosticsCallsBeforeHold = nil
@@ -82,12 +88,7 @@ actor FakeAudioSessionBackend: AudioSessionBackend {
                 diagnosticsCallsBeforeHold = calls - 1
             }
         }
-        return AudioSessionDiagnostics(
-            isActive: isActive,
-            input: selectedInput,
-            outputs: [AudioPort(id: "speaker", name: "Speaker", kind: .other)],
-            sampleRate: 48_000
-        )
+        return snapshot
     }
 
     func eventStream() async -> AsyncStream<AudioSessionBackendEvent> {
@@ -157,4 +158,12 @@ actor FakeAudioSessionBackend: AudioSessionBackend {
 extension AudioPort {
     static let usb = AudioPort(id: "usb", name: "Wireless Mic Rx", kind: .usb)
     static let builtIn = AudioPort(id: "built-in", name: "iPad Microphone", kind: .builtIn)
+}
+
+actor VolatileAudioInputPreferenceStore: AudioInputPreferenceStoring {
+    private var stored: AudioPort?
+
+    func load() -> AudioPort? { stored }
+
+    func save(_ port: AudioPort?) { stored = port }
 }

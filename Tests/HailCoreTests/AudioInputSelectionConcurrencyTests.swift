@@ -101,6 +101,47 @@ struct AudioInputSelectionConcurrencyTests {
         #expect(await backend.selectedInput == .usb)
         #expect(await controller.preferredInput == nil)
     }
+
+    @Test func explicitSelectionRevalidatesAfterIdleReconciliation() async throws {
+        let backend = FakeAudioSessionBackend(inputs: [.usb, .builtIn])
+        let store = SuspendingAudioInputPreferenceStore(initial: .usb)
+        let controller = ManagedAudioSession(backend: backend, preferenceStore: store)
+        try await controller.activate()
+        await store.holdNextSaveCall()
+
+        let selection = Task { try await controller.selectInput(id: AudioPort.builtIn.id) }
+        await store.waitUntilSaveIsHeld()
+        await controller.handle(.routeChanged)
+        await backend.holdDiagnosticsCall(after: 1)
+        await store.releaseHeldSave()
+        await backend.waitUntilDiagnosticsIsHeld()
+
+        await backend.replaceInputs([.usb])
+        await controller.handle(.routeChanged)
+        await backend.releaseHeldDiagnostics()
+
+        await #expect(throws: AudioInputSelectionError.routeMismatch(expected: .builtIn, actual: .usb)) {
+            try await selection.value
+        }
+        #expect(await backend.selectedInput == .usb)
+    }
+
+    @Test func staleRouteSnapshotCannotOverwriteANewerSelection() async throws {
+        let backend = FakeAudioSessionBackend(inputs: [.usb, .builtIn])
+        let store = SuspendingAudioInputPreferenceStore()
+        let controller = ManagedAudioSession(backend: backend, preferenceStore: store)
+        try await controller.activate()
+        await backend.holdDiagnosticsCall(after: 1)
+
+        let routeChange = Task { await controller.handle(.routeChanged) }
+        await backend.waitUntilDiagnosticsIsHeld()
+        try await controller.selectInput(id: AudioPort.builtIn.id)
+        await backend.releaseHeldDiagnostics()
+        await routeChange.value
+
+        #expect(await backend.selectedInput == .builtIn)
+        #expect(await controller.diagnostics.input == .builtIn)
+    }
 }
 
 private actor SuspendingAudioInputPreferenceStore: AudioInputPreferenceStoring {
