@@ -92,6 +92,16 @@ public actor ManagedAudioSession: AudioSessionDiagnosticsProviding {
 }
 
 extension ManagedAudioSession {
+    func validateRouteApplication(_ generation: Int?) throws {
+        guard let generation else { return }
+        guard generation == inputSelectionGeneration,
+              activeInputSelectionGeneration == nil,
+              wantsActive,
+              sessionActive else {
+            throw AudioInputSelectionError.superseded
+        }
+    }
+
     @discardableResult
     func reconcileRouteWhenIdle() async -> Bool {
         var reconciled = false

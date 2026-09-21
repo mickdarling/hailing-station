@@ -21,7 +21,9 @@ public extension ManagedAudioSession {
             try await persistPreference(for: request)
             pendingPreferredInput = nil
             let final = try await reconcileRouteIfNeeded(generation: request.generation) ?? diagnostics
-            try verify(final, matches: request)
+            if request.preference != nil {
+                try verify(final, matches: request)
+            }
             publish(final)
             try await finishSelection(generation, expectedPort: request.preference)
         } catch {
@@ -159,16 +161,6 @@ private extension ManagedAudioSession {
         guard sessionActive else { throw AudioInputSelectionError.sessionInactive }
     }
 
-    func validateRouteApplication(_ generation: Int?) throws {
-        guard let generation else { return }
-        guard generation == inputSelectionGeneration,
-              activeInputSelectionGeneration == nil,
-              wantsActive,
-              sessionActive else {
-            throw AudioInputSelectionError.superseded
-        }
-    }
-
     func reconcileRouteIfNeeded(generation: Int) async throws -> AudioSessionDiagnostics? {
         guard routeReconciliationNeeded else { return nil }
         repeat {
@@ -190,7 +182,11 @@ private extension ManagedAudioSession {
         pendingPreferredInput = nil
         if let diagnostics = try? await reconcileRouteIfNeeded(generation: generation) {
             publish(diagnostics)
+            return
         }
+        let diagnostics = await backend.diagnostics(isActive: sessionActive)
+        guard generation == inputSelectionGeneration else { return }
+        publish(diagnostics)
     }
 
     func publish(_ diagnostics: AudioSessionDiagnostics) {
