@@ -1,0 +1,1 @@
+{"id":"0B0B0B0B-0000-4000-8000-000000000019","payload":{"final":true,"reply":{"audioStream":"0B0B0B0B-0000-4000-8000-000000000201","host":"mac-main","id":"0B0B0B0B-0000-4000-8000-000000000101","interruption":"enqueue","priority":"normal","target":"tmux:codex-hail"},"text":"The build is green."},"source":"mac-main","target":"tmux:codex-hail","ts":1758200040000,"type":"text","v":1}
