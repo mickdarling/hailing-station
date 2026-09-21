@@ -29,17 +29,19 @@ public actor LocalReplyEndpoint {
     public let socketURL: URL
     private let listener: NWListener
     let queue = DispatchQueue(label: "hail.local-reply-endpoint")
-    let destination: WebSocketListener
+    let destination: any HostReplyPublishing
     let audit: AuditLog
     let requestTimeout: Duration
+    let submissionTimeout: Duration
     let clock = ContinuousClock()
     var limiter = RateLimiter()
     var connections: [UUID: NWConnection] = [:]
     var awaitingFrames: Set<UUID> = []
+    var submissionTasks: [UUID: Task<Void, Never>] = [:]
     private var readyWaiters: [CheckedContinuation<Void, any Error>] = []
-    private var readyResult: Result<Void, LocalReplyEndpointError>?
+    var readyResult: Result<Void, LocalReplyEndpointError>?
     private var started = false
-    private var stopped = false
+    var stopped = false
 
     public static func standardSocket(
         environment: [String: String] = ProcessInfo.processInfo.environment
@@ -48,8 +50,8 @@ public actor LocalReplyEndpoint {
     }
 
     public init(
-        socketURL: URL, destination: WebSocketListener, audit: AuditLog,
-        requestTimeout: Duration = .seconds(5)
+        socketURL: URL, destination: any HostReplyPublishing, audit: AuditLog,
+        requestTimeout: Duration = .seconds(5), submissionTimeout: Duration = .seconds(10)
     ) throws {
         guard socketURL.isFileURL, !socketURL.path.isEmpty else {
             throw LocalReplyEndpointError.invalidSocketPath
@@ -77,6 +79,7 @@ public actor LocalReplyEndpoint {
         self.destination = destination
         self.audit = audit
         self.requestTimeout = requestTimeout
+        self.submissionTimeout = submissionTimeout
         listener = try NWListener(using: parameters)
     }
 
@@ -100,8 +103,11 @@ public actor LocalReplyEndpoint {
         guard !stopped else { return }
         stopped = true
         listener.cancel()
+        for task in submissionTasks.values { task.cancel() }
+        submissionTasks.removeAll()
         for connection in connections.values { connection.cancel() }
         connections.removeAll()
+        awaitingFrames.removeAll()
         if let info = try? PolicyFile.info(socketURL),
            info.st_uid == getuid(), info.st_mode & S_IFMT == S_IFSOCK {
             unlink(socketURL.path)
@@ -151,44 +157,5 @@ public actor LocalReplyEndpoint {
             case .failure(let error): waiter.resume(throwing: error)
             }
         }
-    }
-
-    private func accept(_ connection: NWConnection) {
-        guard !stopped, readyResult != nil, connections.count < Self.maxConnections else {
-            connection.cancel()
-            return
-        }
-        let id = UUID()
-        connections[id] = connection
-        awaitingFrames.insert(id)
-        connection.stateUpdateHandler = { [weak self] state in
-            switch state {
-            case .failed, .cancelled:
-                Task { await self?.retire(id) }
-            default:
-                break
-            }
-        }
-        connection.start(queue: queue)
-        receive(LocalReplyConnection(id: id, connection: connection), buffer: Data())
-        let timeout = requestTimeout
-        Task { [weak self] in
-            try? await Task.sleep(for: timeout)
-            await self?.expireIncomplete(id)
-        }
-    }
-}
-
-extension LocalReplyEndpoint {
-    var activeConnectionCount: Int { connections.count }
-    var awaitingFrameIDs: Set<UUID> { awaitingFrames }
-
-    func frameCompleted(_ id: UUID) {
-        awaitingFrames.remove(id)
-    }
-
-    func expireIncomplete(_ id: UUID) {
-        guard awaitingFrames.contains(id) else { return }
-        retire(id)
     }
 }

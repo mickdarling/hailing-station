@@ -141,18 +141,6 @@ actor WebSocketPeer {
         }
     }
 
-    func send(_ frame: Frame) async -> Bool {
-        guard let data = try? FrameCoding.encode(frame) else { return false }
-        let metadata = NWProtocolWebSocket.Metadata(opcode: .text)
-        let context = NWConnection.ContentContext(identifier: "hail.frame", metadata: [metadata])
-        return await withCheckedContinuation { continuation in
-            connection.send(
-                content: data, contentContext: context, isComplete: true,
-                completion: .contentProcessed { continuation.resume(returning: $0 == nil) }
-            )
-        }
-    }
-
     private func close(reason: String) async {
         let metadata = NWProtocolWebSocket.Metadata(opcode: .close)
         metadata.closeCode = .protocolCode(.protocolError)
@@ -178,5 +166,24 @@ actor WebSocketPeer {
 
     private func emit(_ event: String, endpoint: String? = nil, detail: String? = nil) {
         log(WebSocketListenerEvent(event: event, sessionID: id, endpoint: endpoint, detail: detail))
+    }
+}
+
+extension WebSocketPeer {
+    func send(_ frame: Frame) async -> Bool {
+        guard !Task.isCancelled else { return false }
+        guard let data = try? FrameCoding.encode(frame) else { return false }
+        let metadata = NWProtocolWebSocket.Metadata(opcode: .text)
+        let context = NWConnection.ContentContext(identifier: "hail.frame", metadata: [metadata])
+        return await withTaskCancellationHandler {
+            await withCheckedContinuation { continuation in
+                connection.send(
+                    content: data, contentContext: context, isComplete: true,
+                    completion: .contentProcessed { continuation.resume(returning: $0 == nil) }
+                )
+            }
+        } onCancel: {
+            connection.cancel()
+        }
     }
 }

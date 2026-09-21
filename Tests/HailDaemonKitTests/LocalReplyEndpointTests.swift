@@ -129,6 +129,49 @@ import Testing
         await endpoint.stop()
     }
 
+    @Test func submissionDeadlineCancelsBlockedPublish() async throws {
+        let scratch = FileManager.default.temporaryDirectory.appendingPathComponent(
+            "hpt-\(UUID().uuidString.prefix(8))", isDirectory: true
+        )
+        defer { try? FileManager.default.removeItem(at: scratch) }
+        let publisher = BlockingReplyPublisher()
+        let socket = scratch.appendingPathComponent("config", isDirectory: true)
+            .appendingPathComponent(LocalReplyEndpoint.socketName)
+        let endpoint = try LocalReplyEndpoint(
+            socketURL: socket, destination: publisher,
+            audit: AuditLog(directory: scratch.appendingPathComponent("audit")),
+            submissionTimeout: .milliseconds(50)
+        )
+        try await endpoint.start()
+        let client = try sendWithoutResponse(replyFrame(), socket: socket.path)
+        try await waitUntil { await publisher.started }
+        try await waitUntil { await publisher.cancelled }
+        #expect(await endpoint.activeConnectionCount == 0)
+        client.cancel()
+        await endpoint.stop()
+    }
+
+    @Test func stopCancelsBlockedPublish() async throws {
+        let scratch = FileManager.default.temporaryDirectory.appendingPathComponent(
+            "hps-\(UUID().uuidString.prefix(8))", isDirectory: true
+        )
+        defer { try? FileManager.default.removeItem(at: scratch) }
+        let publisher = BlockingReplyPublisher()
+        let socket = scratch.appendingPathComponent("config", isDirectory: true)
+            .appendingPathComponent(LocalReplyEndpoint.socketName)
+        let endpoint = try LocalReplyEndpoint(
+            socketURL: socket, destination: publisher,
+            audit: AuditLog(directory: scratch.appendingPathComponent("audit"))
+        )
+        try await endpoint.start()
+        let client = try sendWithoutResponse(replyFrame(), socket: socket.path)
+        try await waitUntil { await publisher.started }
+        await endpoint.stop()
+        try await waitUntil { await publisher.cancelled }
+        #expect(await endpoint.activeConnectionCount == 0)
+        client.cancel()
+    }
+
     // The full socket-to-terminal proof deliberately keeps setup, assertion, and teardown in one scope.
     // swiftlint:disable:next function_body_length
     @Test func privateLocalSubmissionReachesSelectedTerminalAndIsAudited() async throws {
@@ -193,6 +236,27 @@ private func testListener() async throws -> WebSocketListener {
         bindAddress: "127.0.0.1", port: 0, host: host,
         authorizer: PersonalTerminalAuthorizer(), hostName: "mac-main"
     )
+}
+
+private func replyFrame() -> Frame {
+    let reply = ReplyDescriptor(id: UUID(), hostID: "mac-main", targetID: "tmux:reply")
+    return Frame(
+        timestamp: 1, target: reply.targetID, source: reply.hostID,
+        payload: .text(TextPayload(text: "ready", reply: reply))
+    )
+}
+
+private func sendWithoutResponse(_ frame: Frame, socket: String) throws -> NWConnection {
+    var encoded = try FrameCoding.encode(frame)
+    encoded.append(UInt8(ascii: "\n"))
+    let request = encoded
+    let connection = NWConnection(to: .unix(path: socket), using: .tcp)
+    connection.stateUpdateHandler = { state in
+        guard case .ready = state else { return }
+        connection.send(content: request, contentContext: .defaultMessage, isComplete: false, completion: .idempotent)
+    }
+    connection.start(queue: DispatchQueue(label: "hail.local-reply-send-only-test"))
+    return connection
 }
 
 private func waitUntil(_ predicate: @escaping @Sendable () async -> Bool) async throws {
@@ -286,5 +350,27 @@ private final class LocalReplyTestCompletion: @unchecked Sendable {
             return pending
         }
         pending?.resume(with: result)
+    }
+}
+
+private actor BlockingReplyPublisher: HostReplyPublishing {
+    private(set) var started = false
+    private(set) var cancelled = false
+    private var continuation: CheckedContinuation<Int, any Error>?
+
+    func publish(_ frame: Frame) async throws -> Int {
+        _ = frame
+        started = true
+        return try await withTaskCancellationHandler {
+            try await withCheckedThrowingContinuation { continuation = $0 }
+        } onCancel: {
+            Task { await self.cancel() }
+        }
+    }
+
+    private func cancel() {
+        cancelled = true
+        continuation?.resume(throwing: CancellationError())
+        continuation = nil
     }
 }

@@ -1,6 +1,12 @@
 import Foundation
-import HailProtocol
+public import HailProtocol
 import Network
+
+public protocol HostReplyPublishing: Sendable {
+    func publish(_ frame: Frame) async throws -> Int
+}
+
+extension WebSocketListener: HostReplyPublishing {}
 
 struct LocalReplyConnection: Sendable {
     var id: UUID
@@ -8,6 +14,48 @@ struct LocalReplyConnection: Sendable {
 }
 
 extension LocalReplyEndpoint {
+    var activeConnectionCount: Int { connections.count }
+    var awaitingFrameIDs: Set<UUID> { awaitingFrames }
+
+    func accept(_ connection: NWConnection) {
+        guard !stopped, readyResult != nil, connections.count < Self.maxConnections else {
+            connection.cancel()
+            return
+        }
+        let id = UUID()
+        connections[id] = connection
+        awaitingFrames.insert(id)
+        connection.stateUpdateHandler = { [weak self] state in
+            switch state {
+            case .failed, .cancelled:
+                Task { await self?.retire(id) }
+            default:
+                break
+            }
+        }
+        connection.start(queue: queue)
+        receive(LocalReplyConnection(id: id, connection: connection), buffer: Data())
+        let timeout = requestTimeout
+        Task { [weak self] in
+            try? await Task.sleep(for: timeout)
+            await self?.expireIncomplete(id)
+        }
+    }
+
+    func frameCompleted(_ id: UUID) {
+        awaitingFrames.remove(id)
+    }
+
+    func expireIncomplete(_ id: UUID) {
+        guard awaitingFrames.contains(id) else { return }
+        retire(id)
+    }
+
+    func expireSubmission(_ id: UUID) {
+        guard submissionTasks[id] != nil else { return }
+        retire(id)
+    }
+
     func receive(_ client: LocalReplyConnection, buffer: Data) {
         client.connection.receive(
             minimumIncompleteLength: 1, maximumLength: 8 * 1024
@@ -35,11 +83,24 @@ extension LocalReplyEndpoint {
                 await respond(.init(delivered: 0, error: "one frame per connection"), to: client)
                 return
             }
-            await submit(Data(request[..<newline]), from: client)
+            startSubmission(Data(request[..<newline]), from: client)
         } else if done {
             await respond(.init(delivered: 0, error: "unterminated frame"), to: client)
         } else {
             receive(client, buffer: request)
+        }
+    }
+
+    func startSubmission(_ data: Data, from client: LocalReplyConnection) {
+        let task = Task { [weak self] in
+            guard let self else { return }
+            await self.submit(data, from: client)
+        }
+        submissionTasks[client.id] = task
+        let timeout = submissionTimeout
+        Task { [weak self] in
+            try? await Task.sleep(for: timeout)
+            await self?.expireSubmission(client.id)
         }
     }
 
@@ -53,12 +114,25 @@ extension LocalReplyEndpoint {
         }
         limiter.record("local-reply", at: now)
         do {
+            try Task.checkCancellation()
+            guard !stopped, connections[client.id] != nil else { throw CancellationError() }
             let frame = try FrameCoding.decode(data)
             guard let target = frame.target else { throw LocalReplyEndpointError.failed("reply target missing") }
             _ = try await audit.record(.pushed(tool: "local-reply", target: target, bytes: data.count))
-            await respond(.init(delivered: try await destination.publish(frame)), to: client)
+            try Task.checkCancellation()
+            guard !stopped, connections[client.id] != nil else { throw CancellationError() }
+            let delivered = try await destination.publish(frame)
+            try Task.checkCancellation()
+            guard !stopped, connections[client.id] != nil else { throw CancellationError() }
+            await respond(.init(delivered: delivered), to: client)
+        } catch is CancellationError {
+            retire(client.id)
         } catch {
-            await respond(.init(delivered: 0, error: "reply refused"), to: client)
+            if !stopped, connections[client.id] != nil {
+                await respond(.init(delivered: 0, error: "reply refused"), to: client)
+            } else {
+                retire(client.id)
+            }
         }
     }
 
@@ -76,6 +150,7 @@ extension LocalReplyEndpoint {
 
     func retire(_ id: UUID) {
         awaitingFrames.remove(id)
+        submissionTasks.removeValue(forKey: id)?.cancel()
         connections.removeValue(forKey: id)?.cancel()
     }
 }
