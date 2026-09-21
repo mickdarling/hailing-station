@@ -1,6 +1,6 @@
+import AVKit
 import HailCore
 import SwiftUI
-
 struct AudioDiagnosticsView: View {
     let controller: any AudioSessionDiagnosticsProviding
 
@@ -8,7 +8,6 @@ struct AudioDiagnosticsView: View {
     @State private var inputs: [AudioPort] = []
     @State private var preferredInput: AudioPort?
     @State private var status = "Inactive"
-
     var body: some View {
         List {
             Section("Session") {
@@ -26,6 +25,15 @@ struct AudioDiagnosticsView: View {
                     if inputs.isEmpty {
                         Text("No microphones available")
                     } else {
+                        Button {
+                            Task { await select(nil) }
+                        } label: {
+                            if preferredInput == nil {
+                                Label("Automatic", systemImage: "checkmark")
+                            } else {
+                                Text("Automatic")
+                            }
+                        }
                         ForEach(inputs) { input in
                             Button {
                                 Task { await select(input) }
@@ -76,7 +84,6 @@ struct AudioDiagnosticsView: View {
         .onDisappear { Task { await controller.deactivate() } }
     }
 }
-
 private extension AudioDiagnosticsView {
     private var sampleRate: String {
         diagnostics.sampleRate == 0 ? "—" : "\(Int(diagnostics.sampleRate)) Hz"
@@ -124,14 +131,15 @@ private extension AudioDiagnosticsView {
         status = "Inactive"
     }
 
-    private func select(_ input: AudioPort) async {
+    private func select(_ input: AudioPort?) async {
+        let name = input?.name ?? "Automatic"
         do {
-            try await controller.selectInput(id: input.id)
+            try await controller.selectInput(id: input?.id)
             await refresh()
-            status = "Using \(input.name)"
+            status = input.map { "Using \($0.name)" } ?? activeInputStatus
         } catch {
             await refresh()
-            status = "Could not select \(input.name): \(error.localizedDescription)"
+            status = "Could not select \(name): \(error.localizedDescription)"
         }
     }
 
@@ -175,4 +183,17 @@ private extension AudioDiagnosticsView {
         }
         return "Active; preferred \(preferredStateDescription)"
     }
+}
+private struct AudioOutputRoutePicker: UIViewRepresentable {
+    func makeUIView(context: Context) -> AVRoutePickerView {
+        let picker = AVRoutePickerView()
+        picker.prioritizesVideoDevices = false
+        picker.tintColor = .secondaryLabel
+        picker.activeTintColor = .systemIndigo
+        picker.accessibilityLabel = "Choose audio output"
+        picker.accessibilityHint = "Opens the system audio output list."
+        return picker
+    }
+
+    func updateUIView(_ view: AVRoutePickerView, context: Context) {}
 }

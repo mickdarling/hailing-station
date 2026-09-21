@@ -62,7 +62,7 @@ public protocol AudioSessionDiagnosticsProviding: AudioSessionController {
     var events: AsyncStream<AudioSessionEvent> { get async }
     var availableInputs: [AudioPort] { get async }
     var preferredInput: AudioPort? { get async }
-    func selectInput(id: AudioPort.ID) async throws
+    func selectInput(id: AudioPort.ID?) async throws
 }
 
 public struct AudioInputPreferences: Sendable, Equatable {
@@ -121,6 +121,7 @@ public actor UserDefaultsAudioInputPreferenceStore: AudioInputPreferenceStoring 
 }
 
 public enum AudioInputSelectionError: Error, Sendable, Equatable, LocalizedError {
+    case noSelectableInput
     case sessionInactive
     case superseded
     case unavailable(AudioPort.ID)
@@ -128,6 +129,8 @@ public enum AudioInputSelectionError: Error, Sendable, Equatable, LocalizedError
 
     public var errorDescription: String? {
         switch self {
+        case .noSelectableInput:
+            "No supported microphone is currently available."
         case .sessionInactive:
             "Activate the audio session before choosing a microphone."
         case .superseded:

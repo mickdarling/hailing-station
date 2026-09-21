@@ -100,6 +100,9 @@ actor FakeAudioSessionBackend: AudioSessionBackend {
     private var inputs: [AudioPort]
     private var selectionFails: Bool
     private var emitsRouteChangeOnSelection = false
+    private var replacementInputsOnSelection: [AudioPort]?
+    private var holdNextInputLookup = false
+    private var heldInputLookup: CheckedContinuation<Void, Never>?
     private(set) var selectedInput: AudioPort?
     private(set) var selectionCount = 0
     private(set) var activationHistory: [Bool] = []
@@ -119,13 +122,28 @@ actor FakeAudioSessionBackend: AudioSessionBackend {
     }
 
     func availableInputs() async -> [AudioPort] {
-        inputs
+        if holdNextInputLookup {
+            holdNextInputLookup = false
+            await withCheckedContinuation { continuation in
+                heldInputLookup = continuation
+            }
+        }
+        return inputs
     }
 
     func selectInput(id: AudioPort.ID?) async throws {
         if selectionFails { throw FakeAudioError.selectionFailed }
         selectionCount += 1
         selectedInput = inputs.first { $0.id == id }
+        if let replacementInputsOnSelection {
+            self.replacementInputsOnSelection = nil
+            inputs = replacementInputsOnSelection
+            if let selectedInput, !inputs.contains(selectedInput) {
+                self.selectedInput = nil
+            }
+            eventPair.continuation.yield(.routeChanged)
+            await Task.yield()
+        }
         if emitsRouteChangeOnSelection {
             eventPair.continuation.yield(.routeChanged)
             await Task.yield()
@@ -152,12 +170,26 @@ actor FakeAudioSessionBackend: AudioSessionBackend {
         }
     }
 
-    func failFutureSelections() {
-        selectionFails = true
+    func failFutureSelections() { selectionFails = true }
+
+    func emitRouteChangeOnFutureSelections() { emitsRouteChangeOnSelection = true }
+
+    func replaceInputsDuringNextSelection(with inputs: [AudioPort]) {
+        replacementInputsOnSelection = inputs
     }
 
-    func emitRouteChangeOnFutureSelections() {
-        emitsRouteChangeOnSelection = true
+    func holdNextAvailableInputsCall() { holdNextInputLookup = true }
+
+    func waitUntilInputLookupIsHeld() async {
+        while heldInputLookup == nil {
+            await Task.yield()
+        }
+    }
+
+    func releaseHeldInputLookup() {
+        let continuation = heldInputLookup
+        heldInputLookup = nil
+        continuation?.resume()
     }
 }
 

@@ -1,16 +1,17 @@
 public actor ManagedAudioSession: AudioSessionDiagnosticsProviding {
-    private let backend: any AudioSessionBackend
-    private let preferences: AudioInputPreferences
-    private let preferenceStore: any AudioInputPreferenceStoring
-    private let eventPair = AsyncStream<AudioSessionEvent>.makeStream(bufferingPolicy: .bufferingNewest(16))
+    let backend: any AudioSessionBackend
+    let preferences: AudioInputPreferences
+    let preferenceStore: any AudioInputPreferenceStoring
+    let eventPair = AsyncStream<AudioSessionEvent>.makeStream(bufferingPolicy: .bufferingNewest(16))
     private var backendTask: Task<Void, Never>?
-    private var latestDiagnostics = AudioSessionDiagnostics.inactive
-    private var savedPreferredInput: AudioPort?
-    private var pendingPreferredInput: AudioPort?
-    private var loadedPreference = false
-    private var inputSelectionGeneration = 0
-    private var wantsActive = false
-    private var sessionActive = false
+    var latestDiagnostics = AudioSessionDiagnostics.inactive
+    var savedPreferredInput: AudioPort?
+    var pendingPreferredInput: AudioPort?
+    var loadedPreference = false
+    var inputSelectionGeneration = 0
+    var routeReconciliationNeeded = false
+    var wantsActive = false
+    var sessionActive = false
 
     public init(
         backend: any AudioSessionBackend,
@@ -33,19 +34,6 @@ public actor ManagedAudioSession: AudioSessionDiagnosticsProviding {
 
     public var events: AsyncStream<AudioSessionEvent> {
         eventPair.stream
-    }
-
-    public var availableInputs: [AudioPort] {
-        get async {
-            await backend.availableInputs().filter(isSelectable)
-        }
-    }
-
-    public var preferredInput: AudioPort? {
-        get async {
-            await loadPreferenceIfNeeded()
-            return pendingPreferredInput ?? savedPreferredInput
-        }
     }
 
     public func activate() async throws {
@@ -80,40 +68,6 @@ public actor ManagedAudioSession: AudioSessionDiagnosticsProviding {
         latestDiagnostics = await backend.diagnostics(isActive: false)
     }
 
-    public func selectInput(id: AudioPort.ID) async throws {
-        guard sessionActive else { throw AudioInputSelectionError.sessionInactive }
-        let inputs = await backend.availableInputs().filter(isSelectable)
-        guard let selected = inputs.first(where: { $0.id == id }) else {
-            throw AudioInputSelectionError.unavailable(id)
-        }
-
-        inputSelectionGeneration &+= 1
-        let generation = inputSelectionGeneration
-        pendingPreferredInput = selected
-        do {
-            try await backend.selectInput(id: selected.id)
-            try validateSelection(generation)
-            let diagnostics = await backend.diagnostics(isActive: true)
-            try validateSelection(generation)
-            guard diagnostics.input?.id == selected.id else {
-                latestDiagnostics = diagnostics
-                throw AudioInputSelectionError.routeMismatch(expected: selected, actual: diagnostics.input)
-            }
-
-            savedPreferredInput = selected
-            await preferenceStore.save(selected)
-            try validateSelection(generation)
-            pendingPreferredInput = nil
-            latestDiagnostics = diagnostics
-            eventPair.continuation.yield(.routeChanged(diagnostics))
-        } catch {
-            if generation == inputSelectionGeneration {
-                pendingPreferredInput = nil
-            }
-            throw error
-        }
-    }
-
     func handle(_ event: AudioSessionBackendEvent) async {
         switch event {
         case .routeChanged:
@@ -141,36 +95,13 @@ private extension ManagedAudioSession {
         }
     }
 
-    private func selectPreferredInput() async throws {
-        await loadPreferenceIfNeeded()
-        let inputs = await backend.availableInputs()
-        let input = inputs.first { $0.id == savedPreferredInput?.id && isSelectable($0) }
-            ?? preferences.resolve(from: inputs)
-        let current = await backend.diagnostics(isActive: sessionActive).input
-        guard input?.id != current?.id else { return }
-        try await backend.selectInput(id: input?.id)
-    }
-
-    private func loadPreferenceIfNeeded() async {
-        guard !loadedPreference else { return }
-        savedPreferredInput = await preferenceStore.load()
-        loadedPreference = true
-    }
-
-    private func isSelectable(_ port: AudioPort) -> Bool {
-        port.kind != .bluetoothHFP || preferences.allowsBluetoothHFP
-    }
-
-    private func validateSelection(_ generation: Int) throws {
-        guard generation == inputSelectionGeneration else {
-            throw AudioInputSelectionError.superseded
-        }
-        guard sessionActive else { throw AudioInputSelectionError.sessionInactive }
-    }
-
     private func handleRouteChange() async {
-        if wantsActive, pendingPreferredInput == nil {
-            try? await selectPreferredInput()
+        if wantsActive {
+            if pendingPreferredInput == nil {
+                try? await selectPreferredInput()
+            } else {
+                routeReconciliationNeeded = true
+            }
         }
         latestDiagnostics = await backend.diagnostics(isActive: sessionActive)
         eventPair.continuation.yield(.routeChanged(latestDiagnostics))
