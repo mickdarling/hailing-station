@@ -36,9 +36,11 @@ import Testing
 
         await transcriber.start()
         await transcriber.consume(owned)
-        _ = await transcriber.stop()
+        await transcriber.emit(TranscriptionResult(text: "send immediately", isFinal: true))
+        let finalized = await transcriber.stop()
 
         #expect(await transcriber.consumedBuffers == 1)
         #expect(await !transcriber.isRunning)
+        #expect(finalized == "send immediately")
     }
 }
