@@ -62,6 +62,35 @@ struct AudioInputSelectionPublicationTests {
         #expect(await backend.selectedInput == .usb)
         #expect(await controller.diagnostics.input == .usb)
     }
+
+    @Test func cleanupCannotPublishDiagnosticsOlderThanANewerRoute() async throws {
+        let backend = FakeAudioSessionBackend(inputs: [.builtIn])
+        let store = HoldingAudioInputPreferenceStore()
+        let controller = ManagedAudioSession(backend: backend, preferenceStore: store)
+        try await controller.activate()
+        await store.holdNextSaveCall()
+
+        let selection = Task { try await controller.selectInput(id: nil) }
+        await store.waitUntilSaveIsHeld()
+        await controller.handle(.routeChanged)
+        await backend.holdDiagnosticsCall(after: 1)
+        await store.releaseHeldSave()
+        await backend.waitUntilDiagnosticsIsHeld()
+
+        await backend.replaceInputs([.usb, .builtIn])
+        await controller.handle(.routeChanged)
+        await backend.holdDiagnosticsCall(after: 1)
+        await backend.releaseHeldDiagnostics()
+        await backend.waitUntilDiagnosticsIsHeld()
+
+        await backend.replaceInputs([.builtIn])
+        await controller.handle(.routeChanged)
+        await backend.releaseHeldDiagnostics()
+        try await selection.value
+
+        #expect(await backend.selectedInput == .builtIn)
+        #expect(await controller.diagnostics.input == .builtIn)
+    }
 }
 
 private actor HoldingAudioInputPreferenceStore: AudioInputPreferenceStoring {

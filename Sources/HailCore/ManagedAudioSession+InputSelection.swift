@@ -99,9 +99,16 @@ private extension ManagedAudioSession {
         let reconciled = await reconcileRouteWhenIdle()
         try validateSelection(generation)
         guard reconciled else { return }
-        let diagnostics = await backend.diagnostics(isActive: sessionActive)
+        let revision = diagnosticsRevision
+        let snapshot = await backend.diagnostics(isActive: sessionActive)
         try validateSelection(generation)
-        publish(diagnostics)
+        let diagnostics: AudioSessionDiagnostics
+        if revision == diagnosticsRevision {
+            diagnostics = snapshot
+            publish(snapshot)
+        } else {
+            diagnostics = latestDiagnostics
+        }
         guard let expectedPort, diagnostics.input?.id != expectedPort.id else { return }
         throw AudioInputSelectionError.routeMismatch(expected: expectedPort, actual: diagnostics.input)
     }
