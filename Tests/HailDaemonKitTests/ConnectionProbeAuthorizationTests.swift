@@ -62,6 +62,7 @@ import Testing
             sessionFrame(payload: .control(.select(targetID: "tmux:a"))),
             sessionFrame(payload: .control(.subscribe(targetID: "tmux:a"))),
             sessionFrame(payload: .control(.unsubscribe(targetID: "tmux:a"))),
+            sessionFrame(payload: .control(.escape(targetID: "tmux:a"))),
             sessionFrame(payload: .control(.targets([]))),
             sessionFrame(payload: .control(.pong(nonce: "x"))),
             sessionFrame(payload: .unknown(type: "future_action", payload: .object(["go": .bool(true)])))
