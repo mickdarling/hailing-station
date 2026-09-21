@@ -17,6 +17,7 @@ struct TranscriptionLabView: View {
     @State private var status = "Ready"
     @State private var isStarting = false
     @State private var isFinalizing = false
+    @State private var hasReceivedAudio = false
     @State private var startTask: Task<Void, Never>?
     @State private var bufferTask: Task<Void, Never>?
 
@@ -43,6 +44,7 @@ struct TranscriptionLabView: View {
             Text(status)
                 .font(.caption)
                 .foregroundStyle(.secondary)
+                .accessibilityIdentifier("transcription.status")
 
             Button(actionLabel) {
                 if isRecording {
@@ -84,6 +86,7 @@ struct TranscriptionLabView: View {
     private func begin() async {
         guard !isRecording, !isStarting, !isFinalizing else { return }
         isStarting = true
+        hasReceivedAudio = false
         defer {
             isStarting = false
             startTask = nil
@@ -106,6 +109,7 @@ struct TranscriptionLabView: View {
             bufferTask = Task {
                 do {
                     for await buffer in buffers {
+                        markAudioReceived()
                         try await transcriber.consume(buffer)
                     }
                 } catch {
@@ -164,6 +168,15 @@ struct TranscriptionLabView: View {
         let trimmed = text.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !trimmed.isEmpty else { return }
         finalText = [finalText, trimmed].filter { !$0.isEmpty }.joined(separator: " ")
+    }
+}
+
+@available(iOS 26.0, *)
+private extension TranscriptionLabView {
+    func markAudioReceived() {
+        guard !hasReceivedAudio else { return }
+        hasReceivedAudio = true
+        status = "Receiving audio"
     }
 }
 

@@ -37,11 +37,13 @@ xcodebuild -project HailingStation.xcodeproj -scheme Hail-iOS -showdestinations
 Supply local values at invocation time. The project deliberately leaves `DEVELOPMENT_TEAM` empty:
 
 ```sh
+umask 077
+HAIL_DEVICE_BUILD_DIR="$(mktemp -d "${TMPDIR:-/tmp}/hailing-station-build.XXXXXX")"
 xcodebuild build \
   -project HailingStation.xcodeproj \
   -scheme Hail-iOS \
   -destination 'platform=iOS,id=<local-device-id>' \
-  -derivedDataPath /tmp/hailing-station-device-build \
+  -derivedDataPath "$HAIL_DEVICE_BUILD_DIR/DerivedData" \
   DEVELOPMENT_TEAM=<local-team-id> \
   CODE_SIGN_STYLE=Automatic
 ```
@@ -53,17 +55,20 @@ Installing through Xcode or `devicectl` is acceptable. A build with the existing
 The UI smoke test is skipped on Simulator because it proves the physical audio-capture callback path. Run it against an unlocked paired device:
 
 ```sh
+umask 077
+HAIL_DEVICE_TEST_DIR="$(mktemp -d "${TMPDIR:-/tmp}/hailing-station-tests.XXXXXX")"
 xcodebuild test \
   -project HailingStation.xcodeproj \
   -scheme Hail-iOS \
   -destination 'platform=iOS,id=<local-device-id>' \
-  -derivedDataPath /tmp/hailing-station-device-tests \
+  -derivedDataPath "$HAIL_DEVICE_TEST_DIR/DerivedData" \
+  -resultBundlePath "$HAIL_DEVICE_TEST_DIR/Results.xcresult" \
   DEVELOPMENT_TEAM=<local-team-id> \
   CODE_SIGN_STYLE=Automatic \
   -only-testing:Hail-iOSUITests/PhysicalTranscriptionSmokeTests
 ```
 
-The test accepts microphone and speech prompts when iOS presents them, starts capture, waits for the listening state, stops capture, and verifies that the app remains in the foreground. It intentionally does not retain audio or assert transcript contents.
+The test accepts only microphone and speech-recognition prompts when iOS presents them, starts capture, waits for an input-tap buffer, stops capture, and verifies that the app remains in the foreground. It intentionally does not retain audio or assert transcript contents. Its DerivedData and result bundle remain in the private directory printed by `mktemp`; delete that directory after retaining any diagnostics you need.
 
 ## Manual route and connection matrix
 
