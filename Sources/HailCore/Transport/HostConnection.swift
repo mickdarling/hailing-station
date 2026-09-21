@@ -6,6 +6,8 @@ public enum HostConnectionFailure: Error, Equatable, Sendable {
     case malformed(String)
     case incompatibleVersion
     case remote(String)
+    case notReady
+    case unsupportedCapability(String)
 }
 
 /// Owns exactly one endpoint's socket lifecycle. Generation checks make callbacks from replaced sockets inert.
@@ -80,6 +82,27 @@ public actor HostConnection {
 
     public func currentSnapshot() -> HostConnectionSnapshot { snapshot }
 
+    public func selectTarget(_ targetID: String) async throws {
+        try requireReady(capability: "select_target")
+        try await send(.select(targetID: targetID), generation: generation)
+    }
+
+    public func sendFinalText(_ text: String, to targetID: String) async throws {
+        try requireReady(capability: "send_text")
+        let frame = Frame(
+            version: snapshot.negotiatedVersion ?? ProtocolVersion.current,
+            timestamp: wallNow(), target: targetID, source: deviceName,
+            payload: .text(TextPayload(text: text, isFinal: true))
+        )
+        guard let socket else { throw HostConnectionFailure.notReady }
+        try await socket.send(FrameCoding.encode(frame))
+    }
+
+    public func sendEscape(to targetID: String) async throws {
+        try requireReady(capability: "escape")
+        try await send(.escape(targetID: targetID), generation: generation)
+    }
+
     public func connect() async {
         wantsConnection = true
         switch snapshot.state {
@@ -90,6 +113,13 @@ public actor HostConnection {
 
     public func disconnect() async {
         _ = await beginDisconnect()
+    }
+
+    private func requireReady(capability: String) throws {
+        guard snapshot.state == .ready, socket != nil else { throw HostConnectionFailure.notReady }
+        guard snapshot.capabilities.contains(capability) else {
+            throw HostConnectionFailure.unsupportedCapability(capability)
+        }
     }
 
     func retire() async -> Task<Void, Never> {
