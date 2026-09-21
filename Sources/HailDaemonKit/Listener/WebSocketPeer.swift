@@ -20,13 +20,13 @@ func parseBindAddress(_ address: String) -> (host: NWEndpoint.Host, canonical: S
 actor WebSocketPeer {
     private let id: UUID
     private let connection: NWConnection
-    private let session: HostSession
+    let session: HostSession
     private let queue: DispatchQueue
     private let helloTimeout: Duration
     private let log: @Sendable (WebSocketListenerEvent) -> Void
     private let onEnd: @Sendable (UUID) -> Void
     private var helloTimer: Task<Void, Never>?
-    private var ended = false
+    var ended = false
 
     init(
         id: UUID, connection: NWConnection, session: HostSession, queue: DispatchQueue,
@@ -141,7 +141,7 @@ actor WebSocketPeer {
         }
     }
 
-    private func send(_ frame: Frame) async -> Bool {
+    func send(_ frame: Frame) async -> Bool {
         guard let data = try? FrameCoding.encode(frame) else { return false }
         let metadata = NWProtocolWebSocket.Metadata(opcode: .text)
         let context = NWConnection.ContentContext(identifier: "hail.frame", metadata: [metadata])
@@ -166,7 +166,7 @@ actor WebSocketPeer {
         finish(reason: reason)
     }
 
-    private func finish(reason: String) {
+    func finish(reason: String) {
         guard !ended else { return }
         ended = true
         helloTimer?.cancel()
