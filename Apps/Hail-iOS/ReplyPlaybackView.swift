@@ -18,7 +18,7 @@ struct ReplyPlaybackView: View {
                         .font(.caption.weight(.semibold))
                         .foregroundStyle(.secondary)
                     Spacer()
-                    Text(reply.target)
+                    Text("\(reply.host) · \(reply.target)")
                         .font(.caption.monospaced())
                         .foregroundStyle(.tertiary)
                         .lineLimit(1)

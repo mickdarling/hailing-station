@@ -44,7 +44,7 @@ extension RootView {
         if let destination {
             if #available(iOS 26.0, *) {
                 TranscriptionLabView(
-                    audioSession: audioSession,
+                    audioSession: audioRoutes,
                     destinationLabel: destination.label,
                     onFinalized: { text in
                         try await connections.sendFinalText(

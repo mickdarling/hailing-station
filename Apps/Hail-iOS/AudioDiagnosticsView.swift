@@ -11,7 +11,7 @@ struct AudioDiagnosticsView: View {
                 LabeledContent("Sample rate", value: model.sampleRate)
                 Text(model.status).font(.caption).foregroundStyle(.secondary)
                 HStack {
-                    Button("Activate") { Task { await model.activate() } }
+                    Button("Activate") { Task { try? await model.activate() } }
                     Button("Deactivate") { Task { await model.deactivate() } }
                 }
                 .buttonStyle(.bordered)

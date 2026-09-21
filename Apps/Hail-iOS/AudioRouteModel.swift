@@ -4,7 +4,7 @@ import Observation
 /// One UI-facing audio-route subscription shared by the station and diagnostics screens.
 @MainActor
 @Observable
-final class AudioRouteModel {
+final class AudioRouteModel: AudioSessionDiagnosticsProviding {
     let controller: any AudioSessionDiagnosticsProviding
 
     private(set) var diagnostics = AudioSessionDiagnostics.inactive
@@ -32,7 +32,7 @@ final class AudioRouteModel {
         }
     }
 
-    func activate() async {
+    func activate() async throws {
         do {
             try await controller.activate()
             await refresh()
@@ -40,6 +40,7 @@ final class AudioRouteModel {
         } catch {
             await refresh()
             status = "Activation failed: \(error.localizedDescription)"
+            throw error
         }
     }
 
@@ -52,20 +53,31 @@ final class AudioRouteModel {
     func select(_ input: AudioPort?) async {
         let name = input?.name ?? "Automatic"
         do {
-            try await controller.selectInput(id: input?.id)
-            await refresh()
-            status = input.map { "Using \($0.name)" } ?? activeInputStatus
+            try await selectInput(id: input?.id)
         } catch {
             await refresh()
             status = "Could not select \(name): \(error.localizedDescription)"
         }
     }
 
+    var events: AsyncStream<AudioSessionEvent> {
+        get async { await controller.events }
+    }
+
+    func selectInput(id: AudioPort.ID?) async throws {
+        try await controller.selectInput(id: id)
+        await refresh()
+        status = preferredInput.map { "Using \($0.name)" } ?? activeInputStatus
+    }
+
     func refresh() async {
         diagnostics = await controller.diagnostics
         inputs = await controller.availableInputs
         preferredInput = await controller.preferredInput
+        status = diagnostics.isActive ? activeInputStatus : "Audio inactive"
     }
+
+    var availableInputs: [AudioPort] { inputs }
 
     var inputName: String {
         diagnostics.input?.name ?? preferredInput?.name ?? "Automatic"

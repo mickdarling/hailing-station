@@ -61,21 +61,14 @@ struct TranscriptionLabView: View {
 
             if let onEscape {
                 Button(role: .destructive) {
-                    Task {
-                        do {
-                            try await onEscape()
-                            status = "Escape sent"
-                        } catch {
-                            status = "Escape failed: \(error.localizedDescription)"
-                        }
-                    }
+                    Task { await interruptTarget(using: onEscape) }
                 } label: {
                     Label("Escape", systemImage: "xmark.octagon.fill")
                 }
                 .buttonStyle(.bordered)
                 .controlSize(.large)
-                .disabled(isStarting || isFinalizing)
-                .accessibilityHint("Sends Escape immediately to the selected target.")
+                .disabled(isFinalizing)
+                .accessibilityHint("Discards any active recording and sends Escape immediately to the target.")
             }
 
             transcriptActions
