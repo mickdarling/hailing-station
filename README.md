@@ -48,6 +48,8 @@ xcodegen generate
 
 Generated Xcode projects, signing material, local configuration, recordings, captures, and build products are intentionally excluded from version control.
 
+Physical-device signing, installation, audio-route checks, and privacy-safe diagnostics are covered by the [iPhone and iPad device-testing runbook](docs/device-testing.md).
+
 ## Naming
 
 **Hailing Station** is the project and application. **Haley** is the default persona presented by the interface; persona names and behavior are intended to be configurable and are not part of the transport protocol.
