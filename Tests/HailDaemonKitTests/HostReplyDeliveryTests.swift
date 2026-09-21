@@ -78,6 +78,69 @@ import Testing
         }
         await listener.stop(reason: "test complete")
     }
+
+    // The setup and four transition assertions intentionally stay together as one stream-lifecycle scenario.
+    // swiftlint:disable:next function_body_length
+    @Test func audioStreamKeepsItsOriginalRecipientsUntilFinal() async throws {
+        var policy = Policy()
+        try policy.allow("tmux:reply", binding: "reply-binding", tier: .open)
+        try policy.allow("tmux:other", binding: "other-binding", tier: .open)
+        let (host, _) = try await sessionHost(
+            targets: [
+                AdapterTarget(name: "reply", binding: "reply-binding"),
+                AdapterTarget(name: "other", binding: "other-binding")
+            ],
+            policy: policy
+        )
+        let original = HostSession(
+            host: host, authorizer: PersonalTerminalAuthorizer(), hostName: "mac-main"
+        )
+        let late = HostSession(
+            host: host, authorizer: PersonalTerminalAuthorizer(), hostName: "mac-main"
+        )
+        _ = await original.receive(helloFrame())
+        _ = await late.receive(helloFrame())
+        _ = await original.receive(sessionFrame(payload: .control(.select(targetID: "tmux:reply"))))
+
+        let descriptor = ReplyDescriptor(
+            id: UUID(), hostID: "mac-main", targetID: "tmux:reply", audioStreamID: UUID()
+        )
+        let streamID = try #require(descriptor.audioStreamID)
+        #expect(await original.acceptsHostReply(audioReply(
+            descriptor: descriptor, streamID: streamID, sequence: 0
+        )))
+        #expect(!(await late.acceptsHostReply(audioReply(
+            descriptor: descriptor, streamID: streamID, sequence: 0
+        ))))
+
+        _ = await late.receive(sessionFrame(payload: .control(.select(targetID: "tmux:reply"))))
+        _ = await original.receive(sessionFrame(payload: .control(.select(targetID: "tmux:other"))))
+        #expect(await original.acceptsHostReply(audioReply(
+            descriptor: descriptor, streamID: streamID, sequence: 1
+        )))
+        #expect(!(await late.acceptsHostReply(audioReply(
+            descriptor: descriptor, streamID: streamID, sequence: 1
+        ))))
+
+        #expect(await original.acceptsHostReply(audioReply(
+            descriptor: descriptor, streamID: streamID, sequence: 2, isFinal: true
+        )))
+        #expect(!(await original.acceptsHostReply(audioReply(
+            descriptor: descriptor, streamID: streamID, sequence: 3
+        ))))
+    }
+}
+
+private func audioReply(
+    descriptor: ReplyDescriptor, streamID: UUID, sequence: Int, isFinal: Bool = false
+) -> Frame {
+    Frame(
+        timestamp: 1_700_000_000_100, target: descriptor.targetID, source: descriptor.hostID,
+        payload: .audio(AudioPayload(
+            codec: .pcm16, sampleRate: 24_000, channels: 1, sequence: sequence,
+            streamID: streamID, isFinal: isFinal, bytes: Data([0, 0]), reply: descriptor
+        ))
+    )
 }
 
 private func replyClient(port: UInt16) throws -> (URLSession, URLSessionWebSocketTask) {

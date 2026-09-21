@@ -1,6 +1,8 @@
+import Darwin
 import Foundation
 import HailDaemonKit
 import HailProtocol
+import Network
 
 // Parsing, static PCM submission, and the streaming vbsay adapter stay together to share reply identity.
 // swiftlint:disable file_length
@@ -67,7 +69,7 @@ func reply(_ arguments: ArraySlice<String>) async throws {
             timestamp: replyTimestamp(), target: options.target, source: options.host,
             payload: .text(TextPayload(text: text, reply: descriptor))
         )
-        deliveries += try await LocalReplyClient.submit(frame, socketURL: options.socket)
+        deliveries += try await ReplyClient.submit(frame, socketURL: options.socket)
         frames += 1
     }
     if let file = options.pcm16, let streamID {
@@ -150,7 +152,7 @@ private func sendPCMFile(
             timestamp: replyTimestamp(), target: context.descriptor.targetID, source: context.descriptor.hostID,
             payload: .audio(payload)
         )
-        deliveries += try await LocalReplyClient.submit(frame, socketURL: context.socket)
+        deliveries += try await ReplyClient.submit(frame, socketURL: context.socket)
         sequence += 1
         current = next
     }
@@ -217,7 +219,7 @@ private func sendFinalPCM(sequence: Int, context: PCMReplyContext) async throws 
         codec: .pcm16, sampleRate: context.sampleRate, channels: 1, sequence: sequence,
         streamID: context.streamID, isFinal: true, bytes: Data([0, 0]), reply: context.descriptor
     )
-    return try await LocalReplyClient.submit(Frame(
+    return try await ReplyClient.submit(Frame(
         timestamp: replyTimestamp(), target: context.descriptor.targetID, source: context.descriptor.hostID,
         payload: .audio(final)
     ), socketURL: context.socket)
@@ -268,4 +270,118 @@ private func sendStableVBSayFiles(
 
 private func replyTimestamp() -> Int64 {
     Int64((Date().timeIntervalSince1970 * 1_000).rounded(.down))
+}
+
+private enum ReplyClientError: Error {
+    case invalidSocket(String)
+    case timeout
+    case failed(String)
+    case refused(String)
+}
+
+private enum ReplyClient {
+    static func submit(_ frame: Frame, socketURL: URL) async throws -> Int {
+        var info = stat()
+        guard socketURL.isFileURL, lstat(socketURL.path, &info) == 0,
+              info.st_uid == getuid(), info.st_mode & S_IFMT == S_IFSOCK,
+              info.st_mode & 0o077 == 0 else {
+            throw ReplyClientError.invalidSocket(socketURL.path)
+        }
+        var request = try FrameCoding.encode(frame)
+        guard request.count <= PayloadLimits.defaultMaxFrameBytes else {
+            throw ReplyClientError.failed("frame too large")
+        }
+        request.append(UInt8(ascii: "\n"))
+        while true {
+            let response = try await ReplyTransaction(socketURL: socketURL).perform(request)
+            if response.error == "rate limited" {
+                try await Task.sleep(for: .seconds(1))
+                continue
+            }
+            if let error = response.error { throw ReplyClientError.refused(error) }
+            return response.delivered
+        }
+    }
+}
+
+private final class ReplyTransaction: @unchecked Sendable {
+    private let queue = DispatchQueue(label: "hail.local-reply-client")
+    private let connection: NWConnection
+    private let lock = NSLock()
+    private var continuation: CheckedContinuation<LocalReplyResponse, any Error>?
+    private var sent = false
+
+    init(socketURL: URL) {
+        connection = NWConnection(to: .unix(path: socketURL.path), using: .tcp)
+    }
+
+    func perform(_ request: Data) async throws -> LocalReplyResponse {
+        try await withCheckedThrowingContinuation { continuation in
+            lock.withLock { self.continuation = continuation }
+            connection.stateUpdateHandler = { [weak self] state in self?.changed(state, request: request) }
+            connection.start(queue: queue)
+            queue.asyncAfter(deadline: .now() + 15) { [weak self] in
+                self?.finish(.failure(ReplyClientError.timeout))
+            }
+        }
+    }
+
+    private func changed(_ state: NWConnection.State, request: Data) {
+        switch state {
+        case .ready:
+            let shouldSend = lock.withLock {
+                guard !sent else { return false }
+                sent = true
+                return true
+            }
+            guard shouldSend else { return }
+            connection.send(
+                content: request, contentContext: .defaultMessage, isComplete: false,
+                completion: .contentProcessed { [weak self] error in
+                    if let error { self?.finish(.failure(error)) } else { self?.receive(Data()) }
+                }
+            )
+        case .failed(let error):
+            finish(.failure(ReplyClientError.failed("\(error)")))
+        case .cancelled:
+            finish(.failure(ReplyClientError.failed("connection cancelled")))
+        default:
+            break
+        }
+    }
+
+    private func receive(_ buffer: Data) {
+        connection.receive(minimumIncompleteLength: 1, maximumLength: 1_024) { [weak self] data, _, done, error in
+            guard let self else { return }
+            if let error { finish(.failure(error)); return }
+            var response = buffer
+            if let data { response.append(data) }
+            guard response.count <= 4 * 1_024 else {
+                finish(.failure(ReplyClientError.failed("response too large")))
+                return
+            }
+            if let newline = response.firstIndex(of: UInt8(ascii: "\n")) {
+                do {
+                    finish(.success(try JSONDecoder().decode(LocalReplyResponse.self, from: response[..<newline])))
+                } catch {
+                    finish(.failure(ReplyClientError.failed("malformed response")))
+                }
+            } else if done {
+                finish(.failure(ReplyClientError.failed("response ended early")))
+            } else {
+                receive(response)
+            }
+        }
+    }
+
+    private func finish(_ result: Result<LocalReplyResponse, any Error>) {
+        let pending = lock.withLock {
+            let pending = continuation
+            continuation = nil
+            return pending
+        }
+        guard let pending else { return }
+        connection.cancel()
+        pending.resume(with: result)
+    }
 }

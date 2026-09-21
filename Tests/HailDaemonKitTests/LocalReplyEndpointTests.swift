@@ -212,7 +212,8 @@ import Testing
                 timestamp: 1, target: reply.targetID, source: reply.hostID,
                 payload: .text(TextPayload(text: "ready", reply: reply))
             )
-            #expect(try await LocalReplyClient.submit(frame, socketURL: socket) == 1)
+            let response = try await submit(frame, socket: socket.path)
+            #expect(response == LocalReplyResponse(delivered: 1))
             #expect(try await terminalFrame(terminal) == frame)
             var info = stat()
             try #require(lstat(socket.path, &info) == 0)
@@ -281,6 +282,77 @@ private func terminalFrame(_ socket: URLSessionWebSocketTask) async throws -> Fr
     @unknown default: throw TestSupportError.expectedOneControl
     }
 }
+
+private func submit(_ frame: Frame, socket: String) async throws -> LocalReplyResponse {
+    let connection = NWConnection(to: .unix(path: socket), using: .tcp)
+    let queue = DispatchQueue(label: "hail.local-reply-test")
+    var encoded = try FrameCoding.encode(frame)
+    encoded.append(UInt8(ascii: "\n"))
+    let request = encoded
+    return try await withCheckedThrowingContinuation { continuation in
+        let completion = LocalReplyTestCompletion(continuation)
+        connection.stateUpdateHandler = { state in
+            switch state {
+            case .ready:
+                connection.send(
+                    content: request, contentContext: .defaultMessage, isComplete: false,
+                    completion: .contentProcessed { error in
+                        if let error { completion.fail(error) } else {
+                            receiveResponse(connection, completion: completion, buffer: Data())
+                        }
+                    }
+                )
+            case .failed(let error): completion.fail(error)
+            default: break
+            }
+        }
+        connection.start(queue: queue)
+    }
+}
+
+private func receiveResponse(
+    _ connection: NWConnection, completion: LocalReplyTestCompletion, buffer: Data
+) {
+    connection.receive(minimumIncompleteLength: 1, maximumLength: 1_024) { data, _, done, error in
+        if let error { completion.fail(error); return }
+        var response = buffer
+        if let data { response.append(data) }
+        if let newline = response.firstIndex(of: UInt8(ascii: "\n")) {
+            do {
+                completion.succeed(try JSONDecoder().decode(LocalReplyResponse.self, from: response[..<newline]))
+            } catch {
+                completion.fail(error)
+            }
+            connection.cancel()
+        } else if done {
+            completion.fail(LocalReplyEndpointError.failed("response ended early"))
+        } else {
+            receiveResponse(connection, completion: completion, buffer: response)
+        }
+    }
+}
+
+private final class LocalReplyTestCompletion: @unchecked Sendable {
+    private let lock = NSLock()
+    private var continuation: CheckedContinuation<LocalReplyResponse, any Error>?
+
+    init(_ continuation: CheckedContinuation<LocalReplyResponse, any Error>) {
+        self.continuation = continuation
+    }
+
+    func succeed(_ response: LocalReplyResponse) { finish(.success(response)) }
+    func fail(_ error: any Error) { finish(.failure(error)) }
+
+    private func finish(_ result: Result<LocalReplyResponse, any Error>) {
+        let pending = lock.withLock {
+            let pending = continuation
+            continuation = nil
+            return pending
+        }
+        pending?.resume(with: result)
+    }
+}
+
 private actor BlockingReplyPublisher: HostReplyPublishing {
     private(set) var started = false
     private(set) var cancelled = false
