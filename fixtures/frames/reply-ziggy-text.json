@@ -1,0 +1,1 @@
+{"id":"0B0B0B0B-0000-4000-8000-000000000023","payload":{"final":true,"reply":{"audioStream":"0B0B0B0B-0000-4000-8000-000000000203","host":"ziggy","id":"0B0B0B0B-0000-4000-8000-000000000103","interruption":"enqueue","priority":"normal","target":"tmux:codex-hail"},"text":"Ziggy has a result too."},"source":"ziggy","target":"tmux:codex-hail","ts":1758200040007,"type":"text","v":1}

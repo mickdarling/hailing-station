@@ -50,6 +50,7 @@ public struct Frame: Codable, Sendable, Equatable {
             throw DecodingError.dataCorrupted(context)
         }
         payload = try FramePayload(rawType: rawType, container: container, key: .payload)
+        try validateReplyProvenance(decoder)
     }
 
     public func encode(to encoder: any Encoder) throws {
@@ -61,6 +62,23 @@ public struct Frame: Codable, Sendable, Equatable {
         try container.encode(source, forKey: .source)
         try container.encode(payload.rawType, forKey: .type)
         try payload.encodePayload(into: &container, key: .payload)
+    }
+
+    private func validateReplyProvenance(_ decoder: any Decoder) throws {
+        let reply: ReplyDescriptor?
+        switch payload {
+        case .text(let text): reply = text.reply
+        case .audio(let audio): reply = audio.reply
+        default: reply = nil
+        }
+        guard let reply else { return }
+        guard source == reply.hostID, target == reply.targetID else {
+            let context = DecodingError.Context(
+                codingPath: decoder.codingPath,
+                debugDescription: "reply provenance does not match the frame envelope"
+            )
+            throw DecodingError.dataCorrupted(context)
+        }
     }
 }
 
