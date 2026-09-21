@@ -104,6 +104,9 @@ private func replyOptions(_ arguments: ArraySlice<String>) throws -> ReplyOption
     if let text = options.text, text.utf8.count > PayloadLimits.maxTextBytes {
         throw ReplyCommandError.invalid("text exceeds \(PayloadLimits.maxTextBytes) bytes")
     }
+    if options.say != nil, options.sampleRate != 24_000 {
+        throw ReplyCommandError.invalid("vbsay output is fixed at 24000 Hz")
+    }
     return options
 }
 
