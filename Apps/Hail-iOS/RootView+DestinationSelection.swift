@@ -12,8 +12,11 @@ extension RootView {
     }
 
     var destination: Destination? {
-        guard let selectedHostID, let selectedTargetID else { return nil }
-        return availableDestinations.first { $0.hostID == selectedHostID && $0.target.id == selectedTargetID }
+        guard let selectedHostID, let selectedTargetID, let rememberedSelection else { return nil }
+        return availableDestinations.first {
+            $0.hostID == selectedHostID && $0.target.id == selectedTargetID
+                && rememberedSelection.matches(hostID: $0.hostID, target: $0.target)
+        }
     }
 
     @MainActor
