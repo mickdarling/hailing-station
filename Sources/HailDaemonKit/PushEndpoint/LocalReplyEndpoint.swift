@@ -35,6 +35,7 @@ public actor LocalReplyEndpoint {
     let clock = ContinuousClock()
     var limiter = RateLimiter()
     var connections: [UUID: NWConnection] = [:]
+    var awaitingFrames: Set<UUID> = []
     private var readyWaiters: [CheckedContinuation<Void, any Error>] = []
     private var readyResult: Result<Void, LocalReplyEndpointError>?
     private var started = false
@@ -50,23 +51,29 @@ public actor LocalReplyEndpoint {
         socketURL: URL, destination: WebSocketListener, audit: AuditLog,
         requestTimeout: Duration = .seconds(5)
     ) throws {
-        guard socketURL.isFileURL, !socketURL.path.isEmpty,
-              socketURL.path.utf8.count < 104 else { throw LocalReplyEndpointError.invalidSocketPath }
-        let directory = socketURL.deletingLastPathComponent()
-        let rules = PolicyFile(directory: directory)
+        guard socketURL.isFileURL, !socketURL.path.isEmpty else {
+            throw LocalReplyEndpointError.invalidSocketPath
+        }
+        let requestedDirectory = socketURL.deletingLastPathComponent()
+        let rules = PolicyFile(directory: requestedDirectory)
         try rules.createDirectoryIfMissing()
         guard let descriptor = try rules.openDirectory() else {
             throw LocalReplyEndpointError.failed("private socket directory unavailable")
         }
         close(descriptor)
+        let directory = try Self.resolvedDirectory(requestedDirectory)
+        let resolvedSocketURL = directory.appendingPathComponent(socketURL.lastPathComponent)
+        guard resolvedSocketURL.path.utf8.count < 104 else {
+            throw LocalReplyEndpointError.invalidSocketPath
+        }
         try Self.checkSocketAncestors(directory)
-        if try PolicyFile.info(socketURL) != nil {
-            throw LocalReplyEndpointError.socketExists(socketURL.path)
+        if try PolicyFile.info(resolvedSocketURL) != nil {
+            throw LocalReplyEndpointError.socketExists(resolvedSocketURL.path)
         }
 
         let parameters = NWParameters.tcp
-        parameters.requiredLocalEndpoint = .unix(path: socketURL.path)
-        self.socketURL = socketURL
+        parameters.requiredLocalEndpoint = .unix(path: resolvedSocketURL.path)
+        self.socketURL = resolvedSocketURL
         self.destination = destination
         self.audit = audit
         self.requestTimeout = requestTimeout
@@ -153,6 +160,7 @@ public actor LocalReplyEndpoint {
         }
         let id = UUID()
         connections[id] = connection
+        awaitingFrames.insert(id)
         connection.stateUpdateHandler = { [weak self] state in
             switch state {
             case .failed, .cancelled:
@@ -166,31 +174,21 @@ public actor LocalReplyEndpoint {
         let timeout = requestTimeout
         Task { [weak self] in
             try? await Task.sleep(for: timeout)
-            await self?.retire(id)
+            await self?.expireIncomplete(id)
         }
     }
 }
 
 extension LocalReplyEndpoint {
     var activeConnectionCount: Int { connections.count }
+    var awaitingFrameIDs: Set<UUID> { awaitingFrames }
 
-    /// Network.framework binds Unix sockets by path, not relative to an open directory descriptor.
-    /// Refuse an ancestry another local user can rename while the listener starts, so the directory
-    /// checked above remains the directory in which the socket is created and later removed.
-    private static func checkSocketAncestors(_ directory: URL) throws {
-        var candidate = directory
-        while true {
-            var info = stat()
-            guard stat(candidate.path, &info) == 0,
-                  info.st_mode & S_IFMT == S_IFDIR,
-                  info.st_uid == 0 || info.st_uid == getuid(),
-                  info.st_mode & 0o022 == 0 else {
-                throw LocalReplyEndpointError.failed(
-                    "socket path has an unsafe ancestor: \(candidate.path)"
-                )
-            }
-            guard candidate.path != "/" else { return }
-            candidate = candidate.deletingLastPathComponent()
-        }
+    func frameCompleted(_ id: UUID) {
+        awaitingFrames.remove(id)
+    }
+
+    func expireIncomplete(_ id: UUID) {
+        guard awaitingFrames.contains(id) else { return }
+        retire(id)
     }
 }

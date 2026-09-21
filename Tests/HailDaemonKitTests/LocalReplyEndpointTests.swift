@@ -26,6 +26,36 @@ import Testing
         }
     }
 
+    @Test func resolvesSymlinkBeforeCheckingSocketAncestors() async throws {
+        let scratch = FileManager.default.temporaryDirectory.appendingPathComponent(
+            "hs-link-\(UUID().uuidString.prefix(8))", isDirectory: true
+        )
+        defer { try? FileManager.default.removeItem(at: scratch) }
+        let unsafe = scratch.appendingPathComponent("unsafe", isDirectory: true)
+        let victim = unsafe.appendingPathComponent("victim", isDirectory: true)
+        let safe = scratch.appendingPathComponent("safe", isDirectory: true)
+        try FileManager.default.createDirectory(
+            at: victim.appendingPathComponent("config"), withIntermediateDirectories: true
+        )
+        try FileManager.default.createDirectory(at: safe, withIntermediateDirectories: true)
+        #expect(chmod(unsafe.path, 0o777) == 0)
+        try FileManager.default.createSymbolicLink(
+            at: safe.appendingPathComponent("link"), withDestinationURL: victim
+        )
+        let listener = try await testListener()
+        let socket = safe.appendingPathComponent("link/config/\(LocalReplyEndpoint.socketName)")
+        var refused = false
+        do {
+            _ = try LocalReplyEndpoint(
+                socketURL: socket, destination: listener,
+                audit: AuditLog(directory: scratch.appendingPathComponent("audit"))
+            )
+        } catch {
+            refused = true
+        }
+        #expect(refused)
+    }
+
     @Test func incompleteConnectionExpires() async throws {
         let scratch = FileManager.default.temporaryDirectory.appendingPathComponent(
             "hs-timeout-\(UUID().uuidString.prefix(8))", isDirectory: true
@@ -46,6 +76,31 @@ import Testing
         try await Task.sleep(for: .milliseconds(100))
         #expect(await endpoint.activeConnectionCount == 0)
         idle.cancel()
+        await endpoint.stop()
+    }
+
+    @Test func completedFrameDisarmsRequestDeadline() async throws {
+        let scratch = FileManager.default.temporaryDirectory.appendingPathComponent(
+            "hs-complete-\(UUID().uuidString.prefix(8))", isDirectory: true
+        )
+        defer { try? FileManager.default.removeItem(at: scratch) }
+        let listener = try await testListener()
+        let socket = scratch.appendingPathComponent("config", isDirectory: true)
+            .appendingPathComponent(LocalReplyEndpoint.socketName)
+        let endpoint = try LocalReplyEndpoint(
+            socketURL: socket, destination: listener,
+            audit: AuditLog(directory: scratch.appendingPathComponent("audit")),
+            requestTimeout: .milliseconds(50)
+        )
+        try await endpoint.start()
+        let client = NWConnection(to: .unix(path: socket.path), using: .tcp)
+        client.start(queue: DispatchQueue(label: "hail.local-reply-complete-test"))
+        try await waitUntil { await endpoint.activeConnectionCount == 1 }
+        let id = try #require(await endpoint.awaitingFrameIDs.first)
+        await endpoint.frameCompleted(id)
+        try await Task.sleep(for: .milliseconds(100))
+        #expect(await endpoint.activeConnectionCount == 1)
+        client.cancel()
         await endpoint.stop()
     }
 
