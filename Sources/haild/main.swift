@@ -25,7 +25,7 @@ func usage() -> Never {
            haild targets deny <target-id>
            haild targets tier <target-id> <open|confirm|locked>
            haild send <target-id> <text>      (text is one argument; quote it)
-           haild reply <target-id> [--host <host-id>] [--text <text>] [--pcm16 <path>]
+           haild reply <target-id> [--host <host-id>] [--text <text>] [--pcm16 <path>|--say <text>]
                        [--sample-rate <hz>] [--socket <path>]
            haild status
            haild audit verify|tail|today
