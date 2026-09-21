@@ -16,6 +16,7 @@ import Testing
             .listTargets,
             .targets([TargetInfo(id: "tmux:a", kind: "tmux", name: "a", alive: true)]),
             .select(targetID: "tmux:a"), .subscribe(targetID: "tmux:a"), .unsubscribe(targetID: "tmux:a"),
+            .escape(targetID: "tmux:a"),
             .ping(nonce: "n1"), .pong(nonce: "n1"),
             .error(code: .unauthorized, message: "no such device"), .error(code: .unknown("future"), message: "")
         ]

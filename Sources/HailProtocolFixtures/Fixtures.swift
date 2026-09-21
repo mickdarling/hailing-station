@@ -108,6 +108,10 @@ public enum Fixtures {
             id: id(14), timestamp: 1_758_200_000_062, source: "terminal",
             payload: .control(.unsubscribe(targetID: "tmux:codex-hail"))
         )),
+        Example(name: "control-escape", frame: Frame(
+            id: id(18), timestamp: 1_758_200_000_063, source: "terminal",
+            payload: .control(.escape(targetID: "tmux:codex-hail"))
+        )),
         Example(name: "control-ping", frame: Frame(
             id: id(9), timestamp: 1_758_200_015_000, source: "terminal", payload: .control(.ping(nonce: "n-0001"))
         )),
