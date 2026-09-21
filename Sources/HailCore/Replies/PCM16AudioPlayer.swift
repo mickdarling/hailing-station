@@ -9,8 +9,6 @@ public enum ReplyAudioPlayerError: Error, Equatable, Sendable {
 /// AVAudioEngine renderer for the raw signed 16-bit, mono stream produced by the current vbsay bridge.
 @MainActor
 public final class PCM16AudioPlayer: ReplyAudioPlaying {
-    static let sourceSampleRate = 24_000.0
-
     private let engine = AVAudioEngine()
     private let node = AVAudioPlayerNode()
     private let sourceFormat: AVAudioFormat
@@ -19,9 +17,7 @@ public final class PCM16AudioPlayer: ReplyAudioPlaying {
     #endif
 
     public init() {
-        guard let sourceFormat = AVAudioFormat(
-            standardFormatWithSampleRate: Self.sourceSampleRate, channels: 1
-        ) else {
+        guard let sourceFormat = PCM16BufferConverter.sourceFormat() else {
             preconditionFailure("Hailing Station PCM playback format is unavailable")
         }
         self.sourceFormat = sourceFormat
@@ -33,7 +29,7 @@ public final class PCM16AudioPlayer: ReplyAudioPlaying {
 
     public func schedule(_ payload: AudioPayload) throws {
         try prepare()
-        node.scheduleBuffer(try buffer(payload))
+        node.scheduleBuffer(try PCM16BufferConverter.buffer(payload))
         if !node.isPlaying { node.play() }
     }
 
@@ -54,7 +50,7 @@ public final class PCM16AudioPlayer: ReplyAudioPlaying {
         node.stop()
         node.reset()
         try prepare()
-        for payload in payloads { node.scheduleBuffer(try buffer(payload)) }
+        for payload in payloads { node.scheduleBuffer(try PCM16BufferConverter.buffer(payload)) }
         node.play()
     }
 
@@ -76,8 +72,18 @@ public final class PCM16AudioPlayer: ReplyAudioPlaying {
         #endif
         if !engine.isRunning { try engine.start() }
     }
+}
 
-    func buffer(_ payload: AudioPayload) throws -> AVAudioPCMBuffer {
+/// Pure payload conversion kept separate from the hardware-owning player so unit tests never
+/// instantiate AVAudioEngine. The player and every returned buffer share this explicit format.
+enum PCM16BufferConverter {
+    static let sourceSampleRate = 24_000.0
+
+    static func sourceFormat() -> AVAudioFormat? {
+        AVAudioFormat(standardFormatWithSampleRate: sourceSampleRate, channels: 1)
+    }
+
+    static func buffer(_ payload: AudioPayload) throws -> AVAudioPCMBuffer {
         guard payload.codec == .pcm16, payload.channels == 1,
               !payload.bytes.isEmpty,
               payload.bytes.count.isMultiple(of: MemoryLayout<Int16>.size) else {
@@ -104,10 +110,13 @@ public final class PCM16AudioPlayer: ReplyAudioPlaying {
             }
         }
         input.frameLength = AVAudioFrameCount(count)
-        return try convert(input)
+        guard let sourceFormat = sourceFormat() else { throw ReplyAudioPlayerError.invalidBuffer }
+        return try convert(input, to: sourceFormat)
     }
 
-    private func convert(_ input: AVAudioPCMBuffer) throws -> AVAudioPCMBuffer {
+    private static func convert(
+        _ input: AVAudioPCMBuffer, to sourceFormat: AVAudioFormat
+    ) throws -> AVAudioPCMBuffer {
         guard let converter = AVAudioConverter(from: input.format, to: sourceFormat) else {
             throw ReplyAudioPlayerError.unsupportedFormat
         }
