@@ -4,8 +4,12 @@ import SwiftUI
 
 /// Thin root: current target, talk control, transcript, last reply. Each area fills in with its issue.
 struct RootView: View {
+    private static let savedHostsKey = "hailing-station.host-endpoints.v1"
     @State private var connections = HostConnectionStore()
     @State private var audioSession = ManagedAudioSession(backend: AVAudioSessionBackend())
+    @State private var selectedHostID: HostEndpoint.Identifier?
+    @State private var selectedTargetID: String?
+    @State private var didRestoreHosts = false
     @Environment(\.scenePhase) private var scenePhase
 
     var body: some View {
@@ -16,22 +20,37 @@ struct RootView: View {
             guard phase == .active else { return }
             Task { await connections.sceneBecameActive() }
         }
+        .task { await restoreHostsOnce() }
     }
 
     private var content: some View {
-        VStack(spacing: 24) {
-            Text("Hailing Station")
-                .font(.largeTitle.weight(.semibold))
-            Text("no target selected")
-                .foregroundStyle(.secondary)
-            Text("protocol v\(ProtocolVersion.current)")
-                .font(.footnote.monospaced())
-                .foregroundStyle(.tertiary)
-            NavigationLink("Connectivity Lab (#99)") { ConnectivityLabView(store: connections) }
-            NavigationLink("Audio session (#4)") { AudioDiagnosticsView(controller: audioSession) }
-            NavigationLink("Live transcription (#6)") {
+        VStack(spacing: 16) {
+            HStack {
+                VStack(alignment: .leading, spacing: 2) {
+                    Text("Hailing Station").font(.title.bold())
+                    Text(destination?.label ?? "Choose a destination")
+                        .foregroundStyle(destination == nil ? .secondary : .primary)
+                }
+                Spacer()
+                destinationMenu
+            }
+
+            if let destination {
                 if #available(iOS 26.0, *) {
-                    TranscriptionLabView(audioSession: audioSession)
+                    TranscriptionLabView(
+                        audioSession: audioSession,
+                        destinationLabel: destination.label,
+                        onFinalized: { text in
+                            try await connections.sendFinalText(
+                                text, host: destination.hostID, targetID: destination.target.id
+                            )
+                        },
+                        onEscape: {
+                            try await connections.sendEscape(
+                                host: destination.hostID, targetID: destination.target.id
+                            )
+                        }
+                    )
                 } else {
                     ContentUnavailableView(
                         "Requires iOS 26",
@@ -39,122 +58,116 @@ struct RootView: View {
                         description: Text("SpeechAnalyzer is unavailable on this device.")
                     )
                 }
+            } else {
+                ContentUnavailableView(
+                    "No target selected",
+                    systemImage: "dot.radiowaves.left.and.right",
+                    description: Text("Connect to your Mac, then choose an allowed target.")
+                )
             }
-            NavigationLink("Routing spike (#22)") { RoutingSpikeView() }
+
+            HStack {
+                NavigationLink("Connections") {
+                    ConnectivityLabView(store: connections, endpointsChanged: persist)
+                }
+                NavigationLink("Audio") { AudioDiagnosticsView(controller: audioSession) }
+                NavigationLink("Labs") { LabsView(audioSession: audioSession) }
+            }
+            .buttonStyle(.bordered)
         }
         .padding()
     }
+
+    @ViewBuilder
+    private var destinationMenu: some View {
+        Menu {
+            if availableDestinations.isEmpty {
+                Text("No ready targets")
+            }
+            ForEach(availableDestinations) { option in
+                Button {
+                    Task { await select(option) }
+                } label: {
+                    if destination?.id == option.id {
+                        Label(option.label, systemImage: "checkmark")
+                    } else {
+                        Text(option.label)
+                    }
+                }
+            }
+        } label: {
+            Label("Target", systemImage: "scope")
+        }
+        .buttonStyle(.bordered)
+    }
+
+    private var availableDestinations: [Destination] {
+        connections.hosts.flatMap { host in
+            guard host.state == .ready else { return [Destination]() }
+            return host.targets.filter(\.alive).map {
+                Destination(hostID: host.id, hostName: host.endpoint.name, target: $0)
+            }
+        }
+    }
+
+    private var destination: Destination? {
+        guard let selectedHostID, let selectedTargetID else { return nil }
+        return availableDestinations.first { $0.hostID == selectedHostID && $0.target.id == selectedTargetID }
+    }
+
+    @MainActor
+    private func select(_ option: Destination) async {
+        do {
+            try await connections.selectTarget(host: option.hostID, targetID: option.target.id)
+            selectedHostID = option.hostID
+            selectedTargetID = option.target.id
+        } catch {
+            selectedHostID = nil
+            selectedTargetID = nil
+        }
+    }
+
+    @MainActor
+    private func restoreHostsOnce() async {
+        guard !didRestoreHosts else { return }
+        didRestoreHosts = true
+        guard let data = UserDefaults.standard.data(forKey: Self.savedHostsKey),
+              let endpoints = try? JSONDecoder().decode([HostEndpoint].self, from: data) else { return }
+        for endpoint in endpoints {
+            await connections.upsert(endpoint)
+            await connections.connect(endpoint.id)
+        }
+    }
+
+    @MainActor
+    private func persist(_ endpoints: [HostEndpoint]) {
+        guard let data = try? JSONEncoder().encode(endpoints) else { return }
+        UserDefaults.standard.set(data, forKey: Self.savedHostsKey)
+    }
 }
 
-/// Temporary diagnostics surface for proving multiple independent Mac connections before terminal styling lands.
-private struct ConnectivityLabView: View {
-    @Bindable var store: HostConnectionStore
-    @State private var editingID: HostEndpoint.Identifier?
-    @State private var name = ""
-    @State private var url = "ws://127.0.0.1:8765"
-    @State private var validation = ""
+private struct Destination: Identifiable, Equatable {
+    let hostID: HostEndpoint.Identifier
+    let hostName: String
+    let target: TargetInfo
+
+    var id: String { "\(hostID)|\(target.id)" }
+    var label: String { "\(hostName) · \(target.name)" }
+}
+
+private struct LabsView: View {
+    let audioSession: any AudioSessionDiagnosticsProviding
 
     var body: some View {
         List {
-            Section("Add or edit a Mac") {
-                TextField("Name", text: $name)
-                TextField("WebSocket URL", text: $url)
-                    .textInputAutocapitalization(.never)
-                    .autocorrectionDisabled()
-                    .keyboardType(.URL)
-                if !validation.isEmpty { Text(validation).foregroundStyle(.red) }
-                Button(editingID == nil ? "Add host" : "Save host") { Task { await save() } }
-                    .disabled(name.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty)
-            }
-
-            Section("Hosts") {
-                if store.hosts.isEmpty {
-                    Text("Add a Mac URL to begin the connection probe.").foregroundStyle(.secondary)
-                }
-                ForEach(store.hosts) { host in
-                    VStack(alignment: .leading, spacing: 8) {
-                        HStack {
-                            VStack(alignment: .leading) {
-                                Text(host.endpoint.name).font(.headline)
-                                Text(host.endpoint.url.absoluteString)
-                                    .font(.caption.monospaced()).foregroundStyle(.secondary)
-                            }
-                            Spacer()
-                            Text(host.state.label).font(.caption.weight(.medium))
-                        }
-                        HStack {
-                            Button("Connect") { Task { await store.connect(host.id) } }
-                            Button("Disconnect") { Task { await store.disconnect(host.id) } }
-                            Button("Edit") { beginEditing(host.endpoint) }
-                        }
-                        .buttonStyle(.bordered)
-                        diagnostics(host)
-                    }
-                    .padding(.vertical, 4)
-                }
-                .onDelete { offsets in
-                    let ids = offsets.map { store.hosts[$0].id }
-                    Task { for id in ids { await store.remove(id) } }
+            NavigationLink("Live transcription") {
+                if #available(iOS 26.0, *) {
+                    TranscriptionLabView(audioSession: audioSession)
                 }
             }
+            NavigationLink("Routing spike") { RoutingSpikeView() }
         }
-        .navigationTitle("Connectivity Lab")
-    }
-
-    @ViewBuilder
-    private func diagnostics(_ host: HostConnectionSnapshot) -> some View {
-        if let version = host.negotiatedVersion {
-            Text("protocol v\(version) · \(host.capabilities.joined(separator: ", "))")
-                .font(.caption.monospaced())
-        }
-        if let ping = host.lastPingMilliseconds {
-            Text("last ping \(ping.formatted(.number.precision(.fractionLength(1)))) ms")
-                .font(.caption.monospaced())
-        }
-        if host.receivedTargetList, host.targets.isEmpty {
-            Text("No allowed targets returned.").font(.caption).foregroundStyle(.secondary)
-        }
-        ForEach(host.targets, id: \.id) { target in
-            Text("\(target.alive ? "●" : "○") \(target.name) · \(target.kind)")
-                .font(.caption)
-        }
-    }
-
-    private func save() async {
-        guard let parsedURL = URL(string: url) else {
-            validation = "Enter a ws:// or wss:// URL."
-            return
-        }
-        do {
-            let endpoint = try HostEndpoint(id: editingID ?? UUID().uuidString.lowercased(), name: name, url: parsedURL)
-            await store.upsert(endpoint)
-            validation = ""
-            editingID = nil
-            name = ""
-        } catch {
-            validation = "Enter a name and a ws:// or wss:// URL with a host."
-        }
-    }
-
-    private func beginEditing(_ endpoint: HostEndpoint) {
-        editingID = endpoint.id
-        name = endpoint.name
-        url = endpoint.url.absoluteString
-        validation = ""
-    }
-}
-
-private extension HostConnectionState {
-    var label: String {
-        switch self {
-        case .disconnected: "disconnected"
-        case .connecting: "connecting"
-        case .negotiating: "negotiating"
-        case .ready: "ready"
-        case .reconnecting(let attempt, let delay):
-            "retry \(attempt) in \(delay.formatted(.number.precision(.fractionLength(1))))s"
-        case .failed(let reason): "failed: \(reason)"
-        }
+        .navigationTitle("Labs")
     }
 }
 
