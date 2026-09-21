@@ -147,7 +147,7 @@ struct TranscriptionLabView: View {
         let task = bufferTask
         bufferTask = nil
         if waitForBuffer { await task?.value }
-        await transcriber.stop()
+        _ = await transcriber.stop()
         await audioSession.deactivate()
         isRecording = false
     }
