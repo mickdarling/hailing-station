@@ -29,16 +29,14 @@ import Testing
             try await sendReplyTestFrame(helloFrame(), on: unselected)
             _ = try await receiveReplyTestFrame(on: selected)
             _ = try await receiveReplyTestFrame(on: unselected)
-            try await sendReplyTestFrame(
-                sessionFrame(payload: .control(.select(targetID: "tmux:reply"))), on: selected
-            )
+            try await selectReplyTarget("tmux:reply", on: selected)
 
             let reply = ReplyDescriptor(id: UUID(), hostID: "mac-main", targetID: "tmux:reply")
             let frame = Frame(
                 timestamp: 1_700_000_000_100, target: reply.targetID, source: reply.hostID,
                 payload: .text(TextPayload(text: "ready", reply: reply))
             )
-            #expect(try await listener.publish(frame) == 1)
+            try #require(await listener.publish(frame) == 1)
             #expect(try await receiveReplyTestFrame(on: selected) == frame)
         } catch {
             await listener.stop(reason: "test failed")
@@ -154,6 +152,17 @@ private func replyClient(port: UInt16) throws -> (URLSession, URLSessionWebSocke
 private func sendReplyTestFrame(_ frame: Frame, on socket: URLSessionWebSocketTask) async throws {
     let data = try FrameCoding.encode(frame)
     try await socket.send(.data(data))
+}
+
+private func selectReplyTarget(_ targetID: String, on socket: URLSessionWebSocketTask) async throws {
+    try await sendReplyTestFrame(
+        sessionFrame(payload: .control(.select(targetID: targetID))), on: socket
+    )
+    let nonce = "selection-applied"
+    try await sendReplyTestFrame(
+        sessionFrame(payload: .control(.ping(nonce: nonce))), on: socket
+    )
+    try #require(await receiveReplyTestFrame(on: socket).payload == .control(.pong(nonce: nonce)))
 }
 
 private func receiveReplyTestFrame(on socket: URLSessionWebSocketTask) async throws -> Frame {
