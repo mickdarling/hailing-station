@@ -11,6 +11,7 @@ public actor ManagedAudioSession: AudioSessionDiagnosticsProviding {
     var inputSelectionGeneration = 0
     var activeInputSelectionGeneration: Int?
     var preferenceSaveTail: Task<Void, Never>?
+    var latestQueuedPreferenceGeneration = 0
     var routeReconciliationNeeded = false
     var wantsActive = false
     var sessionActive = false
@@ -87,6 +88,26 @@ public actor ManagedAudioSession: AudioSessionDiagnosticsProviding {
         case .interruptionEnded(let shouldResume):
             await handleInterruptionEnd(shouldResume: shouldResume)
         }
+    }
+}
+
+extension ManagedAudioSession {
+    @discardableResult
+    func reconcileRouteWhenIdle() async -> Bool {
+        var reconciled = false
+        while routeReconciliationNeeded, activeInputSelectionGeneration == nil, wantsActive, sessionActive {
+            routeReconciliationNeeded = false
+            let generation = inputSelectionGeneration
+            do {
+                try await selectPreferredInput(expectedGeneration: generation)
+                reconciled = true
+            } catch AudioInputSelectionError.superseded {
+                routeReconciliationNeeded = true
+            } catch {
+                return reconciled
+            }
+        }
+        return reconciled
     }
 }
 

@@ -16,6 +16,8 @@ actor FakeAudioSessionBackend: AudioSessionBackend {
     private var heldInputLookup: CheckedContinuation<Void, Never>?
     private var holdNextInputSelection = false
     private var heldInputSelection: CheckedContinuation<Void, Never>?
+    private var diagnosticsCallsBeforeHold: Int?
+    private var heldDiagnostics: CheckedContinuation<Void, Never>?
     private(set) var selectedInput: AudioPort?
     private(set) var selectionCount = 0
     private(set) var activationHistory: [Bool] = []
@@ -70,7 +72,17 @@ actor FakeAudioSessionBackend: AudioSessionBackend {
     }
 
     func diagnostics(isActive: Bool) async -> AudioSessionDiagnostics {
-        AudioSessionDiagnostics(
+        if let calls = diagnosticsCallsBeforeHold {
+            if calls == 0 {
+                diagnosticsCallsBeforeHold = nil
+                await withCheckedContinuation { continuation in
+                    heldDiagnostics = continuation
+                }
+            } else {
+                diagnosticsCallsBeforeHold = calls - 1
+            }
+        }
+        return AudioSessionDiagnostics(
             isActive: isActive,
             input: selectedInput,
             outputs: [AudioPort(id: "speaker", name: "Speaker", kind: .other)],
@@ -122,6 +134,22 @@ actor FakeAudioSessionBackend: AudioSessionBackend {
     func releaseHeldSelection() {
         let continuation = heldInputSelection
         heldInputSelection = nil
+        continuation?.resume()
+    }
+
+    func holdDiagnosticsCall(after calls: Int) {
+        diagnosticsCallsBeforeHold = calls
+    }
+
+    func waitUntilDiagnosticsIsHeld() async {
+        while heldDiagnostics == nil {
+            await Task.yield()
+        }
+    }
+
+    func releaseHeldDiagnostics() {
+        let continuation = heldDiagnostics
+        heldDiagnostics = nil
         continuation?.resume()
     }
 }

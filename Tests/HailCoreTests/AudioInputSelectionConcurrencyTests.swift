@@ -57,6 +57,50 @@ struct AudioInputSelectionConcurrencyTests {
         #expect(await backend.selectedInput == .builtIn)
         #expect(await controller.preferredInput == .builtIn)
     }
+
+    @Test func failedSupersedingRequestRepairsTheEscapedOlderSave() async throws {
+        let backend = FakeAudioSessionBackend(inputs: [.usb, .builtIn])
+        let store = SuspendingAudioInputPreferenceStore(initial: .usb)
+        let controller = ManagedAudioSession(backend: backend, preferenceStore: store)
+        try await controller.activate()
+        await store.holdNextSaveCall()
+
+        let earlier = Task { try await controller.selectInput(id: AudioPort.builtIn.id) }
+        await store.waitUntilSaveIsHeld()
+        await #expect(throws: AudioInputSelectionError.unavailable("missing")) {
+            try await controller.selectInput(id: "missing")
+        }
+        await store.releaseHeldSave()
+
+        await #expect(throws: AudioInputSelectionError.superseded) {
+            try await earlier.value
+        }
+        #expect(await controller.preferredInput == .usb)
+        #expect(await store.load() == .usb)
+    }
+
+    @Test func routeQueuedDuringFinalDiagnosticsDrainsWhenSelectionBecomesIdle() async throws {
+        let backend = FakeAudioSessionBackend(inputs: [.builtIn])
+        let store = SuspendingAudioInputPreferenceStore()
+        let controller = ManagedAudioSession(backend: backend, preferenceStore: store)
+        try await controller.activate()
+        await store.holdNextSaveCall()
+
+        let selection = Task { try await controller.selectInput(id: nil) }
+        await store.waitUntilSaveIsHeld()
+        await controller.handle(.routeChanged)
+        await backend.holdDiagnosticsCall(after: 1)
+        await store.releaseHeldSave()
+        await backend.waitUntilDiagnosticsIsHeld()
+
+        await backend.replaceInputs([.usb, .builtIn])
+        await controller.handle(.routeChanged)
+        await backend.releaseHeldDiagnostics()
+        try await selection.value
+
+        #expect(await backend.selectedInput == .usb)
+        #expect(await controller.preferredInput == nil)
+    }
 }
 
 private actor SuspendingAudioInputPreferenceStore: AudioInputPreferenceStoring {

@@ -14,7 +14,6 @@ public extension ManagedAudioSession {
 
     func selectInput(id: AudioPort.ID?) async throws {
         let generation = try startSelection()
-        defer { finishSelection(generation) }
         do {
             let request = try await resolveSelection(id: id, generation: generation)
             try await backend.selectInput(id: request.port.id)
@@ -24,8 +23,10 @@ public extension ManagedAudioSession {
             let final = try await reconcileRouteIfNeeded(generation: request.generation) ?? diagnostics
             try verify(final, matches: request)
             publish(final)
+            await finishSelection(generation)
         } catch {
             await recoverFromFailedSelection(generation)
+            await finishSelection(generation)
             throw error
         }
     }
@@ -53,20 +54,6 @@ extension ManagedAudioSession {
 
     func isSelectable(_ port: AudioPort) -> Bool {
         port.kind != .bluetoothHFP || preferences.allowsBluetoothHFP
-    }
-
-    func reconcileRouteWhenIdle() async {
-        while routeReconciliationNeeded, activeInputSelectionGeneration == nil, wantsActive, sessionActive {
-            routeReconciliationNeeded = false
-            let generation = inputSelectionGeneration
-            do {
-                try await selectPreferredInput(expectedGeneration: generation)
-            } catch AudioInputSelectionError.superseded {
-                routeReconciliationNeeded = true
-            } catch {
-                return
-            }
-        }
     }
 }
 
@@ -103,23 +90,49 @@ private extension ManagedAudioSession {
         return InputSelectionRequest(generation: generation, port: port, preference: nil)
     }
 
-    func finishSelection(_ generation: Int) {
+    func finishSelection(_ generation: Int) async {
         if activeInputSelectionGeneration == generation {
             activeInputSelectionGeneration = nil
         }
+        guard await reconcileRouteWhenIdle() else { return }
+        let diagnosticGeneration = inputSelectionGeneration
+        let diagnostics = await backend.diagnostics(isActive: sessionActive)
+        guard diagnosticGeneration == inputSelectionGeneration,
+              activeInputSelectionGeneration == nil else { return }
+        publish(diagnostics)
     }
 
     func persistPreference(for request: InputSelectionRequest) async throws {
         let previous = preferenceSaveTail
         let store = preferenceStore
+        latestQueuedPreferenceGeneration = request.generation
         let save = Task {
             await previous?.value
             await store.save(request.preference)
         }
         preferenceSaveTail = save
         await save.value
-        try validateSelection(request.generation)
+        do {
+            try validateSelection(request.generation)
+        } catch {
+            if latestQueuedPreferenceGeneration == request.generation {
+                await repairPersistedPreference()
+            }
+            throw error
+        }
         savedPreferredInput = request.preference
+    }
+
+    func repairPersistedPreference() async {
+        let previous = preferenceSaveTail
+        let store = preferenceStore
+        let preference = savedPreferredInput
+        let repair = Task {
+            await previous?.value
+            await store.save(preference)
+        }
+        preferenceSaveTail = repair
+        await repair.value
     }
 
     func verifiedDiagnostics(for request: InputSelectionRequest) async throws -> AudioSessionDiagnostics {
