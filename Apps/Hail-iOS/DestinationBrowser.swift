@@ -6,9 +6,9 @@ import SwiftUI
 struct DestinationBrowser: View {
     let hosts: [HostConnectionSnapshot]
     let selected: Destination?
+    let usesPopoverLayout: Bool
     let onSelect: @MainActor (Destination) -> Void
     @Environment(\.dismiss) private var dismiss
-    @Environment(\.horizontalSizeClass) private var horizontalSizeClass
 
     var body: some View {
         NavigationStack {
@@ -36,12 +36,8 @@ struct DestinationBrowser: View {
                 }
             }
         }
-        .frame(
-            minWidth: horizontalSizeClass == .regular ? 340 : nil,
-            idealWidth: horizontalSizeClass == .regular ? 420 : nil,
-            minHeight: 360,
-            idealHeight: 520
-        )
+        .frame(width: usesPopoverLayout ? 420 : nil)
+        .frame(minHeight: 360, idealHeight: 520)
     }
 
     @ViewBuilder

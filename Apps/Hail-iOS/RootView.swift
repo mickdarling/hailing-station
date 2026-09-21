@@ -19,6 +19,7 @@ struct RootView: View {
     @State var selectionRevision: UInt = 0
     @State private var showingDestinations = false
     @Environment(\.scenePhase) private var scenePhase
+    @Environment(\.horizontalSizeClass) private var horizontalSizeClass
 
     init(selectionStore: any DestinationSelectionStoring = UserDefaultsDestinationSelectionStore()) {
         self.selectionStore = selectionStore
@@ -115,6 +116,7 @@ struct RootView: View {
             DestinationBrowser(
                 hosts: connections.hosts,
                 selected: destination,
+                usesPopoverLayout: horizontalSizeClass == .regular,
                 onSelect: { option in Task { await select(option) } }
             )
             .presentationCompactAdaptation(.sheet)
