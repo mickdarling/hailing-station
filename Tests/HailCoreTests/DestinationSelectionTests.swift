@@ -4,20 +4,31 @@ import Testing
 @testable import HailCore
 
 struct DestinationSelectionTests {
-    @Test func matchesOnlyTheSameLiveTargetNameAndIdentity() {
-        let selection = DestinationSelection(hostID: "mac-1", targetID: "tmux:one", targetName: "one")
+    @Test func matchesOnlyTheSameLiveTargetNameAndIdentity() throws {
+        let original = try HostEndpoint(
+            id: "mac-1", name: "Mac", url: #require(URL(string: "ws://mac-one:8765"))
+        )
+        let edited = try HostEndpoint(
+            id: "mac-1", name: "Mac", url: #require(URL(string: "ws://mac-two:8765"))
+        )
+        let selection = DestinationSelection(
+            hostID: original.id,
+            hostURL: original.url.absoluteString,
+            targetID: "tmux:one",
+            targetName: "one"
+        )
 
         #expect(selection.matches(
-            hostID: "mac-1", target: TargetInfo(id: "tmux:one", kind: "tmux", name: "one", alive: true)
+            endpoint: original, target: TargetInfo(id: "tmux:one", kind: "tmux", name: "one", alive: true)
         ))
         #expect(!selection.matches(
-            hostID: "mac-2", target: TargetInfo(id: "tmux:one", kind: "tmux", name: "one", alive: true)
+            endpoint: edited, target: TargetInfo(id: "tmux:one", kind: "tmux", name: "one", alive: true)
         ))
         #expect(!selection.matches(
-            hostID: "mac-1", target: TargetInfo(id: "tmux:one", kind: "tmux", name: "renamed", alive: true)
+            endpoint: original, target: TargetInfo(id: "tmux:one", kind: "tmux", name: "renamed", alive: true)
         ))
         #expect(!selection.matches(
-            hostID: "mac-1", target: TargetInfo(id: "tmux:one", kind: "tmux", name: "one", alive: false)
+            endpoint: original, target: TargetInfo(id: "tmux:one", kind: "tmux", name: "one", alive: false)
         ))
     }
 
@@ -26,7 +37,9 @@ struct DestinationSelectionTests {
         let defaults = try #require(UserDefaults(suiteName: suite))
         defer { defaults.removePersistentDomain(forName: suite) }
         let store = UserDefaultsDestinationSelectionStore(suiteName: suite)
-        let selection = DestinationSelection(hostID: "mac-1", targetID: "tmux:one", targetName: "one")
+        let selection = DestinationSelection(
+            hostID: "mac-1", hostURL: "ws://mac-one:8765", targetID: "tmux:one", targetName: "one"
+        )
 
         await store.save(selection)
         #expect(await store.load() == selection)

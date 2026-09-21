@@ -6,16 +6,17 @@ extension RootView {
         connections.hosts.flatMap { host in
             guard host.state == .ready else { return [Destination]() }
             return host.targets.filter(\.alive).map {
-                Destination(hostID: host.id, hostName: host.endpoint.name, target: $0)
+                Destination(endpoint: host.endpoint, target: $0)
             }
         }
     }
 
     var destination: Destination? {
-        guard let selectedHostID, let selectedTargetID, let rememberedSelection else { return nil }
+        guard selectionAuthorizedForReadyConnection,
+              let selectedHostID, let selectedTargetID, let rememberedSelection else { return nil }
         return availableDestinations.first {
             $0.hostID == selectedHostID && $0.target.id == selectedTargetID
-                && rememberedSelection.matches(hostID: $0.hostID, target: $0.target)
+                && rememberedSelection.matches(endpoint: $0.endpoint, target: $0.target)
         }
     }
 
@@ -29,7 +30,10 @@ extension RootView {
             selectedHostID = option.hostID
             selectedTargetID = option.target.id
             let selection = DestinationSelection(
-                hostID: option.hostID, targetID: option.target.id, targetName: option.target.name
+                hostID: option.hostID,
+                hostURL: option.endpoint.url.absoluteString,
+                targetID: option.target.id,
+                targetName: option.target.name
             )
             rememberedSelection = selection
             selectionAuthorizedForReadyConnection = true
@@ -51,7 +55,9 @@ extension RootView {
     @MainActor
     func reconcileRememberedSelection() async {
         guard didRestoreSelection, !isRestoringSelection, let rememberedSelection else { return }
-        guard let host = connections.hosts.first(where: { $0.id == rememberedSelection.hostID }) else {
+        guard let host = connections.hosts.first(where: {
+            rememberedSelection.matches(endpoint: $0.endpoint)
+        }) else {
             if didRestoreHosts { await forgetSelection() }
             return
         }
@@ -61,7 +67,7 @@ extension RootView {
         }
         guard host.receivedTargetList else { return }
         guard let target = host.targets.first(where: {
-            rememberedSelection.matches(hostID: host.id, target: $0)
+            rememberedSelection.matches(endpoint: host.endpoint, target: $0)
         }) else {
             await forgetSelection()
             return
@@ -78,7 +84,7 @@ extension RootView {
                   let current = connections.hosts.first(where: { $0.id == host.id }),
                   current.state == .ready,
                   current.targets.contains(where: {
-                      rememberedSelection.matches(hostID: current.id, target: $0)
+                      rememberedSelection.matches(endpoint: current.endpoint, target: $0)
                   }) else { return }
             selectedHostID = host.id
             selectedTargetID = target.id
@@ -103,10 +109,10 @@ extension RootView {
 }
 
 struct Destination: Identifiable, Equatable {
-    let hostID: HostEndpoint.Identifier
-    let hostName: String
+    let endpoint: HostEndpoint
     let target: TargetInfo
 
+    var hostID: HostEndpoint.Identifier { endpoint.id }
     var id: String { "\(hostID)|\(target.id)" }
-    var label: String { "\(hostName) · \(target.name)" }
+    var label: String { "\(endpoint.name) · \(target.name)" }
 }

@@ -7,17 +7,23 @@ public import HailProtocol
 /// target ID for a renamed destination. Restoration only occurs after the host publishes a matching live target.
 public struct DestinationSelection: Codable, Equatable, Sendable {
     public let hostID: HostEndpoint.Identifier
+    public let hostURL: String
     public let targetID: String
     public let targetName: String
 
-    public init(hostID: HostEndpoint.Identifier, targetID: String, targetName: String) {
+    public init(hostID: HostEndpoint.Identifier, hostURL: String, targetID: String, targetName: String) {
         self.hostID = hostID
+        self.hostURL = hostURL
         self.targetID = targetID
         self.targetName = targetName
     }
 
-    public func matches(hostID: HostEndpoint.Identifier, target: TargetInfo) -> Bool {
-        self.hostID == hostID && target.id == targetID && target.name == targetName && target.alive
+    public func matches(endpoint: HostEndpoint) -> Bool {
+        hostID == endpoint.id && hostURL == endpoint.url.absoluteString
+    }
+
+    public func matches(endpoint: HostEndpoint, target: TargetInfo) -> Bool {
+        matches(endpoint: endpoint) && target.id == targetID && target.name == targetName && target.alive
     }
 }
 

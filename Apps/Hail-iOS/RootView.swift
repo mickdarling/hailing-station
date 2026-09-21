@@ -142,7 +142,7 @@ struct RootView: View {
         guard let data = try? JSONEncoder().encode(endpoints) else { return }
         UserDefaults.standard.set(data, forKey: Self.savedHostsKey)
         guard let rememberedSelection,
-              !endpoints.contains(where: { $0.id == rememberedSelection.hostID }) else { return }
+              !endpoints.contains(where: rememberedSelection.matches(endpoint:)) else { return }
         Task { await forgetSelection() }
     }
 }
