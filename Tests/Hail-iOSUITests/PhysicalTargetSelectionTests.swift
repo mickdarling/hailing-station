@@ -87,6 +87,23 @@ final class PhysicalTargetSelectionTests: XCTestCase {
     }
 
     @MainActor
+    func testRestoresConfiguredPhysicalTargetAfterRelaunch() throws {
+        let app = try launchAndSelectTarget()
+        guard let targetLabel = ProcessInfo.processInfo.environment["HAIL_UI_TARGET_LABEL"] else {
+            throw XCTSkip("Set HAIL_UI_TARGET_LABEL to a connected host and target label.")
+        }
+
+        app.terminate()
+        app.launch()
+
+        XCTAssertTrue(
+            app.staticTexts[targetLabel].waitForExistence(timeout: 30),
+            "The remembered target did not restore after relaunch. Current UI: \(app.debugDescription)"
+        )
+        XCTAssertEqual(app.state, .runningForeground)
+    }
+
+    @MainActor
     private func launchAndSelectTarget() throws -> XCUIApplication {
         if ProcessInfo.processInfo.environment["SIMULATOR_UDID"] != nil {
             throw XCTSkip("The host-backed target selection test requires a physical iPhone or iPad.")

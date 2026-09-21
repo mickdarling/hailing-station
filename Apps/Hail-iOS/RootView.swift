@@ -5,13 +5,23 @@ import SwiftUI
 /// Thin root: current target, talk control, transcript, last reply. Each area fills in with its issue.
 struct RootView: View {
     private static let savedHostsKey = "hailing-station.host-endpoints.v1"
-    @State private var connections = HostConnectionStore()
+    let selectionStore: any DestinationSelectionStoring
+    @State var connections = HostConnectionStore()
     @State private var audioSession = ManagedAudioSession(backend: AVAudioSessionBackend())
     @State private var playback = ReplyPlaybackController(player: PCM16AudioPlayer())
-    @State private var selectedHostID: HostEndpoint.Identifier?
-    @State private var selectedTargetID: String?
-    @State private var didRestoreHosts = false
+    @State var selectedHostID: HostEndpoint.Identifier?
+    @State var selectedTargetID: String?
+    @State var rememberedSelection: DestinationSelection?
+    @State var didRestoreHosts = false
+    @State var didRestoreSelection = false
+    @State var isRestoringSelection = false
+    @State var selectionAuthorizedForReadyConnection = false
+    @State var selectionRevision: UInt = 0
     @Environment(\.scenePhase) private var scenePhase
+
+    init(selectionStore: any DestinationSelectionStoring = UserDefaultsDestinationSelectionStore()) {
+        self.selectionStore = selectionStore
+    }
 
     var body: some View {
         NavigationStack {
@@ -24,7 +34,13 @@ struct RootView: View {
         .onChange(of: connections.replyFrames) { _, frames in
             for frame in frames { playback.ingest(frame) }
         }
-        .task { await restoreHostsOnce() }
+        .onChange(of: connections.hosts) { _, _ in
+            Task { await reconcileRememberedSelection() }
+        }
+        .task {
+            await restoreHostsOnce()
+            await restoreSelectionOnce()
+        }
     }
 
     private var content: some View {
@@ -109,32 +125,6 @@ struct RootView: View {
         .buttonStyle(.bordered)
     }
 
-    private var availableDestinations: [Destination] {
-        connections.hosts.flatMap { host in
-            guard host.state == .ready else { return [Destination]() }
-            return host.targets.filter(\.alive).map {
-                Destination(hostID: host.id, hostName: host.endpoint.name, target: $0)
-            }
-        }
-    }
-
-    private var destination: Destination? {
-        guard let selectedHostID, let selectedTargetID else { return nil }
-        return availableDestinations.first { $0.hostID == selectedHostID && $0.target.id == selectedTargetID }
-    }
-
-    @MainActor
-    private func select(_ option: Destination) async {
-        do {
-            try await connections.selectTarget(host: option.hostID, targetID: option.target.id)
-            selectedHostID = option.hostID
-            selectedTargetID = option.target.id
-        } catch {
-            selectedHostID = nil
-            selectedTargetID = nil
-        }
-    }
-
     @MainActor
     private func restoreHostsOnce() async {
         guard !didRestoreHosts else { return }
@@ -151,16 +141,10 @@ struct RootView: View {
     private func persist(_ endpoints: [HostEndpoint]) {
         guard let data = try? JSONEncoder().encode(endpoints) else { return }
         UserDefaults.standard.set(data, forKey: Self.savedHostsKey)
+        guard let rememberedSelection,
+              !endpoints.contains(where: { $0.id == rememberedSelection.hostID }) else { return }
+        Task { await forgetSelection() }
     }
-}
-
-private struct Destination: Identifiable, Equatable {
-    let hostID: HostEndpoint.Identifier
-    let hostName: String
-    let target: TargetInfo
-
-    var id: String { "\(hostID)|\(target.id)" }
-    var label: String { "\(hostName) · \(target.name)" }
 }
 
 private struct LabsView: View {
