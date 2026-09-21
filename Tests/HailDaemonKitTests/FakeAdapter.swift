@@ -13,6 +13,7 @@ actor FakeAdapter: Adapter {
 
     private(set) var deliveries: [Delivery] = []
     private(set) var captures: [String] = []
+    private(set) var escapes: [String] = []
     private let deliverError: (any Error)?
     /// After this many successful deliveries, every further one throws `AdapterError.rebound`.
     private let failAfter: Int?
@@ -48,6 +49,14 @@ actor FakeAdapter: Adapter {
     func capture(_ target: String) async throws -> String {
         captures.append(target)
         return "tail of \(target)"
+    }
+
+    func escape(_ target: String, binding: String?) async throws {
+        guard let listed = targetsToList.first(where: { $0.name == target }) else {
+            throw AdapterError.unknownTarget(target)
+        }
+        if let binding, listed.binding != binding { throw AdapterError.rebound(target) }
+        escapes.append(target)
     }
 }
 
