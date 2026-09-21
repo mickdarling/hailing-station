@@ -21,7 +21,8 @@ extension WebSocketListener {
         guard !stopped, readyResult != nil else { throw WebSocketListenerError.stoppedBeforeReady }
         guard let encoded = try? FrameCoding.encode(frame),
               let validated = try? FrameCoding.decode(encoded),
-              validated == frame else { throw WebSocketListenerError.invalidReply }
+              validated == frame,
+              validated.source == hostName else { throw WebSocketListenerError.invalidReply }
         switch validated.payload {
         case .text(let text) where text.isFinal && text.reply != nil: break
         case .audio(let audio) where audio.reply != nil: break

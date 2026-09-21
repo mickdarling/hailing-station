@@ -61,6 +61,23 @@ import Testing
         }
         await listener.stop(reason: "test complete")
     }
+
+    @Test func publicationRejectsAnotherHostsIdentity() async throws {
+        let (host, _) = try await sessionHost()
+        let listener = try WebSocketListener(
+            bindAddress: "127.0.0.1", port: 0, host: host, hostName: "mac-main"
+        )
+        _ = try await listener.start()
+        let reply = ReplyDescriptor(id: UUID(), hostID: "ziggy", targetID: "tmux:reply")
+        let impersonating = Frame(
+            timestamp: 1, target: reply.targetID, source: reply.hostID,
+            payload: .text(TextPayload(text: "wrong host", reply: reply))
+        )
+        await #expect(throws: WebSocketListenerError.invalidReply) {
+            try await listener.publish(impersonating)
+        }
+        await listener.stop(reason: "test complete")
+    }
 }
 
 private func replyClient(port: UInt16) throws -> (URLSession, URLSessionWebSocketTask) {

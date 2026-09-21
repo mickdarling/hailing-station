@@ -35,7 +35,7 @@ public actor WebSocketListener {
     private let networkListener: NWListener
     private let host: HailHost
     private let authorizer: any HostSessionAuthorizing
-    private let hostName: String
+    let hostName: String
     private let maxConnections: Int
     private let helloTimeout: Duration
     private let log: @Sendable (WebSocketListenerEvent) -> Void
