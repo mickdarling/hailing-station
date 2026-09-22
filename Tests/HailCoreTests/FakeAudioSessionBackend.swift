@@ -18,9 +18,11 @@ actor FakeAudioSessionBackend: AudioSessionBackend {
     private var heldInputSelection: CheckedContinuation<Void, Never>?
     private var diagnosticsCallsBeforeHold: Int?
     private var heldDiagnostics: CheckedContinuation<Void, Never>?
+    let lifecycleSuspension = FakeAudioLifecycleSuspension()
     private(set) var selectedInput: AudioPort?
     private(set) var selectionCount = 0
     private(set) var activationHistory: [Bool] = []
+    private(set) var eventStreamRequestCount = 0
     private var active = false
     private let eventPair = AsyncStream<AudioSessionBackendEvent>.makeStream(bufferingPolicy: .bufferingNewest(16))
 
@@ -29,9 +31,12 @@ actor FakeAudioSessionBackend: AudioSessionBackend {
         self.selectionFails = selectionFails
     }
 
-    func configure(allowsBluetoothHFP: Bool) async throws {}
+    func configure(allowsBluetoothHFP: Bool) async throws {
+        await lifecycleSuspension.suspendConfigurationIfNeeded()
+    }
 
     func setActive(_ active: Bool) async throws {
+        if active { await lifecycleSuspension.suspendActivationIfNeeded() }
         self.active = active
         activationHistory.append(active)
     }
@@ -92,7 +97,8 @@ actor FakeAudioSessionBackend: AudioSessionBackend {
     }
 
     func eventStream() async -> AsyncStream<AudioSessionBackendEvent> {
-        eventPair.stream
+        eventStreamRequestCount += 1
+        return eventPair.stream
     }
 
     func replaceInputs(_ inputs: [AudioPort]) {
