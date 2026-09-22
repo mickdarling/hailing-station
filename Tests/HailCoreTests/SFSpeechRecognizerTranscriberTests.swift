@@ -91,6 +91,20 @@ import Testing
         await transcriber.cancel()
     }
 
+    @Test func concurrentStartDoesNotExposeAnUnreadyUtterance() async throws {
+        let backend = StubStreamingSpeechRecognitionBackend()
+        await backend.blockNextStart()
+        let transcriber = SFSpeechRecognizerTranscriber(backend: backend)
+
+        let startup = Task { try await transcriber.start() }
+        await backend.waitUntilStartIsBlocked()
+        await #expect(throws: CancellationError.self) { try await transcriber.start() }
+        await backend.resumeStart()
+
+        _ = try await startup.value
+        await transcriber.cancel()
+    }
+
     private func makeCaptureBuffer() throws -> AudioCaptureBuffer {
         let format = try #require(AVAudioFormat(standardFormatWithSampleRate: 48_000, channels: 1))
         let source = try #require(AVAudioPCMBuffer(pcmFormat: format, frameCapacity: 1))

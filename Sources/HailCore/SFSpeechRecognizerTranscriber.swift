@@ -67,8 +67,8 @@ public actor SFSpeechRecognizerTranscriber: Transcriber {
     }
 
     public func start() async throws -> UUID {
-        if let utteranceID { return utteranceID }
         guard startupGeneration == nil else { throw CancellationError() }
+        if let utteranceID { return utteranceID }
         operationGeneration &+= 1
         let generation = operationGeneration
         startupGeneration = generation
