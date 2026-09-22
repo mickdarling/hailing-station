@@ -172,20 +172,17 @@ private extension SFSpeechRecognizerTranscriber {
         )
         complete(with: latestText)
     }
-
     func requireCurrent(generation: UInt64, utteranceID: UUID) throws {
         try Task.checkCancellation()
         guard operationGeneration == generation, self.utteranceID == utteranceID else {
             throw CancellationError()
         }
     }
-
     func complete(with text: String) {
         completionContinuation?.yield(text)
         completionContinuation?.finish()
         completionContinuation = nil
     }
-
     func reset() {
         timeoutTask?.cancel()
         timeoutTask = nil
