@@ -100,6 +100,7 @@ public actor SFSpeechRecognizerTranscriber: Transcriber {
     public func stop() async -> String {
         guard let utteranceID, let completionTask else { return "" }
         if backendTransitionGeneration == operationGeneration {
+            if timeoutTask != nil { return await completionTask.value }
             await cancel()
             return ""
         }
