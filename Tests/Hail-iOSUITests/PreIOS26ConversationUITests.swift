@@ -34,7 +34,7 @@ final class PreIOS26ConversationUITests: XCTestCase {
         let start = app.buttons["station.talk"]
         XCTAssertTrue(start.waitForExistence(timeout: 10))
         start.tap()
-        app.tap()
+        triggerSequentialPermissionHandlers(in: app, talkButton: start)
         let stop = app.buttons["station.talk"]
         XCTAssertTrue(waitForLabel("Tap to finish", on: stop, timeout: 30))
         let status = app.staticTexts["transcription.status"]
@@ -53,6 +53,18 @@ final class PreIOS26ConversationUITests: XCTestCase {
 
         XCTAssertTrue(waitForLabel("Sent", on: status, timeout: 10))
         XCTAssertEqual(app.state, .runningForeground)
+    }
+
+    @MainActor
+    private func triggerSequentialPermissionHandlers(
+        in app: XCUIApplication,
+        talkButton: XCUIElement
+    ) {
+        // Microphone and speech-recognition permission arrive as separate alerts on a clean device.
+        for _ in 0..<2 {
+            app.tap()
+            if waitForLabel("Tap to finish", on: talkButton, timeout: 5) { return }
+        }
     }
 
     @MainActor
