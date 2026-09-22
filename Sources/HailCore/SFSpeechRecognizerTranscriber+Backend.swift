@@ -30,12 +30,13 @@ actor AppleStreamingSpeechRecognitionBackend: StreamingSpeechRecognitionBackend 
     ) throws {
         guard task == nil,
               let recognizer = SFSpeechRecognizer(locale: Locale(identifier: localeIdentifier)),
-              recognizer.isAvailable else {
+              recognizer.isAvailable,
+              recognizer.supportsOnDeviceRecognition else {
             throw SFSpeechRecognizerTranscriberError.unavailable
         }
         let request = SFSpeechAudioBufferRecognitionRequest()
         request.shouldReportPartialResults = true
-        request.requiresOnDeviceRecognition = recognizer.supportsOnDeviceRecognition
+        request.requiresOnDeviceRecognition = true
         self.recognizer = recognizer
         self.request = request
         task = recognizer.recognitionTask(with: request) { result, error in

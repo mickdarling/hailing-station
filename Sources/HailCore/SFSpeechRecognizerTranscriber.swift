@@ -8,14 +8,14 @@ public enum SFSpeechRecognizerTranscriberError: LocalizedError, Sendable, Equata
     case notRunning
     public var errorDescription: String? {
         switch self {
-        case .unavailable: "Speech recognition is unavailable on this device."
+        case .unavailable: "On-device speech recognition is unavailable for this language."
         case .notRunning: "The transcriber is not running."
         }
     }
 }
-/// Short-form streaming transcription for systems before SpeechAnalyzer. The backend prefers Apple's
-/// on-device recognizer when the current device and locale support it, and otherwise uses the standard
-/// Speech service. Capture remains outside this type so both speech implementations share one audio path.
+/// Short-form streaming transcription for systems before SpeechAnalyzer. The backend requires Apple's
+/// on-device recognizer for the current device and locale. Capture remains outside this type so both
+/// speech implementations share one audio path without uploading audio for recognition.
 public actor SFSpeechRecognizerTranscriber: Transcriber {
     public nonisolated let results: AsyncStream<TranscriptionResult>
     private let localeIdentifier: String
