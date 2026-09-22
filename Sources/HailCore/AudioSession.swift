@@ -16,6 +16,9 @@ public actor ManagedAudioSession: AudioSessionDiagnosticsProviding {
     var diagnosticsRevision = 0
     var wantsActive = false
     var sessionActive = false
+    var lifecycleGeneration: UInt64 = 0
+    var lifecycleTransitionLocked = false
+    var lifecycleTransitionWaiters: [CheckedContinuation<Void, Never>] = []
 
     public init(
         backend: any AudioSessionBackend,
@@ -38,40 +41,6 @@ public actor ManagedAudioSession: AudioSessionDiagnosticsProviding {
 
     public var events: AsyncStream<AudioSessionEvent> {
         eventBroadcast.stream()
-    }
-
-    public func activate() async throws {
-        wantsActive = true
-        do {
-            await loadPreferenceIfNeeded()
-            try await backend.configure(allowsBluetoothHFP: preferences.allowsBluetoothHFP)
-            try await backend.setActive(true)
-            sessionActive = true
-            try await selectPreferredInput()
-            latestDiagnostics = await backend.diagnostics(isActive: true)
-            startBackendEventsIfNeeded()
-        } catch {
-            wantsActive = false
-            sessionActive = false
-            try? await backend.setActive(false)
-            latestDiagnostics = await backend.diagnostics(isActive: false)
-            throw error
-        }
-    }
-
-    public func deactivate() async {
-        wantsActive = false
-        sessionActive = false
-        inputSelectionGeneration &+= 1
-        activeInputSelectionGeneration = nil
-        pendingPreferredInput = nil
-        routeReconciliationNeeded = false
-        do {
-            try await backend.setActive(false)
-        } catch {
-            // Deactivation is best-effort because this protocol is also used from teardown paths.
-        }
-        latestDiagnostics = await backend.diagnostics(isActive: false)
     }
 
     func handle(_ event: AudioSessionBackendEvent) async {
@@ -109,6 +78,18 @@ extension ManagedAudioSession {
         }
     }
 
+    func startBackendEventsIfNeeded() {
+        guard backendTask == nil else { return }
+        let backend = backend
+        backendTask = Task { [weak self] in
+            let stream = await backend.eventStream()
+            for await event in stream {
+                guard !Task.isCancelled else { return }
+                await self?.handle(event)
+            }
+        }
+    }
+
     @discardableResult
     func reconcileRouteWhenIdle() async -> Bool {
         var reconciled = false
@@ -129,18 +110,6 @@ extension ManagedAudioSession {
 }
 
 private extension ManagedAudioSession {
-    private func startBackendEventsIfNeeded() {
-        guard backendTask == nil else { return }
-        let backend = backend
-        backendTask = Task { [weak self] in
-            let stream = await backend.eventStream()
-            for await event in stream {
-                guard !Task.isCancelled else { return }
-                await self?.handle(event)
-            }
-        }
-    }
-
     private func handleRouteChange() async {
         if wantsActive {
             routeReconciliationNeeded = true
