@@ -1,6 +1,5 @@
 import AVFAudio
 import Speech
-@available(iOS 26.0, *)
 extension TranscriptionLabView {
     @MainActor
     func begin() async {

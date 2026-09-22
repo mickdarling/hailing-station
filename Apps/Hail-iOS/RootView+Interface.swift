@@ -42,29 +42,20 @@ extension RootView {
     @ViewBuilder
     var conversationSurface: some View {
         if let destination {
-            if #available(iOS 26.0, *) {
-                TranscriptionLabView(
-                    audioSession: audioRoutes,
-                    destinationLabel: destination.label,
-                    onFinalized: { text in
-                        try await connections.sendFinalText(
-                            text, host: destination.hostID, targetID: destination.target.id
-                        )
-                    },
-                    onEscape: {
-                        try await connections.sendEscape(
-                            host: destination.hostID, targetID: destination.target.id
-                        )
-                    }
-                )
-            } else {
-                ContentUnavailableView(
-                    "Requires iOS 26",
-                    systemImage: "waveform.badge.exclamationmark",
-                    description: Text("SpeechAnalyzer is unavailable on this device.")
-                )
-                .stationCard()
-            }
+            TranscriptionLabView(
+                audioSession: audioRoutes,
+                destinationLabel: destination.label,
+                onFinalized: { text in
+                    try await connections.sendFinalText(
+                        text, host: destination.hostID, targetID: destination.target.id
+                    )
+                },
+                onEscape: {
+                    try await connections.sendEscape(
+                        host: destination.hostID, targetID: destination.target.id
+                    )
+                }
+            )
         } else {
             ContentUnavailableView(
                 "Choose where Haley should speak",

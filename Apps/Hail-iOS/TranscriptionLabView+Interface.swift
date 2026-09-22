@@ -1,6 +1,5 @@
 import SwiftUI
 
-@available(iOS 26.0, *)
 extension TranscriptionLabView {
     @ViewBuilder
     var transcriptSurface: some View {

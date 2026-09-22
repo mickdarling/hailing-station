@@ -4,7 +4,6 @@ import Speech
 import SwiftUI
 
 /// Audio-first capture surface shared by compact and regular-width station layouts.
-@available(iOS 26.0, *)
 struct TranscriptionLabView: View {
     let audioSession: any AudioSessionDiagnosticsProviding
     let destinationLabel: String?
@@ -30,7 +29,7 @@ struct TranscriptionLabView: View {
     init(
         audioSession: any AudioSessionDiagnosticsProviding,
         capture: any AudioCapturing = AVAudioEngineCapture(),
-        transcriber: any Transcriber = SpeechAnalyzerTranscriber(),
+        transcriber: (any Transcriber)? = nil,
         destinationLabel: String? = nil,
         onFinalized: (@MainActor (String) async throws -> Void)? = nil,
         onEscape: (@MainActor () async throws -> Void)? = nil
@@ -40,7 +39,7 @@ struct TranscriptionLabView: View {
         self.onFinalized = onFinalized
         self.onEscape = onEscape
         _capture = State(initialValue: capture)
-        _transcriber = State(initialValue: transcriber)
+        _transcriber = State(initialValue: transcriber ?? Self.defaultTranscriber())
     }
 
     var body: some View {
@@ -83,5 +82,10 @@ struct TranscriptionLabView: View {
             startTask?.cancel()
             Task { await finish(force: true) }
         }
+    }
+
+    private static func defaultTranscriber() -> any Transcriber {
+        if #available(iOS 26.0, *) { return SpeechAnalyzerTranscriber() }
+        return SFSpeechRecognizerTranscriber()
     }
 }
