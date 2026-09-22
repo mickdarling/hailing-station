@@ -40,7 +40,7 @@ struct RootView: View {
                 if phase == .active {
                     await connections.sceneBecameActive()
                 } else {
-                    await audioRoutes.deactivate()
+                    await audioRoutes.sceneBecameInactive()
                 }
             }
         }

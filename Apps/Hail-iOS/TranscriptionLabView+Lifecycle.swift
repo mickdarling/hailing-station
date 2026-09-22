@@ -141,6 +141,9 @@ extension TranscriptionLabView {
 
     @MainActor
     func observeResults() async {
+        let coordinator = audioSession as? any AudioSceneCleanupCoordinating
+        coordinator?.installSceneCleanup { await finish(force: true) }
+        defer { coordinator?.removeSceneCleanup() }
         for await result in transcriber.results {
             guard result.utteranceID == activeUtteranceID else { continue }
             if result.isFinal {
