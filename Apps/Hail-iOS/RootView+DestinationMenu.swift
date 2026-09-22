@@ -16,7 +16,7 @@ extension RootView {
         .background(.quaternary, in: RoundedRectangle(cornerRadius: 16, style: .continuous))
         .accessibilityIdentifier("station.destination")
         .accessibilityLabel("Destination")
-        .accessibilityValue(destination?.label ?? "None selected")
+        .accessibilityValue(destinationAccessibilityValue)
         .accessibilityHint("Opens the Mac and target browser.")
         .popover(isPresented: $showingDestinations) {
             DestinationBrowser(
@@ -27,6 +27,14 @@ extension RootView {
             )
             .presentationCompactAdaptation(.sheet)
         }
+    }
+
+    var destinationAccessibilityValue: String {
+        guard let destination else { return "None selected" }
+        let role = destination.target.kind == "tmux"
+            ? "Terminal"
+            : "\(destination.target.kind.capitalized) target"
+        return "Mac \(destination.endpoint.name). \(role) \(destination.target.name)."
     }
 
     var accessibleDestinationLabel: some View {

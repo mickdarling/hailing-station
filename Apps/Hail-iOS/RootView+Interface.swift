@@ -39,7 +39,6 @@ extension RootView {
             .frame(maxWidth: horizontalSizeClass == .regular ? 360 : .infinity, alignment: .top)
         }
     }
-
     @ViewBuilder
     var conversationSurface: some View {
         if let destination {
@@ -114,6 +113,7 @@ extension RootView {
             Label("Mac Setup", systemImage: "network")
                 .frame(maxWidth: .infinity)
         }
+        .accessibilityIdentifier("station.mac-setup-tool")
         NavigationLink {
             AudioDiagnosticsView(model: audioRoutes)
         } label: {

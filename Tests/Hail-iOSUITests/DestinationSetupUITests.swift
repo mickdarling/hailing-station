@@ -31,7 +31,12 @@ final class DestinationSetupUITests: XCTestCase {
 
         let destination = app.buttons["station.destination"]
         XCTAssertTrue(destination.waitForExistence(timeout: 10))
-        let selected = NSPredicate(format: "value == %@", targetLabel)
+        let destinationNames = targetLabel.components(separatedBy: " · ")
+        XCTAssertEqual(destinationNames.count, 2)
+        let selected = NSPredicate(
+            format: "value CONTAINS %@ AND value CONTAINS %@",
+            destinationNames[0], destinationNames[1]
+        )
         XCTAssertEqual(
             XCTWaiter.wait(
                 for: [XCTNSPredicateExpectation(predicate: selected, object: destination)],
@@ -40,6 +45,8 @@ final class DestinationSetupUITests: XCTestCase {
             .completed
         )
         XCTAssertEqual(destination.label, "Destination")
-        XCTAssertEqual(destination.value as? String, targetLabel)
+        let accessibleValue = try XCTUnwrap(destination.value as? String)
+        XCTAssertTrue(accessibleValue.contains("Mac \(destinationNames[0])"))
+        XCTAssertTrue(accessibleValue.contains(destinationNames[1]))
     }
 }

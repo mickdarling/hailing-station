@@ -46,8 +46,9 @@ final class PhysicalTargetSelectionTests: XCTestCase {
         let app = XCUIApplication()
         app.launch()
         XCTAssertTrue(app.staticTexts["Hailing Station"].waitForExistence(timeout: 10))
-        let setup = app.buttons["station.setup-mac"].exists ? "station.setup-mac" : "Mac Setup"
-        app.buttons[setup].tap()
+        let setup = app.buttons["station.mac-setup-tool"]
+        XCTAssertTrue(setup.waitForExistence(timeout: 10))
+        setup.tap()
         XCTAssertTrue(app.navigationBars["Mac Setup"].waitForExistence(timeout: 10))
 
         let configuredHost = configuredHostCell(name: hostName, url: hostURL, in: app)
