@@ -1,9 +1,5 @@
 public extension ManagedAudioSession {
-    var availableInputs: [AudioPort] {
-        get async {
-            await backend.availableInputs().filter(isSelectable)
-        }
-    }
+    var availableInputs: [AudioPort] { get async { await backend.availableInputs().filter(isSelectable) } }
 
     var preferredInput: AudioPort? {
         get async {
@@ -14,8 +10,10 @@ public extension ManagedAudioSession {
 
     func selectInput(id: AudioPort.ID?) async throws {
         let generation = try startSelection()
+        var attemptedInput: AudioPort?
         do {
             let request = try await resolveSelection(id: id, generation: generation)
+            attemptedInput = request.port
             try await backend.selectInput(id: request.port.id)
             let diagnostics = try await verifiedDiagnostics(for: request)
             try await persistPreference(for: request)
@@ -24,11 +22,18 @@ public extension ManagedAudioSession {
             if request.preference != nil {
                 try verify(final, matches: request)
             }
+            failedInputAttempt = nil
+            inputFailureDescription = nil
             publish(final)
             try await finishSelection(generation, expectedPort: request.preference)
         } catch {
             await recoverFromFailedSelection(generation)
             try? await finishSelection(generation, expectedPort: nil)
+            if generation == inputSelectionGeneration,
+               !(error is AudioSessionLifecycleError),
+               error as? AudioInputSelectionError != .superseded {
+                await recordInputFailure(attempted: attemptedInput, error: error, generation: generation)
+            }
             throw error
         }
     }
@@ -41,11 +46,22 @@ extension ManagedAudioSession {
         try validateRouteApplication(expectedGeneration)
         let input = inputs.first { $0.id == savedPreferredInput?.id && isSelectable($0) }
             ?? preferences.resolve(from: inputs)
+        guard let input else { throw AudioInputSelectionError.noSelectableInput }
         let current = await backend.diagnostics(isActive: sessionActive).input
         try validateRouteApplication(expectedGeneration)
-        guard input?.id != current?.id else { return }
-        try await backend.selectInput(id: input?.id)
+        guard input.id != current?.id else {
+            failedInputAttempt = nil
+            inputFailureDescription = nil
+            return
+        }
+        try await backend.selectInput(id: input.id)
         try validateRouteApplication(expectedGeneration)
+        let diagnostics = await backend.diagnostics(isActive: sessionActive)
+        try validateRouteApplication(expectedGeneration)
+        guard diagnostics.input?.id == input.id else {
+            throw AudioInputSelectionError.routeMismatch(expected: input, actual: diagnostics.input) }
+        failedInputAttempt = nil
+        inputFailureDescription = nil
     }
 
     func loadPreferenceIfNeeded() async {
@@ -54,9 +70,7 @@ extension ManagedAudioSession {
         loadedPreference = true
     }
 
-    func isSelectable(_ port: AudioPort) -> Bool {
-        port.kind != .bluetoothHFP || preferences.allowsBluetoothHFP
-    }
+    func isSelectable(_ port: AudioPort) -> Bool { port.kind != .bluetoothHFP || preferences.allowsBluetoothHFP }
 }
 
 private extension ManagedAudioSession {
@@ -134,18 +148,6 @@ private extension ManagedAudioSession {
         savedPreferredInput = request.preference
     }
 
-    func repairPersistedPreference() async {
-        let previous = preferenceSaveTail
-        let store = preferenceStore
-        let preference = savedPreferredInput
-        let repair = Task {
-            await previous?.value
-            await store.save(preference)
-        }
-        preferenceSaveTail = repair
-        await repair.value
-    }
-
     func verifiedDiagnostics(for request: InputSelectionRequest) async throws -> AudioSessionDiagnostics {
         try validateSelection(request.generation)
         let diagnostics = await backend.diagnostics(isActive: true)
@@ -156,7 +158,7 @@ private extension ManagedAudioSession {
 
     func verify(_ diagnostics: AudioSessionDiagnostics, matches request: InputSelectionRequest) throws {
         guard diagnostics.input?.id == request.port.id else {
-            latestDiagnostics = diagnostics
+            recordDiagnostics(diagnostics)
             throw AudioInputSelectionError.routeMismatch(expected: request.port, actual: diagnostics.input)
         }
     }

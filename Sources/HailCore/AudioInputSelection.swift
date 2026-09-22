@@ -36,6 +36,46 @@ public struct AudioSessionDiagnostics: Sendable, Equatable {
     public static let inactive = AudioSessionDiagnostics(isActive: false, input: nil, outputs: [], sampleRate: 0)
 }
 
+public enum AudioInputSelectionResolution: String, Sendable, Equatable {
+    case inactive
+    case automatic
+    case confirmed
+    case fallback
+    case failed
+}
+
+/// The operator-facing truth about a microphone request. `preferred` is the durable choice,
+/// `attempted` is what the controller most recently asked iOS to apply, and `active` is the route
+/// iOS actually confirmed.
+public struct AudioInputSelectionState: Sendable, Equatable {
+    public let resolution: AudioInputSelectionResolution
+    public let preferred: AudioPort?
+    public let attempted: AudioPort?
+    public let active: AudioPort?
+    public let failureDescription: String?
+
+    public init(
+        resolution: AudioInputSelectionResolution,
+        preferred: AudioPort?,
+        attempted: AudioPort?,
+        active: AudioPort?,
+        failureDescription: String? = nil
+    ) {
+        self.resolution = resolution
+        self.preferred = preferred
+        self.attempted = attempted
+        self.active = active
+        self.failureDescription = failureDescription
+    }
+
+    public static let inactive = AudioInputSelectionState(
+        resolution: .inactive,
+        preferred: nil,
+        attempted: nil,
+        active: nil
+    )
+}
+
 public enum AudioSessionEvent: Sendable, Equatable {
     case routeChanged(AudioSessionDiagnostics)
     case interruptionBegan
@@ -63,6 +103,11 @@ public protocol AudioSessionDiagnosticsProviding: AudioSessionController {
     var availableInputs: [AudioPort] { get async }
     var preferredInput: AudioPort? { get async }
     func selectInput(id: AudioPort.ID?) async throws
+}
+
+public protocol AudioInputSelectionProviding: AudioSessionDiagnosticsProviding {
+    var inputSelectionState: AudioInputSelectionState { get async }
+    func retryInputSelection() async throws
 }
 
 public struct AudioInputPreferences: Sendable, Equatable {

@@ -10,6 +10,7 @@ actor FakeAudioSessionBackend: AudioSessionBackend {
 
     private var inputs: [AudioPort]
     private var selectionFails: Bool
+    private var ignoresSelections = false
     private var emitsRouteChangeOnSelection = false
     private var replacementInputsOnSelection: [AudioPort]?
     private var holdNextInputLookup = false
@@ -60,7 +61,9 @@ actor FakeAudioSessionBackend: AudioSessionBackend {
         }
         if selectionFails { throw FakeAudioError.selectionFailed }
         selectionCount += 1
-        selectedInput = inputs.first { $0.id == id }
+        if !ignoresSelections {
+            selectedInput = inputs.first { $0.id == id }
+        }
         if let replacementInputsOnSelection {
             self.replacementInputsOnSelection = nil
             inputs = replacementInputsOnSelection
@@ -109,6 +112,10 @@ actor FakeAudioSessionBackend: AudioSessionBackend {
     }
 
     func failFutureSelections() { selectionFails = true }
+
+    func allowFutureSelections() { selectionFails = false }
+
+    func ignoreFutureSelections() { ignoresSelections = true }
 
     func emitRouteChangeOnFutureSelections() { emitsRouteChangeOnSelection = true }
 

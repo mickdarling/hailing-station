@@ -27,7 +27,7 @@ public extension ManagedAudioSession {
             try validateLifecycleIntent(generation, wantsActive: true)
             let diagnostics = await backend.diagnostics(isActive: true)
             try validateLifecycleIntent(generation, wantsActive: true)
-            latestDiagnostics = diagnostics
+            recordDiagnostics(diagnostics)
             startBackendEventsIfNeeded()
         } catch {
             await recoverFromActivationFailure(generation: generation)
@@ -45,11 +45,86 @@ public extension ManagedAudioSession {
         try? await backend.setActive(false)
         let diagnostics = await backend.diagnostics(isActive: false)
         guard generation == lifecycleGeneration, !wantsActive else { return }
-        latestDiagnostics = diagnostics
+        recordDiagnostics(diagnostics)
+    }
+
+    func retryInputSelection() async throws {
+        guard sessionActive else { throw AudioInputSelectionError.sessionInactive }
+        inputSelectionGeneration &+= 1
+        let generation = inputSelectionGeneration
+        let lifecycle = lifecycleGeneration
+        activeInputSelectionGeneration = generation
+        defer {
+            if activeInputSelectionGeneration == generation {
+                activeInputSelectionGeneration = nil
+            }
+        }
+        await loadPreferenceIfNeeded()
+        let inputs = await backend.availableInputs().filter(isSelectable)
+        try validateRetry(generation, lifecycle: lifecycle)
+        guard let input = inputs.first(where: { $0.id == savedPreferredInput?.id })
+            ?? preferences.resolve(from: inputs) else {
+            throw AudioInputSelectionError.noSelectableInput
+        }
+        do {
+            try await backend.selectInput(id: input.id)
+            try validateRetry(generation, lifecycle: lifecycle)
+            let diagnostics = await backend.diagnostics(isActive: true)
+            try validateRetry(generation, lifecycle: lifecycle)
+            guard diagnostics.input?.id == input.id else {
+                throw AudioInputSelectionError.routeMismatch(expected: input, actual: diagnostics.input)
+            }
+            failedInputAttempt = nil
+            inputFailureDescription = nil
+            publish(diagnostics)
+        } catch {
+            if error as? AudioInputSelectionError == .superseded { throw error }
+            await recordInputFailure(attempted: input, error: error, generation: generation)
+            throw error
+        }
+    }
+}
+
+extension ManagedAudioSession {
+    func recordInputFailure(attempted: AudioPort?, error: any Error, generation: Int) async {
+        let lifecycle = lifecycleGeneration
+        let revision = diagnosticsRevision
+        let snapshot = await backend.diagnostics(isActive: sessionActive)
+        guard generation == inputSelectionGeneration,
+              lifecycle == lifecycleGeneration,
+              wantsActive,
+              sessionActive else { return }
+        let diagnostics = revision == diagnosticsRevision ? snapshot : latestDiagnostics
+        failedInputAttempt = attempted
+        inputFailureDescription = error.localizedDescription
+        diagnosticsRevision &+= 1
+        recordDiagnostics(diagnostics)
+        eventBroadcast.yield(.routeChanged(diagnostics))
+    }
+
+    func repairPersistedPreference() async {
+        let previous = preferenceSaveTail
+        let store = preferenceStore
+        let preference = savedPreferredInput
+        let repair = Task {
+            await previous?.value
+            await store.save(preference)
+        }
+        preferenceSaveTail = repair
+        await repair.value
     }
 }
 
 private extension ManagedAudioSession {
+    func validateRetry(_ generation: Int, lifecycle: UInt64) throws {
+        guard generation == inputSelectionGeneration,
+              lifecycle == lifecycleGeneration,
+              wantsActive,
+              sessionActive else {
+            throw AudioInputSelectionError.superseded
+        }
+    }
+
     func beginLifecycleIntent(wantsActive: Bool) -> UInt64 {
         lifecycleGeneration &+= 1
         self.wantsActive = wantsActive
@@ -79,7 +154,7 @@ private extension ManagedAudioSession {
         guard !wantsActive else { return }
         sessionActive = false
         try? await backend.setActive(false)
-        latestDiagnostics = await backend.diagnostics(isActive: false)
+        recordDiagnostics(await backend.diagnostics(isActive: false))
     }
 
     func acquireLifecycleTransition() async {
