@@ -92,8 +92,10 @@ resolve_team_id() {
 }
 
 ensure_clean_checkout() {
-  git diff --quiet || fail "tracked working-tree changes exist; archive a reviewed commit"
-  git diff --cached --quiet || fail "staged changes exist; archive a reviewed commit"
+  local checkout_status
+  checkout_status="$(git status --porcelain --untracked-files=all)"
+  [[ -z "$checkout_status" ]] || \
+    fail "tracked or untracked checkout changes exist; archive a reviewed commit"
 }
 
 run_verification() {
