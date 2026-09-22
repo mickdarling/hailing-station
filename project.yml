@@ -38,6 +38,7 @@ targets:
       properties:
         CFBundleDisplayName: Hailing Station
         CFBundleIconName: AppIcon
+        ITSAppUsesNonExemptEncryption: false
         CFBundleShortVersionString: $(MARKETING_VERSION)
         CFBundleVersion: $(CURRENT_PROJECT_VERSION)
         UILaunchScreen: {}
