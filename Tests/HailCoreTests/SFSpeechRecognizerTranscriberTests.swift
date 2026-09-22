@@ -140,6 +140,26 @@ import Testing
         _ = try await startup.value
         await transcriber.cancel()
     }
+
+    @Test func queuedBufferCannotCrossIntoTheNextUtterance() async throws {
+        let backend = StubStreamingSpeechRecognitionBackend()
+        let transcriber = SFSpeechRecognizerTranscriber(backend: backend)
+        let buffer = try makeCaptureBuffer()
+        _ = try await transcriber.start()
+        await backend.blockNextAppend()
+
+        let consuming = Task { try await transcriber.consume(buffer) }
+        await backend.waitUntilAppendIsBlocked()
+        await transcriber.cancel()
+        _ = try await transcriber.start()
+        await backend.resumeAppend()
+
+        await #expect(throws: SFSpeechRecognizerTranscriberError.notRunning) {
+            try await consuming.value
+        }
+        #expect(await backend.appendCount == 0)
+        await transcriber.cancel()
+    }
 }
 
 extension SFSpeechRecognizerTranscriberTests {

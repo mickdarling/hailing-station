@@ -22,12 +22,13 @@ enum StreamingSpeechRecognitionEvent: Sendable, Equatable {
 
 protocol StreamingSpeechRecognitionBackend: Sendable {
     func start(
+        utteranceID: UUID,
         localeIdentifier: String,
         handler: @escaping @Sendable (StreamingSpeechRecognitionEvent) -> Void
     ) async throws
-    func append(_ buffer: AudioCaptureBuffer) async throws
-    func endAudio() async
-    func cancel() async
+    func append(_ buffer: AudioCaptureBuffer, utteranceID: UUID) async throws
+    func endAudio(utteranceID: UUID) async
+    func cancel(utteranceID: UUID) async
 }
 
 #if canImport(Speech)
@@ -35,8 +36,10 @@ actor AppleStreamingSpeechRecognitionBackend: StreamingSpeechRecognitionBackend 
     private var recognizer: SFSpeechRecognizer?
     private var request: SFSpeechAudioBufferRecognitionRequest?
     private var task: SFSpeechRecognitionTask?
+    private var activeUtteranceID: UUID?
 
     func start(
+        utteranceID: UUID,
         localeIdentifier: String,
         handler: @escaping @Sendable (StreamingSpeechRecognitionEvent) -> Void
     ) throws {
@@ -49,6 +52,7 @@ actor AppleStreamingSpeechRecognitionBackend: StreamingSpeechRecognitionBackend 
         let request = SFSpeechAudioBufferRecognitionRequest()
         request.shouldReportPartialResults = true
         request.requiresOnDeviceRecognition = true
+        activeUtteranceID = utteranceID
         self.recognizer = recognizer
         self.request = request
         task = recognizer.recognitionTask(with: request) { result, error in
@@ -62,20 +66,25 @@ actor AppleStreamingSpeechRecognitionBackend: StreamingSpeechRecognitionBackend 
         }
     }
 
-    func append(_ buffer: AudioCaptureBuffer) throws {
-        guard let request else { throw SFSpeechRecognizerTranscriberError.notRunning }
+    func append(_ buffer: AudioCaptureBuffer, utteranceID: UUID) throws {
+        guard activeUtteranceID == utteranceID, let request else {
+            throw SFSpeechRecognizerTranscriberError.notRunning
+        }
         request.append(buffer.pcmBuffer)
     }
 
-    func endAudio() {
+    func endAudio(utteranceID: UUID) {
+        guard activeUtteranceID == utteranceID else { return }
         request?.endAudio()
     }
 
-    func cancel() {
+    func cancel(utteranceID: UUID) {
+        guard activeUtteranceID == utteranceID else { return }
         task?.cancel()
         task = nil
         request = nil
         recognizer = nil
+        activeUtteranceID = nil
     }
 }
 #endif

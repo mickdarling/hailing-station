@@ -64,17 +64,16 @@ public actor SFSpeechRecognizerTranscriber: Transcriber {
             }
         }
         completionContinuation = completion.continuation
-        completionTask = Task {
-            for await text in completion.stream { return text }
-            return ""
-        }
+        completionTask = Task { await completion.stream.first(where: { _ in true }) ?? "" }
         latestText = ""
         self.utteranceID = utteranceID
         do {
-            try await backend.start(localeIdentifier: localeIdentifier) { events.continuation.yield($0) }
+            try await backend.start(utteranceID: utteranceID, localeIdentifier: localeIdentifier) {
+                events.continuation.yield($0)
+            }
             try requireCurrent(generation: generation, utteranceID: utteranceID)
         } catch {
-            await backend.cancel()
+            await backend.cancel(utteranceID: utteranceID)
             if backendTransitionGeneration == generation { backendTransitionGeneration = nil }
             if operationGeneration == generation, self.utteranceID == utteranceID {
                 operationGeneration &+= 1
@@ -87,8 +86,8 @@ public actor SFSpeechRecognizerTranscriber: Transcriber {
         return utteranceID
     }
     public func consume(_ buffer: AudioCaptureBuffer) async throws {
-        guard utteranceID != nil else { throw SFSpeechRecognizerTranscriberError.notRunning }
-        try await backend.append(buffer)
+        guard let utteranceID else { throw SFSpeechRecognizerTranscriberError.notRunning }
+        try await backend.append(buffer, utteranceID: utteranceID)
     }
     public func stop() async -> String {
         if let stopCleanupTask { return await stopCleanupTask.value }
@@ -110,21 +109,21 @@ public actor SFSpeechRecognizerTranscriber: Transcriber {
             guard !Task.isCancelled else { return }
             await self?.finishAfterTimeout(generation: generation, utteranceID: utteranceID)
         }
-        await backend.endAudio()
+        await backend.endAudio(utteranceID: utteranceID)
         let text = await completionTask.value
         timeoutTask?.cancel()
         timeoutTask = nil
         guard operationGeneration == generation else { return await cleanupTask.value }
         operationGeneration &+= 1
         reset()
-        await backend.cancel()
+        await backend.cancel(utteranceID: utteranceID)
         guard operationGeneration == generation &+ 1 else { return await cleanupTask.value }
         if backendTransitionGeneration == generation { backendTransitionGeneration = nil }
         if stopCleanupGeneration == generation { completeStopCleanup(with: text) }
         return text
     }
     public func cancel() async {
-        let stoppingGeneration = stopCleanupGeneration
+        let (stoppingGeneration, canceledUtteranceID) = (stopCleanupGeneration, utteranceID)
         operationGeneration &+= 1
         let cancellationGeneration = operationGeneration
         if backendTransitionGeneration == nil { backendTransitionGeneration = cancellationGeneration }
@@ -132,7 +131,7 @@ public actor SFSpeechRecognizerTranscriber: Transcriber {
         timeoutTask = nil
         complete(with: "")
         reset()
-        await backend.cancel()
+        if let canceledUtteranceID { await backend.cancel(utteranceID: canceledUtteranceID) }
         if [cancellationGeneration, stoppingGeneration].contains(backendTransitionGeneration) {
             backendTransitionGeneration = nil
         }
