@@ -1,7 +1,7 @@
 import HailCore
 import SwiftUI
 
-/// Temporary diagnostics surface for proving multiple independent Mac connections before terminal styling lands.
+/// Manual Mac setup and connection status for the station.
 struct ConnectivityLabView: View {
     @Bindable var store: HostConnectionStore
     let endpointsChanged: @MainActor ([HostEndpoint]) -> Void
@@ -12,6 +12,12 @@ struct ConnectivityLabView: View {
 
     var body: some View {
         List {
+            Section("How it works") {
+                Label("1. Add this Mac's Hailing Station WebSocket address.", systemImage: "1.circle")
+                Label("2. Connect and wait for Ready.", systemImage: "2.circle")
+                Label("3. Return to the station and choose a target.", systemImage: "3.circle")
+            }
+
             Section("Add or edit a Mac") {
                 TextField("Name", text: $name)
                 TextField("WebSocket URL", text: $url)
@@ -19,13 +25,13 @@ struct ConnectivityLabView: View {
                     .autocorrectionDisabled()
                     .keyboardType(.URL)
                 if !validation.isEmpty { Text(validation).foregroundStyle(.red) }
-                Button(editingID == nil ? "Add host" : "Save host") { Task { await save() } }
+                Button(editingID == nil ? "Add Mac" : "Save Mac") { Task { await save() } }
                     .disabled(name.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty)
             }
 
-            Section("Hosts") {
+            Section("Configured Macs") {
                 if store.hosts.isEmpty {
-                    Text("Add a Mac URL to begin the connection probe.").foregroundStyle(.secondary)
+                    Text("Add a Mac address to begin.").foregroundStyle(.secondary)
                 }
                 ForEach(store.hosts) { host in
                     hostRow(host)
@@ -39,7 +45,7 @@ struct ConnectivityLabView: View {
                 }
             }
         }
-        .navigationTitle("Connectivity Lab")
+        .navigationTitle("Mac Setup")
     }
 
     private func hostRow(_ host: HostConnectionSnapshot) -> some View {

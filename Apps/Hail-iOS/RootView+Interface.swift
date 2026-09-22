@@ -3,7 +3,8 @@ import SwiftUI
 
 extension RootView {
     var content: some View {
-        ScrollView {
+        resetStationStateForUITestingIfRequested()
+        return ScrollView {
             VStack(spacing: 18) {
                 StationHeader(connection: connectionPresentation) {
                     destinationMenu
@@ -38,7 +39,6 @@ extension RootView {
             .frame(maxWidth: horizontalSizeClass == .regular ? 360 : .infinity, alignment: .top)
         }
     }
-
     @ViewBuilder
     var conversationSurface: some View {
         if let destination {
@@ -57,11 +57,36 @@ extension RootView {
                 }
             )
         } else {
-            ContentUnavailableView(
-                "Choose where Haley should speak",
-                systemImage: "dot.radiowaves.left.and.right",
-                description: Text("Connect to a Mac, then choose one of its allowed targets above.")
-            )
+            VStack(spacing: 16) {
+                Image(systemName: hasReadyHost ? "scope" : "macbook.and.iphone")
+                    .font(.system(size: 42))
+                    .foregroundStyle(.secondary)
+                Text(hasReadyHost ? "Choose a destination" : "Connect Haley to a Mac")
+                    .font(.title3.bold())
+                Text(hasReadyHost
+                    ? "Your Mac is connected. Choose the allowed target Haley should use."
+                    : "Add this Mac, connect it, then choose the target Haley should use.")
+                    .multilineTextAlignment(.center)
+                    .foregroundStyle(.secondary)
+                if hasReadyHost {
+                    Button {
+                        showingDestinations = true
+                    } label: {
+                        Label("Choose a destination", systemImage: "scope")
+                    }
+                    .buttonStyle(.borderedProminent)
+                    .accessibilityIdentifier("station.choose-destination")
+                } else {
+                    NavigationLink {
+                        ConnectivityLabView(store: connections, endpointsChanged: persist)
+                    } label: {
+                        Label("Set up a Mac", systemImage: "plus.circle.fill")
+                    }
+                    .buttonStyle(.borderedProminent)
+                    .accessibilityIdentifier("station.setup-mac")
+                }
+            }
+            .padding(24)
             .stationCard(minHeight: horizontalSizeClass == .regular ? 420 : 260)
         }
     }
@@ -85,9 +110,10 @@ extension RootView {
         NavigationLink {
             ConnectivityLabView(store: connections, endpointsChanged: persist)
         } label: {
-            Label("Connections", systemImage: "network")
+            Label("Mac Setup", systemImage: "network")
                 .frame(maxWidth: .infinity)
         }
+        .accessibilityIdentifier("station.mac-setup-tool")
         NavigationLink {
             AudioDiagnosticsView(model: audioRoutes)
         } label: {
@@ -145,6 +171,25 @@ extension RootView {
             color: .secondary
         )
     }
+
+    var hasReadyHost: Bool {
+        connections.hosts.contains(where: { $0.state == .ready })
+    }
+
+    /// Keeps the empty-state UI test deterministic without changing normal launch persistence.
+    @MainActor
+    private func resetStationStateForUITestingIfRequested() {
+        guard ProcessInfo.processInfo.arguments.contains("-reset-station-state"),
+              !StationUITestReset.didRun else { return }
+        StationUITestReset.didRun = true
+        UserDefaults.standard.removeObject(forKey: "hailing-station.host-endpoints.v1")
+        UserDefaults.standard.removeObject(forKey: "hailing-station.destination-selection.v1")
+    }
+}
+
+@MainActor
+private enum StationUITestReset {
+    static var didRun = false
 }
 
 private extension View {

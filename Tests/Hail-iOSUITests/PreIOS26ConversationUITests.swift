@@ -71,7 +71,7 @@ final class PreIOS26ConversationUITests: XCTestCase {
     private func assertDestination(_ label: String, in app: XCUIApplication) {
         let destination = app.buttons["station.destination"]
         XCTAssertTrue(destination.waitForExistence(timeout: 10))
-        let selected = NSPredicate(format: "value == %@", label)
+        let selected = destinationValuePredicate(for: label)
         XCTAssertEqual(
             XCTWaiter.wait(
                 for: [XCTNSPredicateExpectation(predicate: selected, object: destination)],
