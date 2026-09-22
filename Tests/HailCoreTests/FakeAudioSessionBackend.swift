@@ -10,10 +10,13 @@ actor FakeAudioSessionBackend: AudioSessionBackend {
 
     private var inputs: [AudioPort]
     private var selectionFails: Bool
+    private var ignoresSelections = false
     private var emitsRouteChangeOnSelection = false
     private var replacementInputsOnSelection: [AudioPort]?
+    private var failSelectionsAfterReplacement = false
     private var holdNextInputLookup = false
     private var heldInputLookup: CheckedContinuation<Void, Never>?
+    private var replacementAfterInputLookups: (remaining: Int, inputs: [AudioPort])?
     private var holdNextInputSelection = false
     private var heldInputSelection: CheckedContinuation<Void, Never>?
     private var diagnosticsCallsBeforeHold: Int?
@@ -48,6 +51,14 @@ actor FakeAudioSessionBackend: AudioSessionBackend {
                 heldInputLookup = continuation
             }
         }
+        if let replacement = replacementAfterInputLookups {
+            if replacement.remaining == 0 {
+                inputs = replacement.inputs
+                replacementAfterInputLookups = nil
+            } else {
+                replacementAfterInputLookups = (replacement.remaining - 1, replacement.inputs)
+            }
+        }
         return inputs
     }
 
@@ -60,7 +71,9 @@ actor FakeAudioSessionBackend: AudioSessionBackend {
         }
         if selectionFails { throw FakeAudioError.selectionFailed }
         selectionCount += 1
-        selectedInput = inputs.first { $0.id == id }
+        if !ignoresSelections {
+            selectedInput = inputs.first { $0.id == id }
+        }
         if let replacementInputsOnSelection {
             self.replacementInputsOnSelection = nil
             inputs = replacementInputsOnSelection
@@ -69,6 +82,10 @@ actor FakeAudioSessionBackend: AudioSessionBackend {
             }
             eventPair.continuation.yield(.routeChanged)
             await Task.yield()
+            if failSelectionsAfterReplacement {
+                failSelectionsAfterReplacement = false
+                selectionFails = true
+            }
         }
         if emitsRouteChangeOnSelection {
             eventPair.continuation.yield(.routeChanged)
@@ -100,23 +117,30 @@ actor FakeAudioSessionBackend: AudioSessionBackend {
         eventStreamRequestCount += 1
         return eventPair.stream
     }
+}
 
+extension FakeAudioSessionBackend {
     func replaceInputs(_ inputs: [AudioPort]) {
         self.inputs = inputs
         if let selectedInput, !inputs.contains(selectedInput) {
             self.selectedInput = nil
         }
     }
-
     func failFutureSelections() { selectionFails = true }
-
+    func allowFutureSelections() { selectionFails = false }
+    func ignoreFutureSelections() { ignoresSelections = true }
     func emitRouteChangeOnFutureSelections() { emitsRouteChangeOnSelection = true }
-
     func replaceInputsDuringNextSelection(with inputs: [AudioPort]) {
         replacementInputsOnSelection = inputs
     }
-
+    func failSelectionsAfterNextInputReplacement() {
+        failSelectionsAfterReplacement = true
+    }
     func holdNextAvailableInputsCall() { holdNextInputLookup = true }
+
+    func replaceInputs(_ inputs: [AudioPort], afterAvailableInputCalls calls: Int) {
+        replacementAfterInputLookups = (calls, inputs)
+    }
 
     func waitUntilInputLookupIsHeld() async {
         while heldInputLookup == nil {
