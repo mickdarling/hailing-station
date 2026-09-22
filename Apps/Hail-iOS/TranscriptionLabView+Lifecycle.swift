@@ -78,6 +78,24 @@ extension TranscriptionLabView {
     }
 
     @MainActor
+    func interruptTarget(using action: @MainActor () async throws -> Void) async {
+        let pendingStart = startTask
+        pendingStart?.cancel()
+        await pendingStart?.value
+        if isRecording || bufferTask != nil {
+            _ = await cleanUp()
+        }
+        finalText = ""
+        volatileText = ""
+        do {
+            try await action()
+            status = "Escape sent"
+        } catch {
+            status = "Escape failed: \(error.localizedDescription)"
+        }
+    }
+
+    @MainActor
     private func fail(_ message: String) async {
         _ = await cleanUp(waitForBuffer: false)
         status = message
