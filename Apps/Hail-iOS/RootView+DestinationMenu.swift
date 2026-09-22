@@ -17,7 +17,7 @@ extension RootView {
         .accessibilityIdentifier("station.destination")
         .accessibilityLabel("Destination")
         .accessibilityValue(destination?.label ?? "None selected")
-        .accessibilityHint("Opens the Mac and terminal session browser.")
+        .accessibilityHint("Opens the Mac and target browser.")
         .popover(isPresented: $showingDestinations) {
             DestinationBrowser(
                 hosts: connections.hosts,
