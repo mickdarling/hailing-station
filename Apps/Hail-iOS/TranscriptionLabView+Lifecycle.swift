@@ -1,6 +1,5 @@
 import AVFAudio
 import Speech
-
 @available(iOS 26.0, *)
 extension TranscriptionLabView {
     @MainActor
@@ -49,12 +48,17 @@ extension TranscriptionLabView {
 
     @MainActor
     func finish(force: Bool = false) async {
+        if force, isInterrupting || isFinalizing {
+            await audioSession.deactivate()
+            return
+        }
         guard !isInterrupting, !isFinalizing, force || isRecording || bufferTask != nil else { return }
         isFinalizing = true
         defer { isFinalizing = false }
         status = "Finalizing…"
         let finalized = await cleanUp()
         guard !force else {
+            await audioSession.deactivate()
             status = "Ready"
             return
         }
@@ -103,7 +107,6 @@ extension TranscriptionLabView {
         }
         if discardedUtterance {
             await transcriber.cancel()
-            await audioSession.deactivate()
         }
         await pendingStart?.value
     }
@@ -132,13 +135,15 @@ extension TranscriptionLabView {
         if waitForBuffer { await task?.value }
         let finalized = await transcriber.stop()
         activeUtteranceID = nil
-        await audioSession.deactivate()
         isRecording = false
         return finalized
     }
 
     @MainActor
     func observeResults() async {
+        let coordinator = audioSession as? any AudioSceneCleanupCoordinating
+        coordinator?.installSceneCleanup { await finish(force: true) }
+        defer { coordinator?.removeSceneCleanup() }
         for await result in transcriber.results {
             guard result.utteranceID == activeUtteranceID else { continue }
             if result.isFinal {
@@ -149,7 +154,6 @@ extension TranscriptionLabView {
             }
         }
     }
-
     @MainActor
     private func discardCapture() async {
         capture.stop()
@@ -157,7 +161,6 @@ extension TranscriptionLabView {
         bufferTask = nil
         activeUtteranceID = nil
         await transcriber.cancel()
-        await audioSession.deactivate()
         isRecording = false
     }
 

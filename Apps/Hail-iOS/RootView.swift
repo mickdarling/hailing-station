@@ -36,8 +36,13 @@ struct RootView: View {
             content
         }
         .onChange(of: scenePhase) { _, phase in
-            guard phase == .active else { return }
-            Task { await connections.sceneBecameActive() }
+            Task {
+                if phase == .active {
+                    await connections.sceneBecameActive()
+                } else {
+                    await audioRoutes.sceneBecameInactive()
+                }
+            }
         }
         .onChange(of: connections.replyFrames) { _, frames in
             for frame in frames { playback.ingest(frame) }

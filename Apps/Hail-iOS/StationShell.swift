@@ -65,8 +65,17 @@ struct AudioRouteSummaryView: View {
                 }
                 Text(model.status)
                     .font(.caption)
-                    .foregroundStyle(.secondary)
+                    .foregroundStyle(model.hasInputFailure ? Color.red : Color.secondary)
                     .lineLimit(2)
+                if model.hasInputFailure {
+                    Button {
+                        Task { await model.retry() }
+                    } label: {
+                        Label("Retry microphone", systemImage: "arrow.clockwise")
+                    }
+                    .buttonStyle(.borderedProminent)
+                    .accessibilityHint("Retries the failed microphone route without changing your saved preference.")
+                }
             }
         } label: {
             Label("Audio route", systemImage: "waveform.circle")
@@ -78,46 +87,42 @@ struct AudioRouteSummaryView: View {
     @ViewBuilder
     private var routeControls: some View {
         Menu {
-            if model.inputs.isEmpty {
-                Text("No microphones available")
-            } else {
-                Button {
-                    Task { await model.select(nil) }
-                } label: {
-                    if model.preferredInput == nil {
-                        Label("Automatic", systemImage: "checkmark")
-                    } else {
-                        Text("Automatic")
-                    }
+            Button {
+                Task { await model.select(nil) }
+            } label: {
+                if model.preferredInput == nil {
+                    Label("Automatic", systemImage: "checkmark")
+                } else {
+                    Text("Automatic")
                 }
-                ForEach(model.inputs) { input in
-                    Button {
-                        Task { await model.select(input) }
-                    } label: {
-                        if input.id == model.preferredInput?.id {
-                            Label(input.name, systemImage: "checkmark")
-                        } else {
-                            Text(input.name)
-                        }
+            }
+            ForEach(model.inputs) { input in
+                Button {
+                    Task { await model.select(input) }
+                } label: {
+                    if input.id == model.preferredInput?.id {
+                        Label(input.name, systemImage: "checkmark")
+                    } else {
+                        Text(input.name)
                     }
                 }
             }
+            if model.inputs.isEmpty { Text("Activate audio to discover microphones") }
         } label: {
             routeTile(title: "Microphone", value: model.inputName, systemImage: "mic")
         }
-        .disabled(!model.diagnostics.isActive || model.inputs.isEmpty)
+        .accessibilityIdentifier("station.microphone")
         .accessibilityLabel(model.inputAccessibilityLabel)
         .accessibilityHint(
             model.diagnostics.isActive
                 ? "Opens the microphone list."
-                : "Microphone selection becomes available while audio is active."
+                : "Opens the microphone list and activates audio when you choose one."
         )
 
-        HStack(spacing: 8) {
+        AudioOutputRouteControl(outputName: model.outputName) {
             routeTile(title: "Output", value: model.outputName, systemImage: "speaker.wave.2")
-            AudioOutputRoutePicker()
-                .frame(width: 44, height: 44)
         }
+        .accessibilityIdentifier("station.output")
     }
 
     private func routeTile(title: String, value: String, systemImage: String) -> some View {
@@ -139,5 +144,22 @@ struct AudioRouteSummaryView: View {
         .padding(.horizontal, 12)
         .padding(.vertical, 8)
         .background(.quaternary, in: RoundedRectangle(cornerRadius: 14, style: .continuous))
+    }
+}
+
+struct AudioOutputRouteControl<Label: View>: View {
+    let outputName: String
+    @ViewBuilder let label: Label
+
+    var body: some View {
+        ZStack {
+            label.allowsHitTesting(false)
+            AudioOutputRoutePicker()
+                .frame(maxWidth: .infinity, minHeight: 56)
+        }
+        .contentShape(Rectangle())
+        .accessibilityElement(children: .contain)
+        .accessibilityLabel("Output, \(outputName). Choose audio output")
+        .accessibilityHint("Opens the system audio output list.")
     }
 }
