@@ -140,7 +140,9 @@ import Testing
         _ = try await startup.value
         await transcriber.cancel()
     }
+}
 
+extension SFSpeechRecognizerTranscriberTests {
     @Test func finalizationTimeoutPublishesTheReturnedFinalText() async throws {
         let backend = StubStreamingSpeechRecognitionBackend()
         let transcriber = SFSpeechRecognizerTranscriber(
@@ -158,6 +160,12 @@ import Testing
         #expect(final == TranscriptionResult(
             utteranceID: utteranceID, text: "timed out final", isFinal: true
         ))
+
+        let lateResult = Task { await iterator.next() }
+        await backend.emit(.result(text: "late recognizer final", isFinal: true))
+        await Task.yield()
+        lateResult.cancel()
+        #expect(await lateResult.value == nil)
     }
 
     @Test func startWaitsForStopCleanupToFinish() async throws {

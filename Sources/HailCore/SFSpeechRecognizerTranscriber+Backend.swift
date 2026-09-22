@@ -1,7 +1,19 @@
-import Foundation
+public import Foundation
 #if canImport(Speech)
 @preconcurrency import Speech
 #endif
+
+public enum SFSpeechRecognizerTranscriberError: LocalizedError, Sendable, Equatable {
+    case unavailable
+    case notRunning
+
+    public var errorDescription: String? {
+        switch self {
+        case .unavailable: "On-device speech recognition is unavailable for this language."
+        case .notRunning: "The transcriber is not running."
+        }
+    }
+}
 
 enum StreamingSpeechRecognitionEvent: Sendable, Equatable {
     case result(text: String, isFinal: Bool)

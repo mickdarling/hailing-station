@@ -3,16 +3,6 @@ public import Foundation
 #if canImport(Speech)
 @preconcurrency import Speech
 #endif
-public enum SFSpeechRecognizerTranscriberError: LocalizedError, Sendable, Equatable {
-    case unavailable
-    case notRunning
-    public var errorDescription: String? {
-        switch self {
-        case .unavailable: "On-device speech recognition is unavailable for this language."
-        case .notRunning: "The transcriber is not running."
-        }
-    }
-}
 /// Short-form streaming transcription for systems before SpeechAnalyzer. The backend requires Apple's
 /// on-device recognizer for the current device and locale. Capture remains outside this type so both
 /// speech implementations share one audio path without uploading audio for recognition.
@@ -29,6 +19,7 @@ public actor SFSpeechRecognizerTranscriber: Transcriber {
     private var timeoutTask: Task<Void, Never>?
     private var utteranceID: UUID?
     private var backendTransitionGeneration: UInt64?
+    private var didFinalize = false
     private var latestText = ""
     private var operationGeneration: UInt64 = 0
     public init(localeIdentifier: String = "en-US") {
@@ -149,11 +140,13 @@ private extension SFSpeechRecognizerTranscriber {
         generation: UInt64,
         utteranceID: UUID
     ) {
-        guard operationGeneration == generation, self.utteranceID == utteranceID else { return }
+        guard operationGeneration == generation, self.utteranceID == utteranceID,
+              !didFinalize else { return }
         switch event {
         case .result(let text, let isFinal):
             let trimmed = text.trimmingCharacters(in: .whitespacesAndNewlines)
             if isFinal || !trimmed.isEmpty { latestText = trimmed }
+            if isFinal { didFinalize = true }
             resultContinuation.yield(
                 TranscriptionResult(utteranceID: utteranceID, text: trimmed, isFinal: isFinal)
             )
@@ -167,6 +160,8 @@ private extension SFSpeechRecognizerTranscriber {
         publishFinal(utteranceID: utteranceID)
     }
     func publishFinal(utteranceID: UUID) {
+        guard !didFinalize else { return }
+        didFinalize = true
         resultContinuation.yield(
             TranscriptionResult(utteranceID: utteranceID, text: latestText, isFinal: true)
         )
@@ -195,6 +190,7 @@ private extension SFSpeechRecognizerTranscriber {
         completionContinuation?.finish()
         completionContinuation = nil
         utteranceID = nil
+        didFinalize = false
         latestText = ""
     }
 }
