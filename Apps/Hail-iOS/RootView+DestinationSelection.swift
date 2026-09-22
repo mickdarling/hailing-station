@@ -13,9 +13,11 @@ extension RootView {
 
     var destination: Destination? {
         guard selectionAuthorizedForReadyConnection,
+              let authorizedConnectionGeneration,
               let selectedHostID, let selectedTargetID, let rememberedSelection else { return nil }
         return availableDestinations.first {
             $0.hostID == selectedHostID && $0.target.id == selectedTargetID
+                && connections.snapshots[$0.hostID]?.connectionGeneration == authorizedConnectionGeneration
                 && rememberedSelection.matches(endpoint: $0.endpoint, target: $0.target)
         }
     }
@@ -24,9 +26,15 @@ extension RootView {
     func select(_ option: Destination) async {
         selectionRevision &+= 1
         let revision = selectionRevision
+        guard let connectionGeneration = connections.snapshots[option.hostID]?.connectionGeneration else {
+            return
+        }
         do {
             try await connections.selectTarget(host: option.hostID, targetID: option.target.id)
             guard selectionRevision == revision else { return }
+            guard let current = connections.snapshots[option.hostID],
+                  current.state == .ready,
+                  current.connectionGeneration == connectionGeneration else { return }
             selectedHostID = option.hostID
             selectedTargetID = option.target.id
             let selection = DestinationSelection(
@@ -37,6 +45,7 @@ extension RootView {
             )
             rememberedSelection = selection
             selectionAuthorizedForReadyConnection = true
+            authorizedConnectionGeneration = connectionGeneration
             await selectionStore.save(selection)
         } catch {
             guard selectionRevision == revision else { return }
@@ -63,6 +72,7 @@ extension RootView {
         }
         guard host.state == .ready else {
             selectionAuthorizedForReadyConnection = false
+            authorizedConnectionGeneration = nil
             return
         }
         guard host.receivedTargetList else { return }
@@ -72,7 +82,10 @@ extension RootView {
             await forgetSelection()
             return
         }
-        guard !selectionAuthorizedForReadyConnection else { return }
+        if selectionAuthorizedForReadyConnection,
+           authorizedConnectionGeneration == host.connectionGeneration { return }
+        selectionAuthorizedForReadyConnection = false
+        authorizedConnectionGeneration = nil
 
         await authorizeRememberedSelection(rememberedSelection, host: host, target: target)
     }
@@ -94,6 +107,7 @@ extension RootView {
             selectedHostID = nil
             selectedTargetID = nil
             selectionAuthorizedForReadyConnection = false
+            authorizedConnectionGeneration = nil
             if connections.snapshots[host.id]?.connectionGeneration != connectionGeneration {
                 Task { await reconcileRememberedSelection() }
             }
@@ -109,12 +123,14 @@ extension RootView {
                   rememberedSelection.matches(endpoint: current.endpoint, target: $0)
               }) else {
             selectionAuthorizedForReadyConnection = false
+            authorizedConnectionGeneration = nil
             Task { await reconcileRememberedSelection() }
             return
         }
         selectedHostID = host.id
         selectedTargetID = target.id
         selectionAuthorizedForReadyConnection = true
+        authorizedConnectionGeneration = connectionGeneration
     }
 
     @MainActor
@@ -124,6 +140,7 @@ extension RootView {
         selectedTargetID = nil
         rememberedSelection = nil
         selectionAuthorizedForReadyConnection = false
+        authorizedConnectionGeneration = nil
         await selectionStore.save(nil)
     }
 }

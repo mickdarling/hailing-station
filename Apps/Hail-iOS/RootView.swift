@@ -17,6 +17,7 @@ struct RootView: View {
     @State var didRestoreSelection = false
     @State var isRestoringSelection = false
     @State var selectionAuthorizedForReadyConnection = false
+    @State var authorizedConnectionGeneration: UUID?
     @State var selectionRevision: UInt = 0
     @State var showingDestinations = false
     @Environment(\.scenePhase) private var scenePhase
@@ -39,7 +40,10 @@ struct RootView: View {
             Task {
                 if phase == .active {
                     await connections.sceneBecameActive()
+                    await reconcileRememberedSelection()
                 } else {
+                    selectionAuthorizedForReadyConnection = false
+                    authorizedConnectionGeneration = nil
                     await audioRoutes.sceneBecameInactive()
                 }
             }
@@ -65,10 +69,20 @@ struct RootView: View {
         didRestoreHosts = true
         guard let data = UserDefaults.standard.data(forKey: Self.savedHostsKey),
               let endpoints = try? JSONDecoder().decode([HostEndpoint].self, from: data) else { return }
+        let remembered = await selectionStore.load()
+        var normalized: [HostEndpoint] = []
         for endpoint in endpoints {
+            if let duplicate = normalized.firstIndex(where: { $0.url == endpoint.url }) {
+                if endpoint.id == remembered?.hostID { normalized[duplicate] = endpoint }
+            } else {
+                normalized.append(endpoint)
+            }
+        }
+        for endpoint in normalized {
             await connections.upsert(endpoint)
             await connections.connect(endpoint.id)
         }
+        if normalized.count != endpoints.count { persist(normalized) }
     }
 
     @MainActor
