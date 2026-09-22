@@ -20,7 +20,7 @@ This is the sanitized public record for Hailing Station's first audio-first mobi
 | Adaptive compact and expanded station chrome | Simulator matrix | Pass |
 | Input preference, fallback, failure, retry, lifecycle, and route-change races | Injected backends | Pass |
 | Host negotiation, allowed-target delivery, Escape, reply identity, playback queue, and controls | Injected and integration tests | Pass |
-| Full repository verification | macOS | 354 tests passed; audit, lint, protocol, and script checks passed |
+| Full repository verification | macOS | 363 tests passed; audit, lint, protocol, and script checks passed |
 
 The physical tests retain no microphone recording and assert no private transcript contents.
 
