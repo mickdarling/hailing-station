@@ -104,7 +104,7 @@ extension RootView {
                 .frame(maxWidth: .infinity)
         }
         NavigationLink {
-            LabsView(audioSession: audioSession)
+            LabsView(audioSession: audioRoutes)
         } label: {
             Label("Labs", systemImage: "wrench.and.screwdriver")
                 .frame(maxWidth: .infinity)
