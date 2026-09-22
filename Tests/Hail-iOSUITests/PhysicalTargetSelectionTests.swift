@@ -97,7 +97,7 @@ final class PhysicalTargetSelectionTests: XCTestCase {
         app.launch()
 
         XCTAssertTrue(
-            app.staticTexts[targetLabel].waitForExistence(timeout: 30),
+            waitForDestination(targetLabel, in: app, timeout: 30),
             "The remembered target did not restore after relaunch. Current UI: \(app.debugDescription)"
         )
         XCTAssertEqual(app.state, .runningForeground)
@@ -123,8 +123,9 @@ final class PhysicalTargetSelectionTests: XCTestCase {
 
     @MainActor
     private func selectTarget(_ label: String, in app: XCUIApplication) {
-        let targetButton = app.buttons["Target"]
+        let targetButton = destinationButton(in: app)
         XCTAssertTrue(targetButton.waitForExistence(timeout: 30))
+        if targetButton.value as? String == label { return }
         targetButton.tap()
 
         let target = app.buttons[label]
@@ -133,11 +134,25 @@ final class PhysicalTargetSelectionTests: XCTestCase {
             "Configured target was unavailable. Current UI: \(app.debugDescription)"
         )
         target.tap()
-        XCTAssertTrue(app.staticTexts[label].waitForExistence(timeout: 10))
+        XCTAssertTrue(waitForDestination(label, in: app, timeout: 10))
     }
 
     @MainActor
-    private func replaceText(in field: XCUIElement, with replacement: String) {
+    private func destinationButton(in app: XCUIApplication) -> XCUIElement {
+        app.buttons["station.destination"]
+    }
+}
+
+private extension PhysicalTargetSelectionTests {
+    @MainActor
+    func waitForDestination(_ label: String, in app: XCUIApplication, timeout: TimeInterval) -> Bool {
+        let predicate = NSPredicate(format: "value == %@", label)
+        let expectation = XCTNSPredicateExpectation(predicate: predicate, object: destinationButton(in: app))
+        return XCTWaiter.wait(for: [expectation], timeout: timeout) == .completed
+    }
+
+    @MainActor
+    func replaceText(in field: XCUIElement, with replacement: String) {
         field.tap()
         if let current = field.value as? String, !current.isEmpty {
             field.typeText(String(repeating: XCUIKeyboardKey.delete.rawValue, count: current.count))
@@ -146,7 +161,7 @@ final class PhysicalTargetSelectionTests: XCTestCase {
     }
 
     @MainActor
-    private func configuredHostCell(name: String, url: String, in app: XCUIApplication) -> XCUIElement {
+    func configuredHostCell(name: String, url: String, in app: XCUIApplication) -> XCUIElement {
         app.cells
             .containing(.staticText, identifier: name)
             .containing(.staticText, identifier: url)
@@ -154,7 +169,7 @@ final class PhysicalTargetSelectionTests: XCTestCase {
     }
 
     @MainActor
-    private func allowLocalNetworkIfRequested() {
+    func allowLocalNetworkIfRequested() {
         let springboard = XCUIApplication(bundleIdentifier: "com.apple.springboard")
         let alert = springboard.alerts.firstMatch
         guard alert.waitForExistence(timeout: 3) else { return }
