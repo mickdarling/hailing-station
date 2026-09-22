@@ -27,6 +27,8 @@ final class AdaptiveStationUITests: XCTestCase {
         XCTAssertTrue(app.descendants(matching: .any)["station.connection"].exists)
         XCTAssertTrue(app.buttons["station.destination"].exists)
         XCTAssertTrue(app.descendants(matching: .any)["station.audio-route"].exists)
+        XCTAssertTrue(app.buttons["station.microphone"].exists)
+        XCTAssertTrue(app.descendants(matching: .any)["station.output"].exists)
         XCTAssertTrue(app.descendants(matching: .any)["station.tools"].exists)
     }
 }
