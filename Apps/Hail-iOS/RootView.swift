@@ -20,6 +20,7 @@ struct RootView: View {
     @State var authorizedConnectionGeneration: UUID?
     @State var selectionRevision: UInt = 0
     @State var showingDestinations = false
+    @State var scenePhaseRevision: UInt = 0
     @Environment(\.scenePhase) private var scenePhase
     @Environment(\.horizontalSizeClass) var horizontalSizeClass
     @Environment(\.dynamicTypeSize) var dynamicTypeSize
@@ -37,13 +38,19 @@ struct RootView: View {
             content
         }
         .onChange(of: scenePhase) { _, phase in
+            scenePhaseRevision &+= 1
+            let revision = scenePhaseRevision
+            if phase != .active {
+                selectionAuthorizedForReadyConnection = false
+                authorizedConnectionGeneration = nil
+            }
             Task {
                 if phase == .active {
                     await connections.sceneBecameActive()
+                    guard scenePhaseRevision == revision,
+                          scenePhase == .active else { return }
                     await reconcileRememberedSelection()
                 } else {
-                    selectionAuthorizedForReadyConnection = false
-                    authorizedConnectionGeneration = nil
                     await audioRoutes.sceneBecameInactive()
                 }
             }
