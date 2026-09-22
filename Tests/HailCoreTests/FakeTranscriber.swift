@@ -1,3 +1,4 @@
+import Foundation
 import HailCore
 
 actor FakeTranscriber: Transcriber {
@@ -7,6 +8,7 @@ actor FakeTranscriber: Transcriber {
     private(set) var consumedBuffers = 0
     private(set) var isRunning = false
     private var finalText = ""
+    private var utteranceID = TranscriptionResult.unscopedUtteranceID
 
     init() {
         let pair = AsyncStream<TranscriptionResult>.makeStream()
@@ -14,9 +16,11 @@ actor FakeTranscriber: Transcriber {
         continuation = pair.continuation
     }
 
-    func start() {
+    func start() -> UUID {
         isRunning = true
         finalText = ""
+        utteranceID = UUID()
+        return utteranceID
     }
 
     func consume(_: AudioCaptureBuffer) {
@@ -28,8 +32,15 @@ actor FakeTranscriber: Transcriber {
         return finalText
     }
 
+    func cancel() {
+        isRunning = false
+        finalText = ""
+    }
+
     func emit(_ result: TranscriptionResult) {
         if result.isFinal { finalText = result.text }
-        continuation.yield(result)
+        continuation.yield(
+            TranscriptionResult(utteranceID: utteranceID, text: result.text, isFinal: result.isFinal)
+        )
     }
 }
