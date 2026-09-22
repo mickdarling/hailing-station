@@ -1,6 +1,4 @@
 public import Foundation
-/// Pre-SpeechAnalyzer streaming transcription requiring Apple's on-device recognizer. Capture remains
-/// outside this type so both speech implementations share one path without uploading audio for recognition.
 public actor SFSpeechRecognizerTranscriber: Transcriber {
     public nonisolated let results: AsyncStream<TranscriptionResult>
     private let localeIdentifier: String
@@ -13,6 +11,7 @@ public actor SFSpeechRecognizerTranscriber: Transcriber {
     private var completionTask: Task<String, Never>?
     private var stopCleanupContinuation: AsyncStream<String>.Continuation?
     private var stopCleanupTask: Task<String, Never>?
+    private var stopCleanupGeneration: UInt64?
     private var timeoutTask: Task<Void, Never>?
     private var utteranceID: UUID?
     private var backendTransitionGeneration: UInt64?
@@ -61,8 +60,7 @@ public actor SFSpeechRecognizerTranscriber: Transcriber {
         eventContinuation = events.continuation
         eventTask = Task { [weak self] in
             for await event in events.stream {
-                guard let self else { return }
-                await self.receive(event, generation: generation, utteranceID: utteranceID)
+                if let self { await self.receive(event, generation: generation, utteranceID: utteranceID) }
             }
         }
         completionContinuation = completion.continuation
@@ -99,13 +97,12 @@ public actor SFSpeechRecognizerTranscriber: Transcriber {
             await cancel()
             return ""
         }
+        let generation = operationGeneration
+        stopCleanupGeneration = generation
         let cleanup = AsyncStream<String>.makeStream(bufferingPolicy: .bufferingNewest(1))
         stopCleanupContinuation = cleanup.continuation
-        stopCleanupTask = Task {
-            for await text in cleanup.stream { return text }
-            return ""
-        }
-        let generation = operationGeneration
+        let cleanupTask = Task { await cleanup.stream.first(where: { _ in true }) ?? "" }
+        stopCleanupTask = cleanupTask
         backendTransitionGeneration = generation
         let timeout = finalizationTimeout
         timeoutTask = Task { [weak self] in
@@ -117,16 +114,17 @@ public actor SFSpeechRecognizerTranscriber: Transcriber {
         let text = await completionTask.value
         timeoutTask?.cancel()
         timeoutTask = nil
-        guard operationGeneration == generation else { return await stopCleanupTask?.value ?? "" }
+        guard operationGeneration == generation else { return await cleanupTask.value }
         operationGeneration &+= 1
         reset()
         await backend.cancel()
+        guard operationGeneration == generation &+ 1 else { return await cleanupTask.value }
         if backendTransitionGeneration == generation { backendTransitionGeneration = nil }
-        completeStopCleanup(with: text)
+        if stopCleanupGeneration == generation { completeStopCleanup(with: text) }
         return text
     }
     public func cancel() async {
-        let wasStopping = stopCleanupTask != nil
+        let stoppingGeneration = stopCleanupGeneration
         operationGeneration &+= 1
         let cancellationGeneration = operationGeneration
         if backendTransitionGeneration == nil { backendTransitionGeneration = cancellationGeneration }
@@ -135,10 +133,12 @@ public actor SFSpeechRecognizerTranscriber: Transcriber {
         complete(with: "")
         reset()
         await backend.cancel()
-        if wasStopping || backendTransitionGeneration == cancellationGeneration {
+        if [cancellationGeneration, stoppingGeneration].contains(backendTransitionGeneration) {
             backendTransitionGeneration = nil
         }
-        if wasStopping { completeStopCleanup(with: "") }
+        if let stoppingGeneration, stopCleanupGeneration == stoppingGeneration {
+            completeStopCleanup(with: "")
+        }
     }
 }
 private extension SFSpeechRecognizerTranscriber {
@@ -180,6 +180,7 @@ private extension SFSpeechRecognizerTranscriber {
         stopCleanupContinuation?.finish()
         stopCleanupContinuation = nil
         stopCleanupTask = nil
+        stopCleanupGeneration = nil
     }
     func reset() {
         timeoutTask?.cancel()

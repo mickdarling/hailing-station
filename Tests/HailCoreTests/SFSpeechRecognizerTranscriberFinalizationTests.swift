@@ -68,4 +68,30 @@ extension SFSpeechRecognizerTranscriberTests {
         _ = try await transcriber.start()
         await transcriber.cancel()
     }
+
+    @Test func staleStopCleanupCannotCompleteANewerStop() async throws {
+        let backend = StubStreamingSpeechRecognitionBackend()
+        let transcriber = SFSpeechRecognizerTranscriber(backend: backend)
+        var iterator = transcriber.results.makeAsyncIterator()
+        _ = try await transcriber.start()
+        await backend.emit(.result(text: "first", isFinal: true))
+        _ = await iterator.next()
+        await backend.blockNextCancel()
+
+        let firstStop = Task { await transcriber.stop() }
+        await backend.waitUntilCancelIsBlocked()
+        await transcriber.cancel()
+        _ = try await transcriber.start()
+        await backend.blockNextEndAudio()
+        let secondStop = Task { await transcriber.stop() }
+        await backend.waitUntilEndAudioIsBlocked()
+        await backend.resumeCancel()
+
+        await #expect(throws: CancellationError.self) { try await transcriber.start() }
+        await backend.emit(.result(text: "second", isFinal: true))
+        await backend.resumeEndAudio()
+
+        #expect(await firstStop.value == "")
+        #expect(await secondStop.value == "second")
+    }
 }
