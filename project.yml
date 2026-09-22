@@ -27,6 +27,9 @@ targets:
     platform: iOS
     sources:
       - Apps/Hail-iOS
+    settings:
+      base:
+        ASSETCATALOG_COMPILER_APPICON_NAME: AppIcon
     dependencies:
       - package: Hail
         products: [HailCore, HailProtocol]
@@ -34,6 +37,7 @@ targets:
       path: Apps/Hail-iOS/Info.plist
       properties:
         CFBundleDisplayName: Hailing Station
+        CFBundleIconName: AppIcon
         CFBundleShortVersionString: $(MARKETING_VERSION)
         CFBundleVersion: $(CURRENT_PROJECT_VERSION)
         UILaunchScreen: {}
