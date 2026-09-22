@@ -49,6 +49,7 @@ xcodegen generate
 Generated Xcode projects, signing material, local configuration, recordings, captures, and build products are intentionally excluded from version control.
 
 Physical-device signing, installation, audio-route checks, and privacy-safe diagnostics are covered by the [iPhone and iPad device-testing runbook](docs/device-testing.md).
+Remote beta installation and guarded App Store Connect upload are covered by the [TestFlight delivery runbook](docs/testflight.md).
 The first one-Mac physical proof is summarized in the [single-device vertical-slice test record](docs/vertical-slice-test-record.md).
 The current adaptive layout and sanitized interaction record are documented in the [mobile interface notes](docs/mobile-interface.md).
 
