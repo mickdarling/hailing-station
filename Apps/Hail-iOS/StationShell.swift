@@ -146,3 +146,20 @@ struct AudioRouteSummaryView: View {
         .background(.quaternary, in: RoundedRectangle(cornerRadius: 14, style: .continuous))
     }
 }
+
+struct AudioOutputRouteControl<Label: View>: View {
+    let outputName: String
+    @ViewBuilder let label: Label
+
+    var body: some View {
+        ZStack {
+            label.allowsHitTesting(false)
+            AudioOutputRoutePicker()
+                .frame(maxWidth: .infinity, minHeight: 56)
+        }
+        .contentShape(Rectangle())
+        .accessibilityElement(children: .contain)
+        .accessibilityLabel("Output, \(outputName). Choose audio output")
+        .accessibilityHint("Opens the system audio output list.")
+    }
+}

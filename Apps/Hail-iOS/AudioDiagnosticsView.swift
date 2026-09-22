@@ -18,27 +18,30 @@ struct AudioDiagnosticsView: View {
             }
             Section("Input") {
                 Menu {
-                    Button {
-                        Task { await model.select(nil) }
-                    } label: {
-                        if model.preferredInput == nil {
-                            Label("Automatic", systemImage: "checkmark")
-                        } else {
-                            Text("Automatic")
-                        }
-                    }
-                    ForEach(model.inputs) { input in
+                    if model.inputs.isEmpty {
+                        Text("No microphones available")
+                    } else {
                         Button {
-                            Task { await model.select(input) }
+                            Task { await model.select(nil) }
                         } label: {
-                            if input.id == model.preferredInput?.id {
-                                Label(input.name, systemImage: "checkmark")
+                            if model.preferredInput == nil {
+                                Label("Automatic", systemImage: "checkmark")
                             } else {
-                                Text(input.name)
+                                Text("Automatic")
+                            }
+                        }
+                        ForEach(model.inputs) { input in
+                            Button {
+                                Task { await model.select(input) }
+                            } label: {
+                                if input.id == model.preferredInput?.id {
+                                    Label(input.name, systemImage: "checkmark")
+                                } else {
+                                    Text(input.name)
+                                }
                             }
                         }
                     }
-                    if model.inputs.isEmpty { Text("Activate audio to discover microphones") }
                 } label: {
                     routeControlLabel(
                         title: "Microphone",
@@ -46,14 +49,8 @@ struct AudioDiagnosticsView: View {
                         systemImage: "mic"
                     )
                 }
+                .disabled(!model.diagnostics.isActive || model.inputs.isEmpty)
                 .accessibilityLabel(model.inputAccessibilityLabel)
-
-                if model.hasInputFailure {
-                    Button("Retry microphone") {
-                        Task { await model.retry() }
-                    }
-                    .accessibilityHint("Retries the failed route without changing the saved preference.")
-                }
 
                 if let preferredStateDescription = model.preferredStateDescription {
                     LabeledContent("Preferred", value: preferredStateDescription)
@@ -62,12 +59,15 @@ struct AudioDiagnosticsView: View {
                 }
             }
             Section("Output") {
-                AudioOutputRouteControl(outputName: model.outputName) {
+                HStack {
                     routeControlLabel(
                         title: "Output",
                         value: model.outputName,
                         systemImage: "speaker.wave.2"
                     )
+                    Spacer()
+                    AudioOutputRoutePicker()
+                        .frame(width: 44, height: 44)
                 }
             }
             Section("Preference") {
@@ -77,6 +77,7 @@ struct AudioDiagnosticsView: View {
         }
         .navigationTitle("Audio session")
         .task { await model.refresh() }
+        .onDisappear { Task { await model.deactivate() } }
     }
 }
 private extension AudioDiagnosticsView {
@@ -92,36 +93,16 @@ private extension AudioDiagnosticsView {
         .frame(maxWidth: .infinity, alignment: .leading)
     }
 }
-struct AudioOutputRouteControl<Label: View>: View {
-    let outputName: String
-    @ViewBuilder let label: Label
-
-    var body: some View {
-        ZStack {
-            label
-                .allowsHitTesting(false)
-            AudioOutputRoutePicker(outputName: outputName)
-                .frame(maxWidth: .infinity, minHeight: 56)
-        }
-        .contentShape(Rectangle())
-        .accessibilityElement(children: .contain)
-    }
-}
-
 struct AudioOutputRoutePicker: UIViewRepresentable {
-    let outputName: String
-
     func makeUIView(context: Context) -> AVRoutePickerView {
         let picker = AVRoutePickerView()
         picker.prioritizesVideoDevices = false
-        picker.tintColor = .clear
-        picker.activeTintColor = .clear
-        picker.accessibilityLabel = "Output, \(outputName). Choose audio output"
+        picker.tintColor = .secondaryLabel
+        picker.activeTintColor = .systemIndigo
+        picker.accessibilityLabel = "Choose audio output"
         picker.accessibilityHint = "Opens the system audio output list."
         return picker
     }
 
-    func updateUIView(_ view: AVRoutePickerView, context: Context) {
-        view.accessibilityLabel = "Output, \(outputName). Choose audio output"
-    }
+    func updateUIView(_ view: AVRoutePickerView, context: Context) {}
 }

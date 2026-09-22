@@ -1,6 +1,5 @@
 import AVFAudio
 import Speech
-import UIKit
 @available(iOS 26.0, *)
 extension TranscriptionLabView {
     @MainActor
@@ -142,7 +141,6 @@ extension TranscriptionLabView {
 
     @MainActor
     func observeResults() async {
-        async let lifecycle: Void = observeSceneInactivity()
         for await result in transcriber.results {
             guard result.utteranceID == activeUtteranceID else { continue }
             if result.isFinal {
@@ -151,13 +149,6 @@ extension TranscriptionLabView {
             } else {
                 volatileText = result.text.trimmingCharacters(in: .whitespacesAndNewlines)
             }
-        }
-        _ = await lifecycle
-    }
-    @MainActor
-    private func observeSceneInactivity() async {
-        for await _ in NotificationCenter.default.notifications(named: UIApplication.willResignActiveNotification) {
-            await finish(force: true)
         }
     }
     @MainActor
