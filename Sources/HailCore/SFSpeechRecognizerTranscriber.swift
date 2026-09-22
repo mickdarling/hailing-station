@@ -104,25 +104,26 @@ public actor SFSpeechRecognizerTranscriber: Transcriber {
             return ""
         }
         let generation = operationGeneration
-        await backend.endAudio()
+        backendTransitionGeneration = generation
         let timeout = finalizationTimeout
         timeoutTask = Task { [weak self] in
             try? await Task.sleep(for: timeout)
             guard !Task.isCancelled else { return }
             await self?.finishAfterTimeout(generation: generation, utteranceID: utteranceID)
         }
+        await backend.endAudio()
         let text = await completionTask.value
         timeoutTask?.cancel()
         timeoutTask = nil
         guard operationGeneration == generation else { return "" }
         operationGeneration &+= 1
-        backendTransitionGeneration = generation
         reset()
         await backend.cancel()
         if backendTransitionGeneration == generation { backendTransitionGeneration = nil }
         return text
     }
     public func cancel() async {
+        let wasFinalizing = timeoutTask != nil
         operationGeneration &+= 1
         let cancellationGeneration = operationGeneration
         if backendTransitionGeneration == nil { backendTransitionGeneration = cancellationGeneration }
@@ -131,7 +132,9 @@ public actor SFSpeechRecognizerTranscriber: Transcriber {
         complete(with: "")
         reset()
         await backend.cancel()
-        if backendTransitionGeneration == cancellationGeneration { backendTransitionGeneration = nil }
+        if wasFinalizing || backendTransitionGeneration == cancellationGeneration {
+            backendTransitionGeneration = nil
+        }
     }
 }
 private extension SFSpeechRecognizerTranscriber {
