@@ -34,7 +34,7 @@ import Testing
         let owned = try #require(AudioCaptureBuffer(copying: source))
         let transcriber = FakeTranscriber()
 
-        await transcriber.start()
+        _ = await transcriber.start()
         await transcriber.consume(owned)
         await transcriber.emit(TranscriptionResult(text: "send immediately", isFinal: true))
         let finalized = await transcriber.stop()
