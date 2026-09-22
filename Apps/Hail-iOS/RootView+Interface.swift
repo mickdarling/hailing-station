@@ -65,8 +65,8 @@ extension RootView {
                 Text(hasReadyHost ? "Choose a destination" : "Connect Haley to a Mac")
                     .font(.title3.bold())
                 Text(hasReadyHost
-                    ? "Your Mac is connected. Choose the allowed terminal session or target Haley should use."
-                    : "Add this Mac, connect it, then choose the terminal session Haley should use.")
+                    ? "Your Mac is connected. Choose the allowed target Haley should use."
+                    : "Add this Mac, connect it, then choose the target Haley should use.")
                     .multilineTextAlignment(.center)
                     .foregroundStyle(.secondary)
                 if hasReadyHost {

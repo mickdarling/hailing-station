@@ -15,7 +15,7 @@ struct ConnectivityLabView: View {
             Section("How it works") {
                 Label("1. Add this Mac's Hailing Station WebSocket address.", systemImage: "1.circle")
                 Label("2. Connect and wait for Ready.", systemImage: "2.circle")
-                Label("3. Return to the station and choose a terminal session.", systemImage: "3.circle")
+                Label("3. Return to the station and choose a target.", systemImage: "3.circle")
             }
 
             Section("Add or edit a Mac") {

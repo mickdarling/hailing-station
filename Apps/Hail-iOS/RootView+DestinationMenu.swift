@@ -65,14 +65,14 @@ extension RootView {
             Text("Mac · \(destination.endpoint.name)")
                 .font(.caption.weight(.semibold))
                 .foregroundStyle(.secondary)
-                .lineLimit(1)
+                .lineLimit(dynamicTypeSize.isAccessibilitySize ? 3 : 1)
             Text(destination.target.kind == "tmux"
                 ? "Terminal · \(destination.target.name)"
                 : "\(destination.target.kind.capitalized) target · \(destination.target.name)")
                 .font(.headline)
                 .lineLimit(dynamicTypeSize.isAccessibilitySize ? 3 : 1)
         } else {
-            Text("Mac and terminal")
+            Text("Mac and target")
                 .font(.caption.weight(.semibold))
                 .foregroundStyle(.secondary)
             Text("Choose a destination")
