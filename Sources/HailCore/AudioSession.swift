@@ -2,7 +2,7 @@ public actor ManagedAudioSession: AudioSessionDiagnosticsProviding {
     let backend: any AudioSessionBackend
     let preferences: AudioInputPreferences
     let preferenceStore: any AudioInputPreferenceStoring
-    let eventPair = AsyncStream<AudioSessionEvent>.makeStream(bufferingPolicy: .bufferingNewest(16))
+    let eventBroadcast = AudioSessionEventBroadcast()
     private var backendTask: Task<Void, Never>?
     var latestDiagnostics = AudioSessionDiagnostics.inactive
     var savedPreferredInput: AudioPort?
@@ -29,7 +29,7 @@ public actor ManagedAudioSession: AudioSessionDiagnosticsProviding {
 
     deinit {
         backendTask?.cancel()
-        eventPair.continuation.finish()
+        eventBroadcast.finish()
     }
 
     public var diagnostics: AudioSessionDiagnostics {
@@ -37,7 +37,7 @@ public actor ManagedAudioSession: AudioSessionDiagnosticsProviding {
     }
 
     public var events: AsyncStream<AudioSessionEvent> {
-        eventPair.stream
+        eventBroadcast.stream()
     }
 
     public func activate() async throws {
@@ -85,7 +85,7 @@ public actor ManagedAudioSession: AudioSessionDiagnosticsProviding {
             pendingPreferredInput = nil
             routeReconciliationNeeded = false
             latestDiagnostics = await backend.diagnostics(isActive: false)
-            eventPair.continuation.yield(.interruptionBegan)
+            eventBroadcast.yield(.interruptionBegan)
         case .interruptionEnded(let shouldResume):
             await handleInterruptionEnd(shouldResume: shouldResume)
         }
@@ -96,7 +96,7 @@ extension ManagedAudioSession {
     func publish(_ diagnostics: AudioSessionDiagnostics) {
         diagnosticsRevision &+= 1
         latestDiagnostics = diagnostics
-        eventPair.continuation.yield(.routeChanged(diagnostics))
+        eventBroadcast.yield(.routeChanged(diagnostics))
     }
 
     func validateRouteApplication(_ generation: Int?) throws {
@@ -158,7 +158,7 @@ private extension ManagedAudioSession {
         guard wantsActive, shouldResume else {
             sessionActive = false
             latestDiagnostics = await backend.diagnostics(isActive: false)
-            eventPair.continuation.yield(.interruptionEnded(resumed: false))
+            eventBroadcast.yield(.interruptionEnded(resumed: false))
             return
         }
         do {
@@ -166,12 +166,12 @@ private extension ManagedAudioSession {
             sessionActive = true
             try await selectPreferredInput()
             latestDiagnostics = await backend.diagnostics(isActive: true)
-            eventPair.continuation.yield(.interruptionEnded(resumed: true))
+            eventBroadcast.yield(.interruptionEnded(resumed: true))
         } catch {
             sessionActive = false
             try? await backend.setActive(false)
             latestDiagnostics = await backend.diagnostics(isActive: false)
-            eventPair.continuation.yield(.interruptionEnded(resumed: false))
+            eventBroadcast.yield(.interruptionEnded(resumed: false))
         }
     }
 }
