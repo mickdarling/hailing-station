@@ -167,7 +167,7 @@ final class PhysicalTargetSelectionTests: XCTestCase {
 private extension PhysicalTargetSelectionTests {
     @MainActor
     func waitForDestination(_ label: String, in app: XCUIApplication, timeout: TimeInterval) -> Bool {
-        let predicate = NSPredicate(format: "value == %@", label)
+        let predicate = destinationValuePredicate(for: label)
         let expectation = XCTNSPredicateExpectation(predicate: predicate, object: destinationButton(in: app))
         return XCTWaiter.wait(for: [expectation], timeout: timeout) == .completed
     }

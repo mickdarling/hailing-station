@@ -33,10 +33,7 @@ final class DestinationSetupUITests: XCTestCase {
         XCTAssertTrue(destination.waitForExistence(timeout: 10))
         let destinationNames = targetLabel.components(separatedBy: " · ")
         XCTAssertEqual(destinationNames.count, 2)
-        let selected = NSPredicate(
-            format: "value CONTAINS %@ AND value CONTAINS %@",
-            destinationNames[0], destinationNames[1]
-        )
+        let selected = destinationValuePredicate(for: targetLabel)
         XCTAssertEqual(
             XCTWaiter.wait(
                 for: [XCTNSPredicateExpectation(predicate: selected, object: destination)],
@@ -49,4 +46,13 @@ final class DestinationSetupUITests: XCTestCase {
         XCTAssertTrue(accessibleValue.contains("Mac \(destinationNames[0])"))
         XCTAssertTrue(accessibleValue.contains(destinationNames[1]))
     }
+}
+
+func destinationValuePredicate(for label: String) -> NSPredicate {
+    let names = label.components(separatedBy: " · ")
+    guard names.count == 2 else { return NSPredicate(format: "value == %@", label) }
+    return NSPredicate(
+        format: "value CONTAINS %@ AND value CONTAINS %@",
+        names[0], names[1]
+    )
 }
