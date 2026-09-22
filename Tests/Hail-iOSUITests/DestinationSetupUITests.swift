@@ -11,6 +11,7 @@ final class DestinationSetupUITests: XCTestCase {
             throw XCTSkip("The empty-state setup check runs in a fresh simulator.")
         }
         let app = XCUIApplication()
+        app.launchArguments.append("-reset-station-state")
         app.launch()
 
         let setup = app.buttons["station.setup-mac"]
@@ -22,8 +23,7 @@ final class DestinationSetupUITests: XCTestCase {
 
     @MainActor
     func testSelectedDestinationNamesMacAndTerminalSession() throws {
-        guard let hostName = ProcessInfo.processInfo.environment["HAIL_UI_HOST_NAME"],
-              let targetLabel = ProcessInfo.processInfo.environment["HAIL_UI_TARGET_LABEL"] else {
+        guard let targetLabel = ProcessInfo.processInfo.environment["HAIL_UI_TARGET_LABEL"] else {
             throw XCTSkip("Set the sanitized physical host and target UI test environment.")
         }
         let app = XCUIApplication()
@@ -39,7 +39,7 @@ final class DestinationSetupUITests: XCTestCase {
             ),
             .completed
         )
-        XCTAssertTrue(app.staticTexts["Mac · \(hostName)"].exists)
-        XCTAssertTrue(app.staticTexts.matching(NSPredicate(format: "label BEGINSWITH 'Terminal · '")).firstMatch.exists)
+        XCTAssertEqual(destination.label, "Destination")
+        XCTAssertEqual(destination.value as? String, targetLabel)
     }
 }

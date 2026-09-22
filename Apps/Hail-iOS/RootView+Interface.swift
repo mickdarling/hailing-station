@@ -3,7 +3,8 @@ import SwiftUI
 
 extension RootView {
     var content: some View {
-        ScrollView {
+        resetStationStateForUITestingIfRequested()
+        return ScrollView {
             VStack(spacing: 18) {
                 StationHeader(connection: connectionPresentation) {
                     destinationMenu
@@ -58,21 +59,33 @@ extension RootView {
             )
         } else {
             VStack(spacing: 16) {
-                Image(systemName: "macbook.and.iphone")
+                Image(systemName: hasReadyHost ? "scope" : "macbook.and.iphone")
                     .font(.system(size: 42))
                     .foregroundStyle(.secondary)
-                Text("Connect Haley to a Mac")
+                Text(hasReadyHost ? "Choose a destination" : "Connect Haley to a Mac")
                     .font(.title3.bold())
-                Text("Add this Mac, connect it, then choose the terminal session Haley should use.")
+                Text(hasReadyHost
+                    ? "Your Mac is connected. Choose the allowed terminal session or target Haley should use."
+                    : "Add this Mac, connect it, then choose the terminal session Haley should use.")
                     .multilineTextAlignment(.center)
                     .foregroundStyle(.secondary)
-                NavigationLink {
-                    ConnectivityLabView(store: connections, endpointsChanged: persist)
-                } label: {
-                    Label("Set up a Mac", systemImage: "plus.circle.fill")
+                if hasReadyHost {
+                    Button {
+                        showingDestinations = true
+                    } label: {
+                        Label("Choose a destination", systemImage: "scope")
+                    }
+                    .buttonStyle(.borderedProminent)
+                    .accessibilityIdentifier("station.choose-destination")
+                } else {
+                    NavigationLink {
+                        ConnectivityLabView(store: connections, endpointsChanged: persist)
+                    } label: {
+                        Label("Set up a Mac", systemImage: "plus.circle.fill")
+                    }
+                    .buttonStyle(.borderedProminent)
+                    .accessibilityIdentifier("station.setup-mac")
                 }
-                .buttonStyle(.borderedProminent)
-                .accessibilityIdentifier("station.setup-mac")
             }
             .padding(24)
             .stationCard(minHeight: horizontalSizeClass == .regular ? 420 : 260)
@@ -158,6 +171,25 @@ extension RootView {
             color: .secondary
         )
     }
+
+    var hasReadyHost: Bool {
+        connections.hosts.contains(where: { $0.state == .ready })
+    }
+
+    /// Keeps the empty-state UI test deterministic without changing normal launch persistence.
+    @MainActor
+    private func resetStationStateForUITestingIfRequested() {
+        guard ProcessInfo.processInfo.arguments.contains("-reset-station-state"),
+              !StationUITestReset.didRun else { return }
+        StationUITestReset.didRun = true
+        UserDefaults.standard.removeObject(forKey: "hailing-station.host-endpoints.v1")
+        UserDefaults.standard.removeObject(forKey: "hailing-station.destination-selection.v1")
+    }
+}
+
+@MainActor
+private enum StationUITestReset {
+    static var didRun = false
 }
 
 private extension View {
