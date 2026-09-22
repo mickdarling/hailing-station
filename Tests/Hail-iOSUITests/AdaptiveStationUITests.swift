@@ -22,6 +22,19 @@ final class AdaptiveStationUITests: XCTestCase {
     }
 
     @MainActor
+    func testMicrophoneMenuCanBootstrapAFreshSession() {
+        let app = XCUIApplication()
+        app.launch()
+        XCTAssertTrue(app.staticTexts["Hailing Station"].waitForExistence(timeout: 10))
+
+        let microphone = app.buttons["station.microphone"]
+        XCTAssertTrue(microphone.waitForExistence(timeout: 10))
+        XCTAssertTrue(microphone.isEnabled)
+        microphone.tap()
+        XCTAssertTrue(app.buttons["Automatic"].waitForExistence(timeout: 5))
+    }
+
+    @MainActor
     private func assertStationChrome(in app: XCUIApplication) {
         XCTAssertTrue(app.staticTexts["Hailing Station"].waitForExistence(timeout: 10))
         XCTAssertTrue(app.descendants(matching: .any)["station.connection"].exists)

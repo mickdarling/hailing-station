@@ -87,34 +87,30 @@ struct AudioRouteSummaryView: View {
     @ViewBuilder
     private var routeControls: some View {
         Menu {
-            if model.inputs.isEmpty {
-                Text("No microphones available")
-            } else {
-                Button {
-                    Task { await model.select(nil) }
-                } label: {
-                    if model.preferredInput == nil {
-                        Label("Automatic", systemImage: "checkmark")
-                    } else {
-                        Text("Automatic")
-                    }
+            Button {
+                Task { await model.select(nil) }
+            } label: {
+                if model.preferredInput == nil {
+                    Label("Automatic", systemImage: "checkmark")
+                } else {
+                    Text("Automatic")
                 }
-                ForEach(model.inputs) { input in
-                    Button {
-                        Task { await model.select(input) }
-                    } label: {
-                        if input.id == model.preferredInput?.id {
-                            Label(input.name, systemImage: "checkmark")
-                        } else {
-                            Text(input.name)
-                        }
+            }
+            ForEach(model.inputs) { input in
+                Button {
+                    Task { await model.select(input) }
+                } label: {
+                    if input.id == model.preferredInput?.id {
+                        Label(input.name, systemImage: "checkmark")
+                    } else {
+                        Text(input.name)
                     }
                 }
             }
+            if model.inputs.isEmpty { Text("Activate audio to discover microphones") }
         } label: {
             routeTile(title: "Microphone", value: model.inputName, systemImage: "mic")
         }
-        .disabled(model.inputs.isEmpty)
         .accessibilityIdentifier("station.microphone")
         .accessibilityLabel(model.inputAccessibilityLabel)
         .accessibilityHint(
