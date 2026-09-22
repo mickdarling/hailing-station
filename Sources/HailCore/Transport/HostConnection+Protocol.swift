@@ -83,6 +83,28 @@ extension HostConnection {
         if requiresDeadline { schedulePongDeadline(nonce: nonce, generation: token) }
     }
 
+    /// Confirms that the host processed every frame before this ping, including target selection.
+    /// WebSocket message ordering makes the pong a lightweight selection acknowledgement without a
+    /// protocol-version change that would break terminals already installed through TestFlight.
+    func confirmRoundTrip(generation token: UInt64) async throws {
+        let nonce = UUID().uuidString.lowercased()
+        pendingPings[nonce] = monotonicNow()
+        do {
+            try await send(.ping(nonce: nonce), generation: token)
+            schedulePongDeadline(nonce: nonce, generation: token)
+            while pendingPings[nonce] != nil {
+                guard isCurrent(token), wantsConnection else { throw HostConnectionFailure.notReady }
+                try await Task.sleep(for: .milliseconds(10))
+            }
+            guard isCurrent(token), wantsConnection, snapshot.state == .ready else {
+                throw HostConnectionFailure.notReady
+            }
+        } catch {
+            pendingPings.removeValue(forKey: nonce)
+            throw error
+        }
+    }
+
     func schedulePongDeadline(nonce: String, generation token: UInt64) {
         Task { [weak self, pongTimeout, deadlineSleep] in
             do { try await deadlineSleep(pongTimeout) } catch { return }

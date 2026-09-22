@@ -74,7 +74,15 @@ import Testing
         )))
         try await waitUntil { await connection.currentSnapshot().state == .ready }
 
-        try await connection.selectTarget("tmux:codex")
+        let selection = Task { try await connection.selectTarget("tmux:codex") }
+        try await waitUntil { try await socket.sentFrames().count >= 5 }
+        let selectionFrames = try await socket.sentFrames()
+        guard case .control(.ping(let selectionNonce)) = selectionFrames[4].payload else {
+            Issue.record("selection was not followed by a confirmation ping")
+            return
+        }
+        try await socket.push(.pong(nonce: selectionNonce))
+        try await selection.value
         try await connection.sendFinalText("run the tests", to: "tmux:codex")
         try await connection.sendEscape(to: "tmux:codex")
 
