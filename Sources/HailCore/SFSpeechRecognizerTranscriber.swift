@@ -108,6 +108,10 @@ public actor SFSpeechRecognizerTranscriber: Transcriber {
     }
     public func stop() async -> String {
         guard let utteranceID, let completionTask else { return "" }
+        if backendTransitionGeneration == operationGeneration {
+            await cancel()
+            return ""
+        }
         let generation = operationGeneration
         await backend.endAudio()
         let timeout = finalizationTimeout
@@ -149,7 +153,7 @@ private extension SFSpeechRecognizerTranscriber {
         switch event {
         case .result(let text, let isFinal):
             let trimmed = text.trimmingCharacters(in: .whitespacesAndNewlines)
-            if !trimmed.isEmpty { latestText = trimmed }
+            if isFinal || !trimmed.isEmpty { latestText = trimmed }
             resultContinuation.yield(
                 TranscriptionResult(utteranceID: utteranceID, text: trimmed, isFinal: isFinal)
             )

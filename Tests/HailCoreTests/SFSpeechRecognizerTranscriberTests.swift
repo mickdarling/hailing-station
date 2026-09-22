@@ -22,6 +22,21 @@ import Testing
         #expect(await backend.cancelCount == 1)
     }
 
+    @Test func anEmptyFinalResultRetractsTheLatestPartialText() async throws {
+        let backend = StubStreamingSpeechRecognitionBackend()
+        let transcriber = SFSpeechRecognizerTranscriber(backend: backend)
+        var iterator = transcriber.results.makeAsyncIterator()
+
+        let utteranceID = try await transcriber.start()
+        await backend.emit(.result(text: "discard this", isFinal: false))
+        _ = await iterator.next()
+        await backend.emit(.result(text: "   ", isFinal: true))
+        let final = await iterator.next()
+
+        #expect(await transcriber.stop() == "")
+        #expect(final == TranscriptionResult(utteranceID: utteranceID, text: "", isFinal: true))
+    }
+
     @Test func recognitionFailureFinalizesTheLatestPartialText() async throws {
         let backend = StubStreamingSpeechRecognitionBackend()
         let transcriber = SFSpeechRecognizerTranscriber(backend: backend)
@@ -74,6 +89,23 @@ import Testing
 
         await #expect(throws: CancellationError.self) { try await startup.value }
         await #expect(throws: CancellationError.self) { try await prematureRestart.value }
+        _ = try await transcriber.start()
+        #expect(await backend.cancelCount == 2)
+        await transcriber.cancel()
+    }
+
+    @Test func stopDuringStartupKeepsRestartBlockedUntilStartupCleanup() async throws {
+        let backend = StubStreamingSpeechRecognitionBackend()
+        await backend.blockNextStart()
+        let transcriber = SFSpeechRecognizerTranscriber(backend: backend)
+
+        let startup = Task { try await transcriber.start() }
+        await backend.waitUntilStartIsBlocked()
+        #expect(await transcriber.stop() == "")
+        await #expect(throws: CancellationError.self) { try await transcriber.start() }
+        await backend.resumeStart()
+
+        await #expect(throws: CancellationError.self) { try await startup.value }
         _ = try await transcriber.start()
         #expect(await backend.cancelCount == 2)
         await transcriber.cancel()
