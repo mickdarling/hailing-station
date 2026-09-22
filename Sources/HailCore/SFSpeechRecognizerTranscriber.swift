@@ -15,7 +15,6 @@ public enum SFSpeechRecognizerTranscriberError: LocalizedError, Sendable, Equata
         }
     }
 }
-
 /// Short-form streaming transcription for systems before SpeechAnalyzer. The backend prefers Apple's
 /// on-device recognizer when the current device and locale support it, and otherwise uses the standard
 /// Speech service. Capture remains outside this type so both speech implementations share one audio path.
@@ -26,10 +25,13 @@ public actor SFSpeechRecognizerTranscriber: Transcriber {
     private let backend: any StreamingSpeechRecognitionBackend
     private let finalizationTimeout: Duration
     private let resultContinuation: AsyncStream<TranscriptionResult>.Continuation
+    private var eventContinuation: AsyncStream<StreamingSpeechRecognitionEvent>.Continuation?
+    private var eventTask: Task<Void, Never>?
     private var completionContinuation: AsyncStream<String>.Continuation?
     private var completionTask: Task<String, Never>?
     private var timeoutTask: Task<Void, Never>?
     private var utteranceID: UUID?
+    private var startupGeneration: UInt64?
     private var latestText = ""
     private var operationGeneration: UInt64 = 0
 
@@ -57,6 +59,8 @@ public actor SFSpeechRecognizerTranscriber: Transcriber {
 
     deinit {
         timeoutTask?.cancel()
+        eventTask?.cancel()
+        eventContinuation?.finish()
         completionTask?.cancel()
         completionContinuation?.finish()
         resultContinuation.finish()
@@ -64,10 +68,20 @@ public actor SFSpeechRecognizerTranscriber: Transcriber {
 
     public func start() async throws -> UUID {
         if let utteranceID { return utteranceID }
+        guard startupGeneration == nil else { throw CancellationError() }
         operationGeneration &+= 1
         let generation = operationGeneration
+        startupGeneration = generation
         let utteranceID = UUID()
+        let events = AsyncStream<StreamingSpeechRecognitionEvent>.makeStream(bufferingPolicy: .unbounded)
         let completion = AsyncStream<String>.makeStream(bufferingPolicy: .bufferingNewest(1))
+        eventContinuation = events.continuation
+        eventTask = Task { [weak self] in
+            for await event in events.stream {
+                guard let self else { return }
+                await self.receive(event, generation: generation, utteranceID: utteranceID)
+            }
+        }
         completionContinuation = completion.continuation
         completionTask = Task {
             for await text in completion.stream { return text }
@@ -76,14 +90,23 @@ public actor SFSpeechRecognizerTranscriber: Transcriber {
         latestText = ""
         self.utteranceID = utteranceID
         do {
-            try await backend.start(localeIdentifier: localeIdentifier) { [weak self] event in
-                Task { await self?.receive(event, generation: generation, utteranceID: utteranceID) }
+            try await backend.start(localeIdentifier: localeIdentifier) { event in
+                events.continuation.yield(event)
             }
+            try requireCurrent(generation: generation, utteranceID: utteranceID)
         } catch {
-            complete(with: "")
-            reset()
+            // A backend may finish starting after cancel() has already returned. Keep later starts
+            // out until this stale startup is torn down, or its cleanup could cancel the new session.
+            await backend.cancel()
+            if startupGeneration == generation { startupGeneration = nil }
+            if operationGeneration == generation, self.utteranceID == utteranceID {
+                operationGeneration &+= 1
+                complete(with: "")
+                reset()
+            }
             throw error
         }
+        startupGeneration = nil
         return utteranceID
     }
 
@@ -116,12 +139,14 @@ public actor SFSpeechRecognizerTranscriber: Transcriber {
         operationGeneration &+= 1
         timeoutTask?.cancel()
         timeoutTask = nil
-        await backend.cancel()
         complete(with: "")
         reset()
+        await backend.cancel()
     }
+}
 
-    private func receive(
+private extension SFSpeechRecognizerTranscriber {
+    func receive(
         _ event: StreamingSpeechRecognitionEvent,
         generation: UInt64,
         utteranceID: UUID
@@ -140,20 +165,31 @@ public actor SFSpeechRecognizerTranscriber: Transcriber {
         }
     }
 
-    private func finishAfterTimeout(generation: UInt64, utteranceID: UUID) {
+    func finishAfterTimeout(generation: UInt64, utteranceID: UUID) {
         guard operationGeneration == generation, self.utteranceID == utteranceID else { return }
         complete(with: latestText)
     }
 
-    private func complete(with text: String) {
+    func requireCurrent(generation: UInt64, utteranceID: UUID) throws {
+        try Task.checkCancellation()
+        guard operationGeneration == generation, self.utteranceID == utteranceID else {
+            throw CancellationError()
+        }
+    }
+
+    func complete(with text: String) {
         completionContinuation?.yield(text)
         completionContinuation?.finish()
         completionContinuation = nil
     }
 
-    private func reset() {
+    func reset() {
         timeoutTask?.cancel()
         timeoutTask = nil
+        eventContinuation?.finish()
+        eventContinuation = nil
+        eventTask?.cancel()
+        eventTask = nil
         completionTask?.cancel()
         completionTask = nil
         completionContinuation?.finish()

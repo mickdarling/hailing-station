@@ -57,6 +57,40 @@ import Testing
         }
     }
 
+    @Test func cancelDuringStartupCleansUpBeforeAllowingRestart() async throws {
+        let backend = StubStreamingSpeechRecognitionBackend()
+        await backend.blockNextStart()
+        let transcriber = SFSpeechRecognizerTranscriber(backend: backend)
+
+        let startup = Task { try await transcriber.start() }
+        await backend.waitUntilStartIsBlocked()
+        await transcriber.cancel()
+        let prematureRestart = Task { try await transcriber.start() }
+        await backend.resumeStart()
+
+        await #expect(throws: CancellationError.self) { try await startup.value }
+        await #expect(throws: CancellationError.self) { try await prematureRestart.value }
+        _ = try await transcriber.start()
+        #expect(await backend.cancelCount == 2)
+        await transcriber.cancel()
+    }
+
+    @Test func canceledStartupTaskCleansUpTheBackend() async throws {
+        let backend = StubStreamingSpeechRecognitionBackend()
+        await backend.blockNextStart()
+        let transcriber = SFSpeechRecognizerTranscriber(backend: backend)
+
+        let startup = Task { try await transcriber.start() }
+        await backend.waitUntilStartIsBlocked()
+        startup.cancel()
+        await backend.resumeStart()
+
+        await #expect(throws: CancellationError.self) { try await startup.value }
+        #expect(await backend.cancelCount == 1)
+        _ = try await transcriber.start()
+        await transcriber.cancel()
+    }
+
     private func makeCaptureBuffer() throws -> AudioCaptureBuffer {
         let format = try #require(AVAudioFormat(standardFormatWithSampleRate: 48_000, channels: 1))
         let source = try #require(AVAudioPCMBuffer(pcmFormat: format, frameCapacity: 1))
@@ -70,12 +104,18 @@ private actor StubStreamingSpeechRecognitionBackend: StreamingSpeechRecognitionB
     private(set) var startCount = 0
     private(set) var endAudioCount = 0
     private(set) var cancelCount = 0
+    private var shouldBlockNextStart = false
+    private var blockedStartContinuation: CheckedContinuation<Void, Never>?
 
     func start(
         localeIdentifier _: String,
         handler: @escaping @Sendable (StreamingSpeechRecognitionEvent) -> Void
-    ) {
+    ) async {
         startCount += 1
+        if shouldBlockNextStart {
+            shouldBlockNextStart = false
+            await withCheckedContinuation { blockedStartContinuation = $0 }
+        }
         self.handler = handler
     }
 
@@ -92,5 +132,18 @@ private actor StubStreamingSpeechRecognitionBackend: StreamingSpeechRecognitionB
 
     func emit(_ event: StreamingSpeechRecognitionEvent) {
         handler?(event)
+    }
+
+    func blockNextStart() {
+        shouldBlockNextStart = true
+    }
+
+    func waitUntilStartIsBlocked() async {
+        while blockedStartContinuation == nil { await Task.yield() }
+    }
+
+    func resumeStart() {
+        blockedStartContinuation?.resume()
+        blockedStartContinuation = nil
     }
 }
