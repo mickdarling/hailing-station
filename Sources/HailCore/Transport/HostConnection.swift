@@ -46,6 +46,7 @@ public actor HostConnection {
     var generation: UInt64 = 0
     var wantsConnection = false
     var pendingPings: [String: ContinuousClock.Instant] = [:]
+    var desiredTargetID: String?
     public init(
         endpoint: HostEndpoint,
         connector: any WebSocketConnecting = URLSessionWebSocketConnector(),
@@ -88,7 +89,10 @@ public actor HostConnection {
 
     public func selectTarget(_ targetID: String) async throws {
         try requireReady(capability: "select_target")
-        try await send(.select(targetID: targetID), generation: generation)
+        let token = generation
+        try await send(.select(targetID: targetID), generation: token)
+        try await confirmRoundTrip(generation: token)
+        desiredTargetID = targetID
     }
 
     public func sendFinalText(_ text: String, to targetID: String) async throws {
