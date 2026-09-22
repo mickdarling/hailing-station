@@ -5,20 +5,22 @@ struct ReplyPlaybackView: View {
     let reply: ReplyPresentation
     @Bindable var playback: ReplyPlaybackController
 
+    private var displayedReply: ReplyPresentation { playback.presentationForControls ?? reply }
+
     var body: some View {
         GroupBox {
             VStack(alignment: .leading, spacing: 12) {
-                Text(reply.transcript ?? "Receiving spoken reply…")
+                Text(displayedReply.transcript ?? "Receiving spoken reply…")
                     .frame(maxWidth: .infinity, alignment: .leading)
-                    .foregroundStyle(reply.transcript == nil ? .secondary : .primary)
+                    .foregroundStyle(displayedReply.transcript == nil ? .secondary : .primary)
                     .textSelection(.enabled)
 
                 HStack {
-                    Label(playback.status, systemImage: playbackStatusImage)
+                    Label(playback.statusForControls, systemImage: playbackStatusImage)
                         .font(.caption.weight(.semibold))
                         .foregroundStyle(.secondary)
                     Spacer()
-                    Text("\(reply.host) · \(reply.target)")
+                    Text("\(displayedReply.host) · \(displayedReply.target)")
                         .font(.caption.monospaced())
                         .foregroundStyle(.tertiary)
                         .lineLimit(1)

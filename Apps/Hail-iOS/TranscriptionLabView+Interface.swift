@@ -62,11 +62,11 @@ extension TranscriptionLabView {
             .contentShape(Rectangle())
         }
         .buttonStyle(.plain)
-        .disabled(isStarting || isFinalizing)
+        .disabled(isStarting || isFinalizing || isInterrupting)
         .accessibilityIdentifier("station.talk")
         .accessibilityLabel(actionLabel)
         .accessibilityValue(status)
-        .accessibilityHint(isRecording ? "Stops listening and sends the request." : "Starts listening.")
+        .accessibilityHint(talkHint)
     }
 
     @ViewBuilder
@@ -107,8 +107,16 @@ extension TranscriptionLabView {
     }
 
     var actionLabel: String {
+        if isInterrupting { return "Interrupting…" }
         if isFinalizing { return "Finalizing…" }
         if isRecording { return "Tap to finish" }
         return isStarting ? "Starting…" : "Tap to talk"
+    }
+
+    var talkHint: String {
+        guard isRecording else { return "Starts listening." }
+        return onFinalized == nil
+            ? "Stops listening and finalizes the local transcript."
+            : "Stops listening and sends the request."
     }
 }

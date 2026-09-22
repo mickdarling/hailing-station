@@ -6,10 +6,14 @@ import Speech
 
 /// A partial or final transcription result (#6).
 public struct TranscriptionResult: Sendable, Equatable {
+    public static let unscopedUtteranceID = UUID(uuid: (0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0))
+
+    public let utteranceID: UUID
     public let text: String
     public let isFinal: Bool
 
-    public init(text: String, isFinal: Bool) {
+    public init(utteranceID: UUID = unscopedUtteranceID, text: String, isFinal: Bool) {
+        self.utteranceID = utteranceID
         self.text = text
         self.isFinal = isFinal
     }
@@ -18,11 +22,13 @@ public struct TranscriptionResult: Sendable, Equatable {
 /// Turns captured audio into text on the device. SpeechAnalyzer is the first implementation (#6).
 public protocol Transcriber: Sendable {
     var results: AsyncStream<TranscriptionResult> { get }
-    func start() async throws
+    @discardableResult func start() async throws -> UUID
     func consume(_ buffer: AudioCaptureBuffer) async throws
     /// Finalizes the current utterance and returns the same final text published through `results`.
     /// Returning it closes the race between UI observation and immediate audio-first delivery.
     func stop() async -> String
+    /// Stops immediately without finalizing or publishing the current utterance.
+    func cancel() async
 }
 
 public enum SpeechAnalyzerTranscriberError: LocalizedError, Sendable, Equatable {
@@ -48,15 +54,15 @@ public enum SpeechAnalyzerTranscriberError: LocalizedError, Sendable, Equatable 
 public actor SpeechAnalyzerTranscriber: Transcriber {
     public nonisolated let results: AsyncStream<TranscriptionResult>
 
-    private let localeIdentifier: String
-    private let resultContinuation: AsyncStream<TranscriptionResult>.Continuation
+    let localeIdentifier: String
+    let resultContinuation: AsyncStream<TranscriptionResult>.Continuation
     private var analyzer: SpeechAnalyzer?
     private var analyzerInput: AsyncStream<AnalyzerInput>.Continuation?
     private var analyzerFormat: AVAudioFormat?
-    private var converter: AVAudioConverter?
-    private var resultTask: Task<Void, Never>?
-    private var utteranceFinalText = ""
-    private var utteranceVolatileText = ""
+    var converter: AVAudioConverter?
+    private var resultTask: Task<String, Never>?
+    private var utteranceID: UUID?
+    private var operationGeneration: UInt64 = 0
 
     public init(localeIdentifier: String = "en-US") {
         self.localeIdentifier = localeIdentifier
@@ -71,68 +77,43 @@ public actor SpeechAnalyzerTranscriber: Transcriber {
         resultContinuation.finish()
     }
 
-    public func start() async throws {
-        guard analyzer == nil else { return }
-        utteranceFinalText = ""
-        utteranceVolatileText = ""
+    public func start() async throws -> UUID {
+        if analyzer != nil, let utteranceID { return utteranceID }
+        operationGeneration &+= 1
+        let generation = operationGeneration
+        let utteranceID = UUID()
         let (transcriber, format) = try await prepareTranscriber()
+        try requireCurrent(generation)
         let modules: [any SpeechModule] = [transcriber]
         let pair = AsyncStream<AnalyzerInput>.makeStream(bufferingPolicy: .unbounded)
         let analyzer = SpeechAnalyzer(modules: modules)
-        try await analyzer.prepareToAnalyze(in: format)
-
-        resultTask = Task { [resultContinuation] in
-            do {
-                for try await result in transcriber.results {
-                    guard !Task.isCancelled else { return }
-                    let text = String(result.text.characters).trimmingCharacters(in: .whitespacesAndNewlines)
-                    if result.isFinal {
-                        if !text.isEmpty {
-                            self.utteranceFinalText = [self.utteranceFinalText, text]
-                                .filter { !$0.isEmpty }.joined(separator: " ")
-                        }
-                        self.utteranceVolatileText = ""
-                    } else {
-                        self.utteranceVolatileText = text
-                    }
-                    resultContinuation.yield(TranscriptionResult(text: text, isFinal: result.isFinal))
-                }
-            } catch {
-                // Feed and setup errors are reported to the caller. Result-stream failures end this utterance.
-            }
+        do {
+            try await analyzer.prepareToAnalyze(in: format)
+            try requireCurrent(generation)
+        } catch {
+            await analyzer.cancelAndFinishNow()
+            throw error
         }
 
+        let resultTask = makeResultTask(for: transcriber, utteranceID: utteranceID)
+
         self.analyzer = analyzer
+        self.utteranceID = utteranceID
+        self.resultTask = resultTask
         analyzerInput = pair.continuation
         analyzerFormat = format
         converter = nil
         do {
             try await analyzer.start(inputSequence: pair.stream)
+            try requireCurrent(generation)
         } catch {
             pair.continuation.finish()
-            resultTask?.cancel()
+            resultTask.cancel()
             await analyzer.cancelAndFinishNow()
-            reset()
+            if operationGeneration == generation { reset() }
             throw error
         }
-    }
-
-    private func prepareTranscriber() async throws -> (SpeechTranscriber, AVAudioFormat) {
-        guard SpeechTranscriber.isAvailable else { throw SpeechAnalyzerTranscriberError.unavailable }
-        let requestedLocale = Locale(identifier: localeIdentifier)
-        guard let locale = await SpeechTranscriber.supportedLocale(equivalentTo: requestedLocale) else {
-            throw SpeechAnalyzerTranscriberError.unsupportedLocale(localeIdentifier)
-        }
-
-        let transcriber = SpeechTranscriber(locale: locale, preset: .progressiveTranscription)
-        if let installation = try await AssetInventory.assetInstallationRequest(supporting: [transcriber]) {
-            try await installation.downloadAndInstall()
-        }
-        let modules: [any SpeechModule] = [transcriber]
-        guard let format = await SpeechAnalyzer.bestAvailableAudioFormat(compatibleWith: modules) else {
-            throw SpeechAnalyzerTranscriberError.noCompatibleAudioFormat
-        }
-        return (transcriber, format)
+        return utteranceID
     }
 
     public func consume(_ buffer: AudioCaptureBuffer) async throws {
@@ -144,47 +125,36 @@ public actor SpeechAnalyzerTranscriber: Transcriber {
     }
 
     public func stop() async -> String {
-        guard let analyzer else { return "" }
-        analyzerInput?.finish()
+        guard let analyzer, let resultTask else { return "" }
+        let generation = operationGeneration
+        let currentInput = analyzerInput
+        currentInput?.finish()
         do {
             try await analyzer.finalizeAndFinishThroughEndOfInput()
         } catch {
             await analyzer.cancelAndFinishNow()
         }
-        await resultTask?.value
-        let text = [utteranceFinalText, utteranceVolatileText].filter { !$0.isEmpty }.joined(separator: " ")
+        let text = await resultTask.value
+        guard operationGeneration == generation else { return "" }
+        operationGeneration &+= 1
         reset()
         return text
     }
 
-    private func convert(_ buffer: AVAudioPCMBuffer, to format: AVAudioFormat) throws -> AVAudioPCMBuffer {
-        if buffer.format == format { return buffer }
-        if converter?.inputFormat != buffer.format || converter?.outputFormat != format {
-            converter = AVAudioConverter(from: buffer.format, to: format)
-        }
-        guard let converter else { throw SpeechAnalyzerTranscriberError.conversionFailed }
+    public func cancel() async {
+        operationGeneration &+= 1
+        let currentAnalyzer = analyzer
+        let currentInput = analyzerInput
+        let currentResultTask = resultTask
+        reset()
+        currentInput?.finish()
+        currentResultTask?.cancel()
+        if let currentAnalyzer { await currentAnalyzer.cancelAndFinishNow() }
+    }
 
-        let ratio = format.sampleRate / buffer.format.sampleRate
-        let capacity = AVAudioFrameCount((Double(buffer.frameLength) * ratio).rounded(.up)) + 1
-        guard let output = AVAudioPCMBuffer(pcmFormat: format, frameCapacity: capacity) else {
-            throw SpeechAnalyzerTranscriberError.conversionFailed
-        }
-
-        let input = ConverterInput(buffer)
-        var conversionError: NSError?
-        let status = converter.convert(to: output, error: &conversionError) { _, inputStatus in
-            guard !input.wasSupplied else {
-                inputStatus.pointee = .noDataNow
-                return nil
-            }
-            input.wasSupplied = true
-            inputStatus.pointee = .haveData
-            return input.buffer
-        }
-        guard status != .error, conversionError == nil else {
-            throw SpeechAnalyzerTranscriberError.conversionFailed
-        }
-        return output
+    private func requireCurrent(_ generation: UInt64) throws {
+        try Task.checkCancellation()
+        guard operationGeneration == generation else { throw CancellationError() }
     }
 
     private func reset() {
@@ -193,5 +163,6 @@ public actor SpeechAnalyzerTranscriber: Transcriber {
         analyzerFormat = nil
         converter = nil
         resultTask = nil
+        utteranceID = nil
     }
 }

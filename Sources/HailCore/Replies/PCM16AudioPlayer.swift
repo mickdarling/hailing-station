@@ -27,14 +27,26 @@ public final class PCM16AudioPlayer: ReplyAudioPlaying {
         engine.connect(node, to: engine.mainMixerNode, format: sourceFormat)
     }
 
-    public func schedule(_ payload: AudioPayload) throws {
+    public func schedule(_ payload: AudioPayload, onPlayed: (@MainActor @Sendable () -> Void)?) throws {
         try prepare()
-        node.scheduleBuffer(try PCM16BufferConverter.buffer(payload))
+        let buffer = try PCM16BufferConverter.buffer(payload)
+        if let onPlayed {
+            node.scheduleBuffer(buffer, completionCallbackType: .dataPlayedBack) { _ in
+                Task { @MainActor in onPlayed() }
+            }
+        } else {
+            node.scheduleBuffer(buffer)
+        }
         if !node.isPlaying { node.play() }
     }
 
     public func pause() {
         node.pause()
+    }
+
+    public func cancel() {
+        node.stop()
+        node.reset()
     }
 
     public func resume() throws {
@@ -46,11 +58,22 @@ public final class PCM16AudioPlayer: ReplyAudioPlaying {
         node.volume = muted ? 0 : 1
     }
 
-    public func replaceQueue(with payloads: [AudioPayload]) throws {
+    public func replaceQueue(
+        with payloads: [AudioPayload], onPlayed: (@MainActor @Sendable () -> Void)?
+    ) throws {
         node.stop()
         node.reset()
         try prepare()
-        for payload in payloads { node.scheduleBuffer(try PCM16BufferConverter.buffer(payload)) }
+        for (index, payload) in payloads.enumerated() {
+            let buffer = try PCM16BufferConverter.buffer(payload)
+            if index == payloads.indices.last, let onPlayed {
+                node.scheduleBuffer(buffer, completionCallbackType: .dataPlayedBack) { _ in
+                    Task { @MainActor in onPlayed() }
+                }
+            } else {
+                node.scheduleBuffer(buffer)
+            }
+        }
         node.play()
     }
 

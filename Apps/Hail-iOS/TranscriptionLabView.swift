@@ -21,6 +21,8 @@ struct TranscriptionLabView: View {
     @State var isStarting = false
     @State var isFinalizing = false
     @State var hasReceivedAudio = false
+    @State var activeUtteranceID: UUID?
+    @State var isInterrupting = false
     @State var startTask: Task<Void, Never>?
     @State var bufferTask: Task<Void, Never>?
     @Environment(\.horizontalSizeClass) var horizontalSizeClass
