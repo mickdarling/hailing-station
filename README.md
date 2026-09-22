@@ -49,6 +49,7 @@ xcodegen generate
 Generated Xcode projects, signing material, local configuration, recordings, captures, and build products are intentionally excluded from version control.
 
 Physical-device signing, installation, audio-route checks, and privacy-safe diagnostics are covered by the [iPhone and iPad device-testing runbook](docs/device-testing.md).
+The current adaptive layout and sanitized interaction record are documented in the [mobile interface notes](docs/mobile-interface.md).
 
 ## Naming
 

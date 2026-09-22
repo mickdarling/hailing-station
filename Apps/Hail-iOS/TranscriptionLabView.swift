@@ -3,7 +3,7 @@ import HailCore
 import Speech
 import SwiftUI
 
-/// Temporary real-device surface for proving DJI/built-in capture through SpeechAnalyzer before terminal styling.
+/// Audio-first capture surface shared by compact and regular-width station layouts.
 @available(iOS 26.0, *)
 struct TranscriptionLabView: View {
     let audioSession: any AudioSessionDiagnosticsProviding
@@ -21,8 +21,11 @@ struct TranscriptionLabView: View {
     @State var isStarting = false
     @State var isFinalizing = false
     @State var hasReceivedAudio = false
+    @State var activeUtteranceID: UUID?
+    @State var isInterrupting = false
     @State var startTask: Task<Void, Never>?
     @State var bufferTask: Task<Void, Never>?
+    @Environment(\.horizontalSizeClass) var horizontalSizeClass
 
     init(
         audioSession: any AudioSessionDiagnosticsProviding,
@@ -41,106 +44,44 @@ struct TranscriptionLabView: View {
     }
 
     var body: some View {
-        VStack(spacing: 20) {
-            if let destinationLabel {
-                Label(destinationLabel, systemImage: "desktopcomputer")
+        VStack(spacing: 18) {
+            HStack(alignment: .firstTextBaseline) {
+                Label("You", systemImage: "person.wave.2")
                     .font(.headline)
-                    .frame(maxWidth: .infinity, alignment: .leading)
-            }
-            if isRecording || isStarting || isFinalizing {
-                ScrollView {
-                    Text(transcript.isEmpty ? "Listening…" : transcript)
-                        .frame(maxWidth: .infinity, alignment: .leading)
-                        .foregroundStyle(transcript.isEmpty ? .secondary : .primary)
-                        .textSelection(.enabled)
-                }
-                .frame(maxHeight: .infinity)
-            } else {
-                TextEditor(text: $finalText)
-                    .overlay(alignment: .topLeading) {
-                        if finalText.isEmpty {
-                            Text("Your transcript will appear here.")
-                                .foregroundStyle(.secondary)
-                                .padding(.horizontal, 5)
-                                .padding(.vertical, 8)
-                                .allowsHitTesting(false)
-                        }
-                    }
-                    .frame(maxHeight: .infinity)
-                    .accessibilityLabel("Last transcript")
-            }
-
-            Text(status)
-                .font(.caption)
-                .foregroundStyle(.secondary)
-                .accessibilityIdentifier("transcription.status")
-
-            Button(actionLabel) {
-                if isRecording {
-                    Task { await finish() }
-                } else {
-                    startTask = Task { await begin() }
+                Spacer()
+                if let destinationLabel {
+                    Label(destinationLabel, systemImage: "desktopcomputer")
+                        .font(.caption.weight(.semibold))
+                        .foregroundStyle(.secondary)
+                        .lineLimit(1)
                 }
             }
-            .buttonStyle(.borderedProminent)
-            .controlSize(.large)
-            .disabled(isStarting || isFinalizing)
+
+            transcriptSurface
+
+            talkButton
 
             if let onEscape {
                 Button(role: .destructive) {
-                    Task {
-                        do {
-                            try await onEscape()
-                            status = "Escape sent"
-                        } catch {
-                            status = "Escape failed: \(error.localizedDescription)"
-                        }
-                    }
+                    Task { await interruptTarget(using: onEscape) }
                 } label: {
                     Label("Escape", systemImage: "xmark.octagon.fill")
                 }
                 .buttonStyle(.bordered)
                 .controlSize(.large)
-                .disabled(isRecording || isStarting || isFinalizing)
+                .disabled(isFinalizing)
+                .accessibilityHint("Discards any active recording and sends Escape immediately to the target.")
             }
 
-            if let onFinalized {
-                Button("Send edited correction") {
-                    let correction = finalText.trimmingCharacters(in: .whitespacesAndNewlines)
-                    Task {
-                        do {
-                            try await onFinalized(correction)
-                            status = "Correction sent"
-                        } catch {
-                            status = "Correction failed: \(error.localizedDescription)"
-                        }
-                    }
-                }
-                .disabled(isRecording || isStarting || isFinalizing || finalText.isEmpty)
-            }
-
-            Button("Clear") {
-                finalText = ""
-                volatileText = ""
-            }
-            .disabled(isRecording || transcript.isEmpty)
+            transcriptActions
         }
-        .padding()
-        .navigationTitle("Live transcription")
+        .padding(18)
+        .background(.regularMaterial, in: RoundedRectangle(cornerRadius: 24, style: .continuous))
+        .navigationTitle("Conversation")
         .task { await observeResults() }
         .onDisappear {
             startTask?.cancel()
             Task { await finish(force: true) }
         }
-    }
-
-    private var transcript: String {
-        [finalText, volatileText].filter { !$0.isEmpty }.joined(separator: " ")
-    }
-
-    private var actionLabel: String {
-        if isFinalizing { return "Finalizing…" }
-        if isRecording { return "Tap to finish" }
-        return isStarting ? "Starting…" : "Tap to talk"
     }
 }

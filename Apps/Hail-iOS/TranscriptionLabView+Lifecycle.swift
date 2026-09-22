@@ -5,7 +5,7 @@ import Speech
 extension TranscriptionLabView {
     @MainActor
     func begin() async {
-        guard !isRecording, !isStarting, !isFinalizing else { return }
+        guard !isRecording, !isStarting, !isFinalizing, !isInterrupting else { return }
         isStarting = true
         hasReceivedAudio = false
         finalText = ""
@@ -24,7 +24,7 @@ extension TranscriptionLabView {
             try Task.checkCancellation()
             status = "Preparing on-device speech model…"
             try await audioSession.activate()
-            try await transcriber.start()
+            activeUtteranceID = try await transcriber.start()
             try Task.checkCancellation()
             let buffers = try capture.start()
             isRecording = true
@@ -40,8 +40,7 @@ extension TranscriptionLabView {
                 }
             }
         } catch is CancellationError {
-            _ = await cleanUp()
-            status = "Ready"
+            await handleStartCancellation()
         } catch {
             _ = await cleanUp()
             status = "Could not start: \(error.localizedDescription)"
@@ -50,7 +49,7 @@ extension TranscriptionLabView {
 
     @MainActor
     func finish(force: Bool = false) async {
-        guard !isFinalizing, force || isRecording || bufferTask != nil else { return }
+        guard !isInterrupting, !isFinalizing, force || isRecording || bufferTask != nil else { return }
         isFinalizing = true
         defer { isFinalizing = false }
         status = "Finalizing…"
@@ -64,6 +63,8 @@ extension TranscriptionLabView {
             status = "Nothing heard"
             return
         }
+        finalText = text
+        volatileText = ""
         if let onFinalized {
             status = "Sending…"
             do {
@@ -78,9 +79,49 @@ extension TranscriptionLabView {
     }
 
     @MainActor
+    func interruptTarget(using action: @MainActor () async throws -> Void) async {
+        guard !isInterrupting else { return }
+        isInterrupting = true
+        defer { isInterrupting = false }
+        let discardedUtterance = isStarting || isRecording || bufferTask != nil || activeUtteranceID != nil
+        let pendingStart = startTask
+        pendingStart?.cancel()
+        capture.stop()
+        bufferTask?.cancel()
+        bufferTask = nil
+        isRecording = false
+        activeUtteranceID = nil
+        if discardedUtterance {
+            finalText = ""
+            volatileText = ""
+        }
+        do {
+            try await action()
+            status = "Escape sent"
+        } catch {
+            status = "Escape failed: \(error.localizedDescription)"
+        }
+        if discardedUtterance {
+            await transcriber.cancel()
+            await audioSession.deactivate()
+        }
+        await pendingStart?.value
+    }
+
+    @MainActor
     private func fail(_ message: String) async {
         _ = await cleanUp(waitForBuffer: false)
         status = message
+    }
+
+    @MainActor
+    private func handleStartCancellation() async {
+        if isInterrupting {
+            await discardCapture()
+        } else {
+            _ = await cleanUp()
+            status = "Ready"
+        }
     }
 
     @MainActor
@@ -90,6 +131,7 @@ extension TranscriptionLabView {
         bufferTask = nil
         if waitForBuffer { await task?.value }
         let finalized = await transcriber.stop()
+        activeUtteranceID = nil
         await audioSession.deactivate()
         isRecording = false
         return finalized
@@ -98,6 +140,7 @@ extension TranscriptionLabView {
     @MainActor
     func observeResults() async {
         for await result in transcriber.results {
+            guard result.utteranceID == activeUtteranceID else { continue }
             if result.isFinal {
                 appendFinal(result.text)
                 volatileText = ""
@@ -105,6 +148,17 @@ extension TranscriptionLabView {
                 volatileText = result.text.trimmingCharacters(in: .whitespacesAndNewlines)
             }
         }
+    }
+
+    @MainActor
+    private func discardCapture() async {
+        capture.stop()
+        bufferTask?.cancel()
+        bufferTask = nil
+        activeUtteranceID = nil
+        await transcriber.cancel()
+        await audioSession.deactivate()
+        isRecording = false
     }
 
     private func appendFinal(_ text: String) {
