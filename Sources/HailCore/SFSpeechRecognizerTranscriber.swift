@@ -1,11 +1,6 @@
-import AVFAudio
 public import Foundation
-#if canImport(Speech)
-@preconcurrency import Speech
-#endif
-/// Short-form streaming transcription for systems before SpeechAnalyzer. The backend requires Apple's
-/// on-device recognizer for the current device and locale. Capture remains outside this type so both
-/// speech implementations share one audio path without uploading audio for recognition.
+/// Pre-SpeechAnalyzer streaming transcription requiring Apple's on-device recognizer. Capture remains
+/// outside this type so both speech implementations share one path without uploading audio for recognition.
 public actor SFSpeechRecognizerTranscriber: Transcriber {
     public nonisolated let results: AsyncStream<TranscriptionResult>
     private let localeIdentifier: String
@@ -16,6 +11,8 @@ public actor SFSpeechRecognizerTranscriber: Transcriber {
     private var eventTask: Task<Void, Never>?
     private var completionContinuation: AsyncStream<String>.Continuation?
     private var completionTask: Task<String, Never>?
+    private var stopCleanupContinuation: AsyncStream<String>.Continuation?
+    private var stopCleanupTask: Task<String, Never>?
     private var timeoutTask: Task<Void, Never>?
     private var utteranceID: UUID?
     private var backendTransitionGeneration: UInt64?
@@ -48,6 +45,8 @@ public actor SFSpeechRecognizerTranscriber: Transcriber {
         eventContinuation?.finish()
         completionTask?.cancel()
         completionContinuation?.finish()
+        stopCleanupTask?.cancel()
+        stopCleanupContinuation?.finish()
         resultContinuation.finish()
     }
     public func start() async throws -> UUID {
@@ -74,13 +73,9 @@ public actor SFSpeechRecognizerTranscriber: Transcriber {
         latestText = ""
         self.utteranceID = utteranceID
         do {
-            try await backend.start(localeIdentifier: localeIdentifier) { event in
-                events.continuation.yield(event)
-            }
+            try await backend.start(localeIdentifier: localeIdentifier) { events.continuation.yield($0) }
             try requireCurrent(generation: generation, utteranceID: utteranceID)
         } catch {
-            // A backend may finish starting after cancel() has already returned. Keep later starts
-            // out until this stale startup is torn down, or its cleanup could cancel the new session.
             await backend.cancel()
             if backendTransitionGeneration == generation { backendTransitionGeneration = nil }
             if operationGeneration == generation, self.utteranceID == utteranceID {
@@ -98,10 +93,16 @@ public actor SFSpeechRecognizerTranscriber: Transcriber {
         try await backend.append(buffer)
     }
     public func stop() async -> String {
+        if let stopCleanupTask { return await stopCleanupTask.value }
         guard let utteranceID, let completionTask else { return "" }
         if backendTransitionGeneration == operationGeneration {
-            if timeoutTask != nil { return await completionTask.value }
             await cancel()
+            return ""
+        }
+        let cleanup = AsyncStream<String>.makeStream(bufferingPolicy: .bufferingNewest(1))
+        stopCleanupContinuation = cleanup.continuation
+        stopCleanupTask = Task {
+            for await text in cleanup.stream { return text }
             return ""
         }
         let generation = operationGeneration
@@ -116,15 +117,16 @@ public actor SFSpeechRecognizerTranscriber: Transcriber {
         let text = await completionTask.value
         timeoutTask?.cancel()
         timeoutTask = nil
-        guard operationGeneration == generation else { return "" }
+        guard operationGeneration == generation else { return await stopCleanupTask?.value ?? "" }
         operationGeneration &+= 1
         reset()
         await backend.cancel()
         if backendTransitionGeneration == generation { backendTransitionGeneration = nil }
+        completeStopCleanup(with: text)
         return text
     }
     public func cancel() async {
-        let wasFinalizing = timeoutTask != nil
+        let wasStopping = stopCleanupTask != nil
         operationGeneration &+= 1
         let cancellationGeneration = operationGeneration
         if backendTransitionGeneration == nil { backendTransitionGeneration = cancellationGeneration }
@@ -133,17 +135,14 @@ public actor SFSpeechRecognizerTranscriber: Transcriber {
         complete(with: "")
         reset()
         await backend.cancel()
-        if wasFinalizing || backendTransitionGeneration == cancellationGeneration {
+        if wasStopping || backendTransitionGeneration == cancellationGeneration {
             backendTransitionGeneration = nil
         }
+        if wasStopping { completeStopCleanup(with: "") }
     }
 }
 private extension SFSpeechRecognizerTranscriber {
-    func receive(
-        _ event: StreamingSpeechRecognitionEvent,
-        generation: UInt64,
-        utteranceID: UUID
-    ) {
+    func receive(_ event: StreamingSpeechRecognitionEvent, generation: UInt64, utteranceID: UUID) {
         guard operationGeneration == generation, self.utteranceID == utteranceID,
               !didFinalize else { return }
         switch event {
@@ -151,9 +150,7 @@ private extension SFSpeechRecognizerTranscriber {
             let trimmed = text.trimmingCharacters(in: .whitespacesAndNewlines)
             if isFinal || !trimmed.isEmpty { latestText = trimmed }
             if isFinal { didFinalize = true }
-            resultContinuation.yield(
-                TranscriptionResult(utteranceID: utteranceID, text: trimmed, isFinal: isFinal)
-            )
+            resultContinuation.yield(TranscriptionResult(utteranceID: utteranceID, text: trimmed, isFinal: isFinal))
             if isFinal { complete(with: latestText) }
         case .failed:
             publishFinal(utteranceID: utteranceID)
@@ -166,21 +163,23 @@ private extension SFSpeechRecognizerTranscriber {
     func publishFinal(utteranceID: UUID) {
         guard !didFinalize else { return }
         didFinalize = true
-        resultContinuation.yield(
-            TranscriptionResult(utteranceID: utteranceID, text: latestText, isFinal: true)
-        )
+        resultContinuation.yield(TranscriptionResult(utteranceID: utteranceID, text: latestText, isFinal: true))
         complete(with: latestText)
     }
     func requireCurrent(generation: UInt64, utteranceID: UUID) throws {
         try Task.checkCancellation()
-        guard operationGeneration == generation, self.utteranceID == utteranceID else {
-            throw CancellationError()
-        }
+        guard operationGeneration == generation, self.utteranceID == utteranceID else { throw CancellationError() }
     }
     func complete(with text: String) {
         completionContinuation?.yield(text)
         completionContinuation?.finish()
         completionContinuation = nil
+    }
+    func completeStopCleanup(with text: String) {
+        stopCleanupContinuation?.yield(text)
+        stopCleanupContinuation?.finish()
+        stopCleanupContinuation = nil
+        stopCleanupTask = nil
     }
     func reset() {
         timeoutTask?.cancel()

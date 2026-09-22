@@ -5,6 +5,7 @@ extension SFSpeechRecognizerTranscriberTests {
     @Test func startIsBlockedWhileStopBeginsFinalization() async throws {
         let backend = StubStreamingSpeechRecognitionBackend()
         await backend.blockNextEndAudio()
+        await backend.blockNextCancel()
         let transcriber = SFSpeechRecognizerTranscriber(backend: backend)
         _ = try await transcriber.start()
 
@@ -14,9 +15,14 @@ extension SFSpeechRecognizerTranscriberTests {
         let concurrentStop = Task { await transcriber.stop() }
         await backend.emit(.result(text: "finished", isFinal: true))
         await backend.resumeEndAudio()
+        await backend.waitUntilCancelIsBlocked()
+        let cleanupStop = Task { await transcriber.stop() }
+        await #expect(throws: CancellationError.self) { try await transcriber.start() }
+        await backend.resumeCancel()
 
         #expect(await stopping.value == "finished")
         #expect(await concurrentStop.value == "finished")
+        #expect(await cleanupStop.value == "finished")
     }
 
     @Test func finalizationTimeoutPublishesTheReturnedFinalText() async throws {
