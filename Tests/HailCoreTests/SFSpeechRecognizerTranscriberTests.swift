@@ -25,12 +25,16 @@ import Testing
     @Test func recognitionFailureFinalizesTheLatestPartialText() async throws {
         let backend = StubStreamingSpeechRecognitionBackend()
         let transcriber = SFSpeechRecognizerTranscriber(backend: backend)
+        var iterator = transcriber.results.makeAsyncIterator()
 
-        _ = try await transcriber.start()
+        let utteranceID = try await transcriber.start()
         await backend.emit(.result(text: "send this", isFinal: false))
+        _ = await iterator.next()
         await backend.emit(.failed)
+        let final = await iterator.next()
 
         #expect(await transcriber.stop() == "send this")
+        #expect(final == TranscriptionResult(utteranceID: utteranceID, text: "send this", isFinal: true))
     }
 
     @Test func cancelDiscardsTheUtteranceAndAllowsAnotherStart() async throws {
@@ -105,59 +109,48 @@ import Testing
         await transcriber.cancel()
     }
 
+    @Test func finalizationTimeoutPublishesTheReturnedFinalText() async throws {
+        let backend = StubStreamingSpeechRecognitionBackend()
+        let transcriber = SFSpeechRecognizerTranscriber(
+            backend: backend, finalizationTimeout: .milliseconds(1)
+        )
+        var iterator = transcriber.results.makeAsyncIterator()
+
+        let utteranceID = try await transcriber.start()
+        await backend.emit(.result(text: "timed out final", isFinal: false))
+        _ = await iterator.next()
+        let text = await transcriber.stop()
+        let final = await iterator.next()
+
+        #expect(text == "timed out final")
+        #expect(final == TranscriptionResult(
+            utteranceID: utteranceID, text: "timed out final", isFinal: true
+        ))
+    }
+
+    @Test func startWaitsForStopCleanupToFinish() async throws {
+        let backend = StubStreamingSpeechRecognitionBackend()
+        let transcriber = SFSpeechRecognizerTranscriber(backend: backend)
+        var iterator = transcriber.results.makeAsyncIterator()
+        _ = try await transcriber.start()
+        await backend.emit(.result(text: "done", isFinal: true))
+        _ = await iterator.next()
+        await backend.blockNextCancel()
+
+        let stopping = Task { await transcriber.stop() }
+        await backend.waitUntilCancelIsBlocked()
+        await #expect(throws: CancellationError.self) { try await transcriber.start() }
+        await backend.resumeCancel()
+
+        #expect(await stopping.value == "done")
+        _ = try await transcriber.start()
+        await transcriber.cancel()
+    }
+
     private func makeCaptureBuffer() throws -> AudioCaptureBuffer {
         let format = try #require(AVAudioFormat(standardFormatWithSampleRate: 48_000, channels: 1))
         let source = try #require(AVAudioPCMBuffer(pcmFormat: format, frameCapacity: 1))
         source.frameLength = 1
         return try #require(AudioCaptureBuffer(copying: source))
-    }
-}
-
-private actor StubStreamingSpeechRecognitionBackend: StreamingSpeechRecognitionBackend {
-    private var handler: (@Sendable (StreamingSpeechRecognitionEvent) -> Void)?
-    private(set) var startCount = 0
-    private(set) var endAudioCount = 0
-    private(set) var cancelCount = 0
-    private var shouldBlockNextStart = false
-    private var blockedStartContinuation: CheckedContinuation<Void, Never>?
-
-    func start(
-        localeIdentifier _: String,
-        handler: @escaping @Sendable (StreamingSpeechRecognitionEvent) -> Void
-    ) async {
-        startCount += 1
-        if shouldBlockNextStart {
-            shouldBlockNextStart = false
-            await withCheckedContinuation { blockedStartContinuation = $0 }
-        }
-        self.handler = handler
-    }
-
-    func append(_: AudioCaptureBuffer) {}
-
-    func endAudio() {
-        endAudioCount += 1
-    }
-
-    func cancel() {
-        cancelCount += 1
-        handler = nil
-    }
-
-    func emit(_ event: StreamingSpeechRecognitionEvent) {
-        handler?(event)
-    }
-
-    func blockNextStart() {
-        shouldBlockNextStart = true
-    }
-
-    func waitUntilStartIsBlocked() async {
-        while blockedStartContinuation == nil { await Task.yield() }
-    }
-
-    func resumeStart() {
-        blockedStartContinuation?.resume()
-        blockedStartContinuation = nil
     }
 }
