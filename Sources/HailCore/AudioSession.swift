@@ -1,10 +1,13 @@
-public actor ManagedAudioSession: AudioSessionDiagnosticsProviding {
+public actor ManagedAudioSession: AudioInputSelectionProviding {
     let backend: any AudioSessionBackend
     let preferences: AudioInputPreferences
     let preferenceStore: any AudioInputPreferenceStoring
     let eventBroadcast = AudioSessionEventBroadcast()
     private var backendTask: Task<Void, Never>?
     var latestDiagnostics = AudioSessionDiagnostics.inactive
+    var latestInputSelectionState = AudioInputSelectionState.inactive
+    var failedInputAttempt: AudioPort?
+    var inputFailureDescription: String?
     var savedPreferredInput: AudioPort?
     var pendingPreferredInput: AudioPort?
     var loadedPreference = false
@@ -35,8 +38,10 @@ public actor ManagedAudioSession: AudioSessionDiagnosticsProviding {
         eventBroadcast.finish()
     }
 
-    public var diagnostics: AudioSessionDiagnostics {
-        latestDiagnostics
+    public var diagnostics: AudioSessionDiagnostics { latestDiagnostics }
+
+    public var inputSelectionState: AudioInputSelectionState {
+        latestInputSelectionState
     }
 
     public var events: AsyncStream<AudioSessionEvent> {
@@ -53,7 +58,7 @@ public actor ManagedAudioSession: AudioSessionDiagnosticsProviding {
             activeInputSelectionGeneration = nil
             pendingPreferredInput = nil
             routeReconciliationNeeded = false
-            latestDiagnostics = await backend.diagnostics(isActive: false)
+            recordDiagnostics(await backend.diagnostics(isActive: false))
             eventBroadcast.yield(.interruptionBegan)
         case .interruptionEnded(let shouldResume):
             await handleInterruptionEnd(shouldResume: shouldResume)
@@ -64,14 +69,55 @@ public actor ManagedAudioSession: AudioSessionDiagnosticsProviding {
 extension ManagedAudioSession {
     func publish(_ diagnostics: AudioSessionDiagnostics) {
         diagnosticsRevision &+= 1
-        latestDiagnostics = diagnostics
+        recordDiagnostics(diagnostics)
         eventBroadcast.yield(.routeChanged(diagnostics))
+    }
+
+    func recordDiagnostics(_ diagnostics: AudioSessionDiagnostics) {
+        latestDiagnostics = diagnostics
+        guard diagnostics.isActive else {
+            failedInputAttempt = nil
+            inputFailureDescription = nil
+            latestInputSelectionState = .inactive
+            return
+        }
+        if let failureDescription = inputFailureDescription,
+           failedInputAttempt == nil || failedInputAttempt?.id != diagnostics.input?.id {
+            latestInputSelectionState = AudioInputSelectionState(
+                resolution: .failed,
+                preferred: savedPreferredInput,
+                attempted: failedInputAttempt,
+                active: diagnostics.input,
+                failureDescription: failureDescription
+            )
+            return
+        }
+        failedInputAttempt = nil
+        inputFailureDescription = nil
+        let resolution: AudioInputSelectionResolution = if savedPreferredInput == nil {
+            .automatic
+        } else if savedPreferredInput?.id == diagnostics.input?.id {
+            .confirmed
+        } else {
+            .fallback
+        }
+        latestInputSelectionState = AudioInputSelectionState(
+            resolution: resolution,
+            preferred: savedPreferredInput,
+            attempted: diagnostics.input,
+            active: diagnostics.input
+        )
+    }
+
+    func stageInputFailure(attempted: AudioPort?, error: any Error) {
+        failedInputAttempt = attempted
+        inputFailureDescription = error.localizedDescription
     }
 
     func validateRouteApplication(_ generation: Int?) throws {
         guard let generation else { return }
         guard generation == inputSelectionGeneration,
-              activeInputSelectionGeneration == nil,
+              activeInputSelectionGeneration == nil || activeInputSelectionGeneration == generation,
               wantsActive,
               sessionActive else {
             throw AudioInputSelectionError.superseded
@@ -91,7 +137,7 @@ extension ManagedAudioSession {
     }
 
     @discardableResult
-    func reconcileRouteWhenIdle() async -> Bool {
+    func reconcileRouteWhenIdle() async throws -> Bool {
         var reconciled = false
         while routeReconciliationNeeded, activeInputSelectionGeneration == nil, wantsActive, sessionActive {
             routeReconciliationNeeded = false
@@ -102,7 +148,15 @@ extension ManagedAudioSession {
             } catch AudioInputSelectionError.superseded {
                 routeReconciliationNeeded = true
             } catch {
-                return reconciled
+                let attempted: AudioPort?
+                if case .routeMismatch(let expected, _) = error as? AudioInputSelectionError {
+                    attempted = expected
+                } else {
+                    attempted = nil
+                }
+                stageInputFailure(attempted: attempted, error: error)
+                await recordInputFailure(attempted: attempted, error: error, generation: generation)
+                throw error
             }
         }
         return reconciled
@@ -113,7 +167,7 @@ private extension ManagedAudioSession {
     private func handleRouteChange() async {
         if wantsActive {
             routeReconciliationNeeded = true
-            await reconcileRouteWhenIdle()
+            _ = try? await reconcileRouteWhenIdle()
         }
         let generation = inputSelectionGeneration
         let revision = diagnosticsRevision
@@ -126,7 +180,7 @@ private extension ManagedAudioSession {
     private func handleInterruptionEnd(shouldResume: Bool) async {
         guard wantsActive, shouldResume else {
             sessionActive = false
-            latestDiagnostics = await backend.diagnostics(isActive: false)
+            recordDiagnostics(await backend.diagnostics(isActive: false))
             eventBroadcast.yield(.interruptionEnded(resumed: false))
             return
         }
@@ -134,12 +188,12 @@ private extension ManagedAudioSession {
             try await backend.setActive(true)
             sessionActive = true
             try await selectPreferredInput()
-            latestDiagnostics = await backend.diagnostics(isActive: true)
+            recordDiagnostics(await backend.diagnostics(isActive: true))
             eventBroadcast.yield(.interruptionEnded(resumed: true))
         } catch {
             sessionActive = false
             try? await backend.setActive(false)
-            latestDiagnostics = await backend.diagnostics(isActive: false)
+            recordDiagnostics(await backend.diagnostics(isActive: false))
             eventBroadcast.yield(.interruptionEnded(resumed: false))
         }
     }
