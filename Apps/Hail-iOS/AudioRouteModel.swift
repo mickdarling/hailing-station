@@ -4,15 +4,16 @@ import Observation
 /// One UI-facing audio-route subscription shared by the station and diagnostics screens.
 @MainActor
 @Observable
-final class AudioRouteModel: AudioSessionDiagnosticsProviding {
-    let controller: any AudioSessionDiagnosticsProviding
+final class AudioRouteModel: AudioInputSelectionProviding {
+    let controller: any AudioInputSelectionProviding
 
     private(set) var diagnostics = AudioSessionDiagnostics.inactive
     private(set) var inputs: [AudioPort] = []
     private(set) var preferredInput: AudioPort?
+    private(set) var selectionState = AudioInputSelectionState.inactive
     private(set) var status = "Audio inactive"
 
-    init(controller: any AudioSessionDiagnosticsProviding) {
+    init(controller: any AudioInputSelectionProviding) {
         self.controller = controller
     }
 
@@ -53,6 +54,7 @@ final class AudioRouteModel: AudioSessionDiagnosticsProviding {
     func select(_ input: AudioPort?) async {
         let name = input?.name ?? "Automatic"
         do {
+            if !diagnostics.isActive { try await controller.activate() }
             try await selectInput(id: input?.id)
         } catch {
             await refresh()
@@ -60,8 +62,22 @@ final class AudioRouteModel: AudioSessionDiagnosticsProviding {
         }
     }
 
+    func retry() async {
+        do {
+            if !diagnostics.isActive { try await controller.activate() }
+            try await retryInputSelection()
+        } catch {
+            await refresh()
+            status = "Retry failed: \(error.localizedDescription)"
+        }
+    }
+
     var events: AsyncStream<AudioSessionEvent> {
         get async { await controller.events }
+    }
+
+    var inputSelectionState: AudioInputSelectionState {
+        get async { await controller.inputSelectionState }
     }
 
     func selectInput(id: AudioPort.ID?) async throws {
@@ -70,11 +86,17 @@ final class AudioRouteModel: AudioSessionDiagnosticsProviding {
         status = preferredInput.map { "Using \($0.name)" } ?? activeInputStatus
     }
 
+    func retryInputSelection() async throws {
+        try await controller.retryInputSelection()
+        await refresh()
+    }
+
     func refresh() async {
         diagnostics = await controller.diagnostics
         inputs = await controller.availableInputs
         preferredInput = await controller.preferredInput
-        status = diagnostics.isActive ? activeInputStatus : "Audio inactive"
+        selectionState = await controller.inputSelectionState
+        status = diagnostics.isActive ? inputStateStatus : "Audio inactive"
     }
 
     var availableInputs: [AudioPort] { inputs }
@@ -94,8 +116,16 @@ final class AudioRouteModel: AudioSessionDiagnosticsProviding {
         return "\(preferredInput.name) · \(availability ? "not active" : "unavailable")"
     }
 
+    var hasInputFailure: Bool { selectionState.resolution == .failed }
+
+    var inputFailureDescription: String? { selectionState.failureDescription }
+
     var inputAccessibilityLabel: String {
         let active = diagnostics.input?.name ?? "no active microphone"
+        if hasInputFailure {
+            let attempted = selectionState.attempted?.name ?? "automatic selection"
+            return "Microphone, \(active). Could not apply \(attempted). Choose a microphone or retry."
+        }
         guard let preferredStateDescription else {
             return "Microphone, \(active). Choose microphone."
         }
@@ -107,8 +137,7 @@ final class AudioRouteModel: AudioSessionDiagnosticsProviding {
     }
 
     private var routeChangeStatus: String {
-        guard let preferredStateDescription else { return "Audio route changed" }
-        return "Route changed; preferred \(preferredStateDescription)"
+        hasInputFailure ? inputStateStatus : "Audio route changed; \(inputStateStatus)"
     }
 
     private var activeInputStatus: String {
@@ -116,5 +145,22 @@ final class AudioRouteModel: AudioSessionDiagnosticsProviding {
             return diagnostics.input.map { "Using \($0.name)" } ?? "Active with no microphone"
         }
         return "Active; preferred \(preferredStateDescription)"
+    }
+
+    private var inputStateStatus: String {
+        switch selectionState.resolution {
+        case .inactive:
+            return "Audio inactive"
+        case .automatic:
+            return diagnostics.input.map { "Using \($0.name) automatically" } ?? "No microphone active"
+        case .confirmed:
+            return diagnostics.input.map { "Using \($0.name)" } ?? "Preferred microphone is not active"
+        case .fallback:
+            let active = diagnostics.input?.name ?? "fallback input"
+            let preferred = preferredInput?.name ?? "input"
+            return "Using \(active); preferred \(preferred) unavailable"
+        case .failed:
+            return "Microphone needs attention: \(inputFailureDescription ?? "route request failed")"
+        }
     }
 }

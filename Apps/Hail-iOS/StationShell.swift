@@ -65,8 +65,17 @@ struct AudioRouteSummaryView: View {
                 }
                 Text(model.status)
                     .font(.caption)
-                    .foregroundStyle(.secondary)
+                    .foregroundStyle(model.hasInputFailure ? Color.red : Color.secondary)
                     .lineLimit(2)
+                if model.hasInputFailure {
+                    Button {
+                        Task { await model.retry() }
+                    } label: {
+                        Label("Retry microphone", systemImage: "arrow.clockwise")
+                    }
+                    .buttonStyle(.borderedProminent)
+                    .accessibilityHint("Retries the failed microphone route without changing your saved preference.")
+                }
             }
         } label: {
             Label("Audio route", systemImage: "waveform.circle")
@@ -105,19 +114,19 @@ struct AudioRouteSummaryView: View {
         } label: {
             routeTile(title: "Microphone", value: model.inputName, systemImage: "mic")
         }
-        .disabled(!model.diagnostics.isActive || model.inputs.isEmpty)
+        .disabled(model.inputs.isEmpty)
+        .accessibilityIdentifier("station.microphone")
         .accessibilityLabel(model.inputAccessibilityLabel)
         .accessibilityHint(
             model.diagnostics.isActive
                 ? "Opens the microphone list."
-                : "Microphone selection becomes available while audio is active."
+                : "Opens the microphone list and activates audio when you choose one."
         )
 
-        HStack(spacing: 8) {
+        AudioOutputRouteControl(outputName: model.outputName) {
             routeTile(title: "Output", value: model.outputName, systemImage: "speaker.wave.2")
-            AudioOutputRoutePicker()
-                .frame(width: 44, height: 44)
         }
+        .accessibilityIdentifier("station.output")
     }
 
     private func routeTile(title: String, value: String, systemImage: String) -> some View {

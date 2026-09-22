@@ -55,6 +55,7 @@ extension TranscriptionLabView {
         status = "Finalizing…"
         let finalized = await cleanUp()
         guard !force else {
+            await audioSession.deactivate()
             status = "Ready"
             return
         }
@@ -103,7 +104,6 @@ extension TranscriptionLabView {
         }
         if discardedUtterance {
             await transcriber.cancel()
-            await audioSession.deactivate()
         }
         await pendingStart?.value
     }
@@ -132,7 +132,6 @@ extension TranscriptionLabView {
         if waitForBuffer { await task?.value }
         let finalized = await transcriber.stop()
         activeUtteranceID = nil
-        await audioSession.deactivate()
         isRecording = false
         return finalized
     }
@@ -157,7 +156,6 @@ extension TranscriptionLabView {
         bufferTask = nil
         activeUtteranceID = nil
         await transcriber.cancel()
-        await audioSession.deactivate()
         isRecording = false
     }
 

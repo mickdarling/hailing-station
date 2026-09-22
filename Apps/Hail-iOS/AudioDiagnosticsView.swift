@@ -49,8 +49,15 @@ struct AudioDiagnosticsView: View {
                         systemImage: "mic"
                     )
                 }
-                .disabled(!model.diagnostics.isActive || model.inputs.isEmpty)
+                .disabled(model.inputs.isEmpty)
                 .accessibilityLabel(model.inputAccessibilityLabel)
+
+                if model.hasInputFailure {
+                    Button("Retry microphone") {
+                        Task { await model.retry() }
+                    }
+                    .accessibilityHint("Retries the failed route without changing the saved preference.")
+                }
 
                 if let preferredStateDescription = model.preferredStateDescription {
                     LabeledContent("Preferred", value: preferredStateDescription)
@@ -59,15 +66,12 @@ struct AudioDiagnosticsView: View {
                 }
             }
             Section("Output") {
-                HStack {
+                AudioOutputRouteControl(outputName: model.outputName) {
                     routeControlLabel(
                         title: "Output",
                         value: model.outputName,
                         systemImage: "speaker.wave.2"
                     )
-                    Spacer()
-                    AudioOutputRoutePicker()
-                        .frame(width: 44, height: 44)
                 }
             }
             Section("Preference") {
@@ -77,7 +81,6 @@ struct AudioDiagnosticsView: View {
         }
         .navigationTitle("Audio session")
         .task { await model.refresh() }
-        .onDisappear { Task { await model.deactivate() } }
     }
 }
 private extension AudioDiagnosticsView {
@@ -93,16 +96,36 @@ private extension AudioDiagnosticsView {
         .frame(maxWidth: .infinity, alignment: .leading)
     }
 }
+struct AudioOutputRouteControl<Label: View>: View {
+    let outputName: String
+    @ViewBuilder let label: Label
+
+    var body: some View {
+        ZStack {
+            label
+                .allowsHitTesting(false)
+            AudioOutputRoutePicker(outputName: outputName)
+                .frame(maxWidth: .infinity, minHeight: 56)
+        }
+        .contentShape(Rectangle())
+        .accessibilityElement(children: .contain)
+    }
+}
+
 struct AudioOutputRoutePicker: UIViewRepresentable {
+    let outputName: String
+
     func makeUIView(context: Context) -> AVRoutePickerView {
         let picker = AVRoutePickerView()
         picker.prioritizesVideoDevices = false
-        picker.tintColor = .secondaryLabel
-        picker.activeTintColor = .systemIndigo
-        picker.accessibilityLabel = "Choose audio output"
+        picker.tintColor = .clear
+        picker.activeTintColor = .clear
+        picker.accessibilityLabel = "Output, \(outputName). Choose audio output"
         picker.accessibilityHint = "Opens the system audio output list."
         return picker
     }
 
-    func updateUIView(_ view: AVRoutePickerView, context: Context) {}
+    func updateUIView(_ view: AVRoutePickerView, context: Context) {
+        view.accessibilityLabel = "Output, \(outputName). Choose audio output"
+    }
 }

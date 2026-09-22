@@ -8,7 +8,28 @@ final class PhysicalTargetSelectionTests: XCTestCase {
     @MainActor
     func testSelectsConfiguredPhysicalTarget() throws {
         let app = try launchAndSelectTarget()
+        XCTAssertEqual(app.state, .runningForeground)
+    }
 
+    @MainActor
+    func testActivatesAutomaticMicrophoneFromStationControl() throws {
+        if ProcessInfo.processInfo.environment["SIMULATOR_UDID"] != nil {
+            throw XCTSkip("The route-control proof requires a physical iPhone or iPad.")
+        }
+        let app = XCUIApplication()
+        app.launch()
+        XCTAssertTrue(app.staticTexts["Hailing Station"].waitForExistence(timeout: 10))
+
+        let microphone = app.buttons["station.microphone"]
+        XCTAssertTrue(microphone.waitForExistence(timeout: 10))
+        microphone.tap()
+        let automatic = app.buttons["Automatic"]
+        XCTAssertTrue(automatic.waitForExistence(timeout: 5))
+        automatic.tap()
+
+        let activeRoute = NSPredicate(format: "label BEGINSWITH 'Microphone,' AND NOT label CONTAINS 'no active'")
+        let activeRouteExpectation = XCTNSPredicateExpectation(predicate: activeRoute, object: microphone)
+        XCTAssertEqual(XCTWaiter.wait(for: [activeRouteExpectation], timeout: 10), .completed)
         XCTAssertEqual(app.state, .runningForeground)
     }
 

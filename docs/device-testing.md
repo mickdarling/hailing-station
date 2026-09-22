@@ -70,6 +70,8 @@ xcodebuild test \
 
 The test accepts only microphone and speech-recognition prompts when iOS presents them, starts capture, waits for an input-tap buffer, stops capture, and verifies that the app remains in the foreground. It intentionally does not retain audio or assert transcript contents. Its DerivedData and result bundle remain in the private directory printed by `mktemp`; delete that directory after retaining any diagnostics you need.
 
+The first completed, privacy-safe device and vertical-slice results are in the [single-device test record](vertical-slice-test-record.md).
+
 ## Manual route and connection matrix
 
 Run these checks on each currently supported iPhone and iPad form factor:
