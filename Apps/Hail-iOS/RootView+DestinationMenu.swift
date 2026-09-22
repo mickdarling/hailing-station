@@ -17,7 +17,7 @@ extension RootView {
         .accessibilityIdentifier("station.destination")
         .accessibilityLabel("Destination")
         .accessibilityValue(destination?.label ?? "None selected")
-        .accessibilityHint("Opens the host and target browser.")
+        .accessibilityHint("Opens the Mac and terminal session browser.")
         .popover(isPresented: $showingDestinations) {
             DestinationBrowser(
                 hosts: connections.hosts,
@@ -39,9 +39,7 @@ extension RootView {
                     .font(.caption.weight(.semibold))
                     .foregroundStyle(.secondary)
             }
-            Text(destination?.label ?? "Choose a Mac and target")
-                .font(.headline)
-                .lineLimit(3)
+            destinationDetails
         }
         .destinationLabelStyle()
     }
@@ -51,13 +49,7 @@ extension RootView {
             Image(systemName: "scope")
                 .font(.title3)
             VStack(alignment: .leading, spacing: 2) {
-                Text("Destination")
-                    .font(.caption.weight(.semibold))
-                    .foregroundStyle(.secondary)
-                    .lineLimit(1)
-                Text(destination?.label ?? "Choose a Mac and target")
-                    .font(.headline)
-                    .lineLimit(1)
+                destinationDetails
             }
             Spacer()
             Image(systemName: "chevron.up.chevron.down")
@@ -65,6 +57,28 @@ extension RootView {
                 .foregroundStyle(.secondary)
         }
         .destinationLabelStyle()
+    }
+
+    @ViewBuilder
+    var destinationDetails: some View {
+        if let destination {
+            Text("Mac · \(destination.endpoint.name)")
+                .font(.caption.weight(.semibold))
+                .foregroundStyle(.secondary)
+                .lineLimit(1)
+            Text(destination.target.kind == "tmux"
+                ? "Terminal · \(destination.target.name)"
+                : "\(destination.target.kind.capitalized) target · \(destination.target.name)")
+                .font(.headline)
+                .lineLimit(dynamicTypeSize.isAccessibilitySize ? 3 : 1)
+        } else {
+            Text("Mac and terminal")
+                .font(.caption.weight(.semibold))
+                .foregroundStyle(.secondary)
+            Text("Choose a destination")
+                .font(.headline)
+                .lineLimit(2)
+        }
     }
 }
 

@@ -57,11 +57,24 @@ extension RootView {
                 }
             )
         } else {
-            ContentUnavailableView(
-                "Choose where Haley should speak",
-                systemImage: "dot.radiowaves.left.and.right",
-                description: Text("Connect to a Mac, then choose one of its allowed targets above.")
-            )
+            VStack(spacing: 16) {
+                Image(systemName: "macbook.and.iphone")
+                    .font(.system(size: 42))
+                    .foregroundStyle(.secondary)
+                Text("Connect Haley to a Mac")
+                    .font(.title3.bold())
+                Text("Add this Mac, connect it, then choose the terminal session Haley should use.")
+                    .multilineTextAlignment(.center)
+                    .foregroundStyle(.secondary)
+                NavigationLink {
+                    ConnectivityLabView(store: connections, endpointsChanged: persist)
+                } label: {
+                    Label("Set up a Mac", systemImage: "plus.circle.fill")
+                }
+                .buttonStyle(.borderedProminent)
+                .accessibilityIdentifier("station.setup-mac")
+            }
+            .padding(24)
             .stationCard(minHeight: horizontalSizeClass == .regular ? 420 : 260)
         }
     }
@@ -85,7 +98,7 @@ extension RootView {
         NavigationLink {
             ConnectivityLabView(store: connections, endpointsChanged: persist)
         } label: {
-            Label("Connections", systemImage: "network")
+            Label("Mac Setup", systemImage: "network")
                 .frame(maxWidth: .infinity)
         }
         NavigationLink {

@@ -46,8 +46,9 @@ final class PhysicalTargetSelectionTests: XCTestCase {
         let app = XCUIApplication()
         app.launch()
         XCTAssertTrue(app.staticTexts["Hailing Station"].waitForExistence(timeout: 10))
-        app.buttons["Connections"].tap()
-        XCTAssertTrue(app.navigationBars["Connectivity Lab"].waitForExistence(timeout: 10))
+        let setup = app.buttons["station.setup-mac"].exists ? "station.setup-mac" : "Mac Setup"
+        app.buttons[setup].tap()
+        XCTAssertTrue(app.navigationBars["Mac Setup"].waitForExistence(timeout: 10))
 
         let configuredHost = configuredHostCell(name: hostName, url: hostURL, in: app)
         if !configuredHost.exists, app.staticTexts[hostName].exists {
@@ -55,7 +56,7 @@ final class PhysicalTargetSelectionTests: XCTestCase {
             XCTAssertTrue(savedHost.waitForExistence(timeout: 5))
             savedHost.buttons["Edit"].tap()
             replaceText(in: app.textFields["WebSocket URL"], with: hostURL)
-            app.buttons["Save host"].tap()
+            app.buttons["Save Mac"].tap()
         } else if !configuredHost.exists {
             let name = app.textFields["Name"]
             let url = app.textFields["WebSocket URL"]
@@ -63,7 +64,7 @@ final class PhysicalTargetSelectionTests: XCTestCase {
             name.tap()
             name.typeText(hostName)
             replaceText(in: url, with: hostURL)
-            app.buttons["Add host"].tap()
+            app.buttons["Add Mac"].tap()
             XCTAssertTrue(app.staticTexts[hostName].waitForExistence(timeout: 10))
         }
 
@@ -72,11 +73,10 @@ final class PhysicalTargetSelectionTests: XCTestCase {
         host.buttons["Connect"].tap()
         allowLocalNetworkIfRequested()
         XCTAssertTrue(host.staticTexts["ready"].waitForExistence(timeout: 30))
-        app.navigationBars["Connectivity Lab"].buttons.firstMatch.tap()
+        app.navigationBars["Mac Setup"].buttons.firstMatch.tap()
         selectTarget(targetLabel, in: app)
         XCTAssertEqual(app.state, .runningForeground)
     }
-
     @MainActor
     func testExercisesReplyControlsForConfiguredTarget() throws {
         guard ProcessInfo.processInfo.environment["HAIL_UI_EXERCISE_REPLY_CONTROLS"] == "1" else {
@@ -141,7 +141,6 @@ final class PhysicalTargetSelectionTests: XCTestCase {
         selectTarget(targetLabel, in: app)
         return app
     }
-
     @MainActor
     private func selectTarget(_ label: String, in app: XCUIApplication) {
         let targetButton = destinationButton(in: app)

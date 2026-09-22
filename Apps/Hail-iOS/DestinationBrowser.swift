@@ -13,11 +13,19 @@ struct DestinationBrowser: View {
     var body: some View {
         NavigationStack {
             List {
+                Section {
+                    Text(
+                        "Choose a Mac, then the target that should receive your speech. "
+                            + "tmux targets are terminal sessions."
+                    )
+                        .font(.callout)
+                        .foregroundStyle(.secondary)
+                }
                 if hosts.isEmpty {
                     ContentUnavailableView(
                         "No Macs configured",
                         systemImage: "desktopcomputer.trianglebadge.exclamationmark",
-                        description: Text("Add and connect a Mac from Connections.")
+                        description: Text("Return to the station and choose Set up a Mac.")
                     )
                 }
                 ForEach(hosts) { host in
@@ -28,7 +36,7 @@ struct DestinationBrowser: View {
                     }
                 }
             }
-            .navigationTitle("Choose a target")
+            .navigationTitle("Choose a destination")
             .navigationBarTitleDisplayMode(.inline)
             .toolbar {
                 ToolbarItem(placement: .confirmationAction) {
@@ -61,6 +69,7 @@ struct DestinationBrowser: View {
     private func targetButton(_ target: TargetInfo, on host: HostConnectionSnapshot) -> some View {
         let option = Destination(endpoint: host.endpoint, target: target)
         let isSelected = selected?.id == option.id
+        let role = target.kind == "tmux" ? "terminal session" : "\(target.kind) target"
         return Button {
             onSelect(option)
             dismiss()
@@ -71,7 +80,9 @@ struct DestinationBrowser: View {
                     .foregroundStyle(target.alive ? Color.green : Color.secondary)
                 VStack(alignment: .leading, spacing: 2) {
                     Text(target.name)
-                    Text(target.kind).font(.caption).foregroundStyle(.secondary)
+                    Text(target.kind == "tmux" ? "Terminal session" : target.kind)
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
                 }
                 Spacer()
                 if isSelected { Image(systemName: "checkmark").foregroundStyle(.tint) }
@@ -81,7 +92,7 @@ struct DestinationBrowser: View {
         .disabled(!target.alive)
         .accessibilityIdentifier(option.label)
         .accessibilityLabel(
-            "\(target.name), \(target.kind) target, host \(host.endpoint.name), \(host.endpoint.url.absoluteString)"
+            "\(target.name), \(role), Mac \(host.endpoint.name), \(host.endpoint.url.absoluteString)"
         )
         .accessibilityValue(target.accessibilityValue(isSelected: isSelected))
         .accessibilityHint(target.alive ? "Selects this target" : "This target is unavailable")
@@ -95,7 +106,7 @@ struct DestinationBrowser: View {
                 .textCase(nil)
         }
         .accessibilityElement(children: .ignore)
-        .accessibilityLabel("Host \(host.endpoint.name), \(host.endpoint.url.absoluteString)")
+        .accessibilityLabel("Mac \(host.endpoint.name), \(host.endpoint.url.absoluteString)")
         .accessibilityValue(host.state.selectionLabel)
     }
 }
