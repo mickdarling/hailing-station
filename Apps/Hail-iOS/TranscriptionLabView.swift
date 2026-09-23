@@ -135,6 +135,7 @@ extension TranscriptionLabView {
 
     @MainActor
     func restorePlaybackAfterForcedTeardown() {
+        guard scenePhase == .active else { return }
         guard finishTask == nil, startTask == nil, !isStarting, !isFinalizing, !isInterrupting else {
             playbackRestoreRequested = true
             return
