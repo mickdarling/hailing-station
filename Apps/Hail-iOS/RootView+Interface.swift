@@ -187,7 +187,6 @@ extension RootView {
         )
     }
 
-    /// Keeps the empty-state UI test deterministic without changing normal launch persistence.
     @MainActor
     private func resetStationStateForUITestingIfRequested() {
         guard ProcessInfo.processInfo.arguments.contains("-reset-station-state"),

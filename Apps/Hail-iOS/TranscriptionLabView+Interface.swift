@@ -127,4 +127,56 @@ extension TranscriptionLabView {
             ? "Stops listening and finalizes the local transcript."
             : "Stops listening and sends the request."
     }
+
+    @MainActor
+    func send(_ text: String, failurePrefix: String) async {
+        guard let onFinalized else { return }
+        let destinationAtSend = destinationID
+        let replyAtSend = latestReplyID
+        pendingDestinationID = destinationAtSend
+        status = "Sending…"
+        do {
+            try await onFinalized(text)
+            guard pendingDestinationID == destinationAtSend else { return }
+            if latestReplyID == replyAtSend { status = "Waiting for reply…" }
+        } catch {
+            guard pendingDestinationID == destinationAtSend else { return }
+            pendingDestinationID = nil
+            status = "\(failurePrefix): \(error.localizedDescription)"
+        }
+    }
+
+    @MainActor
+    func noteReplyArrival(previous: String?, current: String?) {
+        guard current != nil, current != previous,
+              pendingDestinationID == destinationID,
+              status == "Sending…" || status == "Waiting for reply…" else { return }
+        pendingDestinationID = nil
+        status = "Reply received"
+    }
+
+    @MainActor
+    func noteDestinationChange(
+        previous: ConversationDestinationID?, current: ConversationDestinationID?
+    ) {
+        guard current != previous, pendingDestinationID != nil else { return }
+        pendingDestinationID = nil
+        status = "Ready"
+    }
+
+    @MainActor
+    func discardCapture() async {
+        capture.stop()
+        bufferTask?.cancel()
+        bufferTask = nil
+        activeUtteranceID = nil
+        await transcriber.cancel()
+        isRecording = false
+    }
+
+    @MainActor
+    func quietReplyAudio() async throws {
+        status = "Quieting reply audio…"
+        try await Task.sleep(for: .milliseconds(200))
+    }
 }
