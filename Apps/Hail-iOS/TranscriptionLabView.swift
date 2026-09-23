@@ -31,6 +31,7 @@ struct TranscriptionLabView: View {
     @State var playbackRestoreRequested = false
     @State var startTask: Task<Void, Never>?
     @State var finishTask: Task<Void, Never>?
+    @State var finishGeneration: UUID?
     @State var bufferTask: Task<Void, Never>?
     @Environment(\.scenePhase) var scenePhase
     @Environment(\.horizontalSizeClass) var horizontalSizeClass

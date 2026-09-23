@@ -55,15 +55,28 @@ extension TranscriptionLabView {
             }
         }
         if let pendingFinish = finishTask {
-            if force { await audioSession.deactivate() }
-            await pendingFinish.value
-            completeFinish(releasingPlayback: releasePlaybackAfterTeardown)
+            if force {
+                let generation = UUID()
+                let task = Task {
+                    await audioSession.deactivate()
+                    await pendingFinish.value
+                }
+                finishGeneration = generation
+                finishTask = task
+                await task.value
+                completeFinish(generation: generation, releasingPlayback: releasePlaybackAfterTeardown)
+            } else if let generation = finishGeneration {
+                await pendingFinish.value
+                completeFinish(generation: generation, releasingPlayback: releasePlaybackAfterTeardown)
+            }
             return
         }
+        let generation = UUID()
         let task = Task { await performFinish(force: force) }
+        finishGeneration = generation
         finishTask = task
         await task.value
-        completeFinish(releasingPlayback: releasePlaybackAfterTeardown)
+        completeFinish(generation: generation, releasingPlayback: releasePlaybackAfterTeardown)
     }
 
     @MainActor
@@ -171,26 +184,5 @@ extension TranscriptionLabView {
         activeUtteranceID = nil
         isRecording = false
         return finalized
-    }
-
-    @MainActor
-    func observeResults() async {
-        let coordinator = audioSession as? any AudioSceneCleanupCoordinating
-        coordinator?.installSceneCleanup { await finish(force: true) }
-        defer { coordinator?.removeSceneCleanup() }
-        for await result in transcriber.results {
-            guard result.utteranceID == activeUtteranceID else { continue }
-            if result.isFinal {
-                appendFinal(result.text)
-                volatileText = ""
-            } else {
-                volatileText = result.text.trimmingCharacters(in: .whitespacesAndNewlines)
-            }
-        }
-    }
-    private func appendFinal(_ text: String) {
-        let trimmed = text.trimmingCharacters(in: .whitespacesAndNewlines)
-        guard !trimmed.isEmpty else { return }
-        finalText = [finalText, trimmed].filter { !$0.isEmpty }.joined(separator: " ")
     }
 }

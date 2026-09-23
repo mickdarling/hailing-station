@@ -36,7 +36,9 @@ struct CaptureSafeLabsView: View {
 
 extension TranscriptionLabView {
     @MainActor
-    func completeFinish(releasingPlayback: Bool) {
+    func completeFinish(generation: UUID, releasingPlayback: Bool) {
+        guard finishGeneration == generation else { return }
+        finishGeneration = nil
         finishTask = nil
         if releasingPlayback, scenePhase == .active {
             isForcedTeardown = false
@@ -51,6 +53,28 @@ extension TranscriptionLabView {
         guard !hasReceivedAudio else { return }
         hasReceivedAudio = true
         status = "Receiving audio"
+    }
+
+    @MainActor
+    func observeResults() async {
+        let coordinator = audioSession as? any AudioSceneCleanupCoordinating
+        coordinator?.installSceneCleanup { await finish(force: true) }
+        defer { coordinator?.removeSceneCleanup() }
+        for await result in transcriber.results {
+            guard result.utteranceID == activeUtteranceID else { continue }
+            if result.isFinal {
+                appendFinal(result.text)
+                volatileText = ""
+            } else {
+                volatileText = result.text.trimmingCharacters(in: .whitespacesAndNewlines)
+            }
+        }
+    }
+
+    func appendFinal(_ text: String) {
+        let trimmed = text.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !trimmed.isEmpty else { return }
+        finalText = [finalText, trimmed].filter { !$0.isEmpty }.joined(separator: " ")
     }
 }
 
