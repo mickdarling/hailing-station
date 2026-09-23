@@ -79,10 +79,10 @@ extension TranscriptionLabView {
             Text(status)
                 .font(.caption)
                 .foregroundStyle(.secondary)
-                .accessibilityIdentifier("transcription.status")
         }
         .accessibilityElement(children: .combine)
         .accessibilityLabel(status)
+        .accessibilityIdentifier("transcription.status")
 
         HStack {
             if onFinalized != nil {
