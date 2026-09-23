@@ -28,3 +28,22 @@ struct CaptureSafeLabsView: View {
         .navigationTitle("Labs")
     }
 }
+
+extension TranscriptionLabView {
+    @MainActor
+    func completeFinish(releasingPlayback: Bool) {
+        finishTask = nil
+        if releasingPlayback {
+            isForcedTeardown = false
+            endCaptureExclusivity(resumingPlayback: true)
+        } else {
+            restorePlaybackIfRequestedAndReady()
+        }
+    }
+
+    func markAudioReceived() {
+        guard !hasReceivedAudio else { return }
+        hasReceivedAudio = true
+        status = "Receiving audio"
+    }
+}

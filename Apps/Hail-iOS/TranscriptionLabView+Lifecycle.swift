@@ -46,19 +46,24 @@ extension TranscriptionLabView {
     }
 
     @MainActor
-    func finish(force: Bool = false) async {
-        if force { isForcedTeardown = true }
+    func finish(force: Bool = false, releasePlaybackAfterTeardown: Bool = false) async {
+        if force {
+            isForcedTeardown = true
+            if finishTask != nil, !ownsCaptureSuppression {
+                ownsCaptureSuppression = true
+                onCaptureWillBegin?()
+            }
+        }
         if let pendingFinish = finishTask {
+            if force { await audioSession.deactivate() }
             await pendingFinish.value
-            finishTask = nil
-            restorePlaybackIfRequestedAndReady()
+            completeFinish(releasingPlayback: releasePlaybackAfterTeardown)
             return
         }
         let task = Task { await performFinish(force: force) }
         finishTask = task
         await task.value
-        finishTask = nil
-        restorePlaybackIfRequestedAndReady()
+        completeFinish(releasingPlayback: releasePlaybackAfterTeardown)
     }
 
     @MainActor
@@ -187,11 +192,5 @@ extension TranscriptionLabView {
         let trimmed = text.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !trimmed.isEmpty else { return }
         finalText = [finalText, trimmed].filter { !$0.isEmpty }.joined(separator: " ")
-    }
-
-    private func markAudioReceived() {
-        guard !hasReceivedAudio else { return }
-        hasReceivedAudio = true
-        status = "Receiving audio"
     }
 }

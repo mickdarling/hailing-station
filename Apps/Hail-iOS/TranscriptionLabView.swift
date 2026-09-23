@@ -95,7 +95,8 @@ struct TranscriptionLabView: View {
         }
         .onDisappear {
             startTask?.cancel()
-            Task { await finish(force: true) }
+            let releasePlayback = scenePhase == .active
+            Task { await finish(force: true, releasePlaybackAfterTeardown: releasePlayback) }
         }
     }
 
