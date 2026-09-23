@@ -61,7 +61,7 @@ extension TranscriptionLabView {
             .contentShape(Rectangle())
         }
         .buttonStyle(.plain)
-        .disabled(isStarting || isFinalizing || isInterrupting)
+        .disabled(isStarting || isFinalizing || isInterrupting || finishTask != nil)
         .accessibilityIdentifier("station.talk")
         .accessibilityLabel(actionLabel)
         .accessibilityValue(status)
@@ -107,6 +107,7 @@ extension TranscriptionLabView {
 
     var actionLabel: String {
         if isInterrupting { return "Interrupting…" }
+        if finishTask != nil { return "Finishing…" }
         if isFinalizing { return "Finalizing…" }
         if isRecording { return "Tap to finish" }
         return isStarting ? "Starting…" : "Tap to talk"
