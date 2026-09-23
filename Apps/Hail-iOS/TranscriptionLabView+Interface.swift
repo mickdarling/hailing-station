@@ -141,17 +141,14 @@ extension TranscriptionLabView {
         replyTimeoutTask = nil
         let sendID = UUID()
         let destinationAtSend = destinationID
-        let replyAtSend = latestReplyID
         pendingSendID = sendID
         pendingDestinationID = destinationAtSend
         status = "Sending…"
         do {
             try await onFinalized(text)
             guard pendingSendID == sendID, pendingDestinationID == destinationAtSend else { return }
-            if latestReplyID == replyAtSend {
-                status = "Waiting for reply…"
-                scheduleReplyTimeout(sendID: sendID, destinationID: destinationAtSend)
-            }
+            status = "Waiting for reply…"
+            scheduleReplyTimeout(sendID: sendID, destinationID: destinationAtSend)
         } catch {
             guard pendingSendID == sendID, pendingDestinationID == destinationAtSend else { return }
             clearPendingSend()
