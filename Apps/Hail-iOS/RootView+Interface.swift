@@ -123,7 +123,7 @@ extension RootView {
                 .frame(maxWidth: .infinity)
         }
         NavigationLink {
-            LabsView(audioSession: audioRoutes)
+            CaptureSafeLabsView(audioSession: audioRoutes, playback: playback)
         } label: {
             Label("Labs", systemImage: "wrench.and.screwdriver")
                 .frame(maxWidth: .infinity)
@@ -186,6 +186,27 @@ extension RootView {
         StationUITestReset.didRun = true
         UserDefaults.standard.removeObject(forKey: "hailing-station.host-endpoints.v1")
         UserDefaults.standard.removeObject(forKey: "hailing-station.destination-selection.v1")
+    }
+}
+
+private struct CaptureSafeLabsView: View {
+    let audioSession: any AudioSessionDiagnosticsProviding
+    let playback: ReplyPlaybackController
+
+    var body: some View {
+        List {
+            NavigationLink("Live transcription") {
+                if #available(iOS 26.0, *) {
+                    TranscriptionLabView(
+                        audioSession: audioSession,
+                        onCaptureWillBegin: playback.beginCaptureSuppression,
+                        onCaptureDidEnd: { playback.endCaptureSuppression(resumingPlayback: $0) }
+                    )
+                }
+            }
+            NavigationLink("Routing spike") { RoutingSpikeView() }
+        }
+        .navigationTitle("Labs")
     }
 }
 

@@ -26,7 +26,9 @@ struct TranscriptionLabView: View {
     @State var isInterrupting = false
     @State var isForcedTeardown = false
     @State var ownsCaptureSuppression = false
+    @State var playbackRestoreRequested = false
     @State var startTask: Task<Void, Never>?
+    @State var finishTask: Task<Void, Never>?
     @State var bufferTask: Task<Void, Never>?
     @Environment(\.scenePhase) var scenePhase
     @Environment(\.horizontalSizeClass) var horizontalSizeClass
@@ -118,6 +120,7 @@ extension TranscriptionLabView {
     @MainActor
     func beginCaptureExclusivity() {
         isForcedTeardown = false
+        playbackRestoreRequested = false
         guard !ownsCaptureSuppression else { return }
         ownsCaptureSuppression = true
         onCaptureWillBegin?()
@@ -131,6 +134,11 @@ extension TranscriptionLabView {
 
     @MainActor
     func restorePlaybackAfterForcedTeardown() {
+        guard finishTask == nil, startTask == nil, !isStarting, !isFinalizing, !isInterrupting else {
+            playbackRestoreRequested = true
+            return
+        }
+        playbackRestoreRequested = false
         isForcedTeardown = false
         if ownsCaptureSuppression {
             endCaptureExclusivity(resumingPlayback: true)
@@ -144,6 +152,12 @@ extension TranscriptionLabView {
         guard ownsCaptureSuppression else { return }
         ownsCaptureSuppression = false
         onCaptureDidEnd?(resumingPlayback)
+    }
+
+    @MainActor
+    func restorePlaybackIfRequestedAndReady() {
+        guard playbackRestoreRequested else { return }
+        restorePlaybackAfterForcedTeardown()
     }
 
     @MainActor

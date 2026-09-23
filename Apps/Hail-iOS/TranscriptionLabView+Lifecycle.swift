@@ -12,6 +12,7 @@ extension TranscriptionLabView {
         defer {
             isStarting = false
             startTask = nil
+            restorePlaybackIfRequestedAndReady()
         }
         guard await prepareCaptureAuthorization() else { return }
 
@@ -51,12 +52,24 @@ extension TranscriptionLabView {
             let pendingStart = startTask
             pendingStart?.cancel()
             await audioSession.deactivate()
-            if isInterrupting || isFinalizing {
-                await pendingStart?.value
-                return
-            }
             await pendingStart?.value
         }
+        if let pendingFinish = finishTask {
+            await pendingFinish.value
+            finishTask = nil
+            restorePlaybackIfRequestedAndReady()
+            return
+        }
+        let task = Task { await performFinish(force: force) }
+        finishTask = task
+        await task.value
+        finishTask = nil
+        restorePlaybackIfRequestedAndReady()
+    }
+
+    @MainActor
+    private func performFinish(force: Bool) async {
+        if force, isInterrupting { return }
         guard !isInterrupting, !isFinalizing, force || isRecording || bufferTask != nil else { return }
         isFinalizing = true
         defer { isFinalizing = false }
@@ -96,7 +109,10 @@ extension TranscriptionLabView {
     func interruptTarget(using action: @MainActor () async throws -> Void) async {
         guard !isInterrupting else { return }
         isInterrupting = true
-        defer { isInterrupting = false }
+        defer {
+            isInterrupting = false
+            restorePlaybackIfRequestedAndReady()
+        }
         let discardedUtterance = isStarting || isRecording || bufferTask != nil || activeUtteranceID != nil
         let pendingStart = startTask
         pendingStart?.cancel()
