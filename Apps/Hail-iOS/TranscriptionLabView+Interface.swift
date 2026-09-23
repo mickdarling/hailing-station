@@ -70,10 +70,19 @@ extension TranscriptionLabView {
 
     @ViewBuilder
     var transcriptActions: some View {
-        Text(status)
-            .font(.caption)
-            .foregroundStyle(.secondary)
-            .accessibilityIdentifier("transcription.status")
+        HStack(spacing: 8) {
+            if showsActivity {
+                ProgressView()
+                    .controlSize(.small)
+                    .accessibilityHidden(true)
+            }
+            Text(status)
+                .font(.caption)
+                .foregroundStyle(.secondary)
+                .accessibilityIdentifier("transcription.status")
+        }
+        .accessibilityElement(children: .combine)
+        .accessibilityLabel(status)
 
         HStack {
             if let onFinalized {
@@ -110,6 +119,11 @@ extension TranscriptionLabView {
         if isFinalizing { return "Finalizing…" }
         if isRecording { return "Tap to finish" }
         return isStarting ? "Starting…" : "Tap to talk"
+    }
+
+    var showsActivity: Bool {
+        isStarting || isRecording || isFinalizing || status == "Sending…"
+            || status == "Waiting for reply…"
     }
 
     var talkHint: String {

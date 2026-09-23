@@ -109,7 +109,7 @@ extension TranscriptionLabView {
             status = "Sending…"
             do {
                 try await onFinalized(text)
-                status = "Sent"
+                status = "Waiting for reply…"
             } catch {
                 status = "Send failed: \(error.localizedDescription)"
             }
