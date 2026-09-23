@@ -47,6 +47,38 @@ import Testing
         #expect(player.resumeCount == 0)
         #expect(controller.statusForControls == "Paused")
     }
+
+    @Test func segmentsAccumulatedDuringCaptureDrainAfterActiveReplyResumes() {
+        let player = CaptureSuppressionPlayer()
+        let controller = ReplyPlaybackController(player: player)
+        let reply = captureReply()
+        controller.ingest(captureEvent(reply: reply, sequence: 0, isFinal: false))
+        controller.beginCaptureSuppression()
+
+        controller.ingest(captureEvent(reply: reply, sequence: 1, isFinal: true))
+        #expect(player.scheduled.map(\.sequence) == [0])
+
+        controller.endCaptureSuppression()
+        #expect(player.resumeCount == 1)
+        #expect(player.scheduled.map(\.sequence) == [0, 1])
+    }
+
+    @Test func accumulatedSegmentsDrainWhenUserResumesExplicitPause() {
+        let player = CaptureSuppressionPlayer()
+        let controller = ReplyPlaybackController(player: player)
+        let reply = captureReply()
+        controller.ingest(captureEvent(reply: reply, sequence: 0, isFinal: false))
+        controller.beginCaptureSuppression()
+        controller.togglePause()
+        controller.ingest(captureEvent(reply: reply, sequence: 1, isFinal: true))
+
+        controller.endCaptureSuppression()
+        #expect(player.scheduled.map(\.sequence) == [0])
+
+        controller.togglePause()
+        #expect(player.resumeCount == 1)
+        #expect(player.scheduled.map(\.sequence) == [0, 1])
+    }
 }
 
 @MainActor
@@ -67,13 +99,18 @@ private final class CaptureSuppressionPlayer: ReplyAudioPlaying {
     ) {}
 }
 
-private func captureEvent() -> HostReplyEvent {
-    let reply = ReplyDescriptor(
+private func captureReply() -> ReplyDescriptor {
+    ReplyDescriptor(
         id: UUID(), hostID: "main-mac", targetID: "tmux:codex", audioStreamID: UUID()
     )
+}
+
+private func captureEvent(
+    reply: ReplyDescriptor = captureReply(), sequence: Int = 0, isFinal: Bool = true
+) -> HostReplyEvent {
     let audio = AudioPayload(
-        codec: .pcm16, sampleRate: 24_000, channels: 1, sequence: 0,
-        streamID: reply.audioStreamID, isFinal: true, bytes: Data([1, 0]), reply: reply
+        codec: .pcm16, sampleRate: 24_000, channels: 1, sequence: sequence,
+        streamID: reply.audioStreamID, isFinal: isFinal, bytes: Data([1, 0]), reply: reply
     )
     return HostReplyEvent(
         endpointID: "main",

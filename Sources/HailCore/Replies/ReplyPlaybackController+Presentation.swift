@@ -25,6 +25,7 @@ extension ReplyPlaybackController {
             do {
                 try player.resume()
                 status = isMuted ? "Muted" : "Playing"
+                drain()
             } catch {
                 status = "Playback could not resume"
             }
@@ -47,7 +48,8 @@ extension ReplyPlaybackController {
             do {
                 try player.resume()
                 isPaused = false
-                status = "Playing"
+                status = isMuted ? "Muted" : "Playing"
+                drain()
             } catch {
                 status = "Playback could not resume"
             }
