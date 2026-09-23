@@ -7,6 +7,7 @@ import SwiftUI
 struct TranscriptionLabView: View {
     let audioSession: any AudioSessionDiagnosticsProviding
     let destinationLabel: String?
+    let latestReplyID: String?
     let onCaptureWillBegin: (@MainActor (UUID) -> Void)?
     let onCaptureDidEnd: (@MainActor (UUID, _ resumingPlayback: Bool) -> Void)?
     let onCaptureTeardownCompleted: (@MainActor (UUID) -> Void)?
@@ -42,6 +43,7 @@ struct TranscriptionLabView: View {
         capture: any AudioCapturing = AVAudioEngineCapture(),
         transcriber: (any Transcriber)? = nil,
         destinationLabel: String? = nil,
+        latestReplyID: String? = nil,
         onCaptureWillBegin: (@MainActor (UUID) -> Void)? = nil,
         onCaptureDidEnd: (@MainActor (UUID, _ resumingPlayback: Bool) -> Void)? = nil,
         onCaptureTeardownCompleted: (@MainActor (UUID) -> Void)? = nil,
@@ -50,6 +52,7 @@ struct TranscriptionLabView: View {
     ) {
         self.audioSession = audioSession
         self.destinationLabel = destinationLabel
+        self.latestReplyID = latestReplyID
         self.onCaptureWillBegin = onCaptureWillBegin
         self.onCaptureDidEnd = onCaptureDidEnd
         self.onCaptureTeardownCompleted = onCaptureTeardownCompleted
@@ -98,6 +101,9 @@ struct TranscriptionLabView: View {
         .onAppear { restorePlaybackAfterForcedTeardown() }
         .onChange(of: scenePhase) { _, phase in
             if phase == .active { restorePlaybackAfterForcedTeardown() }
+        }
+        .onChange(of: latestReplyID) { previous, current in
+            noteReplyArrival(previous: previous, current: current)
         }
         .onDisappear {
             startTask?.cancel()

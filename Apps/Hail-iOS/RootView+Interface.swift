@@ -50,6 +50,7 @@ extension RootView {
             TranscriptionLabView(
                 audioSession: audioRoutes,
                 destinationLabel: destination.label,
+                latestReplyID: playback.latest?.id,
                 onCaptureWillBegin: { CapturePlaybackSuppression.begin($0, using: playback) },
                 onCaptureDidEnd: { CapturePlaybackSuppression.end($0, using: playback, resuming: $1) },
                 onCaptureTeardownCompleted: {

@@ -85,16 +85,11 @@ extension TranscriptionLabView {
         .accessibilityLabel(status)
 
         HStack {
-            if let onFinalized {
+            if onFinalized != nil {
                 Button("Send edited correction") {
                     let correction = finalText.trimmingCharacters(in: .whitespacesAndNewlines)
                     Task {
-                        do {
-                            try await onFinalized(correction)
-                            status = "Correction sent"
-                        } catch {
-                            status = "Correction failed: \(error.localizedDescription)"
-                        }
+                        await send(correction, failurePrefix: "Correction failed")
                     }
                 }
                 .disabled(isRecording || isStarting || isFinalizing || finalText.isEmpty)

@@ -105,17 +105,33 @@ extension TranscriptionLabView {
         }
         finalText = text
         volatileText = ""
-        if let onFinalized {
-            status = "Sending…"
-            do {
-                try await onFinalized(text)
-                status = "Waiting for reply…"
-            } catch {
-                status = "Send failed: \(error.localizedDescription)"
-            }
+        if onFinalized != nil {
+            await send(text, failurePrefix: "Send failed")
         } else {
             status = "Ready"
         }
+    }
+
+    @MainActor
+    func send(_ text: String, failurePrefix: String) async {
+        guard let onFinalized else { return }
+        let replyAtSend = latestReplyID
+        status = "Sending…"
+        do {
+            try await onFinalized(text)
+            if status != "Reply received", latestReplyID == replyAtSend {
+                status = "Waiting for reply…"
+            }
+        } catch {
+            status = "\(failurePrefix): \(error.localizedDescription)"
+        }
+    }
+
+    @MainActor
+    func noteReplyArrival(previous: String?, current: String?) {
+        guard current != nil, current != previous,
+              status == "Sending…" || status == "Waiting for reply…" else { return }
+        status = "Reply received"
     }
 
     @MainActor
