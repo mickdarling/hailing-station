@@ -51,7 +51,7 @@ final class PreIOS26ConversationUITests: XCTestCase {
         )
         stop.tap()
 
-        XCTAssertTrue(waitForLabel("Sent", on: status, timeout: 10))
+        XCTAssertTrue(waitForLabel("Waiting for reply…", on: status, timeout: 10))
         XCTAssertEqual(app.state, .runningForeground)
     }
 
