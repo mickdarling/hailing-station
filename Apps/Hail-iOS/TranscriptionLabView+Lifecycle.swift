@@ -4,7 +4,7 @@ extension TranscriptionLabView {
     @MainActor
     func begin() async {
         guard !isRecording, !isStarting, !isFinalizing, !isInterrupting,
-              finishTask == nil, interruptTask == nil else { return }
+              finishTask == nil, interruptTask == nil, pendingSendID == nil else { return }
         beginCaptureExclusivity()
         isStarting = true
         hasReceivedAudio = false
@@ -79,14 +79,18 @@ extension TranscriptionLabView {
         await task.value
         completeFinish(generation: generation)
     }
-
     @MainActor
     private func performFinish(force: Bool) async {
         if force, await prepareForcedFinish() { return }
+        if force, pendingSendID != nil, !isRecording, bufferTask == nil, activeUtteranceID == nil {
+            await audioSession.deactivate()
+            return
+        }
         guard !isInterrupting, !isFinalizing, force || isRecording || bufferTask != nil else { return }
         isFinalizing = true
         defer { isFinalizing = false }
         status = "Finalizing…"
+        let destinationGenerationAtStart = destinationGeneration
         let finalized = await cleanUp()
         guard !force else {
             status = "Ready"
@@ -105,22 +109,21 @@ extension TranscriptionLabView {
         }
         finalText = text
         volatileText = ""
-        if let onFinalized {
-            status = "Sending…"
-            do {
-                try await onFinalized(text)
-                status = "Sent"
-            } catch {
-                status = "Send failed: \(error.localizedDescription)"
+        if onFinalized != nil {
+            guard destinationGeneration == destinationGenerationAtStart else {
+                status = "Destination changed — request not sent"
+                return
             }
+            await send(text, failurePrefix: "Send failed")
         } else {
             status = "Ready"
         }
     }
-
     @MainActor
     func interruptTarget(using action: @MainActor () async throws -> Void) async {
         guard !isInterrupting else { return }
+        if let pendingDestinationID { Self.uncorrelatedDestinations.insert(pendingDestinationID) }
+        clearPendingSend()
         isInterrupting = true
         defer {
             isInterrupting = false
@@ -150,14 +153,12 @@ extension TranscriptionLabView {
         await pendingStart?.value
         releaseCaptureExclusivityAfterWork()
     }
-
     @MainActor
     private func fail(_ message: String) async {
         _ = await cleanUp(waitForBuffer: false)
         releaseCaptureExclusivityAfterWork()
         status = message
     }
-
     @MainActor
     private func handleStartCancellation() async {
         if isInterrupting {
@@ -168,7 +169,6 @@ extension TranscriptionLabView {
         }
         releaseCaptureExclusivityAfterWork()
     }
-
     @MainActor
     private func cleanUp(waitForBuffer: Bool = true) async -> String {
         capture.stop()
@@ -179,5 +179,22 @@ extension TranscriptionLabView {
         activeUtteranceID = nil
         isRecording = false
         return finalized
+    }
+
+    @MainActor
+    func noteDestinationChange(
+        previous: ConversationDestinationID?, current: ConversationDestinationID?
+    ) {
+        guard current != previous else { return }
+        destinationGeneration = UUID()
+        let invalidatedSend = pendingSendID != nil
+        if let pendingDestinationID { Self.uncorrelatedDestinations.insert(pendingDestinationID) }
+        clearPendingSend()
+        if invalidatedSend {
+            status = "Ready"
+            return
+        }
+        guard !isStarting, !isRecording, !isFinalizing, !isInterrupting else { return }
+        status = "Ready"
     }
 }

@@ -50,6 +50,12 @@ extension RootView {
             TranscriptionLabView(
                 audioSession: audioRoutes,
                 destinationLabel: destination.label,
+                destinationID: ConversationDestinationID(
+                    endpointID: destination.hostID, targetID: destination.target.id
+                ),
+                replyIDs: Set(playback.replies.lazy.filter { reply in
+                    reply.endpointID == destination.hostID && reply.target == destination.target.id
+                }.map(\.id)),
                 onCaptureWillBegin: { CapturePlaybackSuppression.begin($0, using: playback) },
                 onCaptureDidEnd: { CapturePlaybackSuppression.end($0, using: playback, resuming: $1) },
                 onCaptureTeardownCompleted: {
@@ -181,7 +187,6 @@ extension RootView {
         )
     }
 
-    /// Keeps the empty-state UI test deterministic without changing normal launch persistence.
     @MainActor
     private func resetStationStateForUITestingIfRequested() {
         guard ProcessInfo.processInfo.arguments.contains("-reset-station-state"),

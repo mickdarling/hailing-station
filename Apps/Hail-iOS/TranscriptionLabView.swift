@@ -3,10 +3,17 @@ import HailCore
 import Speech
 import SwiftUI
 
+struct ConversationDestinationID: Hashable {
+    let endpointID: HostEndpoint.Identifier
+    let targetID: String
+}
+
 /// Audio-first capture surface shared by compact and regular-width station layouts.
 struct TranscriptionLabView: View {
     let audioSession: any AudioSessionDiagnosticsProviding
     let destinationLabel: String?
+    let destinationID: ConversationDestinationID?
+    let replyIDs: Set<String>
     let onCaptureWillBegin: (@MainActor (UUID) -> Void)?
     let onCaptureDidEnd: (@MainActor (UUID, _ resumingPlayback: Bool) -> Void)?
     let onCaptureTeardownCompleted: (@MainActor (UUID) -> Void)?
@@ -15,7 +22,6 @@ struct TranscriptionLabView: View {
 
     @State var capture: any AudioCapturing
     @State var transcriber: any Transcriber
-
     @State var isRecording = false
     @State var finalText = ""
     @State var volatileText = ""
@@ -28,6 +34,10 @@ struct TranscriptionLabView: View {
     @State var interruptTask: Task<Void, Never>?
     @State var isForcedTeardown = false
     @State var captureOwnerID = UUID()
+    @State var pendingSendID: UUID?
+    @State var pendingDestinationID: ConversationDestinationID?
+    @State var destinationGeneration = UUID()
+    @State var replyTimeoutTask: Task<Void, Never>?
     @State var ownsCaptureSuppression = false
     @State var playbackRestoreRequested = false
     @State var startTask: Task<Void, Never>?
@@ -42,6 +52,8 @@ struct TranscriptionLabView: View {
         capture: any AudioCapturing = AVAudioEngineCapture(),
         transcriber: (any Transcriber)? = nil,
         destinationLabel: String? = nil,
+        destinationID: ConversationDestinationID? = nil,
+        replyIDs: Set<String> = [],
         onCaptureWillBegin: (@MainActor (UUID) -> Void)? = nil,
         onCaptureDidEnd: (@MainActor (UUID, _ resumingPlayback: Bool) -> Void)? = nil,
         onCaptureTeardownCompleted: (@MainActor (UUID) -> Void)? = nil,
@@ -50,6 +62,8 @@ struct TranscriptionLabView: View {
     ) {
         self.audioSession = audioSession
         self.destinationLabel = destinationLabel
+        self.destinationID = destinationID
+        self.replyIDs = replyIDs
         self.onCaptureWillBegin = onCaptureWillBegin
         self.onCaptureDidEnd = onCaptureDidEnd
         self.onCaptureTeardownCompleted = onCaptureTeardownCompleted
@@ -99,7 +113,15 @@ struct TranscriptionLabView: View {
         .onChange(of: scenePhase) { _, phase in
             if phase == .active { restorePlaybackAfterForcedTeardown() }
         }
+        .onChange(of: replyIDs) { previous, current in
+            noteReplyArrival(previous: previous, current: current)
+        }
+        .onChange(of: destinationID) { previous, current in
+            noteDestinationChange(previous: previous, current: current)
+        }
         .onDisappear {
+            if let pendingDestinationID { Self.uncorrelatedDestinations.insert(pendingDestinationID) }
+            clearPendingSend()
             startTask?.cancel()
             Task { await finish(force: true) }
         }
@@ -112,6 +134,7 @@ struct TranscriptionLabView: View {
 }
 
 extension TranscriptionLabView {
+    @MainActor static var uncorrelatedDestinations: Set<ConversationDestinationID> = []
     @MainActor
     func beginCaptureExclusivity() {
         isForcedTeardown = false
@@ -155,18 +178,23 @@ extension TranscriptionLabView {
     }
 
     @MainActor
-    func discardCapture() async {
-        capture.stop()
-        bufferTask?.cancel()
-        bufferTask = nil
-        activeUtteranceID = nil
-        await transcriber.cancel()
-        isRecording = false
-    }
-
-    @MainActor
-    func quietReplyAudio() async throws {
-        status = "Quieting reply audio…"
-        try await Task.sleep(for: .milliseconds(200))
+    func scheduleReplyTimeout(sendID: UUID, destinationID: ConversationDestinationID?) {
+        replyTimeoutTask?.cancel()
+        replyTimeoutTask = Task { @MainActor in
+            do {
+                try await Task.sleep(for: .seconds(30))
+            } catch {
+                return
+            }
+            guard pendingSendID == sendID, pendingDestinationID == destinationID,
+                  status == "Waiting for reply…" else { return }
+            if let destinationID {
+                Self.uncorrelatedDestinations.insert(destinationID)
+            }
+            pendingSendID = nil
+            pendingDestinationID = nil
+            replyTimeoutTask = nil
+            status = "No reply yet — tap to talk again"
+        }
     }
 }

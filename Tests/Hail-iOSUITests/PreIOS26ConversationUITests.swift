@@ -51,7 +51,10 @@ final class PreIOS26ConversationUITests: XCTestCase {
         )
         stop.tap()
 
-        XCTAssertTrue(waitForLabel("Sent", on: status, timeout: 10))
+        XCTAssertTrue(
+            waitForAnyLabel(["Waiting for reply…", "Reply received"], on: status, timeout: 10),
+            "The conversation did not reach a successful post-send state."
+        )
         XCTAssertEqual(app.state, .runningForeground)
     }
 
@@ -102,6 +105,15 @@ final class PreIOS26ConversationUITests: XCTestCase {
     @MainActor
     private func waitForLabel(_ label: String, on element: XCUIElement, timeout: TimeInterval) -> Bool {
         let predicate = NSPredicate(format: "label == %@", label)
+        let expectation = XCTNSPredicateExpectation(predicate: predicate, object: element)
+        return XCTWaiter.wait(for: [expectation], timeout: timeout) == .completed
+    }
+
+    @MainActor
+    private func waitForAnyLabel(
+        _ labels: [String], on element: XCUIElement, timeout: TimeInterval
+    ) -> Bool {
+        let predicate = NSPredicate(format: "label IN %@", labels)
         let expectation = XCTNSPredicateExpectation(predicate: predicate, object: element)
         return XCTWaiter.wait(for: [expectation], timeout: timeout) == .completed
     }
