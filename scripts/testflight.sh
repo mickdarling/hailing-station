@@ -92,10 +92,19 @@ resolve_team_id() {
 }
 
 ensure_clean_checkout() {
-  local checkout_status
+  local checkout_status ignored_input
   checkout_status="$(git status --porcelain --untracked-files=all)"
   [[ -z "$checkout_status" ]] || \
     fail "tracked or untracked checkout changes exist; archive a reviewed commit"
+
+  while IFS= read -r -d '' ignored_input; do
+    [[ "$ignored_input" == "Apps/Hail-iOS/Hail.entitlements" ]] && continue
+    fail "ignored file exists in a build-input root; remove it before archiving: $ignored_input"
+  done < <(git ls-files -z --others --ignored --exclude-standard -- Apps/Hail-iOS Sources)
+}
+
+default_build_number() {
+  python3 -c 'import time; print(time.time_ns() // 100)'
 }
 
 run_verification() {
@@ -114,15 +123,14 @@ archive_app() {
     "$team_id" "$marketing_version" "$build_number" > "$build_config"
 
   echo "Archiving Hailing Station ${marketing_version} (${build_number})..."
-  DEVELOPER_DIR="${DEVELOPER_DIR:-/Applications/Xcode.app/Contents/Developer}" \
-    xcodebuild -quiet archive \
-      -project HailingStation.xcodeproj \
-      -scheme Hail-iOS \
-      -configuration Release \
-      -destination 'generic/platform=iOS' \
-      -archivePath "$archive_path" \
-      -allowProvisioningUpdates \
-      -xcconfig "$build_config"
+  xcodebuild -quiet archive \
+    -project HailingStation.xcodeproj \
+    -scheme Hail-iOS \
+    -configuration Release \
+    -destination 'generic/platform=iOS' \
+    -archivePath "$archive_path" \
+    -allowProvisioningUpdates \
+    -xcconfig "$build_config"
 
   [[ -d "$archive_path" ]] || fail "Xcode reported success but did not create the archive"
   echo "Archive ready: $archive_path"
@@ -145,12 +153,11 @@ upload_archive() {
   /usr/libexec/PlistBuddy -c 'Add :uploadSymbols bool true' "$export_options"
 
   echo "Uploading $(basename "$archive_path") to TestFlight Internal Only..."
-  DEVELOPER_DIR="${DEVELOPER_DIR:-/Applications/Xcode.app/Contents/Developer}" \
-    xcodebuild -quiet -exportArchive \
-      -archivePath "$archive_path" \
-      -exportPath "$private_temp_dir/output" \
-      -exportOptionsPlist "$export_options" \
-      -allowProvisioningUpdates
+  xcodebuild -quiet -exportArchive \
+    -archivePath "$archive_path" \
+    -exportPath "$private_temp_dir/output" \
+    -exportOptionsPlist "$export_options" \
+    -allowProvisioningUpdates
   echo "Upload accepted by App Store Connect. Processing continues on Apple's servers."
 }
 
@@ -165,7 +172,7 @@ case "$command_name" in
 esac
 
 marketing_version="$(project_marketing_version)"
-build_number="$(date -u +%Y%m%d%H%M%S)"
+build_number="$(default_build_number)"
 archive_path=""
 skip_verify=false
 confirm_upload=false
@@ -219,6 +226,7 @@ case "$command_name" in
     ensure_clean_checkout
     [[ "$skip_verify" == true ]] || run_verification
     team_id="$(resolve_team_id)"
+    ensure_clean_checkout
     archive_app "$team_id"
     ;;
   upload)
@@ -228,6 +236,7 @@ case "$command_name" in
     ensure_clean_checkout
     [[ "$skip_verify" == true ]] || run_verification
     team_id="$(resolve_team_id)"
+    ensure_clean_checkout
     archive_app "$team_id"
     upload_archive
     ;;
