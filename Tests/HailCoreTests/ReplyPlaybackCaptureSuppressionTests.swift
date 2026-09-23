@@ -79,6 +79,23 @@ import Testing
         #expect(player.resumeCount == 1)
         #expect(player.scheduled.map(\.sequence) == [0, 1])
     }
+
+    @Test func forcedReleaseLeavesPlaybackPausedUntilUserResumes() {
+        let player = CaptureSuppressionPlayer()
+        let controller = ReplyPlaybackController(player: player)
+        controller.ingest(captureEvent())
+        controller.beginCaptureSuppression()
+
+        controller.endCaptureSuppression(resumingPlayback: false)
+        #expect(!controller.isCaptureSuppressed)
+        #expect(controller.isPaused)
+        #expect(player.resumeCount == 0)
+        #expect(controller.statusForControls == "Paused")
+
+        controller.togglePause()
+        #expect(!controller.isPaused)
+        #expect(player.resumeCount == 1)
+    }
 }
 
 @MainActor

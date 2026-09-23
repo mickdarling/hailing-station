@@ -14,9 +14,18 @@ extension ReplyPlaybackController {
         status = "Paused while listening"
     }
 
-    public func endCaptureSuppression() {
+    public func endCaptureSuppression(resumingPlayback: Bool = true) {
         guard isCaptureSuppressed else { return }
         isCaptureSuppressed = false
+        guard resumingPlayback else {
+            if activeKey != nil || hasQueuedPlayback {
+                isPaused = true
+                status = "Paused"
+            } else {
+                status = isMuted ? "Muted" : "Ready for replies"
+            }
+            return
+        }
         guard !isPaused else {
             status = "Paused"
             return
