@@ -16,7 +16,15 @@ Do not add account names, team identifiers, API-key identifiers, issuer identifi
 
 ## Archive without uploading
 
-From a clean, reviewed checkout:
+Every distinct TestFlight release has three identities:
+
+- `MARKETING_VERSION` is the tester-visible release number. Increment it in `project.yml` for every release that contains a new commit or functional change, even while the app remains in internal testing.
+- `CFBundleVersion` is the upload build number. It must be unique and increasing for every upload attempt, including a retry of the same release.
+- The Git commit SHA is the exact source identity. Archive only a clean, reviewed commit.
+
+The normal sequence is therefore: make the functional change, increment the marketing version in the same reviewed release commit, merge it, and archive that commit from `main`. The guarded archive and release commands reject a commit that does not advance the version in `project.yml` relative to its parent. `--version` cannot bypass the tracked value.
+
+From that clean, reviewed checkout:
 
 ```sh
 scripts/testflight.sh archive
@@ -28,7 +36,13 @@ The script runs the standard verification and Simulator build, generates the Xco
 HAIL_DEVELOPMENT_TEAM=<local-team-id> scripts/testflight.sh archive
 ```
 
-Use `--version`, `--build`, or `--archive-path` only when a release needs an explicit value. Build numbers must increase for each upload of the same marketing version.
+Use `--build` or `--archive-path` only when a release needs an explicit value. `--version` is accepted only when it matches `project.yml`; change and review the tracked version instead of overriding it at release time. Build numbers must increase for each upload of the same marketing version.
+
+To check the release commit without archiving:
+
+```sh
+scripts/testflight.sh check-version
+```
 
 ## Upload an archive
 
@@ -67,5 +81,5 @@ TestFlight availability does not replace Hailing Station's private-network or ho
 - If archive signing fails, select or install the intended Apple team in Xcode, then retry with `HAIL_DEVELOPMENT_TEAM` set only in the local shell.
 - If upload reports that the bundle identifier or app record is missing, create or correct the record in App Store Connect; do not change the identifier only to bypass the error.
 - If an agreement or role blocks upload, resolve it in the Apple developer account and rerun the upload against the same archive.
-- If Apple rejects a duplicate build number, create a new archive with a larger `--build` value. An archive's embedded build number cannot be changed safely after signing.
-- If a build is bad, stop assigning it to testers and upload a corrected build with a new number. Existing direct Xcode builds can still be used for local recovery.
+- If Apple rejects a duplicate build number, create a new archive of the same reviewed release commit with a larger `--build` value. An archive's embedded build number cannot be changed safely after signing.
+- If a build is bad because its source changed, stop assigning it to testers, increment the marketing version, review and merge the correction, and upload that new release. Existing direct Xcode builds can still be used for local recovery.

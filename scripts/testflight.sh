@@ -21,12 +21,14 @@ ensure_private_temp_dir() {
 
 usage() {
   cat <<'EOF'
-usage: scripts/testflight.sh <archive|upload|release> [options]
+usage: scripts/testflight.sh <archive|upload|release|check-version> [options]
 
 Commands:
   archive   Verify and create a signed Release archive.
   upload    Upload an existing archive to TestFlight Internal Only.
   release   Archive and upload in one deliberate operation.
+  check-version
+            Confirm that HEAD advances the tracked marketing version.
 
 Options:
   --version VERSION       Marketing version (default: project.yml value).
@@ -54,6 +56,34 @@ fail() {
 
 project_marketing_version() {
   awk -F'"' '/^[[:space:]]*MARKETING_VERSION:/ { print $2; exit }' project.yml
+}
+
+marketing_version_at_revision() {
+  git show "$1:project.yml" 2>/dev/null | \
+    awk -F'"' '/^[[:space:]]*MARKETING_VERSION:/ { print $2; exit }'
+}
+
+ensure_release_version_changed() {
+  local tracked_version previous_version
+  tracked_version="$(project_marketing_version)"
+  [[ "$marketing_version" == "$tracked_version" ]] || \
+    fail "--version must match project.yml ($tracked_version); commit the marketing-version change"
+
+  previous_version="$(marketing_version_at_revision 'HEAD^')" || \
+    fail "cannot read the preceding project version; archive a reviewed release commit"
+  [[ -n "$previous_version" ]] || \
+    fail "the preceding commit has no marketing version"
+
+  python3 - "$previous_version" "$tracked_version" <<'PY' || \
+    fail "MARKETING_VERSION must increase in the reviewed release commit ($previous_version -> $tracked_version)"
+import re
+import sys
+
+versions = sys.argv[1:]
+if not all(re.fullmatch(r"[0-9]+\.[0-9]+\.[0-9]+", version) for version in versions):
+    raise SystemExit(1)
+raise SystemExit(0 if tuple(map(int, versions[1].split("."))) > tuple(map(int, versions[0].split("."))) else 1)
+PY
 }
 
 resolve_team_id() {
@@ -170,7 +200,7 @@ command_name="$1"
 shift
 
 case "$command_name" in
-  archive|upload|release) ;;
+  archive|upload|release|check-version) ;;
   -h|--help) usage; exit 0 ;;
   *) usage; fail "unknown command: $command_name" ;;
 esac
@@ -228,6 +258,7 @@ fi
 case "$command_name" in
   archive)
     prepare_clean_checkout
+    ensure_release_version_changed
     [[ "$skip_verify" == true ]] || run_verification
     team_id="$(resolve_team_id)"
     prepare_clean_checkout
@@ -238,10 +269,16 @@ case "$command_name" in
     ;;
   release)
     prepare_clean_checkout
+    ensure_release_version_changed
     [[ "$skip_verify" == true ]] || run_verification
     team_id="$(resolve_team_id)"
     prepare_clean_checkout
     archive_app "$team_id"
     upload_archive
+    ;;
+  check-version)
+    prepare_clean_checkout
+    ensure_release_version_changed
+    echo "Release version advances to $marketing_version."
     ;;
 esac

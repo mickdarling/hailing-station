@@ -35,6 +35,7 @@ scripts_() {
     bash -n "$f"
     shellcheck "$f"
   done < <(find "${dirs[@]}" -type f \( -name '*.sh' -o -name 'hail-*' \) | sort)
+  scripts/tests/test-testflight.sh
   if command -v actionlint >/dev/null; then actionlint; else echo "actionlint not installed; skipped"; fi
 }
 
