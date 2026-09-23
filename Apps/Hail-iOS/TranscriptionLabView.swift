@@ -7,6 +7,8 @@ import SwiftUI
 struct TranscriptionLabView: View {
     let audioSession: any AudioSessionDiagnosticsProviding
     let destinationLabel: String?
+    let onCaptureWillBegin: (@MainActor () -> Void)?
+    let onCaptureDidEnd: (@MainActor () -> Void)?
     let onFinalized: (@MainActor (String) async throws -> Void)?
     let onEscape: (@MainActor () async throws -> Void)?
 
@@ -22,6 +24,7 @@ struct TranscriptionLabView: View {
     @State var hasReceivedAudio = false
     @State var activeUtteranceID: UUID?
     @State var isInterrupting = false
+    @State var ownsCaptureSuppression = false
     @State var startTask: Task<Void, Never>?
     @State var bufferTask: Task<Void, Never>?
     @Environment(\.horizontalSizeClass) var horizontalSizeClass
@@ -31,11 +34,15 @@ struct TranscriptionLabView: View {
         capture: any AudioCapturing = AVAudioEngineCapture(),
         transcriber: (any Transcriber)? = nil,
         destinationLabel: String? = nil,
+        onCaptureWillBegin: (@MainActor () -> Void)? = nil,
+        onCaptureDidEnd: (@MainActor () -> Void)? = nil,
         onFinalized: (@MainActor (String) async throws -> Void)? = nil,
         onEscape: (@MainActor () async throws -> Void)? = nil
     ) {
         self.audioSession = audioSession
         self.destinationLabel = destinationLabel
+        self.onCaptureWillBegin = onCaptureWillBegin
+        self.onCaptureDidEnd = onCaptureDidEnd
         self.onFinalized = onFinalized
         self.onEscape = onEscape
         _capture = State(initialValue: capture)
@@ -87,5 +94,54 @@ struct TranscriptionLabView: View {
     private static func defaultTranscriber() -> any Transcriber {
         if #available(iOS 26.0, *) { return SpeechAnalyzerTranscriber() }
         return SFSpeechRecognizerTranscriber()
+    }
+}
+
+extension TranscriptionLabView {
+    @MainActor
+    func prepareCaptureAuthorization() async -> Bool {
+        status = "Requesting microphone and speech access…"
+        guard await requestHailPermissions() else {
+            status = "Microphone and speech recognition permissions are required."
+            endCaptureExclusivity()
+            return false
+        }
+        return true
+    }
+
+    @MainActor
+    func beginCaptureExclusivity() {
+        guard !ownsCaptureSuppression else { return }
+        ownsCaptureSuppression = true
+        onCaptureWillBegin?()
+    }
+
+    @MainActor
+    func endCaptureExclusivity() {
+        guard ownsCaptureSuppression else { return }
+        ownsCaptureSuppression = false
+        onCaptureDidEnd?()
+    }
+
+    @MainActor
+    func quietReplyAudio() async throws {
+        status = "Quieting reply audio…"
+        try await Task.sleep(for: .milliseconds(200))
+    }
+}
+
+/// TCC invokes these callbacks on arbitrary queues, so this bridge must not inherit the view's MainActor.
+private func requestHailPermissions() async -> Bool {
+    let microphone = await withCheckedContinuation(isolation: nil) { continuation in
+        AVAudioApplication.requestRecordPermission { @Sendable granted in
+            continuation.resume(returning: granted)
+        }
+    }
+    guard microphone else { return false }
+
+    return await withCheckedContinuation(isolation: nil) { continuation in
+        SFSpeechRecognizer.requestAuthorization { @Sendable status in
+            continuation.resume(returning: status == .authorized)
+        }
     }
 }

@@ -39,12 +39,15 @@ extension RootView {
             .frame(maxWidth: horizontalSizeClass == .regular ? 360 : .infinity, alignment: .top)
         }
     }
+
     @ViewBuilder
     var conversationSurface: some View {
         if let destination {
             TranscriptionLabView(
                 audioSession: audioRoutes,
                 destinationLabel: destination.label,
+                onCaptureWillBegin: playback.beginCaptureSuppression,
+                onCaptureDidEnd: playback.endCaptureSuppression,
                 onFinalized: { text in
                     try await connections.sendFinalText(
                         text, host: destination.hostID, targetID: destination.target.id
@@ -90,7 +93,6 @@ extension RootView {
             .stationCard(minHeight: horizontalSizeClass == .regular ? 420 : 260)
         }
     }
-
     var stationTools: some View {
         GroupBox {
             ViewThatFits(in: .horizontal) {
@@ -190,11 +192,4 @@ extension RootView {
 @MainActor
 private enum StationUITestReset {
     static var didRun = false
-}
-
-private extension View {
-    func stationCard(minHeight: CGFloat = 320) -> some View {
-        frame(maxWidth: .infinity, minHeight: minHeight)
-            .background(.regularMaterial, in: RoundedRectangle(cornerRadius: 24, style: .continuous))
-    }
 }

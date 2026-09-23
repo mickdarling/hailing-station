@@ -4,6 +4,7 @@ extension TranscriptionLabView {
     @MainActor
     func begin() async {
         guard !isRecording, !isStarting, !isFinalizing, !isInterrupting else { return }
+        beginCaptureExclusivity()
         isStarting = true
         hasReceivedAudio = false
         finalText = ""
@@ -12,13 +13,10 @@ extension TranscriptionLabView {
             isStarting = false
             startTask = nil
         }
-        status = "Requesting microphone and speech access…"
-        guard await requestHailPermissions() else {
-            status = "Microphone and speech recognition permissions are required."
-            return
-        }
+        guard await prepareCaptureAuthorization() else { return }
 
         do {
+            try await quietReplyAudio()
             try Task.checkCancellation()
             status = "Preparing on-device speech model…"
             try await audioSession.activate()
@@ -41,6 +39,7 @@ extension TranscriptionLabView {
             await handleStartCancellation()
         } catch {
             _ = await cleanUp()
+            endCaptureExclusivity()
             status = "Could not start: \(error.localizedDescription)"
         }
     }
@@ -56,6 +55,7 @@ extension TranscriptionLabView {
         defer { isFinalizing = false }
         status = "Finalizing…"
         let finalized = await cleanUp()
+        endCaptureExclusivity()
         guard !force else {
             await audioSession.deactivate()
             status = "Ready"
@@ -108,11 +108,13 @@ extension TranscriptionLabView {
             await transcriber.cancel()
         }
         await pendingStart?.value
+        endCaptureExclusivity()
     }
 
     @MainActor
     private func fail(_ message: String) async {
         _ = await cleanUp(waitForBuffer: false)
+        endCaptureExclusivity()
         status = message
     }
 
@@ -124,6 +126,7 @@ extension TranscriptionLabView {
             _ = await cleanUp()
             status = "Ready"
         }
+        endCaptureExclusivity()
     }
 
     @MainActor
@@ -173,21 +176,5 @@ extension TranscriptionLabView {
         guard !hasReceivedAudio else { return }
         hasReceivedAudio = true
         status = "Receiving audio"
-    }
-}
-
-/// TCC invokes these callbacks on arbitrary queues, so this bridge must not inherit the view's MainActor.
-private func requestHailPermissions() async -> Bool {
-    let microphone = await withCheckedContinuation(isolation: nil) { continuation in
-        AVAudioApplication.requestRecordPermission { @Sendable granted in
-            continuation.resume(returning: granted)
-        }
-    }
-    guard microphone else { return false }
-
-    return await withCheckedContinuation(isolation: nil) { continuation in
-        SFSpeechRecognizer.requestAuthorization { @Sendable status in
-            continuation.resume(returning: status == .authorized)
-        }
     }
 }
