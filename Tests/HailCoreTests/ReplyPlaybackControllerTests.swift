@@ -12,6 +12,7 @@ import Testing
         let second = descriptor(id: UUID(), stream: UUID())
 
         controller.ingest(event(first, sequence: 0, final: false, byte: 10))
+        #expect(controller.latest?.endpointID == "main")
         controller.ingest(event(second, sequence: 0, final: true, byte: 20))
         #expect(controller.presentationForControls?.id.contains(first.id.uuidString.lowercased()) == true)
         controller.ingest(event(first, sequence: 2, final: true, byte: 12))

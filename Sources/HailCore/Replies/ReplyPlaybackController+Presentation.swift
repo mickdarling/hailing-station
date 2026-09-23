@@ -132,7 +132,8 @@ extension ReplyPlaybackController {
             if let transcript { replies[index].transcript = transcript }
         } else {
             replies.append(ReplyPresentation(
-                id: id, host: descriptor.hostID, target: descriptor.targetID, transcript: transcript
+                id: id, endpointID: event.endpointID, host: descriptor.hostID,
+                target: descriptor.targetID, transcript: transcript
             ))
             trimPresentations(retainingPresentationID: id)
         }

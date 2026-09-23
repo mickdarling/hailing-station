@@ -14,6 +14,7 @@ public protocol ReplyAudioPlaying: AnyObject {
 
 public struct ReplyPresentation: Identifiable, Equatable, Sendable {
     public var id: String
+    public var endpointID: HostEndpoint.Identifier
     public var host: String
     public var target: String
     public var transcript: String?
