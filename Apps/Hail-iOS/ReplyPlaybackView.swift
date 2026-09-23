@@ -53,6 +53,7 @@ struct ReplyPlaybackView: View {
             Label("Replay", systemImage: "arrow.counterclockwise")
                 .frame(maxWidth: .infinity)
         }
+        .disabled(playback.isCaptureSuppressed)
         Button {
             playback.toggleMute()
         } label: {
