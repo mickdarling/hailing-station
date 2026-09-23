@@ -22,7 +22,7 @@ From a clean, reviewed checkout:
 scripts/testflight.sh archive
 ```
 
-The script runs the standard verification and Simulator build, generates the Xcode project, chooses a high-resolution time-based build number, and writes a signed Release archive below the ignored `artifacts/` directory. It checks the checkout both before verification and immediately before archiving, including ignored files beneath application and package source roots. Set the team for the invocation when more than one Apple team is installed:
+The script runs the standard verification and Simulator build, generates the Xcode project, chooses a high-resolution time-based build number, and writes a signed Release archive below the ignored `artifacts/` directory. It removes the generated entitlements before each cleanliness check, rejects every other ignored file beneath application and package source roots, and regenerates the entitlements from the reviewed manifest immediately before archiving. Set the team for the invocation when more than one Apple team is installed:
 
 ```sh
 HAIL_DEVELOPMENT_TEAM=<local-team-id> scripts/testflight.sh archive

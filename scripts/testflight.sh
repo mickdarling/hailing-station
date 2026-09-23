@@ -98,9 +98,13 @@ ensure_clean_checkout() {
     fail "tracked or untracked checkout changes exist; archive a reviewed commit"
 
   while IFS= read -r -d '' ignored_input; do
-    [[ "$ignored_input" == "Apps/Hail-iOS/Hail.entitlements" ]] && continue
     fail "ignored file exists in a build-input root; remove it before archiving: $ignored_input"
   done < <(git ls-files -z --others --ignored --exclude-standard -- Apps/Hail-iOS Sources)
+}
+
+prepare_clean_checkout() {
+  rm -f -- Apps/Hail-iOS/Hail.entitlements
+  ensure_clean_checkout
 }
 
 default_build_number() {
@@ -223,20 +227,20 @@ fi
 
 case "$command_name" in
   archive)
-    ensure_clean_checkout
+    prepare_clean_checkout
     [[ "$skip_verify" == true ]] || run_verification
     team_id="$(resolve_team_id)"
-    ensure_clean_checkout
+    prepare_clean_checkout
     archive_app "$team_id"
     ;;
   upload)
     upload_archive
     ;;
   release)
-    ensure_clean_checkout
+    prepare_clean_checkout
     [[ "$skip_verify" == true ]] || run_verification
     team_id="$(resolve_team_id)"
-    ensure_clean_checkout
+    prepare_clean_checkout
     archive_app "$team_id"
     upload_archive
     ;;
