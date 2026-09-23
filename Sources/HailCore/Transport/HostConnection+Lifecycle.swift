@@ -94,6 +94,9 @@ extension HostConnection {
         await publish(.ready, token: token)
         try await sendPing(generation: token)
         try await send(.listTargets, generation: token)
+        if let desiredTargetID {
+            try await send(.select(targetID: desiredTargetID), generation: token)
+        }
         while isCurrent(token), wantsConnection, !Task.isCancelled {
             let data = try await opened.receive()
             guard isCurrent(token), wantsConnection else { return }
