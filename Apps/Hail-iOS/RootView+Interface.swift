@@ -53,10 +53,9 @@ extension RootView {
                 destinationID: ConversationDestinationID(
                     endpointID: destination.hostID, targetID: destination.target.id
                 ),
-                latestReplyEventID: connections.replyFrames.last { event in
-                    event.endpointID == destination.hostID
-                        && event.frame.target == destination.target.id
-                }?.frame.id,
+                replyIDs: Set(playback.replies.lazy.filter { reply in
+                    reply.endpointID == destination.hostID && reply.target == destination.target.id
+                }.map(\.id)),
                 onCaptureWillBegin: { CapturePlaybackSuppression.begin($0, using: playback) },
                 onCaptureDidEnd: { CapturePlaybackSuppression.end($0, using: playback, resuming: $1) },
                 onCaptureTeardownCompleted: {

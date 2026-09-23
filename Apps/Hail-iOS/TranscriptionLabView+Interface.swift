@@ -162,8 +162,8 @@ extension TranscriptionLabView {
         }
     }
     @MainActor
-    func noteReplyArrival(previous: UUID?, current: UUID?) {
-        guard current != nil, current != previous, let destinationID else { return }
+    func noteReplyArrival(previous: Set<String>, current: Set<String>) {
+        guard !current.subtracting(previous).isEmpty, let destinationID else { return }
         if Self.uncorrelatedDestinations.contains(destinationID) {
             if pendingSendID == nil, !showsActivity, !isInterrupting,
                interruptTask == nil, finishTask == nil { status = "Reply received — turn unverified" }
