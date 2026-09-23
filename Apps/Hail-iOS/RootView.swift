@@ -21,7 +21,7 @@ struct RootView: View {
     @State var selectionRevision: UInt = 0
     @State var showingDestinations = false
     @State var scenePhaseRevision: UInt = 0
-    @Environment(\.scenePhase) private var scenePhase
+    @Environment(\.scenePhase) var scenePhase
     @Environment(\.horizontalSizeClass) var horizontalSizeClass
     @Environment(\.dynamicTypeSize) var dynamicTypeSize
 
@@ -39,6 +39,7 @@ struct RootView: View {
         }
         .onChange(of: scenePhase) { _, phase in
             scenePhaseRevision &+= 1
+            selectionRevision &+= 1
             let revision = scenePhaseRevision
             if phase != .active {
                 selectionAuthorizedForReadyConnection = false
@@ -59,6 +60,7 @@ struct RootView: View {
             for frame in frames { playback.ingest(frame) }
         }
         .onChange(of: connections.hosts) { _, _ in
+            guard scenePhase == .active else { return }
             Task { await reconcileRememberedSelection() }
         }
         .task {

@@ -1,3 +1,4 @@
+import Foundation
 import HailCore
 import HailProtocol
 
@@ -24,14 +25,18 @@ extension RootView {
 
     @MainActor
     func select(_ option: Destination) async {
+        guard scenePhase == .active else { return }
         selectionRevision &+= 1
         let revision = selectionRevision
+        let phaseRevision = scenePhaseRevision
         guard let connectionGeneration = connections.snapshots[option.hostID]?.connectionGeneration else {
             return
         }
         do {
             try await connections.selectTarget(host: option.hostID, targetID: option.target.id)
-            guard selectionRevision == revision else { return }
+            guard scenePhase == .active,
+                  scenePhaseRevision == phaseRevision,
+                  selectionRevision == revision else { return }
             guard let current = connections.snapshots[option.hostID],
                   current.state == .ready,
                   current.connectionGeneration == connectionGeneration else { return }
@@ -63,7 +68,10 @@ extension RootView {
 
     @MainActor
     func reconcileRememberedSelection() async {
-        guard didRestoreSelection, !isRestoringSelection, let rememberedSelection else { return }
+        guard scenePhase == .active,
+              didRestoreSelection,
+              !isRestoringSelection,
+              let rememberedSelection else { return }
         guard let host = connections.hosts.first(where: {
             rememberedSelection.matches(endpoint: $0.endpoint)
         }) else {
@@ -98,24 +106,27 @@ extension RootView {
     ) async {
         isRestoringSelection = true
         let revision = selectionRevision
+        let phaseRevision = scenePhaseRevision
         let connectionGeneration = host.connectionGeneration
         do {
             try await connections.selectTarget(host: host.id, targetID: target.id)
         } catch {
-            isRestoringSelection = false
-            guard selectionRevision == revision else { return }
-            selectedHostID = nil
-            selectedTargetID = nil
-            selectionAuthorizedForReadyConnection = false
-            authorizedConnectionGeneration = nil
-            if connections.snapshots[host.id]?.connectionGeneration != connectionGeneration {
-                Task { await reconcileRememberedSelection() }
-            }
+            authorizationFailed(
+                revision: revision,
+                phaseRevision: phaseRevision,
+                hostID: host.id,
+                connectionGeneration: connectionGeneration
+            )
             return
         }
         isRestoringSelection = false
-        guard selectionRevision == revision,
-              self.rememberedSelection == rememberedSelection else { return }
+        guard scenePhase == .active,
+              scenePhaseRevision == phaseRevision,
+              selectionRevision == revision,
+              self.rememberedSelection == rememberedSelection else {
+            retryReconciliationIfActive()
+            return
+        }
         guard let current = connections.hosts.first(where: { $0.id == host.id }),
               current.state == .ready,
               current.connectionGeneration == connectionGeneration,
@@ -131,6 +142,35 @@ extension RootView {
         selectedTargetID = target.id
         selectionAuthorizedForReadyConnection = true
         authorizedConnectionGeneration = connectionGeneration
+    }
+
+    @MainActor
+    private func authorizationFailed(
+        revision: UInt,
+        phaseRevision: UInt,
+        hostID: HostEndpoint.Identifier,
+        connectionGeneration: UUID
+    ) {
+        isRestoringSelection = false
+        guard scenePhase == .active,
+              scenePhaseRevision == phaseRevision,
+              selectionRevision == revision else {
+            retryReconciliationIfActive()
+            return
+        }
+        selectedHostID = nil
+        selectedTargetID = nil
+        selectionAuthorizedForReadyConnection = false
+        authorizedConnectionGeneration = nil
+        if connections.snapshots[hostID]?.connectionGeneration != connectionGeneration {
+            retryReconciliationIfActive()
+        }
+    }
+
+    @MainActor
+    private func retryReconciliationIfActive() {
+        guard scenePhase == .active else { return }
+        Task { await reconcileRememberedSelection() }
     }
 
     @MainActor
