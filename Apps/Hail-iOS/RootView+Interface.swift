@@ -51,7 +51,7 @@ extension RootView {
                 audioSession: audioRoutes,
                 destinationLabel: destination.label,
                 latestReplyID: playback.latest.flatMap { reply in
-                    reply.host == destination.hostID && reply.target == destination.target.id
+                    reply.endpointID == destination.hostID && reply.target == destination.target.id
                         ? reply.id : nil
                 },
                 onCaptureWillBegin: { CapturePlaybackSuppression.begin($0, using: playback) },
