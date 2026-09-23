@@ -47,13 +47,7 @@ extension TranscriptionLabView {
 
     @MainActor
     func finish(force: Bool = false) async {
-        if force {
-            isForcedTeardown = true
-            let pendingStart = startTask
-            pendingStart?.cancel()
-            await audioSession.deactivate()
-            await pendingStart?.value
-        }
+        if force { isForcedTeardown = true }
         if let pendingFinish = finishTask {
             await pendingFinish.value
             finishTask = nil
@@ -69,6 +63,12 @@ extension TranscriptionLabView {
 
     @MainActor
     private func performFinish(force: Bool) async {
+        if force {
+            let pendingStart = startTask
+            pendingStart?.cancel()
+            await audioSession.deactivate()
+            await pendingStart?.value
+        }
         if force, isInterrupting { return }
         guard !isInterrupting, !isFinalizing, force || isRecording || bufferTask != nil else { return }
         isFinalizing = true
