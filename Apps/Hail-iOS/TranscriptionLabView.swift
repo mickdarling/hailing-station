@@ -101,7 +101,7 @@ struct TranscriptionLabView: View {
         }
         .onDisappear {
             startTask?.cancel()
-            Task { await finish(force: true, releasePlaybackAfterTeardown: true) }
+            Task { await finish(force: true) }
         }
     }
 

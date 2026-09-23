@@ -69,11 +69,11 @@ extension TranscriptionLabView {
     }
 
     @MainActor
-    func completeFinish(generation: UUID, releasingPlayback: Bool) {
+    func completeFinish(generation: UUID) {
         guard finishGeneration == generation else { return }
         finishGeneration = nil
         finishTask = nil
-        if releasingPlayback, scenePhase == .active {
+        if scenePhase == .active {
             isForcedTeardown = false
             endCaptureExclusivity(resumingPlayback: true)
         } else {

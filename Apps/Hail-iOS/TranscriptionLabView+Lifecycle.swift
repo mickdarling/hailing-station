@@ -47,7 +47,7 @@ extension TranscriptionLabView {
     }
 
     @MainActor
-    func finish(force: Bool = false, releasePlaybackAfterTeardown: Bool = false) async {
+    func finish(force: Bool = false) async {
         if force {
             isForcedTeardown = true
             if finishTask != nil, !ownsCaptureSuppression {
@@ -65,10 +65,10 @@ extension TranscriptionLabView {
                 finishGeneration = generation
                 finishTask = task
                 await task.value
-                completeFinish(generation: generation, releasingPlayback: releasePlaybackAfterTeardown)
+                completeFinish(generation: generation)
             } else if let generation = finishGeneration {
                 await pendingFinish.value
-                completeFinish(generation: generation, releasingPlayback: releasePlaybackAfterTeardown)
+                completeFinish(generation: generation)
             }
             return
         }
@@ -77,7 +77,7 @@ extension TranscriptionLabView {
         finishGeneration = generation
         finishTask = task
         await task.value
-        completeFinish(generation: generation, releasingPlayback: releasePlaybackAfterTeardown)
+        completeFinish(generation: generation)
     }
 
     @MainActor
