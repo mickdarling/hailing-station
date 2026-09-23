@@ -3,10 +3,16 @@ import HailCore
 import Speech
 import SwiftUI
 
+struct ConversationDestinationID: Equatable {
+    let endpointID: HostEndpoint.Identifier
+    let targetID: String
+}
+
 /// Audio-first capture surface shared by compact and regular-width station layouts.
 struct TranscriptionLabView: View {
     let audioSession: any AudioSessionDiagnosticsProviding
     let destinationLabel: String?
+    let destinationID: ConversationDestinationID?
     let latestReplyID: String?
     let onCaptureWillBegin: (@MainActor (UUID) -> Void)?
     let onCaptureDidEnd: (@MainActor (UUID, _ resumingPlayback: Bool) -> Void)?
@@ -28,6 +34,7 @@ struct TranscriptionLabView: View {
     @State var isInterrupting = false
     @State var isForcedTeardown = false
     @State var captureOwnerID = UUID()
+    @State var pendingDestinationID: ConversationDestinationID?
     @State var ownsCaptureSuppression = false
     @State var playbackRestoreRequested = false
     @State var startTask: Task<Void, Never>?
@@ -42,6 +49,7 @@ struct TranscriptionLabView: View {
         capture: any AudioCapturing = AVAudioEngineCapture(),
         transcriber: (any Transcriber)? = nil,
         destinationLabel: String? = nil,
+        destinationID: ConversationDestinationID? = nil,
         latestReplyID: String? = nil,
         onCaptureWillBegin: (@MainActor (UUID) -> Void)? = nil,
         onCaptureDidEnd: (@MainActor (UUID, _ resumingPlayback: Bool) -> Void)? = nil,
@@ -51,6 +59,7 @@ struct TranscriptionLabView: View {
     ) {
         self.audioSession = audioSession
         self.destinationLabel = destinationLabel
+        self.destinationID = destinationID
         self.latestReplyID = latestReplyID
         self.onCaptureWillBegin = onCaptureWillBegin
         self.onCaptureDidEnd = onCaptureDidEnd
@@ -103,6 +112,9 @@ struct TranscriptionLabView: View {
         }
         .onChange(of: latestReplyID) { previous, current in
             noteReplyArrival(previous: previous, current: current)
+        }
+        .onChange(of: destinationID) { previous, current in
+            noteDestinationChange(previous: previous, current: current)
         }
         .onDisappear {
             startTask?.cancel()

@@ -50,6 +50,9 @@ extension RootView {
             TranscriptionLabView(
                 audioSession: audioRoutes,
                 destinationLabel: destination.label,
+                destinationID: ConversationDestinationID(
+                    endpointID: destination.hostID, targetID: destination.target.id
+                ),
                 latestReplyID: playback.replies.last { reply in
                     reply.endpointID == destination.hostID && reply.target == destination.target.id
                 }?.id,
