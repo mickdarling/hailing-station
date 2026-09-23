@@ -18,8 +18,13 @@ struct CaptureSafeLabsView: View {
                 if #available(iOS 26.0, *) {
                     TranscriptionLabView(
                         audioSession: audioSession,
-                        onCaptureWillBegin: playback.beginCaptureSuppression,
-                        onCaptureDidEnd: { playback.endCaptureSuppression(resumingPlayback: $0) }
+                        onCaptureWillBegin: { CapturePlaybackSuppression.begin($0, using: playback) },
+                        onCaptureDidEnd: {
+                            CapturePlaybackSuppression.end($0, using: playback, resuming: $1)
+                        },
+                        onCaptureTeardownCompleted: {
+                            CapturePlaybackSuppression.markCleanupComplete($0, using: playback)
+                        }
                     )
                 }
             }
@@ -33,10 +38,11 @@ extension TranscriptionLabView {
     @MainActor
     func completeFinish(releasingPlayback: Bool) {
         finishTask = nil
-        if releasingPlayback {
+        if releasingPlayback, scenePhase == .active {
             isForcedTeardown = false
             endCaptureExclusivity(resumingPlayback: true)
         } else {
+            onCaptureTeardownCompleted?(captureOwnerID)
             restorePlaybackIfRequestedAndReady()
         }
     }
@@ -46,4 +52,49 @@ extension TranscriptionLabView {
         hasReceivedAudio = true
         status = "Receiving audio"
     }
+}
+
+extension RootView {
+    var hasReadyHost: Bool {
+        connections.hosts.contains(where: { $0.state == .ready })
+    }
+}
+
+@MainActor
+enum CapturePlaybackSuppression {
+    private struct Entry {
+        let owner: UUID
+        var cleanupComplete = false
+    }
+
+    private static var entries: [ObjectIdentifier: Entry] = [:]
+
+    static func begin(_ owner: UUID, using playback: ReplyPlaybackController) {
+        entries[ObjectIdentifier(playback)] = Entry(owner: owner)
+        playback.beginCaptureSuppression()
+    }
+
+    static func end(_ owner: UUID, using playback: ReplyPlaybackController, resuming: Bool) {
+        let key = ObjectIdentifier(playback)
+        guard entries[key]?.owner == owner else { return }
+        entries[key] = nil
+        playback.endCaptureSuppression(resumingPlayback: resuming)
+    }
+
+    static func markCleanupComplete(_ owner: UUID, using playback: ReplyPlaybackController) {
+        let key = ObjectIdentifier(playback)
+        guard entries[key]?.owner == owner else { return }
+        entries[key]?.cleanupComplete = true
+    }
+
+    static func releaseCompleted(using playback: ReplyPlaybackController) {
+        let key = ObjectIdentifier(playback)
+        guard let entry = entries[key], entry.cleanupComplete else { return }
+        end(entry.owner, using: playback, resuming: true)
+    }
+}
+
+@MainActor
+enum StationUITestReset {
+    static var didRun = false
 }

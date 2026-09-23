@@ -51,7 +51,7 @@ extension TranscriptionLabView {
             isForcedTeardown = true
             if finishTask != nil, !ownsCaptureSuppression {
                 ownsCaptureSuppression = true
-                onCaptureWillBegin?()
+                onCaptureWillBegin?(captureOwnerID)
             }
         }
         if let pendingFinish = finishTask {

@@ -7,8 +7,9 @@ import SwiftUI
 struct TranscriptionLabView: View {
     let audioSession: any AudioSessionDiagnosticsProviding
     let destinationLabel: String?
-    let onCaptureWillBegin: (@MainActor () -> Void)?
-    let onCaptureDidEnd: (@MainActor (_ resumingPlayback: Bool) -> Void)?
+    let onCaptureWillBegin: (@MainActor (UUID) -> Void)?
+    let onCaptureDidEnd: (@MainActor (UUID, _ resumingPlayback: Bool) -> Void)?
+    let onCaptureTeardownCompleted: (@MainActor (UUID) -> Void)?
     let onFinalized: (@MainActor (String) async throws -> Void)?
     let onEscape: (@MainActor () async throws -> Void)?
 
@@ -25,6 +26,7 @@ struct TranscriptionLabView: View {
     @State var activeUtteranceID: UUID?
     @State var isInterrupting = false
     @State var isForcedTeardown = false
+    @State var captureOwnerID = UUID()
     @State var ownsCaptureSuppression = false
     @State var playbackRestoreRequested = false
     @State var startTask: Task<Void, Never>?
@@ -38,8 +40,9 @@ struct TranscriptionLabView: View {
         capture: any AudioCapturing = AVAudioEngineCapture(),
         transcriber: (any Transcriber)? = nil,
         destinationLabel: String? = nil,
-        onCaptureWillBegin: (@MainActor () -> Void)? = nil,
-        onCaptureDidEnd: (@MainActor (_ resumingPlayback: Bool) -> Void)? = nil,
+        onCaptureWillBegin: (@MainActor (UUID) -> Void)? = nil,
+        onCaptureDidEnd: (@MainActor (UUID, _ resumingPlayback: Bool) -> Void)? = nil,
+        onCaptureTeardownCompleted: (@MainActor (UUID) -> Void)? = nil,
         onFinalized: (@MainActor (String) async throws -> Void)? = nil,
         onEscape: (@MainActor () async throws -> Void)? = nil
     ) {
@@ -47,6 +50,7 @@ struct TranscriptionLabView: View {
         self.destinationLabel = destinationLabel
         self.onCaptureWillBegin = onCaptureWillBegin
         self.onCaptureDidEnd = onCaptureDidEnd
+        self.onCaptureTeardownCompleted = onCaptureTeardownCompleted
         self.onFinalized = onFinalized
         self.onEscape = onEscape
         _capture = State(initialValue: capture)
@@ -95,8 +99,7 @@ struct TranscriptionLabView: View {
         }
         .onDisappear {
             startTask?.cancel()
-            let releasePlayback = scenePhase == .active
-            Task { await finish(force: true, releasePlaybackAfterTeardown: releasePlayback) }
+            Task { await finish(force: true, releasePlaybackAfterTeardown: true) }
         }
     }
 
@@ -124,7 +127,7 @@ extension TranscriptionLabView {
         playbackRestoreRequested = false
         guard !ownsCaptureSuppression else { return }
         ownsCaptureSuppression = true
-        onCaptureWillBegin?()
+        onCaptureWillBegin?(captureOwnerID)
     }
 
     @MainActor
@@ -144,8 +147,6 @@ extension TranscriptionLabView {
         isForcedTeardown = false
         if ownsCaptureSuppression {
             endCaptureExclusivity(resumingPlayback: true)
-        } else {
-            onCaptureDidEnd?(true)
         }
     }
 
@@ -153,7 +154,7 @@ extension TranscriptionLabView {
     func endCaptureExclusivity(resumingPlayback: Bool = true) {
         guard ownsCaptureSuppression else { return }
         ownsCaptureSuppression = false
-        onCaptureDidEnd?(resumingPlayback)
+        onCaptureDidEnd?(captureOwnerID, resumingPlayback)
     }
 
     @MainActor

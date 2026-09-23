@@ -17,6 +17,10 @@ extension RootView {
         }
         .scrollDismissesKeyboard(.interactively)
         .background(Color(uiColor: .systemGroupedBackground))
+        .onAppear { CapturePlaybackSuppression.releaseCompleted(using: playback) }
+        .onChange(of: scenePhase) { _, phase in
+            if phase == .active { CapturePlaybackSuppression.releaseCompleted(using: playback) }
+        }
     }
 
     var adaptiveContent: some View {
@@ -46,8 +50,11 @@ extension RootView {
             TranscriptionLabView(
                 audioSession: audioRoutes,
                 destinationLabel: destination.label,
-                onCaptureWillBegin: playback.beginCaptureSuppression,
-                onCaptureDidEnd: { playback.endCaptureSuppression(resumingPlayback: $0) },
+                onCaptureWillBegin: { CapturePlaybackSuppression.begin($0, using: playback) },
+                onCaptureDidEnd: { CapturePlaybackSuppression.end($0, using: playback, resuming: $1) },
+                onCaptureTeardownCompleted: {
+                    CapturePlaybackSuppression.markCleanupComplete($0, using: playback)
+                },
                 onFinalized: { text in
                     try await connections.sendFinalText(
                         text, host: destination.hostID, targetID: destination.target.id
@@ -174,10 +181,6 @@ extension RootView {
         )
     }
 
-    var hasReadyHost: Bool {
-        connections.hosts.contains(where: { $0.state == .ready })
-    }
-
     /// Keeps the empty-state UI test deterministic without changing normal launch persistence.
     @MainActor
     private func resetStationStateForUITestingIfRequested() {
@@ -187,9 +190,4 @@ extension RootView {
         UserDefaults.standard.removeObject(forKey: "hailing-station.host-endpoints.v1")
         UserDefaults.standard.removeObject(forKey: "hailing-station.destination-selection.v1")
     }
-}
-
-@MainActor
-private enum StationUITestReset {
-    static var didRun = false
 }
