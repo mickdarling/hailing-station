@@ -28,6 +28,7 @@ struct TranscriptionLabView: View {
     @State var ownsCaptureSuppression = false
     @State var startTask: Task<Void, Never>?
     @State var bufferTask: Task<Void, Never>?
+    @Environment(\.scenePhase) var scenePhase
     @Environment(\.horizontalSizeClass) var horizontalSizeClass
 
     init(
@@ -86,6 +87,10 @@ struct TranscriptionLabView: View {
         .background(.regularMaterial, in: RoundedRectangle(cornerRadius: 24, style: .continuous))
         .navigationTitle("Conversation")
         .task { await observeResults() }
+        .onAppear { restorePlaybackAfterForcedTeardown() }
+        .onChange(of: scenePhase) { _, phase in
+            if phase == .active { restorePlaybackAfterForcedTeardown() }
+        }
         .onDisappear {
             startTask?.cancel()
             Task { await finish(force: true) }
@@ -122,6 +127,16 @@ extension TranscriptionLabView {
     func releaseCaptureExclusivityAfterWork() {
         guard !isForcedTeardown else { return }
         endCaptureExclusivity(resumingPlayback: true)
+    }
+
+    @MainActor
+    func restorePlaybackAfterForcedTeardown() {
+        isForcedTeardown = false
+        if ownsCaptureSuppression {
+            endCaptureExclusivity(resumingPlayback: true)
+        } else {
+            onCaptureDidEnd?(true)
+        }
     }
 
     @MainActor
