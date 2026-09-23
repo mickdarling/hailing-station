@@ -189,27 +189,6 @@ extension RootView {
     }
 }
 
-private struct CaptureSafeLabsView: View {
-    let audioSession: any AudioSessionDiagnosticsProviding
-    let playback: ReplyPlaybackController
-
-    var body: some View {
-        List {
-            NavigationLink("Live transcription") {
-                if #available(iOS 26.0, *) {
-                    TranscriptionLabView(
-                        audioSession: audioSession,
-                        onCaptureWillBegin: playback.beginCaptureSuppression,
-                        onCaptureDidEnd: { playback.endCaptureSuppression(resumingPlayback: $0) }
-                    )
-                }
-            }
-            NavigationLink("Routing spike") { RoutingSpikeView() }
-        }
-        .navigationTitle("Labs")
-    }
-}
-
 @MainActor
 private enum StationUITestReset {
     static var didRun = false

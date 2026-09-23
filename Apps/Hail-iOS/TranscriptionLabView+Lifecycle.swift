@@ -183,16 +183,6 @@ extension TranscriptionLabView {
             }
         }
     }
-    @MainActor
-    private func discardCapture() async {
-        capture.stop()
-        bufferTask?.cancel()
-        bufferTask = nil
-        activeUtteranceID = nil
-        await transcriber.cancel()
-        isRecording = false
-    }
-
     private func appendFinal(_ text: String) {
         let trimmed = text.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !trimmed.isEmpty else { return }
