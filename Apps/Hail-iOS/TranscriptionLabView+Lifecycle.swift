@@ -115,8 +115,7 @@ extension TranscriptionLabView {
     @MainActor
     func interruptTarget(using action: @MainActor () async throws -> Void) async {
         guard !isInterrupting else { return }
-        pendingSendID = nil
-        pendingDestinationID = nil
+        clearPendingSend()
         isInterrupting = true
         defer {
             isInterrupting = false
@@ -175,5 +174,13 @@ extension TranscriptionLabView {
         activeUtteranceID = nil
         isRecording = false
         return finalized
+    }
+
+    @MainActor
+    func clearPendingSend() {
+        replyTimeoutTask?.cancel()
+        replyTimeoutTask = nil
+        pendingSendID = nil
+        pendingDestinationID = nil
     }
 }

@@ -136,7 +136,9 @@ extension TranscriptionLabView {
 
     @MainActor
     func send(_ text: String, failurePrefix: String) async {
-        guard let onFinalized else { return }
+        guard let onFinalized, pendingSendID == nil else { return }
+        replyTimeoutTask?.cancel()
+        replyTimeoutTask = nil
         let sendID = UUID()
         let destinationAtSend = destinationID
         let replyAtSend = latestReplyID
@@ -146,11 +148,13 @@ extension TranscriptionLabView {
         do {
             try await onFinalized(text)
             guard pendingSendID == sendID, pendingDestinationID == destinationAtSend else { return }
-            if latestReplyID == replyAtSend { status = "Waiting for reply…" }
+            if latestReplyID == replyAtSend {
+                status = "Waiting for reply…"
+                scheduleReplyTimeout(sendID: sendID, destinationID: destinationAtSend)
+            }
         } catch {
             guard pendingSendID == sendID, pendingDestinationID == destinationAtSend else { return }
-            pendingSendID = nil
-            pendingDestinationID = nil
+            clearPendingSend()
             status = "\(failurePrefix): \(error.localizedDescription)"
         }
     }
@@ -160,8 +164,7 @@ extension TranscriptionLabView {
         guard current != nil, current != previous,
               pendingDestinationID == destinationID,
               status == "Sending…" || status == "Waiting for reply…" else { return }
-        pendingSendID = nil
-        pendingDestinationID = nil
+        clearPendingSend()
         status = "Reply received"
     }
 
@@ -170,8 +173,7 @@ extension TranscriptionLabView {
         previous: ConversationDestinationID?, current: ConversationDestinationID?
     ) {
         guard current != previous else { return }
-        pendingSendID = nil
-        pendingDestinationID = nil
+        clearPendingSend()
         guard !isStarting, !isRecording, !isFinalizing, !isInterrupting else { return }
         status = "Ready"
     }

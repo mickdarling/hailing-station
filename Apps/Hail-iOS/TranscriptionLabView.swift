@@ -37,6 +37,7 @@ struct TranscriptionLabView: View {
     @State var captureOwnerID = UUID()
     @State var pendingSendID: UUID?
     @State var pendingDestinationID: ConversationDestinationID?
+    @State var replyTimeoutTask: Task<Void, Never>?
     @State var ownsCaptureSuppression = false
     @State var playbackRestoreRequested = false
     @State var startTask: Task<Void, Never>?
@@ -171,5 +172,23 @@ extension TranscriptionLabView {
     func restorePlaybackIfRequestedAndReady() {
         guard playbackRestoreRequested else { return }
         restorePlaybackAfterForcedTeardown()
+    }
+
+    @MainActor
+    func scheduleReplyTimeout(sendID: UUID, destinationID: ConversationDestinationID?) {
+        replyTimeoutTask?.cancel()
+        replyTimeoutTask = Task { @MainActor in
+            do {
+                try await Task.sleep(for: .seconds(30))
+            } catch {
+                return
+            }
+            guard pendingSendID == sendID, pendingDestinationID == destinationID,
+                  status == "Waiting for reply…" else { return }
+            pendingSendID = nil
+            pendingDestinationID = nil
+            replyTimeoutTask = nil
+            status = "No reply yet — tap to talk again"
+        }
     }
 }
