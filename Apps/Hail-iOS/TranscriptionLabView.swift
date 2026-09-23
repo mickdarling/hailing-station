@@ -13,7 +13,7 @@ struct TranscriptionLabView: View {
     let audioSession: any AudioSessionDiagnosticsProviding
     let destinationLabel: String?
     let destinationID: ConversationDestinationID?
-    let latestReplyID: String?
+    let latestReplyEventID: UUID?
     let onCaptureWillBegin: (@MainActor (UUID) -> Void)?
     let onCaptureDidEnd: (@MainActor (UUID, _ resumingPlayback: Bool) -> Void)?
     let onCaptureTeardownCompleted: (@MainActor (UUID) -> Void)?
@@ -53,7 +53,7 @@ struct TranscriptionLabView: View {
         transcriber: (any Transcriber)? = nil,
         destinationLabel: String? = nil,
         destinationID: ConversationDestinationID? = nil,
-        latestReplyID: String? = nil,
+        latestReplyEventID: UUID? = nil,
         onCaptureWillBegin: (@MainActor (UUID) -> Void)? = nil,
         onCaptureDidEnd: (@MainActor (UUID, _ resumingPlayback: Bool) -> Void)? = nil,
         onCaptureTeardownCompleted: (@MainActor (UUID) -> Void)? = nil,
@@ -63,7 +63,7 @@ struct TranscriptionLabView: View {
         self.audioSession = audioSession
         self.destinationLabel = destinationLabel
         self.destinationID = destinationID
-        self.latestReplyID = latestReplyID
+        self.latestReplyEventID = latestReplyEventID
         self.onCaptureWillBegin = onCaptureWillBegin
         self.onCaptureDidEnd = onCaptureDidEnd
         self.onCaptureTeardownCompleted = onCaptureTeardownCompleted
@@ -113,7 +113,7 @@ struct TranscriptionLabView: View {
         .onChange(of: scenePhase) { _, phase in
             if phase == .active { restorePlaybackAfterForcedTeardown() }
         }
-        .onChange(of: latestReplyID) { previous, current in
+        .onChange(of: latestReplyEventID) { previous, current in
             noteReplyArrival(previous: previous, current: current)
         }
         .onChange(of: destinationID) { previous, current in

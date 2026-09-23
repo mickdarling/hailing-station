@@ -162,10 +162,11 @@ extension TranscriptionLabView {
         }
     }
     @MainActor
-    func noteReplyArrival(previous: String?, current: String?) {
+    func noteReplyArrival(previous: UUID?, current: UUID?) {
         guard current != nil, current != previous, let destinationID else { return }
         if Self.uncorrelatedDestinations.contains(destinationID) {
-            if pendingSendID == nil { status = "Reply received — turn unverified" }
+            if pendingSendID == nil, !showsActivity, !isInterrupting,
+               interruptTask == nil, finishTask == nil { status = "Reply received — turn unverified" }
             return
         }
         guard pendingDestinationID == destinationID,
@@ -173,7 +174,6 @@ extension TranscriptionLabView {
         clearPendingSend()
         status = "Reply received"
     }
-
     @MainActor
     func clearPendingSend() {
         replyTimeoutTask?.cancel()
