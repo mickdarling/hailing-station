@@ -3,7 +3,9 @@ import Speech
 extension TranscriptionLabView {
     @MainActor
     func begin() async {
-        guard !isRecording, !isStarting, !isFinalizing, !isInterrupting else { return }
+        guard !isRecording, !isStarting, !isFinalizing, !isInterrupting,
+              finishTask == nil, interruptTask == nil else { return }
+        beginCaptureExclusivity()
         isStarting = true
         hasReceivedAudio = false
         finalText = ""
@@ -11,14 +13,12 @@ extension TranscriptionLabView {
         defer {
             isStarting = false
             startTask = nil
+            restorePlaybackIfRequestedAndReady()
         }
-        status = "Requesting microphone and speech access…"
-        guard await requestHailPermissions() else {
-            status = "Microphone and speech recognition permissions are required."
-            return
-        }
+        guard await prepareCaptureAuthorization() else { return }
 
         do {
+            try await quietReplyAudio()
             try Task.checkCancellation()
             status = "Preparing on-device speech model…"
             try await audioSession.activate()
@@ -41,26 +41,63 @@ extension TranscriptionLabView {
             await handleStartCancellation()
         } catch {
             _ = await cleanUp()
+            releaseCaptureExclusivityAfterWork()
             status = "Could not start: \(error.localizedDescription)"
         }
     }
 
     @MainActor
     func finish(force: Bool = false) async {
-        if force, isInterrupting || isFinalizing {
-            await audioSession.deactivate()
+        if force {
+            isForcedTeardown = true
+            if finishTask != nil, !ownsCaptureSuppression {
+                ownsCaptureSuppression = true
+                onCaptureWillBegin?(captureOwnerID)
+            }
+        }
+        if let pendingFinish = finishTask {
+            if force {
+                let generation = UUID()
+                let task = Task {
+                    await audioSession.deactivate()
+                    await pendingFinish.value
+                }
+                finishGeneration = generation
+                finishTask = task
+                await task.value
+                completeFinish(generation: generation)
+            } else if let generation = finishGeneration {
+                await pendingFinish.value
+                completeFinish(generation: generation)
+            }
             return
         }
+        let generation = UUID()
+        let task = Task { await performFinish(force: force) }
+        finishGeneration = generation
+        finishTask = task
+        await task.value
+        completeFinish(generation: generation)
+    }
+
+    @MainActor
+    private func performFinish(force: Bool) async {
+        if force, await prepareForcedFinish() { return }
         guard !isInterrupting, !isFinalizing, force || isRecording || bufferTask != nil else { return }
         isFinalizing = true
         defer { isFinalizing = false }
         status = "Finalizing…"
         let finalized = await cleanUp()
         guard !force else {
+            status = "Ready"
+            return
+        }
+        guard !isForcedTeardown else {
             await audioSession.deactivate()
             status = "Ready"
             return
         }
+        releaseCaptureExclusivityAfterWork()
         let text = finalized.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !text.isEmpty else {
             status = "Nothing heard"
@@ -85,7 +122,10 @@ extension TranscriptionLabView {
     func interruptTarget(using action: @MainActor () async throws -> Void) async {
         guard !isInterrupting else { return }
         isInterrupting = true
-        defer { isInterrupting = false }
+        defer {
+            isInterrupting = false
+            restorePlaybackIfRequestedAndReady()
+        }
         let discardedUtterance = isStarting || isRecording || bufferTask != nil || activeUtteranceID != nil
         let pendingStart = startTask
         pendingStart?.cancel()
@@ -108,11 +148,13 @@ extension TranscriptionLabView {
             await transcriber.cancel()
         }
         await pendingStart?.value
+        releaseCaptureExclusivityAfterWork()
     }
 
     @MainActor
     private func fail(_ message: String) async {
         _ = await cleanUp(waitForBuffer: false)
+        releaseCaptureExclusivityAfterWork()
         status = message
     }
 
@@ -124,6 +166,7 @@ extension TranscriptionLabView {
             _ = await cleanUp()
             status = "Ready"
         }
+        releaseCaptureExclusivityAfterWork()
     }
 
     @MainActor
@@ -136,58 +179,5 @@ extension TranscriptionLabView {
         activeUtteranceID = nil
         isRecording = false
         return finalized
-    }
-
-    @MainActor
-    func observeResults() async {
-        let coordinator = audioSession as? any AudioSceneCleanupCoordinating
-        coordinator?.installSceneCleanup { await finish(force: true) }
-        defer { coordinator?.removeSceneCleanup() }
-        for await result in transcriber.results {
-            guard result.utteranceID == activeUtteranceID else { continue }
-            if result.isFinal {
-                appendFinal(result.text)
-                volatileText = ""
-            } else {
-                volatileText = result.text.trimmingCharacters(in: .whitespacesAndNewlines)
-            }
-        }
-    }
-    @MainActor
-    private func discardCapture() async {
-        capture.stop()
-        bufferTask?.cancel()
-        bufferTask = nil
-        activeUtteranceID = nil
-        await transcriber.cancel()
-        isRecording = false
-    }
-
-    private func appendFinal(_ text: String) {
-        let trimmed = text.trimmingCharacters(in: .whitespacesAndNewlines)
-        guard !trimmed.isEmpty else { return }
-        finalText = [finalText, trimmed].filter { !$0.isEmpty }.joined(separator: " ")
-    }
-
-    private func markAudioReceived() {
-        guard !hasReceivedAudio else { return }
-        hasReceivedAudio = true
-        status = "Receiving audio"
-    }
-}
-
-/// TCC invokes these callbacks on arbitrary queues, so this bridge must not inherit the view's MainActor.
-private func requestHailPermissions() async -> Bool {
-    let microphone = await withCheckedContinuation(isolation: nil) { continuation in
-        AVAudioApplication.requestRecordPermission { @Sendable granted in
-            continuation.resume(returning: granted)
-        }
-    }
-    guard microphone else { return false }
-
-    return await withCheckedContinuation(isolation: nil) { continuation in
-        SFSpeechRecognizer.requestAuthorization { @Sendable status in
-            continuation.resume(returning: status == .authorized)
-        }
     }
 }

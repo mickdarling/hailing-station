@@ -17,6 +17,10 @@ extension RootView {
         }
         .scrollDismissesKeyboard(.interactively)
         .background(Color(uiColor: .systemGroupedBackground))
+        .onAppear { CapturePlaybackSuppression.releaseCompleted(using: playback) }
+        .onChange(of: scenePhase) { _, phase in
+            if phase == .active { CapturePlaybackSuppression.releaseCompleted(using: playback) }
+        }
     }
 
     var adaptiveContent: some View {
@@ -39,12 +43,18 @@ extension RootView {
             .frame(maxWidth: horizontalSizeClass == .regular ? 360 : .infinity, alignment: .top)
         }
     }
+
     @ViewBuilder
     var conversationSurface: some View {
         if let destination {
             TranscriptionLabView(
                 audioSession: audioRoutes,
                 destinationLabel: destination.label,
+                onCaptureWillBegin: { CapturePlaybackSuppression.begin($0, using: playback) },
+                onCaptureDidEnd: { CapturePlaybackSuppression.end($0, using: playback, resuming: $1) },
+                onCaptureTeardownCompleted: {
+                    CapturePlaybackSuppression.markCleanupComplete($0, using: playback)
+                },
                 onFinalized: { text in
                     try await connections.sendFinalText(
                         text, host: destination.hostID, targetID: destination.target.id
@@ -90,7 +100,6 @@ extension RootView {
             .stationCard(minHeight: horizontalSizeClass == .regular ? 420 : 260)
         }
     }
-
     var stationTools: some View {
         GroupBox {
             ViewThatFits(in: .horizontal) {
@@ -121,7 +130,7 @@ extension RootView {
                 .frame(maxWidth: .infinity)
         }
         NavigationLink {
-            LabsView(audioSession: audioRoutes)
+            CaptureSafeLabsView(audioSession: audioRoutes, playback: playback)
         } label: {
             Label("Labs", systemImage: "wrench.and.screwdriver")
                 .frame(maxWidth: .infinity)
@@ -172,10 +181,6 @@ extension RootView {
         )
     }
 
-    var hasReadyHost: Bool {
-        connections.hosts.contains(where: { $0.state == .ready })
-    }
-
     /// Keeps the empty-state UI test deterministic without changing normal launch persistence.
     @MainActor
     private func resetStationStateForUITestingIfRequested() {
@@ -184,17 +189,5 @@ extension RootView {
         StationUITestReset.didRun = true
         UserDefaults.standard.removeObject(forKey: "hailing-station.host-endpoints.v1")
         UserDefaults.standard.removeObject(forKey: "hailing-station.destination-selection.v1")
-    }
-}
-
-@MainActor
-private enum StationUITestReset {
-    static var didRun = false
-}
-
-private extension View {
-    func stationCard(minHeight: CGFloat = 320) -> some View {
-        frame(maxWidth: .infinity, minHeight: minHeight)
-            .background(.regularMaterial, in: RoundedRectangle(cornerRadius: 24, style: .continuous))
     }
 }
