@@ -155,11 +155,18 @@ extension TranscriptionLabView {
             status = "\(failurePrefix): \(error.localizedDescription)"
         }
     }
-
     @MainActor
     func noteReplyArrival(previous: String?, current: String?) {
-        guard current != nil, current != previous,
-              pendingDestinationID == destinationID,
+        guard current != nil, current != previous, let destinationID else { return }
+        if let debt = unattributedReplyDebt[destinationID], debt > 0 {
+            if debt == 1 {
+                unattributedReplyDebt[destinationID] = nil
+            } else {
+                unattributedReplyDebt[destinationID] = debt - 1
+            }
+            return
+        }
+        guard pendingDestinationID == destinationID,
               status == "Sending…" || status == "Waiting for reply…" else { return }
         clearPendingSend()
         status = "Reply received"

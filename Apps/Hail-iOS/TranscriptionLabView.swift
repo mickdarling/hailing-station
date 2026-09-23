@@ -3,7 +3,7 @@ import HailCore
 import Speech
 import SwiftUI
 
-struct ConversationDestinationID: Equatable {
+struct ConversationDestinationID: Hashable {
     let endpointID: HostEndpoint.Identifier
     let targetID: String
 }
@@ -37,6 +37,7 @@ struct TranscriptionLabView: View {
     @State var captureOwnerID = UUID()
     @State var pendingSendID: UUID?
     @State var pendingDestinationID: ConversationDestinationID?
+    @State var unattributedReplyDebt: [ConversationDestinationID: Int] = [:]
     @State var replyTimeoutTask: Task<Void, Never>?
     @State var ownsCaptureSuppression = false
     @State var playbackRestoreRequested = false
@@ -185,6 +186,9 @@ extension TranscriptionLabView {
             }
             guard pendingSendID == sendID, pendingDestinationID == destinationID,
                   status == "Waiting for reply…" else { return }
+            if let destinationID {
+                unattributedReplyDebt[destinationID, default: 0] += 1
+            }
             pendingSendID = nil
             pendingDestinationID = nil
             replyTimeoutTask = nil
