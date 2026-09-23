@@ -159,8 +159,9 @@ extension TranscriptionLabView {
     func noteDestinationChange(
         previous: ConversationDestinationID?, current: ConversationDestinationID?
     ) {
-        guard current != previous, pendingDestinationID != nil else { return }
+        guard current != previous else { return }
         pendingDestinationID = nil
+        guard !isStarting, !isRecording, !isFinalizing, !isInterrupting else { return }
         status = "Ready"
     }
 
