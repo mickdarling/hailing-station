@@ -156,6 +156,7 @@ extension TranscriptionLabView {
             scheduleReplyTimeout(sendID: sendID, destinationID: destinationAtSend)
         } catch {
             guard pendingSendID == sendID, pendingDestinationID == destinationAtSend else { return }
+            if let destinationAtSend { Self.uncorrelatedDestinations.insert(destinationAtSend) }
             clearPendingSend()
             status = "\(failurePrefix): \(error.localizedDescription)"
         }
