@@ -186,6 +186,7 @@ extension TranscriptionLabView {
     ) {
         guard current != previous else { return }
         let invalidatedSend = pendingSendID != nil
+        if let pendingDestinationID { Self.uncorrelatedDestinations.insert(pendingDestinationID) }
         clearPendingSend()
         if invalidatedSend {
             status = "Ready"
