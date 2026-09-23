@@ -94,6 +94,12 @@ struct ConnectivityLabView: View {
             return
         }
         do {
+            if store.hosts.contains(where: {
+                $0.endpoint.url == parsedURL && $0.id != editingID
+            }) {
+                validation = "That Mac address is already configured. Edit the existing entry instead."
+                return
+            }
             let id = editingID ?? UUID().uuidString.lowercased()
             await store.upsert(try HostEndpoint(id: id, name: name, url: parsedURL))
             endpointsChanged(store.hosts.map(\.endpoint))
