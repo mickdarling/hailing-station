@@ -55,12 +55,13 @@ extension TranscriptionLabView {
         defer { isFinalizing = false }
         status = "Finalizing…"
         let finalized = await cleanUp()
-        endCaptureExclusivity()
         guard !force else {
             await audioSession.deactivate()
+            endCaptureExclusivity(resumingPlayback: false)
             status = "Ready"
             return
         }
+        endCaptureExclusivity()
         let text = finalized.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !text.isEmpty else {
             status = "Nothing heard"

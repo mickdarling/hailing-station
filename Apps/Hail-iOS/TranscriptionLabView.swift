@@ -8,7 +8,7 @@ struct TranscriptionLabView: View {
     let audioSession: any AudioSessionDiagnosticsProviding
     let destinationLabel: String?
     let onCaptureWillBegin: (@MainActor () -> Void)?
-    let onCaptureDidEnd: (@MainActor () -> Void)?
+    let onCaptureDidEnd: (@MainActor (_ resumingPlayback: Bool) -> Void)?
     let onFinalized: (@MainActor (String) async throws -> Void)?
     let onEscape: (@MainActor () async throws -> Void)?
 
@@ -35,7 +35,7 @@ struct TranscriptionLabView: View {
         transcriber: (any Transcriber)? = nil,
         destinationLabel: String? = nil,
         onCaptureWillBegin: (@MainActor () -> Void)? = nil,
-        onCaptureDidEnd: (@MainActor () -> Void)? = nil,
+        onCaptureDidEnd: (@MainActor (_ resumingPlayback: Bool) -> Void)? = nil,
         onFinalized: (@MainActor (String) async throws -> Void)? = nil,
         onEscape: (@MainActor () async throws -> Void)? = nil
     ) {
@@ -117,10 +117,10 @@ extension TranscriptionLabView {
     }
 
     @MainActor
-    func endCaptureExclusivity() {
+    func endCaptureExclusivity(resumingPlayback: Bool = true) {
         guard ownsCaptureSuppression else { return }
         ownsCaptureSuppression = false
-        onCaptureDidEnd?()
+        onCaptureDidEnd?(resumingPlayback)
     }
 
     @MainActor

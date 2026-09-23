@@ -47,7 +47,7 @@ extension RootView {
                 audioSession: audioRoutes,
                 destinationLabel: destination.label,
                 onCaptureWillBegin: playback.beginCaptureSuppression,
-                onCaptureDidEnd: playback.endCaptureSuppression,
+                onCaptureDidEnd: { playback.endCaptureSuppression(resumingPlayback: $0) },
                 onFinalized: { text in
                     try await connections.sendFinalText(
                         text, host: destination.hostID, targetID: destination.target.id
