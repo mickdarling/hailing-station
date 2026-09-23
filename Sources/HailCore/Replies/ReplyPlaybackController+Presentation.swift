@@ -2,12 +2,63 @@ import Foundation
 import HailProtocol
 
 extension ReplyPlaybackController {
+    /// Makes microphone capture strictly half-duplex with reply playback. New reply frames may
+    /// continue to queue, but none are scheduled or resumed until capture finalization releases the
+    /// suppression. A user's explicit pause choice remains authoritative across the transition.
+    public func beginCaptureSuppression() {
+        guard !isCaptureSuppressed else { return }
+        isCaptureSuppressed = true
+        if !isPaused, activeKey != nil {
+            player.pause()
+        }
+        status = "Paused while listening"
+    }
+
+    public func endCaptureSuppression(resumingPlayback: Bool = true) {
+        guard isCaptureSuppressed else { return }
+        isCaptureSuppressed = false
+        guard resumingPlayback else {
+            if activeKey != nil || hasQueuedPlayback {
+                isPaused = true
+                status = "Paused"
+            } else {
+                status = isMuted ? "Muted" : "Ready for replies"
+            }
+            return
+        }
+        guard !isPaused else {
+            status = "Paused"
+            return
+        }
+        if activeKey != nil {
+            do {
+                try player.resume()
+                status = isMuted ? "Muted" : "Playing"
+                drain()
+            } catch {
+                status = "Playback could not resume"
+            }
+        } else {
+            if !hasQueuedPlayback {
+                status = isMuted ? "Muted" : "Ready for replies"
+            } else {
+                drain()
+            }
+        }
+    }
+
     public func togglePause() {
+        if isCaptureSuppressed {
+            isPaused.toggle()
+            status = isPaused ? "Paused" : "Paused while listening"
+            return
+        }
         if isPaused {
             do {
                 try player.resume()
                 isPaused = false
-                status = "Playing"
+                status = isMuted ? "Muted" : "Playing"
+                drain()
             } catch {
                 status = "Playback could not resume"
             }
@@ -21,10 +72,14 @@ extension ReplyPlaybackController {
     public func toggleMute() {
         isMuted.toggle()
         player.setMuted(isMuted)
-        status = isMuted ? "Muted" : "Playing"
+        status = isCaptureSuppressed ? "Paused while listening" : (isMuted ? "Muted" : "Playing")
     }
 
     public func replayLatest() {
+        guard !isCaptureSuppressed else {
+            status = "Replay available after listening"
+            return
+        }
         guard !lastAudio.isEmpty, let lastKey else { return }
         guard activeKey == nil || activeKey == lastKey else {
             status = "Replay available when this reply finishes"
@@ -48,6 +103,7 @@ extension ReplyPlaybackController {
     }
 
     public var statusForControls: String {
+        if isCaptureSuppressed { return "Paused while listening" }
         guard let presentationForControls else { return status }
         return presentationStatuses[presentationForControls.id] ?? status
     }
@@ -76,7 +132,8 @@ extension ReplyPlaybackController {
             if let transcript { replies[index].transcript = transcript }
         } else {
             replies.append(ReplyPresentation(
-                id: id, host: descriptor.hostID, target: descriptor.targetID, transcript: transcript
+                id: id, endpointID: event.endpointID, host: descriptor.hostID,
+                target: descriptor.targetID, transcript: transcript
             ))
             trimPresentations(retainingPresentationID: id)
         }

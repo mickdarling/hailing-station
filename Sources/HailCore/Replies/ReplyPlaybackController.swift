@@ -14,6 +14,7 @@ public protocol ReplyAudioPlaying: AnyObject {
 
 public struct ReplyPresentation: Identifiable, Equatable, Sendable {
     public var id: String
+    public var endpointID: HostEndpoint.Identifier
     public var host: String
     public var target: String
     public var transcript: String?
@@ -41,6 +42,7 @@ public final class ReplyPlaybackController {
     public internal(set) var replies: [ReplyPresentation] = []
     public internal(set) var isPaused = false
     public internal(set) var isMuted = false
+    public internal(set) var isCaptureSuppressed = false
     public internal(set) var status = "No replies yet"
 
     let player: any ReplyAudioPlaying
@@ -63,6 +65,8 @@ public final class ReplyPlaybackController {
         if let lastKey { keys.insert(lastKey) }
         return keys
     }
+
+    var hasQueuedPlayback: Bool { !queue.isEmpty }
 
     public init(player: any ReplyAudioPlaying) {
         self.player = player
@@ -134,7 +138,11 @@ public final class ReplyPlaybackController {
         isPaused = false
     }
 
-    private func drain() {
+    func drain() {
+        guard !isCaptureSuppressed, !isPaused else {
+            status = isCaptureSuppressed ? "Paused while listening" : "Paused"
+            return
+        }
         while let key = queue.first, var stream = streams[key],
               let segment = stream.segments[stream.nextSequence] {
             let beginsPlayback = stream.nextSequence == 0 && !playbackOrder.contains(key)
