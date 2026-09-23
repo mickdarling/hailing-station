@@ -181,10 +181,17 @@ extension TranscriptionLabView {
     }
 
     @MainActor
-    func clearPendingSend() {
-        replyTimeoutTask?.cancel()
-        replyTimeoutTask = nil
-        pendingSendID = nil
-        pendingDestinationID = nil
+    func noteDestinationChange(
+        previous: ConversationDestinationID?, current: ConversationDestinationID?
+    ) {
+        guard current != previous else { return }
+        let invalidatedSend = pendingSendID != nil
+        clearPendingSend()
+        if invalidatedSend {
+            status = "Ready"
+            return
+        }
+        guard !isStarting, !isRecording, !isFinalizing, !isInterrupting else { return }
+        status = "Ready"
     }
 }

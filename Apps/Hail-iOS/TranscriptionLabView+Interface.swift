@@ -147,6 +147,11 @@ extension TranscriptionLabView {
         do {
             try await onFinalized(text)
             guard pendingSendID == sendID, pendingDestinationID == destinationAtSend else { return }
+            if let destinationAtSend, uncorrelatedDestinations.contains(destinationAtSend) {
+                clearPendingSend()
+                status = "Sent — reply turn unverified"
+                return
+            }
             status = "Waiting for reply…"
             scheduleReplyTimeout(sendID: sendID, destinationID: destinationAtSend)
         } catch {
@@ -158,12 +163,8 @@ extension TranscriptionLabView {
     @MainActor
     func noteReplyArrival(previous: String?, current: String?) {
         guard current != nil, current != previous, let destinationID else { return }
-        if let debt = unattributedReplyDebt[destinationID], debt > 0 {
-            if debt == 1 {
-                unattributedReplyDebt[destinationID] = nil
-            } else {
-                unattributedReplyDebt[destinationID] = debt - 1
-            }
+        if uncorrelatedDestinations.contains(destinationID) {
+            if pendingSendID == nil { status = "Reply received — turn unverified" }
             return
         }
         guard pendingDestinationID == destinationID,
@@ -173,13 +174,11 @@ extension TranscriptionLabView {
     }
 
     @MainActor
-    func noteDestinationChange(
-        previous: ConversationDestinationID?, current: ConversationDestinationID?
-    ) {
-        guard current != previous else { return }
-        clearPendingSend()
-        guard !isStarting, !isRecording, !isFinalizing, !isInterrupting else { return }
-        status = "Ready"
+    func clearPendingSend() {
+        replyTimeoutTask?.cancel()
+        replyTimeoutTask = nil
+        pendingSendID = nil
+        pendingDestinationID = nil
     }
 
     @MainActor
