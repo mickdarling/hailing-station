@@ -24,6 +24,7 @@ struct TranscriptionLabView: View {
     @State var hasReceivedAudio = false
     @State var activeUtteranceID: UUID?
     @State var isInterrupting = false
+    @State var isForcedTeardown = false
     @State var ownsCaptureSuppression = false
     @State var startTask: Task<Void, Never>?
     @State var bufferTask: Task<Void, Never>?
@@ -103,7 +104,7 @@ extension TranscriptionLabView {
         status = "Requesting microphone and speech access…"
         guard await requestHailPermissions() else {
             status = "Microphone and speech recognition permissions are required."
-            endCaptureExclusivity()
+            endCaptureExclusivity(resumingPlayback: !isForcedTeardown)
             return false
         }
         return true
@@ -112,6 +113,7 @@ extension TranscriptionLabView {
     @MainActor
     func beginCaptureExclusivity() {
         guard !ownsCaptureSuppression else { return }
+        isForcedTeardown = false
         ownsCaptureSuppression = true
         onCaptureWillBegin?()
     }
