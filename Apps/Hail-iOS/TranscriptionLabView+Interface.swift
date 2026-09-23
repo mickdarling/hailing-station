@@ -95,7 +95,9 @@ extension TranscriptionLabView {
                         await send(correction, failurePrefix: "Correction failed")
                     }
                 }
-                .disabled(showsActivity || finalText.isEmpty)
+                .disabled(
+                    showsActivity || isInterrupting || interruptTask != nil || finishTask != nil || finalText.isEmpty
+                )
             }
 
             Button("Clear") {
