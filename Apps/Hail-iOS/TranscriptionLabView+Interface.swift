@@ -61,7 +61,7 @@ extension TranscriptionLabView {
             .contentShape(Rectangle())
         }
         .buttonStyle(.plain)
-        .disabled(isStarting || isFinalizing || isInterrupting || finishTask != nil)
+        .disabled(isStarting || isFinalizing || isInterrupting || finishTask != nil || interruptTask != nil)
         .accessibilityIdentifier("station.talk")
         .accessibilityLabel(actionLabel)
         .accessibilityValue(status)

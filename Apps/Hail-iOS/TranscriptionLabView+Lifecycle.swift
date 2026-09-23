@@ -3,7 +3,8 @@ import Speech
 extension TranscriptionLabView {
     @MainActor
     func begin() async {
-        guard !isRecording, !isStarting, !isFinalizing, !isInterrupting, finishTask == nil else { return }
+        guard !isRecording, !isStarting, !isFinalizing, !isInterrupting,
+              finishTask == nil, interruptTask == nil else { return }
         beginCaptureExclusivity()
         isStarting = true
         hasReceivedAudio = false
@@ -87,7 +88,10 @@ extension TranscriptionLabView {
             await audioSession.deactivate()
             await pendingStart?.value
         }
-        if force, isInterrupting { return }
+        if force, let pendingInterrupt = interruptTask {
+            await pendingInterrupt.value
+            return
+        }
         guard !isInterrupting, !isFinalizing, force || isRecording || bufferTask != nil else { return }
         isFinalizing = true
         defer { isFinalizing = false }

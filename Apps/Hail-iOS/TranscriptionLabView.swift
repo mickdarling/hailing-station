@@ -32,6 +32,7 @@ struct TranscriptionLabView: View {
     @State var hasReceivedAudio = false
     @State var activeUtteranceID: UUID?
     @State var isInterrupting = false
+    @State var interruptTask: Task<Void, Never>?
     @State var isForcedTeardown = false
     @State var captureOwnerID = UUID()
     @State var pendingDestinationID: ConversationDestinationID?
@@ -90,13 +91,13 @@ struct TranscriptionLabView: View {
 
             if let onEscape {
                 Button(role: .destructive) {
-                    Task { await interruptTarget(using: onEscape) }
+                    startInterrupt(using: onEscape)
                 } label: {
                     Label("Escape", systemImage: "xmark.octagon.fill")
                 }
                 .buttonStyle(.bordered)
                 .controlSize(.large)
-                .disabled(isFinalizing)
+                .disabled(isFinalizing || finishTask != nil || interruptTask != nil)
                 .accessibilityHint("Discards any active recording and sends Escape immediately to the target.")
             }
 
@@ -129,17 +130,6 @@ struct TranscriptionLabView: View {
 }
 
 extension TranscriptionLabView {
-    @MainActor
-    func prepareCaptureAuthorization() async -> Bool {
-        status = "Requesting microphone and speech access…"
-        guard await requestHailPermissions() else {
-            status = "Microphone and speech recognition permissions are required."
-            releaseCaptureExclusivityAfterWork()
-            return false
-        }
-        return true
-    }
-
     @MainActor
     func beginCaptureExclusivity() {
         isForcedTeardown = false
@@ -180,21 +170,5 @@ extension TranscriptionLabView {
     func restorePlaybackIfRequestedAndReady() {
         guard playbackRestoreRequested else { return }
         restorePlaybackAfterForcedTeardown()
-    }
-}
-
-/// TCC invokes these callbacks on arbitrary queues, so this bridge must not inherit the view's MainActor.
-private func requestHailPermissions() async -> Bool {
-    let microphone = await withCheckedContinuation(isolation: nil) { continuation in
-        AVAudioApplication.requestRecordPermission { @Sendable granted in
-            continuation.resume(returning: granted)
-        }
-    }
-    guard microphone else { return false }
-
-    return await withCheckedContinuation(isolation: nil) { continuation in
-        SFSpeechRecognizer.requestAuthorization { @Sendable status in
-            continuation.resume(returning: status == .authorized)
-        }
     }
 }
