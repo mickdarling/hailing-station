@@ -79,7 +79,6 @@ extension TranscriptionLabView {
         await task.value
         completeFinish(generation: generation)
     }
-
     @MainActor
     private func performFinish(force: Bool) async {
         if force, await prepareForcedFinish() { return }
@@ -91,6 +90,7 @@ extension TranscriptionLabView {
         isFinalizing = true
         defer { isFinalizing = false }
         status = "Finalizing…"
+        let destinationGenerationAtStart = destinationGeneration
         let finalized = await cleanUp()
         guard !force else {
             status = "Ready"
@@ -110,12 +110,15 @@ extension TranscriptionLabView {
         finalText = text
         volatileText = ""
         if onFinalized != nil {
+            guard destinationGeneration == destinationGenerationAtStart else {
+                status = "Destination changed — request not sent"
+                return
+            }
             await send(text, failurePrefix: "Send failed")
         } else {
             status = "Ready"
         }
     }
-
     @MainActor
     func interruptTarget(using action: @MainActor () async throws -> Void) async {
         guard !isInterrupting else { return }
@@ -150,14 +153,12 @@ extension TranscriptionLabView {
         await pendingStart?.value
         releaseCaptureExclusivityAfterWork()
     }
-
     @MainActor
     private func fail(_ message: String) async {
         _ = await cleanUp(waitForBuffer: false)
         releaseCaptureExclusivityAfterWork()
         status = message
     }
-
     @MainActor
     private func handleStartCancellation() async {
         if isInterrupting {
@@ -168,7 +169,6 @@ extension TranscriptionLabView {
         }
         releaseCaptureExclusivityAfterWork()
     }
-
     @MainActor
     private func cleanUp(waitForBuffer: Bool = true) async -> String {
         capture.stop()
@@ -186,6 +186,7 @@ extension TranscriptionLabView {
         previous: ConversationDestinationID?, current: ConversationDestinationID?
     ) {
         guard current != previous else { return }
+        destinationGeneration = UUID()
         let invalidatedSend = pendingSendID != nil
         if let pendingDestinationID { Self.uncorrelatedDestinations.insert(pendingDestinationID) }
         clearPendingSend()

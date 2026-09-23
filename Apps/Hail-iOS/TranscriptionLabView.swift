@@ -22,7 +22,6 @@ struct TranscriptionLabView: View {
 
     @State var capture: any AudioCapturing
     @State var transcriber: any Transcriber
-
     @State var isRecording = false
     @State var finalText = ""
     @State var volatileText = ""
@@ -37,6 +36,7 @@ struct TranscriptionLabView: View {
     @State var captureOwnerID = UUID()
     @State var pendingSendID: UUID?
     @State var pendingDestinationID: ConversationDestinationID?
+    @State var destinationGeneration = UUID()
     @State var replyTimeoutTask: Task<Void, Never>?
     @State var ownsCaptureSuppression = false
     @State var playbackRestoreRequested = false
