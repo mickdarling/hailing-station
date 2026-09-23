@@ -87,34 +87,40 @@ extension RootView {
 @MainActor
 enum CapturePlaybackSuppression {
     private struct Entry {
-        let owner: UUID
         var cleanupComplete = false
     }
 
-    private static var entries: [ObjectIdentifier: Entry] = [:]
+    private static var entries: [ObjectIdentifier: [UUID: Entry]] = [:]
 
     static func begin(_ owner: UUID, using playback: ReplyPlaybackController) {
-        entries[ObjectIdentifier(playback)] = Entry(owner: owner)
-        playback.beginCaptureSuppression()
+        let key = ObjectIdentifier(playback)
+        let wasEmpty = entries[key]?.isEmpty != false
+        entries[key, default: [:]][owner] = Entry()
+        if wasEmpty { playback.beginCaptureSuppression() }
     }
 
     static func end(_ owner: UUID, using playback: ReplyPlaybackController, resuming: Bool) {
         let key = ObjectIdentifier(playback)
-        guard entries[key]?.owner == owner else { return }
+        guard entries[key]?.removeValue(forKey: owner) != nil else { return }
+        guard entries[key]?.isEmpty == true else { return }
         entries[key] = nil
         playback.endCaptureSuppression(resumingPlayback: resuming)
     }
 
     static func markCleanupComplete(_ owner: UUID, using playback: ReplyPlaybackController) {
         let key = ObjectIdentifier(playback)
-        guard entries[key]?.owner == owner else { return }
-        entries[key]?.cleanupComplete = true
+        guard entries[key]?[owner] != nil else { return }
+        entries[key]?[owner]?.cleanupComplete = true
     }
 
     static func releaseCompleted(using playback: ReplyPlaybackController) {
         let key = ObjectIdentifier(playback)
-        guard let entry = entries[key], entry.cleanupComplete else { return }
-        end(entry.owner, using: playback, resuming: true)
+        let completed = entries[key]?.compactMap { owner, entry in
+            entry.cleanupComplete ? owner : nil
+        } ?? []
+        for owner in completed {
+            end(owner, using: playback, resuming: true)
+        }
     }
 }
 
