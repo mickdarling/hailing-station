@@ -83,6 +83,10 @@ extension TranscriptionLabView {
     @MainActor
     private func performFinish(force: Bool) async {
         if force, await prepareForcedFinish() { return }
+        if force, pendingSendID != nil, !isRecording, bufferTask == nil, activeUtteranceID == nil {
+            await audioSession.deactivate()
+            return
+        }
         guard !isInterrupting, !isFinalizing, force || isRecording || bufferTask != nil else { return }
         isFinalizing = true
         defer { isFinalizing = false }
