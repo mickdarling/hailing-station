@@ -1,4 +1,6 @@
+import AVFAudio
 import HailCore
+import Speech
 import SwiftUI
 
 extension View {
@@ -35,6 +37,37 @@ struct CaptureSafeLabsView: View {
 }
 
 extension TranscriptionLabView {
+    @MainActor
+    func startInterrupt(using action: @escaping @MainActor () async throws -> Void) {
+        guard interruptTask == nil else { return }
+        interruptTask = Task {
+            await interruptTarget(using: action)
+            interruptTask = nil
+        }
+    }
+
+    @MainActor
+    func prepareCaptureAuthorization() async -> Bool {
+        status = "Requesting microphone and speech access…"
+        guard await requestHailPermissions() else {
+            status = "Microphone and speech recognition permissions are required."
+            releaseCaptureExclusivityAfterWork()
+            return false
+        }
+        return true
+    }
+
+    @MainActor
+    func prepareForcedFinish() async -> Bool {
+        let pendingStart = startTask
+        pendingStart?.cancel()
+        await audioSession.deactivate()
+        await pendingStart?.value
+        guard let pendingInterrupt = interruptTask else { return false }
+        await pendingInterrupt.value
+        return true
+    }
+
     @MainActor
     func completeFinish(generation: UUID, releasingPlayback: Bool) {
         guard finishGeneration == generation else { return }
@@ -75,6 +108,22 @@ extension TranscriptionLabView {
         let trimmed = text.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !trimmed.isEmpty else { return }
         finalText = [finalText, trimmed].filter { !$0.isEmpty }.joined(separator: " ")
+    }
+}
+
+/// TCC invokes these callbacks on arbitrary queues, so this bridge must not inherit the view's MainActor.
+private func requestHailPermissions() async -> Bool {
+    let microphone = await withCheckedContinuation(isolation: nil) { continuation in
+        AVAudioApplication.requestRecordPermission { @Sendable granted in
+            continuation.resume(returning: granted)
+        }
+    }
+    guard microphone else { return false }
+
+    return await withCheckedContinuation(isolation: nil) { continuation in
+        SFSpeechRecognizer.requestAuthorization { @Sendable status in
+            continuation.resume(returning: status == .authorized)
+        }
     }
 }
 
