@@ -138,8 +138,8 @@ public final class ReplyPlaybackController {
     }
 
     func drain() {
-        guard !isCaptureSuppressed else {
-            status = "Paused while listening"
+        guard !isCaptureSuppressed, !isPaused else {
+            status = isCaptureSuppressed ? "Paused while listening" : "Paused"
             return
         }
         while let key = queue.first, var stream = streams[key],

@@ -96,6 +96,22 @@ import Testing
         #expect(!controller.isPaused)
         #expect(player.resumeCount == 1)
     }
+
+    @Test func delayedSegmentsStayQueuedAfterForcedRelease() {
+        let player = CaptureSuppressionPlayer()
+        let controller = ReplyPlaybackController(player: player)
+        let reply = captureReply()
+        controller.ingest(captureEvent(reply: reply, sequence: 0, isFinal: false))
+        controller.beginCaptureSuppression()
+        controller.endCaptureSuppression(resumingPlayback: false)
+
+        controller.ingest(captureEvent(reply: reply, sequence: 1, isFinal: true))
+        #expect(player.scheduled.map(\.sequence) == [0])
+        #expect(controller.statusForControls == "Paused")
+
+        controller.togglePause()
+        #expect(player.scheduled.map(\.sequence) == [0, 1])
+    }
 }
 
 @MainActor
