@@ -37,7 +37,6 @@ struct TranscriptionLabView: View {
     @State var captureOwnerID = UUID()
     @State var pendingSendID: UUID?
     @State var pendingDestinationID: ConversationDestinationID?
-    @State var uncorrelatedDestinations: Set<ConversationDestinationID> = []
     @State var replyTimeoutTask: Task<Void, Never>?
     @State var ownsCaptureSuppression = false
     @State var playbackRestoreRequested = false
@@ -121,6 +120,8 @@ struct TranscriptionLabView: View {
             noteDestinationChange(previous: previous, current: current)
         }
         .onDisappear {
+            if let pendingDestinationID { Self.uncorrelatedDestinations.insert(pendingDestinationID) }
+            clearPendingSend()
             startTask?.cancel()
             Task { await finish(force: true) }
         }
@@ -133,6 +134,7 @@ struct TranscriptionLabView: View {
 }
 
 extension TranscriptionLabView {
+    @MainActor static var uncorrelatedDestinations: Set<ConversationDestinationID> = []
     @MainActor
     func beginCaptureExclusivity() {
         isForcedTeardown = false
@@ -187,7 +189,7 @@ extension TranscriptionLabView {
             guard pendingSendID == sendID, pendingDestinationID == destinationID,
                   status == "Waiting for reply…" else { return }
             if let destinationID {
-                uncorrelatedDestinations.insert(destinationID)
+                Self.uncorrelatedDestinations.insert(destinationID)
             }
             pendingSendID = nil
             pendingDestinationID = nil

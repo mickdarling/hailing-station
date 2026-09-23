@@ -147,7 +147,7 @@ extension TranscriptionLabView {
         do {
             try await onFinalized(text)
             guard pendingSendID == sendID, pendingDestinationID == destinationAtSend else { return }
-            if let destinationAtSend, uncorrelatedDestinations.contains(destinationAtSend) {
+            if let destinationAtSend, Self.uncorrelatedDestinations.contains(destinationAtSend) {
                 clearPendingSend()
                 status = "Sent — reply turn unverified"
                 return
@@ -163,7 +163,7 @@ extension TranscriptionLabView {
     @MainActor
     func noteReplyArrival(previous: String?, current: String?) {
         guard current != nil, current != previous, let destinationID else { return }
-        if uncorrelatedDestinations.contains(destinationID) {
+        if Self.uncorrelatedDestinations.contains(destinationID) {
             if pendingSendID == nil { status = "Reply received — turn unverified" }
             return
         }
