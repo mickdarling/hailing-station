@@ -4,7 +4,7 @@ extension TranscriptionLabView {
     @MainActor
     func begin() async {
         guard !isRecording, !isStarting, !isFinalizing, !isInterrupting,
-              finishTask == nil, interruptTask == nil else { return }
+              finishTask == nil, interruptTask == nil, pendingSendID == nil else { return }
         beginCaptureExclusivity()
         isStarting = true
         hasReceivedAudio = false
@@ -115,6 +115,8 @@ extension TranscriptionLabView {
     @MainActor
     func interruptTarget(using action: @MainActor () async throws -> Void) async {
         guard !isInterrupting else { return }
+        pendingSendID = nil
+        pendingDestinationID = nil
         isInterrupting = true
         defer {
             isInterrupting = false
