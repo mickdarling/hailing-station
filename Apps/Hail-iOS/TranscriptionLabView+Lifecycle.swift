@@ -39,7 +39,7 @@ extension TranscriptionLabView {
             await handleStartCancellation()
         } catch {
             _ = await cleanUp()
-            endCaptureExclusivity(resumingPlayback: !isForcedTeardown)
+            releaseCaptureExclusivityAfterWork()
             status = "Could not start: \(error.localizedDescription)"
         }
     }
@@ -50,8 +50,8 @@ extension TranscriptionLabView {
             isForcedTeardown = true
             let pendingStart = startTask
             pendingStart?.cancel()
+            await audioSession.deactivate()
             if isInterrupting || isFinalizing {
-                await audioSession.deactivate()
                 await pendingStart?.value
                 return
             }
@@ -63,18 +63,15 @@ extension TranscriptionLabView {
         status = "Finalizing…"
         let finalized = await cleanUp()
         guard !force else {
-            await audioSession.deactivate()
-            endCaptureExclusivity(resumingPlayback: false)
             status = "Ready"
             return
         }
         guard !isForcedTeardown else {
             await audioSession.deactivate()
-            endCaptureExclusivity(resumingPlayback: false)
             status = "Ready"
             return
         }
-        endCaptureExclusivity(resumingPlayback: true)
+        releaseCaptureExclusivityAfterWork()
         let text = finalized.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !text.isEmpty else {
             status = "Nothing heard"
@@ -122,13 +119,13 @@ extension TranscriptionLabView {
             await transcriber.cancel()
         }
         await pendingStart?.value
-        endCaptureExclusivity(resumingPlayback: !isForcedTeardown)
+        releaseCaptureExclusivityAfterWork()
     }
 
     @MainActor
     private func fail(_ message: String) async {
         _ = await cleanUp(waitForBuffer: false)
-        endCaptureExclusivity(resumingPlayback: !isForcedTeardown)
+        releaseCaptureExclusivityAfterWork()
         status = message
     }
 
@@ -140,7 +137,7 @@ extension TranscriptionLabView {
             _ = await cleanUp()
             status = "Ready"
         }
-        endCaptureExclusivity(resumingPlayback: !isForcedTeardown)
+        releaseCaptureExclusivityAfterWork()
     }
 
     @MainActor

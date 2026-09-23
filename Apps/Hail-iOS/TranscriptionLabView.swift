@@ -104,7 +104,7 @@ extension TranscriptionLabView {
         status = "Requesting microphone and speech access…"
         guard await requestHailPermissions() else {
             status = "Microphone and speech recognition permissions are required."
-            endCaptureExclusivity(resumingPlayback: !isForcedTeardown)
+            releaseCaptureExclusivityAfterWork()
             return false
         }
         return true
@@ -112,10 +112,16 @@ extension TranscriptionLabView {
 
     @MainActor
     func beginCaptureExclusivity() {
-        guard !ownsCaptureSuppression else { return }
         isForcedTeardown = false
+        guard !ownsCaptureSuppression else { return }
         ownsCaptureSuppression = true
         onCaptureWillBegin?()
+    }
+
+    @MainActor
+    func releaseCaptureExclusivityAfterWork() {
+        guard !isForcedTeardown else { return }
+        endCaptureExclusivity(resumingPlayback: true)
     }
 
     @MainActor
