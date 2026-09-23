@@ -119,6 +119,7 @@ extension TranscriptionLabView {
     @MainActor
     func interruptTarget(using action: @MainActor () async throws -> Void) async {
         guard !isInterrupting else { return }
+        if let pendingDestinationID { Self.uncorrelatedDestinations.insert(pendingDestinationID) }
         clearPendingSend()
         isInterrupting = true
         defer {
