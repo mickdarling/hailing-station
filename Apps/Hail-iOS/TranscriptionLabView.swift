@@ -35,6 +35,7 @@ struct TranscriptionLabView: View {
     @State var interruptTask: Task<Void, Never>?
     @State var isForcedTeardown = false
     @State var captureOwnerID = UUID()
+    @State var pendingSendID: UUID?
     @State var pendingDestinationID: ConversationDestinationID?
     @State var ownsCaptureSuppression = false
     @State var playbackRestoreRequested = false

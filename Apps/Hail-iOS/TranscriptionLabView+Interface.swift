@@ -61,7 +61,10 @@ extension TranscriptionLabView {
             .contentShape(Rectangle())
         }
         .buttonStyle(.plain)
-        .disabled(isStarting || isFinalizing || isInterrupting)
+        .disabled(
+            isStarting || isFinalizing || isInterrupting || finishTask != nil || interruptTask != nil
+                || (!isRecording && pendingSendID != nil)
+        )
         .accessibilityIdentifier("station.talk")
         .accessibilityLabel(actionLabel)
         .accessibilityValue(status)
@@ -111,6 +114,7 @@ extension TranscriptionLabView {
 
     var actionLabel: String {
         if isInterrupting { return "Interrupting…" }
+        if finishTask != nil { return "Finishing…" }
         if isFinalizing { return "Finalizing…" }
         if isRecording { return "Tap to finish" }
         return isStarting ? "Starting…" : "Tap to talk"
@@ -131,16 +135,19 @@ extension TranscriptionLabView {
     @MainActor
     func send(_ text: String, failurePrefix: String) async {
         guard let onFinalized else { return }
+        let sendID = UUID()
         let destinationAtSend = destinationID
         let replyAtSend = latestReplyID
+        pendingSendID = sendID
         pendingDestinationID = destinationAtSend
         status = "Sending…"
         do {
             try await onFinalized(text)
-            guard pendingDestinationID == destinationAtSend else { return }
+            guard pendingSendID == sendID, pendingDestinationID == destinationAtSend else { return }
             if latestReplyID == replyAtSend { status = "Waiting for reply…" }
         } catch {
-            guard pendingDestinationID == destinationAtSend else { return }
+            guard pendingSendID == sendID, pendingDestinationID == destinationAtSend else { return }
+            pendingSendID = nil
             pendingDestinationID = nil
             status = "\(failurePrefix): \(error.localizedDescription)"
         }
@@ -151,6 +158,7 @@ extension TranscriptionLabView {
         guard current != nil, current != previous,
               pendingDestinationID == destinationID,
               status == "Sending…" || status == "Waiting for reply…" else { return }
+        pendingSendID = nil
         pendingDestinationID = nil
         status = "Reply received"
     }
@@ -160,6 +168,7 @@ extension TranscriptionLabView {
         previous: ConversationDestinationID?, current: ConversationDestinationID?
     ) {
         guard current != previous else { return }
+        pendingSendID = nil
         pendingDestinationID = nil
         guard !isStarting, !isRecording, !isFinalizing, !isInterrupting else { return }
         status = "Ready"
