@@ -48,9 +48,28 @@ extension TranscriptionLabView {
     @MainActor
     func announceStatusIfNeeded(_ current: String) {
         // Spoken accessibility feedback must not become microphone input (#86).
-        guard scenePhase == .active, !ownsCaptureSuppression, UIAccessibility.isVoiceOverRunning,
-              replyPlaybackStatus != "Playing", replyPlaybackStatus != "Replaying" else { return }
+        guard scenePhase == .active, UIAccessibility.isVoiceOverRunning else { return }
+        guard !ownsCaptureSuppression else {
+            deferredStatusAnnouncement = current
+            return
+        }
+        deferredStatusAnnouncement = nil
+        guard replyPlaybackStatus != "Playing", replyPlaybackStatus != "Replaying" else { return }
         UIAccessibility.post(notification: .announcement, argument: current)
+    }
+
+    @MainActor
+    func announceDeferredStatusIfNeeded() {
+        guard let deferredStatusAnnouncement else { return }
+        self.deferredStatusAnnouncement = nil
+        // Capture-progress speech is intentionally withheld. Only a still-current terminal result
+        // may be spoken after the microphone owner has released capture.
+        guard deferredStatusAnnouncement == status,
+              ![
+                "Requesting microphone and speech access…", "Preparing on-device speech model…",
+                "Quieting reply audio…", "Listening", "Receiving audio", "Finalizing…"
+              ].contains(status) else { return }
+        announceStatusIfNeeded(deferredStatusAnnouncement)
     }
 
     @MainActor

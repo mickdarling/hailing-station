@@ -40,6 +40,7 @@ struct TranscriptionLabView: View {
     @State var destinationGeneration = UUID()
     @State var replyTimeoutTask: Task<Void, Never>?
     @State var ownsCaptureSuppression = false
+    @State var deferredStatusAnnouncement: String?
     @State var playbackRestoreRequested = false
     @State var startTask: Task<Void, Never>?
     @State var finishTask: Task<Void, Never>?
@@ -122,6 +123,9 @@ struct TranscriptionLabView: View {
         }
         .onChange(of: status) { _, current in
             announceStatusIfNeeded(current)
+        }
+        .onChange(of: ownsCaptureSuppression) { wasSuppressed, isSuppressed in
+            if wasSuppressed && !isSuppressed { announceDeferredStatusIfNeeded() }
         }
         .onChange(of: replyPlaybackStatus) { _, current in
             announceReplyStatusIfNeeded(current)
