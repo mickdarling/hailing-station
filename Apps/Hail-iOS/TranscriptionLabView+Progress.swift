@@ -26,14 +26,14 @@ extension TranscriptionLabView {
 
     var showsProgress: Bool {
         showsActivity || replyPlaybackStatus.map {
-            ["Waiting for audio", "Queued", "Playing", "Replaying"].contains($0)
+            ["Playing", "Replaying"].contains($0)
         } == true
     }
 
     func replyStatusLabel(_ raw: String) -> String {
         switch raw {
         case "Received": "Text received"
-        case "Waiting for audio": "Receiving audio"
+        case "Waiting for audio": "Waiting for audio"
         case "Queued": "Queued"
         case "Playing": "Speaking"
         case "Replaying": "Replaying"
