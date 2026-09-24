@@ -26,6 +26,8 @@ final class InstalledAppConnectionTests: XCTestCase {
                       "Mac Setup did not open.")
 
         let hosts = app.cells.containing(.button, identifier: "Connect")
+        XCTAssertTrue(hosts.firstMatch.waitForExistence(timeout: 20),
+                      "The saved Mac did not appear in Mac Setup.")
         XCTAssertEqual(hosts.count, 1, "Expected exactly one configured Mac for this smoke test.")
         let host = hosts.firstMatch
         if !host.staticTexts["ready"].exists {
