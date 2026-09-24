@@ -18,7 +18,29 @@ final class InstalledAppConnectionTests: XCTestCase {
         allowLocalNetworkIfRequested()
         XCTAssertTrue(app.staticTexts["Hailing Station"].waitForExistence(timeout: 20),
                       "The installed Hailing Station app did not open.")
+        ensureSavedMacReady(in: app)
 
+        let destination = app.buttons["station.destination"]
+        XCTAssertTrue(destination.waitForExistence(timeout: 30), "Destination control is missing.")
+        let choose = app.buttons["station.choose-destination"]
+        if choose.exists { choose.tap() } else { destination.tap() }
+        XCTAssertTrue(app.navigationBars["Choose a destination"].waitForExistence(timeout: 10),
+                      "Destination browser did not open.")
+        let targets = app.buttons.matching(NSPredicate(format: "identifier CONTAINS %@", " · "))
+        XCTAssertTrue(targets.firstMatch.waitForExistence(timeout: 30), "No allowed target arrived.")
+        let liveTargets = targets.allElementsBoundByIndex.filter(\.isEnabled)
+        XCTAssertEqual(liveTargets.count, 1, "Expected exactly one live allowed target.")
+        liveTargets[0].tap()
+        let selected = NSPredicate(format: "value BEGINSWITH 'Mac ' AND value CONTAINS 'Terminal '")
+        XCTAssertEqual(XCTWaiter.wait(for: [XCTNSPredicateExpectation(predicate: selected,
+                                                                     object: destination)],
+                                  timeout: 10), .completed,
+                       "The allowed target did not remain selected.")
+        XCTAssertEqual(app.state, .runningForeground)
+    }
+
+    @MainActor
+    private func ensureSavedMacReady(in app: XCUIApplication) {
         let setup = app.buttons["station.mac-setup-tool"]
         XCTAssertTrue(setup.waitForExistence(timeout: 20), "Mac Setup is unavailable.")
         setup.tap()
@@ -39,24 +61,6 @@ final class InstalledAppConnectionTests: XCTestCase {
         XCTAssertTrue(host.staticTexts["ready"].waitForExistence(timeout: 30),
                       "The configured Mac did not become ready.")
         app.navigationBars["Mac Setup"].buttons.firstMatch.tap()
-
-        let destination = app.buttons["station.destination"]
-        XCTAssertTrue(destination.waitForExistence(timeout: 30), "Destination control is missing.")
-        let choose = app.buttons["station.choose-destination"]
-        if choose.exists { choose.tap() } else { destination.tap() }
-        XCTAssertTrue(app.navigationBars["Choose a destination"].waitForExistence(timeout: 10),
-                      "Destination browser did not open.")
-        let targets = app.buttons.matching(NSPredicate(format: "identifier CONTAINS %@", " · "))
-        XCTAssertTrue(targets.firstMatch.waitForExistence(timeout: 30), "No allowed target arrived.")
-        let liveTargets = targets.allElementsBoundByIndex.filter(\.isEnabled)
-        XCTAssertEqual(liveTargets.count, 1, "Expected exactly one live allowed target.")
-        liveTargets[0].tap()
-        let selected = NSPredicate(format: "value BEGINSWITH 'Mac ' AND value CONTAINS 'Terminal '")
-        XCTAssertEqual(XCTWaiter.wait(for: [XCTNSPredicateExpectation(predicate: selected,
-                                                                     object: destination)],
-                                  timeout: 10), .completed,
-                       "The allowed target did not remain selected.")
-        XCTAssertEqual(app.state, .runningForeground)
     }
 
     @MainActor
