@@ -8,6 +8,11 @@ struct ConversationDestinationID: Hashable {
     let targetID: String
 }
 
+struct SelectedReplyPlaybackObservation: Equatable {
+    let id: String?
+    let status: String?
+}
+
 /// Audio-first capture surface shared by compact and regular-width station layouts.
 struct TranscriptionLabView: View {
     let audioSession: any AudioSessionDiagnosticsProviding
@@ -143,8 +148,8 @@ struct TranscriptionLabView: View {
         .onChange(of: ownsCaptureSuppression) { wasSuppressed, isSuppressed in
             if wasSuppressed && !isSuppressed { announceDeferredStatusIfNeeded() }
         }
-        .onChange(of: replyPlaybackStatus) { _, current in
-            announceReplyStatusIfNeeded(current)
+        .onChange(of: selectedReplyPlaybackObservation) { _, current in
+            announceReplyStatusIfNeeded(current.status)
         }
         .onChange(of: controlledReplyPlaybackStatus) { _, current in
             announceControlledReplyFailureIfNeeded(current)
@@ -168,6 +173,10 @@ struct TranscriptionLabView: View {
 }
 
 extension TranscriptionLabView {
+    var selectedReplyPlaybackObservation: SelectedReplyPlaybackObservation {
+        SelectedReplyPlaybackObservation(id: selectedReplyID, status: replyPlaybackStatus)
+    }
+
     private static func defaultTranscriber() -> any Transcriber {
         if #available(iOS 26.0, *) { return SpeechAnalyzerTranscriber() }
         return SFSpeechRecognizerTranscriber()
