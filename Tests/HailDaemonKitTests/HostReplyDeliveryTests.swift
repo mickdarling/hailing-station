@@ -77,6 +77,25 @@ import Testing
         await listener.stop(reason: "test complete")
     }
 
+    @Test func publicationAcceptsHostNameWithDifferentLetterCase() async throws {
+        let (host, _) = try await sessionHost()
+        for (daemonName, sourceName) in [
+            ("themachine.local", "TheMachine.local"), ("Straße.local", "STRASSE.LOCAL")
+        ] {
+            let listener = try WebSocketListener(
+                bindAddress: "127.0.0.1", port: 0, host: host, hostName: daemonName
+            )
+            _ = try await listener.start()
+            let reply = ReplyDescriptor(id: UUID(), hostID: sourceName, targetID: "tmux:reply")
+            let frame = Frame(
+                timestamp: 1, target: reply.targetID, source: reply.hostID,
+                payload: .text(TextPayload(text: "ready", reply: reply))
+            )
+            #expect(try await listener.publish(frame) == 0)
+            await listener.stop(reason: "test complete")
+        }
+    }
+
     // The setup and four transition assertions intentionally stay together as one stream-lifecycle scenario.
     // swiftlint:disable:next function_body_length
     @Test func audioStreamKeepsItsOriginalRecipientsUntilFinal() async throws {

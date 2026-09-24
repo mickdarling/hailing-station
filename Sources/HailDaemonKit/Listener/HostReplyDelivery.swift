@@ -1,3 +1,4 @@
+import Foundation
 public import HailProtocol
 
 extension WebSocketPeer {
@@ -22,7 +23,11 @@ extension WebSocketListener {
         guard let encoded = try? FrameCoding.encode(frame),
               let validated = try? FrameCoding.decode(encoded),
               validated == frame,
-              validated.source == hostName else { throw WebSocketListenerError.invalidReply }
+              validated.source.compare(
+                  hostName, options: [.caseInsensitive], locale: Locale(identifier: "en_US_POSIX")
+              ) == .orderedSame else {
+            throw WebSocketListenerError.invalidReply
+        }
         switch validated.payload {
         case .text(let text) where text.isFinal && text.reply != nil: break
         case .audio(let audio) where audio.reply != nil: break
