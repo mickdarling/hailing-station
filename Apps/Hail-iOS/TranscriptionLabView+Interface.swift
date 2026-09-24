@@ -73,27 +73,18 @@ extension TranscriptionLabView {
 
     @ViewBuilder
     var transcriptActions: some View {
-        HStack(spacing: 12) {
-            if showsProgress && !reduceMotion {
-                ProgressView().accessibilityHidden(true)
+        HStack(spacing: 8) {
+            if showsActivity {
+                ProgressView()
+                    .controlSize(.small)
+                    .accessibilityHidden(true)
             }
-            VStack(alignment: .leading, spacing: 4) {
-                Text(status)
-                    .font(.subheadline.weight(.semibold))
-                if let replyPlaybackStatus {
-                    Text("Reply: \(replyStatusLabel(replyPlaybackStatus))")
-                        .font(.caption)
-                        .foregroundStyle(.secondary)
-                }
-            }
-            Spacer(minLength: 0)
+            Text(status)
+                .font(.caption)
+                .foregroundStyle(.secondary)
         }
-        .frame(maxWidth: .infinity, alignment: .leading)
-        .padding(12)
-        .background(.quaternary, in: RoundedRectangle(cornerRadius: 14))
-        .accessibilityElement(children: .ignore)
+        .accessibilityElement(children: .combine)
         .accessibilityLabel(status)
-        .accessibilityValue(replyPlaybackStatus.map { "Reply: \(replyStatusLabel($0))" } ?? "")
         .accessibilityIdentifier("transcription.status")
 
         HStack {
@@ -132,7 +123,7 @@ extension TranscriptionLabView {
     }
 
     var showsActivity: Bool {
-        isStarting || isRecording || isFinalizing || isInterrupting || status == "Sending…"
+        isStarting || isRecording || isFinalizing || status == "Sending…"
             || status == "Waiting for reply…"
     }
 
@@ -170,6 +161,27 @@ extension TranscriptionLabView {
             status = "\(failurePrefix): \(error.localizedDescription)"
         }
     }
+    @MainActor
+    func noteReplyArrival(previous: Set<String>, current: Set<String>) {
+        guard !current.subtracting(previous).isEmpty, let destinationID else { return }
+        if Self.uncorrelatedDestinations.contains(destinationID) {
+            if pendingSendID == nil, !showsActivity, !isInterrupting,
+               interruptTask == nil, finishTask == nil { status = "Reply received — turn unverified" }
+            return
+        }
+        guard pendingDestinationID == destinationID,
+              status == "Sending…" || status == "Waiting for reply…" else { return }
+        clearPendingSend()
+        status = "Reply received"
+    }
+    @MainActor
+    func clearPendingSend() {
+        replyTimeoutTask?.cancel()
+        replyTimeoutTask = nil
+        pendingSendID = nil
+        pendingDestinationID = nil
+    }
+
     @MainActor
     func discardCapture() async {
         capture.stop()

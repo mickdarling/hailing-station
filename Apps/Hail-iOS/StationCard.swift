@@ -20,6 +20,7 @@ struct CaptureSafeLabsView: View {
                 if #available(iOS 26.0, *) {
                     TranscriptionLabView(
                         audioSession: audioSession,
+                        globalReplyAudioSpeaking: playback.isReplyAudioOutputBusy,
                         onCaptureWillBegin: { CapturePlaybackSuppression.begin($0, using: playback) },
                         onCaptureDidEnd: {
                             CapturePlaybackSuppression.end($0, using: playback, resuming: $1)

@@ -52,7 +52,7 @@ final class PreIOS26ConversationUITests: XCTestCase {
         stop.tap()
 
         XCTAssertTrue(
-            waitForAnyLabel(["Waiting for reply…", "Reply arrived — turn unverified"], on: status, timeout: 10),
+            waitForAnyLabel(["Waiting for reply…", "Reply received"], on: status, timeout: 10),
             "The conversation did not reach a successful post-send state."
         )
         XCTAssertEqual(app.state, .runningForeground)
