@@ -6,6 +6,10 @@ private let terminalPlaybackFailures: Set<String> = [
     "Playback could not resume", "Audio format is not yet playable",
     "Conflicting audio segment refused", "Playback failed", "Replay failed"
 ]
+private let replayRefusalNotices = [
+    "Replay available after listening": "Replay was not started while listening",
+    "Replay available when this reply finishes": "Replay was not started while another reply was speaking"
+]
 
 extension ReplyPlaybackController {
     var terminalReplyFailureStatuses: [String: String] {
@@ -138,15 +142,8 @@ extension TranscriptionLabView {
                 "Conflicting audio segment refused", "Replay available after listening",
                 "Replay available when this reply finishes"
         ].contains(current) {
-            if ownsCaptureSuppression || isReplySpeaking {
-                switch current {
-                case "Replay available after listening":
-                    deferredReplayNotice = "Replay was not started while listening"
-                case "Replay available when this reply finishes":
-                    deferredReplayNotice = "Replay was not started while another reply was speaking"
-                default:
-                    deferredReplyAnnouncement = current
-                }
+            if let notice = replayRefusalNotices[current] {
+                deferredReplayNotice = notice
             } else {
                 deferredReplyAnnouncement = current
             }
@@ -157,10 +154,15 @@ extension TranscriptionLabView {
     @MainActor
     func announceControlledReplyFailureIfNeeded(_ current: String?) {
         guard scenePhase == .active, UIAccessibility.isVoiceOverRunning,
-              let current, current != replyPlaybackStatus,
-              terminalPlaybackFailures.contains(current),
-              !replyFailureStatuses.values.contains(current) else { return }
-        deferredControlledReplyFailure = current
+              let current, current != replyPlaybackStatus else { return }
+        if current == "Replaying" { deferredReplayNotice = nil; return }
+        if let notice = replayRefusalNotices[current] {
+            deferredReplayNotice = notice
+        } else {
+            guard terminalPlaybackFailures.contains(current),
+                  !replyFailureStatuses.values.contains(current) else { return }
+            deferredControlledReplyFailure = current
+        }
         announceDeferredStatusIfNeeded()
     }
 

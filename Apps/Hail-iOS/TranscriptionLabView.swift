@@ -137,7 +137,7 @@ struct TranscriptionLabView: View {
         .task { await observeResults() }
         .onAppear { restorePlaybackAfterForcedTeardown() }
         .onChange(of: scenePhase) { _, phase in
-            if phase == .active { restorePlaybackAfterForcedTeardown() }
+            if phase == .active { restorePlaybackAfterForcedTeardown(); announceDeferredStatusIfNeeded() }
         }
         .onChange(of: replyIDs) { previous, current in
             noteReplyArrival(previous: previous, current: current)
