@@ -17,6 +17,7 @@ struct TranscriptionLabView: View {
     let replyPlaybackStatus: String?
     let globalReplyAudioSpeaking: Bool
     let controlledReplyPlaybackStatus: String?
+    let replyFailureStatuses: [String: String]
     let onCaptureWillBegin: (@MainActor (UUID) -> Void)?
     let onCaptureDidEnd: (@MainActor (UUID, _ resumingPlayback: Bool) -> Void)?
     let onCaptureTeardownCompleted: (@MainActor (UUID) -> Void)?
@@ -45,6 +46,7 @@ struct TranscriptionLabView: View {
     @State var deferredStatusAnnouncement: String?
     @State var deferredReplyAnnouncement: String?
     @State var deferredControlledReplyFailure: String?
+    @State var deferredReplyFailures: [String: String] = [:]
     @State var playbackRestoreRequested = false
     @State var startTask: Task<Void, Never>?
     @State var finishTask: Task<Void, Never>?
@@ -63,6 +65,7 @@ struct TranscriptionLabView: View {
         replyPlaybackStatus: String? = nil,
         globalReplyAudioSpeaking: Bool = false,
         controlledReplyPlaybackStatus: String? = nil,
+        replyFailureStatuses: [String: String] = [:],
         onCaptureWillBegin: (@MainActor (UUID) -> Void)? = nil,
         onCaptureDidEnd: (@MainActor (UUID, _ resumingPlayback: Bool) -> Void)? = nil,
         onCaptureTeardownCompleted: (@MainActor (UUID) -> Void)? = nil,
@@ -76,6 +79,7 @@ struct TranscriptionLabView: View {
         self.replyPlaybackStatus = replyPlaybackStatus
         self.globalReplyAudioSpeaking = globalReplyAudioSpeaking
         self.controlledReplyPlaybackStatus = controlledReplyPlaybackStatus
+        self.replyFailureStatuses = replyFailureStatuses
         self.onCaptureWillBegin = onCaptureWillBegin
         self.onCaptureDidEnd = onCaptureDidEnd
         self.onCaptureTeardownCompleted = onCaptureTeardownCompleted
@@ -140,6 +144,9 @@ struct TranscriptionLabView: View {
         }
         .onChange(of: controlledReplyPlaybackStatus) { _, current in
             announceControlledReplyFailureIfNeeded(current)
+        }
+        .onChange(of: replyFailureStatuses) { previous, current in
+            announceNewReplyFailures(previous: previous, current: current)
         }
         .onChange(of: globalReplyAudioSpeaking) { wasSpeaking, isSpeaking in
             if wasSpeaking && !isSpeaking { announceDeferredStatusIfNeeded() }

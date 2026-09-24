@@ -22,6 +22,7 @@ struct CaptureSafeLabsView: View {
                         audioSession: audioSession,
                         globalReplyAudioSpeaking: playback.isReplyAudioOutputBusy,
                         controlledReplyPlaybackStatus: playback.statusForControls,
+                        replyFailureStatuses: playback.terminalReplyFailureStatuses,
                         onCaptureWillBegin: { CapturePlaybackSuppression.begin($0, using: playback) },
                         onCaptureDidEnd: {
                             CapturePlaybackSuppression.end($0, using: playback, resuming: $1)

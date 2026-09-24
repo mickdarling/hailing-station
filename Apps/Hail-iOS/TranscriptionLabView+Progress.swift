@@ -1,5 +1,20 @@
+import HailCore
 import SwiftUI
 import UIKit
+
+private let terminalPlaybackFailures: Set<String> = [
+    "Playback could not resume", "Audio format is not yet playable",
+    "Conflicting audio segment refused", "Playback failed", "Replay failed"
+]
+
+extension ReplyPlaybackController {
+    var terminalReplyFailureStatuses: [String: String] {
+        Dictionary(uniqueKeysWithValues: replies.compactMap { reply in
+            let current = status(for: reply)
+            return terminalPlaybackFailures.contains(current) ? (reply.id, current) : nil
+        })
+    }
+}
 
 extension TranscriptionLabView {
     @MainActor static var uncorrelatedDestinations: Set<ConversationDestinationID> = []
@@ -91,9 +106,13 @@ extension TranscriptionLabView {
             ? deferredReplyAnnouncement : nil
         let controlledFailure = deferredControlledReplyFailure == controlledReplyPlaybackStatus
             ? deferredControlledReplyFailure : nil
+        let otherFailures = Set(deferredReplyFailures.compactMap { id, failure in
+            replyFailureStatuses[id] == failure ? failure : nil
+        })
         self.deferredStatusAnnouncement = nil
         deferredReplyAnnouncement = nil
         deferredControlledReplyFailure = nil
+        deferredReplyFailures.removeAll()
         // Capture-progress speech is intentionally withheld. Only a still-current terminal result
         // may be spoken after the microphone owner has released capture.
         let captureProgress = [
@@ -107,6 +126,9 @@ extension TranscriptionLabView {
         if let currentReply { announcement.append("Reply \(replyStatusLabel(currentReply))") }
         if let controlledFailure, controlledFailure != currentReply {
             announcement.append("Other playback: \(controlledFailure)")
+        }
+        for failure in otherFailures.sorted() where failure != currentReply && failure != controlledFailure {
+            announcement.append("Other reply: \(failure)")
         }
         guard !announcement.isEmpty else { return }
         UIAccessibility.post(notification: .announcement, argument: announcement.joined(separator: ". "))
@@ -134,11 +156,18 @@ extension TranscriptionLabView {
     func announceControlledReplyFailureIfNeeded(_ current: String?) {
         guard scenePhase == .active, UIAccessibility.isVoiceOverRunning,
               let current, current != replyPlaybackStatus,
-              [
-                "Playback could not resume", "Audio format is not yet playable",
-                "Conflicting audio segment refused", "Playback failed", "Replay failed"
-              ].contains(current) else { return }
+              terminalPlaybackFailures.contains(current),
+              !replyFailureStatuses.values.contains(current) else { return }
         deferredControlledReplyFailure = current
+        announceDeferredStatusIfNeeded()
+    }
+
+    @MainActor
+    func announceNewReplyFailures(previous: [String: String], current: [String: String]) {
+        guard scenePhase == .active, UIAccessibility.isVoiceOverRunning else { return }
+        for (id, failure) in current where previous[id] != failure {
+            deferredReplyFailures[id] = failure
+        }
         announceDeferredStatusIfNeeded()
     }
 
