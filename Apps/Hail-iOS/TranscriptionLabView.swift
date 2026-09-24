@@ -14,6 +14,7 @@ struct TranscriptionLabView: View {
     let destinationLabel: String?
     let destinationID: ConversationDestinationID?
     let replyIDs: Set<String>
+    let replyPlaybackStatus: String?
     let onCaptureWillBegin: (@MainActor (UUID) -> Void)?
     let onCaptureDidEnd: (@MainActor (UUID, _ resumingPlayback: Bool) -> Void)?
     let onCaptureTeardownCompleted: (@MainActor (UUID) -> Void)?
@@ -46,6 +47,7 @@ struct TranscriptionLabView: View {
     @State var bufferTask: Task<Void, Never>?
     @Environment(\.scenePhase) var scenePhase
     @Environment(\.horizontalSizeClass) var horizontalSizeClass
+    @Environment(\.accessibilityReduceMotion) var reduceMotion
 
     init(
         audioSession: any AudioSessionDiagnosticsProviding,
@@ -54,6 +56,7 @@ struct TranscriptionLabView: View {
         destinationLabel: String? = nil,
         destinationID: ConversationDestinationID? = nil,
         replyIDs: Set<String> = [],
+        replyPlaybackStatus: String? = nil,
         onCaptureWillBegin: (@MainActor (UUID) -> Void)? = nil,
         onCaptureDidEnd: (@MainActor (UUID, _ resumingPlayback: Bool) -> Void)? = nil,
         onCaptureTeardownCompleted: (@MainActor (UUID) -> Void)? = nil,
@@ -64,6 +67,7 @@ struct TranscriptionLabView: View {
         self.destinationLabel = destinationLabel
         self.destinationID = destinationID
         self.replyIDs = replyIDs
+        self.replyPlaybackStatus = replyPlaybackStatus
         self.onCaptureWillBegin = onCaptureWillBegin
         self.onCaptureDidEnd = onCaptureDidEnd
         self.onCaptureTeardownCompleted = onCaptureTeardownCompleted
@@ -115,6 +119,12 @@ struct TranscriptionLabView: View {
         }
         .onChange(of: replyIDs) { previous, current in
             noteReplyArrival(previous: previous, current: current)
+        }
+        .onChange(of: status) { _, current in
+            announceStatusIfNeeded(current)
+        }
+        .onChange(of: replyPlaybackStatus) { _, current in
+            announceReplyStatusIfNeeded(current)
         }
         .onChange(of: destinationID) { previous, current in
             noteDestinationChange(previous: previous, current: current)
@@ -175,26 +185,5 @@ extension TranscriptionLabView {
     func restorePlaybackIfRequestedAndReady() {
         guard playbackRestoreRequested else { return }
         restorePlaybackAfterForcedTeardown()
-    }
-
-    @MainActor
-    func scheduleReplyTimeout(sendID: UUID, destinationID: ConversationDestinationID?) {
-        replyTimeoutTask?.cancel()
-        replyTimeoutTask = Task { @MainActor in
-            do {
-                try await Task.sleep(for: .seconds(30))
-            } catch {
-                return
-            }
-            guard pendingSendID == sendID, pendingDestinationID == destinationID,
-                  status == "Waiting for reply…" else { return }
-            if let destinationID {
-                Self.uncorrelatedDestinations.insert(destinationID)
-            }
-            pendingSendID = nil
-            pendingDestinationID = nil
-            replyTimeoutTask = nil
-            status = "No reply yet — tap to talk again"
-        }
     }
 }
