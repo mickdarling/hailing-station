@@ -37,7 +37,7 @@ final class PreIOS26ConversationUITests: XCTestCase {
         triggerSequentialPermissionHandlers(in: app, talkButton: start)
         let stop = app.buttons["station.talk"]
         XCTAssertTrue(waitForLabel("Tap to finish", on: stop, timeout: 30))
-        let status = app.staticTexts["transcription.status"]
+        let status = app.descendants(matching: .any)["transcription.status"]
         XCTAssertTrue(waitForLabel("Receiving audio", on: status, timeout: 10))
         XCTAssertTrue(
             app.staticTexts.matching(
