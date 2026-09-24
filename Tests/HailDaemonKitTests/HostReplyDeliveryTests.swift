@@ -79,17 +79,21 @@ import Testing
 
     @Test func publicationAcceptsHostNameWithDifferentLetterCase() async throws {
         let (host, _) = try await sessionHost()
-        let listener = try WebSocketListener(
-            bindAddress: "127.0.0.1", port: 0, host: host, hostName: "themachine.local"
-        )
-        _ = try await listener.start()
-        let reply = ReplyDescriptor(id: UUID(), hostID: "TheMachine.local", targetID: "tmux:reply")
-        let frame = Frame(
-            timestamp: 1, target: reply.targetID, source: reply.hostID,
-            payload: .text(TextPayload(text: "ready", reply: reply))
-        )
-        #expect(try await listener.publish(frame) == 0)
-        await listener.stop(reason: "test complete")
+        for (daemonName, sourceName) in [
+            ("themachine.local", "TheMachine.local"), ("Straße.local", "STRASSE.LOCAL")
+        ] {
+            let listener = try WebSocketListener(
+                bindAddress: "127.0.0.1", port: 0, host: host, hostName: daemonName
+            )
+            _ = try await listener.start()
+            let reply = ReplyDescriptor(id: UUID(), hostID: sourceName, targetID: "tmux:reply")
+            let frame = Frame(
+                timestamp: 1, target: reply.targetID, source: reply.hostID,
+                payload: .text(TextPayload(text: "ready", reply: reply))
+            )
+            #expect(try await listener.publish(frame) == 0)
+            await listener.stop(reason: "test complete")
+        }
     }
 
     // The setup and four transition assertions intentionally stay together as one stream-lifecycle scenario.
