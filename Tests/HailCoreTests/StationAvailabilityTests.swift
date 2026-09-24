@@ -87,4 +87,22 @@ import Testing
         #expect(resolve([try snapshot(.ready), live],
                         preferredHostID: nil, hasRememberedSelection: false) == .chooseTarget)
     }
+
+    @Test func emptyCatalogDoesNotHideAnotherHostsConnectionProgress() throws {
+        let other = try HostEndpoint(
+            id: "other", name: "Other Mac", url: #require(URL(string: "ws://127.0.0.1:8766"))
+        )
+        let empty = try snapshot(.ready, receivedTargetList: true)
+        let connecting = HostConnectionSnapshot(endpoint: other, state: .connecting)
+        let reconnecting = HostConnectionSnapshot(
+            endpoint: other, state: .reconnecting(attempt: 2, nextDelay: 1)
+        )
+        #expect(resolve([empty, connecting], preferredHostID: nil,
+                        hasRememberedSelection: false) == .connecting)
+        #expect(resolve([empty, reconnecting], preferredHostID: nil,
+                        hasRememberedSelection: false) == .reconnecting)
+        let live = try snapshot(.ready, receivedTargetList: true, targets: [liveTarget])
+        #expect(resolve([live, connecting], preferredHostID: nil,
+                        hasRememberedSelection: false) == .chooseTarget)
+    }
 }

@@ -42,6 +42,11 @@ public enum StationAvailability: Equatable, Sendable {
         let listed = ready.filter(\.receivedTargetList)
         let hasLiveTarget = listed.contains { $0.targets.contains(where: \.alive) }
         if !hasLiveTarget {
+            let pending = hosts.filter { $0.state != .ready }
+            if !pending.isEmpty {
+                let state = connectionState(pending)
+                if state == .connecting || state == .reconnecting { return state }
+            }
             return listed.count == ready.count ? .noAllowedTargets : .waitingForTargets
         }
         if selectionInProgress { return .restoringSelection }
