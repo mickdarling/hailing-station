@@ -107,7 +107,8 @@ extension TranscriptionLabView {
         let controlledFailure = deferredControlledReplyFailure == controlledReplyPlaybackStatus
             ? deferredControlledReplyFailure : nil
         let otherFailures = Set(deferredReplyFailures.compactMap { id, failure in
-            replyFailureStatuses[id] == failure ? failure : nil
+            guard replyFailureStatuses[id] == failure else { return nil }
+            return replyIDs.contains(id) && failure == currentReply ? nil : failure
         })
         self.deferredStatusAnnouncement = nil
         deferredReplyAnnouncement = nil
@@ -127,7 +128,7 @@ extension TranscriptionLabView {
         if let controlledFailure, controlledFailure != currentReply {
             announcement.append("Other playback: \(controlledFailure)")
         }
-        for failure in otherFailures.sorted() where failure != currentReply && failure != controlledFailure {
+        for failure in otherFailures.sorted() where failure != controlledFailure {
             announcement.append("Other reply: \(failure)")
         }
         guard !announcement.isEmpty else { return }
