@@ -73,6 +73,11 @@ public final class ReplyPlaybackController {
     }
 
     public var latest: ReplyPresentation? { replies.last }
+    /// An unmuted reply still owns the output path. This is intentionally conservative across
+    /// segment gaps: accessibility speech must not compete with a reply that may resume.
+    public var isReplyAudioOutputBusy: Bool {
+        activeKey != nil && !isPaused && !isMuted && !isCaptureSuppressed
+    }
     public var presentationForControls: ReplyPresentation? {
         presentation(for: activeKey ?? queue.first) ?? latest
     }

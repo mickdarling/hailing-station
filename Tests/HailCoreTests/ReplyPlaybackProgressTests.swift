@@ -22,6 +22,37 @@ import Testing
         #expect(controller.status(for: firstPresentation) == "Played")
         #expect(controller.status(for: secondPresentation) == "Playing")
     }
+
+    @Test func outputBusyTracksOwnerRatherThanGlobalDisplayText() {
+        let player = ProgressReplyPlayer()
+        let controller = ReplyPlaybackController(player: player)
+        #expect(!controller.isReplyAudioOutputBusy)
+
+        controller.ingest(progressEvent(progressDescriptor(), byte: 1))
+        #expect(controller.isReplyAudioOutputBusy)
+        controller.toggleMute()
+        #expect(!controller.isReplyAudioOutputBusy)
+        controller.toggleMute()
+        #expect(controller.isReplyAudioOutputBusy)
+        controller.togglePause()
+        #expect(!controller.isReplyAudioOutputBusy)
+        controller.toggleMute()
+        controller.toggleMute()
+        #expect(!controller.isReplyAudioOutputBusy)
+        controller.togglePause()
+        #expect(controller.isReplyAudioOutputBusy)
+
+        controller.beginCaptureSuppression()
+        #expect(!controller.isReplyAudioOutputBusy)
+        controller.endCaptureSuppression()
+        #expect(controller.isReplyAudioOutputBusy)
+        player.completeNextReply()
+        #expect(!controller.isReplyAudioOutputBusy)
+        controller.toggleMute()
+        controller.toggleMute()
+        #expect(controller.status == "Playing")
+        #expect(!controller.isReplyAudioOutputBusy)
+    }
 }
 
 @MainActor
