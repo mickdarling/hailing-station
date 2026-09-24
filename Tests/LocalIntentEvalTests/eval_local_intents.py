@@ -53,7 +53,9 @@ def request_json(url: str, payload: dict | None = None) -> dict:
         method="GET" if data is None else "POST",
     )
     # A local service must not redirect a transcript to a non-loopback URL.
-    with urllib.request.build_opener(NoRedirect).open(request, timeout=90) as response:
+    with urllib.request.build_opener(urllib.request.ProxyHandler({}), NoRedirect).open(
+        request, timeout=90
+    ) as response:
         return json.load(response)
 
 

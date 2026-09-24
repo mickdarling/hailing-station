@@ -1,4 +1,5 @@
 import importlib.util
+import io
 import unittest
 from pathlib import Path
 from unittest.mock import patch
@@ -11,6 +12,16 @@ SPEC.loader.exec_module(MODULE)
 
 
 class LocalIntentEvalTests(unittest.TestCase):
+    def test_loopback_request_disables_environment_proxy_and_redirects(self):
+        with patch.object(MODULE.urllib.request, "build_opener") as build_opener:
+            build_opener.return_value.open.return_value = io.BytesIO(b'{"ok":true}')
+            result = MODULE.request_json("http://127.0.0.1:11434/api/tags")
+        self.assertEqual(result, {"ok": True})
+        proxy, redirect = build_opener.call_args.args
+        self.assertIsInstance(proxy, MODULE.urllib.request.ProxyHandler)
+        self.assertEqual(proxy.proxies, {})
+        self.assertIs(redirect, MODULE.NoRedirect)
+
     def test_ollama_request_is_bounded_and_loopback(self):
         with patch.object(MODULE, "request_json") as request:
             request.return_value = {"message": {"content": '{"intent":"host_status"}'}}
