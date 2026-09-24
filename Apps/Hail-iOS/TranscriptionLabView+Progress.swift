@@ -49,39 +49,50 @@ extension TranscriptionLabView {
     func announceStatusIfNeeded(_ current: String) {
         // Spoken accessibility feedback must not become microphone input (#86).
         guard scenePhase == .active, UIAccessibility.isVoiceOverRunning else { return }
-        guard !ownsCaptureSuppression else {
-            deferredStatusAnnouncement = current
-            return
-        }
-        deferredStatusAnnouncement = nil
-        guard replyPlaybackStatus != "Playing", replyPlaybackStatus != "Replaying" else { return }
-        UIAccessibility.post(notification: .announcement, argument: current)
+        deferredStatusAnnouncement = current
+        announceDeferredStatusIfNeeded()
     }
 
     @MainActor
     func announceDeferredStatusIfNeeded() {
-        guard let deferredStatusAnnouncement else { return }
+        guard scenePhase == .active, UIAccessibility.isVoiceOverRunning,
+              !ownsCaptureSuppression, !isReplySpeaking else { return }
+        let currentStatus = deferredStatusAnnouncement == status ? deferredStatusAnnouncement : nil
+        let currentReply = deferredReplyAnnouncement == replyPlaybackStatus
+            ? deferredReplyAnnouncement : nil
         self.deferredStatusAnnouncement = nil
+        deferredReplyAnnouncement = nil
         // Capture-progress speech is intentionally withheld. Only a still-current terminal result
         // may be spoken after the microphone owner has released capture.
-        guard deferredStatusAnnouncement == status,
-              ![
-                "Requesting microphone and speech access…", "Preparing on-device speech model…",
-                "Quieting reply audio…", "Listening", "Receiving audio", "Finalizing…"
-              ].contains(status) else { return }
-        announceStatusIfNeeded(deferredStatusAnnouncement)
+        let captureProgress = [
+            "Requesting microphone and speech access…", "Preparing on-device speech model…",
+            "Quieting reply audio…", "Listening", "Receiving audio", "Finalizing…"
+        ]
+        var announcement: [String] = []
+        if let currentStatus, !captureProgress.contains(currentStatus) {
+            announcement.append(currentStatus)
+        }
+        if let currentReply { announcement.append("Reply \(replyStatusLabel(currentReply))") }
+        guard !announcement.isEmpty else { return }
+        UIAccessibility.post(notification: .announcement, argument: announcement.joined(separator: ". "))
+    }
+
+    var isReplySpeaking: Bool {
+        replyPlaybackStatus == "Playing" || replyPlaybackStatus == "Replaying"
     }
 
     @MainActor
     func announceReplyStatusIfNeeded(_ current: String?) {
-        guard scenePhase == .active, !ownsCaptureSuppression, UIAccessibility.isVoiceOverRunning,
-              let current, [
+        guard scenePhase == .active, UIAccessibility.isVoiceOverRunning else { return }
+        if let current, [
                 "Paused", "Muted", "Played", "Playback failed", "Replay failed",
                 "Playback could not resume", "Audio format is not yet playable",
                 "Conflicting audio segment refused", "Replay available after listening",
                 "Replay available when this reply finishes"
-              ].contains(current) else { return }
-        UIAccessibility.post(notification: .announcement, argument: "Reply \(replyStatusLabel(current))")
+        ].contains(current) {
+            deferredReplyAnnouncement = current
+        }
+        announceDeferredStatusIfNeeded()
     }
 
     @MainActor

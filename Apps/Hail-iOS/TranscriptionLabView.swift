@@ -41,6 +41,7 @@ struct TranscriptionLabView: View {
     @State var replyTimeoutTask: Task<Void, Never>?
     @State var ownsCaptureSuppression = false
     @State var deferredStatusAnnouncement: String?
+    @State var deferredReplyAnnouncement: String?
     @State var playbackRestoreRequested = false
     @State var startTask: Task<Void, Never>?
     @State var finishTask: Task<Void, Never>?
