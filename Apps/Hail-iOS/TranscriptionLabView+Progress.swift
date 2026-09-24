@@ -47,14 +47,15 @@ extension TranscriptionLabView {
 
     @MainActor
     func announceStatusIfNeeded(_ current: String) {
-        guard scenePhase == .active, UIAccessibility.isVoiceOverRunning,
+        // Spoken accessibility feedback must not become microphone input (#86).
+        guard scenePhase == .active, !ownsCaptureSuppression, UIAccessibility.isVoiceOverRunning,
               replyPlaybackStatus != "Playing", replyPlaybackStatus != "Replaying" else { return }
         UIAccessibility.post(notification: .announcement, argument: current)
     }
 
     @MainActor
     func announceReplyStatusIfNeeded(_ current: String?) {
-        guard scenePhase == .active, UIAccessibility.isVoiceOverRunning,
+        guard scenePhase == .active, !ownsCaptureSuppression, UIAccessibility.isVoiceOverRunning,
               let current, ["Paused", "Muted", "Played", "Playback failed", "Replay failed"]
                 .contains(current) else { return }
         UIAccessibility.post(notification: .announcement, argument: "Reply \(replyStatusLabel(current))")
