@@ -73,18 +73,20 @@ extension RootView {
                 }
             )
         } else {
+            let availability = stationAvailability
             VStack(spacing: 16) {
-                Image(systemName: hasReadyHost ? "scope" : "macbook.and.iphone")
+                if availability.isWorking {
+                    ProgressView().accessibilityHidden(true)
+                }
+                Image(systemName: availability.badge.systemImage)
                     .font(.system(size: 42))
                     .foregroundStyle(.secondary)
-                Text(hasReadyHost ? "Choose a destination" : "Connect Haley to a Mac")
+                Text(availability.emptyTitle)
                     .font(.title3.bold())
-                Text(hasReadyHost
-                    ? "Your Mac is connected. Choose the allowed target Haley should use."
-                    : "Add this Mac, connect it, then choose the target Haley should use.")
+                Text(availability.emptyDetail)
                     .multilineTextAlignment(.center)
                     .foregroundStyle(.secondary)
-                if hasReadyHost {
+                if availability.canChooseDestination {
                     Button {
                         showingDestinations = true
                     } label: {
@@ -96,7 +98,10 @@ extension RootView {
                     NavigationLink {
                         ConnectivityLabView(store: connections, endpointsChanged: persist)
                     } label: {
-                        Label("Set up a Mac", systemImage: "plus.circle.fill")
+                        Label(
+                            availability == .unconfigured ? "Set up a Mac" : "Check Mac connection",
+                            systemImage: availability == .unconfigured ? "plus.circle.fill" : "network"
+                        )
                     }
                     .buttonStyle(.borderedProminent)
                     .accessibilityIdentifier("station.setup-mac")
@@ -104,6 +109,7 @@ extension RootView {
             }
             .padding(24)
             .stationCard(minHeight: horizontalSizeClass == .regular ? 420 : 260)
+            .accessibilityIdentifier("station.availability")
         }
     }
     var stationTools: some View {
@@ -143,49 +149,17 @@ extension RootView {
         }
     }
 
-    var connectionPresentation: StationConnectionPresentation {
-        if destination != nil {
-            return StationConnectionPresentation(
-                label: "Ready",
-                systemImage: "checkmark.circle.fill",
-                color: .green
-            )
-        }
-        if connections.hosts.contains(where: { $0.state == .ready }) {
-            return StationConnectionPresentation(
-                label: "Choose a target",
-                systemImage: "scope",
-                color: .blue
-            )
-        }
-        if connections.hosts.contains(where: {
-            switch $0.state {
-            case .connecting, .negotiating, .reconnecting: true
-            default: false
-            }
-        }) {
-            return StationConnectionPresentation(
-                label: "Connecting",
-                systemImage: "arrow.trianglehead.2.clockwise",
-                color: .orange
-            )
-        }
-        if connections.hosts.contains(where: {
-            if case .failed = $0.state { return true }
-            return false
-        }) {
-            return StationConnectionPresentation(
-                label: "Needs attention",
-                systemImage: "exclamationmark.triangle.fill",
-                color: .red
-            )
-        }
-        return StationConnectionPresentation(
-            label: connections.hosts.isEmpty ? "No Mac configured" : "Offline",
-            systemImage: "circle.dashed",
-            color: .secondary
+    var stationAvailability: StationAvailability {
+        StationAvailability.resolve(
+            hosts: connections.hosts,
+            preferredHostID: rememberedSelection?.hostID,
+            selectionConfirmed: destination != nil,
+            hasRememberedSelection: rememberedSelection != nil,
+            selectionInProgress: isRestoringSelection
         )
     }
+
+    var connectionPresentation: StationConnectionPresentation { stationAvailability.badge }
 
     @MainActor
     private func resetStationStateForUITestingIfRequested() {
