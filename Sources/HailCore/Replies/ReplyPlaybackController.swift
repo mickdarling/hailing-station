@@ -115,6 +115,7 @@ public final class ReplyPlaybackController {
     func playbackFinished(_ key: ReplyStreamKey, generation: UInt) {
         guard generation == playbackGeneration,
               let index = playbackOrder.firstIndex(of: key) else { return }
+        setPresentationStatus("Played", for: key)
         playbackOrder.remove(at: index)
         if activeKey == key { activeKey = playbackOrder.first }
         if queue.first == key {

@@ -108,6 +108,14 @@ extension ReplyPlaybackController {
         return presentationStatuses[presentationForControls.id] ?? status
     }
 
+    /// The status of one reply, independent of whichever other host currently owns playback.
+    /// This does not assert that the reply belongs to the terminal's latest send.
+    public func status(for reply: ReplyPresentation) -> String {
+        if let recorded = presentationStatuses[reply.id] { return recorded }
+        if presentationForControls?.id == reply.id { return statusForControls }
+        return "Received"
+    }
+
     func presentation(for key: ReplyStreamKey?) -> ReplyPresentation? {
         guard let key else { return nil }
         return replies.first { $0.id == presentationID(for: key) }
