@@ -14,6 +14,8 @@ final class InstalledAppConnectionTests: XCTestCase {
     func testConnectsAndSelectsAllowedTarget() throws {
         let app = XCUIApplication(bundleIdentifier: "com.mickdarling.Hail-iOS")
         app.launch()
+        // A restored Mac can start connecting before Mac Setup opens, prompting on first launch.
+        allowLocalNetworkIfRequested()
         XCTAssertTrue(app.staticTexts["Hailing Station"].waitForExistence(timeout: 20),
                       "The installed Hailing Station app did not open.")
 
