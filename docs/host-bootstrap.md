@@ -8,6 +8,14 @@ The Mac host knows which local applications and services exist, how they are con
 
 One host may expose several tools and sessions, and one terminal may connect to several hosts. Neither the host catalog nor the mobile interface assumes a single Mac, a single tmux server, or an AI-only target.
 
+## Baseline voice service without an agent
+
+The first useful host profile can expose a few safe, programmatic intents before Claude, Codex, or another general agent is installed. For example, a spoken connection check can read observed host state and return a fixed response. The terminal captures speech and plays the answer; the host classifies the request among configured intents, authorizes the selected action, runs it, and returns an observed result. The response may be templated text spoken by the existing audio path or an approved clip. No LLM needs to generate the wording.
+
+Speech recognition and semantic routing are different stages. A transcript is evidence of what the recognizer heard, not proof of what the user intended. Start with a small, explicit intent set and a clarification/unsupported path. A later fast decision model, such as the typed-choice approach considered in [#96](https://github.com/mickdarling/hailing-station/issues/96), may help choose among bounded intents; it is optional and does not authorize execution. A validly typed but wrong choice is still a wrong action. Consequential voice actions require separate confirmation before execution ([#89](https://github.com/mickdarling/hailing-station/issues/89)). The initial bounded voice service and its physical-device proof are tracked in [#108](https://github.com/mickdarling/hailing-station/issues/108).
+
+The stages are: terminal audio capture → speech recognition → host intent selection → host policy check → confirmation when the action is consequential → adapter/action execution → observed outcome → deterministic reply text → terminal speech output. A refused or expired confirmation stops before execution. Each stage should expose a meaningful pending, failed, or completed state to the conversation UI, without claiming success merely because a message was sent.
+
 ## Proposed bootstrap path
 
 1. **Prepare the host.** Install/start the macOS service, inspect health, and configure a local adapter profile. An initial host-side setup command can list supported adapters, check prerequisites, create or edit a profile, grant permitted actions, and run a safe connection test; a macOS settings UI can follow. The profile identifies a supported integration, its local working context, and its permitted actions. Tool availability and configuration errors are visible locally before the phone connects.
