@@ -57,6 +57,7 @@ extension RootView {
                     reply.endpointID == destination.hostID && reply.target == destination.target.id
                 }.map(\.id)),
                 replyPlaybackStatus: replyStatus(for: destination),
+                globalReplyAudioSpeaking: playback.status == "Playing" || playback.status == "Replaying",
                 onCaptureWillBegin: { CapturePlaybackSuppression.begin($0, using: playback) },
                 onCaptureDidEnd: { CapturePlaybackSuppression.end($0, using: playback, resuming: $1) },
                 onCaptureTeardownCompleted: {

@@ -78,7 +78,7 @@ extension TranscriptionLabView {
     }
 
     var isReplySpeaking: Bool {
-        replyPlaybackStatus == "Playing" || replyPlaybackStatus == "Replaying"
+        globalReplyAudioSpeaking || replyPlaybackStatus == "Playing" || replyPlaybackStatus == "Replaying"
     }
 
     @MainActor

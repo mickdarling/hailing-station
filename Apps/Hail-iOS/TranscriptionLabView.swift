@@ -15,6 +15,7 @@ struct TranscriptionLabView: View {
     let destinationID: ConversationDestinationID?
     let replyIDs: Set<String>
     let replyPlaybackStatus: String?
+    let globalReplyAudioSpeaking: Bool
     let onCaptureWillBegin: (@MainActor (UUID) -> Void)?
     let onCaptureDidEnd: (@MainActor (UUID, _ resumingPlayback: Bool) -> Void)?
     let onCaptureTeardownCompleted: (@MainActor (UUID) -> Void)?
@@ -59,6 +60,7 @@ struct TranscriptionLabView: View {
         destinationID: ConversationDestinationID? = nil,
         replyIDs: Set<String> = [],
         replyPlaybackStatus: String? = nil,
+        globalReplyAudioSpeaking: Bool = false,
         onCaptureWillBegin: (@MainActor (UUID) -> Void)? = nil,
         onCaptureDidEnd: (@MainActor (UUID, _ resumingPlayback: Bool) -> Void)? = nil,
         onCaptureTeardownCompleted: (@MainActor (UUID) -> Void)? = nil,
@@ -70,6 +72,7 @@ struct TranscriptionLabView: View {
         self.destinationID = destinationID
         self.replyIDs = replyIDs
         self.replyPlaybackStatus = replyPlaybackStatus
+        self.globalReplyAudioSpeaking = globalReplyAudioSpeaking
         self.onCaptureWillBegin = onCaptureWillBegin
         self.onCaptureDidEnd = onCaptureDidEnd
         self.onCaptureTeardownCompleted = onCaptureTeardownCompleted
@@ -130,6 +133,9 @@ struct TranscriptionLabView: View {
         }
         .onChange(of: replyPlaybackStatus) { _, current in
             announceReplyStatusIfNeeded(current)
+        }
+        .onChange(of: globalReplyAudioSpeaking) { wasSpeaking, isSpeaking in
+            if wasSpeaking && !isSpeaking { announceDeferredStatusIfNeeded() }
         }
         .onChange(of: destinationID) { previous, current in
             noteDestinationChange(previous: previous, current: current)
