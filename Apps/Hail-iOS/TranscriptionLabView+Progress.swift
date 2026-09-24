@@ -46,19 +46,6 @@ extension TranscriptionLabView {
         restorePlaybackAfterForcedTeardown()
     }
 
-    @ViewBuilder
-    var replyStatusSummary: some View {
-        if let replyPlaybackStatus {
-            HStack {
-                Text("Reply: \(replyStatusLabel(replyPlaybackStatus))")
-                    .font(.caption)
-                    .foregroundStyle(.secondary)
-                Spacer(minLength: 0)
-            }
-            .accessibilityIdentifier("transcription.reply-status")
-        }
-    }
-
     @MainActor
     func scheduleReplyTimeout(sendID: UUID, destinationID: ConversationDestinationID?) {
         replyTimeoutTask?.cancel()

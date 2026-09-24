@@ -126,3 +126,33 @@ extension TranscriptionLabView {
         announceDeferredStatusIfNeeded()
     }
 }
+
+extension TranscriptionLabView {
+    @ViewBuilder
+    var replyStatusSummary: some View {
+        if let replyPlaybackStatus {
+            HStack {
+                Text("Reply: \(replyStatusLabel(replyPlaybackStatus))")
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+                Spacer(minLength: 0)
+            }
+            .accessibilityIdentifier("transcription.reply-status")
+        }
+    }
+
+    func replyStatusLabel(_ raw: String) -> String {
+        switch raw {
+        case "Received": "Text received"
+        case "Waiting for audio": "Waiting for audio"
+        case "Queued": "Queued"
+        case "Playing": "Speaking"
+        case "Replaying": "Replaying"
+        case "Paused": "Paused"
+        case "Paused while listening": "Paused while listening"
+        case "Muted": "Muted"
+        case "Played": "Finished"
+        default: raw
+        }
+    }
+}

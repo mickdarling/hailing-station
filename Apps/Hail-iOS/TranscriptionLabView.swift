@@ -181,19 +181,4 @@ extension TranscriptionLabView {
         if #available(iOS 26.0, *) { return SpeechAnalyzerTranscriber() }
         return SFSpeechRecognizerTranscriber()
     }
-
-    func replyStatusLabel(_ raw: String) -> String {
-        switch raw {
-        case "Received": "Text received"
-        case "Waiting for audio": "Waiting for audio"
-        case "Queued": "Queued"
-        case "Playing": "Speaking"
-        case "Replaying": "Replaying"
-        case "Paused": "Paused"
-        case "Paused while listening": "Paused while listening"
-        case "Muted": "Muted"
-        case "Played": "Finished"
-        default: raw
-        }
-    }
 }
