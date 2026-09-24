@@ -21,6 +21,7 @@ struct CaptureSafeLabsView: View {
                     TranscriptionLabView(
                         audioSession: audioSession,
                         globalReplyAudioSpeaking: playback.isReplyAudioOutputBusy,
+                        controlledReplyPlaybackStatus: playback.statusForControls,
                         onCaptureWillBegin: { CapturePlaybackSuppression.begin($0, using: playback) },
                         onCaptureDidEnd: {
                             CapturePlaybackSuppression.end($0, using: playback, resuming: $1)

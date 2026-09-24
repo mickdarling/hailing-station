@@ -58,6 +58,7 @@ extension RootView {
                 }.map(\.id)),
                 replyPlaybackStatus: replyStatus(for: destination),
                 globalReplyAudioSpeaking: playback.isReplyAudioOutputBusy,
+                controlledReplyPlaybackStatus: playback.statusForControls,
                 onCaptureWillBegin: { CapturePlaybackSuppression.begin($0, using: playback) },
                 onCaptureDidEnd: { CapturePlaybackSuppression.end($0, using: playback, resuming: $1) },
                 onCaptureTeardownCompleted: {

@@ -2,6 +2,50 @@ import SwiftUI
 import UIKit
 
 extension TranscriptionLabView {
+    @MainActor static var uncorrelatedDestinations: Set<ConversationDestinationID> = []
+
+    @MainActor
+    func beginCaptureExclusivity() {
+        isForcedTeardown = false
+        playbackRestoreRequested = false
+        guard !ownsCaptureSuppression else { return }
+        ownsCaptureSuppression = true
+        onCaptureWillBegin?(captureOwnerID)
+    }
+
+    @MainActor
+    func releaseCaptureExclusivityAfterWork() {
+        guard !isForcedTeardown else { return }
+        endCaptureExclusivity(resumingPlayback: true)
+    }
+
+    @MainActor
+    func restorePlaybackAfterForcedTeardown() {
+        guard scenePhase == .active else { return }
+        guard finishTask == nil, startTask == nil, !isStarting, !isFinalizing, !isInterrupting else {
+            playbackRestoreRequested = true
+            return
+        }
+        playbackRestoreRequested = false
+        isForcedTeardown = false
+        if ownsCaptureSuppression {
+            endCaptureExclusivity(resumingPlayback: true)
+        }
+    }
+
+    @MainActor
+    func endCaptureExclusivity(resumingPlayback: Bool = true) {
+        guard ownsCaptureSuppression else { return }
+        ownsCaptureSuppression = false
+        onCaptureDidEnd?(captureOwnerID, resumingPlayback)
+    }
+
+    @MainActor
+    func restorePlaybackIfRequestedAndReady() {
+        guard playbackRestoreRequested else { return }
+        restorePlaybackAfterForcedTeardown()
+    }
+
     @ViewBuilder
     var replyStatusSummary: some View {
         if let replyPlaybackStatus {
@@ -45,8 +89,11 @@ extension TranscriptionLabView {
         let currentStatus = deferredStatusAnnouncement == status ? deferredStatusAnnouncement : nil
         let currentReply = deferredReplyAnnouncement == replyPlaybackStatus
             ? deferredReplyAnnouncement : nil
+        let controlledFailure = deferredControlledReplyFailure == controlledReplyPlaybackStatus
+            ? deferredControlledReplyFailure : nil
         self.deferredStatusAnnouncement = nil
         deferredReplyAnnouncement = nil
+        deferredControlledReplyFailure = nil
         // Capture-progress speech is intentionally withheld. Only a still-current terminal result
         // may be spoken after the microphone owner has released capture.
         let captureProgress = [
@@ -58,6 +105,9 @@ extension TranscriptionLabView {
             announcement.append(currentStatus)
         }
         if let currentReply { announcement.append("Reply \(replyStatusLabel(currentReply))") }
+        if let controlledFailure, controlledFailure != currentReply {
+            announcement.append("Other playback: \(controlledFailure)")
+        }
         guard !announcement.isEmpty else { return }
         UIAccessibility.post(notification: .announcement, argument: announcement.joined(separator: ". "))
     }
@@ -77,6 +127,18 @@ extension TranscriptionLabView {
         ].contains(current) {
             deferredReplyAnnouncement = current
         }
+        announceDeferredStatusIfNeeded()
+    }
+
+    @MainActor
+    func announceControlledReplyFailureIfNeeded(_ current: String?) {
+        guard scenePhase == .active, UIAccessibility.isVoiceOverRunning,
+              let current, current != replyPlaybackStatus,
+              [
+                "Playback could not resume", "Audio format is not yet playable",
+                "Conflicting audio segment refused", "Playback failed", "Replay failed"
+              ].contains(current) else { return }
+        deferredControlledReplyFailure = current
         announceDeferredStatusIfNeeded()
     }
 

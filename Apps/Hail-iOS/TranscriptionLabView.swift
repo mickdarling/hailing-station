@@ -16,6 +16,7 @@ struct TranscriptionLabView: View {
     let replyIDs: Set<String>
     let replyPlaybackStatus: String?
     let globalReplyAudioSpeaking: Bool
+    let controlledReplyPlaybackStatus: String?
     let onCaptureWillBegin: (@MainActor (UUID) -> Void)?
     let onCaptureDidEnd: (@MainActor (UUID, _ resumingPlayback: Bool) -> Void)?
     let onCaptureTeardownCompleted: (@MainActor (UUID) -> Void)?
@@ -43,6 +44,7 @@ struct TranscriptionLabView: View {
     @State var ownsCaptureSuppression = false
     @State var deferredStatusAnnouncement: String?
     @State var deferredReplyAnnouncement: String?
+    @State var deferredControlledReplyFailure: String?
     @State var playbackRestoreRequested = false
     @State var startTask: Task<Void, Never>?
     @State var finishTask: Task<Void, Never>?
@@ -60,6 +62,7 @@ struct TranscriptionLabView: View {
         replyIDs: Set<String> = [],
         replyPlaybackStatus: String? = nil,
         globalReplyAudioSpeaking: Bool = false,
+        controlledReplyPlaybackStatus: String? = nil,
         onCaptureWillBegin: (@MainActor (UUID) -> Void)? = nil,
         onCaptureDidEnd: (@MainActor (UUID, _ resumingPlayback: Bool) -> Void)? = nil,
         onCaptureTeardownCompleted: (@MainActor (UUID) -> Void)? = nil,
@@ -72,6 +75,7 @@ struct TranscriptionLabView: View {
         self.replyIDs = replyIDs
         self.replyPlaybackStatus = replyPlaybackStatus
         self.globalReplyAudioSpeaking = globalReplyAudioSpeaking
+        self.controlledReplyPlaybackStatus = controlledReplyPlaybackStatus
         self.onCaptureWillBegin = onCaptureWillBegin
         self.onCaptureDidEnd = onCaptureDidEnd
         self.onCaptureTeardownCompleted = onCaptureTeardownCompleted
@@ -134,6 +138,9 @@ struct TranscriptionLabView: View {
         .onChange(of: replyPlaybackStatus) { _, current in
             announceReplyStatusIfNeeded(current)
         }
+        .onChange(of: controlledReplyPlaybackStatus) { _, current in
+            announceControlledReplyFailureIfNeeded(current)
+        }
         .onChange(of: globalReplyAudioSpeaking) { wasSpeaking, isSpeaking in
             if wasSpeaking && !isSpeaking { announceDeferredStatusIfNeeded() }
         }
@@ -151,50 +158,5 @@ struct TranscriptionLabView: View {
     private static func defaultTranscriber() -> any Transcriber {
         if #available(iOS 26.0, *) { return SpeechAnalyzerTranscriber() }
         return SFSpeechRecognizerTranscriber()
-    }
-}
-
-extension TranscriptionLabView {
-    @MainActor static var uncorrelatedDestinations: Set<ConversationDestinationID> = []
-    @MainActor
-    func beginCaptureExclusivity() {
-        isForcedTeardown = false
-        playbackRestoreRequested = false
-        guard !ownsCaptureSuppression else { return }
-        ownsCaptureSuppression = true
-        onCaptureWillBegin?(captureOwnerID)
-    }
-
-    @MainActor
-    func releaseCaptureExclusivityAfterWork() {
-        guard !isForcedTeardown else { return }
-        endCaptureExclusivity(resumingPlayback: true)
-    }
-
-    @MainActor
-    func restorePlaybackAfterForcedTeardown() {
-        guard scenePhase == .active else { return }
-        guard finishTask == nil, startTask == nil, !isStarting, !isFinalizing, !isInterrupting else {
-            playbackRestoreRequested = true
-            return
-        }
-        playbackRestoreRequested = false
-        isForcedTeardown = false
-        if ownsCaptureSuppression {
-            endCaptureExclusivity(resumingPlayback: true)
-        }
-    }
-
-    @MainActor
-    func endCaptureExclusivity(resumingPlayback: Bool = true) {
-        guard ownsCaptureSuppression else { return }
-        ownsCaptureSuppression = false
-        onCaptureDidEnd?(captureOwnerID, resumingPlayback)
-    }
-
-    @MainActor
-    func restorePlaybackIfRequestedAndReady() {
-        guard playbackRestoreRequested else { return }
-        restorePlaybackAfterForcedTeardown()
     }
 }
