@@ -56,6 +56,11 @@ extension RootView {
                 replyIDs: Set(playback.replies.lazy.filter { reply in
                     reply.endpointID == destination.hostID && reply.target == destination.target.id
                 }.map(\.id)),
+                replyPlaybackStatus: replyStatus(for: destination),
+                selectedReplyID: replyPresentation(for: destination)?.id,
+                globalReplyAudioSpeaking: playback.isReplyAudioOutputBusy,
+                controlledReplyPlaybackStatus: playback.statusForControls,
+                replyFailureStatuses: playback.terminalReplyFailureStatuses,
                 onCaptureWillBegin: { CapturePlaybackSuppression.begin($0, using: playback) },
                 onCaptureDidEnd: { CapturePlaybackSuppression.end($0, using: playback, resuming: $1) },
                 onCaptureTeardownCompleted: {
@@ -160,6 +165,19 @@ extension RootView {
     }
 
     var connectionPresentation: StationConnectionPresentation { stationAvailability.badge }
+
+    func replyPresentation(for destination: Destination) -> ReplyPresentation? {
+        let matches: (ReplyPresentation) -> Bool = {
+            $0.endpointID == destination.hostID && $0.target == destination.target.id
+        }
+        if let current = playback.presentationForControls, matches(current) { return current }
+        return playback.replies.last(where: matches)
+    }
+
+    func replyStatus(for destination: Destination) -> String? {
+        guard let reply = replyPresentation(for: destination) else { return nil }
+        return playback.status(for: reply)
+    }
 
     @MainActor
     private func resetStationStateForUITestingIfRequested() {

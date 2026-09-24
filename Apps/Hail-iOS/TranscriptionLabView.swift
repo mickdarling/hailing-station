@@ -8,12 +8,22 @@ struct ConversationDestinationID: Hashable {
     let targetID: String
 }
 
+struct SelectedReplyPlaybackObservation: Equatable {
+    let id: String?
+    let status: String?
+}
+
 /// Audio-first capture surface shared by compact and regular-width station layouts.
 struct TranscriptionLabView: View {
     let audioSession: any AudioSessionDiagnosticsProviding
     let destinationLabel: String?
     let destinationID: ConversationDestinationID?
     let replyIDs: Set<String>
+    let replyPlaybackStatus: String?
+    let selectedReplyID: String?
+    let globalReplyAudioSpeaking: Bool
+    let controlledReplyPlaybackStatus: String?
+    let replyFailureStatuses: [String: String]
     let onCaptureWillBegin: (@MainActor (UUID) -> Void)?
     let onCaptureDidEnd: (@MainActor (UUID, _ resumingPlayback: Bool) -> Void)?
     let onCaptureTeardownCompleted: (@MainActor (UUID) -> Void)?
@@ -39,6 +49,11 @@ struct TranscriptionLabView: View {
     @State var destinationGeneration = UUID()
     @State var replyTimeoutTask: Task<Void, Never>?
     @State var ownsCaptureSuppression = false
+    @State var deferredStatusAnnouncement: String?
+    @State var deferredReplyAnnouncement: String?
+    @State var deferredControlledReplyFailure: String?
+    @State var deferredReplyFailures: [String: String] = [:]
+    @State var deferredReplayNotice: String?
     @State var playbackRestoreRequested = false
     @State var startTask: Task<Void, Never>?
     @State var finishTask: Task<Void, Never>?
@@ -54,6 +69,11 @@ struct TranscriptionLabView: View {
         destinationLabel: String? = nil,
         destinationID: ConversationDestinationID? = nil,
         replyIDs: Set<String> = [],
+        replyPlaybackStatus: String? = nil,
+        selectedReplyID: String? = nil,
+        globalReplyAudioSpeaking: Bool = false,
+        controlledReplyPlaybackStatus: String? = nil,
+        replyFailureStatuses: [String: String] = [:],
         onCaptureWillBegin: (@MainActor (UUID) -> Void)? = nil,
         onCaptureDidEnd: (@MainActor (UUID, _ resumingPlayback: Bool) -> Void)? = nil,
         onCaptureTeardownCompleted: (@MainActor (UUID) -> Void)? = nil,
@@ -64,6 +84,11 @@ struct TranscriptionLabView: View {
         self.destinationLabel = destinationLabel
         self.destinationID = destinationID
         self.replyIDs = replyIDs
+        self.replyPlaybackStatus = replyPlaybackStatus
+        self.selectedReplyID = selectedReplyID
+        self.globalReplyAudioSpeaking = globalReplyAudioSpeaking
+        self.controlledReplyPlaybackStatus = controlledReplyPlaybackStatus
+        self.replyFailureStatuses = replyFailureStatuses
         self.onCaptureWillBegin = onCaptureWillBegin
         self.onCaptureDidEnd = onCaptureDidEnd
         self.onCaptureTeardownCompleted = onCaptureTeardownCompleted
@@ -104,6 +129,7 @@ struct TranscriptionLabView: View {
             }
 
             transcriptActions
+            replyStatusSummary
         }
         .padding(18)
         .background(.regularMaterial, in: RoundedRectangle(cornerRadius: 24, style: .continuous))
@@ -111,10 +137,28 @@ struct TranscriptionLabView: View {
         .task { await observeResults() }
         .onAppear { restorePlaybackAfterForcedTeardown() }
         .onChange(of: scenePhase) { _, phase in
-            if phase == .active { restorePlaybackAfterForcedTeardown() }
+            if phase == .active { restorePlaybackAfterForcedTeardown(); announceDeferredStatusIfNeeded() }
         }
         .onChange(of: replyIDs) { previous, current in
             noteReplyArrival(previous: previous, current: current)
+        }
+        .onChange(of: status) { _, current in
+            announceStatusIfNeeded(current)
+        }
+        .onChange(of: ownsCaptureSuppression) { wasSuppressed, isSuppressed in
+            if wasSuppressed && !isSuppressed { announceDeferredStatusIfNeeded() }
+        }
+        .onChange(of: selectedReplyPlaybackObservation) { _, current in
+            announceReplyStatusIfNeeded(current.status)
+        }
+        .onChange(of: controlledReplyPlaybackStatus) { _, current in
+            announceControlledReplyFailureIfNeeded(current)
+        }
+        .onChange(of: replyFailureStatuses) { previous, current in
+            announceNewReplyFailures(previous: previous, current: current)
+        }
+        .onChange(of: globalReplyAudioSpeaking) { wasSpeaking, isSpeaking in
+            if wasSpeaking && !isSpeaking { announceDeferredStatusIfNeeded() }
         }
         .onChange(of: destinationID) { previous, current in
             noteDestinationChange(previous: previous, current: current)
@@ -125,6 +169,12 @@ struct TranscriptionLabView: View {
             startTask?.cancel()
             Task { await finish(force: true) }
         }
+    }
+}
+
+extension TranscriptionLabView {
+    var selectedReplyPlaybackObservation: SelectedReplyPlaybackObservation {
+        SelectedReplyPlaybackObservation(id: selectedReplyID, status: replyPlaybackStatus)
     }
 
     private static func defaultTranscriber() -> any Transcriber {
