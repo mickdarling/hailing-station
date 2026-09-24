@@ -47,6 +47,7 @@ struct TranscriptionLabView: View {
     @State var deferredReplyAnnouncement: String?
     @State var deferredControlledReplyFailure: String?
     @State var deferredReplyFailures: [String: String] = [:]
+    @State var deferredReplayNotice: String?
     @State var playbackRestoreRequested = false
     @State var startTask: Task<Void, Never>?
     @State var finishTask: Task<Void, Never>?
@@ -165,5 +166,22 @@ struct TranscriptionLabView: View {
     private static func defaultTranscriber() -> any Transcriber {
         if #available(iOS 26.0, *) { return SpeechAnalyzerTranscriber() }
         return SFSpeechRecognizerTranscriber()
+    }
+}
+
+extension TranscriptionLabView {
+    func replyStatusLabel(_ raw: String) -> String {
+        switch raw {
+        case "Received": "Text received"
+        case "Waiting for audio": "Waiting for audio"
+        case "Queued": "Queued"
+        case "Playing": "Speaking"
+        case "Replaying": "Replaying"
+        case "Paused": "Paused"
+        case "Paused while listening": "Paused while listening"
+        case "Muted": "Muted"
+        case "Played": "Finished"
+        default: raw
+        }
     }
 }

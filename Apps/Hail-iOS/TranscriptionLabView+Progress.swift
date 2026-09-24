@@ -74,21 +74,6 @@ extension TranscriptionLabView {
         }
     }
 
-    func replyStatusLabel(_ raw: String) -> String {
-        switch raw {
-        case "Received": "Text received"
-        case "Waiting for audio": "Waiting for audio"
-        case "Queued": "Queued"
-        case "Playing": "Speaking"
-        case "Replaying": "Replaying"
-        case "Paused": "Paused"
-        case "Paused while listening": "Paused while listening"
-        case "Muted": "Muted"
-        case "Played": "Finished"
-        default: raw
-        }
-    }
-
     @MainActor
     func announceStatusIfNeeded(_ current: String) {
         // Spoken accessibility feedback must not become microphone input (#86).
@@ -115,6 +100,8 @@ extension TranscriptionLabView {
         deferredReplyAnnouncement = nil
         deferredControlledReplyFailure = nil
         deferredReplyFailures.removeAll()
+        let replayNotice = deferredReplayNotice
+        deferredReplayNotice = nil
         // Capture-progress speech is intentionally withheld. Only a still-current terminal result
         // may be spoken after the microphone owner has released capture.
         let captureProgress = [
@@ -132,6 +119,7 @@ extension TranscriptionLabView {
         for failure in otherFailures.sorted() where failure != controlledFailure {
             announcement.append("Other reply: \(failure)")
         }
+        if let replayNotice { announcement.append(replayNotice) }
         guard !announcement.isEmpty else { return }
         UIAccessibility.post(notification: .announcement, argument: announcement.joined(separator: ". "))
     }
@@ -143,13 +131,25 @@ extension TranscriptionLabView {
     @MainActor
     func announceReplyStatusIfNeeded(_ current: String?) {
         guard scenePhase == .active, UIAccessibility.isVoiceOverRunning else { return }
+        if current == "Replaying" { deferredReplayNotice = nil }
         if let current, [
                 "Paused", "Muted", "Played", "Playback failed", "Replay failed",
                 "Playback could not resume", "Audio format is not yet playable",
                 "Conflicting audio segment refused", "Replay available after listening",
                 "Replay available when this reply finishes"
         ].contains(current) {
-            deferredReplyAnnouncement = current
+            if ownsCaptureSuppression || isReplySpeaking {
+                switch current {
+                case "Replay available after listening":
+                    deferredReplayNotice = "Replay was not started while listening"
+                case "Replay available when this reply finishes":
+                    deferredReplayNotice = "Replay was not started while another reply was speaking"
+                default:
+                    deferredReplyAnnouncement = current
+                }
+            } else {
+                deferredReplyAnnouncement = current
+            }
         }
         announceDeferredStatusIfNeeded()
     }
