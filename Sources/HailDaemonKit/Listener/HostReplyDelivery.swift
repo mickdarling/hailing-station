@@ -22,7 +22,9 @@ extension WebSocketListener {
         guard let encoded = try? FrameCoding.encode(frame),
               let validated = try? FrameCoding.decode(encoded),
               validated == frame,
-              validated.source == hostName else { throw WebSocketListenerError.invalidReply }
+              validated.source.lowercased() == hostName.lowercased() else {
+            throw WebSocketListenerError.invalidReply
+        }
         switch validated.payload {
         case .text(let text) where text.isFinal && text.reply != nil: break
         case .audio(let audio) where audio.reply != nil: break
