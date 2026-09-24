@@ -52,6 +52,7 @@ Physical-device signing, installation, audio-route checks, and privacy-safe diag
 Remote beta installation and guarded App Store Connect upload are covered by the [TestFlight delivery runbook](docs/testflight.md).
 The first one-Mac physical proof is summarized in the [single-device vertical-slice test record](docs/vertical-slice-test-record.md).
 The current adaptive layout and sanitized interaction record are documented in the [mobile interface notes](docs/mobile-interface.md).
+The proposed Mac-owned tool configuration and client capability flow are described in the [host bootstrap design](docs/host-bootstrap.md).
 
 ## Naming
 
