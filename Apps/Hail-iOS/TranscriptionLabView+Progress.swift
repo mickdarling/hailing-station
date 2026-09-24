@@ -2,6 +2,19 @@ import SwiftUI
 import UIKit
 
 extension TranscriptionLabView {
+    @ViewBuilder
+    var replyStatusSummary: some View {
+        if let replyPlaybackStatus {
+            HStack {
+                Text("Reply: \(replyStatusLabel(replyPlaybackStatus))")
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+                Spacer(minLength: 0)
+            }
+            .accessibilityIdentifier("transcription.reply-status")
+        }
+    }
+
     func replyStatusLabel(_ raw: String) -> String {
         switch raw {
         case "Received": "Text received"

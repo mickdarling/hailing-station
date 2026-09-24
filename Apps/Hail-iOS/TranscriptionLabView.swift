@@ -112,6 +112,7 @@ struct TranscriptionLabView: View {
             }
 
             transcriptActions
+            replyStatusSummary
         }
         .padding(18)
         .background(.regularMaterial, in: RoundedRectangle(cornerRadius: 24, style: .continuous))
