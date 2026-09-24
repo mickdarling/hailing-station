@@ -4,6 +4,7 @@
 This does not connect to Hailing Station, execute actions, or ingest user speech.
 It only calls an already-running Ollama or LM Studio server on loopback.
 """
+from __future__ import annotations
 
 import argparse
 import json
