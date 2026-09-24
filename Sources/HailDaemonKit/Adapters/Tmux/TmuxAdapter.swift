@@ -9,8 +9,9 @@ import Foundation
 /// line breaks, which `send-keys` would turn into extra Enter presses.
 public actor TmuxAdapter: Adapter {
     public static let defaultChunkSize = 400
-    /// The active pane's id and pid come with the session line; the name is last because it may hold tabs.
-    static let listFormat = "#{session_id}\t#{session_created}\t#{pane_id}\t#{pane_pid}\t#{session_name}"
+    /// Use a printable separator: tmux can replace tabs with underscores under launchd. The first four
+    /// fields cannot contain `|`; the session name is last and may contain any additional separators.
+    static let listFormat = "#{session_id}|#{session_created}|#{pane_id}|#{pane_pid}|#{session_name}"
 
     public nonisolated let kind = "tmux"
     private let runner: any CommandRunner

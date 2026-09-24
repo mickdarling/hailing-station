@@ -4,6 +4,12 @@ import Testing
 @Suite struct TmuxEventDiffTests {
     typealias Session = TmuxAdapter.Session
 
+    @Test func listingFormatAvoidsControlSeparatorsThatLaunchdTmuxRewrites() {
+        #expect(TmuxAdapter.listFormat ==
+            "#{session_id}|#{session_created}|#{pane_id}|#{pane_pid}|#{session_name}")
+        #expect(!TmuxAdapter.listFormat.contains("\t"))
+    }
+
     func session(_ id: String, _ name: String, pane: String = "%1", pid: String = "1") -> Session {
         Session(id: id, created: "1", paneID: pane, panePID: pid, name: name)
     }
@@ -31,18 +37,18 @@ import Testing
         ])
     }
 
-    @Test func parseSkipsMalformedLinesAndKeepsTabsInNames() {
-        let out = "$1\t10\t%1\t5\tclaude-hail\n\n$2\t11\t%2\t6\ta\tb\nbroken\n"
-            + "\t1\t%1\t1\tnoid\n$3\t12\t%3\t7\t\n$4\t1\t%4\tnoname\n"
+    @Test func parseSkipsMalformedLinesAndKeepsSeparatorsInNames() {
+        let out = "$1|10|%1|5|claude-hail\n\n$2|11|%2|6|a|b\tname\nbroken\n"
+            + "|1|%1|1|noid\n$3|12|%3|7|\n$4|1|%4|noname\n"
         let expected = [
             Session(id: "$1", created: "10", paneID: "%1", panePID: "5", name: "claude-hail"),
-            Session(id: "$2", created: "11", paneID: "%2", panePID: "6", name: "a\tb")
+            Session(id: "$2", created: "11", paneID: "%2", panePID: "6", name: "a|b\tname")
         ]
         #expect(TmuxAdapter.parseSessions(out) == expected)
     }
 
     @Test func pollingEmitsAppearAndVanishWithinTheInterval() async throws {
-        let sessions = SessionListing("$1\t1\t%1\t1\ta\n")
+        let sessions = SessionListing("$1|1|%1|1|a\n")
         let adapter = TmuxAdapter(
             runner: FakeCommandRunner.serving(sessions), pollInterval: .milliseconds(20)
         )
@@ -50,7 +56,7 @@ import Testing
         for await event in adapter.events {
             seen.append(event)
             switch seen.count {
-            case 1: sessions.set("$1\t1\t%1\t1\ta\n$2\t2\t%2\t2\tb\n")
+            case 1: sessions.set("$1|1|%1|1|a\n$2|2|%2|2|b\n")
             case 2: sessions.set("")
             case 4: break
             default: continue
@@ -73,7 +79,7 @@ import Testing
     }
 
     @Test func aLateConsumerStillSeesEverySession() async throws {
-        let listing = (1...70).map { "$\($0)\t1\t%\($0)\t\($0)\ts\($0)\n" }.joined()
+        let listing = (1...70).map { "$\($0)|1|%\($0)|\($0)|s\($0)\n" }.joined()
         let runner = FakeCommandRunner.serving(SessionListing(listing))
         let adapter = TmuxAdapter(runner: runner, pollInterval: .milliseconds(5))
         let stream = adapter.events

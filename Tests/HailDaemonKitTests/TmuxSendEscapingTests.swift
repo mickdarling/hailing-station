@@ -71,9 +71,9 @@ import Testing
         // codex dies and a new session takes the name; the server restarts and reuses the id; the session
         // survives but its active pane is now another program. Each is a different binding.
         for changed in [
-            "$1\t1758230000\t%1\t501\tclaude-hail\n$7\t1758230900\t%9\t900\tcodex\n",
-            "$2\t1758239999\t%2\t502\tcodex\n",
-            "$2\t1758230001\t%5\t777\tcodex\n"
+            "$1|1758230000|%1|501|claude-hail\n$7|1758230900|%9|900|codex\n",
+            "$2|1758239999|%2|502|codex\n",
+            "$2|1758230001|%5|777|codex\n"
         ] {
             listing.set(changed)
             await #expect(throws: AdapterError.rebound("codex")) {
@@ -94,7 +94,7 @@ import Testing
             guard arguments.contains("list-sessions") else { return CommandResult(exitCode: 0, stdout: "") }
             let count = Int(calls.get()) ?? 0
             calls.set(String(count + 1))
-            listings.set(count == 0 ? twoSessions : "$2\t1758230001\t%8\t808\tcodex\n")
+            listings.set(count == 0 ? twoSessions : "$2|1758230001|%8|808|codex\n")
             return CommandResult(exitCode: 0, stdout: listings.get())
         }
         let adapter = TmuxAdapter(runner: runner, chunkSize: 2, pollInterval: nil)

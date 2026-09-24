@@ -27,10 +27,10 @@ extension TmuxAdapter {
         return out
     }
 
-    /// Parses `list-sessions -F listFormat`. Blank or short lines are skipped; the name may contain tabs.
+    /// Parses `list-sessions -F listFormat`. Blank or short lines are skipped; the name may contain pipes.
     static func parseSessions(_ stdout: String) -> [Session] {
         stdout.split(whereSeparator: \.isNewline).compactMap { line in
-            let parts = line.split(separator: "\t", maxSplits: 4, omittingEmptySubsequences: false).map(String.init)
+            let parts = line.split(separator: "|", maxSplits: 4, omittingEmptySubsequences: false).map(String.init)
             guard parts.count == 5, parts.allSatisfy({ !$0.isEmpty }) else { return nil }
             return Session(id: parts[0], created: parts[1], paneID: parts[2], panePID: parts[3], name: parts[4])
         }

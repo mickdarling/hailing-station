@@ -46,4 +46,4 @@ final class SessionListing: Sendable {
     func set(_ listing: String) { storage.withLock { $0 = listing } }
 }
 
-let twoSessions = "$1\t1758230000\t%1\t501\tclaude-hail\n$2\t1758230001\t%2\t502\tcodex\n"
+let twoSessions = "$1|1758230000|%1|501|claude-hail\n$2|1758230001|%2|502|codex\n"
