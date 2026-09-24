@@ -72,4 +72,19 @@ import Testing
         #expect(resolve([otherReady]) == .offline)
         #expect(resolve([otherReady], preferredHostID: nil, hasRememberedSelection: false) == .chooseTarget)
     }
+
+    @Test func waitsForEveryReadyHostsCatalogUnlessOneAlreadyHasALiveTarget() throws {
+        let other = try HostEndpoint(
+            id: "other", name: "Other Mac", url: #require(URL(string: "ws://127.0.0.1:8766"))
+        )
+        let empty = try snapshot(.ready, receivedTargetList: true)
+        let pending = HostConnectionSnapshot(endpoint: other, state: .ready)
+        #expect(resolve([empty, pending], preferredHostID: nil, hasRememberedSelection: false) == .waitingForTargets)
+        let live = HostConnectionSnapshot(
+            endpoint: other, state: .ready, targets: [liveTarget], receivedTargetList: true
+        )
+        #expect(resolve([empty, live], preferredHostID: nil, hasRememberedSelection: false) == .chooseTarget)
+        #expect(resolve([try snapshot(.ready), live],
+                        preferredHostID: nil, hasRememberedSelection: false) == .chooseTarget)
+    }
 }

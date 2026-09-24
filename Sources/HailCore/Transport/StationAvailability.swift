@@ -39,8 +39,11 @@ public enum StationAvailability: Equatable, Sendable {
         selectionInProgress: Bool
     ) -> Self {
         let ready = hosts.filter { $0.state == .ready }
-        guard ready.contains(where: \.receivedTargetList) else { return .waitingForTargets }
-        guard ready.contains(where: { $0.targets.contains(where: \.alive) }) else { return .noAllowedTargets }
+        let listed = ready.filter(\.receivedTargetList)
+        let hasLiveTarget = listed.contains { $0.targets.contains(where: \.alive) }
+        if !hasLiveTarget {
+            return listed.count == ready.count ? .noAllowedTargets : .waitingForTargets
+        }
         if selectionInProgress { return .restoringSelection }
         return hasRememberedSelection ? .selectionFailed : .chooseTarget
     }
