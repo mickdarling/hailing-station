@@ -56,8 +56,12 @@ extension TranscriptionLabView {
     @MainActor
     func announceReplyStatusIfNeeded(_ current: String?) {
         guard scenePhase == .active, !ownsCaptureSuppression, UIAccessibility.isVoiceOverRunning,
-              let current, ["Paused", "Muted", "Played", "Playback failed", "Replay failed"]
-                .contains(current) else { return }
+              let current, [
+                "Paused", "Muted", "Played", "Playback failed", "Replay failed",
+                "Playback could not resume", "Audio format is not yet playable",
+                "Conflicting audio segment refused", "Replay available after listening",
+                "Replay available when this reply finishes"
+              ].contains(current) else { return }
         UIAccessibility.post(notification: .announcement, argument: "Reply \(replyStatusLabel(current))")
     }
 
