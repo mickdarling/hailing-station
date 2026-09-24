@@ -94,7 +94,7 @@ extension TranscriptionLabView {
         let otherFailures = Set<String>(deferredReplyFailures.compactMap { element -> String? in
             let (id, failure) = element
             guard replyFailureStatuses[id] == failure else { return nil }
-            return replyIDs.contains(id) && failure == currentReply ? nil : failure
+            return id == selectedReplyID ? nil : failure
         })
         self.deferredStatusAnnouncement = nil
         deferredReplyAnnouncement = nil

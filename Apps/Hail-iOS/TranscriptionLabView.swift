@@ -15,6 +15,7 @@ struct TranscriptionLabView: View {
     let destinationID: ConversationDestinationID?
     let replyIDs: Set<String>
     let replyPlaybackStatus: String?
+    let selectedReplyID: String?
     let globalReplyAudioSpeaking: Bool
     let controlledReplyPlaybackStatus: String?
     let replyFailureStatuses: [String: String]
@@ -64,6 +65,7 @@ struct TranscriptionLabView: View {
         destinationID: ConversationDestinationID? = nil,
         replyIDs: Set<String> = [],
         replyPlaybackStatus: String? = nil,
+        selectedReplyID: String? = nil,
         globalReplyAudioSpeaking: Bool = false,
         controlledReplyPlaybackStatus: String? = nil,
         replyFailureStatuses: [String: String] = [:],
@@ -78,6 +80,7 @@ struct TranscriptionLabView: View {
         self.destinationID = destinationID
         self.replyIDs = replyIDs
         self.replyPlaybackStatus = replyPlaybackStatus
+        self.selectedReplyID = selectedReplyID
         self.globalReplyAudioSpeaking = globalReplyAudioSpeaking
         self.controlledReplyPlaybackStatus = controlledReplyPlaybackStatus
         self.replyFailureStatuses = replyFailureStatuses
@@ -162,14 +165,14 @@ struct TranscriptionLabView: View {
             Task { await finish(force: true) }
         }
     }
+}
 
+extension TranscriptionLabView {
     private static func defaultTranscriber() -> any Transcriber {
         if #available(iOS 26.0, *) { return SpeechAnalyzerTranscriber() }
         return SFSpeechRecognizerTranscriber()
     }
-}
 
-extension TranscriptionLabView {
     func replyStatusLabel(_ raw: String) -> String {
         switch raw {
         case "Received": "Text received"
