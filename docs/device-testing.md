@@ -72,6 +72,18 @@ The test accepts only microphone and speech-recognition prompts when iOS present
 
 The first completed, privacy-safe device and vertical-slice results are in the [single-device test record](vertical-slice-test-record.md).
 
+## Test the installed TestFlight app without replacing it
+
+Never run an installed-beta UI test from the main application project. Xcode can install a development `Hail-iOS` build from the same project's build products even when the selected UI-test target has no declared app dependency. This occurred during device testing and replaced a TestFlight install. Use the isolated `Tests/InstalledAppHarness/project.yml`, which contains no application target, only after checking the installed version and build with `devicectl device info apps --device <local-device-id> --bundle-id com.mickdarling.Hail-iOS --include-default-apps`.
+
+The device must be unlocked and shown as Connected in Xcode's Devices window for physical UI automation, even when it is paired over Wi-Fi. The smoke test expects exactly one configured Mac and one live allowed target. It connects the Mac if needed and selects that target; it does not capture speech or record transcripts. Generate the isolated project:
+
+```sh
+xcodegen generate --spec Tests/InstalledAppHarness/project.yml
+```
+
+Open the generated project in Xcode, select the UI-test target's local signing team, choose the paired device, then run Product > Test. Xcode's Devices window may need the device selected to move it from Disconnected to Connected; the command-line runner has reported a passcode error despite a CoreDevice-unlocked device, so prefer the Xcode UI until that is resolved. Check that the installed build number is unchanged afterward. If it changes, stop and restore the beta through TestFlight before further testing. Keep Xcode result bundles private because they may include device or connection metadata.
+
 ## Manual route and connection matrix
 
 Run these checks on each currently supported iPhone and iPad form factor:

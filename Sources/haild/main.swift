@@ -10,7 +10,13 @@ import HailDaemonKit
 // unavailable or adapter error, 5 unbound, 6 partial, 7 denied by policy, 8 confirmation needed or cancelled,
 // 9 policy file unusable, 64 usage.
 
-let tmuxPath = ProcessInfo.processInfo.environment["HAIL_TMUX"] ?? "tmux"
+// A launchd job often inherits only the system PATH, which omits Homebrew on Apple Silicon and Intel.
+// Keep an explicit override for nonstandard installations, then try the two standard Homebrew prefixes.
+let configuredTmux = ProcessInfo.processInfo.environment["HAIL_TMUX"]
+let tmuxPath = configuredTmux.flatMap { $0.isEmpty ? nil : $0 }
+    ?? ["/opt/homebrew/bin/tmux", "/usr/local/bin/tmux"]
+        .first { FileManager.default.isExecutableFile(atPath: $0) }
+    ?? "tmux"
 let standardError = FileHandle.standardError
 func makeHost() async throws -> HailHost {
     let registry = Registry()

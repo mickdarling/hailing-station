@@ -1,0 +1,31 @@
+# Deliberately separate from the application project. Xcode can otherwise install a
+# development app from the same workspace while launching it by bundle identifier.
+name: HailingStationInstalledAppTests
+options:
+  bundleIdPrefix: com.mickdarling
+  deploymentTarget:
+    iOS: "18.0"
+settings:
+  base:
+    SWIFT_VERSION: "6.0"
+    CODE_SIGN_STYLE: Automatic
+    DEVELOPMENT_TEAM: ""
+targets:
+  Hail-InstalledAppUITests:
+    type: bundle.ui-testing
+    platform: iOS
+    sources:
+      - ../Hail-InstalledAppUITests
+    settings:
+      base:
+        GENERATE_INFOPLIST_FILE: YES
+        PRODUCT_BUNDLE_IDENTIFIER: com.mickdarling.Hail-InstalledAppUITests
+schemes:
+  Hail-InstalledApp:
+    build:
+      targets:
+        Hail-InstalledAppUITests: all
+    test:
+      config: Debug
+      targets:
+        - Hail-InstalledAppUITests

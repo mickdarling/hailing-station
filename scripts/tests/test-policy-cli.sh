@@ -13,7 +13,7 @@ printf '%s\n' \
   '#!/usr/bin/env bash' \
   'set -euo pipefail' \
   'if [[ "${1:-}" == "list-sessions" ]]; then' \
-  '  printf '\''$1\t1700000000\t%%1\t4242\tcli\n'\''' \
+  '  printf '\''$1|1700000000|%%1|4242|cli\n'\''' \
   'elif [[ "${1:-}" == "send-keys" ]]; then' \
   '  printf '\''%s\n'\'' "$*" >> "$HAIL_FAKE_TMUX_LOG"' \
   'else' \
