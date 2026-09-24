@@ -36,6 +36,7 @@ extension ReplyPlaybackController {
                 status = isMuted ? "Muted" : "Playing"
                 drain()
             } catch {
+                isPaused = true
                 status = "Playback could not resume"
             }
         } else {

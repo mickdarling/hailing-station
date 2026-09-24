@@ -53,24 +53,41 @@ import Testing
         #expect(controller.status == "Playing")
         #expect(!controller.isReplyAudioOutputBusy)
     }
+
+    @Test func failedCaptureResumeDoesNotLeaveOutputBusy() {
+        let player = ProgressReplyPlayer()
+        let controller = ReplyPlaybackController(player: player)
+        controller.ingest(progressEvent(progressDescriptor(), byte: 1))
+        controller.beginCaptureSuppression()
+        player.failResume = true
+        controller.endCaptureSuppression()
+        #expect(controller.status == "Playback could not resume")
+        #expect(controller.isPaused)
+        #expect(!controller.isReplyAudioOutputBusy)
+    }
 }
 
 @MainActor
 private final class ProgressReplyPlayer: ReplyAudioPlaying {
     private var completions: [@MainActor @Sendable () -> Void] = []
+    var failResume = false
 
     func schedule(_ payload: AudioPayload, onPlayed: (@MainActor @Sendable () -> Void)?) {
         if let onPlayed { completions.append(onPlayed) }
     }
     func cancel() {}
     func pause() {}
-    func resume() {}
+    func resume() throws {
+        if failResume { throw ProgressResumeError.failed }
+    }
     func setMuted(_ muted: Bool) {}
     func replaceQueue(with payloads: [AudioPayload], onPlayed: (@MainActor @Sendable () -> Void)?) {
         if let onPlayed { completions.append(onPlayed) }
     }
     func completeNextReply() { completions.removeFirst()() }
 }
+
+private enum ProgressResumeError: Error { case failed }
 
 private func progressDescriptor() -> ReplyDescriptor {
     ReplyDescriptor(id: UUID(), hostID: "main-mac", targetID: "tmux:codex", audioStreamID: UUID())
