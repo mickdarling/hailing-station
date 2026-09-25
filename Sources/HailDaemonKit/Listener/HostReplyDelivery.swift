@@ -22,12 +22,12 @@ extension WebSocketListener {
         guard !stopped, readyResult != nil else { throw WebSocketListenerError.stoppedBeforeReady }
         guard let encoded = try? FrameCoding.encode(frame),
               let validated = try? FrameCoding.decode(encoded),
-              validated == frame,
-              validated.source.compare(
-                  hostName, options: [.caseInsensitive], locale: Locale(identifier: "en_US_POSIX")
-              ) == .orderedSame else {
+              validated == frame else {
             throw WebSocketListenerError.invalidReply
         }
+        guard validated.source.compare(
+            hostName, options: [.caseInsensitive], locale: Locale(identifier: "en_US_POSIX")
+        ) == .orderedSame else { throw WebSocketListenerError.sourceHostMismatch }
         switch validated.payload {
         case .text(let text) where text.isFinal && text.reply != nil: break
         case .audio(let audio) where audio.reply != nil: break
