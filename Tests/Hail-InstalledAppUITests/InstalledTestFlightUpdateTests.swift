@@ -33,7 +33,7 @@ final class InstalledTestFlightUpdateTests: XCTestCase {
         XCTAssertTrue(release.waitForExistence(timeout: 30),
                       "TestFlight did not expose the current release; no update was started.")
         let normalizedRelease = release.label.replacingOccurrences(of: " ", with: "")
-        XCTAssertTrue(normalizedRelease.contains("VERSION:\(expectedVersion)Build\(expectedBuild)"),
+        XCTAssertEqual(normalizedRelease, "VERSION:\(expectedVersion)Build\(expectedBuild)",
                       "TestFlight does not show the expected release version and build; no update was started.")
         let update = testFlight.buttons["Update"].firstMatch
         if update.waitForExistence(timeout: 15) {
