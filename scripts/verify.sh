@@ -37,6 +37,7 @@ scripts_() {
   done < <(find "${dirs[@]}" -type f \( -name '*.sh' -o -name 'hail-*' \) | sort)
   scripts/tests/test-testflight.sh
   python3 -m unittest discover -s Tests/LocalIntentEvalTests
+  python3 -m unittest discover -s Tests/ReplyCLITests
   if command -v actionlint >/dev/null; then actionlint; else echo "actionlint not installed; skipped"; fi
 }
 
