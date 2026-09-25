@@ -84,6 +84,20 @@ xcodegen generate --spec Tests/InstalledAppHarness/project.yml
 
 Open the generated project in Xcode, select the UI-test target's local signing team, choose the paired device, then run Product > Test. Xcode's Devices window may need the device selected to move it from Disconnected to Connected; the command-line runner has reported a passcode error despite a CoreDevice-unlocked device, so prefer the Xcode UI until that is resolved. Check that the installed build number is unchanged afterward. If it changes, stop and restore the beta through TestFlight before further testing. Keep Xcode result bundles private because they may include device or connection metadata.
 
+To update the installed beta without replacing it with a development build, the same isolated
+project includes `InstalledTestFlightUpdateTests`. First confirm the intended build is available
+to the internal tester group in App Store Connect. Set the expected marketing version explicitly
+when running the test (for example, `HAIL_EXPECTED_TESTFLIGHT_VERSION=0.1.3` and
+`HAIL_EXPECTED_TESTFLIGHT_BUILD=<exact-App-Store-Connect-build>`) and select
+only `InstalledTestFlightUpdateTests/testInstallExpectedHailingStationUpdate`. The test opens the
+official TestFlight app, checks that its Hailing Station detail page shows the expected version
+and build number,
+and taps Update. It skips without changing the device when no expected version was supplied, and
+fails without tapping when TestFlight shows another version or build. Run separately on each paired,
+unlocked physical device using the local UI-test signing team. After each run, verify the exact
+installed version and build with `devicectl device info apps`; an `Open` button alone is not
+proof of which build was installed. Never run the update test from the main application project.
+
 ## Manual route and connection matrix
 
 Run these checks on each currently supported iPhone and iPad form factor:
