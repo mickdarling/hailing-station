@@ -6,6 +6,7 @@ public enum WebSocketListenerError: Error, Sendable, Equatable {
     case invalidArguments
     case invalidBindAddress(String)
     case invalidReply
+    case sourceHostMismatch
     case stoppedBeforeReady
     case failed(String)
 }
