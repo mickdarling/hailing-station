@@ -1,7 +1,7 @@
 import XCTest
 
 /// Drives Apple's TestFlight UI without building or reinstalling Hailing Station.
-/// Pass HAIL_EXPECTED_TESTFLIGHT_VERSION=<version> to xcodebuild.
+/// Pass HAIL_EXPECTED_TESTFLIGHT_VERSION and HAIL_EXPECTED_TESTFLIGHT_BUILD to xcodebuild.
 final class InstalledTestFlightUpdateTests: XCTestCase {
     override func setUpWithError() throws {
         continueAfterFailure = false
@@ -14,8 +14,11 @@ final class InstalledTestFlightUpdateTests: XCTestCase {
     func testInstallExpectedHailingStationUpdate() throws {
         guard let expectedVersion = Bundle(for: Self.self)
             .object(forInfoDictionaryKey: "HailExpectedTestFlightVersion") as? String,
-            !expectedVersion.isEmpty else {
-            throw XCTSkip("Provide HailExpectedTestFlightVersion before allowing an update.")
+            !expectedVersion.isEmpty,
+            let expectedBuild = Bundle(for: Self.self)
+                .object(forInfoDictionaryKey: "HailExpectedTestFlightBuild") as? String,
+            !expectedBuild.isEmpty else {
+            throw XCTSkip("Provide the expected TestFlight version and build before allowing an update.")
         }
 
         let testFlight = XCUIApplication(bundleIdentifier: "com.apple.TestFlight")
@@ -26,9 +29,12 @@ final class InstalledTestFlightUpdateTests: XCTestCase {
                       "Hailing Station was not listed in TestFlight on this device.")
         appName.tap()
 
-        XCTAssertTrue(testFlight.staticTexts[expectedVersion].firstMatch
-            .waitForExistence(timeout: 30),
-            "TestFlight does not show the expected release version; no update was started.")
+        let release = testFlight.staticTexts["TestFlight.appDetails.shortVersion"]
+        XCTAssertTrue(release.waitForExistence(timeout: 30),
+                      "TestFlight did not expose the current release; no update was started.")
+        let normalizedRelease = release.label.replacingOccurrences(of: " ", with: "")
+        XCTAssertTrue(normalizedRelease.contains("VERSION:\(expectedVersion)Build\(expectedBuild)"),
+                      "TestFlight does not show the expected release version and build; no update was started.")
         let update = testFlight.buttons["Update"].firstMatch
         if update.waitForExistence(timeout: 15) {
             update.tap()

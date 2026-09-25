@@ -20,6 +20,7 @@ targets:
       path: Info.plist
       properties:
         HailExpectedTestFlightVersion: "$(HAIL_EXPECTED_TESTFLIGHT_VERSION)"
+        HailExpectedTestFlightBuild: "$(HAIL_EXPECTED_TESTFLIGHT_BUILD)"
     settings:
       base:
         PRODUCT_BUNDLE_IDENTIFIER: com.mickdarling.Hail-InstalledAppUITests
