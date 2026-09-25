@@ -61,6 +61,7 @@ struct TranscriptionLabView: View {
     @State var bufferTask: Task<Void, Never>?
     @Environment(\.scenePhase) var scenePhase
     @Environment(\.horizontalSizeClass) var horizontalSizeClass
+    @Environment(\.accessibilityReduceMotion) var reduceMotion
 
     init(
         audioSession: any AudioSessionDiagnosticsProviding,
@@ -129,7 +130,6 @@ struct TranscriptionLabView: View {
             }
 
             transcriptActions
-            replyStatusSummary
         }
         .padding(18)
         .background(.regularMaterial, in: RoundedRectangle(cornerRadius: 24, style: .continuous))
