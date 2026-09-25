@@ -16,9 +16,12 @@ targets:
     platform: iOS
     sources:
       - ../Hail-InstalledAppUITests
+    info:
+      path: Info.plist
+      properties:
+        HailExpectedTestFlightVersion: "$(HAIL_EXPECTED_TESTFLIGHT_VERSION)"
     settings:
       base:
-        GENERATE_INFOPLIST_FILE: YES
         PRODUCT_BUNDLE_IDENTIFIER: com.mickdarling.Hail-InstalledAppUITests
 schemes:
   Hail-InstalledApp:
