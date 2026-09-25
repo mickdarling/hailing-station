@@ -1,6 +1,9 @@
 import Foundation
+import OSLog
 public import HailProtocol
 import Network
+
+private let replyLogger = Logger(subsystem: "com.mickdarling.hailing-station", category: "local-reply")
 
 public protocol HostReplyPublishing: Sendable {
     func publish(_ frame: Frame) async throws -> Int
@@ -116,9 +119,14 @@ extension LocalReplyEndpoint {
         do {
             try Task.checkCancellation()
             guard !stopped, connections[client.id] != nil else { throw CancellationError() }
-            let frame = try FrameCoding.decode(data)
-            guard let target = frame.target else { throw LocalReplyEndpointError.failed("reply target missing") }
-            _ = try await audit.record(.pushed(tool: "local-reply", target: target, bytes: data.count))
+            let frame = try Self.decodeLocalReply(data)
+            guard let target = frame.target else { throw LocalReplyRefusal.replyTargetMissing }
+            do {
+                _ = try await audit.record(.pushed(tool: "local-reply", target: target, bytes: data.count))
+            } catch {
+                replyLogger.error("Local reply audit failed: \(String(reflecting: error), privacy: .private)")
+                throw LocalReplyRefusal.auditFailure
+            }
             try Task.checkCancellation()
             guard !stopped, connections[client.id] != nil else { throw CancellationError() }
             let delivered = try await destination.publish(frame)
@@ -128,11 +136,22 @@ extension LocalReplyEndpoint {
         } catch is CancellationError {
             retire(client.id)
         } catch {
+            let reason = LocalReplyRefusal(error)
+            replyLogger.error(
+                "Local reply refused (\(reason.rawValue)): \(String(reflecting: error), privacy: .private)"
+            )
             if !stopped, connections[client.id] != nil {
-                await respond(.init(delivered: 0, error: "reply refused"), to: client)
+                await respond(.init(delivered: 0, error: reason.message), to: client)
             } else {
                 retire(client.id)
             }
+        }
+    }
+
+    private static func decodeLocalReply(_ data: Data) throws -> Frame {
+        do { return try FrameCoding.decode(data) } catch {
+            replyLogger.error("Local reply decode failed: \(String(reflecting: error), privacy: .private)")
+            throw LocalReplyRefusal.decodeFailure
         }
     }
 

@@ -9,6 +9,40 @@ public enum LocalReplyEndpointError: Error, Equatable, Sendable {
     case stoppedBeforeReady
 }
 
+/// Stable refusal codes returned only over the owner-only local reply socket.
+public enum LocalReplyRefusal: String, Codable, Error, Sendable {
+    case sourceHostMismatch
+    case listenerNotReady
+    case invalidReplyPayload
+    case replyTargetMissing
+    case auditFailure
+    case decodeFailure
+    case internalFailure = "internal"
+
+    public var message: String {
+        let reason = switch self {
+        case .sourceHostMismatch: "source host mismatch"
+        case .listenerNotReady: "listener not ready"
+        case .invalidReplyPayload: "invalid reply payload"
+        case .replyTargetMissing: "reply target missing"
+        case .auditFailure: "audit failure"
+        case .decodeFailure: "frame decode failure"
+        case .internalFailure: "internal failure"
+        }
+        return "reply refused [\(rawValue)]: \(reason)"
+    }
+
+    init(_ error: any Error) {
+        switch error {
+        case let reason as LocalReplyRefusal: self = reason
+        case WebSocketListenerError.sourceHostMismatch: self = .sourceHostMismatch
+        case WebSocketListenerError.stoppedBeforeReady: self = .listenerNotReady
+        case WebSocketListenerError.invalidReply: self = .invalidReplyPayload
+        default: self = .internalFailure
+        }
+    }
+}
+
 public struct LocalReplyResponse: Codable, Equatable, Sendable {
     public var delivered: Int
     public var error: String?

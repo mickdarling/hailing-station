@@ -71,7 +71,7 @@ import Testing
             timestamp: 1, target: reply.targetID, source: reply.hostID,
             payload: .text(TextPayload(text: "wrong host", reply: reply))
         )
-        await #expect(throws: WebSocketListenerError.invalidReply) {
+        await #expect(throws: WebSocketListenerError.sourceHostMismatch) {
             try await listener.publish(impersonating)
         }
         await listener.stop(reason: "test complete")

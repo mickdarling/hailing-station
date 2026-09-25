@@ -228,6 +228,105 @@ import Testing
         await listener.stop(reason: "test complete")
         #expect(!FileManager.default.fileExists(atPath: socket.path))
     }
+
+    @Test(arguments: [
+        (false, "mac-main", LocalReplyRefusal.listenerNotReady),
+        (true, "other-host", LocalReplyRefusal.sourceHostMismatch)
+    ])
+    func localRefusalNamesTheHostFailure(
+        startListener: Bool, source: String, expected: LocalReplyRefusal
+    ) async throws {
+        let scratch = FileManager.default.temporaryDirectory.appendingPathComponent(
+            "hs-refusal-\(UUID().uuidString.prefix(8))", isDirectory: true
+        )
+        defer { try? FileManager.default.removeItem(at: scratch) }
+        let listener = try await testListener()
+        if startListener { _ = try await listener.start() }
+        let socket = scratch.appendingPathComponent("config", isDirectory: true)
+            .appendingPathComponent(LocalReplyEndpoint.socketName)
+        let endpoint = try LocalReplyEndpoint(
+            socketURL: socket, destination: listener,
+            audit: AuditLog(directory: scratch.appendingPathComponent("audit"))
+        )
+        try await endpoint.start()
+        let reply = ReplyDescriptor(id: UUID(), hostID: source, targetID: "tmux:reply")
+        let frame = Frame(
+            timestamp: 1, target: reply.targetID, source: reply.hostID,
+            payload: .text(TextPayload(text: "ready", reply: reply))
+        )
+        let response = try await submit(frame, socket: socket.path)
+        #expect(response == LocalReplyResponse(delivered: 0, error: expected.message))
+        await endpoint.stop()
+        await listener.stop(reason: "test complete")
+    }
+
+    @Test func localRefusalNamesInvalidReplyPayload() async throws {
+        var frame = replyFrame()
+        frame.payload = .text(TextPayload(text: "draft", isFinal: false, reply: replyDescriptor(frame)))
+        let listener = try await testListener()
+        _ = try await listener.start()
+        try await expectRefusal(
+            FrameCoding.encode(frame), destination: listener, expected: .invalidReplyPayload
+        )
+        await listener.stop(reason: "test complete")
+    }
+
+    @Test func localRefusalNamesMissingTarget() async throws {
+        let frame = Frame(timestamp: 1, source: "mac-main", payload: .text(TextPayload(text: "ready")))
+        try await expectRefusal(
+            FrameCoding.encode(frame), destination: testListener(), expected: .replyTargetMissing
+        )
+    }
+
+    @Test func localRefusalNamesDecodeFailure() async throws {
+        try await expectRefusal(Data("not-json".utf8), destination: testListener(), expected: .decodeFailure)
+    }
+
+    @Test func localRefusalNamesAuditFailure() async throws {
+        try await expectRefusal(
+            FrameCoding.encode(replyFrame()), destination: testListener(), expected: .auditFailure,
+            auditClock: { Date(timeIntervalSince1970: 0) }
+        )
+    }
+
+    @Test func localRefusalHidesUnexpectedPublisherError() async throws {
+        try await expectRefusal(
+            FrameCoding.encode(replyFrame()), destination: FailingReplyPublisher(), expected: .internalFailure
+        )
+    }
+
+    @Test func localRefusalCodesRemainBoundedAndStable() throws {
+        for reason in [LocalReplyRefusal.sourceHostMismatch, .listenerNotReady, .invalidReplyPayload,
+                       .replyTargetMissing, .auditFailure, .decodeFailure, .internalFailure] {
+            #expect(reason.message.count <= ControlLimits.maxErrorMessage)
+            #expect(try JSONDecoder().decode(LocalReplyRefusal.self, from: JSONEncoder().encode(reason)) == reason)
+        }
+    }
+}
+
+private func replyDescriptor(_ frame: Frame) -> ReplyDescriptor? {
+    guard case .text(let text) = frame.payload else { return nil }
+    return text.reply
+}
+
+private func expectRefusal(
+    _ data: Data, destination: any HostReplyPublishing, expected: LocalReplyRefusal,
+    auditClock: @escaping @Sendable () -> Date = { Date() }
+) async throws {
+    let scratch = FileManager.default.temporaryDirectory.appendingPathComponent(
+        "hs-refusal-\(UUID().uuidString.prefix(8))", isDirectory: true
+    )
+    defer { try? FileManager.default.removeItem(at: scratch) }
+    let socket = scratch.appendingPathComponent("config", isDirectory: true)
+        .appendingPathComponent(LocalReplyEndpoint.socketName)
+    let endpoint = try LocalReplyEndpoint(
+        socketURL: socket, destination: destination,
+        audit: AuditLog(directory: scratch.appendingPathComponent("audit"), now: auditClock)
+    )
+    try await endpoint.start()
+    let response = try await submit(data, socket: socket.path)
+    #expect(response == LocalReplyResponse(delivered: 0, error: expected.message))
+    await endpoint.stop()
 }
 
 private func testListener() async throws -> WebSocketListener {
@@ -284,9 +383,13 @@ private func terminalFrame(_ socket: URLSessionWebSocketTask) async throws -> Fr
 }
 
 private func submit(_ frame: Frame, socket: String) async throws -> LocalReplyResponse {
+    try await submit(FrameCoding.encode(frame), socket: socket)
+}
+
+private func submit(_ data: Data, socket: String) async throws -> LocalReplyResponse {
     let connection = NWConnection(to: .unix(path: socket), using: .tcp)
     let queue = DispatchQueue(label: "hail.local-reply-test")
-    var encoded = try FrameCoding.encode(frame)
+    var encoded = data
     encoded.append(UInt8(ascii: "\n"))
     let request = encoded
     return try await withCheckedThrowingContinuation { continuation in
@@ -307,6 +410,13 @@ private func submit(_ frame: Frame, socket: String) async throws -> LocalReplyRe
             }
         }
         connection.start(queue: queue)
+    }
+}
+
+private actor FailingReplyPublisher: HostReplyPublishing {
+    func publish(_ frame: Frame) async throws -> Int {
+        _ = frame
+        throw LocalReplyEndpointError.failed("private diagnostic must not reach the client")
     }
 }
 
