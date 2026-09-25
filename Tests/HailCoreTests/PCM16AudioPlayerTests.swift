@@ -43,11 +43,46 @@ import Testing
             try PCM16BufferConverter.buffer(payload(bytes: Data([0])))
         }
     }
+
+    @Test func aSingleChunkHasQuietLeadAndTailWithoutChangingSpeech() throws {
+        let buffers = try PCM16PlaybackBuffers.forPayload(payload(bytes: Data([0x00, 0x20, 0x00, 0x40])))
+
+        #expect(buffers.count == 3)
+        #expect(try isBoundarySilence(buffers[0]))
+        #expect(try isBoundarySilence(buffers[2]))
+        let speech = try #require(buffers[1].floatChannelData?.pointee)
+        #expect(buffers[1].frameLength == 2)
+        #expect(speech[0] == 0.25)
+        #expect(speech[1] == 0.5)
+    }
+
+    @Test func streamedChunksArePaddedOnlyAtUtteranceBoundaries() throws {
+        let bytes = Data([0x00, 0x20])
+        let first = try PCM16PlaybackBuffers.forPayload(payload(sequence: 0, isFinal: false, bytes: bytes))
+        let middle = try PCM16PlaybackBuffers.forPayload(payload(sequence: 1, isFinal: false, bytes: bytes))
+        let last = try PCM16PlaybackBuffers.forPayload(payload(sequence: 2, isFinal: true, bytes: bytes))
+
+        #expect(first.count == 2)
+        #expect(try isBoundarySilence(first[0]))
+        #expect(middle.count == 1)
+        #expect(last.count == 2)
+        #expect(try isBoundarySilence(last[1]))
+        #expect(first[1].frameLength == 1 && middle[0].frameLength == 1 && last[0].frameLength == 1)
+    }
+
+    private func isBoundarySilence(_ buffer: AVAudioPCMBuffer) throws -> Bool {
+        guard buffer.frameLength == PCM16PlaybackBuffers.boundaryFrames,
+              buffer.format.sampleRate == 24_000 else { return false }
+        let samples = try #require(buffer.floatChannelData?.pointee)
+        return UnsafeBufferPointer(start: samples, count: Int(buffer.frameLength)).allSatisfy { $0 == 0 }
+    }
 }
 
-private func payload(sampleRate: Int = 24_000, bytes: Data) -> AudioPayload {
+private func payload(
+    sampleRate: Int = 24_000, sequence: Int = 0, isFinal: Bool = true, bytes: Data
+) -> AudioPayload {
     AudioPayload(
-        codec: .pcm16, sampleRate: sampleRate, channels: 1, sequence: 0,
-        streamID: UUID(), isFinal: true, bytes: bytes
+        codec: .pcm16, sampleRate: sampleRate, channels: 1, sequence: sequence,
+        streamID: UUID(), isFinal: isFinal, bytes: bytes
     )
 }

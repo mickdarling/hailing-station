@@ -28,15 +28,9 @@ public final class PCM16AudioPlayer: ReplyAudioPlaying {
     }
 
     public func schedule(_ payload: AudioPayload, onPlayed: (@MainActor @Sendable () -> Void)?) throws {
+        let buffers = try PCM16PlaybackBuffers.forPayload(payload)
         try prepare()
-        let buffer = try PCM16BufferConverter.buffer(payload)
-        if let onPlayed {
-            node.scheduleBuffer(buffer, completionCallbackType: .dataPlayedBack) { _ in
-                Task { @MainActor in onPlayed() }
-            }
-        } else {
-            node.scheduleBuffer(buffer)
-        }
+        schedule(buffers, onPlayed: onPlayed)
         if !node.isPlaying { node.play() }
     }
 
@@ -65,8 +59,17 @@ public final class PCM16AudioPlayer: ReplyAudioPlaying {
         node.reset()
         try prepare()
         for (index, payload) in payloads.enumerated() {
-            let buffer = try PCM16BufferConverter.buffer(payload)
-            if index == payloads.indices.last, let onPlayed {
+            let completion = index == payloads.indices.last ? onPlayed : nil
+            schedule(try PCM16PlaybackBuffers.forPayload(payload), onPlayed: completion)
+        }
+        node.play()
+    }
+
+    private func schedule(
+        _ buffers: [AVAudioPCMBuffer], onPlayed: (@MainActor @Sendable () -> Void)?
+    ) {
+        for (index, buffer) in buffers.enumerated() {
+            if index == buffers.indices.last, let onPlayed {
                 node.scheduleBuffer(buffer, completionCallbackType: .dataPlayedBack) { _ in
                     Task { @MainActor in onPlayed() }
                 }
@@ -74,7 +77,6 @@ public final class PCM16AudioPlayer: ReplyAudioPlaying {
                 node.scheduleBuffer(buffer)
             }
         }
-        node.play()
     }
 
     private func prepare() throws {
@@ -94,6 +96,32 @@ public final class PCM16AudioPlayer: ReplyAudioPlaying {
         try session.setActive(true)
         #endif
         if !engine.isRunning { try engine.start() }
+    }
+}
+
+/// Route activation needs a short quiet lead-in before the first speech sample, and the final
+/// sample needs output headroom before playback completion can release the reply. Padding only
+/// utterance boundaries avoids adding a gap at every streamed chunk.
+enum PCM16PlaybackBuffers {
+    static let boundaryFrames: AVAudioFrameCount = 2_400 // 100 ms at the player format's 24 kHz.
+
+    static func forPayload(_ payload: AudioPayload) throws -> [AVAudioPCMBuffer] {
+        let speech = try PCM16BufferConverter.buffer(payload)
+        var buffers: [AVAudioPCMBuffer] = []
+        if payload.sequence == 0 { buffers.append(try silence(in: speech.format)) }
+        buffers.append(speech)
+        if payload.isFinal { buffers.append(try silence(in: speech.format)) }
+        return buffers
+    }
+
+    private static func silence(in format: AVAudioFormat) throws -> AVAudioPCMBuffer {
+        guard let buffer = AVAudioPCMBuffer(pcmFormat: format, frameCapacity: boundaryFrames),
+              let samples = buffer.floatChannelData?.pointee else {
+            throw ReplyAudioPlayerError.invalidBuffer
+        }
+        for index in 0..<Int(boundaryFrames) { samples[index] = 0 }
+        buffer.frameLength = boundaryFrames
+        return buffer
     }
 }
 
