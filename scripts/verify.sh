@@ -37,6 +37,9 @@ scripts_() {
   done < <(find "${dirs[@]}" -type f \( -name '*.sh' -o -name 'hail-*' \) | sort)
   scripts/tests/test-testflight.sh
   python3 -m unittest discover -s Tests/LocalIntentEvalTests
+  # `scripts` is also a standalone entry point; the CLI integration must not rely on `all` building first.
+  swift build --product haild ${SWIFT_FLAGS[@]+"${SWIFT_FLAGS[@]}"}
+  python3 -m unittest discover -s Tests/ReplyCLITests
   if command -v actionlint >/dev/null; then actionlint; else echo "actionlint not installed; skipped"; fi
 }
 

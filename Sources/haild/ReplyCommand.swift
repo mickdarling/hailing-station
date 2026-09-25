@@ -272,11 +272,20 @@ private func replyTimestamp() -> Int64 {
     Int64((Date().timeIntervalSince1970 * 1_000).rounded(.down))
 }
 
-private enum ReplyClientError: Error {
+private enum ReplyClientError: Error, CustomStringConvertible {
     case invalidSocket(String)
     case timeout
     case failed(String)
     case refused(String)
+
+    var description: String {
+        switch self {
+        case .invalidSocket(let path): "invalid owner-only reply socket: \(path)"
+        case .timeout: "local reply timed out"
+        case .failed(let reason): reason
+        case .refused(let reason): reason
+        }
+    }
 }
 
 private enum ReplyClient {
