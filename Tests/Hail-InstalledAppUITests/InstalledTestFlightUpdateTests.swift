@@ -32,15 +32,18 @@ final class InstalledTestFlightUpdateTests: XCTestCase {
         let release = testFlight.staticTexts["TestFlight.appDetails.shortVersion"]
         XCTAssertTrue(release.waitForExistence(timeout: 30),
                       "TestFlight did not expose the current release; no update was started.")
-        let normalizedRelease = release.label.replacingOccurrences(of: " ", with: "")
-        XCTAssertEqual(normalizedRelease, "VERSION:\(expectedVersion)Build\(expectedBuild)",
+        let numericFields = release.label.split(whereSeparator: { !$0.isNumber }).map(String.init)
+        let expectedFields = expectedVersion.split(separator: ".").map(String.init) + [expectedBuild]
+        XCTAssertEqual(numericFields, expectedFields,
                       "TestFlight does not show the expected release version and build; no update was started.")
-        let update = testFlight.buttons["Update"].firstMatch
+        let offerButton = NSPredicate(format: "identifier BEGINSWITH %@ AND identifier != %@",
+                                      "TestFlight.offerButton.", "TestFlight.offerButton.open")
+        let update = testFlight.buttons.matching(offerButton).firstMatch
         if update.waitForExistence(timeout: 15) {
             update.tap()
         }
 
-        XCTAssertTrue(testFlight.buttons["Open"].firstMatch.waitForExistence(timeout: 180),
+        XCTAssertTrue(testFlight.buttons["TestFlight.offerButton.open"].waitForExistence(timeout: 180),
                       "The expected TestFlight release is neither installed nor finished updating.")
     }
 }
