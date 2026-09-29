@@ -21,6 +21,10 @@ When opening an issue:
 
 Changes are developed from issue specifications and kept small enough to review. Pull requests should identify the issue they close or advance, name the tests that cover their acceptance criteria, and pass the repository verification scripts.
 
+Before opening a PR, read [AGENTS.md](AGENTS.md), `scripts/pr-shape.py`, and the PR template. Check the first spec reference, open issue/spec label, four-production-file limit, security label, and test traceability before submitting. Finish intended commits before requesting independent review and retain the full current head SHA.
+
+A draft still awaiting review may fail the review-record check; record that as a pending review, not a hash/implementation failure or an invented verdict. After completed independent exact-head review, post any required newest second-key comment in the enforced format, then update the body round record and run PR-shape locally. Any later push requires a fresh review. Diagnose the specific failure and repair metadata without unnecessary source pushes; do not weaken the gate or repeat unchanged failing runs. Smart review selection, skipped review, quota errors, and absent findings from a failed review are not approval.
+
 Run before pushing:
 
 ```sh
