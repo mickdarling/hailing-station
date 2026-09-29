@@ -48,7 +48,8 @@ public actor ProviderInputCoordinator {
             throw ProviderInputCoordinatorError.invalidTimeout
         }
         let prefix = binding.providerID + ":"
-        guard binding.targetID.hasPrefix(prefix), binding.targetID.count > prefix.count else {
+        guard !binding.providerID.contains(":"), binding.targetID.hasPrefix(prefix),
+              binding.targetID.count > prefix.count else {
             throw ProviderInputCoordinatorError.invalidBinding
         }
         self.host = host

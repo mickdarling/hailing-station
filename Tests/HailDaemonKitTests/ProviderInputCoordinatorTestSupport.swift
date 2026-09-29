@@ -96,3 +96,19 @@ actor ProviderCoordinatorCancellationAdapter: Adapter {
         deliveries.append(text)
     }
 }
+
+enum ProviderCoordinatorSyntheticError: Error, Equatable { case arbitraryFailure }
+
+actor ProviderArbitraryFailureAdapter: Adapter {
+    nonisolated let kind = "tmux"
+    private let successfulWrites: Int
+    private(set) var deliveries: [String] = []
+
+    init(successfulWrites: Int) { self.successfulWrites = successfulWrites }
+    func listTargets() async throws -> [AdapterTarget] { [ProviderCoordinatorRig.target] }
+    func capture(_ target: String) async throws -> String { "" }
+    func deliver(_ text: String, to target: String, binding: String?) async throws {
+        guard deliveries.count < successfulWrites else { throw ProviderCoordinatorSyntheticError.arbitraryFailure }
+        deliveries.append(text)
+    }
+}

@@ -158,7 +158,7 @@ extension HailHost {
             return HostError.partial(delivered: delivered, reason: "delivery cancelled")
         }
         if error is AdapterError { return HostError.partial(delivered: delivered, reason: "\(error)") }
-        return error
+        return HostError.partial(delivered: delivered, reason: "adapter delivery failed")
     }
 
     private func requireExpectedBinding(_ expectedBinding: String?, for listed: Registry.Listed) throws {

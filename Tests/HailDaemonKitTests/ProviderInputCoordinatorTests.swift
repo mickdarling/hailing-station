@@ -175,4 +175,24 @@ extension ProviderInputCoordinatorTests {
         await #expect(throws: CancellationError.self) { try await rig.send() }
         #expect(await adapter.deliveries == ["one"])
     }
+
+    @Test func arbitraryAdapterErrorPreservesPartialEvidenceAndZeroWriteOriginal() async throws {
+        for completedLines in 0...1 {
+            let adapter = ProviderArbitraryFailureAdapter(successfulWrites: completedLines)
+            let rig = try await ProviderCoordinatorRig.make(
+                adapter: adapter, configuration: .init(maxTurns: 1), sanitizing: .init(newlines: .split)
+            )
+            if completedLines == 0 {
+                await #expect(throws: ProviderCoordinatorSyntheticError.arbitraryFailure) {
+                    try await rig.coordinator.submit("one\ntwo", utteranceID: UUID())
+                }
+            } else {
+                await #expect(throws: HostError.partial(delivered: ["one"], reason: "adapter delivery failed")) {
+                    try await rig.coordinator.submit("one\ntwo", utteranceID: UUID())
+                }
+            }
+            #expect(await adapter.deliveries.count == completedLines)
+            await #expect(throws: ProviderCoordinatorSyntheticError.arbitraryFailure) { try await rig.send() }
+        }
+    }
 }

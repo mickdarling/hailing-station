@@ -137,3 +137,20 @@ import Testing
         }
     }
 }
+
+extension ProviderInputCoordinatorLifecycleTests {
+    @Test func providerMustMatchFirstComponentButTargetNameMayContainColons() async throws {
+        let rig = try await ProviderCoordinatorRig.make()
+        let mismatch = try ProviderSessionBinding(
+            hostID: "host-test", providerID: "tmux:group", targetID: "tmux:group:session", sessionID: "opaque-binding"
+        )
+        #expect(throws: ProviderInputCoordinatorError.invalidBinding) {
+            try ProviderInputCoordinator(host: rig.host, binding: mismatch, connectionID: UUID())
+        }
+        let valid = try ProviderSessionBinding(
+            hostID: "host-test", providerID: "tmux", targetID: "tmux:group:session", sessionID: "opaque-binding"
+        )
+        let coordinator = try ProviderInputCoordinator(host: rig.host, binding: valid, connectionID: UUID())
+        #expect(await coordinator.binding == valid)
+    }
+}
