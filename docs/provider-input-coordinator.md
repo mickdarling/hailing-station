@@ -6,7 +6,7 @@ Implementation slice [#140](https://github.com/mickdarling/hailing-station/issue
 
 `ProviderInputCoordinator` connects the existing guarded `HailHost.send` path to the host-local turn correlator. It owns one immutable provider observation binding and terminal connection generation, bounds retained turns/events, and records a successful complete dispatch as **sent**. Provider acceptance and lifecycle completion still require explicit observed events; text-final is not completion.
 
-This is not registered with the listener or daemon composition root. No current adapter receives a generated turn context, no observer lease is consumed, no target output is captured, and no provider events are published on the mobile wire. Tests use real host policy and synthetic adapters/events. The source version advances to 0.1.8 after its review fix; this slice does not upload or install TestFlight.
+This is not registered with the listener or daemon composition root. No current adapter receives a generated turn context, no observer lease is consumed, no target output is captured, and no provider events are published on the mobile wire. Tests use real host policy and synthetic adapters/events. The source version advances to 0.1.9 after its review fixes; this slice does not upload or install TestFlight.
 
 ## Identity and dispatch
 
@@ -33,3 +33,5 @@ An independent draft audit found cancellation during awaited target listing coul
 Round-one exact-head correctness review then found unknown adapter errors could lose partial-write evidence, and colon-containing provider IDs could misidentify Registry's first-colon adapter resolution. Both were repaired with regressions. Colon-containing target names remain valid, while this adapter-backed coordinator rejects colon-containing provider IDs. Changed source requires fresh exact-head correctness and security review.
 
 Final review-fix verification initially failed two existing tests: audit history's intermediate-day test threw `inUse` (#79), and the newer-audio-activation test threw `superseded` (#118). Neither implementation/test is changed by this slice. The failure is recorded on both issues; the cause is not assumed. A focused rerun passed all 12 tests in those two suites, and one complete verifier rerun passed all 457 Swift tests in 79 suites plus lint/scripts/audit. The final simulator build-for-testing also passed. A successful rerun does not resolve either intermittent-failure issue.
+
+The subsequent GitHub Codex review identified cancellation during synchronous confirmation-policy reload could consume a one-shot confirmation before any write. A post-reload check now preserves that token, with a deterministic gated-store regression proving zero writes and successful exact-token retry. Final verification of this repair passed 458 Swift tests in 79 suites plus lint/scripts/audit, simulator build-for-testing, and 51 focused tests in five suites. Earlier failed-run evidence remains recorded above.

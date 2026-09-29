@@ -73,6 +73,8 @@ public actor HailHost {
         try requireExpectedBinding(expectedBinding, for: listed)
         // Refresh after listing before consuming a confirmation that may have waited on a policy change.
         if confirmedHash != nil { try refreshPolicy() }
+        // Synchronous policy-store I/O can outlast cancellation from another task; preserve the token.
+        try Task.checkCancellation()
         var request = DeliveryRequest(target: id, binding: listed.binding, lines: lines, device: device)
         // No suspension from here to the first evaluation: the consumed token cannot go stale in between.
         let confirmed = consume(confirmedHash, for: request)

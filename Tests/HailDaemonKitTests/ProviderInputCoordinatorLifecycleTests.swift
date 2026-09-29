@@ -139,6 +139,37 @@ import Testing
 }
 
 extension ProviderInputCoordinatorLifecycleTests {
+    @Test func cancellationDuringConfirmedReloadPreservesTokenAndRefusesWrites() async throws {
+        let adapter = FakeAdapter(kind: "tmux", targets: [ProviderCoordinatorRig.target])
+        let registry = Registry()
+        try await registry.register(adapter)
+        var policy = Policy()
+        try policy.allow("tmux:synthetic", binding: "opaque-binding")
+        let store = ProviderCoordinatorGatedStore(policy)
+        let host = try HailHost(registry: registry, store: store)
+        let binding = try ProviderSessionBinding(
+            hostID: "host-test", providerID: "tmux", targetID: "tmux:synthetic", sessionID: "opaque-binding"
+        )
+        let coordinator = try ProviderInputCoordinator(
+            host: host, binding: binding, connectionID: UUID(), configuration: .init(maxTurns: 1)
+        )
+        let outcome = try await coordinator.submit("synthetic input", utteranceID: UUID())
+        guard case .needsConfirmation(let readBack) = outcome else { Issue.record("expected confirmation"); return }
+        store.gateNextLoad()
+        let pending = Task {
+            try await coordinator.submit("synthetic input", utteranceID: UUID(), confirmedHash: readBack.hash)
+        }
+        await store.waitForReload()
+        pending.cancel()
+        store.release()
+        await #expect(throws: CancellationError.self) { try await pending.value }
+        #expect(await adapter.deliveries.isEmpty)
+        let retry = try await coordinator.submit("synthetic input", utteranceID: UUID(), confirmedHash: readBack.hash)
+        guard case .sent(let turn) = retry else { Issue.record("confirmation token was consumed"); return }
+        #expect(await coordinator.state(for: turn.id) == .sent)
+        #expect(await adapter.deliveries.count == 1)
+    }
+
     @Test func providerMustMatchFirstComponentButTargetNameMayContainColons() async throws {
         let rig = try await ProviderCoordinatorRig.make()
         let mismatch = try ProviderSessionBinding(

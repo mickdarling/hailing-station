@@ -1,4 +1,5 @@
 import Foundation
+import Dispatch
 import Synchronization
 import Testing
 @testable import HailDaemonKit
@@ -111,4 +112,47 @@ actor ProviderArbitraryFailureAdapter: Adapter {
         guard deliveries.count < successfulWrites else { throw ProviderCoordinatorSyntheticError.arbitraryFailure }
         deliveries.append(text)
     }
+}
+
+/// Blocks a synchronous store reload while an async handshake lets the test cancel its caller.
+final class ProviderCoordinatorGatedStore: PolicyStore {
+    private struct Gate {
+        var armed = false
+        var arrived = false
+        var arrival: CheckedContinuation<Void, Never>?
+    }
+
+    private let backing: InMemoryPolicyStore
+    private let gate = Mutex(Gate())
+    private let releaseGate = DispatchSemaphore(value: 0)
+    let summary = "gated synthetic policy"
+
+    init(_ policy: Policy) { backing = InMemoryPolicyStore(policy) }
+
+    func gateNextLoad() { gate.withLock { $0.armed = true; $0.arrived = false } }
+
+    func load() throws -> Policy {
+        let blocked = gate.withLock { state in
+            guard state.armed else { return false }
+            state.armed = false
+            state.arrived = true
+            state.arrival?.resume()
+            state.arrival = nil
+            return true
+        }
+        if blocked { releaseGate.wait() }
+        return try backing.load()
+    }
+
+    func update(_ change: (inout Policy) throws -> Void) throws -> PolicyUpdate { try backing.update(change) }
+
+    func waitForReload() async {
+        await withCheckedContinuation { continuation in
+            gate.withLock { state in
+                if state.arrived { continuation.resume() } else { state.arrival = continuation }
+            }
+        }
+    }
+
+    func release() { releaseGate.signal() }
 }
