@@ -2,6 +2,8 @@
 
 This document makes the intended ownership boundary explicit. It is a design proposal tracked by [#105](https://github.com/mickdarling/hailing-station/issues/105), not a claim that launch/configuration support already ships. Today, tmux is the first host adapter and the terminal can browse allowed targets. The proposal extends that arrangement without making the phone an AI-tool launcher or baking tmux into the product contract.
 
+Bootstrap/catalog is only the control plane. The separate [host-owned session I/O proposal](host-owned-session-pipeline.md) specifies how the Mac observes and returns target output without asking a target to call `haild reply`.
+
 ## Product thesis
 
 The Mac host knows which local applications and services exist, how they are configured, and which sessions it is permitted to expose. Hailing Station on iPhone or iPad is the audio-first terminal: it selects an offered destination, sends typed input, presents replies, and arbitrates audio across hosts. It does not need tool-specific binaries, credentials, working directories, or process-management rules.

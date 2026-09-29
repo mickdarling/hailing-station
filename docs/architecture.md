@@ -15,6 +15,8 @@ The iOS or iPadOS application owns the audio session, input and output selection
 
 Each Mac runs a small daemon. The daemon authenticates terminals, applies policy, lists permitted targets, routes accepted input through target adapters, and returns typed output events. The first adapter addresses tmux sessions; adapters are not limited to terminals or AI tools.
 
+The intended host-owned capture and rendering contract is detailed in [host-owned session I/O](host-owned-session-pipeline.md). Today, ordinary tmux output is **not** automatically captured and returned: the working spoken path depends on the target invoking `haild reply`. The proposal replaces that dependency with observed, normalized provider events while retaining the explicit reply command for manual announcements.
+
 The Mac is also the proposed bootstrap and configuration authority for its local tools. An operator configures adapters and permitted session actions on that Mac; the host then advertises a bounded, host-scoped capability catalog to authenticated terminals. The client can discover and select what the host offers, but does not know how to launch Claude, Codex, tmux, or any other local tool. Advertisement is not authorization: starting, attaching to, sending to, and interrupting a session each remain policy-controlled actions. See [host bootstrap and capability catalog](host-bootstrap.md) for the proposed flow and open design questions (#105).
 
 ## Protocol

@@ -53,6 +53,7 @@ Remote beta installation and guarded App Store Connect upload are covered by the
 The first one-Mac physical proof is summarized in the [single-device vertical-slice test record](docs/vertical-slice-test-record.md).
 The current adaptive layout and sanitized interaction record are documented in the [mobile interface notes](docs/mobile-interface.md).
 The proposed Mac-owned tool configuration and client capability flow are described in the [host bootstrap design](docs/host-bootstrap.md).
+The proposed provider-neutral capture, session-event, and speech pipeline is described in the [host-owned session I/O design](docs/host-owned-session-pipeline.md); it distinguishes current behavior from the target architecture.
 
 ## Naming
 
