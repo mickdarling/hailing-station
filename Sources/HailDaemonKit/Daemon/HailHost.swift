@@ -55,7 +55,8 @@ public actor HailHost {
     /// carries the read-back; send the same text again with its `hash` as `confirmedHash` to deliver.
     @discardableResult
     public func send(
-        _ text: String, to id: String, from device: String = "keyboard", confirmedHash: String? = nil
+        _ text: String, to id: String, from device: String = "keyboard", confirmedHash: String? = nil,
+        expectedBinding: String? = nil
     ) async throws -> SendOutcome {
         try requireSendPreflight()
         let lines: [String]
@@ -65,6 +66,11 @@ public actor HailHost {
             throw HostError.refused(error)
         }
         let listed = try await listed(id)
+        // Listing may suspend even for a cancelled caller. Stop before consuming confirmation or writing.
+        try Task.checkCancellation()
+        // A coordinator's observation must identify the same application that this dispatch authorizes.
+        // Check before consuming confirmation authority or handing any text to the adapter.
+        try requireExpectedBinding(expectedBinding, for: listed)
         // Refresh after listing before consuming a confirmation that may have waited on a policy change.
         if confirmedHash != nil { try refreshPolicy() }
         var request = DeliveryRequest(target: id, binding: listed.binding, lines: lines, device: device)
@@ -73,6 +79,7 @@ public actor HailHost {
         let confirmedRevision = policyRevision
         var delivered: [String] = []
         for (index, line) in lines.enumerated() {
+            try requireUncancelledDelivery(delivered)
             request.lines = Array(lines[index...])
             var decision = evaluator.evaluate(request, lockdown: lockdown.isOn, limiter: limiter, now: clock.now)
             // A confirmation turns a read-back into delivery and nothing else: every denial stands.
@@ -92,8 +99,8 @@ public actor HailHost {
             limiter.record(request, at: clock.now)
             do {
                 try await registry.deliver(line, to: id, binding: listed.binding)
-            } catch let error as AdapterError where !delivered.isEmpty {
-                throw HostError.partial(delivered: delivered, reason: "\(error)")
+            } catch {
+                throw preservingPartial(error, delivered: delivered)
             }
             delivered.append(line)
         }
@@ -140,6 +147,26 @@ public actor HailHost {
     }
 }
 extension HailHost {
+    private func requireUncancelledDelivery(_ delivered: [String]) throws {
+        guard Task.isCancelled else { return }
+        throw preservingPartial(CancellationError(), delivered: delivered)
+    }
+
+    private func preservingPartial(_ error: any Error, delivered: [String]) -> any Error {
+        guard !delivered.isEmpty else { return error }
+        if error is CancellationError {
+            return HostError.partial(delivered: delivered, reason: "delivery cancelled")
+        }
+        if error is AdapterError { return HostError.partial(delivered: delivered, reason: "\(error)") }
+        return error
+    }
+
+    private func requireExpectedBinding(_ expectedBinding: String?, for listed: Registry.Listed) throws {
+        if let expectedBinding, listed.binding != expectedBinding {
+            throw HostError.denied(.rebound(listed.info.id))
+        }
+    }
+
     func requirePolicy() throws {
         if policyFailure != nil { try refreshPolicy() }
     }
