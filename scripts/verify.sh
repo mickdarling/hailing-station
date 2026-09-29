@@ -27,6 +27,19 @@ build() { echo "== build"; swift build ${SWIFT_FLAGS[@]+"${SWIFT_FLAGS[@]}"}; }
 test_() { echo "== test";  swift test --parallel ${SWIFT_FLAGS[@]+"${SWIFT_FLAGS[@]}"}; }
 lint()  { echo "== lint";  swiftlint lint --strict --quiet; }
 
+trace_tests() (
+  # The subshell scopes cleanup to this lane. Never install into managed/system Python.
+  trace_python="${SPEC_TRACE_PYTHON:-}"
+  if [[ -z "$trace_python" ]]; then
+    trace_env="$(mktemp -d "${TMPDIR:-/tmp}/hailing-spec-trace.XXXXXX")"
+    trap 'rm -rf -- "$trace_env"' EXIT
+    python3 -m venv "$trace_env"
+    trace_python="$trace_env/bin/python"
+    "$trace_python" -m pip install -r scripts/spec-trace-requirements.txt
+  fi
+  "$trace_python" -m unittest scripts/tests/test_trace.py
+)
+
 scripts_() {
   echo "== scripts"
   local f dirs=(scripts)
@@ -36,6 +49,7 @@ scripts_() {
     shellcheck "$f"
   done < <(find "${dirs[@]}" -type f \( -name '*.sh' -o -name 'hail-*' \) | sort)
   scripts/tests/test-testflight.sh
+  trace_tests
   python3 -m unittest discover -s Tests/LocalIntentEvalTests
   # `scripts` is also a standalone entry point; the CLI integration must not rely on `all` building first.
   swift build --product haild ${SWIFT_FLAGS[@]+"${SWIFT_FLAGS[@]}"}

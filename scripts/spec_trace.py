@@ -2,7 +2,7 @@
 """Spec-to-test traceability (#27).
 
 Reads the spec issue a PR closes, extracts the names under "Test expectations", and checks that each
-named Swift test suite exists in Tests/ with at least one test, each named script test file exists, and
+named Swift test suite exists in declared test sources with at least one test, each named script test file exists, and
 each manual runbook path exists. `trace: partial` in the PR body downgrades failures to warnings.
 
 Usable offline: `trace.py --spec-body FILE --tree DIR [--partial]`.
@@ -16,6 +16,34 @@ import re
 import subprocess
 import sys
 from pathlib import Path
+
+try:
+    import yaml
+except ModuleNotFoundError:
+    raise SystemExit("spec trace requires PyYAML 6.0.3: install scripts/spec-trace-requirements.txt in a venv; "
+                     "set SPEC_TRACE_PYTHON to its Python executable for scripts/verify.sh")
+
+if yaml.__version__ != "6.0.3":
+    raise SystemExit("spec trace requires pinned PyYAML 6.0.3: install scripts/spec-trace-requirements.txt in a venv; "
+                     "set SPEC_TRACE_PYTHON to its Python executable for scripts/verify.sh")
+
+
+class ProjectLoader(yaml.SafeLoader):
+    """Data only, with ambiguous duplicate keys and aliases rejected rather than interpreted."""
+
+    def compose_node(self, parent, index):
+        if self.check_event(yaml.AliasEvent):
+            raise yaml.YAMLError("project aliases are unsupported")
+        return super().compose_node(parent, index)
+
+    def construct_mapping(self, node, deep=False):
+        keys = set()
+        for key, _ in node.value:
+            if (not isinstance(key, yaml.ScalarNode) or key.tag != "tag:yaml.org,2002:str" or
+                    key.value in keys or key.value.endswith(":REPLACE")):
+                raise yaml.YAMLError("project keys must be unique strings without merge overrides")
+            keys.add(key.value)
+        return super().construct_mapping(node, deep=deep)
 
 SECTION = re.compile(r"^#{2,3}\s*test expectations\b[^\n]*$(.*?)(?=^#{2,3}\s|\Z)", re.M | re.S | re.I)
 TOKEN = re.compile(r"`([^`\n]+)`")
@@ -87,19 +115,119 @@ def strip_code(source: str, keep_strings: bool = False) -> str:
     return "".join(out)
 
 
-def test_target_paths(tree: Path) -> list[Path]:
-    """Directories of the test targets Package.swift declares. No manifest: Tests/. A manifest that declares
-    no test target yields nothing, so a PR that drops the targets cannot pass by leaving files behind.
-    Roots outside the tree (a `path: "../x"` escape) are ignored."""
+def contained_path(path: Path, tree: Path) -> bool:
+    """Only real paths in this checkout, never symlinks (including ancestor directories)."""
+    base = tree.resolve()
+    try:
+        relative = path.absolute().relative_to(tree.absolute())
+        return path.resolve().is_relative_to(base) and not any(
+            (tree / Path(*relative.parts[:index])).is_symlink() for index in range(1, len(relative.parts) + 1)
+        )
+    except (ValueError, OSError, RuntimeError):
+        return False
+
+
+def xcode_test_paths(tree: Path, problems: list[str] | None = None) -> list[Path]:
+    """Read the root XcodeGen spec, not generated projects or arbitrary nested manifests.
+
+    A deliberately narrow subset: concrete test targets with unfiltered compile-source paths. Unsupported
+    selection/merging forms fail closed; this is presence evidence, not Xcode build or execution proof.
+    """
+    manifest = tree / "project.yml"
+    def reject(reason):
+        if problems is not None:
+            problems.append(f"Xcode test discovery: {reason}; use concrete unfiltered compile sources in root project.yml")
+
+    if not manifest.exists() and not manifest.is_symlink():
+        return []
+    if not manifest.is_file() or not contained_path(manifest, tree):
+        reject("project.yml is not a regular in-tree file (symlinks are unsupported)")
+        return []
+    if manifest.stat().st_size > 1024 * 1024:
+        reject("project.yml exceeds the 1 MiB metadata limit")
+        return []
+    try:
+        project = yaml.load(manifest.read_text(errors="replace"), Loader=ProjectLoader)
+    except (yaml.YAMLError, RecursionError):
+        reject("project.yml is malformed or uses unsupported YAML tags, aliases, duplicate keys, or :REPLACE overrides")
+        return []
+    if not isinstance(project, dict):
+        reject("project.yml must be a mapping")
+        return []
+    unsupported = set(project) & {"include", "configFiles"}
+    if unsupported:
+        reject("project.yml uses unsupported " + ", ".join(sorted(unsupported)))
+        return []
+    options = project.get("options", {})
+    if (not isinstance(options, dict) or "fileTypes" in options or
+            options.get("defaultSourceDirectoryType", "group") != "group"):
+        reject("project.yml options are malformed, override fileTypes, or use a non-group defaultSourceDirectoryType")
+        return []
+    # Build settings can remove otherwise-declared Swift sources. Do not claim these paths without
+    # interpreting their configuration-dependent patterns.
+    def filtered_settings(settings):
+        if not isinstance(settings, dict):
+            return True
+        return any(key == "groups" or re.match(r"^(?:EXCLUDED|INCLUDED)_SOURCE_FILE_NAMES(?:\[|$)", key) or
+                   (isinstance(value, dict) and filtered_settings(value)) for key, value in settings.items())
+
+    if filtered_settings(project.get("settings", {})):
+        reject("project.yml settings are malformed, reference groups, or filter source file names")
+        return []
+    targets = project.get("targets", {})
+    if not isinstance(targets, dict):
+        reject("project.yml targets must be a mapping")
+        return []
+    roots = []
+    for name, target in targets.items():
+        if not isinstance(target, dict) or target.get("type") not in ("bundle.ui-testing", "bundle.unit-test"):
+            continue
+        unsupported = set(target) & {"templates", "template", "settingGroups", "configFiles"}
+        if unsupported or filtered_settings(target.get("settings", {})):
+            reject(f"target {name} uses unsupported " + (", ".join(sorted(unsupported)) if unsupported else "source-filtering settings"))
+            continue
+        sources = target.get("sources", [])
+        if isinstance(sources, (str, dict)):
+            sources = [sources]
+        if not isinstance(sources, list):
+            reject(f"target {name} sources must be a path or a list of paths")
+            continue
+        for source in sources:
+            source_type = None
+            if isinstance(source, dict):
+                if (set(source) - {"path", "type", "buildPhase"} or
+                        source.get("type", "group") not in ("group", "file") or
+                        source.get("buildPhase", "sources") != "sources"):
+                    reject(f"target {name} source mapping must use only path, group/file type, and sources buildPhase")
+                    continue
+                source_type = source.get("type")
+                source = source.get("path")
+            if not isinstance(source, str) or not source or "$" in source or Path(source).is_absolute():
+                reject(f"target {name} source must be a nonempty literal relative path")
+                continue
+            root = tree / source
+            if contained_path(root, tree):
+                if root.is_dir() and (source_type == "file" or (source_type is None and root.suffix)):
+                    reject(f"target {name} directory source must be a source group, not a file reference")
+                else:
+                    roots.append(root)
+            else:
+                reject(f"target {name} source escapes the tree or traverses a symlink")
+    return roots
+
+
+def test_target_paths(tree: Path, problems: list[str] | None = None) -> list[Path]:
+    """Union of SwiftPM and root XcodeGen test sources. Only a tree with neither manifest falls back
+    to Tests/. Removing declared targets must not make leftover source files satisfy the gate."""
     manifest = tree / "Package.swift"
-    if not manifest.exists():
+    xcode_manifest = tree / "project.yml"
+    if not any(p.exists() or p.is_symlink() for p in (manifest, xcode_manifest)):
         return [tree / "Tests"]
-    text = strip_code(manifest.read_text(errors="replace"), keep_strings=True)
+    text = strip_code(manifest.read_text(errors="replace"), keep_strings=True) if manifest.is_file() and contained_path(manifest, tree) else ""
     names = re.findall(r'\.testTarget\(\s*name:\s*"([^"]+)"', text)
     explicit = dict(re.findall(r'\.testTarget\(\s*name:\s*"([^"]+)"[^)]*?path:\s*"([^"]+)"', text))
-    base = tree.resolve()
     roots = [(tree / explicit.get(name, f"Tests/{name}")) for name in names]
-    return [root for root in roots if root.resolve().is_relative_to(base)]
+    return list(dict.fromkeys([root for root in roots if contained_path(root, tree)] + xcode_test_paths(tree, problems)))
 
 
 def suite_bodies(name: str, source: str) -> list[str]:
@@ -129,8 +257,9 @@ def expectations(spec_body: str) -> list[str]:
 def check(tokens: list[str], tree: Path) -> list[str]:
     problems: list[str] = []
     swift_files = [
-        f for root in test_target_paths(tree) if root.is_dir()
-        for f in root.rglob("*.swift") if not f.is_symlink() and f.resolve().is_relative_to(tree.resolve())
+        f for root in test_target_paths(tree, problems)
+        for f in (root.rglob("*.swift") if root.is_dir() else [root] if root.is_file() and root.suffix == ".swift" else [])
+        if contained_path(f, tree)
     ]
     sources = {f: strip_code(f.read_text(errors="replace")) for f in swift_files}
     for token in tokens:
@@ -172,7 +301,8 @@ def run(spec: str, tree: Path, partial: bool, deferred: set[str] | None = None) 
     missing expectation still fails, so partial cannot silently hide an unlisted gap."""
     deferred = deferred or set()
     problems = check(expectations(spec), tree)
-    blocking = [p for p in problems if not any(f"`{name}`" in p for name in deferred)]
+    blocking = [p for p in problems if p.startswith("Xcode test discovery:") or
+                not any(f"`{name}`" in p for name in deferred)]
     return problems, (1 if blocking else 0)
 
 
