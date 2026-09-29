@@ -127,6 +127,21 @@ def contained_path(path: Path, tree: Path) -> bool:
         return False
 
 
+def xcode_descendant_wrapper(root: Path, tree: Path) -> Path | None:
+    """Fail closed instead of recursively interpreting resource/file wrappers as source groups.
+
+    An explicit root group may have an extension, but its descendants are inferred by XcodeGen. The
+    narrow supported schema does not model every wrapper extension, so any descendant directory with
+    an extension needs a separate concrete source declaration instead of this recursive source root.
+    """
+    for directory, children, _ in os.walk(root, followlinks=False):
+        children[:] = [name for name in sorted(children) if contained_path(Path(directory) / name, tree)]
+        for name in children:
+            if Path(name).suffix:
+                return Path(directory) / name
+    return None
+
+
 def xcode_test_paths(tree: Path, problems: list[str] | None = None) -> list[Path]:
     """Read the root XcodeGen spec, not generated projects or arbitrary nested manifests.
 
@@ -209,6 +224,9 @@ def xcode_test_paths(tree: Path, problems: list[str] | None = None) -> list[Path
             if contained_path(root, tree):
                 if root.is_dir() and (source_type == "file" or (source_type is None and root.suffix)):
                     reject(f"target {name} directory source must be a source group, not a file reference")
+                elif root.is_dir() and (wrapper := xcode_descendant_wrapper(root, tree)):
+                    reject(f"target {name} source contains unsupported descendant directory wrapper "
+                           f"{wrapper.relative_to(tree)}; declare concrete compile-source groups/files separately")
                 else:
                     roots.append(root)
             else:

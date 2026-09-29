@@ -28,6 +28,13 @@ file or a directory source group. A directory with an extension needs explicit `
 and cannot traverse symlinks. Symlinked manifests, source roots, ancestor directories, and Swift files
 do not count. Swift comments, strings, literal `#if false` blocks, and suites without tests still fail.
 
+An Xcode directory-source root containing any extension-bearing descendant directory is unsupported
+and fails closed with an explicit descendant-wrapper diagnostic. XcodeGen can treat such descendants
+as opaque resource/file wrappers instead of compiling Swift files inside them; the checker does not
+guess a comprehensive extension/type registry. Declare concrete compile-source groups/files separately
+instead of the broad parent root. Independently declared explicit `type: group` wrapper roots and Swift
+file roots remain supported. This Xcode-only restriction does not reinterpret SwiftPM source discovery.
+
 A tree with neither manifest retains the legacy `Tests/` fallback. An existing manifest with no test
 targets does not trigger that fallback: removing the target while leaving its files behind still fails.
 The separately located installed-app harness specification is not implicitly discovered.
@@ -98,9 +105,9 @@ historical draft evidence, not a current-head approval.
 
 The draft was preserved in a retained task-specific recovery stash, then reapplied after a fast-forward to frozen host source
 `3e56aa7762bbdf5951991918aed62b8f9d54ff93`. Prior ignored logs were preserved. The source marketing
-version is now 0.1.13. This is a stacked tree awaiting PR147's merge, not the final merged-base commit;
-source-tree equality and final exact-head review remain pending. Host source changes from review would
-require updated combined verification.
+version at this verification was 0.1.13. It was then a stacked tree awaiting PR147's merge, not the final
+merged-base commit; source-tree equality and exact-head review were still pending at that point. Host
+source changes from review would have required updated combined verification.
 
 - The first captured `DEVELOPER_DIR=/Applications/Xcode.app/Contents/Developer scripts/verify.sh all`
   run passed: 479 Swift tests in 82 suites, audit CLI, strict repository lint, script/TestFlight checks,
@@ -123,5 +130,59 @@ require updated combined verification.
 
 PR147 subsequently merged as `a3dc924b965774db1d216afdba0bfa2edf512af6`. An exact Git tree comparison
 against the tested host source `3e56aa7762bbdf5951991918aed62b8f9d54ff93` showed no differences.
-The combined verification therefore covers the merged host contents. Committing/rebasing this checker
-slice and independent exact-head reviews remain separate from that test evidence.
+The combined verification therefore covers the merged host contents. The checker slice was subsequently
+committed/rebased as `c7fdcb58bb799dafe84a228d6b8cc7779b4c7b54`; its valid review finding and repair follow.
+
+## Round-one finding and 0.1.14 repair (2026-09-29)
+
+Both independent code/security reviews returned REQUEST CHANGES at
+`c7fdcb58bb799dafe84a228d6b8cc7779b4c7b54`. The valid finding was that recursive scanning accepted
+`Tests/AlphaTests/Fixtures.bundle/A.swift`, although XcodeGen treated the nested bundle as a resource
+wrapper and did not put that Swift file in the target's Sources phase. Passing 0.1.13 tests did not prove
+this missing boundary; neither review approved that source. Fresh exact-head reviews are required.
+
+The repair conservatively rejects an Xcode directory-source root containing extension-bearing descendant
+directories. It reports the unsupported wrapper rather than traversing it as a compile-source group.
+This check lives in Xcode-source discovery only, before the roots are unioned with SwiftPM declarations.
+Explicit independently declared group/file roots and existing SwiftPM behavior retain regression coverage.
+The source marketing version advances to 0.1.14; no TestFlight build is uploaded or installed.
+
+An independently generated invented scratch project using XcodeGen 2.46.0 confirmed the exact boundary:
+
+- `NestedWrapper`, sources `Tests/AlphaTests`: empty `PBXSourcesBuildPhase`; `Fixtures.bundle` in Resources.
+- `ExplicitGroup`, source mapping `Tests/AlphaTests/Fixtures.bundle` / `type: group`: `A.swift` in Sources.
+- `ExplicitFile`, source mapping `Tests/AlphaTests/Fixtures.bundle/A.swift` / `type: file`: `A.swift` in Sources.
+- `PlainGroup`, sources `Tests/PlainTests`: `Plain.swift` in Sources.
+
+Generation and phase assertions are captured in `artifacts/spec-trace-014-wrapper-xcodegen.log` and
+`artifacts/spec-trace-014-wrapper-phases.log`. This inspected XcodeGen's generated project data only:
+the scratch Swift files and PR code were not built or executed. The privileged checker itself still
+never runs XcodeGen or executes anything from the PR tree.
+
+Repair verification uses the working tree on merged host base `a3dc924b965774db1d216afdba0bfa2edf512af6`,
+with the 0.1.14 repair uncommitted at the time of these commands. No final repaired head or approval is
+claimed here.
+
+- All 39 checker unit tests passed (`artifacts/spec-trace-014-unit.log`); the three wrapper/provenance
+  regressions also passed independently (`artifacts/spec-trace-014-wrapper-focus.log`).
+- The first captured `DEVELOPER_DIR=/Applications/Xcode.app/Contents/Developer scripts/verify.sh all`
+  run failed: 479 tests in 82 suites reported one issue in the unchanged
+  `AuditLogFileTests.aClockStepBackStillFindsATailOlderThanEightDays`, which threw `inUse`
+  (`artifacts/spec-trace-014-all.log`). This exact test/condition is recorded in #79; no cause or fix is
+  claimed by this checker repair.
+- The one targeted diagnostic run passed all 8 `AuditLogFileTests` tests
+  (`artifacts/spec-trace-014-audit-focus.log`). The sole complete rerun then passed 479 tests in 82 suites,
+  audit CLI, strict repository lint, script/TestFlight checks, 39 checker tests with isolated dependency
+  provisioning, 5 local-intent tests, 1 reply-CLI test, and actionlint
+  (`artifacts/spec-trace-014-all-rerun.log`). No audit code/test-race changes were made.
+- `scripts/verify.sh sim` with the same Xcode selection passed build-for-testing
+  (`artifacts/spec-trace-014-sim.log`). App and UI-test Info.plists each report 0.1.14 / build 1
+  (`artifacts/spec-trace-014-app-metadata.log`, `artifacts/spec-trace-014-uitest-metadata.log`). This is
+  simulator build evidence, not UI execution or physical/installed TestFlight proof.
+- Offline #143 trace and named footer suite presence each passed with 2 expectations / 0 problems,
+  without partial deferral (`artifacts/spec-trace-014-issue143.log`,
+  `artifacts/spec-trace-014-footer-presence.log`). `git diff --check` passed.
+- The complete #143 slice remains four production files under the unchanged PR-shape exclusions.
+  This repair edits only the checker, its unit tests, this document, and the version manifest.
+  No commit/push/PR, application/host behavior change, device action, or TestFlight delivery was performed
+  during repair; fresh independent exact-head reviews remain required.

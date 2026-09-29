@@ -200,6 +200,37 @@ class TraceTests(unittest.TestCase):
         self.xcode_project("[{path: Tests/Fixtures.bundle, type: group}]")
         self.assertEqual(tracer.check(["AlphaTests"], self.tree), [])
 
+    def test_xcode_nested_wrapper_cannot_satisfy_declared_suite_presence(self):
+        wrapper = self.tree / "Tests/AlphaTests/Fixtures.bundle"
+        wrapper.mkdir()
+        (wrapper / "A.swift").write_text("class AlphaTests { func testPresence() {} }")
+        self.xcode_project()
+        self.assertEqual(tracer.test_target_paths(self.tree), [])
+        problems = tracer.check(["AlphaTests"], self.tree)
+        self.assertIn("suite `AlphaTests` not found under Tests/", problems)
+        self.assertTrue(any("unsupported descendant directory wrapper Tests/AlphaTests/Fixtures.bundle" in p
+                            for p in problems))
+        self.assertEqual(tracer.run("## Test expectations\n`AlphaTests`", self.tree, True, {"AlphaTests"})[1], 1)
+
+    def test_xcode_independent_wrapper_group_and_file_declarations_are_supported(self):
+        wrapper = self.tree / "Tests/AlphaTests/Fixtures.bundle"
+        wrapper.mkdir()
+        (wrapper / "A.swift").write_text("class AlphaTests { func testPresence() {} }")
+        for source in (
+            "[{path: Tests/AlphaTests/Fixtures.bundle, type: group}]",
+            "[{path: Tests/AlphaTests/Fixtures.bundle/A.swift, type: file}]",
+        ):
+            with self.subTest(source=source):
+                self.xcode_project(source)
+                self.assertEqual(tracer.check(["AlphaTests"], self.tree), [])
+
+    def test_swiftpm_wrapper_descendant_behavior_is_not_reinterpreted_as_xcode(self):
+        wrapper = self.tree / "Tests/AlphaTests/Fixtures.bundle"
+        wrapper.mkdir()
+        (wrapper / "A.swift").write_text("@Suite struct AlphaTests { @Test func ok() {} }")
+        (self.tree / "Package.swift").write_text('.testTarget(name: "AlphaTests")')
+        self.assertEqual(tracer.check(["AlphaTests"], self.tree), [])
+
     def test_xcode_diagnostics_cannot_be_hidden_by_named_partial_trace(self):
         self.xcode_project("[{path: Tests/AlphaTests, excludes: ['A.swift']}]")
         problems, code = tracer.run("## Test expectations\n`AlphaTests`", self.tree, True, {"AlphaTests"})
