@@ -1,4 +1,5 @@
 import Foundation
+import Synchronization
 import Testing
 @testable import HailDaemonKit
 
@@ -8,16 +9,20 @@ import Testing
         let events = [try fixture.event(0, .accepted), try fixture.event(1, .finished)]
         let observer: any ProviderSessionObserving = SyntheticProviderObserver(events: events)
         #expect(observer.observationCapabilities == [.explicitAcceptance, .explicitCompletion])
+        let observation = try await observer.observe(fixture.binding)
+        defer { observation.cancel() }
         var received: [ProviderSessionEvent] = []
-        for try await event in try await observer.observe(fixture.binding) { received.append(event) }
+        for try await event in observation.events { received.append(event) }
         #expect(received == events)
     }
 
     @Test func observerFailureIsNotASyntheticSuccess() async throws {
         let fixture = try ProviderTestFixture()
         let observer: any ProviderSessionObserving = SyntheticProviderObserver(events: [], failure: .unavailable)
+        let observation = try await observer.observe(fixture.binding)
+        defer { observation.cancel() }
         await #expect(throws: ProviderObservationError.unavailable) {
-            for try await _ in try await observer.observe(fixture.binding) {}
+            for try await _ in observation.events {}
         }
     }
 
@@ -69,6 +74,28 @@ import Testing
         started.continuation.finish()
         termination.continuation.finish()
     }
+
+    @Test func earlyLoopExitCancelsTheLeaseWithoutCancellingTheTask() async throws {
+        let cleanupCount = Mutex(0)
+        let channel = try ProviderEventChannel(onTermination: { cleanupCount.withLock { $0 += 1 } })
+        let fixture = try ProviderTestFixture()
+        let first = try fixture.event(0, .running)
+        #expect(channel.yield(first))
+        let observation = channel.observation
+        do {
+            defer { observation.cancel() }
+            for try await event in observation.events {
+                #expect(event == first)
+                break
+            }
+        }
+        #expect(!Task.isCancelled)
+        #expect(cleanupCount.withLock { $0 } == 1)
+        #expect(!channel.yield(try fixture.event(1, .finished)))
+        observation.cancel()
+        channel.finish()
+        #expect(cleanupCount.withLock { $0 } == 1)
+    }
 }
 
 private struct SyntheticProviderObserver: ProviderSessionObserving {
@@ -78,11 +105,11 @@ private struct SyntheticProviderObserver: ProviderSessionObserving {
 
     func observe(
         _ binding: ProviderSessionBinding
-    ) async throws -> AsyncThrowingStream<ProviderSessionEvent, any Error> {
+    ) async throws -> ProviderObservation {
         let channel = try ProviderEventChannel()
         guard events.allSatisfy({ $0.binding == binding }) else { throw ProviderObservationError.unavailable }
         for event in events where !channel.yield(event) { throw ProviderObservationError.bufferOverflow }
         channel.finish(throwing: failure)
-        return channel.stream
+        return channel.observation
     }
 }

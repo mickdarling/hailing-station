@@ -9,10 +9,29 @@ public enum ProviderObservationError: Error, Sendable, Equatable {
 
 /// Optional output side of a provider adapter, separate from the legacy target-list/delivery Adapter.
 /// Implementations must honor the binding, use bounded buffering, surface lost observation/overflow,
-/// and cancel their observation work when the consumer terminates. No implementation is registered yet.
+/// and cancel upstream work when the lease ends. Consumers must `defer { observation.cancel() }`
+/// around iteration, including early exit or rebinding; breaking a stream alone does not end it.
+/// No implementation is registered yet.
 public protocol ProviderSessionObserving: Sendable {
     var observationCapabilities: Set<ProviderObservationCapability> { get }
-    func observe(_ binding: ProviderSessionBinding) async throws -> AsyncThrowingStream<ProviderSessionEvent, any Error>
+    func observe(_ binding: ProviderSessionBinding) async throws -> ProviderObservation
+}
+
+/// Consumer lease with explicit, idempotent cleanup independent of task cancellation.
+public struct ProviderObservation: Sendable {
+    public let events: AsyncThrowingStream<ProviderSessionEvent, any Error>
+    private let cancelObservation: @Sendable () -> Void
+
+    init(
+        events: AsyncThrowingStream<ProviderSessionEvent, any Error>,
+        cancel: @escaping @Sendable () -> Void
+    ) {
+        self.events = events
+        cancelObservation = cancel
+    }
+
+    /// Ends upstream observation. Consumers must stop reading the old lease after cancellation.
+    public func cancel() { cancelObservation() }
 }
 
 /// Bounded channel for observer implementations. Overflow ends the observation with an explicit error;
@@ -20,6 +39,10 @@ public protocol ProviderSessionObserving: Sendable {
 public struct ProviderEventChannel: Sendable {
     public let stream: AsyncThrowingStream<ProviderSessionEvent, any Error>
     private let continuation: AsyncThrowingStream<ProviderSessionEvent, any Error>.Continuation
+
+    public var observation: ProviderObservation {
+        ProviderObservation(events: stream) { continuation.finish(throwing: ProviderObservationError.interrupted) }
+    }
 
     public init(capacity: Int = 64, onTermination: @escaping @Sendable () -> Void = {}) throws {
         guard (1...ProviderEventLimits.maxBufferedEvents).contains(capacity) else {
