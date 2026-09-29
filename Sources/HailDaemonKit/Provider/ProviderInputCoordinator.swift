@@ -9,9 +9,13 @@ public enum ProviderInputOutcome: Sendable, Equatable {
     case needsConfirmation(ReadBack)
 }
 
+public enum ProviderInputDeliveryMode: Sendable {
+    case legacy, contextual
+}
+
 /// Executes guarded host dispatch and owns bounded correlation for one immutable generation (#140).
 /// `binding.sessionID` is the exact opaque AdapterTarget.binding, never a display/session name.
-/// This actor owns no observer or publisher. Adapters do not receive turn contexts in this slice.
+/// This actor owns no observer or publisher. Contextual dispatch explicitly opts into adapter handoff.
 public actor ProviderInputCoordinator {
     public static let maxTimeout: Duration = .seconds(86_400)
 
@@ -19,14 +23,16 @@ public actor ProviderInputCoordinator {
         public let timeout: Duration
         public let maxTurns: Int
         public let maxEvents: Int
+        public let deliveryMode: ProviderInputDeliveryMode
 
         public init(
             timeout: Duration = .seconds(120), maxTurns: Int = 128,
-            maxEvents: Int = ProviderEventLimits.maxRetainedEvents
+            maxEvents: Int = ProviderEventLimits.maxRetainedEvents, deliveryMode: ProviderInputDeliveryMode = .legacy
         ) {
             self.timeout = timeout
             self.maxTurns = maxTurns
             self.maxEvents = maxEvents
+            self.deliveryMode = deliveryMode
         }
     }
 
@@ -35,6 +41,7 @@ public actor ProviderInputCoordinator {
     private let host: HailHost
     private let timeout: Duration
     private let now: @Sendable () -> ContinuousClock.Instant
+    private let deliveryMode: ProviderInputDeliveryMode
     private var correlator: ProviderTurnCorrelator
     private var deadlines: [UUID: ContinuousClock.Instant] = [:]
     private var dispatching = false
@@ -57,6 +64,7 @@ public actor ProviderInputCoordinator {
         self.connectionID = connectionID
         timeout = configuration.timeout
         self.now = now
+        deliveryMode = configuration.deliveryMode
         correlator = try ProviderTurnCorrelator(
             binding: binding, connectionID: connectionID,
             maxTurns: configuration.maxTurns, maxEvents: configuration.maxEvents
@@ -74,9 +82,7 @@ public actor ProviderInputCoordinator {
         try correlator.validateSent(context)
         dispatching = true
         defer { dispatching = false }
-        let outcome = try await host.send(
-            text, to: binding.targetID, from: device, confirmedHash: confirmedHash, expectedBinding: binding.sessionID
-        )
+        let outcome = try await dispatch(text, context: context, from: device, confirmedHash: confirmedHash)
         switch outcome {
         case .needsConfirmation(let readBack):
             return .needsConfirmation(readBack)
@@ -87,8 +93,20 @@ public actor ProviderInputCoordinator {
         }
     }
 
+    private func dispatch(
+        _ text: String, context: ProviderTurnContext, from device: String, confirmedHash: String?
+    ) async throws -> SendOutcome {
+        switch deliveryMode {
+        case .legacy:
+            try await host.send(text, to: binding.targetID, from: device,
+                                confirmedHash: confirmedHash, expectedBinding: binding.sessionID)
+        case .contextual:
+            try await host.send(text, context: context, from: device, confirmedHash: confirmedHash)
+        }
+    }
+
     /// The caller retries early events after dispatch completes. Rejection here consumes no sequence.
-    /// No actual provider context handoff or stream ownership is claimed by this explicit local API.
+    /// Context handoff does not supply stream ownership or a bounded early-event retry owner.
     public func ingest(_ event: ProviderSessionEvent) throws -> ProviderEventCorrelation {
         guard !dispatching else { throw ProviderInputCoordinatorError.dispatchInProgress }
         expireDueTurns()
