@@ -2,6 +2,8 @@
 
 This document makes the intended ownership boundary explicit. It is a design proposal tracked by [#105](https://github.com/mickdarling/hailing-station/issues/105), not a claim that launch/configuration support already ships. Today, tmux is the first host adapter and the terminal can browse allowed targets. The proposal extends that arrangement without making the phone an AI-tool launcher or baking tmux into the product contract.
 
+Bootstrap/catalog is only the control plane. The separate [host-owned session I/O proposal](host-owned-session-pipeline.md) specifies how the Mac observes and returns target output without asking a target to call `haild reply`.
+
 ## Product thesis
 
 The Mac host knows which local applications and services exist, how they are configured, and which sessions it is permitted to expose. Hailing Station on iPhone or iPad is the audio-first terminal: it selects an offered destination, sends typed input, presents replies, and arbitrates audio across hosts. It does not need tool-specific binaries, credentials, working directories, or process-management rules.
@@ -20,7 +22,7 @@ The stages are: terminal audio capture → speech recognition → host intent se
 
 1. **Prepare the host.** Install/start the macOS service, inspect health, and configure a local adapter profile. An initial host-side setup command can list supported adapters, check prerequisites, create or edit a profile, grant permitted actions, and run a safe connection test; a macOS settings UI can follow. The profile identifies a supported integration, its local working context, and its permitted actions. Tool availability and configuration errors are visible locally before the phone connects.
 2. **Discover or create sessions.** An adapter lists existing sessions and, only if it supports and is permitted to do so, starts or resumes one. Existing, startable, and resumable are different states; a missing or detached session must not be shown as ready merely because a process-launch command exited successfully.
-3. **Publish a bounded catalog.** The host sends authenticated clients only authorized, host-scoped descriptors: stable target/session identity, a display name, availability, supported input/output modes, and available typed actions. It does not publish private paths, environment variables, credentials, or raw adapter configuration.
+3. **Publish a bounded catalog.** After per-terminal authentication exists, the host should send authenticated clients only authorized, host-scoped descriptors: stable target/session identity, a display name, availability, supported input/output modes, and available typed actions. It must not publish private paths, environment variables, credentials, or raw adapter configuration. The current personal-testing WebSocket does not authenticate terminal identities, so catalog publication cannot rely on a client-supplied device name.
 4. **Select and act.** The terminal presents the host, tool, session, and available actions. Selection is confirmed for the current connection generation before the app claims Ready. Each action is separately checked against host policy; catalog visibility alone grants no execution rights.
 5. **Return results.** Adapters provide typed output and lifecycle events with host, target, session, and reply identity. The terminal owns transcript presentation, pause/mute/replay, queueing, and arbitration when several hosts respond together.
 
@@ -36,7 +38,7 @@ The initial catalog should be data, not downloaded executable code or a tool-def
 - observed availability and a bounded reason when unavailable;
 - supported input and output modalities (for example, text in and text/audio out);
 - typed action flags such as select, send, interrupt, start, attach, or resume; and
-- a policy-filtered readiness state tied to the current authenticated connection.
+- a policy-filtered readiness state tied to the current authenticated connection (a future control, not today's `Ready` state).
 
 This is a proposed shape, not a committed wire schema. Adapter-specific launch arguments, shell commands, prompts, secrets, and arbitrary UI instructions must not cross the catalog boundary. The mobile app can render known generic actions and decline unknown versions or actions safely.
 
