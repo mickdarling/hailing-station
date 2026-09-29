@@ -7,9 +7,10 @@ need their own evidence. Discovering `StationBuildFooterTests` does not establis
 
 ## Supported metadata
 
-The trusted base-branch checker reads the PR tree as data. It unions the existing `Package.swift`
-`.testTarget` paths with sources explicitly declared in the repository-root `project.yml` under
-`bundle.ui-testing` or `bundle.unit-test` targets. It does not run XcodeGen or PR code, read generated
+The trusted base-branch checker reads the PR tree as data. It discovers the existing `Package.swift`
+`.testTarget` paths and sources explicitly declared in the repository-root `project.yml` under
+`bundle.ui-testing` or `bundle.unit-test` targets, preserving each target as a separate source group.
+It does not run XcodeGen or PR code, read generated
 projects, recursively find nested project specifications, or scan every `Tests` directory. For example:
 
 ```yaml
@@ -27,6 +28,13 @@ file or a directory source group. A directory with an extension needs explicit `
 `type: file` directory is not recursively treated as compiled sources. Paths must stay inside the tree
 and cannot traverse symlinks. Symlinked manifests, source roots, ancestor directories, and Swift files
 do not count. Swift comments, strings, literal `#if false` blocks, and suites without tests still fail.
+
+A suite must have an actual `struct`, `class`, `enum`, or `actor` declaration and at least one test-bearing
+declaration/extension body in the same declared target. Split files and multiple source roots within one
+Xcode target may supply that evidence together. Different targets cannot complete one another's suite,
+even when a SwiftPM and Xcode target share a name. An extension-only target does not establish a suite;
+the suite name does not have to match the target name. The no-manifest fallback remains one implicit
+legacy `Tests/` group and also requires a non-extension declaration.
 
 An Xcode directory-source root containing any extension-bearing descendant directory is unsupported
 and fails closed with an explicit descendant-wrapper diagnostic. XcodeGen can treat such descendants
@@ -143,7 +151,7 @@ this missing boundary; neither review approved that source. Fresh exact-head rev
 
 The repair conservatively rejects an Xcode directory-source root containing extension-bearing descendant
 directories. It reports the unsupported wrapper rather than traversing it as a compile-source group.
-This check lives in Xcode-source discovery only, before the roots are unioned with SwiftPM declarations.
+This check lives in Xcode-source discovery only, before suite presence is checked in each target group.
 Explicit independently declared group/file roots and existing SwiftPM behavior retain regression coverage.
 The source marketing version advances to 0.1.14; no TestFlight build is uploaded or installed.
 
@@ -186,3 +194,48 @@ claimed here.
   This repair edits only the checker, its unit tests, this document, and the version manifest.
   No commit/push/PR, application/host behavior change, device action, or TestFlight delivery was performed
   during repair; fresh independent exact-head reviews remain required.
+
+## Round-two cloud finding and 0.1.15 repair (2026-09-29)
+
+The 0.1.14 wrapper repair was committed as `24cf2d7fff4e25cdf565c855dbd5e00aa82eecef` and received
+independent correctness/security approvals. The subsequent [PR149 cloud finding](https://github.com/mickdarling/hailing-station/pull/149#discussion_r4139213094)
+was valid and requires REQUEST CHANGES: flattening target sources combined an empty suite declaration
+in one target with its test-bearing extension in another. No individual target contained the complete
+tested suite. Earlier approvals and passing verification did not establish this missing boundary and
+are not approval of the new repair.
+
+Discovery now retains separate target groups through suite checking. Multiple roots within one Xcode
+target stay together, while every SwiftPM target and every Xcode target remains independent, even with
+colliding target names. A non-extension nominal declaration and a test-bearing declaration/extension
+body must coexist in one group. Extension-only targets cannot satisfy presence. The flattened path
+helper remains an inventory only, not the source of suite evidence. Existing wrapper, path, metadata,
+stub, and named-partial safeguards remain enforced; no checker or workflow gate was weakened.
+
+The following commands verified the uncommitted working-tree repair on `24cf2d7fff4e25cdf565c855dbd5e00aa82eecef`,
+whose merged host base is `a3dc924b965774db1d216afdba0bfa2edf512af6`. The tracked marketing version is
+0.1.15. This record covers that working tree, not a future committed/pushed exact head. Fresh independent
+correctness and security reviews are required after freezing the repaired source.
+
+- The isolated pinned dependency setup is captured in `artifacts/spec-trace-015-dependency.log`.
+  `/tmp/hailing-station-trace-015.y45Irv/bin/python -m unittest scripts/tests/test_trace.py` passed all
+  45 tests (`artifacts/spec-trace-015-unit.log`). The six new target-boundary tests independently passed
+  (`artifacts/spec-trace-015-target-focus.log`): extension-only rejection under fallback/SwiftPM/Xcode,
+  cross-target SwiftPM and Xcode negatives, same-named mixed-manifest negatives in both directions,
+  same-target SwiftPM split extensions, and multiple-root Xcode split extensions in a mixed tree.
+- The first captured `DEVELOPER_DIR=/Applications/Xcode.app/Contents/Developer scripts/verify.sh all`
+  passed 479 Swift tests in 82 suites, audit CLI, strict lint, shell/TestFlight script checks, 45 checker
+  tests using automatic isolated dependency provisioning, 5 local-intent tests, 1 reply-CLI test, and
+  actionlint (`artifacts/spec-trace-015-all.log`). No focused Swift or complete rerun was needed.
+- `DEVELOPER_DIR=/Applications/Xcode.app/Contents/Developer scripts/verify.sh sim` passed
+  build-for-testing (`artifacts/spec-trace-015-sim.log`). Actual app and UI-test bundle Info.plists each
+  report 0.1.15 / build 1 (`artifacts/spec-trace-015-app-metadata.log`,
+  `artifacts/spec-trace-015-uitest-metadata.log`). This did not execute UI tests or establish installed
+  TestFlight/physical-device acceptance.
+- Offline issue #143 trace and named footer presence each passed with 2 expectations / 0 problems,
+  without partial deferral (`artifacts/spec-trace-015-issue143.log`,
+  `artifacts/spec-trace-015-footer-presence.log`). `git diff --check` passed.
+- The complete slice still changes four production files under the unchanged PR-shape exclusions:
+  checker, verification script, traceability workflow, and project version manifest. This repair changes
+  only the checker, its tests, this document, and the version manifest. No author commit/push, GitHub
+  mutation, application/host behavior change, device/capture/model activity, or TestFlight delivery
+  occurred during repair.

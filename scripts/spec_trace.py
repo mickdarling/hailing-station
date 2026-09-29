@@ -142,7 +142,7 @@ def xcode_descendant_wrapper(root: Path, tree: Path) -> Path | None:
     return None
 
 
-def xcode_test_paths(tree: Path, problems: list[str] | None = None) -> list[Path]:
+def xcode_test_groups(tree: Path, problems: list[str] | None = None) -> list[list[Path]]:
     """Read the root XcodeGen spec, not generated projects or arbitrary nested manifests.
 
     A deliberately narrow subset: concrete test targets with unfiltered compile-source paths. Unsupported
@@ -193,7 +193,7 @@ def xcode_test_paths(tree: Path, problems: list[str] | None = None) -> list[Path
     if not isinstance(targets, dict):
         reject("project.yml targets must be a mapping")
         return []
-    roots = []
+    groups = []
     for name, target in targets.items():
         if not isinstance(target, dict) or target.get("type") not in ("bundle.ui-testing", "bundle.unit-test"):
             continue
@@ -207,6 +207,7 @@ def xcode_test_paths(tree: Path, problems: list[str] | None = None) -> list[Path
         if not isinstance(sources, list):
             reject(f"target {name} sources must be a path or a list of paths")
             continue
+        roots = []
         for source in sources:
             source_type = None
             if isinstance(source, dict):
@@ -231,27 +232,35 @@ def xcode_test_paths(tree: Path, problems: list[str] | None = None) -> list[Path
                     roots.append(root)
             else:
                 reject(f"target {name} source escapes the tree or traverses a symlink")
-    return roots
+        groups.append(list(dict.fromkeys(roots)))
+    return groups
 
 
-def test_target_paths(tree: Path, problems: list[str] | None = None) -> list[Path]:
-    """Union of SwiftPM and root XcodeGen test sources. Only a tree with neither manifest falls back
+def test_target_groups(tree: Path, problems: list[str] | None = None) -> list[list[Path]]:
+    """Keep each SwiftPM/Xcode target separate, even when names collide between manifests.
+    Only a tree with neither manifest falls back
     to Tests/. Removing declared targets must not make leftover source files satisfy the gate."""
     manifest = tree / "Package.swift"
     xcode_manifest = tree / "project.yml"
     if not any(p.exists() or p.is_symlink() for p in (manifest, xcode_manifest)):
-        return [tree / "Tests"]
+        return [[tree / "Tests"]]
     text = strip_code(manifest.read_text(errors="replace"), keep_strings=True) if manifest.is_file() and contained_path(manifest, tree) else ""
     names = re.findall(r'\.testTarget\(\s*name:\s*"([^"]+)"', text)
     explicit = dict(re.findall(r'\.testTarget\(\s*name:\s*"([^"]+)"[^)]*?path:\s*"([^"]+)"', text))
     roots = [(tree / explicit.get(name, f"Tests/{name}")) for name in names]
-    return list(dict.fromkeys([root for root in roots if contained_path(root, tree)] + xcode_test_paths(tree, problems)))
+    return [[root] for root in roots if contained_path(root, tree)] + xcode_test_groups(tree, problems)
 
 
-def suite_bodies(name: str, source: str) -> list[str]:
+def test_target_paths(tree: Path, problems: list[str] | None = None) -> list[Path]:
+    """Flattened path inventory only; suite presence must use test_target_groups instead."""
+    return list(dict.fromkeys(root for group in test_target_groups(tree, problems) for root in group))
+
+
+def suite_bodies(name: str, source: str, include_extensions: bool = True) -> list[str]:
     """Bodies of every `struct|class|enum|actor|extension <name> { ... }` in `source`, brace-matched."""
     bodies: list[str] = []
-    pattern = r"\b(?:struct|class|enum|actor|extension)\s+" + re.escape(name) + r"\b[^{]*\{"
+    kinds = "struct|class|enum|actor" + ("|extension" if include_extensions else "")
+    pattern = r"\b(?:" + kinds + r")\s+" + re.escape(name) + r"\b[^{]*\{"
     for match in re.finditer(pattern, source):
         depth, start = 1, match.end()
         for index in range(start, len(source)):
@@ -274,18 +283,21 @@ def expectations(spec_body: str) -> list[str]:
 
 def check(tokens: list[str], tree: Path) -> list[str]:
     problems: list[str] = []
-    swift_files = [
-        f for root in test_target_paths(tree, problems)
+    file_groups = [[
+        f for root in group
         for f in (root.rglob("*.swift") if root.is_dir() else [root] if root.is_file() and root.suffix == ".swift" else [])
         if contained_path(f, tree)
-    ]
-    sources = {f: strip_code(f.read_text(errors="replace")) for f in swift_files}
+    ] for group in test_target_groups(tree, problems)]
+    sources = {f: strip_code(f.read_text(errors="replace")) for group in file_groups for f in group}
     for token in tokens:
         if token.endswith("Tests"):
-            bodies = [body for source in sources.values() for body in suite_bodies(token, source)]
-            if not bodies:
+            declared_groups = [group for group in file_groups if any(
+                suite_bodies(token, sources[f], include_extensions=False) for f in group
+            )]
+            if not declared_groups:
                 problems.append(f"suite `{token}` not found under Tests/")
-            elif not any(HAS_TEST.search(body) for body in bodies):
+            elif not any(HAS_TEST.search(body) for group in declared_groups for f in group
+                         for body in suite_bodies(token, sources[f])):
                 problems.append(f"suite `{token}` exists but contains no tests")
         elif token.endswith((".py", ".sh")) or token.startswith(("scripts/tests/", "docs/testing/", "docs/")):
             if not (tree / token).exists():

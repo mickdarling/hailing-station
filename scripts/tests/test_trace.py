@@ -283,6 +283,68 @@ class TraceTests(unittest.TestCase):
         (self.tree / "Tests" / "AlphaTests" / "B.swift").write_text("extension AlphaTests { @Test func ok() {} }\n")
         self.assertEqual(tracer.check(["AlphaTests"], self.tree), [])
 
+    def test_extension_only_is_not_a_declared_suite(self):
+        self.alpha_suite("extension AlphaTests { @Test func ok() {} }")
+        for manifest in ("fallback", "swiftpm", "xcode"):
+            with self.subTest(manifest=manifest):
+                if manifest == "swiftpm":
+                    (self.tree / "Package.swift").write_text('.testTarget(name: "AlphaTests")')
+                elif manifest == "xcode":
+                    (self.tree / "Package.swift").unlink()
+                    self.xcode_project()
+                self.assertEqual(tracer.check(["AlphaTests"], self.tree),
+                                 ["suite `AlphaTests` not found under Tests/"])
+
+    def test_swiftpm_cross_target_extension_cannot_complete_suite(self):
+        self.alpha_suite("struct AlphaTests {}")
+        (self.tree / "Tests/BetaTests").mkdir()
+        (self.tree / "Tests/BetaTests/B.swift").write_text("extension AlphaTests { @Test func ok() {} }")
+        (self.tree / "Package.swift").write_text(
+            '.testTarget(name: "AlphaTests")\n.testTarget(name: "BetaTests")'
+        )
+        self.assertEqual(tracer.check(["AlphaTests"], self.tree),
+                         ["suite `AlphaTests` exists but contains no tests"])
+
+    def test_xcode_cross_target_extension_cannot_complete_suite(self):
+        self.alpha_suite("class AlphaTests: XCTestCase {}")
+        (self.tree / "Tests/BetaTests").mkdir()
+        (self.tree / "Tests/BetaTests/B.swift").write_text("extension AlphaTests { func testPresence() {} }")
+        (self.tree / "project.yml").write_text(
+            "targets:\n  First:\n    type: bundle.unit-test\n    sources: Tests/AlphaTests\n"
+            "  Second:\n    type: bundle.unit-test\n    sources: Tests/BetaTests\n"
+        )
+        self.assertEqual(tracer.check(["AlphaTests"], self.tree),
+                         ["suite `AlphaTests` exists but contains no tests"])
+
+    def test_mixed_same_named_targets_cannot_complete_each_others_suite(self):
+        (self.tree / "Tests/BetaTests").mkdir()
+        (self.tree / "Package.swift").write_text('.testTarget(name: "UI", path: "Tests/AlphaTests")')
+        self.xcode_project("Tests/BetaTests")  # Both manifest target names are UI, not AlphaTests.
+        for declaration_in in ("AlphaTests", "BetaTests"):
+            with self.subTest(declaration_in=declaration_in):
+                for name in ("AlphaTests", "BetaTests"):
+                    (self.tree / f"Tests/{name}/A.swift").write_text(
+                        "struct AlphaTests {}" if name == declaration_in else
+                        "extension AlphaTests { @Test func ok() {} }"
+                    )
+                self.assertEqual(tracer.check(["AlphaTests"], self.tree),
+                                 ["suite `AlphaTests` exists but contains no tests"])
+
+    def test_swiftpm_same_target_split_extension_is_supported_with_mixed_manifest(self):
+        self.alpha_suite("struct AlphaTests {}")
+        (self.tree / "Tests/AlphaTests/B.swift").write_text("extension AlphaTests { @Test func ok() {} }")
+        (self.tree / "Package.swift").write_text('.testTarget(name: "Unrelated", path: "Tests/AlphaTests")')
+        self.xcode_project("OtherTests")
+        self.assertEqual(tracer.check(["AlphaTests"], self.tree), [])
+
+    def test_xcode_same_target_multiple_roots_support_split_extension(self):
+        self.alpha_suite("struct AlphaTests {}")
+        (self.tree / "Checks").mkdir()
+        (self.tree / "Checks/B.swift").write_text("extension AlphaTests { @Test func ok() {} }")
+        self.xcode_project("[Tests/AlphaTests, {path: Checks/B.swift, type: file}]")
+        (self.tree / "Package.swift").write_text('.testTarget(name: "UI", path: "OtherTests")')
+        self.assertEqual(tracer.check(["AlphaTests"], self.tree), [])
+
     def test_partial_defers_only_named_expectations(self):
         problems, code = tracer.run(SPEC, self.tree, partial=True)
         self.assertTrue(problems)
