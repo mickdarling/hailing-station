@@ -25,7 +25,7 @@ The first supported environment is:
 
 - iOS and iPadOS terminals;
 - macOS hosts;
-- direct, authenticated connections over a private network; and
+- direct connections over a private network for personal testing (the current listener does not authenticate terminals or provide TLS; both are required before broader use); and
 - tmux as the first host adapter.
 
 Windows, Linux, Android, and browser terminals are outside the initial scope.

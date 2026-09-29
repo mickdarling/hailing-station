@@ -12,6 +12,8 @@ Hailing Station transports input to applications running on a Mac. A delivered t
 
 ## Required controls
 
+These are requirements, not a statement that the current personal-testing WebSocket implements them. Its listener has no TLS or terminal identity verification; a client-supplied device name is not authentication. Limit that mode to a trusted test environment while [#7](https://github.com/mickdarling/hailing-station/issues/7) and [#21](https://github.com/mickdarling/hailing-station/issues/21) remain open.
+
 - mutually authenticated terminal and host identities;
 - replay-resistant, confidential frames;
 - explicit target allowlists and delivery policy;
