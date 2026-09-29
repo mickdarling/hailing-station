@@ -88,11 +88,15 @@ actor ProviderCoordinatorGatedAdapter: Adapter {
 
 actor ProviderCoordinatorCancellationAdapter: Adapter {
     nonisolated let kind = "tmux"
+    private let cancelsAtEntry: Bool
     private(set) var deliveries: [String] = []
+
+    init(cancelsAtEntry: Bool = false) { self.cancelsAtEntry = cancelsAtEntry }
 
     func listTargets() async throws -> [AdapterTarget] { [ProviderCoordinatorRig.target] }
     func capture(_ target: String) async throws -> String { "" }
     func deliver(_ text: String, to target: String, binding: String?) async throws {
+        if cancelsAtEntry { withUnsafeCurrentTask { $0?.cancel() } }
         guard deliveries.isEmpty else { throw CancellationError() }
         deliveries.append(text)
     }
@@ -155,4 +159,31 @@ final class ProviderCoordinatorGatedStore: PolicyStore {
     }
 
     func release() { releaseGate.signal() }
+}
+
+extension ProviderInputCoordinatorTests {
+    @Test func cancellationAtCommittedAttemptPreservesFirstWriteAndStopsLaterLines() async throws {
+        for text in ["one", "one\ntwo"] {
+            let adapter = ProviderCoordinatorCancellationAdapter(cancelsAtEntry: true)
+            let rig = try await ProviderCoordinatorRig.make(adapter: adapter, tier: .confirm,
+                                                           sanitizing: .init(newlines: .split))
+            let outcome = try await rig.coordinator.submit(text, utteranceID: UUID())
+            guard case .needsConfirmation(let readBack) = outcome else {
+                Issue.record("expected confirmation")
+                return
+            }
+            let committed = Task {
+                try await rig.coordinator.submit(text, utteranceID: UUID(), confirmedHash: readBack.hash)
+            }
+            if text == "one" {
+                let turn = try rig.context(try await committed.value)
+                #expect(await rig.coordinator.state(for: turn.id) == .sent)
+            } else {
+                await #expect(throws: HostError.partial(delivered: ["one"], reason: "delivery cancelled")) {
+                    try await committed.value
+                }
+            }
+            #expect(await adapter.deliveries == ["one"])
+        }
+    }
 }

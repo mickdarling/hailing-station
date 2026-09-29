@@ -73,7 +73,8 @@ public actor HailHost {
         try requireExpectedBinding(expectedBinding, for: listed)
         // Refresh after listing before consuming a confirmation that may have waited on a policy change.
         if confirmedHash != nil { try refreshPolicy() }
-        // Synchronous policy-store I/O can outlast cancellation from another task; preserve the token.
+        // Commit the first dispatch attempt after policy I/O, before consuming one-shot confirmation.
+        // No further cancellation observation occurs before its adapter handoff; later lines may stop.
         try Task.checkCancellation()
         var request = DeliveryRequest(target: id, binding: listed.binding, lines: lines, device: device)
         // No suspension from here to the first evaluation: the consumed token cannot go stale in between.
@@ -81,7 +82,7 @@ public actor HailHost {
         let confirmedRevision = policyRevision
         var delivered: [String] = []
         for (index, line) in lines.enumerated() {
-            try requireUncancelledDelivery(delivered)
+            try requireUncancelledLaterLine(delivered, index: index)
             request.lines = Array(lines[index...])
             var decision = evaluator.evaluate(request, lockdown: lockdown.isOn, limiter: limiter, now: clock.now)
             // A confirmation turns a read-back into delivery and nothing else: every denial stands.
@@ -149,8 +150,8 @@ public actor HailHost {
     }
 }
 extension HailHost {
-    private func requireUncancelledDelivery(_ delivered: [String]) throws {
-        guard Task.isCancelled else { return }
+    private func requireUncancelledLaterLine(_ delivered: [String], index: Int) throws {
+        guard index > 0, Task.isCancelled else { return }
         throw preservingPartial(CancellationError(), delivered: delivered)
     }
 
