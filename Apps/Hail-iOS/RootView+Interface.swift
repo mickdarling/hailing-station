@@ -17,6 +17,9 @@ extension RootView {
         }
         .scrollDismissesKeyboard(.interactively)
         .background(Color(uiColor: .systemGroupedBackground))
+        .safeAreaInset(edge: .bottom, spacing: 0) {
+            StationBuildFooter()
+        }
         .onAppear { CapturePlaybackSuppression.releaseCompleted(using: playback) }
         .onChange(of: scenePhase) { _, phase in
             if phase == .active { CapturePlaybackSuppression.releaseCompleted(using: playback) }
