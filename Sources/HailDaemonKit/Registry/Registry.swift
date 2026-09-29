@@ -7,6 +7,14 @@ public enum RegistryError: Error, Equatable, Sendable {
     case duplicateKind(String)
     /// The id is not `<kind>:<name>` with a registered kind and a non-empty name.
     case unknownTarget(String)
+    case contextualDeliveryUnsupported
+}
+
+/// Optional structured input contract (#145), not a capture grant or observation subscription.
+/// Implementations must verify the exact binding immediately before side effects, just as legacy
+/// delivery does. Receiving context is not evidence of acceptance, output visibility, or completion.
+public protocol ProviderContextDelivering: Adapter {
+    func deliver(_ text: String, to target: String, binding: String, context: ProviderTurnContext) async throws
 }
 
 /// Owns the adapters and merges their targets under stable ids `<kind>:<name>` (#10 item 2).
@@ -81,9 +89,26 @@ public actor Registry {
 
     /// `binding` is the value from the listing that authorised this delivery (#41); the adapter refuses a
     /// target whose binding changed since.
-    package func deliver(_ text: String, to id: String, binding: String?) async throws {
+    package func requireContextDelivery(_ context: ProviderTurnContext) throws {
+        let (adapter, _) = try resolve(context.binding.targetID)
+        guard context.binding.providerID == adapter.kind else { throw ProviderContractError.wrongContext }
+        guard adapter is any ProviderContextDelivering else { throw RegistryError.contextualDeliveryUnsupported }
+    }
+
+    package func deliver(
+        _ text: String, to id: String, binding: String?, context: ProviderTurnContext? = nil
+    ) async throws {
         let (adapter, name) = try resolve(id)
-        try await adapter.deliver(text, to: name, binding: binding)
+        if let context {
+            guard context.binding.targetID == id, context.binding.providerID == adapter.kind,
+                  context.binding.sessionID == binding else { throw ProviderContractError.wrongContext }
+            guard let contextual = adapter as? any ProviderContextDelivering else {
+                throw RegistryError.contextualDeliveryUnsupported
+            }
+            try await contextual.deliver(text, to: name, binding: context.binding.sessionID, context: context)
+        } else {
+            try await adapter.deliver(text, to: name, binding: binding)
+        }
     }
 
     package func escape(_ id: String, binding: String?) async throws {

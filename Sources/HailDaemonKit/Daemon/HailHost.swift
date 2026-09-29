@@ -58,6 +58,31 @@ public actor HailHost {
         _ text: String, to id: String, from device: String = "keyboard", confirmedHash: String? = nil,
         expectedBinding: String? = nil
     ) async throws -> SendOutcome {
+        try await dispatch(text, request: DispatchRequest(
+            target: id, device: device, confirmedHash: confirmedHash, expectedBinding: expectedBinding, turn: nil
+        ))
+    }
+
+    /// Explicit structured dispatch; capabilities and context do not bypass any delivery policy.
+    public func send(
+        _ text: String, context: ProviderTurnContext, from device: String = "keyboard", confirmedHash: String? = nil
+    ) async throws -> SendOutcome {
+        try await dispatch(text, request: DispatchRequest(
+            target: context.binding.targetID, device: device, confirmedHash: confirmedHash,
+            expectedBinding: context.binding.sessionID, turn: context
+        ))
+    }
+
+    private struct DispatchRequest {
+        let target: String
+        let device: String
+        let confirmedHash: String?
+        let expectedBinding: String?
+        let turn: ProviderTurnContext?
+    }
+
+    private func dispatch(_ text: String, request dispatch: DispatchRequest) async throws -> SendOutcome {
+        let id = dispatch.target
         try requireSendPreflight()
         let lines: [String]
         do {
@@ -65,20 +90,13 @@ public actor HailHost {
         } catch let error as SanitizeError {
             throw HostError.refused(error)
         }
-        let listed = try await listed(id)
-        // Listing may suspend even for a cancelled caller. Stop before consuming confirmation or writing.
-        try Task.checkCancellation()
-        // A coordinator's observation must identify the same application that this dispatch authorizes.
-        // Check before consuming confirmation authority or handing any text to the adapter.
-        try requireExpectedBinding(expectedBinding, for: listed)
-        // Refresh after listing before consuming a confirmation that may have waited on a policy change.
-        if confirmedHash != nil { try refreshPolicy() }
+        let listed = try await dispatchListing(dispatch)
         // Commit the first dispatch attempt after policy I/O, before consuming one-shot confirmation.
         // No further cancellation observation occurs before its adapter handoff; later lines may stop.
         try Task.checkCancellation()
-        var request = DeliveryRequest(target: id, binding: listed.binding, lines: lines, device: device)
+        var request = DeliveryRequest(target: id, binding: listed.binding, lines: lines, device: dispatch.device)
         // No suspension from here to the first evaluation: the consumed token cannot go stale in between.
-        let confirmed = consume(confirmedHash, for: request)
+        let confirmed = consume(dispatch.confirmedHash, for: request)
         let confirmedRevision = policyRevision
         var delivered: [String] = []
         for (index, line) in lines.enumerated() {
@@ -101,7 +119,7 @@ public actor HailHost {
             // an attempt the adapter then refuses still spent its slot (fail closed).
             limiter.record(request, at: clock.now)
             do {
-                try await registry.deliver(line, to: id, binding: listed.binding)
+                try await registry.deliver(line, to: id, binding: listed.binding, context: dispatch.turn)
             } catch {
                 throw preservingPartial(error, delivered: delivered)
             }
@@ -150,6 +168,17 @@ public actor HailHost {
     }
 }
 extension HailHost {
+    private func dispatchListing(_ request: DispatchRequest) async throws -> Registry.Listed {
+        let listed = try await listed(request.target)
+        try Task.checkCancellation()
+        // Context and capability are checked before consuming confirmation or making an adapter attempt.
+        try requireExpectedBinding(request.expectedBinding, for: listed)
+        if let context = request.turn { try await registry.requireContextDelivery(context) }
+        // Reload after any listing/capability suspension before consuming a one-shot confirmation.
+        if request.confirmedHash != nil { try refreshPolicy() }
+        return listed
+    }
+
     private func requireUncancelledLaterLine(_ delivered: [String], index: Int) throws {
         guard index > 0, Task.isCancelled else { return }
         throw preservingPartial(CancellationError(), delivered: delivered)
