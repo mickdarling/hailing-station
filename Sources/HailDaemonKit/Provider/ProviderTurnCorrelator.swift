@@ -53,13 +53,20 @@ public struct ProviderTurnCorrelator: Sendable {
         self.maxEvents = maxEvents
     }
 
-    /// Call only after authorized dispatch reports a successful write. This claims sent, not accepted.
-    public mutating func recordSent(_ context: ProviderTurnContext) throws {
+    /// Checks admission before dispatch without claiming sent or consuming retention capacity.
+    /// The owner must reserve exclusive submission across awaited I/O until `recordSent` completes.
+    public func validateSent(_ context: ProviderTurnContext) throws {
         guard context.binding == binding, context.connectionID == connectionID else {
             throw ProviderContractError.wrongContext
         }
         guard contexts[context.id] == nil else { throw ProviderContractError.duplicateTurn }
         guard contexts.count < maxTurns else { throw ProviderContractError.capacityExceeded }
+        guard seenEvents.count < maxEvents else { throw ProviderContractError.capacityExceeded }
+    }
+
+    /// Call only after authorized dispatch reports a successful write. This claims sent, not accepted.
+    public mutating func recordSent(_ context: ProviderTurnContext) throws {
+        try validateSent(context)
         contexts[context.id] = context
         states[context.id] = .sent
     }
