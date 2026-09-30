@@ -26,10 +26,15 @@ private struct ReplyOptions {
     var pcm16: URL?
     var say: String?
     var requestID: UUID?
+    var rendererOutputRoot: URL?
     var sampleRate = 24_000
     var socket = LocalReplyEndpoint.standardSocket()
 
     mutating func apply(_ flag: String, value: String) throws {
+        if flag == "--renderer-output-root" {
+            rendererOutputRoot = URL(fileURLWithPath: value, isDirectory: true)
+            return
+        }
         switch flag {
         case "--host": host = value
         case "--text": text = value
@@ -44,13 +49,15 @@ private struct ReplyOptions {
             sampleRate = rate
         case "--socket": socket = URL(fileURLWithPath: value)
         case "--request":
-            guard let id = UUID(uuidString: value) else {
-                throw ReplyCommandError.invalid("request must be a UUID")
-            }
-            requestID = id
+            requestID = try parseReplyRequest(value)
         default: throw ReplyCommandError.usage
         }
     }
+}
+
+private func parseReplyRequest(_ value: String) throws -> UUID {
+    guard let id = UUID(uuidString: value) else { throw ReplyCommandError.invalid("request must be a UUID") }
+    return id
 }
 
 private struct PCMReplyContext {
@@ -63,6 +70,8 @@ private struct PCMReplyContext {
 
 func reply(_ arguments: ArraySlice<String>) async throws {
     let options = try replyOptions(arguments)
+    let rendererRoot = options.rendererOutputRoot ?? FileManager.default.temporaryDirectory
+    if options.say != nil { try OwnedReplyRenderer.validateOutputRoot(rendererRoot) }
     let streamID = (options.pcm16 != nil || options.say != nil) ? UUID() : nil
     let descriptor = ReplyDescriptor(
         id: UUID(), hostID: options.host, targetID: options.target, audioStreamID: streamID,
@@ -93,7 +102,7 @@ func reply(_ arguments: ArraySlice<String>) async throws {
             sampleRate: options.sampleRate, streamID: streamID, descriptor: descriptor,
             socket: options.socket, frameLimit: audioFrameLimit
         )
-        let result = try await streamVBSay(spoken, context: context)
+        let result = try await streamVBSay(spoken, outputRoot: rendererRoot, context: context)
         frames += result.frames
         deliveries += result.deliveries
     }
@@ -120,6 +129,7 @@ private func replyOptions(_ arguments: ArraySlice<String>) throws -> ReplyOption
     if options.say != nil, options.sampleRate != 24_000 {
         throw ReplyCommandError.invalid("vbsay output is fixed at 24000 Hz")
     }
+    if options.rendererOutputRoot != nil, options.say == nil { throw ReplyCommandError.usage }
     return options
 }
 
@@ -167,28 +177,47 @@ private func sendPCMFile(
 }
 
 // Generation, incremental publication, finalization, and child cleanup form one failure boundary.
-// swiftlint:disable:next function_body_length
 private func streamVBSay(
-    _ text: String, context: PCMReplyContext
+    _ text: String, outputRoot: URL, context: PCMReplyContext
 ) async throws -> (frames: Int, deliveries: Int) {
-    let directory = FileManager.default.temporaryDirectory.appendingPathComponent(
-        "hailing-vbsay-\(UUID().uuidString)", isDirectory: true
+    let renderer = try OwnedReplyRenderer(
+        text: text, outputRoot: outputRoot, environment: ProcessInfo.processInfo.environment
     )
-    try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: false)
-    defer { try? FileManager.default.removeItem(at: directory) }
-    let process = try startVBSay(text, outputDirectory: directory)
-    defer {
-        if process.isRunning {
-            process.terminate()
-            process.waitUntilExit()
+    do {
+        let result = try await withTaskCancellationHandler {
+            try await publishRenderer(renderer, context: context)
+        } onCancel: {
+            renderer.cancel()
         }
+        renderer.retire(cancel: false)
+        try await renderer.waitForCleanup()
+        return result
+    } catch {
+        renderer.retire(cancel: true)
+        await renderer.waitForCancellationSignals()
+        // The CLI must remain alive to retain reaping/cleanup ownership. This async suspension is not
+        // a fixed kernel deadline; whole-job deadline supervision belongs to the separate #177 owner.
+        do { try await renderer.waitForCleanup() } catch OwnedReplyRendererError.cleanupDeferred {
+            if error is CancellationError { throw OwnedReplyRendererError.cancelled }
+            if error is OwnedReplyRendererError { throw error }
+            throw OwnedReplyRendererError.cleanupDeferred
+        }
+        if error is CancellationError { throw OwnedReplyRendererError.cancelled }
+        if error is OwnedReplyRendererError || error is ReplyCommandError || error is ReplyClientError { throw error }
+        throw OwnedReplyRendererError.invalidAudio
     }
+}
 
+// Streaming and terminal-marker recovery share their existing single publication failure boundary.
+private func publishRenderer(
+    _ renderer: OwnedReplyRenderer, context: PCMReplyContext
+) async throws -> (frames: Int, deliveries: Int) {
+    let directory = renderer.outputDirectory
     var observed: [URL: Int] = [:]
     var sent: Set<URL> = []
     var sequence = 0, deliveries = 0
     do {
-        while process.isRunning {
+        while renderer.isRunning {
             let result = try await sendStableVBSayFiles(
                 in: directory, observed: &observed, sent: &sent, sequence: sequence,
                 context: context
@@ -197,10 +226,7 @@ private func streamVBSay(
             deliveries += result.deliveries
             try await Task.sleep(for: .milliseconds(100))
         }
-        process.waitUntilExit()
-        guard process.terminationStatus == 0 else {
-            throw ReplyCommandError.invalid("vbsay exited with status \(process.terminationStatus)")
-        }
+        try await renderer.requireSuccessfulExit()
         // A file can complete between the final poll and process exit; two passes establish stability.
         for _ in 0..<2 {
             let result = try await sendStableVBSayFiles(
@@ -230,20 +256,6 @@ private func sendFinalPCM(sequence: Int, context: PCMReplyContext) async throws 
         timestamp: replyTimestamp(), target: context.descriptor.targetID, source: context.descriptor.hostID,
         payload: .audio(final)
     ), socketURL: context.socket)
-}
-
-private func startVBSay(_ text: String, outputDirectory: URL) throws -> Process {
-    let process = Process()
-    process.executableURL = URL(fileURLWithPath: "/usr/bin/env")
-    process.arguments = ["vbsay", text]
-    var environment = ProcessInfo.processInfo.environment
-    environment["VBSAY_NOPLAY"] = "1"
-    environment["VBSAY_OUT"] = outputDirectory.path
-    environment["VBSAY_CHUNK"] = environment["VBSAY_CHUNK"] ?? "160"
-    process.environment = environment
-    process.standardOutput = FileHandle.nullDevice
-    try process.run()
-    return process
 }
 
 private func sendStableVBSayFiles(
