@@ -32,8 +32,9 @@ import Testing
 
     @Test(arguments: ["bridge\u{009b}", "bridge\u{202e}", "bridge\u{2066}"])
     func directProfileConstructionAlsoRejectsUnicodeControls(name: String) throws {
+        let runner = FakeCommandRunner.serving(SessionListing(bridgeListing))
         #expect(throws: TmuxReplyAdapterError.invalidConfiguration) {
-            try TmuxReplyAdapter(terminal: TmuxAdapter(runner: FakeCommandRunner()), targets: [name])
+            try TmuxReplyAdapter(terminal: TmuxAdapter(runner: runner), targets: [name])
         }
     }
 
