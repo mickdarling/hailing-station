@@ -33,6 +33,7 @@ public actor HailHost {
     private let window: Duration
     private var policy: Policy
     private var policyRevision = UUID()
+    private let replyPublicationAuthority = ReplyPublicationAuthority()
     private var evaluator: PolicyEvaluator
     private var limiter = RateLimiter()
     private var pending: [String: ContinuousClock.Instant] = [:]
@@ -62,6 +63,14 @@ public actor HailHost {
     public func listingFailures() async -> [String: String] { await registry.lastFailures }
     public var currentPolicy: Policy { policy }
     public nonisolated var policySummary: String { store.summary }
+    /// In-memory policy only, not a registry/binding lease or recipient grant. No suspension occurs
+    /// between this coherent actor-state check and issuance; later publication must execute under it.
+    package func replyPublicationPermit(for binding: ProviderSessionBinding) -> ReplyPublicationPermit? {
+        guard policyFailure == nil, !lockdown.isOn,
+              let allowed = policy.targets[binding.targetID], allowed.binding == binding.sessionID,
+              allowed.tier != .locked else { return nil }
+        return replyPublicationAuthority.issuePermit()
+    }
     /// Sanitises `text`, asks the policy, and delivers line by line to `id`. A `needsConfirmation` outcome
     /// carries the read-back; send the same text again with its `hash` as `confirmedHash` to deliver.
     @discardableResult
@@ -280,9 +289,19 @@ extension HailHost {
     /// One store transaction: applied to what is stored now (not this process's snapshot), compiled
     /// before it is written, then adopted here; memory never holds a policy the store does not.
     private func commit(_ change: (inout Policy) throws -> Void) throws {
-        let update = try store.update { policy in
-            try change(&policy)
-            _ = try PolicyEvaluator(policy: policy)
+        let update: PolicyUpdate
+        do {
+            update = try store.update { policy in
+                try change(&policy)
+                _ = try PolicyEvaluator(policy: policy)
+            }
+        } catch {
+            // Unknown transaction phases cannot prove continuous authority, even after a repair.
+            // Retire reply permits conservatively; unchanged save failures keep generic confirmations.
+            // Reconcile the current view and preserve the original transaction diagnostic.
+            replyPublicationAuthority.invalidate()
+            _ = try? refreshPolicy()
+            throw error
         }
         let compiled: PolicyEvaluator
         do {
@@ -292,9 +311,9 @@ extension HailHost {
             policyFailure = "\(error)"
             throw error
         }
+        revokeAuthority()
         policy = update.policy
         evaluator = compiled
-        revokeAuthority()
         if let failure = update.durabilityFailure { throw failure }
     }
     private func refreshPolicy() throws {
@@ -344,5 +363,10 @@ extension HailHost {
         }
         return clock.now - issued < window
     }
-    func revokeAuthority() { (pending, policyRevision) = ([:], UUID()) }
+    /// The synchronized invalidation is the reply revocation boundary. A completed policy/lockdown
+    /// mutation has invalidated every earlier permit; publication already inside its gate finishes first.
+    func revokeAuthority() {
+        replyPublicationAuthority.invalidate()
+        (pending, policyRevision) = ([:], UUID())
+    }
 }
