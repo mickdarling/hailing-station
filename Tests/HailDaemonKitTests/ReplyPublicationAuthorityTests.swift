@@ -30,6 +30,15 @@ private final class PublicationTestEvents: Sendable {
     var snapshot: [String] { events.withLock { $0 } }
 }
 
+/// Blocking test operations run off Swift's cooperative executor; the test can always release its gate.
+private enum PublicationTestWorker {
+    static func run<Result: Sendable>(_ operation: @escaping @Sendable () -> Result) async -> Result {
+        await withCheckedContinuation { continuation in
+            DispatchQueue.global().async { continuation.resume(returning: operation()) }
+        }
+    }
+}
+
 @Suite struct ReplyPublicationAuthorityTests {
     @Test func invalidationPermanentlyRetiresOldPermitsWithoutExecutingTheirOperation() {
         let authority = ReplyPublicationAuthority()
@@ -66,16 +75,16 @@ private final class PublicationTestEvents: Sendable {
         let publication = PublicationTestBarrier()
         let revocation = PublicationTestBarrier()
         let events = PublicationTestEvents()
-        let publishing = Task.detached {
+        async let publishing: Bool = PublicationTestWorker.run {
             permit.performIfCurrent {
                 events.append("publication entered")
                 publication.hold()
                 events.append("publication committed")
                 return true
-            }
+            } == true
         }
         await publication.wait()
-        let revoking = Task.detached {
+        async let revoking: Void = PublicationTestWorker.run {
             events.append("revocation invoked")
             revocation.signal()
             authority.invalidate()
@@ -84,8 +93,9 @@ private final class PublicationTestEvents: Sendable {
         await revocation.wait()
         #expect(events.snapshot == ["publication entered", "revocation invoked"])
         publication.release()
-        #expect(await publishing.value == true)
-        await revoking.value
+        let published = await publishing
+        #expect(published)
+        await revoking
         #expect(events.snapshot == [
             "publication entered", "revocation invoked", "publication committed", "revocation completed"
         ])

@@ -71,3 +71,24 @@ After the blocking independent-review finding about an exception from
   separate regression proves unchanged failed saves preserve generic confirmed
   dispatch while retiring old reply permits. These are synthetic checks, not
   integrated publication or device proof. Independent re-review is still required.
+
+The GitHub verify job for `60861714` subsequently failed the publication barrier
+watchdog at 15 seconds. Both semaphore-held publication and mutex-blocked
+revocation had been scheduled as `Task.detached` operations; this is consistent
+with starving Swift's cooperative executor on the smaller concurrent CI runner.
+The test now runs those deliberately blocking operations on `DispatchQueue.global`
+with checked continuations. Its causal event-order assertions and 15-second
+watchdog are unchanged; no production authority code changes. Source version
+advances to 0.1.36. Fresh full verification and exact-head review are required.
+
+An attempted restricted-pool diagnostic applied the environment to SwiftPM itself
+and stalled before test startup; it is not test evidence. No restricted-pool
+success or direct root-cause measurement is claimed. The isolated launcher and
+its worktree are retained rather than bypassing process safety controls.
+
+The corrected dispatch-worker source passed a fresh standard scratch-directory
+warnings-as-errors run of the same focused suites: 66 tests in 11 suites.
+Repository-wide strict uncached lint and `git diff --check` passed. The first
+dispatch-worker compile flagged an implicit `Void` async-let warning; the explicit
+annotation and a non-optional Boolean result also satisfy the existing lint rules.
+No watchdog or production gate semantics were changed to obtain these results.
