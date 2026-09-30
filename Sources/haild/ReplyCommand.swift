@@ -308,15 +308,28 @@ private enum ReplyClient {
             throw ReplyClientError.failed("frame too large")
         }
         request.append(UInt8(ascii: "\n"))
-        while true {
+        // Only this typed refusal promises that nothing was published. Keep the exact encoded frame
+        // across retries; an ambiguous socket/send failure is never safe to retry automatically.
+        let retryWindow = CorrelatedReplyRetryWindow()
+        for attempt in 0..<CorrelatedReplyRetryWindow.maximumAttempts {
+            try Task.checkCancellation()
+            guard retryWindow.canStart(attempt: attempt) else {
+                throw ReplyClientError.refused("reply request did not become ready within the retry budget")
+            }
             let response = try await ReplyTransaction(socketURL: socketURL).perform(request)
-            if response.error == "rate limited" {
-                try await Task.sleep(for: .seconds(1))
+            if response.code == .requestPending, response.delivered == 0 {
+                guard try await retryWindow.waitForRetry(after: attempt) else {
+                    throw ReplyClientError.refused("reply request did not become ready within the retry budget")
+                }
                 continue
             }
             if let error = response.error { throw ReplyClientError.refused(error) }
+            guard response.code == nil, response.delivered == 1 else {
+                throw ReplyClientError.refused("reply requires exactly one recipient")
+            }
             return response.delivered
         }
+        throw ReplyClientError.refused("reply retry budget exhausted")
     }
 }
 
