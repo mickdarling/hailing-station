@@ -1,6 +1,7 @@
 // The host's policy transaction helpers intentionally remain beside the actor state they protect.
 // swiftlint:disable file_length
 import Foundation
+import Synchronization
 public import HailProtocol
 public enum HostError: Error, Equatable, Sendable {
     case unknownTarget(String)
@@ -9,6 +10,16 @@ public enum HostError: Error, Equatable, Sendable {
     case denied(Denial)
     case partial(delivered: [String], reason: String)
     case policyUnavailable(String)
+}
+final class ObservationCleanup: Sendable {
+    private let lease: Mutex<ProviderObservation?>
+    private let stopping = Mutex(false)
+    init(_ lease: ProviderObservation) { self.lease = Mutex(lease) }
+    var isStopping: Bool { stopping.withLock { $0 } }
+    func cancel(stopping: Bool = false) {
+        if stopping { self.stopping.withLock { $0 = true } }
+        lease.withLock { value in let old = value; value = nil; return old }?.cancel()
+    }
 }
 /// Host composition root (#10): registry, policy (#41), and a sanitised path re-evaluated before every line.
 public actor HailHost {
@@ -168,6 +179,65 @@ public actor HailHost {
     }
 }
 extension HailHost {
+    /// A trusted local scope. Consumer return always ends capture; no listener path calls this API.
+    public func withObservedSession<Result: Sendable>(
+        target: String, configuration: ProviderObservedSession.Configuration = .init(),
+        operation: @escaping @Sendable (ProviderObservedSession) async throws -> Result
+    ) async throws -> Result {
+        guard case .contextual = configuration.input.deliveryMode else {
+            throw ProviderObservedSessionError.legacyInputUnsupported
+        }
+        guard configuration.pollInterval > .zero, configuration.pollInterval <= .seconds(1),
+              (1...ProviderEventLimits.maxBufferedEvents).contains(configuration.maxQueuedEvents),
+              (1...4_194_304).contains(configuration.maxQueuedTextBytes) else {
+            throw ProviderContractError.invalidCapacity
+        }
+        let (binding, lease) = try await openObservation(target, hostID: configuration.hostID)
+        let cleanup = ObservationCleanup(lease)
+        defer { cleanup.cancel() }
+        let owner = try ProviderObservedSession(host: self, binding: binding, config: configuration, cleanup: cleanup)
+        return try await withTaskCancellationHandler {
+            try await owner.run(lease, operation: operation)
+        } onCancel: { cleanup.cancel(stopping: true); Task { await owner.stop() } }
+    }
+
+    /// Host-local acquisition only. No caller-supplied session binding or cached capture grant.
+    package func openObservation(
+        _ id: String, hostID: String
+    ) async throws -> (ProviderSessionBinding, ProviderObservation) {
+        let target = try await captureListing(id)
+        guard let sessionID = target.binding else { throw ProviderObservedSessionError.captureDenied }
+        let binding = try ProviderSessionBinding(hostID: hostID, providerID: target.info.kind,
+                                                targetID: id, sessionID: sessionID)
+        let lease = try await registry.observe(binding)
+        do {
+            // Startup may suspend through revocation, cancellation or replacement.
+            try await validateObservation(binding)
+            return (binding, lease)
+        } catch {
+            lease.cancel()
+            throw error
+        }
+    }
+
+    package func validateObservation(_ binding: ProviderSessionBinding) async throws {
+        let target = try await captureListing(binding.targetID)
+        guard target.binding == binding.sessionID, target.info.kind == binding.providerID else {
+            throw ProviderObservedSessionError.captureDenied
+        }
+    }
+
+    private func captureListing(_ id: String) async throws -> Registry.Listed {
+        try Task.checkCancellation()
+        let target = try await listed(id)
+        try refreshPolicy() // Unlike requirePolicy, every observation check reads current authority.
+        try Task.checkCancellation()
+        guard evaluator.mayCapture(target: id, binding: target.binding, lockdown: lockdown.isOn) else {
+            throw ProviderObservedSessionError.captureDenied
+        }
+        return target
+    }
+
     private func dispatchListing(_ request: DispatchRequest) async throws -> Registry.Listed {
         let listed = try await listed(request.target)
         try Task.checkCancellation()
