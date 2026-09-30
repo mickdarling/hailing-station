@@ -4,6 +4,18 @@ import Testing
 @testable import HailDaemonKit
 
 @Suite struct ReplyPlaybackRecipientLifecycleTests {
+    @Test(arguments: [-60_000, 604_800_000])
+    func wallClockChangesCannotAlterMonotonicReplyLifetime(adjustment: Int64) async throws {
+        let rig = try await RecipientTestRig.make()
+        let session = await rig.session()
+        let descriptor = recipientDescriptor(try await rig.submit(on: session), audio: true)
+        rig.clock.advance(100_000)
+        rig.clock.adjustWallClock(adjustment)
+        #expect(await session.acceptsHostReply(recipientText(descriptor)))
+        rig.clock.advance(20_000)
+        #expect(!(await session.acceptsHostReply(recipientAudio(descriptor, sequence: 0, final: true))))
+    }
+
     @Test func changingDestinationInvalidatesTextAndAlreadyStartedAudioEvenAfterReturning() async throws {
         let rig = try await RecipientTestRig.make()
         let session = await rig.session()

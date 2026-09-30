@@ -72,7 +72,7 @@ extension HostSession {
         pruneReplyRequests()
         guard case .ready = state, generation == selectionGeneration, selectedTarget == target,
               replyRequests.count < HostReplyRequest.capacity else { throw ProviderContractError.capacityExceeded }
-        replyRequests[context.id] = HostReplyRequest(context: context, generation: generation, createdAt: now())
+        replyRequests[context.id] = HostReplyRequest(context: context, generation: generation, createdAt: requestClock())
         return context
     }
 

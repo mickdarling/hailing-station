@@ -7,8 +7,8 @@ evidence.
 
 ## Request contract and current implementation boundaries
 
-`ReplyDescriptor.requestID` is an optional UUID encoded as `request`. The host will
-mint it when accepting a request and bind it to the actual requesting connection,
+`ReplyDescriptor.requestID` is an optional UUID encoded as `request`. The host
+mints it when accepting contextual input and binds it to the actual requesting connection,
 selection generation and exact target binding. The same descriptor, including
 this request reference, accompanies final text and every audio segment. It is
 distinct from the reply ID and audio stream ID. A string supplied by a caller is
@@ -23,8 +23,8 @@ speaker, infer an origin, or establish a request merely by accepting a flag.
 The field is optional in protocol v1. Existing peers can decode old descriptors
 and ignore unknown fields, while omitted request references remain uncorrelated.
 An explicitly null, non-string or malformed request is rejected, not silently
-downgraded to a legacy reply. Decoding compatibility is not routing compatibility: the future
-origin-bound publisher must never silently broadcast an ambiguous personal
+downgraded to a legacy reply. Decoding compatibility is not routing compatibility: the
+origin-bound publisher never silently broadcasts an ambiguous personal
 reply. No new negotiation capability is advertised in this contract-only slice.
 
 Host ingress and publication now enforce connection-owned request identity as
