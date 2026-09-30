@@ -19,6 +19,8 @@ func parseBindAddress(_ address: String) -> (host: NWEndpoint.Host, canonical: S
     return nil
 }
 
+// Lifecycle retirement and protocol closure remain one peer boundary.
+// swiftlint:disable type_body_length
 /// One socket and one `HostSession`; receive calls are serialized per peer while different peers progress
 /// independently. The parent listener owns bounded admission and shutdown.
 actor WebSocketPeer {
@@ -30,7 +32,7 @@ actor WebSocketPeer {
     private let log: @Sendable (WebSocketListenerEvent) -> Void
     private let onEnd: @Sendable (UUID) -> Void
     private var helloTimer: Task<Void, Never>?
-    private let replyAuthority = ReplyPublicationAuthority()
+    private let replyTransport = ReplyTransportLifecycle()
     private let submitClose: @Sendable (@escaping @Sendable () -> Void) -> Void
     private var closing = false
     var ended = false
@@ -60,7 +62,11 @@ actor WebSocketPeer {
     }
 
     func start() {
-        connection.stateUpdateHandler = { [weak self] state in
+        connection.stateUpdateHandler = { [weak self, replyTransport] state in
+            switch state {
+            case .failed, .cancelled: replyTransport.retire()
+            default: break
+            }
             Task { await self?.connectionChanged(state) }
         }
         startHelloTimer()
@@ -163,7 +169,7 @@ actor WebSocketPeer {
         guard !ended, !closing else { return }
         closing = true
         // Refuse reply publication before the close frame is submitted, not after its completion.
-        replyAuthority.invalidate()
+        replyTransport.retire()
         await withCheckedContinuation { continuation in
             submitClose { continuation.resume() }
         }
@@ -173,7 +179,7 @@ actor WebSocketPeer {
     func finish(reason: String) {
         guard !ended else { return }
         // Complete invalidation before closure returns. Previously prepared replies cannot enqueue later.
-        replyAuthority.invalidate()
+        replyTransport.retire()
         ended = true
         helloTimer?.cancel()
         helloTimer = nil
@@ -186,30 +192,85 @@ actor WebSocketPeer {
         log(WebSocketListenerEvent(event: event, sessionID: id, endpoint: endpoint, detail: detail))
     }
 }
+// swiftlint:enable type_body_length
 
 extension WebSocketPeer {
     /// Preparation is not an enqueue grant; its transport permit must remain current at final admission.
     func prepareReplyPublication(_ frame: Frame) -> PreparedWebSocketReply? {
-        guard !ended, !closing, !Task.isCancelled, let data = try? FrameCoding.encode(frame) else { return nil }
-        return PreparedWebSocketReply(data: data, connection: connection, authority: replyAuthority)
+        guard !ended, !closing, !Task.isCancelled, let data = try? FrameCoding.encode(frame),
+              let permit = replyTransport.issuePermit() else { return nil }
+        return PreparedWebSocketReply(data: data, connection: connection, permit: permit)
     }
 
     func send(_ frame: Frame) async -> Bool {
         guard !ended, !closing, !Task.isCancelled else { return false }
-        guard let data = try? FrameCoding.encode(frame) else { return false }
+        guard let data = try? FrameCoding.encode(frame), let permit = replyTransport.issuePermit() else { return false }
         let metadata = NWProtocolWebSocket.Metadata(opcode: .text)
         let context = NWConnection.ContentContext(identifier: "hail.frame", metadata: [metadata])
         return await withTaskCancellationHandler {
             await withCheckedContinuation { continuation in
-                connection.send(
-                    content: data, contentContext: context, isComplete: true,
-                    completion: .contentProcessed { continuation.resume(returning: $0 == nil) }
-                )
+                let submitted = permit.performIfCurrent {
+                    connection.send(
+                        content: data, contentContext: context, isComplete: true,
+                        completion: .contentProcessed { continuation.resume(returning: $0 == nil) }
+                    )
+                    return true
+                } ?? false
+                if !submitted { continuation.resume(returning: false) }
             }
-        } onCancel: {
+        } onCancel: { [replyTransport, connection] in
+            replyTransport.retire()
             connection.cancel()
         }
     }
+}
+
+/// One peer's terminal lifecycle. Unlike restorable policy authority, retired transport never reopens.
+/// Preparation and submission share this lock; revision rotation cannot issue a fresh usable ticket.
+final class ReplyTransportLifecycle: Sendable {
+    private let retired = Mutex(false)
+    private let authority = ReplyPublicationAuthority()
+
+    func issuePermit() -> ReplyTransportPermit? {
+        retired.withLock { retired in
+            guard !retired else { return nil }
+            return ReplyTransportPermit(lifecycle: self, permit: authority.issuePermit())
+        }
+    }
+
+    func retire() {
+        retired.withLock { retired in
+            guard !retired else { return }
+            retired = true
+            authority.invalidate()
+        }
+    }
+
+    fileprivate func performIfCurrent<Result: Sendable>(
+        _ permit: ReplyPublicationPermit, operation: () throws -> Result
+    ) rethrows -> Result? {
+        try retired.withLock { retired in
+            guard !retired else { return nil }
+            return try permit.performIfCurrent(operation)
+        }
+    }
+}
+
+/// Immutable peer-scoped transport evidence; no cached active Boolean escapes to a later enqueue.
+struct ReplyTransportPermit: Sendable {
+    private let lifecycle: ReplyTransportLifecycle
+    private let permit: ReplyPublicationPermit
+
+    fileprivate init(lifecycle: ReplyTransportLifecycle, permit: ReplyPublicationPermit) {
+        self.lifecycle = lifecycle
+        self.permit = permit
+    }
+
+    func performIfCurrent<Result: Sendable>(_ operation: () throws -> Result) rethrows -> Result? {
+        try lifecycle.performIfCurrent(permit, operation: operation)
+    }
+
+    func retireTransport() { lifecycle.retire() }
 }
 
 /// Immutable transport submission. HostSession supplies the policy/binding/local-state critical section;
@@ -218,6 +279,7 @@ final class PreparedWebSocketReply: Sendable {
     private final class WaiterOwner: Sendable {}
     private enum Completion {
         case pending
+        case cancelling
         case finished(Bool)
     }
     private struct State {
@@ -227,25 +289,25 @@ final class PreparedWebSocketReply: Sendable {
         var waiterOwner: WaiterOwner?
     }
     private let state = Mutex(State())
-    private let permit: ReplyPublicationPermit
+    private let permit: ReplyTransportPermit
     private let submit: @Sendable (@escaping @Sendable (Bool) -> Void) -> Void
     private let cancel: @Sendable () -> Void
     private let waiterAdmitted: @Sendable () -> Void
 
-    convenience init(data: Data, connection: NWConnection, authority: ReplyPublicationAuthority) {
-        self.init(permit: authority.issuePermit(), submit: { completion in
+    convenience init(data: Data, connection: NWConnection, permit: ReplyTransportPermit) {
+        self.init(permit: permit, submit: { completion in
             let metadata = NWProtocolWebSocket.Metadata(opcode: .text)
             let context = NWConnection.ContentContext(identifier: "hail.frame", metadata: [metadata])
             connection.send(
                 content: data, contentContext: context, isComplete: true,
                 completion: .contentProcessed { completion($0 == nil) }
             )
-        }, cancel: { authority.invalidate(); connection.cancel() })
+        }, cancel: { connection.cancel() })
     }
 
     /// Internal DI keeps lifecycle tests synthetic; only WebSocketPeer supplies production transport.
     init(
-        permit: ReplyPublicationPermit,
+        permit: ReplyTransportPermit,
         submit: @escaping @Sendable (@escaping @Sendable (Bool) -> Void) -> Void,
         cancel: @escaping @Sendable () -> Void = {},
         waiterAdmitted: @escaping @Sendable () -> Void = {}
@@ -294,15 +356,34 @@ final class PreparedWebSocketReply: Sendable {
                 if case .finished(let result) = immediate { continuation.resume(returning: result) }
             }
         } onCancel: { [self] in
-            if finish(false, waiterOwner: owner) { cancel() }
+            cancelResult(owner)
         }
     }
 
+    /// Claim first, retire outside the ticket lock, then resume. Retirement cannot race a returned result.
+    private func cancelResult(_ owner: WaiterOwner) {
+        let claimed = state.withLock { state in
+            guard case .pending = state.completion, owner === state.waiterOwner else { return false }
+            state.completion = .cancelling
+            return true
+        }
+        guard claimed else { return }
+        permit.retireTransport()
+        cancel()
+        let waiter = state.withLock { state in
+            state.completion = .finished(false)
+            let waiter = state.waiter
+            state.waiter = nil
+            state.waiterOwner = nil
+            return waiter
+        }
+        waiter?.resume(returning: false)
+    }
+
     @discardableResult
-    private func finish(_ result: Bool, onlyIfUnsubmitted: Bool = false, waiterOwner: WaiterOwner? = nil) -> Bool {
+    private func finish(_ result: Bool, onlyIfUnsubmitted: Bool = false) -> Bool {
         let outcome = state.withLock { state -> (Bool, CheckedContinuation<Bool, Never>?) in
-            guard case .pending = state.completion, !onlyIfUnsubmitted || !state.submitted,
-                  waiterOwner == nil || waiterOwner === state.waiterOwner else { return (false, nil) }
+            guard case .pending = state.completion, !onlyIfUnsubmitted || !state.submitted else { return (false, nil) }
             state.completion = .finished(result)
             let waiter = state.waiter
             state.waiter = nil

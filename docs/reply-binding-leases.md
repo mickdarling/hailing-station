@@ -25,6 +25,9 @@ after another actor hop. The final synchronous operation must execute inside
 `performIfCurrent`, together with the host policy permit and transport gate.
 Keep a consistent policy → binding → transport gate order, never reenter a gate,
 and never wait for an asynchronous operation or network completion inside it.
+The transport gate contains a terminal lifecycle lock followed by its revision
+gate. Retirement and issuance use that same order; the ticket-state lock never
+remains held while retiring transport.
 
 Neither `TmuxAdapter` nor `TmuxReplyAdapter` implements this capability. External
 tmux processes can rebind without participating in a host lock; polling and
@@ -52,6 +55,12 @@ concurrent waiters fail closed rather than replace the original continuation.
 Waiter ownership is reserved before installing cancellation handling; even an
 already-cancelled rejected second invocation cannot cancel the first waiter or
 its shared transport ticket.
+Transport lifecycle is permanently retired before an owning cancellation result
+returns, without waiting for a Network state callback to reach the peer actor.
+New ticket issuance and every actual enqueue check that shared synchronized
+lifecycle; rotating a revision cannot reopen a cancelled peer. Ordinary send
+cancellation and observed terminal Network states retire the same lifecycle.
+Policy and provider authority restoration remain separate and unchanged.
 
 Recipient integration must perform its final local selection/request/expiry
 checks and media-state commit with the actual synchronous enqueue, using these

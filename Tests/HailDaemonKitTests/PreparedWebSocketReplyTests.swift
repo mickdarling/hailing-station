@@ -5,10 +5,10 @@ import Testing
 @testable import HailDaemonKit
 
 @Suite struct PreparedWebSocketReplyTests {
-    @Test func completionBeforeWaitingIsBufferedAndOnlyOneEnqueueOccurs() async {
-        let authority = ReplyPublicationAuthority()
+    @Test func completionBeforeWaitingIsBufferedAndOnlyOneEnqueueOccurs() async throws {
+        let transport = ReplyTransportLifecycle()
         let submissions = Mutex(0)
-        let ticket = PreparedWebSocketReply(permit: authority.issuePermit(), submit: { completion in
+        let ticket = PreparedWebSocketReply(permit: try #require(transport.issuePermit()), submit: { completion in
             submissions.withLock { $0 += 1 }
             completion(true)
             completion(false)
@@ -20,24 +20,25 @@ import Testing
         #expect(submissions.withLock { $0 } == 1)
     }
 
-    @Test func staleTransportPermitRefusesWithoutInvokingSender() async {
-        let authority = ReplyPublicationAuthority()
+    @Test func staleTransportPermitRefusesWithoutInvokingSender() async throws {
+        let transport = ReplyTransportLifecycle()
         let submissions = Mutex(0)
-        let ticket = PreparedWebSocketReply(permit: authority.issuePermit(), submit: { completion in
+        let ticket = PreparedWebSocketReply(permit: try #require(transport.issuePermit()), submit: { completion in
             submissions.withLock { $0 += 1 }
             completion(true)
         })
-        authority.invalidate()
+        transport.retire()
+        #expect(transport.issuePermit() == nil)
         #expect(!ticket.enqueue())
         #expect(!(await ticket.result()))
         #expect(submissions.withLock { $0 } == 0)
     }
 
-    @Test func cancellationBeforeWaitingCompletesFalseOnceAndPreventsLaterSubmission() async {
-        let authority = ReplyPublicationAuthority()
+    @Test func cancellationBeforeWaitingCompletesFalseOnceAndPreventsLaterSubmission() async throws {
+        let transport = ReplyTransportLifecycle()
         let cancellations = Mutex(0)
         let submissions = Mutex(0)
-        let ticket = PreparedWebSocketReply(permit: authority.issuePermit(), submit: { completion in
+        let ticket = PreparedWebSocketReply(permit: try #require(transport.issuePermit()), submit: { completion in
             submissions.withLock { $0 += 1 }
             completion(true)
         }, cancel: { cancellations.withLock { $0 += 1 } })
@@ -50,13 +51,14 @@ import Testing
         #expect(!(await ticket.result()))
         #expect(cancellations.withLock { $0 } == 1)
         #expect(submissions.withLock { $0 } == 0)
+        #expect(transport.issuePermit() == nil)
     }
 
     @Test func cancellationAfterEnqueueWinsOverLaterCompletion() async throws {
-        let authority = ReplyPublicationAuthority()
+        let transport = ReplyTransportLifecycle()
         let callback = Mutex<(@Sendable (Bool) -> Void)?>(nil)
         let cancellations = Mutex(0)
-        let ticket = PreparedWebSocketReply(permit: authority.issuePermit(), submit: { completion in
+        let ticket = PreparedWebSocketReply(permit: try #require(transport.issuePermit()), submit: { completion in
             callback.withLock { $0 = completion }
         }, cancel: { cancellations.withLock { $0 += 1 } })
         #expect(ticket.enqueue())
@@ -72,6 +74,7 @@ import Testing
         complete(true)
         #expect(!(await ticket.result()))
         #expect(cancellations.withLock { $0 } == 1)
+        #expect(transport.issuePermit() == nil)
     }
 
     @Test func closingPeerInvalidatesPreviouslyPreparedTicketAndFurtherPreparation() async throws {
@@ -91,11 +94,11 @@ import Testing
 
     @Test(.timeLimit(.minutes(1)))
     func cancelledRejectedWaiterCannotCancelLegitimatePendingWaiter() async throws {
-        let authority = ReplyPublicationAuthority()
+        let transport = ReplyTransportLifecycle()
         let callback = Mutex<(@Sendable (Bool) -> Void)?>(nil)
         let cancellations = Mutex(0)
         let admission = AsyncStream<Void>.makeStream()
-        let ticket = PreparedWebSocketReply(permit: authority.issuePermit(), submit: { completion in
+        let ticket = PreparedWebSocketReply(permit: try #require(transport.issuePermit()), submit: { completion in
             callback.withLock { $0 = completion }
         }, cancel: { cancellations.withLock { $0 += 1 } }, waiterAdmitted: {
             admission.continuation.yield(())
