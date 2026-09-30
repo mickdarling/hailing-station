@@ -34,12 +34,26 @@ public enum AdapterError: Error, Equatable, Sendable {
     case captureFailed(String)
 }
 
+/// Registered input shape, not a client-selected label or permission grant (#152).
+public enum AdapterInputShape: Sendable, Equatable {
+    /// Each sanitized line is a separate adapter delivery; preserves existing adapters.
+    case lineOriented
+    /// Exactly one sanitized line with explicit contextual capability; never legacy fallback.
+    case singleLineContextual
+}
+
+public enum AdapterInputShapeError: Error, Sendable, Equatable {
+    case contextRequired
+    case singleLineRequired
+}
+
 /// The adapter interface (#10 item 2). Implementations are actors or otherwise `Sendable`; every call is
 /// async because adapters shell out, poll, or talk to another process. `events` is optional: the default
 /// is an already-finished stream, so the registry can treat every adapter alike.
 public protocol Adapter: Sendable {
     /// Lowercase `[a-z0-9-]` label used as the id prefix: `tmux`, `console`, `http`. Never contains `:`.
     var kind: String { get }
+    var inputShape: AdapterInputShape { get }
     func listTargets() async throws -> [AdapterTarget]
     /// Deliver `text` literally to the target named `target` (adapter-local name, not the id). With a
     /// `binding` from an earlier listing, the adapter delivers only if the target still has that binding.
@@ -52,6 +66,7 @@ public protocol Adapter: Sendable {
 }
 
 extension Adapter {
+    public var inputShape: AdapterInputShape { .lineOriented }
     public var events: AsyncStream<TargetEvent> {
         AsyncStream { $0.finish() }
     }

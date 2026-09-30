@@ -88,12 +88,22 @@ public actor Registry {
         return merged.sorted { $0.info.id < $1.info.id }
     }
 
-    /// `binding` is the value from the listing that authorised this delivery (#41); the adapter refuses a
-    /// target whose binding changed since.
-    package func requireContextDelivery(_ context: ProviderTurnContext) throws {
-        let (adapter, _) = try resolve(context.binding.targetID)
-        guard context.binding.providerID == adapter.kind else { throw ProviderContractError.wrongContext }
-        guard adapter is any ProviderContextDelivering else { throw RegistryError.contextualDeliveryUnsupported }
+    /// Registered capability/shape preflight on the sanitizer's actual count, before any admission or write.
+    package func requireInputDelivery(to id: String, context: ProviderTurnContext?, lineCount: Int) throws {
+        let (adapter, _) = try resolve(id)
+        if let context {
+            guard context.binding.targetID == id, context.binding.providerID == adapter.kind else {
+                throw ProviderContractError.wrongContext
+            }
+            guard adapter is any ProviderContextDelivering else { throw RegistryError.contextualDeliveryUnsupported }
+        }
+        switch adapter.inputShape {
+        case .lineOriented:
+            break
+        case .singleLineContextual:
+            guard context != nil else { throw AdapterInputShapeError.contextRequired }
+            guard lineCount == 1 else { throw AdapterInputShapeError.singleLineRequired }
+        }
     }
 
     /// The registered adapter owns observation and must recheck exact binding before capture starts.

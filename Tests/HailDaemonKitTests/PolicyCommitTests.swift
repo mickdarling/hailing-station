@@ -23,7 +23,24 @@ import Testing
 
         #expect(try await host.setTier(.open, for: id))
         #expect(await host.currentPolicy.targets[id]?.tier == .locked)
+        // The reported committed view must also be what dispatch's required fresh load sees.
+        store.overwrite(returned)
         await #expect(throws: HostError.denied(.locked(id))) { try await host.send("echo hi", to: id) }
+    }
+
+    @Test func aFreshDispatchReloadSupersedesThePreviouslyAdoptedTransactionResult() async throws {
+        var original = Policy()
+        try original.allow(id, binding: binding, tier: .confirm)
+        var returned = original
+        _ = returned.setTier(.locked, for: id)
+        let store = InMemoryPolicyStore(original, returnedPolicy: returned)
+        let host = try await makeHost(store: store)
+
+        #expect(try await host.setTier(.open, for: id))
+        #expect(await host.currentPolicy.targets[id]?.tier == .locked)
+        #expect(store.stored.targets[id]?.tier == .open)
+        #expect(try await host.send("echo hi", to: id) == .delivered(["echo hi"]))
+        #expect(await host.currentPolicy.targets[id]?.tier == .open)
     }
 
     @Test func aPostRenameDurabilityFailureIsReportedAfterTheHostAdoptsThePolicy() async throws {
