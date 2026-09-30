@@ -1,6 +1,19 @@
 import Foundation
 
 extension AuditLog {
+    func reset() {
+        Self.releaseWriter(descriptor, ownsLock: ownsWriterLock)
+        ownsWriterLock = false
+        (descriptor, chain, day) = (-1, nil, "")
+    }
+
+    nonisolated static func releaseWriter(_ descriptor: Int32, ownsLock: Bool) {
+        guard descriptor >= 0 else { return }
+        // dup/fork references can outlive our close, even with O_CLOEXEC. End our lock explicitly.
+        if ownsLock { flock(descriptor, LOCK_UN) }
+        close(descriptor)
+    }
+
     struct PreviousDay: Equatable, Sendable {
         var day: String
         var hash: String

@@ -26,6 +26,8 @@ public actor AuditLog {
     var chain: AuditChain?
     var day = ""
     var descriptor: Int32 = -1
+    /// Only a successful acquisition belongs to this writer; a refused contender must not unlock it.
+    var ownsWriterLock = false
     /// What this writer last wrote on each day, so a clock stepping back still finds the older tail.
     struct Written: Equatable {
         var salt, hash: String
@@ -37,7 +39,7 @@ public actor AuditLog {
         self.directory = directory
         self.now = now
     }
-    deinit { if descriptor >= 0 { close(descriptor) } }
+    deinit { Self.releaseWriter(descriptor, ownsLock: ownsWriterLock) }
 
     /// Appends to today's file, rotating on a new UTC day; a failed write drops the chain for a re-verify.
     @discardableResult
@@ -118,10 +120,6 @@ public actor AuditLog {
         }
     }
 
-    func reset() {
-        if descriptor >= 0 { close(descriptor) }
-        (descriptor, chain, day) = (-1, nil, "")
-    }
     func setSynchronizeForTesting(_ body: @escaping @Sendable (Int32) -> Int32) { synchronize = body }
 }
 extension AuditLog {
@@ -161,6 +159,7 @@ extension AuditLog {
         }
         descriptor = fd
         guard flock(fd, LOCK_EX | LOCK_NB) == 0 else { throw AuditLogError.inUse(url.path) }
+        ownsWriterLock = true
         let lines = try Self.read(fd, at: url)
         let tail = try Self.verify(lines: lines, path: url.path, day: day)
         let first = try JSONDecoder().decode(AuditRecord.self, from: Data(lines[0].utf8))
