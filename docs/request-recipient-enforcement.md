@@ -71,3 +71,22 @@ duplicate frames and fresh binding/policy refusal. Local Unix endpoint tests
 exercise correlated ingress, zero-recipient refusals and audit preservation.
 These are not iPhone/iPad hearing or installed-build evidence. #161 remains open
 through reviewed integration, migration and controlled physical validation.
+
+PR #173's verify run `36775962913` failed at `e452fee9` with the race harness's
+15-second synchronous publication precondition, not PR-shape. Its blocking
+HostSession publication job had used the cooperative executor needed by the
+test continuation and policy mutation. This scheduling dependency can starve on
+a small concurrent runner; the log proves the watchdog failure, not a production
+authority defect or physical routing failure.
+
+The harness now assigns only its blocking publication job a test-only private
+DispatchQueue TaskExecutor. It asserts from the actual HostSession clock hook
+that the job runs on that queue, while policy/binding mutation progresses normally.
+The causal order remains: pause before authority acquisition, complete revocation,
+release publication, require zero enqueue. The 15-second watchdog is unchanged;
+timeout is a recoverable test failure, and error paths release and drain the job.
+A direct built-runner check with `LIBDISPATCH_COOPERATIVE_POOL_STRICT=1` passed
+all six race tests, including nonfatal zero-budget barrier timeout coverage. The
+restricted setting was applied to the test runner, not SwiftPM/build processes.
+No production executor, guard, permit, lifetime or publication behavior changed.
+Fresh full verification and exact-head review are still required for the new head.
