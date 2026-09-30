@@ -9,6 +9,7 @@ public enum RegistryError: Error, Equatable, Sendable {
     case unknownTarget(String)
     case contextualDeliveryUnsupported
     case observationUnsupported
+    case replyBindingLeaseUnsupported
 }
 
 /// Optional structured input contract (#145), not a capture grant or observation subscription.
@@ -115,6 +116,21 @@ public actor Registry {
             throw RegistryError.observationUnsupported
         }
         return try await observer.observe(binding)
+    }
+
+    /// Cooperative adapter authority only. Unknown capabilities never acquire a fictitious lease.
+    package func acquireReplyBindingLease(_ binding: ProviderSessionBinding) async throws -> ProviderReplyBindingLease {
+        try Task.checkCancellation()
+        let (adapter, _) = try resolve(binding.targetID)
+        guard adapter.kind == binding.providerID else { throw ProviderContractError.wrongContext }
+        guard let provider = adapter as? any ProviderReplyBindingLeasing else {
+            throw RegistryError.replyBindingLeaseUnsupported
+        }
+        let lease = try await provider.acquireReplyBindingLease(binding)
+        try Task.checkCancellation()
+        guard lease.binding == binding else { throw ProviderContractError.wrongContext }
+        guard lease.performIfCurrent({ true }) == true else { throw ProviderContractError.turnEnded }
+        return lease
     }
 
     package func deliver(
