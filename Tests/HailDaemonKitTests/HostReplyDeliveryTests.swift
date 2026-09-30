@@ -4,7 +4,7 @@ import Testing
 @testable import HailDaemonKit
 
 @Suite(.serialized) struct HostReplyDeliveryTests {
-    @Test func replyReachesOnlyNegotiatedPeerSelectingItsTarget() async throws {
+    @Test func selectingTargetDoesNotGrantLegacyBroadcastReplyAuthority() async throws {
         var policy = Policy()
         try policy.allow("tmux:reply", binding: "binding", tier: .open)
         let (host, _) = try await sessionHost(
@@ -36,8 +36,9 @@ import Testing
                 timestamp: 1_700_000_000_100, target: reply.targetID, source: reply.hostID,
                 payload: .text(TextPayload(text: "ready", reply: reply))
             )
-            try #require(await listener.publish(frame) == 1)
-            #expect(try await receiveReplyTestFrame(on: selected) == frame)
+            #expect(try await listener.publish(frame) == 0)
+            try await recipientSocketBarrier(on: selected)
+            try await recipientSocketBarrier(on: unselected)
         } catch {
             await listener.stop(reason: "test failed")
             throw error
@@ -96,32 +97,11 @@ import Testing
         }
     }
 
-    // The setup and four transition assertions intentionally stay together as one stream-lifecycle scenario.
-    // swiftlint:disable:next function_body_length
-    @Test func audioStreamKeepsItsOriginalRecipientsUntilFinal() async throws {
-        var policy = Policy()
-        try policy.allow("tmux:reply", binding: "reply-binding", tier: .open)
-        try policy.allow("tmux:other", binding: "other-binding", tier: .open)
-        let (host, _) = try await sessionHost(
-            targets: [
-                AdapterTarget(name: "reply", binding: "reply-binding"),
-                AdapterTarget(name: "other", binding: "other-binding")
-            ],
-            policy: policy
-        )
-        let original = HostSession(
-            host: host, authorizer: PersonalTerminalAuthorizer(), hostName: "mac-main"
-        )
-        let late = HostSession(
-            host: host, authorizer: PersonalTerminalAuthorizer(), hostName: "mac-main"
-        )
-        _ = await original.receive(helloFrame())
-        _ = await late.receive(helloFrame())
-        _ = await original.receive(sessionFrame(payload: .control(.select(targetID: "tmux:reply"))))
-
-        let descriptor = ReplyDescriptor(
-            id: UUID(), hostID: "mac-main", targetID: "tmux:reply", audioStreamID: UUID()
-        )
+    @Test func destinationChangeEndsOriginalAudioRecipientsRatherThanRetargetingStream() async throws {
+        let rig = try await RecipientTestRig.make()
+        let original = await rig.session()
+        let late = await rig.session()
+        let descriptor = recipientDescriptor(try await rig.submit(on: original), audio: true)
         let streamID = try #require(descriptor.audioStreamID)
         #expect(await original.acceptsHostReply(audioReply(
             descriptor: descriptor, streamID: streamID, sequence: 0
@@ -130,18 +110,17 @@ import Testing
             descriptor: descriptor, streamID: streamID, sequence: 0
         ))))
 
-        _ = await late.receive(sessionFrame(payload: .control(.select(targetID: "tmux:reply"))))
-        _ = await original.receive(sessionFrame(payload: .control(.select(targetID: "tmux:other"))))
-        #expect(await original.acceptsHostReply(audioReply(
+        _ = await original.receive(sessionFrame(payload: .control(.select(targetID: "recipient:other"))))
+        #expect(!(await original.acceptsHostReply(audioReply(
             descriptor: descriptor, streamID: streamID, sequence: 1
-        )))
+        ))))
         #expect(!(await late.acceptsHostReply(audioReply(
             descriptor: descriptor, streamID: streamID, sequence: 1
         ))))
 
-        #expect(await original.acceptsHostReply(audioReply(
+        #expect(!(await original.acceptsHostReply(audioReply(
             descriptor: descriptor, streamID: streamID, sequence: 2, isFinal: true
-        )))
+        ))))
         #expect(!(await original.acceptsHostReply(audioReply(
             descriptor: descriptor, streamID: streamID, sequence: 3
         ))))
