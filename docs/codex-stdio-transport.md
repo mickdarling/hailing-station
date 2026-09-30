@@ -3,7 +3,7 @@
 Part of #153; not a completed Codex adapter. This macOS-only internal foundation
 does not conform to `Adapter`, register targets, submit real inference, attach to
 existing tasks, or publish captured output. #153 and #134 remain open. The source
-marketing version is `0.1.22`, build `1`; no installed-device or TestFlight proof
+marketing version is `0.1.23`, build `1`; no installed-device or TestFlight proof
 is claimed.
 
 ## Interface and ownership
@@ -24,15 +24,24 @@ directory, user configuration, hooks or CLI-managed credentials. There is no
 default Codex executable, auth export, daemon registration or approval handler.
 
 Use `CodexStdioTransport.withTransport` for scope ownership: early return, thrown
-error and parent cancellation synchronously stop admission/close pipes, then join
+error and parent cancellation synchronously stop admission/cancel owned I/O, then join
 the owned work before returning. Direct construction is internal low-level test
 support and requires explicit `join`; dropping a reference is not cleanup.
 `cancel` is synchronous and idempotent. `join` waits the transport reader,
-retained writer/timer tasks, OS read/write/reap work and escalation callback.
+retained writer/timer tasks, source cancellation handlers, OS write/reap work and
+escalation callback.
 
 The exact child PID is protected by the same lock for signalling and `waitpid`.
-Termination closes nonblocking parent pipes and sends SIGTERM, then SIGKILL after
-the configured grace when the owned PID remains unreaped. Tests inspect actual
+Termination closes stdin, cancels stdout readiness and sends SIGTERM, then SIGKILL
+after the configured grace when the owned PID remains unreaped. Stdout's dispatch
+source cancellation handler performs its sole close after in-flight reads finish,
+following [Apple's cancellation-handler contract](https://developer.apple.com/documentation/dispatch/dispatchsourceprotocol/setcancelhandler(handler:)).
+Readiness drains nonblocking reads until EAGAIN; a separate
+[owned-process exit source](https://developer.apple.com/documentation/dispatch/dispatchsource/makeprocesssource(identifier:eventmask:queue:))
+triggers exact-PID reaping. There is one startup WNOHANG registration-race check,
+not a recurring idle read/reap loop. Process exit does not cancel stdout: valid
+remaining bytes and EOF drain independently. Active blocked writes retain their
+bounded cancellation/deadline behavior. Tests inspect actual
 reaping, including a child that ignores SIGTERM. Ownership does not extend to a
 child-created descendant process tree. Kernel/process scheduling is not a hard
 real-time guarantee; tests bound observed synthetic shutdown.
@@ -49,6 +58,8 @@ real-time guarantee; tests bound observed synthetic shutdown.
   it is not silent loss. Notifications are separately bounded by count (default
   32, maximum 256) and raw-frame bytes (default 65,536, maximum 262,144). A decoded
   value has bounded expansion, not a claim that raw byte limits equal heap bytes.
+  Notification budgets apply before delivery to a suspended consumer as well as
+  before enqueueing; consumer arrival order cannot bypass the byte bound.
 - At most four request/notification operations and their retained owned tasks are
   admitted. Notifications consume operation capacity too. One notification waiter
   is allowed. IDs are positive monotonic integers; replies resolve only a matching
@@ -179,6 +190,62 @@ Actual `0.1.22` repair verification (same Xcode selection and commands):
   explicit adapter deferrals (`codex-transport-ci-repair-trace.log`). Whitespace
   checks passed. Independent exact-head reviews and current full CI/gates remain
   required before merge; no approval or clean full verification is fabricated.
+
+The subsequent `0.1.23` production repair addresses two accepted review findings:
+the [notification waiter budget bypass](https://github.com/mickdarling/hailing-station/pull/155#discussion_r4141113560)
+and [idle read/reap polling](https://github.com/mickdarling/hailing-station/pull/155#discussion_r4141113567).
+The first now checks count and raw-frame bytes before either direct delivery or
+enqueueing. An actual-pipe regression warms up the child, then tests the same
+oversized notification with a deterministically suspended consumer and without
+one. Both require fixed capacity failure and actual reaping.
+
+The second replaces idle worker loops with stdout-readiness and process-exit
+dispatch sources. Tests cover immediate exit around registration in twelve
+bounded scopes, joined owner release, and an explicitly ready idle child whose
+read/reap syscall counters show only initial readiness draining and the single
+startup check. This is deterministic idle-I/O evidence, not a power measurement.
+All low-level child fixtures now retain a five-second safety cancellation and
+guarantee cancel/join on both success and error. Safety-triggered cancellation is
+not accepted as normal EOF. Existing broken-pipe, ignored-SIGTERM, blocked-write,
+stderr and chunk-overflow assertions remain; overflow requires the fixed error,
+not merely an optional catch.
+
+Incremental Xcode-selected focused runs passed 31, then 33, then 34 tests in three
+suites as these repairs were added (`codex-transport-source-repair-first.log`,
+`codex-transport-event-source-focused.log`, and
+`codex-transport-event-source-release-focused.log`). The corresponding first two
+strict lint lanes passed. A later focused setup attempt omitted `DEVELOPER_DIR`
+and failed to load `Testing`; its bare lint command likewise failed to load
+SourceKit. Those failed setup logs remain
+`codex-transport-event-source-scoped-focused.log` and
+`codex-transport-event-source-scoped-lint.log`; they are not product-test results.
+Final configured verification of the complete `0.1.23` repair (same Xcode selection):
+
+- Focused run passed 35 tests in three suites, exit 0
+  (`artifacts/codex-transport-event-source-final-focused.log`). Configured
+  `scripts/verify.sh lint` passed, exit 0; no suppressions or gate changes.
+- First `scripts/verify.sh all` exited 1: 561 tests in 91 suites, one `inUse`
+  issue at line 112 in unchanged
+  `AuditLogFileTests.aClockStepBackStillFindsATailOlderThanEightDays`.
+  All 35 transport tests passed. Log:
+  `artifacts/codex-transport-event-source-all.log`. #79 remains unresolved.
+  No audit source changed and no unchanged full rerun was performed.
+- The inspected affected-suite diagnostic passed eight tests in one suite, exit 0
+  (`codex-transport-event-source-audit-focused.log`). Separate audit CLI and
+  scripts lanes passed, exit 0 (`codex-transport-event-source-audit-cli.log` and
+  `codex-transport-event-source-scripts.log`), including 45 checker, five intent
+  and one reply CLI tests. These passes do not convert the failed full run to green.
+- Simulator build-for-testing passed, exit 0
+  (`codex-transport-event-source-sim.log`). This is a simulator build, not
+  installed-product metadata inspection, UI execution or physical-device proof.
+- The first offline trace invocation used `--partial` without named deferrals
+  and correctly exited 1 for the three missing adapter expectations. The corrected
+  invocation used `--partial --defer
+  CodexAppServerAdapterTests,CodexAppServerEventsTests,docs/codex-app-server-adapter.md`
+  and exited 0: seven named expectations, exactly three explicit deferrals.
+  `git diff --check` passed. Fresh independent exact-head reviews and clean
+  exact-head full CI/gates remain required before merge; no approval or clean
+  full verification is fabricated. The earlier failed lanes remain retained evidence.
 
 Spec trace is intentionally partial: the three transport suites and this document
 are delivered; `CodexAppServerAdapterTests`, `CodexAppServerEventsTests` and

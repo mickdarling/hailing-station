@@ -16,6 +16,8 @@ private struct StdioResources {
     var output: Int32
     var stopped = false
     var writes = 0
+    var reads = 0
+    var reaps = 0
 }
 
 final class OwnedStdioChild: Sendable {
@@ -24,6 +26,8 @@ final class OwnedStdioChild: Sendable {
     private let continuation: AsyncThrowingStream<Data, any Error>.Continuation
     private let exited = DispatchGroup()
     private let writer = DispatchQueue(label: "hailing.owned-stdio.write")
+    private let readable: any DispatchSourceRead
+    private let processExit: any DispatchSourceProcess
     private let grace: TimeInterval
 
     init(command: OwnedStdioCommand, grace: TimeInterval = 0.1) throws {
@@ -31,29 +35,41 @@ final class OwnedStdioChild: Sendable {
               !([command.executable] + command.arguments + command.environment).contains(where: {
                   $0.contains("\0")
               }) else { throw CodexStdioError.invalidConfiguration }
-        let spawned = try Self.spawn(command)
+        let (spawned, pid) = try Self.spawn(command)
         resources = Mutex(spawned)
         self.grace = grace
         let pair = AsyncThrowingStream<Data, any Error>.makeStream(bufferingPolicy: .bufferingOldest(4))
         chunks = pair.stream; continuation = pair.continuation
+        readable = DispatchSource.makeReadSource(fileDescriptor: spawned.output,
+            queue: DispatchQueue(label: "hailing.owned-stdio.read"))
+        processExit = DispatchSource.makeProcessSource(identifier: pid, eventMask: .exit, queue: .global())
         exited.enter()
         exited.enter()
-        DispatchQueue.global(qos: .utility).async { self.readLoop() }
-        DispatchQueue.global(qos: .utility).async { self.reapLoop() }
+        readable.setEventHandler { self.readReady() }
+        readable.setCancelHandler {
+            self.resources.withLock { close(spawned.output); $0.output = -1 }
+            self.exited.leave()
+        }
+        processExit.setEventHandler { self.reap(observedExit: true) }
+        processExit.setCancelHandler { self.exited.leave() }
+        readable.activate(); processExit.activate()
+        reap(observedExit: false) // One registration-race check, never idle polling.
     }
 
     var isReaped: Bool { resources.withLock { $0.pid == nil } }
     var isStopped: Bool { resources.withLock { $0.stopped } }
+    var ioChecks: (reads: Int, reaps: Int) { resources.withLock { ($0.reads, $0.reaps) } }
     func cancel() {
         let first = resources.withLock { state -> Bool in
             guard !state.stopped else { return false }
             state.stopped = true
-            close(state.input); close(state.output); state.input = -1; state.output = -1
+            close(state.input); state.input = -1
             if let pid = state.pid { _ = kill(pid, SIGTERM) }
             exited.enter() // Admission precedes any concurrent join observing an empty group.
             return true
         }
         guard first else { return }
+        readable.cancel() // Its cancellation handler owns stdout's sole close after in-flight reads finish.
         continuation.finish(throwing: CodexStdioError.stopped)
         DispatchQueue.global(qos: .utility).asyncAfter(deadline: .now() + grace) {
             defer { self.exited.leave() }
@@ -99,13 +115,14 @@ final class OwnedStdioChild: Sendable {
         }
     }
 
-    private func readLoop() {
-        defer { exited.leave() }
+    private func readReady() {
         var buffer = [UInt8](repeating: 0, count: 4_096)
         while true {
-            let count = resources.withLock { state -> Int in
-                guard !state.stopped else { return -2 }
-                return buffer.withUnsafeMutableBytes { Darwin.read(state.output, $0.baseAddress, $0.count) }
+            let (count, reason) = resources.withLock { state -> (Int, Int32) in
+                guard !state.stopped else { return (-2, 0) }
+                state.reads += 1
+                let count = buffer.withUnsafeMutableBytes { Darwin.read(state.output, $0.baseAddress, $0.count) }
+                return (count, errno)
             }
             if count > 0 {
                 if case .enqueued = continuation.yield(Data(buffer.prefix(count))) { continue }
@@ -113,32 +130,31 @@ final class OwnedStdioChild: Sendable {
             }
             if count == 0 { continuation.finish(); cancel(); return }
             if count == -2 { return }
-            guard errno == EAGAIN || errno == EINTR else {
+            if reason == EAGAIN { return } // The dispatch source wakes only when more bytes/EOF become ready.
+            guard reason == EINTR else {
                 continuation.finish(throwing: CodexStdioError.transportLost); cancel(); return
             }
-            usleep(1_000)
         }
     }
 
-    private func reapLoop() {
-        while true {
-            let reaped = resources.withLock { state -> Bool in
-                guard let pid = state.pid else { return true }
-                var status: Int32 = 0
-                // Reaping and signalling share the lock: a recycled PID cannot be signalled after reap.
-                let result = waitpid(pid, &status, WNOHANG)
-                guard result == pid || (result == -1 && errno == ECHILD) else { return false }
-                state.pid = nil
-                return true
-            }
-            if reaped { exited.leave(); return }
-            usleep(1_000)
+    private func reap(observedExit: Bool) {
+        let reaped = resources.withLock { state -> Bool in
+            guard let pid = state.pid else { return true }
+            state.reaps += 1
+            var status: Int32 = 0
+            // Blocking wait occurs only after the owned exit event, not while an idle child is running.
+            var result = waitpid(pid, &status, observedExit ? 0 : WNOHANG)
+            while result == -1, errno == EINTR { result = waitpid(pid, &status, observedExit ? 0 : WNOHANG) }
+            guard result == pid || (result == -1 && errno == ECHILD) else { return false }
+            state.pid = nil
+            return true
         }
+        if reaped { processExit.cancel() }
     }
 }
 
 extension OwnedStdioChild {
-    private static func spawn(_ command: OwnedStdioCommand) throws -> StdioResources {
+    private static func spawn(_ command: OwnedStdioCommand) throws -> (StdioResources, pid_t) {
         var input = [Int32](repeating: -1, count: 2), output = input
         guard pipe(&input) == 0 else { throw CodexStdioError.transportLost }
         guard pipe(&output) == 0 else { input.forEach { close($0) }; throw CodexStdioError.transportLost }
@@ -164,7 +180,7 @@ extension OwnedStdioChild {
         let result = posix_spawn(&pid, command.executable, &actions, &attributes, &arguments, &environment)
         guard result == 0 else { throw CodexStdioError.transportLost }
         close(input[0]); close(output[1]); keep = true
-        return StdioResources(pid: pid, input: input[1], output: output[0])
+        return (StdioResources(pid: pid, input: input[1], output: output[0]), pid)
     }
     private static func configure(input: Int32, output: Int32) throws {
         for descriptor in [input, output] {

@@ -39,5 +39,23 @@ enum CodexStdioFixtures {
             let result = try await operation(); safety.cancel(); await safety.value; return result
         } catch { safety.cancel(); await safety.value; throw error }
     }
+    static func withChild<Result: Sendable>(
+        _ command: OwnedStdioCommand, grace: TimeInterval = 0.1,
+        operation: @Sendable (OwnedStdioChild) async throws -> Result
+    ) async throws -> Result {
+        let child = try OwnedStdioChild(command: command, grace: grace)
+        let safety = Task {
+            do { try await Task.sleep(for: .seconds(5)) } catch { return }
+            child.cancel()
+        }
+        do {
+            let result = try await operation(child)
+            child.cancel(); await child.join(); safety.cancel(); await safety.value
+            return result
+        } catch {
+            child.cancel(); await child.join(); safety.cancel(); await safety.value
+            throw error
+        }
+    }
 }
 #endif

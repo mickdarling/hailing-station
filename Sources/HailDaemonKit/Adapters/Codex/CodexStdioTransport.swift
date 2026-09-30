@@ -48,6 +48,7 @@ actor CodexStdioTransport {
     }
     nonisolated func cancel() { stopping.withLock { $0 = true }; child.cancel() }
     var isReaped: Bool { child.isReaped }
+    var isWaitingForNotification: Bool { consumer != nil }
     func join() async {
         cancel(); fail(.stopped)
         let outstanding = work
@@ -137,9 +138,9 @@ extension CodexStdioTransport {
         case .refusal(let id): try reply(id, result: .failure(CodexStdioError.providerRefused))
         case .notification(let method, let params):
             let value = CodexStdioNotification(method: method, params: params)
-            if let consumer { self.consumer = nil; consumer.resume(returning: value); return }
             guard notifications.count < limits.maxNotifications,
                   bytes <= limits.maxNotificationBytes - retainedBytes else { throw CodexStdioError.capacityExceeded }
+            if let consumer { self.consumer = nil; consumer.resume(returning: value); return }
             notifications.append((value, bytes)); retainedBytes += bytes
         }
     }
