@@ -31,12 +31,15 @@ actor WebSocketPeer {
     private let onEnd: @Sendable (UUID) -> Void
     private var helloTimer: Task<Void, Never>?
     private let replyAuthority = ReplyPublicationAuthority()
+    private let submitClose: @Sendable (@escaping @Sendable () -> Void) -> Void
+    private var closing = false
     var ended = false
 
     init(
         id: UUID, connection: NWConnection, session: HostSession, queue: DispatchQueue,
         helloTimeout: Duration, log: @escaping @Sendable (WebSocketListenerEvent) -> Void,
-        onEnd: @escaping @Sendable (UUID) -> Void
+        onEnd: @escaping @Sendable (UUID) -> Void,
+        submitClose: (@Sendable (@escaping @Sendable () -> Void) -> Void)? = nil
     ) {
         self.id = id
         self.connection = connection
@@ -45,6 +48,15 @@ actor WebSocketPeer {
         self.helloTimeout = helloTimeout
         self.log = log
         self.onEnd = onEnd
+        self.submitClose = submitClose ?? { completion in
+            let metadata = NWProtocolWebSocket.Metadata(opcode: .close)
+            metadata.closeCode = .protocolCode(.protocolError)
+            let context = NWConnection.ContentContext(identifier: "hail.close", isFinal: true, metadata: [metadata])
+            connection.send(
+                content: nil, contentContext: context, isComplete: true,
+                completion: .contentProcessed { _ in completion() }
+            )
+        }
     }
 
     func start() {
@@ -88,7 +100,7 @@ actor WebSocketPeer {
     }
 
     private func receiveNext() {
-        guard !ended else { return }
+        guard !ended, !closing else { return }
         connection.receiveMessage { [weak self] data, context, _, error in
             Task { await self?.received(data, context: context, error: error) }
         }
@@ -97,7 +109,7 @@ actor WebSocketPeer {
     private func received(
         _ data: Data?, context: NWConnection.ContentContext?, error: NWError?
     ) async {
-        guard !ended else { return }
+        guard !ended, !closing else { return }
         if let error {
             finish(reason: "receive failed: \(error)")
             return
@@ -126,6 +138,7 @@ actor WebSocketPeer {
 
     private func process(_ data: Data) async {
         let result = await session.receive(data)
+        guard !ended, !closing else { return }
         if result.frames.contains(where: { frame in
             if case .control(.hello) = frame.payload { return true }
             return false
@@ -146,15 +159,13 @@ actor WebSocketPeer {
         }
     }
 
-    private func close(reason: String) async {
-        let metadata = NWProtocolWebSocket.Metadata(opcode: .close)
-        metadata.closeCode = .protocolCode(.protocolError)
-        let context = NWConnection.ContentContext(identifier: "hail.close", isFinal: true, metadata: [metadata])
+    func close(reason: String) async {
+        guard !ended, !closing else { return }
+        closing = true
+        // Refuse reply publication before the close frame is submitted, not after its completion.
+        replyAuthority.invalidate()
         await withCheckedContinuation { continuation in
-            connection.send(
-                content: nil, contentContext: context, isComplete: true,
-                completion: .contentProcessed { _ in continuation.resume() }
-            )
+            submitClose { continuation.resume() }
         }
         finish(reason: reason)
     }
@@ -179,12 +190,12 @@ actor WebSocketPeer {
 extension WebSocketPeer {
     /// Preparation is not an enqueue grant; its transport permit must remain current at final admission.
     func prepareReplyPublication(_ frame: Frame) -> PreparedWebSocketReply? {
-        guard !ended, !Task.isCancelled, let data = try? FrameCoding.encode(frame) else { return nil }
+        guard !ended, !closing, !Task.isCancelled, let data = try? FrameCoding.encode(frame) else { return nil }
         return PreparedWebSocketReply(data: data, connection: connection, authority: replyAuthority)
     }
 
     func send(_ frame: Frame) async -> Bool {
-        guard !Task.isCancelled else { return false }
+        guard !ended, !closing, !Task.isCancelled else { return false }
         guard let data = try? FrameCoding.encode(frame) else { return false }
         let metadata = NWProtocolWebSocket.Metadata(opcode: .text)
         let context = NWConnection.ContentContext(identifier: "hail.frame", metadata: [metadata])
@@ -204,6 +215,7 @@ extension WebSocketPeer {
 /// Immutable transport submission. HostSession supplies the policy/binding/local-state critical section;
 /// this final gate additionally orders peer closure against the actual Network enqueue, not completion.
 final class PreparedWebSocketReply: Sendable {
+    private final class WaiterOwner: Sendable {}
     private enum Completion {
         case pending
         case finished(Bool)
@@ -212,11 +224,13 @@ final class PreparedWebSocketReply: Sendable {
         var submitted = false
         var completion = Completion.pending
         var waiter: CheckedContinuation<Bool, Never>?
+        var waiterOwner: WaiterOwner?
     }
     private let state = Mutex(State())
     private let permit: ReplyPublicationPermit
     private let submit: @Sendable (@escaping @Sendable (Bool) -> Void) -> Void
     private let cancel: @Sendable () -> Void
+    private let waiterAdmitted: @Sendable () -> Void
 
     convenience init(data: Data, connection: NWConnection, authority: ReplyPublicationAuthority) {
         self.init(permit: authority.issuePermit(), submit: { completion in
@@ -233,11 +247,13 @@ final class PreparedWebSocketReply: Sendable {
     init(
         permit: ReplyPublicationPermit,
         submit: @escaping @Sendable (@escaping @Sendable (Bool) -> Void) -> Void,
-        cancel: @escaping @Sendable () -> Void = {}
+        cancel: @escaping @Sendable () -> Void = {},
+        waiterAdmitted: @escaping @Sendable () -> Void = {}
     ) {
         self.permit = permit
         self.submit = submit
         self.cancel = cancel
+        self.waiterAdmitted = waiterAdmitted
     }
 
     /// Returns false without submission when stale, cancelled or already submitted. Success is enqueue
@@ -259,28 +275,38 @@ final class PreparedWebSocketReply: Sendable {
     /// One pending waiter, with completion buffered if it arrives first. Later completed reads are safe;
     /// a second concurrent waiter fails closed rather than replacing or leaking the original continuation.
     func result() async -> Bool {
-        await withTaskCancellationHandler {
+        let owner = WaiterOwner()
+        let admission = state.withLock { state -> Completion in
+            if case .finished = state.completion { return state.completion }
+            guard state.waiterOwner == nil else { return .finished(false) }
+            state.waiterOwner = owner
+            return .pending
+        }
+        if case .finished(let result) = admission { return result }
+        waiterAdmitted()
+        return await withTaskCancellationHandler {
             await withCheckedContinuation { continuation in
                 let immediate = state.withLock { state -> Completion in
                     if case .finished = state.completion { return state.completion }
-                    guard state.waiter == nil else { return .finished(false) }
                     state.waiter = continuation
                     return .pending
                 }
                 if case .finished(let result) = immediate { continuation.resume(returning: result) }
             }
         } onCancel: { [self] in
-            if finish(false) { cancel() }
+            if finish(false, waiterOwner: owner) { cancel() }
         }
     }
 
     @discardableResult
-    private func finish(_ result: Bool, onlyIfUnsubmitted: Bool = false) -> Bool {
+    private func finish(_ result: Bool, onlyIfUnsubmitted: Bool = false, waiterOwner: WaiterOwner? = nil) -> Bool {
         let outcome = state.withLock { state -> (Bool, CheckedContinuation<Bool, Never>?) in
-            guard case .pending = state.completion, !onlyIfUnsubmitted || !state.submitted else { return (false, nil) }
+            guard case .pending = state.completion, !onlyIfUnsubmitted || !state.submitted,
+                  waiterOwner == nil || waiterOwner === state.waiterOwner else { return (false, nil) }
             state.completion = .finished(result)
             let waiter = state.waiter
             state.waiter = nil
+            state.waiterOwner = nil
             return (true, waiter)
         }
         outcome.1?.resume(returning: result)

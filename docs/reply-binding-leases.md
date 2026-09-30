@@ -36,8 +36,10 @@ unchanged. A supervised cooperative bridge remains separate work under #166.
 
 `WebSocketPeer.prepareReplyPublication` encodes a frame without sending it and
 captures a permit from that peer's independent transport authority. Peer closure
-invalidates that authority before cancelling the connection. A prepared ticket
-therefore cannot enqueue after a completed closure.
+marks the peer closing and invalidates that authority before submitting its close
+frame or waiting for its completion. Further preparation, regular frame sends and
+prepared publication are refused throughout that wait. Immediate closure also
+invalidates authority before cancelling the connection.
 
 `PreparedWebSocketReply.enqueue()` synchronously submits at most once, inside
 the current transport gate. A false return makes no transport submission. A true
@@ -47,6 +49,9 @@ Completion and cancellation settle the result once; cancellation before an
 outcome invalidates transport authority and cancels the connection. No gate is
 held while waiting. Only one pending result waiter is supported; additional
 concurrent waiters fail closed rather than replace the original continuation.
+Waiter ownership is reserved before installing cancellation handling; even an
+already-cancelled rejected second invocation cannot cancel the first waiter or
+its shared transport ticket.
 
 Recipient integration must perform its final local selection/request/expiry
 checks and media-state commit with the actual synchronous enqueue, using these
