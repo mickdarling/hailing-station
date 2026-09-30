@@ -91,11 +91,12 @@ struct ProviderContextTestRig {
 
     static func make(
         adapter: any Adapter = SyntheticContextAdapter(), tier: Tier = .open,
-        mode: ProviderInputDeliveryMode = .contextual, sanitizing: SanitizePolicy = .init(), rate: Int = 30
+        mode: ProviderInputDeliveryMode = .contextual, sanitizing: SanitizePolicy = .init(), rate: Int = 30,
+        guardPatterns: [GuardPattern] = DangerousPatternGuard.defaults
     ) async throws -> Self {
         let registry = Registry()
         try await registry.register(adapter)
-        var policy = Policy(deliveriesPerMinute: rate)
+        var policy = Policy(guardPatterns: guardPatterns, deliveriesPerMinute: rate)
         try policy.allow("test:session", binding: "binding-test", tier: tier)
         let store = InMemoryPolicyStore(policy)
         let host = try HailHost(registry: registry, sanitizing: sanitizing, store: store)
@@ -110,9 +111,15 @@ struct ProviderContextTestRig {
         return Self(host: host, store: store, coordinator: coordinator, context: context)
     }
 
-    func submit(_ text: String = "synthetic input") async throws -> ProviderTurnContext {
-        let outcome = try await coordinator.submit(text, utteranceID: context.utteranceID)
-        guard case .sent(let context) = outcome else { throw ProviderContractError.unknownTurn }
-        return context
+    func submit(_ text: String = "synthetic input", confirmedHash: String? = nil) async throws -> ProviderTurnContext {
+        let outcome = try await coordinator.submit(text, utteranceID: context.utteranceID, confirmedHash: confirmedHash)
+        switch outcome {
+        case .sent(let context): return context
+        case .needsConfirmation(let readBack): throw ProviderContextTestRigError.unexpectedConfirmation(readBack)
+        }
     }
+}
+
+enum ProviderContextTestRigError: Error, Equatable, Sendable {
+    case unexpectedConfirmation(ReadBack)
 }

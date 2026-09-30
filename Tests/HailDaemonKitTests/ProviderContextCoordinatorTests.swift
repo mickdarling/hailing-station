@@ -56,13 +56,50 @@ import Testing
         #expect(await adapter.observationCount == 0)
     }
 
-    @Test func completeMultilineDeliveryCarriesOneIdenticalProposedContext() async throws {
+    @Test(arguments: [false, true])
+    func completeMultilineDeliveryCarriesOneIdenticalProposedContext(guarded: Bool) async throws {
         let adapter = SyntheticContextAdapter()
         let rig = try await ProviderContextTestRig.make(adapter: adapter, sanitizing: .init(newlines: .split))
-        let sent = try await rig.submit("one\ntwo")
+        let first = guarded ? "sudo invented one" : "one"
+        let text = first + "\ntwo"
+        let outcome = try await rig.coordinator.submit(text, utteranceID: rig.context.utteranceID)
+        let sent: ProviderTurnContext
+        switch outcome {
+        case .sent(let context):
+            #expect(!guarded)
+            sent = context
+        case .needsConfirmation(let readBack):
+            // Fail-closed regex budgets may legitimately ask under scheduler load. This test owns only
+            // invented text: verify no effects and confirm this exact read-back once, never retry blindly.
+            try #require(readBack.reason.hasPrefix("guarded: "))
+            try #require(!readBack.guardHits.isEmpty)
+            try #require(Set(readBack.guardHits).isSubset(of: Set(DangerousPatternGuard.defaults.map(\.name))))
+            try #require(readBack.lines == [first, "two"])
+            try #require(await adapter.contextual.isEmpty)
+            sent = try await rig.submit(text, confirmedHash: readBack.hash)
+        }
         #expect(await adapter.contextual.map(\.context) == [sent, sent])
-        #expect(await adapter.contextual.map(\.text) == ["one", "two"])
+        #expect(await adapter.contextual.map(\.text) == [first, "two"])
         #expect(await rig.coordinator.state(for: sent.id) == .sent)
+    }
+
+    @Test func explicitGuardConfirmationIsNotSentAndRigPreservesItsRealOutcome() async throws {
+        let adapter = SyntheticContextAdapter()
+        let rig = try await ProviderContextTestRig.make(
+            adapter: adapter, guardPatterns: [GuardPattern(name: "synthetic guard", regex: "synthetic")]
+        )
+        let outcome = try await rig.coordinator.submit("synthetic input", utteranceID: rig.context.utteranceID)
+        guard case .needsConfirmation(let readBack) = outcome else {
+            Issue.record("expected the explicit fixture guard to require confirmation")
+            return
+        }
+        #expect(readBack.reason == "guarded: synthetic guard")
+        #expect(readBack.guardHits == ["synthetic guard"])
+        #expect(await adapter.contextual.isEmpty)
+        await #expect(throws: ProviderContextTestRigError.unexpectedConfirmation(readBack)) {
+            try await rig.submit()
+        }
+        #expect(await adapter.contextual.isEmpty)
     }
 
     @Test func legacyModePreservesTheExistingCoordinatorPath() async throws {
