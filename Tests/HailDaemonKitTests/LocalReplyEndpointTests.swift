@@ -174,19 +174,15 @@ import Testing
 
     // The full socket-to-terminal proof deliberately keeps setup, assertion, and teardown in one scope.
     // swiftlint:disable:next function_body_length
-    @Test func privateLocalSubmissionReachesSelectedTerminalAndIsAudited() async throws {
+    @Test func privateLocalSubmissionReachesOnlyProvenOriginAndIsAudited() async throws {
         let scratch = FileManager.default.temporaryDirectory.appendingPathComponent(
             "hs-\(UUID().uuidString.prefix(8))", isDirectory: true
         )
         defer { try? FileManager.default.removeItem(at: scratch) }
-        var policy = Policy()
-        try policy.allow("tmux:reply", binding: "binding", tier: .open)
-        let (host, _) = try await sessionHost(
-            targets: [AdapterTarget(name: "reply", binding: "binding")], policy: policy
-        )
+        let rig = try await RecipientTestRig.make()
         let listener = try WebSocketListener(
-            bindAddress: "127.0.0.1", port: 0, host: host,
-            authorizer: PersonalTerminalAuthorizer(), hostName: "mac-main"
+            bindAddress: "127.0.0.1", port: 0, host: rig.host,
+            authorizer: PersonalTerminalAuthorizer(), hostName: "mac-test"
         )
         let port = try await listener.start()
         let config = scratch.appendingPathComponent("config", isDirectory: true)
@@ -205,20 +201,30 @@ import Testing
             try await terminal.send(.data(FrameCoding.encode(helloFrame())))
             _ = try await terminal.receive()
             try await terminal.send(.data(FrameCoding.encode(
-                sessionFrame(payload: .control(.select(targetID: "tmux:reply")))
+                sessionFrame(payload: .control(.select(targetID: RecipientTestRig.target)))
             )))
-            let reply = ReplyDescriptor(id: UUID(), hostID: "mac-main", targetID: "tmux:reply")
-            let frame = Frame(
-                timestamp: 1, target: reply.targetID, source: reply.hostID,
-                payload: .text(TextPayload(text: "ready", reply: reply))
-            )
+            try await recipientSocketBarrier(on: terminal)
+            try await recipientSocketSend(sessionFrame(
+                target: RecipientTestRig.target, payload: .text(TextPayload(text: "synthetic input"))
+            ), on: terminal)
+            try await recipientSocketBarrier(on: terminal)
+            let context = try #require(await rig.adapter.contexts.last)
+            let frame = recipientText(recipientDescriptor(context))
             let response = try await submit(frame, socket: socket.path)
-            #expect(response == LocalReplyResponse(delivered: 1))
+            try #require(response == LocalReplyResponse(delivered: 1))
             #expect(try await terminalFrame(terminal) == frame)
+            for requestID in [UUID?.none, UUID()] {
+                var unproven = recipientDescriptor(context)
+                unproven.requestID = requestID
+                let refused = try await submit(recipientText(unproven), socket: socket.path)
+                #expect(refused == LocalReplyResponse(delivered: 0))
+                try await recipientSocketBarrier(on: terminal)
+            }
             var info = stat()
             try #require(lstat(socket.path, &info) == 0)
             #expect(info.st_mode & 0o777 == 0o600)
-            #expect(try AuditHistory(directory: auditDirectory).today().last?.contains("\"kind\":\"pushed\"") == true)
+            let history = try AuditHistory(directory: auditDirectory).today()
+            #expect(history.filter { $0.contains("\"kind\":\"pushed\"") }.count == 3)
         } catch {
             await endpoint.stop()
             await listener.stop(reason: "test failed")
