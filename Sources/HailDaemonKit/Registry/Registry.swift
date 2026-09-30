@@ -8,6 +8,7 @@ public enum RegistryError: Error, Equatable, Sendable {
     /// The id is not `<kind>:<name>` with a registered kind and a non-empty name.
     case unknownTarget(String)
     case contextualDeliveryUnsupported
+    case observationUnsupported
 }
 
 /// Optional structured input contract (#145), not a capture grant or observation subscription.
@@ -93,6 +94,17 @@ public actor Registry {
         let (adapter, _) = try resolve(context.binding.targetID)
         guard context.binding.providerID == adapter.kind else { throw ProviderContractError.wrongContext }
         guard adapter is any ProviderContextDelivering else { throw RegistryError.contextualDeliveryUnsupported }
+    }
+
+    /// The registered adapter owns observation and must recheck exact binding before capture starts.
+    package func observe(_ binding: ProviderSessionBinding) async throws -> ProviderObservation {
+        let (adapter, _) = try resolve(binding.targetID)
+        guard adapter.kind == binding.providerID else { throw ProviderContractError.wrongContext }
+        guard adapter is any ProviderContextDelivering,
+              let observer = adapter as? any ProviderSessionObserving else {
+            throw RegistryError.observationUnsupported
+        }
+        return try await observer.observe(binding)
     }
 
     package func deliver(
