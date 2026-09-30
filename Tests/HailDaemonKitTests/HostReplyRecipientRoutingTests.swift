@@ -63,7 +63,7 @@ import Testing
             try await recipientSocketBarrier(on: sockets[index])
         }
         let legacy = ReplyDescriptor(id: UUID(), hostID: "mac-test", targetID: RecipientTestRig.target)
-        #expect(try await listener.publish(recipientText(legacy)) == 0)
+        await #expect(throws: LocalReplyRefusal.noRecipient) { try await listener.publish(recipientText(legacy)) }
         for socket in sockets { try await recipientSocketBarrier(on: socket) }
     }
 }
