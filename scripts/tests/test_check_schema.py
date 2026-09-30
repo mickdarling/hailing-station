@@ -43,6 +43,16 @@ class CheckSchemaTests(unittest.TestCase):
         self.assertEqual(check_schema.validate(None, {"type": "null"}, {}), [])
         self.assertEqual(check_schema.validate(2.0, {"type": "integer"}, {}), [])
 
+    def test_optional_request_identity_uses_supported_scalar_schema(self):
+        reply = json.loads((ROOT / "fixtures" / "frames" / "reply-main-one-text.json").read_text())
+        self.assertEqual(check_schema.validate(reply, self.schema, self.schema), [])
+        reply["payload"]["reply"]["request"] = "00000000-0000-4000-8000-000000000001"
+        self.assertEqual(check_schema.validate(reply, self.schema, self.schema), [])
+        for invalid in [None, False, 123, [], {}]:
+            with self.subTest(invalid=invalid):
+                reply["payload"]["reply"]["request"] = invalid
+                self.assertTrue(check_schema.validate(reply, self.schema, self.schema))
+
     def test_unknown_keys_are_tolerated_by_decision(self):
         extra = dict(self.good, extra=1)
         self.assertEqual(check_schema.validate(extra, self.schema, self.schema), [])
