@@ -8,6 +8,7 @@ package enum OwnedReplyRendererError: Error, Equatable, CustomStringConvertible 
     case ownershipLost
     case cleanupDeferred
     case unsupportedChildRuntime
+    case publicationFailed
 
     package var description: String {
         switch self {
@@ -17,10 +18,11 @@ package enum OwnedReplyRendererError: Error, Equatable, CustomStringConvertible 
         case .nonzeroExit: "speech renderer exited unsuccessfully; owned output cleanup deferred"
         case .cancelled: "speech renderer cancelled; owned output cleanup deferred"
         case .cleanupFailed: "owned renderer cleanup failed"
-        case .invalidAudio: "invalid speech renderer output"
+        case .invalidAudio: "invalid speech renderer output; owned output cleanup deferred"
         case .ownershipLost: "speech renderer child ownership lost"
         case .cleanupDeferred: "owned renderer cleanup deferred to job supervisor"
         case .unsupportedChildRuntime: "unsupported renderer child reaping runtime"
+        case .publicationFailed: "speech reply publication failed; owned output cleanup deferred"
         }
     }
 }

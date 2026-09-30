@@ -116,6 +116,38 @@ class ReplyCLITests(unittest.TestCase):
             self.assertIn("owned output cleanup deferred", result.stderr)
             self.assertEqual(len(list(root.iterdir())), 1)
 
+    def test_accepted_text_then_refused_audio_preserves_fixed_primary_publication_failure(self):
+        self.assert_audio_publication_failure(
+            {"delivered": 0, "code": "noRecipient", "error": "synthetic-private-endpoint-detail"},
+        )
+
+    def test_accepted_text_then_lost_audio_ack_preserves_primary_failure_without_whole_command_retry(self):
+        self.assert_audio_publication_failure(None)
+
+    def assert_audio_publication_failure(self, audio_response):
+        environment = os.environ.copy()
+        environment["PATH"] = str(Path(__file__).parent / "fixtures") + os.pathsep + environment["PATH"]
+        with tempfile.TemporaryDirectory(prefix="hail-renderer-publication-") as scratch:
+            root = Path(scratch) / "output"
+            root.mkdir(mode=0o700)
+            result, requests = self.submit_responses(
+                [{"delivered": 1}, audio_response],
+                ["--say", "synthetic", "--renderer-output-root", str(root)], environment,
+            )
+            self.assertEqual(result.returncode, 1)
+            self.assertIn("speech reply publication failed", result.stderr)
+            self.assertIn("owned output cleanup deferred", result.stderr)
+            self.assertNotIn("synthetic-private-endpoint-detail", result.stderr)
+            self.assertNotIn(str(root), result.stderr)
+            self.assertEqual(result.stdout, "")
+            self.assertEqual(len(requests), 2)
+            frames = [json.loads(request) for request in requests]
+            self.assertEqual([frame["type"] for frame in frames], ["text", "audio"])
+            self.assertEqual(frames[0]["payload"]["reply"], frames[1]["payload"]["reply"])
+            self.assertEqual(frames[1]["payload"]["sequence"], 0)
+            self.assertFalse(frames[1]["payload"]["final"])
+            self.assertEqual(len(list(root.iterdir())), 1)
+
     def test_legacy_text_does_not_invent_request_identity(self):
         frames = self.submit_frames(["--text", "synthetic reply"], 1)
         self.assertNotIn("request", frames[0]["payload"]["reply"])

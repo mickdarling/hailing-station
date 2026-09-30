@@ -142,7 +142,7 @@ private func sendPCM(
 }
 
 private func sendPCMFile(
-    _ url: URL, context: PCMReplyContext, sequence startingSequence: Int, marksFinal: Bool
+    _ url: URL, context: PCMReplyContext, sequence startingSequence: Int, marksFinal: Bool, renderedAudio: Bool = false
 ) async throws -> (frames: Int, deliveries: Int) {
     let attributes = try FileManager.default.attributesOfItem(atPath: url.path)
     let size = (attributes[.size] as? NSNumber)?.intValue ?? 0
@@ -169,7 +169,11 @@ private func sendPCMFile(
             timestamp: replyTimestamp(), target: context.descriptor.targetID, source: context.descriptor.hostID,
             payload: .audio(payload)
         )
-        deliveries += try await ReplyClient.submit(frame, socketURL: context.socket)
+        if renderedAudio {
+            deliveries += try await submitSpeechAudio(frame, socketURL: context.socket)
+        } else {
+            deliveries += try await ReplyClient.submit(frame, socketURL: context.socket)
+        }
         sequence += 1
         current = next
     }
@@ -198,13 +202,27 @@ private func streamVBSay(
         // The CLI must remain alive to retain reaping/cleanup ownership. This async suspension is not
         // a fixed kernel deadline; whole-job deadline supervision belongs to the separate #177 owner.
         do { try await renderer.waitForCleanup() } catch OwnedReplyRendererError.cleanupDeferred {
-            if error is CancellationError { throw OwnedReplyRendererError.cancelled }
-            if error is OwnedReplyRendererError { throw error }
-            throw OwnedReplyRendererError.cleanupDeferred
+            throw speechReplyFailure(error, cleanupDeferred: true)
         }
-        if error is CancellationError { throw OwnedReplyRendererError.cancelled }
-        if error is OwnedReplyRendererError || error is ReplyCommandError || error is ReplyClientError { throw error }
-        throw OwnedReplyRendererError.invalidAudio
+        throw speechReplyFailure(error, cleanupDeferred: false)
+    }
+}
+
+private func speechReplyFailure(_ error: any Error, cleanupDeferred: Bool) -> any Error {
+    if error is CancellationError { return OwnedReplyRendererError.cancelled }
+    if error is OwnedReplyRendererError { return error }
+    if let command = error as? ReplyCommandError {
+        return cleanupDeferred ? ReplyCommandError.invalid("\(command); owned output cleanup deferred") : command
+    }
+    return OwnedReplyRendererError.invalidAudio
+}
+
+private func submitSpeechAudio(_ frame: Frame, socketURL: URL) async throws -> Int {
+    do { return try await ReplyClient.submit(frame, socketURL: socketURL) } catch {
+        if error is CancellationError { throw error }
+        // Local refusal/lost acknowledgement remains the primary category, not a renderer cleanup
+        // failure. Never forward raw endpoint/NW errors or restart the whole accepted-text command.
+        throw OwnedReplyRendererError.publicationFailed
     }
 }
 
@@ -252,7 +270,7 @@ private func sendFinalPCM(sequence: Int, context: PCMReplyContext) async throws 
         codec: .pcm16, sampleRate: context.sampleRate, channels: 1, sequence: sequence,
         streamID: context.streamID, isFinal: true, bytes: Data([0, 0]), reply: context.descriptor
     )
-    return try await ReplyClient.submit(Frame(
+    return try await submitSpeechAudio(Frame(
         timestamp: replyTimestamp(), target: context.descriptor.targetID, source: context.descriptor.hostID,
         payload: .audio(final)
     ), socketURL: context.socket)
@@ -278,7 +296,7 @@ private func sendStableVBSayFiles(
             continue
         }
         let result = try await sendPCMFile(
-            file, context: context, sequence: sequence + frames, marksFinal: false
+            file, context: context, sequence: sequence + frames, marksFinal: false, renderedAudio: true
         )
         frames += result.frames
         deliveries += result.deliveries

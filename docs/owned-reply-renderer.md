@@ -2,7 +2,7 @@
 
 This host-local prerequisite is not diagnostic publisher composition (#166), whole-job supervision
 (#177), an enabled target, or a delivered/physically validated device build. The source version is
-0.1.48. Synthetic tests do not establish real Voicebox quality or two-device routing.
+0.1.49. Synthetic tests do not establish real Voicebox quality or two-device routing.
 
 ## Trusted launch and output configuration
 
@@ -76,3 +76,17 @@ creates its own job group and proves inherited grouping, explicit-root containme
 permissions, three correlated frames, successful normal cleanup, rejected roots before publication,
 and fixed failure/deferred-cleanup behavior. Fixtures generate synthetic PCM only: no real renderer,
 provider, speech, device, signing, host configuration, grant, or selection action is performed.
+
+## Review correction: retain the primary publication failure
+
+Independent review of the original prerequisite observed accepted text followed by refused audio
+reporting only cleanup-deferred. That hid the primary transport/publication failure. Version 0.1.49
+wraps rendered-audio submission in a fixed `speech reply publication failed` category while separately
+reporting deferred output cleanup. Endpoint/NW details and private configuration are not forwarded.
+Known safe local validation, renderer and cancellation categories remain distinguishable. Static PCM
+and text submission behavior is unchanged; no whole-command retry is introduced.
+
+Actual CLI fixtures now prove both text-accepted/audio-refused and text-accepted/lost-audio-ack paths
+exit unsuccessfully with the primary category and deferred disposition, produce no success summary,
+send exactly the original text and first audio attempt, preserve their descriptor, and leave the
+private leaf for the future whole-job owner. This is synthetic evidence only.
