@@ -1,6 +1,10 @@
 import Foundation
 import Network
 import HailProtocol
+import Synchronization
+
+// Peer lifecycle and its prepared enqueue/completion ticket share one bounded transport boundary.
+// swiftlint:disable file_length
 
 func parseBindAddress(_ address: String) -> (host: NWEndpoint.Host, canonical: String)? {
     if let ipv4 = IPv4Address(address), !ipv4.rawValue.allSatisfy({ $0 == 0 }) {
@@ -26,6 +30,7 @@ actor WebSocketPeer {
     private let log: @Sendable (WebSocketListenerEvent) -> Void
     private let onEnd: @Sendable (UUID) -> Void
     private var helloTimer: Task<Void, Never>?
+    private let replyAuthority = ReplyPublicationAuthority()
     var ended = false
 
     init(
@@ -156,6 +161,8 @@ actor WebSocketPeer {
 
     func finish(reason: String) {
         guard !ended else { return }
+        // Complete invalidation before closure returns. Previously prepared replies cannot enqueue later.
+        replyAuthority.invalidate()
         ended = true
         helloTimer?.cancel()
         helloTimer = nil
@@ -170,6 +177,12 @@ actor WebSocketPeer {
 }
 
 extension WebSocketPeer {
+    /// Preparation is not an enqueue grant; its transport permit must remain current at final admission.
+    func prepareReplyPublication(_ frame: Frame) -> PreparedWebSocketReply? {
+        guard !ended, !Task.isCancelled, let data = try? FrameCoding.encode(frame) else { return nil }
+        return PreparedWebSocketReply(data: data, connection: connection, authority: replyAuthority)
+    }
+
     func send(_ frame: Frame) async -> Bool {
         guard !Task.isCancelled else { return false }
         guard let data = try? FrameCoding.encode(frame) else { return false }
@@ -185,5 +198,92 @@ extension WebSocketPeer {
         } onCancel: {
             connection.cancel()
         }
+    }
+}
+
+/// Immutable transport submission. HostSession supplies the policy/binding/local-state critical section;
+/// this final gate additionally orders peer closure against the actual Network enqueue, not completion.
+final class PreparedWebSocketReply: Sendable {
+    private enum Completion {
+        case pending
+        case finished(Bool)
+    }
+    private struct State {
+        var submitted = false
+        var completion = Completion.pending
+        var waiter: CheckedContinuation<Bool, Never>?
+    }
+    private let state = Mutex(State())
+    private let permit: ReplyPublicationPermit
+    private let submit: @Sendable (@escaping @Sendable (Bool) -> Void) -> Void
+    private let cancel: @Sendable () -> Void
+
+    convenience init(data: Data, connection: NWConnection, authority: ReplyPublicationAuthority) {
+        self.init(permit: authority.issuePermit(), submit: { completion in
+            let metadata = NWProtocolWebSocket.Metadata(opcode: .text)
+            let context = NWConnection.ContentContext(identifier: "hail.frame", metadata: [metadata])
+            connection.send(
+                content: data, contentContext: context, isComplete: true,
+                completion: .contentProcessed { completion($0 == nil) }
+            )
+        }, cancel: { authority.invalidate(); connection.cancel() })
+    }
+
+    /// Internal DI keeps lifecycle tests synthetic; only WebSocketPeer supplies production transport.
+    init(
+        permit: ReplyPublicationPermit,
+        submit: @escaping @Sendable (@escaping @Sendable (Bool) -> Void) -> Void,
+        cancel: @escaping @Sendable () -> Void = {}
+    ) {
+        self.permit = permit
+        self.submit = submit
+        self.cancel = cancel
+    }
+
+    /// Returns false without submission when stale, cancelled or already submitted. Success is enqueue
+    /// only; result() receives the later transport outcome. Never await completion while holding a gate.
+    func enqueue() -> Bool {
+        let enqueued = permit.performIfCurrent {
+            guard !Task.isCancelled, state.withLock({ state in
+                guard !state.submitted, case .pending = state.completion else { return false }
+                state.submitted = true
+                return true
+            }) else { return false }
+            submit { [self] result in _ = finish(result) }
+            return true
+        } ?? false
+        if !enqueued { _ = finish(false, onlyIfUnsubmitted: true) }
+        return enqueued
+    }
+
+    /// One pending waiter, with completion buffered if it arrives first. Later completed reads are safe;
+    /// a second concurrent waiter fails closed rather than replacing or leaking the original continuation.
+    func result() async -> Bool {
+        await withTaskCancellationHandler {
+            await withCheckedContinuation { continuation in
+                let immediate = state.withLock { state -> Completion in
+                    if case .finished = state.completion { return state.completion }
+                    guard state.waiter == nil else { return .finished(false) }
+                    state.waiter = continuation
+                    return .pending
+                }
+                if case .finished(let result) = immediate { continuation.resume(returning: result) }
+            }
+        } onCancel: { [self] in
+            if finish(false) { cancel() }
+        }
+    }
+
+    @discardableResult
+    private func finish(_ result: Bool, onlyIfUnsubmitted: Bool = false) -> Bool {
+        let outcome = state.withLock { state -> (Bool, CheckedContinuation<Bool, Never>?) in
+            guard case .pending = state.completion, !onlyIfUnsubmitted || !state.submitted else { return (false, nil) }
+            state.completion = .finished(result)
+            let waiter = state.waiter
+            state.waiter = nil
+            return (true, waiter)
+        }
+        outcome.1?.resume(returning: result)
+        return outcome.0
     }
 }
