@@ -42,7 +42,9 @@ public actor TmuxReplyAdapter: ProviderContextDelivering {
                   !name.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
                       && ("tmux-reply:" + name).utf8.count <= ReplyLimits.maxIdentifierBytes
                       && !name.contains(where: \.isNewline)
-                      && !name.unicodeScalars.contains(where: { $0.value < 32 || $0.value == 127 })
+                      && !name.unicodeScalars.contains(where: {
+                          $0.properties.generalCategory == .control || $0.properties.generalCategory == .format
+                      })
               }) else { throw TmuxReplyAdapterError.invalidConfiguration }
     }
 

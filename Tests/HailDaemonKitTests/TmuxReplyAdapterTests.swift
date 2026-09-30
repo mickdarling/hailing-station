@@ -22,10 +22,18 @@ import Testing
         let tooManyJSON = try #require(String(data: try JSONEncoder().encode(tooMany), encoding: .utf8))
         for value in ["", "bridge", "null", #"["bridge", "bridge"]"#, #"[""]"#, #"["   "]"#,
                       #"["bridge\nother"]"#, #"["bridge\u0000"]"#, #"["bridge\u2028other"]"#,
+                      #"["bridge\u009bother"]"#, #"["bridge\u202eother"]"#, #"["bridge\u2066other"]"#,
                       "[\"\(oversized)\"]", tooManyJSON] {
             #expect(throws: TmuxReplyAdapterError.invalidConfiguration) {
                 try TmuxReplyAdapter.configuredTargets(in: [TmuxReplyAdapter.configurationVariable: value])
             }
+        }
+    }
+
+    @Test(arguments: ["bridge\u{009b}", "bridge\u{202e}", "bridge\u{2066}"])
+    func directProfileConstructionAlsoRejectsUnicodeControls(name: String) throws {
+        #expect(throws: TmuxReplyAdapterError.invalidConfiguration) {
+            try TmuxReplyAdapter(terminal: TmuxAdapter(runner: FakeCommandRunner()), targets: [name])
         }
     }
 
