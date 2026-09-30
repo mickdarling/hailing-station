@@ -27,6 +27,14 @@ the completed mutation returns. Policy commit invalidates before adopting its
 new in-memory policy; changed-policy refresh and observed reload/compile failure
 also invalidate. Lockdown's synchronous transition invokes the same boundary.
 Restoring a grant or recovering policy does not restore an earlier permit.
+When a policy transaction fails before returning its committed view, the host
+conservatively invalidates reply permits immediately, then reconciles the current
+store with `refreshPolicy` before rethrowing the original transaction error.
+Unknown transaction phases cannot prove continuous reply authority; even a
+failed save of an unchanged policy retires old reply permits. Reconciliation of
+unchanged valid policy still preserves existing generic confirmations and permits
+issuing new reply authority. Observed invalid or changed policy uses the central
+revocation path too. A bad-then-restored store cannot revive an earlier permit.
 
 The grant reflects only this host's current in-memory policy. It is not a disk
 refresh, provider/binding validity lease, terminal authentication, request owner
@@ -43,10 +51,23 @@ compilation and lockdown. They use invented data only. No provider process,
 device, host deployment, network speech or TestFlight action is performed. The
 P1 and #161 remain open until integrated checks and physical proof succeed.
 
-Prerequisite verification with Xcode selected through `DEVELOPER_DIR`:
+Initial prerequisite verification at `ee4b42a` with Xcode selected through
+`DEVELOPER_DIR` (superseded by the failed-transaction correction below):
 
 - `swift test --filter 'ReplyPublicationAuthorityTests|HostReplyPublicationAuthorityTests|HostPolicyTests|HostLockdownTests|PolicyCommitTests|PolicyConfirmationRevocationTests|ProviderContextDispatchTests' -Xswiftc -warnings-as-errors`: 42 tests in 7 suites passed.
 - `swiftlint lint --strict --no-cache --quiet`: repository-wide uncached lint passed.
 - `git diff --check`: passed. Exactly three production paths change, including
-  the source version advance to 0.1.34. No full-suite, simulator or physical
+  the initial source version advance to 0.1.34. No full-suite, simulator or physical
   validation is claimed by this prerequisite record.
+
+After the blocking independent-review finding about an exception from
+`store.update` before its committed view is returned:
+
+- `swift test --filter 'ReplyPublicationAuthorityTests|HostReplyPublicationAuthorityTests|ReplyPublicationPolicyFileTests|HostPolicyTests|HostLockdownTests|PolicyCommitTests|PolicyConfirmationRevocationTests|ProviderContextDispatchTests|PolicyFile' -Xswiftc -warnings-as-errors`: 66 tests in 11 suites passed.
+- `swiftlint lint --strict --no-cache --quiet`: repository-wide uncached lint passed.
+- `git diff --check`: passed. The same three production paths change; source
+  version advances again to 0.1.35. Scratch-file tests include actual changed,
+  malformed and wrong-permission policy, and deterministic save refusal. A
+  separate regression proves unchanged failed saves preserve generic confirmed
+  dispatch while retiring old reply permits. These are synthetic checks, not
+  integrated publication or device proof. Independent re-review is still required.
