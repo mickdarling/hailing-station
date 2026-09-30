@@ -25,6 +25,7 @@ private struct ReplyOptions {
     var text: String?
     var pcm16: URL?
     var say: String?
+    var requestID: UUID?
     var sampleRate = 24_000
     var socket = LocalReplyEndpoint.standardSocket()
 
@@ -42,6 +43,11 @@ private struct ReplyOptions {
             }
             sampleRate = rate
         case "--socket": socket = URL(fileURLWithPath: value)
+        case "--request":
+            guard let id = UUID(uuidString: value) else {
+                throw ReplyCommandError.invalid("request must be a UUID")
+            }
+            requestID = id
         default: throw ReplyCommandError.usage
         }
     }
@@ -59,7 +65,8 @@ func reply(_ arguments: ArraySlice<String>) async throws {
     let options = try replyOptions(arguments)
     let streamID = (options.pcm16 != nil || options.say != nil) ? UUID() : nil
     let descriptor = ReplyDescriptor(
-        id: UUID(), hostID: options.host, targetID: options.target, audioStreamID: streamID
+        id: UUID(), hostID: options.host, targetID: options.target, audioStreamID: streamID,
+        requestID: options.requestID
     )
     let audioFrameLimit = LocalReplyEndpoint.maxFramesPerMinute - (options.text == nil ? 0 : 1)
     var frames = 0

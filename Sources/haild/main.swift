@@ -20,7 +20,12 @@ let tmuxPath = configuredTmux.flatMap { $0.isEmpty ? nil : $0 }
 let standardError = FileHandle.standardError
 func makeHost() async throws -> HailHost {
     let registry = Registry()
-    try await registry.register(TmuxAdapter(runner: ProcessCommandRunner(), tmux: tmuxPath))
+    let terminal = TmuxAdapter(runner: ProcessCommandRunner(), tmux: tmuxPath)
+    try await registry.register(terminal)
+    let bridges = try TmuxReplyAdapter.configuredTargets(in: ProcessInfo.processInfo.environment)
+    if !bridges.isEmpty {
+        try await registry.register(TmuxReplyAdapter(terminal: terminal, targets: bridges))
+    }
     return try HailHost(registry: registry, store: PolicyFile.standard())
 }
 
@@ -32,7 +37,7 @@ func usage() -> Never {
            haild targets tier <target-id> <open|confirm|locked>
            haild send <target-id> <text>      (text is one argument; quote it)
            haild reply <target-id> [--host <host-id>] [--text <text>] [--pcm16 <path>|--say <text>]
-                       [--sample-rate <hz>] [--socket <path>]
+                       [--request <opaque-request-UUID>] [--sample-rate <hz>] [--socket <path>]
            haild status
            haild audit verify|tail|today
            haild run --bind <address> --port <port> --connection-probe
