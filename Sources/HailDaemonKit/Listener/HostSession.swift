@@ -74,12 +74,14 @@ public actor HostSession {
 
     let host: HailHost
     private let authorizer: any HostSessionAuthorizing
-    private let hostName: String
-    private let now: @Sendable () -> Int64
-    private var state = State.awaitingHello
+    let hostName: String
+    let now: @Sendable () -> Int64
+    var state = State.awaitingHello
     var peerName = "terminal"
     var selectedTarget: String?
-    var acceptedAudioStreams: [UUID: ReplyDescriptor] = [:]
+    let connectionID = UUID()
+    var selectionGeneration = UUID()
+    var replyRequests: [UUID: HostReplyRequest] = [:]
 
     public init(
         host: HailHost, authorizer: any HostSessionAuthorizing = ConnectionProbeAuthorizer(),
@@ -121,31 +123,6 @@ public actor HostSession {
         }
     }
 
-    /// Host-originated replies are pushed only after negotiation and only to the target this terminal selected.
-    /// Reply identity/provenance has already been validated by the listener's publication boundary.
-    func acceptsHostReply(_ frame: Frame) -> Bool {
-        guard case .ready(let version) = state, frame.version == version else { return false }
-        return switch frame.payload {
-        case .text(let text):
-            text.isFinal && text.reply != nil && frame.target == selectedTarget
-        case .audio(let audio):
-            acceptsHostAudio(audio, target: frame.target)
-        default: false
-        }
-    }
-
-    private func acceptsHostAudio(_ audio: AudioPayload, target: String?) -> Bool {
-        guard let reply = audio.reply, let streamID = audio.streamID else { return false }
-        if audio.sequence == 0 {
-            guard target == selectedTarget else { return false }
-            acceptedAudioStreams[streamID] = reply
-        } else {
-            guard acceptedAudioStreams[streamID] == reply else { return false }
-        }
-        if audio.isFinal { acceptedAudioStreams[streamID] = nil }
-        return true
-    }
-
     private func negotiate(_ frame: Frame) async -> HostSessionResult {
         guard case .control(.hello(let hello)) = frame.payload else {
             return failure(.malformed, "first frame must be hello", close: true)
@@ -173,7 +150,10 @@ public actor HostSession {
     func failure(
         _ code: ErrorCode, _ message: String, close: Bool, version: Int = ProtocolVersion.current
     ) -> HostSessionResult {
-        if close { state = .closed }
+        if close {
+            state = .closed
+            replyRequests.removeAll()
+        }
         return HostSessionResult(
             frames: [response(.error(code: code, message: message), version: version)],
             disposition: close ? .close : .keepOpen
