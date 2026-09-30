@@ -17,6 +17,10 @@ public enum LocalReplyRefusal: String, Codable, Error, Sendable {
     case replyTargetMissing
     case auditFailure
     case decodeFailure
+    case noRecipient
+    case requestPending
+    case notUniqueRecipient
+    case publicationFailed
     case internalFailure = "internal"
 
     public var message: String {
@@ -27,6 +31,10 @@ public enum LocalReplyRefusal: String, Codable, Error, Sendable {
         case .replyTargetMissing: "reply target missing"
         case .auditFailure: "audit failure"
         case .decodeFailure: "frame decode failure"
+        case .noRecipient: "no current request recipient"
+        case .requestPending: "request handoff pending; nothing published"
+        case .notUniqueRecipient: "request recipient is not unique; nothing published"
+        case .publicationFailed: "publication failed; outcome is not retryable"
         case .internalFailure: "internal failure"
         }
         return "reply refused [\(rawValue)]: \(reason)"
@@ -40,16 +48,6 @@ public enum LocalReplyRefusal: String, Codable, Error, Sendable {
         case WebSocketListenerError.invalidReply: self = .invalidReplyPayload
         default: self = .internalFailure
         }
-    }
-}
-
-public struct LocalReplyResponse: Codable, Equatable, Sendable {
-    public var delivered: Int
-    public var error: String?
-
-    public init(delivered: Int, error: String? = nil) {
-        self.delivered = delivered
-        self.error = error
     }
 }
 
