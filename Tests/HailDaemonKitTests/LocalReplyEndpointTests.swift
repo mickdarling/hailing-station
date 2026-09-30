@@ -217,7 +217,9 @@ import Testing
                 var unproven = recipientDescriptor(context)
                 unproven.requestID = requestID
                 let refused = try await submit(recipientText(unproven), socket: socket.path)
-                #expect(refused == LocalReplyResponse(delivered: 0))
+                #expect(refused == LocalReplyResponse(
+                    delivered: 0, error: LocalReplyRefusal.noRecipient.message, code: .noRecipient
+                ))
                 try await recipientSocketBarrier(on: terminal)
             }
             var info = stat()
@@ -261,7 +263,7 @@ import Testing
             payload: .text(TextPayload(text: "ready", reply: reply))
         )
         let response = try await submit(frame, socket: socket.path)
-        #expect(response == LocalReplyResponse(delivered: 0, error: expected.message))
+        #expect(response == LocalReplyResponse(delivered: 0, error: expected.message, code: expected))
         await endpoint.stop()
         await listener.stop(reason: "test complete")
     }
@@ -301,13 +303,39 @@ import Testing
         )
     }
 
+    @Test(arguments: [LocalReplyRefusal.requestPending, .noRecipient, .notUniqueRecipient, .publicationFailed])
+    func correlatedRefusalPreservesItsTypedWireCode(reason: LocalReplyRefusal) async throws {
+        try await expectRefusal(
+            FrameCoding.encode(replyFrame()), destination: RefusingReplyPublisher(reason: reason), expected: reason
+        )
+    }
+
+    @Test(arguments: [0, 2])
+    func nonUniqueDeliveryCountCannotBeReportedAsSuccess(count: Int) async throws {
+        try await expectRefusal(
+            FrameCoding.encode(replyFrame()), destination: CountingReplyPublisher(count: count),
+            expected: count == 0 ? .noRecipient : .publicationFailed
+        )
+    }
+
     @Test func localRefusalCodesRemainBoundedAndStable() throws {
         for reason in [LocalReplyRefusal.sourceHostMismatch, .listenerNotReady, .invalidReplyPayload,
-                       .replyTargetMissing, .auditFailure, .decodeFailure, .internalFailure] {
+                       .replyTargetMissing, .auditFailure, .decodeFailure, .internalFailure,
+                       .noRecipient, .requestPending, .notUniqueRecipient, .publicationFailed] {
             #expect(reason.message.count <= ControlLimits.maxErrorMessage)
             #expect(try JSONDecoder().decode(LocalReplyRefusal.self, from: JSONEncoder().encode(reason)) == reason)
         }
     }
+}
+
+private struct RefusingReplyPublisher: HostReplyPublishing {
+    let reason: LocalReplyRefusal
+    func publish(_ frame: Frame) async throws -> Int { throw reason }
+}
+
+private struct CountingReplyPublisher: HostReplyPublishing {
+    let count: Int
+    func publish(_ frame: Frame) async throws -> Int { count }
 }
 
 private func replyDescriptor(_ frame: Frame) -> ReplyDescriptor? {
@@ -331,7 +359,7 @@ private func expectRefusal(
     )
     try await endpoint.start()
     let response = try await submit(data, socket: socket.path)
-    #expect(response == LocalReplyResponse(delivered: 0, error: expected.message))
+    #expect(response == LocalReplyResponse(delivered: 0, error: expected.message, code: expected))
     await endpoint.stop()
 }
 

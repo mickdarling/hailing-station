@@ -6,6 +6,8 @@ import Network
 private let replyLogger = Logger(subsystem: "com.mickdarling.hailing-station", category: "local-reply")
 
 public protocol HostReplyPublishing: Sendable {
+    /// requestPending may be thrown only for a unique valid uncommitted request, before any enqueue.
+    /// Later failures must not use that retryable code, even when delivery completion is unknown.
     func publish(_ frame: Frame) async throws -> Int
 }
 
@@ -14,6 +16,20 @@ extension WebSocketListener: HostReplyPublishing {}
 struct LocalReplyConnection: Sendable {
     var id: UUID
     var connection: NWConnection
+}
+
+public struct LocalReplyResponse: Codable, Equatable, Sendable {
+    public var delivered: Int
+    public var error: String?
+    /// Only explicit requestPending with zero deliveries permits bounded same-frame retry.
+    /// Older hosts omit this field; absence never implies retry permission.
+    public var code: LocalReplyRefusal?
+
+    public init(delivered: Int, error: String? = nil, code: LocalReplyRefusal? = nil) {
+        self.delivered = delivered
+        self.error = error
+        self.code = code
+    }
 }
 
 extension LocalReplyEndpoint {
@@ -130,8 +146,10 @@ extension LocalReplyEndpoint {
             try Task.checkCancellation()
             guard !stopped, connections[client.id] != nil else { throw CancellationError() }
             let delivered = try await destination.publish(frame)
-            try Task.checkCancellation()
-            guard !stopped, connections[client.id] != nil else { throw CancellationError() }
+            guard delivered == 1 else {
+                throw delivered == 0 ? LocalReplyRefusal.noRecipient : LocalReplyRefusal.publicationFailed
+            }
+            guard !Task.isCancelled, !stopped, connections[client.id] != nil else { throw CancellationError() }
             await respond(.init(delivered: delivered), to: client)
         } catch is CancellationError {
             retire(client.id)
@@ -141,7 +159,7 @@ extension LocalReplyEndpoint {
                 "Local reply refused (\(reason.rawValue)): \(String(reflecting: error), privacy: .private)"
             )
             if !stopped, connections[client.id] != nil {
-                await respond(.init(delivered: 0, error: reason.message), to: client)
+                await respond(.init(delivered: 0, error: reason.message, code: reason), to: client)
             } else {
                 retire(client.id)
             }
