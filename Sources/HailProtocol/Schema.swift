@@ -91,6 +91,9 @@ public enum Schema {
                 "maxLength": .integer(Int64(ReplyLimits.maxIdentifierBytes))
             ]),
             "audioStream": .object(["type": .string("string"), "format": .string("uuid")]),
+            "request": .object([
+                "type": .array([.string("string"), .string("null")]), "format": .string("uuid")
+            ]),
             "priority": .object(["enum": .array(ReplyPriority.allCases.map { .string($0.rawValue) })]),
             "interruption": .object(["enum": .array(ReplyInterruption.allCases.map { .string($0.rawValue) })])
         ]

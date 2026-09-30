@@ -9,6 +9,9 @@ public struct ReplyDescriptor: Codable, Sendable, Equatable {
     public var id: UUID
     public var hostID: String
     public var targetID: String
+    /// Opaque host-minted input request reference (#161). This field alone grants no recipient authority.
+    /// Nil is an uncorrelated legacy/manual reply, not permission to broadcast a personal response.
+    public var requestID: UUID?
     /// Present when this reply has audio. The text and every audio segment name the same stream.
     public var audioStreamID: UUID?
     public var priority: ReplyPriority
@@ -16,11 +19,12 @@ public struct ReplyDescriptor: Codable, Sendable, Equatable {
 
     public init(
         id: UUID, hostID: String, targetID: String, audioStreamID: UUID? = nil,
-        priority: ReplyPriority = .normal, interruption: ReplyInterruption = .enqueue
+        priority: ReplyPriority = .normal, interruption: ReplyInterruption = .enqueue, requestID: UUID? = nil
     ) {
         self.id = id
         self.hostID = hostID
         self.targetID = targetID
+        self.requestID = requestID
         self.audioStreamID = audioStreamID
         self.priority = priority
         self.interruption = interruption
@@ -31,6 +35,7 @@ public struct ReplyDescriptor: Codable, Sendable, Equatable {
         id = try container.decode(UUID.self, forKey: .id)
         hostID = try container.decode(String.self, forKey: .hostID)
         targetID = try container.decode(String.self, forKey: .targetID)
+        requestID = try container.decodeIfPresent(UUID.self, forKey: .requestID)
         audioStreamID = try container.decodeIfPresent(UUID.self, forKey: .audioStreamID)
         priority = try container.decode(ReplyPriority.self, forKey: .priority)
         interruption = try container.decode(ReplyInterruption.self, forKey: .interruption)
@@ -42,6 +47,7 @@ public struct ReplyDescriptor: Codable, Sendable, Equatable {
 
     private enum CodingKeys: String, CodingKey {
         case id, hostID = "host", targetID = "target", audioStreamID = "audioStream", priority, interruption
+        case requestID = "request"
     }
 }
 
