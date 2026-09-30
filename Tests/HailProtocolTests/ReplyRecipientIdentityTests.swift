@@ -11,9 +11,9 @@ import Testing
         #expect(try JSONDecoder().decode(ReplyDescriptor.self, from: data).requestID == nil)
     }
 
-    @Test func explicitNullRequestRemainsLegacy() throws {
+    @Test func explicitNullRequestIsRejectedRatherThanDowngraded() throws {
         let data = try descriptorData(request: NSNull())
-        #expect(try JSONDecoder().decode(ReplyDescriptor.self, from: data).requestID == nil)
+        #expect(throws: DecodingError.self) { try JSONDecoder().decode(ReplyDescriptor.self, from: data) }
     }
 
     @Test func textAndEveryAudioSegmentRetainExactRequestIdentity() throws {

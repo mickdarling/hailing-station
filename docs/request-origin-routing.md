@@ -21,8 +21,9 @@ The CLI does not choose a recipient, search for the latest speaker, infer an
 origin, or establish a request by accepting this flag.
 
 The field is optional in protocol v1. Existing peers can decode old descriptors
-and ignore unknown fields, while missing/null request references remain
-uncorrelated. Decoding compatibility is not routing compatibility: the future
+and ignore unknown fields, while omitted request references remain uncorrelated.
+An explicitly null, non-string or malformed request is rejected, not silently
+downgraded to a legacy reply. Decoding compatibility is not routing compatibility: the future
 origin-bound publisher must never silently broadcast an ambiguous personal
 reply. No new negotiation capability is advertised in this contract-only slice.
 

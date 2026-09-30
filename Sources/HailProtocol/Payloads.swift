@@ -35,7 +35,7 @@ public struct ReplyDescriptor: Codable, Sendable, Equatable {
         id = try container.decode(UUID.self, forKey: .id)
         hostID = try container.decode(String.self, forKey: .hostID)
         targetID = try container.decode(String.self, forKey: .targetID)
-        requestID = try container.decodeIfPresent(UUID.self, forKey: .requestID)
+        requestID = container.contains(.requestID) ? try container.decode(UUID.self, forKey: .requestID) : nil
         audioStreamID = try container.decodeIfPresent(UUID.self, forKey: .audioStreamID)
         priority = try container.decode(ReplyPriority.self, forKey: .priority)
         interruption = try container.decode(ReplyInterruption.self, forKey: .interruption)
