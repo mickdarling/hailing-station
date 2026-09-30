@@ -1,7 +1,16 @@
+import Foundation
 import Testing
 @testable import HailDaemonKit
 
 @Suite struct DangerousPatternTests {
+    // Exact-language fixtures are not scheduler/load assertions. Expiry and cost retain their
+    // separate zero-budget/default-budget tests; this override never changes production's 20 ms.
+    private static func semanticGuards(
+        _ patterns: [GuardPattern] = DangerousPatternGuard.defaults
+    ) throws -> CompiledGuards {
+        try CompiledGuards(patterns, matchBudget: .seconds(5))
+    }
+
     static let hits: [(String, [String])] = [
         ("rm -rf /", ["rm -rf"]), ("rm -fr ~", ["rm -rf"]), ("RM -Rf x", ["rm -rf"]), ("rm -r x", []),
         ("rm -r /", ["rm -rf"]), ("rm --recursive /", ["rm -rf"]),
@@ -55,7 +64,7 @@ import Testing
     @Test(arguments: hits.map(\.0))
     func defaultPatterns(line: String) throws {
         let expected = try #require(Self.hits.first { $0.0 == line }?.1)
-        #expect(DangerousPatternGuard.matches(in: [line], patterns: DangerousPatternGuard.defaults) == expected)
+        #expect(try Self.semanticGuards().matches(in: [line]) == expected)
     }
 
     @Test func everyDefaultPatternCompilesAndFiresAtLeastOnce() throws {
@@ -86,6 +95,18 @@ import Testing
         #expect(guards.matches(in: [String(repeating: "a", count: 2_000) + "!"]) == ["slow"])
     }
 
+    @Test func expiredDefaultRuleBudgetCountsANonmatchAsAHit() throws {
+        let rule = try #require(DangerousPatternGuard.defaults.first { $0.name == "disk write" })
+        let line = String(repeating: "dd ", count: 600) + "truncate log"
+        let regex = try NSRegularExpression(pattern: rule.regex, options: [.caseInsensitive])
+        let range = NSRange(line.startIndex..., in: line)
+        // An independent direct-regex oracle proves the fixture is not a disk-write language match.
+        #expect(regex.firstMatch(in: line, range: range) == nil)
+        #expect(try Self.semanticGuards([rule]).matches(in: [line]) == [])
+        let expired = try CompiledGuards([rule], matchBudget: .zero)
+        #expect(expired.matches(in: [line]) == ["disk write"])
+    }
+
     @Test func worstCaseUtteranceStaysCheap() throws {
         // The sanitizer's cap: 2,000 characters per line, 20 lines. Command words repeated to provoke
         // rescans; anchored lookaheads keep each rule linear.
@@ -103,10 +124,10 @@ import Testing
 
     @Test func matchesSpanLinesAndReportEachNameOnce() throws {
         let lines = ["sudo ls", "sudo rm -rf x"]
-        let names = DangerousPatternGuard.matches(in: lines, patterns: DangerousPatternGuard.defaults)
+        let guards = try Self.semanticGuards()
+        let names = guards.matches(in: lines)
         #expect(names == ["rm -rf", "sudo"])
         // A command split across lines by a continuation is seen whole as well as line by line.
-        let guards = try CompiledGuards(DangerousPatternGuard.defaults)
         #expect(guards.matches(in: ["rm \\", "-rf /"]) == ["rm -rf"])
         #expect(guards.matches(in: ["git push \\", "--force origin main"]) == ["force push"])
         #expect(guards.matches(in: ["chmod \\", "777 x"]) == ["permissions"])
