@@ -109,7 +109,7 @@ public actor ProviderObservedSession {
             let result = ready.removeFirst(); bytes -= textBytes(result.event)
             return result
         }
-        if case .lost(let reason) = status, pending.isEmpty { throw reason }
+        if case .lost(let reason) = status, pending.isEmpty, ingesting == 0 { throw reason }
         guard mayDrain else { return nil }
         let result: ProviderObservedEvent? = try await withTaskCancellationHandler {
             try await withCheckedThrowingContinuation {

@@ -3,6 +3,40 @@ import Testing
 @testable import HailDaemonKit
 
 @Suite struct ProviderObservedAuthorityTests {
+    @Test(arguments: [false, true]) func terminalLossWaitsForAuthorizedInFlightRecord(failed: Bool) async throws {
+        let rig = try await ObservedRig.make()
+        await rig.adapter.configure(holdDispatch: true)
+        await rig.adapter.setEmission([.accepted])
+        try await rig.host.withObservedSession(target: ObservedRig.target,
+                                                configuration: rig.configuration()) { session in
+            let input = Task { try await session.submit("invented input", utteranceID: UUID()) }
+            await rig.adapter.dispatch.arrivals.wait()
+            await rig.adapter.listings.wait(for: 5)
+            await rig.adapter.holdListing(7)
+            await rig.adapter.dispatch.release()
+            await rig.adapter.listing.arrivals.wait() // Valid record is in post-ingest authorization, not ready.
+            await rig.adapter.finish(failed ? ProviderObservationError.unavailable : nil)
+            await rig.adapter.cancellations.wait()
+            let completed = ObservedCounter()
+            let next = Task {
+                defer { completed.increment() }
+                return try await session.next()
+            }
+            await rig.adapter.listings.wait(for: 8) // Consumer freshly revalidates while the record stays held.
+            let proposed = try #require(await rig.adapter.delivered.first)
+            #expect(await session.state(for: proposed.id) == .accepted)
+            #expect(completed.count < 1)
+            await rig.adapter.listing.release()
+            let sent = try rig.sent(try await input.value)
+            let record = try #require(try await next.value)
+            #expect(record.event.sequence == 0)
+            #expect(record.correlation == .associated(sent, state: .accepted))
+            let loss: ProviderObservationLoss = failed ? .streamFailed : .streamEnded
+            await #expect(throws: loss) { try await session.next() }
+        }
+        #expect(rig.adapter.cancellations.count == 1)
+    }
+
     @Test func observationEndingDuringSubmitAuthorizationRefusesNewWrite() async throws {
         let rig = try await ObservedRig.make()
         try await rig.host.withObservedSession(target: ObservedRig.target,

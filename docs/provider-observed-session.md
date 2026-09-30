@@ -1,6 +1,6 @@
 # Host-local owned provider observation
 
-Implementation #141, following contextual dispatch #145. Source version 0.1.17. This is an executable synthetic host-local driver, not a shipped real-provider observer, speech renderer, mobile output feature or authenticated transport.
+Implementation #141, following contextual dispatch #145. Current source version 0.1.18. This is an executable synthetic host-local driver, not a shipped real-provider observer, speech renderer, mobile output feature or authenticated transport.
 
 ## Entry and authority
 
@@ -34,7 +34,7 @@ The registered test adapter schedules its own producer task from the context rec
 
 `ProviderObservedSessionTests` proves the guarded full path, unsupported/capture denial, exact startup revalidation, locked input/capture separation, confirmation and reconnect. `ProviderObservationLifecycleTests` covers failed/partial early output, count/UTF-8/consumer queue limits, EOF/error prefix preservation, post-EOF revocation, duplicates/gaps and invalid suffixes, internal/ambient/late events, monotonic timeout, capacity, idle revocation/rebinding/lockdown, noncooperative stop and scoped early return/throw. Additional authority and cancellation suites gate actual listing suspension to prove post-ingestion revalidation, in-flight queue accounting, no new input after observation ends, immediate lease cancellation before joins, and cancelled next waiter cleanup without sleep-based races.
 
-Verification on base `0e8b6d9f687bc6340a7fdbecd3297052ea90a124`, with `DEVELOPER_DIR=/Applications/Xcode.app/Contents/Developer`:
+Initial 0.1.17 verification on base `0e8b6d9f687bc6340a7fdbecd3297052ea90a124`, with `DEVELOPER_DIR=/Applications/Xcode.app/Contents/Developer` (historical, not approval of the later repair):
 
 - Draft-focused verification passed 30 tests in four suites with warnings as errors (`artifacts/observed-focused-final.log`); strict repository lint passed. Earlier draft failures exposed cancelled-next return/status and prefix-purge interactions and were fixed, not dismissed as flakes. The actual failing logs remain in the artifacts directory.
 - The first complete `scripts/verify.sh all` passed, exit 0: 509 Swift tests in 86 suites, audit CLI, strict lint, shell/script checks, 45 trace-checker tests, five intent tests and one reply CLI test (`artifacts/observed-all-first.log`). There was no unchanged retry or unrelated test-race fix.
@@ -42,7 +42,16 @@ Verification on base `0e8b6d9f687bc6340a7fdbecd3297052ea90a124`, with `DEVELOPER
 - Offline #141 named-path trace passed, exit 0: three expectations, zero problems, with pinned PyYAML provisioned in an isolated venv (`artifacts/observed-trace.log`). Presence is not execution evidence; the Swift test results above supply execution proof. `git diff --check` passed.
 - Exactly four production paths change: HailHost, Registry, the new owner and project.yml. The owner file has one narrowly justified file-length exemption: its private lifecycle state, cleanup and retention transitions remain cohesive; all function/type/complexity/line-length rules and repository gates remain strict.
 
-At this pre-publication verification point, independent exact-head correctness and security review are pending; successful local tests are not an approval record. Subsequent completed exact-head evidence is recorded on the issue/PR.
+Exact-head correctness review of `568c7730d03992c1ea0f0c0b3537996cb61bb53c` requested changes: consumer EOF/error could precede a valid record still suspended in post-ingestion capture authorization. A gated regression failed on that rejected source for both ordinary EOF and stream error (`artifacts/observed-inflight-terminal-rejected-head.log`). The 0.1.18 repair waits for both pending and in-flight records before reporting terminal loss, matching the existing terminal-waiter gate. The consumer receives the authorized record first, then the truthful original loss; no new event or sequence is invented.
+
+Repair verification at 0.1.18 (same merged base, no unrelated changes), with Xcode selected as above:
+
+- Focused 31 tests in four suites passed, including both formerly failing in-flight terminal-loss cases (`artifacts/observed-018-focused.log`), exit 0.
+- The first repair `scripts/verify.sh all` passed, exit 0: 510 Swift tests in 86 suites, 45 checker tests, five intent tests, one reply CLI test, audit CLI, strict lint and scripts (`artifacts/observed-018-all-first.log`). No unchanged retry was needed.
+- The first repair `scripts/verify.sh sim` passed simulator build-for-testing, exit 0 (`artifacts/observed-018-sim-first.log`); this remains build-only evidence.
+- Offline #141 trace passed, exit 0, three expectations and zero problems (`artifacts/observed-018-trace.log`); `git diff --check` passed. Prior logs/results are preserved, not relabelled as repair evidence.
+
+At this pre-publication verification point, renewed independent exact-head correctness and security review are pending; successful local tests are not an approval record. Subsequent completed exact-head evidence is recorded on the issue/PR.
 
 ## Deferred delivery
 
