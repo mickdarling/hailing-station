@@ -5,10 +5,10 @@ connection, even when another iPhone or iPad selects the same target. A target,
 display name, current speaker, or most recently received response is not origin
 evidence.
 
-## Additive contract, not a shipped routing fix
+## Request contract and current implementation boundaries
 
-`ReplyDescriptor.requestID` is an optional UUID encoded as `request`. The host will
-mint it when accepting a request and bind it to the actual requesting connection,
+`ReplyDescriptor.requestID` is an optional UUID encoded as `request`. The host
+mints it when accepting contextual input and binds it to the actual requesting connection,
 selection generation and exact target binding. The same descriptor, including
 this request reference, accompanies final text and every audio segment. It is
 distinct from the reply ID and audio stream ID. A string supplied by a caller is
@@ -23,23 +23,27 @@ speaker, infer an origin, or establish a request merely by accepting a flag.
 The field is optional in protocol v1. Existing peers can decode old descriptors
 and ignore unknown fields, while omitted request references remain uncorrelated.
 An explicitly null, non-string or malformed request is rejected, not silently
-downgraded to a legacy reply. Decoding compatibility is not routing compatibility: the future
-origin-bound publisher must never silently broadcast an ambiguous personal
+downgraded to a legacy reply. Decoding compatibility is not routing compatibility: the
+origin-bound publisher never silently broadcasts an ambiguous personal
 reply. No new negotiation capability is advertised in this contract-only slice.
 
-**Current limitation:** the existing listener still publishes by selected target.
-Adding the field does not prevent cross-device playback. Do not
-deploy this slice as a completed #161 fix or close the issue.
+Host ingress and publication now enforce connection-owned request identity as
+described in [recipient enforcement](request-recipient-enforcement.md). Synthetic
+two-client isolation is not physical proof, and a concrete programmatic bridge
+is still needed before migrating the live Claude route. Do not close #161.
+This describes the source implementation, not the running daemon or installed
+TestFlight builds. Admission also requires cooperative binding leases and retains
+its original revocable policy/binding tickets through actual network enqueue;
+snapshots alone do not establish continuous authority (#167).
 
 ## Remaining implementation and proof
 
-1. Establish host-owned bounded request admission and immutable origin at wire
-   ingress. Reject unknown/expired tokens, stale selection/binding generations,
-   and uncorrelated personal replies. Disconnect never transfers a pending reply
-   to a new peer. Final text and the complete audio stream keep one recipient.
-2. Carry context through an explicitly supported adapter handoff. Ordinary tmux
-   shell/TUI input must not gain a metadata prefix implicitly. Preserve policy,
-   sanitizer, input-shape and exact-binding preflights before side effects.
+1. Integrate and physically validate the implemented bounded ingress ownership
+   and recipient checks. Unknown/expired and uncorrelated replies are refused;
+   selection changes invalidate requests and reconnect cannot inherit ownership.
+2. Integrate a concrete supported programmatic bridge through the explicit
+   contextual adapter. Ordinary tmux remains unchanged; no implicit metadata
+   prefix, policy grant, capture grant or provider enablement is permitted.
 3. Prefer a programmatic bridge retaining correlation outside generated text.
    An LLM choosing which valid token to echo can still misassociate output; a
    voluntary CLI bridge must not be described as proven semantic attribution or
@@ -63,6 +67,10 @@ registers it only when the operator explicitly supplies a nonempty JSON array of
 adapter-local session names in `HAIL_REPLY_BRIDGE_TARGETS`. Missing configuration
 or an empty array leaves it off; invalid, duplicate, oversized or control-bearing
 names fail closed. This is local configuration, never mobile-supplied settings.
+It does not implement cooperative `ProviderReplyBindingLeasing`: external tmux
+rebinding cannot participate in host publication locks. Consequently personal
+contextual ingress refuses this adapter until a concrete supervised bridge owns
+the binding authority. A configured session name is not such a lease.
 
 Only named bridge sessions are listed as `tmux-reply:<name>`. Their distinct IDs
 require separate exact-binding target policy approval: permission for
@@ -96,9 +104,9 @@ raw envelopes into a shell. A future host-owned structured adapter can satisfy
 the same correlation boundary without tmux.
 
 **Not yet implemented or validated:** a concrete programmatic bridge process,
-wire ingress admission, origin-bound publication, provider inference, and physical
-two-client routing. The existing live Claude tmux route is still unsupported by
-this bridge prerequisite, and the current listener still broadcasts by selected
-target. Do not enable this profile on a live target or deploy it as a standalone
-#161 fix. Synthetic tests prove configuration, literal handoff, context/binding
-refusals, and existing host policy boundaries only.
+provider inference and physical two-client routing. Host ingress and publication
+are implemented but the existing live Claude tmux route still lacks programmatic
+context retention. Do not enable this profile on a live target or deploy the
+prerequisites as a completed #161 fix. Synthetic tests prove configuration,
+literal handoff, context/binding refusals, recipient isolation and existing host
+policy boundaries only.

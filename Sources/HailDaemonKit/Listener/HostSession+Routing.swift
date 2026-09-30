@@ -1,3 +1,4 @@
+import Foundation
 import HailProtocol
 
 extension HostSession {
@@ -20,15 +21,75 @@ extension HostSession {
             return failure(.notAllowed, "select the destination before speaking", close: false, version: version)
         }
         do {
-            switch try await host.send(text.text, to: target, from: peerName) {
+            let generation = selectionGeneration
+            let context = try await replyContext(target: target, utteranceID: frame.id, generation: generation)
+            let outcome = try await send(text.text, target: target, context: context)
+            switch outcome {
             case .delivered:
+                if let context {
+                    guard generation == selectionGeneration, var request = replyRequests[context.id] else {
+                        return failure(.notAllowed, "request destination changed", close: false, version: version)
+                    }
+                    request.committed = true
+                    guard request.withAuthority({
+                        guard request.isCurrent(at: requestClock()) else { return false }
+                        replyRequests[context.id] = request
+                        return true
+                    }) == true else {
+                        replyRequests[context.id] = nil
+                        return failure(.notAllowed, "reply authority changed", close: false, version: version)
+                    }
+                }
                 return HostSessionResult(frames: [])
             case .needsConfirmation:
+                if let context { replyRequests[context.id] = nil }
                 return failure(.notAllowed, "target requires confirmation at the Mac", close: false, version: version)
             }
         } catch {
             return deliveryFailure(error, version: version)
         }
+    }
+
+    private func send(_ text: String, target: String, context: ProviderTurnContext?) async throws -> SendOutcome {
+        do {
+            if let context { return try await host.send(text, context: context, from: peerName) }
+            return try await host.send(text, to: target, from: peerName)
+        } catch {
+            if let context { replyRequests[context.id] = nil }
+            throw error
+        }
+    }
+
+    /// Capability preflight does not grant execution. HailHost still checks shape, exact binding and policy.
+    private func replyContext(
+        target: String, utteranceID: UUID, generation: UUID
+    ) async throws -> ProviderTurnContext? {
+        let listing = try await host.registry.listing()
+        guard let listed = listing.first(where: { $0.info.id == target }), let binding = listed.binding,
+              listed.info.alive else { throw HostError.unknownTarget(target) }
+        let context = ProviderTurnContext(utteranceID: utteranceID, connectionID: connectionID, binding: try .init(
+            hostID: hostName, providerID: listed.info.kind, targetID: target, sessionID: binding
+        ))
+        do {
+            try await host.registry.requireInputDelivery(to: target, context: context, lineCount: 1)
+        } catch RegistryError.contextualDeliveryUnsupported {
+            // Legacy generic input is unchanged; it cannot establish a private reply recipient.
+            return nil
+        }
+        // Listings are snapshots, not leases. Contextual adapters without cooperative binding authority
+        // refuse before dispatch; they must not masquerade as safe private reply bridges.
+        let lease = try await host.registry.acquireReplyBindingLease(context.binding)
+        guard let permit = await host.replyPublicationPermit(for: context.binding) else {
+            throw HostError.denied(.notAllowed(target))
+        }
+        pruneReplyRequests()
+        guard case .ready = state, generation == selectionGeneration, selectedTarget == target,
+              replyRequests.count < HostReplyRequest.capacity else { throw ProviderContractError.capacityExceeded }
+        replyRequests[context.id] = HostReplyRequest(
+            context: context, generation: generation, createdAt: requestClock(),
+            policyPermit: permit, bindingLease: lease
+        )
+        return context
     }
 
     private func route(_ control: ControlPayload, version: Int) async -> HostSessionResult {
@@ -61,7 +122,11 @@ extension HostSession {
             guard try await policyFilteredTargets().contains(where: { $0.id == targetID && $0.alive }) else {
                 return failure(.notAllowed, "target is unavailable or not allowed", close: false, version: version)
             }
-            selectedTarget = targetID
+            if selectedTarget != targetID {
+                selectionGeneration = UUID()
+                replyRequests.removeAll()
+                selectedTarget = targetID
+            }
             return HostSessionResult(frames: [])
         } catch {
             return failure(.malformed, "target selection unavailable", close: false, version: version)
