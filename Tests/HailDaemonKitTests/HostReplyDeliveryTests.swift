@@ -36,7 +36,7 @@ import Testing
                 timestamp: 1_700_000_000_100, target: reply.targetID, source: reply.hostID,
                 payload: .text(TextPayload(text: "ready", reply: reply))
             )
-            #expect(try await listener.publish(frame) == 0)
+            await #expect(throws: LocalReplyRefusal.noRecipient) { try await listener.publish(frame) }
             try await recipientSocketBarrier(on: selected)
             try await recipientSocketBarrier(on: unselected)
         } catch {
@@ -92,7 +92,7 @@ import Testing
                 timestamp: 1, target: reply.targetID, source: reply.hostID,
                 payload: .text(TextPayload(text: "ready", reply: reply))
             )
-            #expect(try await listener.publish(frame) == 0)
+            await #expect(throws: LocalReplyRefusal.noRecipient) { try await listener.publish(frame) }
             await listener.stop(reason: "test complete")
         }
     }
