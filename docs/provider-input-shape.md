@@ -1,6 +1,6 @@
 # Registered provider input shape
 
-Implementation #152, part of #132 and #134, following the owned host-local observation driver #141. Source version 0.1.19. This is an adapter-fit prerequisite, not a real provider integration, output publication or device proof.
+Implementation #152, part of #132 and #134, following the owned host-local observation driver #141. Source version 0.1.20. This is an adapter-fit prerequisite, not a real provider integration, output publication or device proof.
 
 ## Typed profiles and dispatch
 
@@ -9,6 +9,8 @@ Implementation #152, part of #132 and #134, following the owned host-local obser
 HailHost sanitizes first and passes the resulting line count to Registry's preflight. The single-line profile requires exactly one sanitized line, otherwise `AdapterInputShapeError.singleLineRequired` is thrown before one-shot confirmation consumption, delivery admission or any adapter request. Raw newline counting is not used: normalization, control/escape stripping, whitespace-only line removal and the host's existing sanitizer limits remain authoritative. The default newline-reject policy still refuses multiline input before shape preflight; explicitly split input is where the registered shape prevents several logical provider turns under one context. No lines are concatenated, dropped or secretly dispatched through legacy delivery.
 
 Profile resolution is a Registry actor hop for all modes. After it returns, HailHost forcibly refreshes current policy, including unconfirmed legacy and contextual input. The existing single cancellation checkpoint remains after policy I/O and before confirmation consumption. Consumption, first policy evaluation and admission are synchronous after that checkpoint; the subsequent Registry/adapter handoff is asynchronous, with no further host cancellation checkpoint before the first committed attempt. Cancellation observed before the checkpoint preserves confirmation; once the first attempt commits, a noncooperative completed write remains sent. Cancellation before later line-oriented deliveries and other partial failures retain known delivered lines.
+
+If Registry's suspended preflight rejects the request, HailHost checks cancellation before rethrowing that preflight error. A cancelled rejected request therefore reports `CancellationError`, not an obsolete shape/capability refusal. This error-path check consumes no confirmation, admission or provider write; it does not add a checkpoint after the successful path's first-attempt commitment.
 
 Context provider identity must match Registry's actual adapter kind, and context binding must match the fresh target listing. The allowlist, exact binding, lockdown, tiers, guards, rate admission and per-line checks remain on the shared guarded path. The registered profile is not a permission grant or client-provided identity. Adapters still must enforce exact binding immediately before their own side effects; an actual target replacement during host suspension cannot be authorized by a previously valid listing. A refused preflight neither records a sent turn nor supplies evidence of provider acceptance.
 
@@ -32,7 +34,22 @@ All labels/text in fixtures are invented. Verification on base `be4604f46ca34450
 
 Exactly four production paths change: Adapter, Registry, HailHost and the project version. No new lint suppression or global gate change is introduced.
 
-At this pre-publication verification point, exact-head independent correctness/security review and PR-shape review records remain pending. Subsequent completed evidence belongs to the issue/PR; local test success is not an approval record.
+The preceding verification is the initial 0.1.19 record. Subsequent completed exact-head evidence belongs to the issue/PR; local test success is not an approval record.
+
+## Exact-head cancellation repair
+
+GitHub Codex's completed review of `542a2ec9fc066e5de3393c2979f5dd7a04020d33` found a valid [P2 cancellation-precedence defect](https://github.com/mickdarling/hailing-station/pull/154#discussion_r4140828076): cancellation during the Registry shape hop could be hidden by a rejected preflight, bypassing the later checkpoint. The refusal still spent no confirmation, admission or write. Source 0.1.20 adds only the rejected-hop cancellation check; prior-head approvals do not cover this repair.
+
+`ProviderInputShapeAuthorityTests.cancelledRejectedShapeHopPreservesConfirmationAdmissionAndSentCapacity` deterministically holds the real registered profile getter, cancels, then releases a rejected contextual multiline or contextless single-line request. Both cases require `CancellationError` and zero adapter writes. Each then actually reuses its matching issued confirmation through the coordinator after trusted fixture reconfiguration, with exactly the required delivery-rate budget and one sent-turn slot; the successful retry proves that the refusal spent neither token nor admission/capacity.
+
+Repair verification on the previously reviewed head above, with `DEVELOPER_DIR=/Applications/Xcode.app/Contents/Developer`:
+
+- Focused shape/policy-commit tests passed, exit 0: 19 tests in three suites (`artifacts/input-shape-review-repair-focus.log`).
+- First `scripts/verify.sh all` passed, exit 0: 526 Swift tests in 88 suites, 45 checker tests, five intent tests, one reply CLI test, audit CLI, strict lint and scripts (`artifacts/input-shape-review-repair-all-first.log`). No retry was needed.
+- First `scripts/verify.sh sim` passed simulator build-for-testing, exit 0 (`artifacts/input-shape-review-repair-sim-first.log`). This is not UI execution, physical-device or TestFlight proof.
+- Offline #152 trace passed, exit 0: four expectations, zero problems (`artifacts/input-shape-review-repair-trace.log`); presence is not execution proof. `git diff --check` passed. The PR still has four production paths, with no new lint suppression.
+
+At this repair's pre-publication verification point, fresh exact-head correctness/security/service review remains pending. Subsequent completed evidence is recorded on the issue/PR.
 
 ## Deliberate limit and follow-on
 

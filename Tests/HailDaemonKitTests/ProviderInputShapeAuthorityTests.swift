@@ -5,6 +5,36 @@ import Testing
 // At most one synchronous profile getter blocks a cooperative executor worker at a time.
 @Suite(.serialized) struct ProviderInputShapeAuthorityTests {
     @Test(arguments: [false, true])
+    func cancelledRejectedShapeHopPreservesConfirmationAdmissionAndSentCapacity(legacy: Bool) async throws {
+        let profile = InputShapeProfile(.lineOriented)
+        let adapter = InputShapeAdapter(profile: profile)
+        let rig = try await InputShapeRig.make(adapter: adapter, tier: .confirm, rate: legacy ? 1 : 2, maxTurns: 1)
+        let text = legacy ? "invented input" : "invented first\ninvented second"
+        let readBack = try await rig.readBack(text)
+        profile.set(.singleLineContextual)
+        profile.hold()
+        let send = Task {
+            if legacy {
+                _ = try await rig.host.send(text, to: InputShapeRig.target, confirmedHash: readBack.hash)
+            } else {
+                _ = try await rig.coordinator.submit(text, utteranceID: UUID(), confirmedHash: readBack.hash)
+            }
+        }
+        await profile.arrivals.wait()
+        send.cancel()
+        profile.release()
+        await #expect(throws: CancellationError.self) { try await send.value }
+        #expect(await adapter.contextual.isEmpty)
+        #expect(await adapter.legacy.isEmpty)
+        profile.set(.lineOriented)
+        let retry = try await rig.coordinator.submit(text, utteranceID: UUID(), confirmedHash: readBack.hash)
+        guard case .sent(let turn) = retry else { Issue.record("actual token did not remain reusable"); return }
+        #expect(await rig.coordinator.state(for: turn.id) == .sent)
+        #expect(await adapter.contextual.map(\.text) == readBack.lines)
+        #expect(await adapter.legacy.isEmpty)
+    }
+
+    @Test(arguments: [false, true])
     func cancellationDuringShapeHopPreservesActualConfirmation(legacy: Bool) async throws {
         let profile = InputShapeProfile(legacy ? .lineOriented : .singleLineContextual)
         let adapter = InputShapeAdapter(profile: profile)

@@ -243,7 +243,12 @@ extension HailHost {
         try Task.checkCancellation()
         // Context and capability are checked before consuming confirmation or making an adapter attempt.
         try requireExpectedBinding(request.expectedBinding, for: listed)
-        try await registry.requireInputDelivery(to: request.target, context: request.turn, lineCount: lineCount)
+        do {
+            try await registry.requireInputDelivery(to: request.target, context: request.turn, lineCount: lineCount)
+        } catch {
+            try Task.checkCancellation()
+            throw error
+        }
         // Every mode now checks registered shape across an actor hop: never carry cached authority through it.
         try refreshPolicy()
         return listed
