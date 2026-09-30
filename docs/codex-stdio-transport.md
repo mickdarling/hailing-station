@@ -3,7 +3,7 @@
 Part of #153; not a completed Codex adapter. This macOS-only internal foundation
 does not conform to `Adapter`, register targets, submit real inference, attach to
 existing tasks, or publish captured output. #153 and #134 remain open. The source
-marketing version is `0.1.21`, build `1`; no installed-device or TestFlight proof
+marketing version is `0.1.22`, build `1`; no installed-device or TestFlight proof
 is claimed.
 
 ## Interface and ownership
@@ -126,6 +126,59 @@ The exact 65,536-byte frame plus newline forces that case and passed in
 scope-proof run added pre-cancelled no-spawn and scoped cancellation/reaping
 coverage. Earlier compile/lint setup and complexity issues were corrected without
 weakening repository gates. Only retained log paths are named here.
+
+The [CI verify job](https://github.com/mickdarling/hailing-station/actions/runs/36671365806/job/109746885714)
+for initial head `2379eec0e1a7797dfdc32c67736e51d786672388` (`0.1.21`)
+failed, exposing a genuine fixture timing defect:
+the combined admission/timeout test used a 50 ms deadline while waiting for the
+child's readiness notice. Expiration before readiness was valid transport behavior
+and could prevent the intended capacity assertion. The `0.1.22` test repair
+separates admission (explicit consumed-request readiness, configured 60-second
+bound, task-group cancellation and scoped join) from timeout (silent real-pipe
+child, 50 ms deadline, no readiness prerequisite, external safety cancellation).
+Both require actual reaping. The broken-pipe error-specific fixture now uses a
+60-second configured bound so its error proof does not depend on 100 ms startup.
+Admission and broken-pipe cases retain and join a five-second outer safety task;
+all outcomes use scoped transport cleanup. The pre-emitted matching broken-pipe
+response is not read before request admission, avoiding an artificial unknown-ID
+failure. The separate early-response/blocked-write regression now waits for
+explicit startup readiness and a warmup exchange; the child uses `select` to
+observe incoming max-frame bytes without consuming them, emits the matching reply
+and an asserted notice, then never reads. Its one-second write deadline must
+still expire after that evidence. The no-ID blocked notification uses the same
+non-consuming proof. Thus these tests cannot pass merely because a 50 ms timer
+expired before a child emitted its early response.
+No transport deadline implementation or bounds changed. Two draft repair compile
+failures (task-group throw inference and a missing `try`/implicit macro result in
+the generic safety helper) were inspected and corrected, with logs retained as
+`codex-transport-ci-repair-focused.log` and
+`codex-transport-ci-repair-safety-focused.log`. The earlier results above remain
+historical evidence for `0.1.21`.
+
+Actual `0.1.22` repair verification (same Xcode selection and commands):
+
+- Focused run passed 31 tests in three suites, exit 0
+  (`artifacts/codex-transport-ci-repair-coordinated-focused.log`). Strict repository
+  lint passed, exit 0 (`codex-transport-ci-repair-coordinated-lint.log`).
+- First repair `scripts/verify.sh all` exited 1: 557 tests in 91 suites, two issues
+  in unchanged `AuditDayLinkTests`: `deletingTheNamedPreviousDayRefusesAnExistingLaterDay`
+  and `aCorruptLatestEarlierDayIsReportedRatherThanSkipped` received `inUse` before
+  their expected file-refusal reason. All 31 transport tests passed. Log:
+  `artifacts/codex-transport-ci-repair-all-first.log`. #79 remains unresolved.
+  This local full run is not reported as passing; there was no unchanged full retry.
+- The inspected affected-suite diagnostic passed seven tests in one suite, exit 0
+  (`codex-transport-ci-repair-audit-followup.log`). Separate audit CLI and scripts
+  lanes passed, exit 0 (`codex-transport-ci-repair-audit-cli.log` and
+  `codex-transport-ci-repair-scripts.log`), including 45 checker, five intent and
+  one reply CLI tests. These auxiliary passes do not rename the full-run failure.
+- First repair simulator build-for-testing passed, exit 0
+  (`codex-transport-ci-repair-sim-first.log`). Generated app and UI-test bundle
+  metadata inspected with `plutil` is `0.1.22` / `1`; no installation or UI test
+  execution is claimed.
+- Offline trace exited 0, seven named expectations with exactly the same three
+  explicit adapter deferrals (`codex-transport-ci-repair-trace.log`). Whitespace
+  checks passed. Independent exact-head reviews and current full CI/gates remain
+  required before merge; no approval or clean full verification is fabricated.
 
 Spec trace is intentionally partial: the three transport suites and this document
 are delivered; `CodexAppServerAdapterTests`, `CodexAppServerEventsTests` and

@@ -16,26 +16,6 @@ import Testing
         #expect(try await transport.nextNotification().params == .object(["correct": .bool(true)]))
         await transport.join(); #expect(await transport.isReaped)
     }
-    @Test func prematureReplyCannotCancelBlockedWriteDeadlineOrForgeSuccess() async throws {
-        let code = #"$SIG{TERM}='IGNORE'; print "{\"id\":1,\"result\":null}\n"; while(1) {}"#
-        try await blockedWrite(code: code, notification: false)
-    }
-    @Test func notificationOnlyBlockedWriteKeepsDeadlineAndReaps() async throws {
-        try await blockedWrite(code: #"$SIG{TERM}='IGNORE'; while(1) {}"#, notification: true)
-    }
-    @Test func prematureReplyCannotHideBrokenPipeWriteFailure() async throws {
-        let command = CodexStdioFixtures.command(
-            #"close STDIN; print "{\"id\":1,\"result\":null}\n"; while(1) {}"#)
-        var limits = CodexStdioLimits(); limits.requestTimeout = .milliseconds(100)
-        let transport = try CodexStdioTransport(command: command, limits: limits)
-        let empty: JSONValue = .object(["id": .integer(1), "method": .string("initialize"), "params": .string("")])
-        let overhead = try JSONEncoder().encode(empty).count
-        let payload = String(repeating: "x", count: limits.maxFrameBytes - overhead)
-        await #expect(throws: CodexStdioError.transportLost) {
-            try await transport.request(.initialize, params: .string(payload))
-        }
-        await transport.join(); #expect(await transport.isReaped)
-    }
     @Test(arguments: [false, true]) func scopeReturnAndThrowCancelAndJoin(failed: Bool) async throws {
         let command = CodexStdioFixtures.command(#"$SIG{TERM}='IGNORE'; while(<STDIN>) {}"#)
         if failed {
@@ -89,16 +69,6 @@ import Testing
             #"print "{\"id\":$1,\"error\":{\"message\":\"invented private content\"}}\n""#))
         await #expect(throws: CodexStdioError.providerRefused) { try await transport.request(.initialize) }
         await CodexStdioFixtures.stopped(transport)
-    }
-    @Test func timeoutAndOutstandingAdmissionAreBounded() async throws {
-        var limits = CodexStdioLimits(); limits.maxRequests = 1; limits.requestTimeout = .milliseconds(50)
-        let transport = try CodexStdioTransport(command: CodexStdioFixtures.command(
-            #"$_=<STDIN>; print "{\"method\":\"ready\"}\n"; while(<STDIN>) {}"#), limits: limits)
-        let first = Task { try await transport.request(.initialize) }
-        #expect(try await transport.nextNotification().method == "ready")
-        await #expect(throws: CodexStdioError.capacityExceeded) { try await transport.request(.threadStart) }
-        await #expect(throws: CodexStdioError.timedOut) { try await first.value }
-        await transport.join(); #expect(await transport.isReaped)
     }
     @Test(arguments: [false, true]) func notificationCountAndBytesFailExplicitly(bytes: Bool) async throws {
         var limits = CodexStdioLimits(); limits.maxNotifications = 1
@@ -158,29 +128,6 @@ extension CodexStdioTransportTests {
                 command: OwnedStdioCommand(executable: "/nonexistent-synthetic-child")) { _ in true }
         }
         await #expect(throws: CodexStdioError.stopped) { try await request.value }
-    }
-    private func blockedWrite(code: String, notification: Bool) async throws {
-        var limits = CodexStdioLimits(); limits.requestTimeout = .milliseconds(50)
-        limits.terminationGrace = 0.02
-        let transport = try CodexStdioTransport(command: CodexStdioFixtures.command(code), limits: limits)
-        var object: [String: JSONValue] = ["method": .string(notification ? "initialized" : "initialize"),
-                                           "params": .string("")]
-        if !notification { object["id"] = .integer(1) }
-        let overhead = try JSONEncoder().encode(JSONValue.object(object)).count
-        let params = JSONValue.string(String(repeating: "x", count: limits.maxFrameBytes - overhead))
-        let safety = Task {
-            do { try await Task.sleep(for: .seconds(2)) } catch { return }
-            transport.cancel()
-        }
-        let began = ContinuousClock().now
-        await #expect(throws: CodexStdioError.timedOut) {
-            if notification { try await transport.notify(.initialized, params: params) } else {
-                _ = try await transport.request(.initialize, params: params)
-            }
-        }
-        await transport.join(); safety.cancel(); await safety.value
-        #expect(await transport.isReaped)
-        #expect(began.duration(to: .now) < .seconds(2))
     }
 }
 #endif

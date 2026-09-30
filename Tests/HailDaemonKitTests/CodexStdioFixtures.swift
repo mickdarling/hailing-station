@@ -27,5 +27,17 @@ enum CodexStdioFixtures {
     static func stopped(_ transport: CodexStdioTransport) async {
         transport.cancel(); await transport.join()
     }
+    static func withSafety<Result: Sendable>(
+        _ transport: CodexStdioTransport,
+        operation: @Sendable () async throws -> Result
+    ) async throws -> Result {
+        let safety = Task {
+            do { try await Task.sleep(for: .seconds(5)) } catch { return }
+            transport.cancel()
+        }
+        do {
+            let result = try await operation(); safety.cancel(); await safety.value; return result
+        } catch { safety.cancel(); await safety.value; throw error }
+    }
 }
 #endif
