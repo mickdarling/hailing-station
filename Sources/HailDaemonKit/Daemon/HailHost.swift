@@ -101,7 +101,7 @@ public actor HailHost {
         } catch let error as SanitizeError {
             throw HostError.refused(error)
         }
-        let listed = try await dispatchListing(dispatch)
+        let listed = try await dispatchListing(dispatch, lineCount: lines.count)
         // Commit the first dispatch attempt after policy I/O, before consuming one-shot confirmation.
         // No further cancellation observation occurs before its adapter handoff; later lines may stop.
         try Task.checkCancellation()
@@ -238,14 +238,14 @@ extension HailHost {
         return target
     }
 
-    private func dispatchListing(_ request: DispatchRequest) async throws -> Registry.Listed {
+    private func dispatchListing(_ request: DispatchRequest, lineCount: Int) async throws -> Registry.Listed {
         let listed = try await listed(request.target)
         try Task.checkCancellation()
         // Context and capability are checked before consuming confirmation or making an adapter attempt.
         try requireExpectedBinding(request.expectedBinding, for: listed)
-        if let context = request.turn { try await registry.requireContextDelivery(context) }
-        // Reload after any listing/capability suspension before consuming a one-shot confirmation.
-        if request.confirmedHash != nil { try refreshPolicy() }
+        try await registry.requireInputDelivery(to: request.target, context: request.turn, lineCount: lineCount)
+        // Every mode now checks registered shape across an actor hop: never carry cached authority through it.
+        try refreshPolicy()
         return listed
     }
 
