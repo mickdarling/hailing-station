@@ -1,3 +1,4 @@
+import Foundation
 import HailCore
 import Testing
 
@@ -40,25 +41,36 @@ import Testing
         let gate = OpenGate()
         let connector = SuspendingConnector(gate: gate, steps: [.socket(superseded)])
         let connection = HostConnection(endpoint: endpoint, connector: connector)
-        let returned = CompletionFlag()
-
-        await connection.connect()
-        try await waitUntil { await connector.openCount == 1 }
-        let disconnect = Task {
-            await connection.disconnect()
-            await returned.set()
+        let watchdog = Task {
+            do { try await Task.sleep(for: .seconds(5)) } catch { return }
+            Issue.record("held-open disconnect fixture stalled; watchdog released gate")
+            await gate.release()
         }
         do {
-            try await waitUntil(timeout: .milliseconds(100)) { await returned.isSet }
-        } catch {
+            await connection.connect()
+            try await waitUntil { await connector.openCount == 1 }
+            let disconnect = Task { await connection.disconnect() }
+            await disconnect.value // The open gate stays closed until actual completion.
+            #expect(await connection.currentSnapshot().state == .disconnected)
+            #expect(await connector.activeOpenCount == 1)
+            #expect(await superseded.closeCount == 0)
             await gate.release()
-            await disconnect.value
-            throw error
+            try await waitUntil {
+                let active = await connector.activeOpenCount
+                let closes = await superseded.closeCount
+                return active == 0 && closes == 1
+            }
+            #expect(await superseded.closeCount == 1)
+            watchdog.cancel(); await watchdog.value
+        } catch {
+            let original = error
+            await gate.release()
+            await connection.disconnect()
+            watchdog.cancel(); await watchdog.value
+            do { try await waitUntil { await connector.activeOpenCount == 0 } } catch {
+                Issue.record("held-open cleanup did not drain after gate release")
+            }
+            throw original
         }
-
-        #expect(await connection.currentSnapshot().state == .disconnected)
-        await gate.release()
-        await disconnect.value
-        try await waitUntil { await superseded.closeCount == 1 }
     }
 }

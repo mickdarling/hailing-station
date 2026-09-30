@@ -106,12 +106,13 @@ actor CodexAppServerAdapter: ProviderContextDelivering, ProviderSessionObserving
         }
         let params = try CodexAppServerProtocol.turnInput(text, threadID: threadID)
         try events?.begin(context)
+        let id: String
         do {
-            let id = try CodexAppServerProtocol.turnID(try await transport.request(.turnStart, params: params))
-            // A completed request remains sent after stop, but no stopped generation can accept output.
-            guard !lease.stopped else { return }
-            lease.yield(try events?.bind(id) ?? [])
+            id = try CodexAppServerProtocol.turnID(try await transport.request(.turnStart, params: params))
         } catch { failed(); throw error as? CodexAppServerError ?? CodexAppServerError.unavailable }
+        // The validated receipt commits sent evidence; observation failure cannot invite replay.
+        guard !lease.stopped else { return }
+        do { lease.yield(try events?.bind(id) ?? []) } catch { failed() }
     }
 }
 extension CodexAppServerAdapter {

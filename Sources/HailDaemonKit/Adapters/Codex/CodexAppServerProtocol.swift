@@ -10,7 +10,7 @@ enum CodexAppServerProtocol {
     static let supportedVersion = "0.159.0"
     static func start(_ transport: CodexStdioTransport) async throws -> String {
         let hello = try await transport.request(.initialize, params: .object([
-            "clientInfo": .object(["name": .string("hailing_station"), "version": .string("0.1.24")]),
+            "clientInfo": .object(["name": .string("hailing_station"), "version": .string("0.1.25")]),
             "capabilities": .object(["experimentalApi": .bool(false)])
         ]))
         let object = try fields(hello)
