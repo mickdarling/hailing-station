@@ -1,6 +1,0 @@
-#!/bin/sh
-# Synthetic PCM only: never invoke a real speech provider or audio device.
-set -eu
-test "${VBSAY_NOPLAY:-}" = 1
-test -n "${VBSAY_OUT:-}"
-printf '\000\000\001\000' > "$VBSAY_OUT/synthetic.raw"

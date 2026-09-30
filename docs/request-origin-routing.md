@@ -14,11 +14,11 @@ this request reference, accompanies final text and every audio segment. It is
 distinct from the reply ID and audio stream ID. A string supplied by a caller is
 not, by itself, proof of any device's ownership.
 
-`haild reply <target> --request <opaque-request-UUID> --say <text>` preserves the
-reference across text and streamed PCM. `--text` and `--pcm16` use the same
-descriptor. Malformed UUIDs are refused before publication or speech generation.
-The CLI does not choose a recipient, search for the latest speaker, infer an
-origin, or establish a request by accepting this flag.
+The next handoff slice will add `haild reply --request` together with its built-in
+usage documentation and synthetic text/PCM tests. This protocol-only slice does
+not yet expose the new reference through the reply CLI. The CLI must not choose a
+recipient, search for the latest speaker, infer an origin, or establish a request
+merely by accepting a flag.
 
 The field is optional in protocol v1. Existing peers can decode old descriptors
 and ignore unknown fields, while omitted request references remain uncorrelated.
@@ -28,7 +28,7 @@ origin-bound publisher must never silently broadcast an ambiguous personal
 reply. No new negotiation capability is advertised in this contract-only slice.
 
 **Current limitation:** the existing listener still publishes by selected target.
-Adding the field and CLI flag does not prevent cross-device playback. Do not
+Adding the field does not prevent cross-device playback. Do not
 deploy this slice as a completed #161 fix or close the issue.
 
 ## Remaining implementation and proof
