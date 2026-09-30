@@ -107,19 +107,53 @@ import Testing
         #expect(independent.performIfCurrent { true } == true)
     }
 
-    @Test func failedSaveRetainsExistingAuthorityButCommittedDurabilityFailureRevokesIt() async throws {
+    @Test func failedSaveRetiresReplyPermitEvenWhenStoredPolicyIsUnchanged() async throws {
         var original = Policy()
         try original.allow(target, binding: sessionID, tier: .open)
         let failure = PolicyFileError.unwritable("synthetic persistence failure")
         let unchanged = try await fixture(store: InMemoryPolicyStore(original, saveError: failure))
         let retained = try #require(await unchanged.host.replyPublicationPermit(for: unchanged.binding))
         await #expect(throws: failure) { try await unchanged.host.deny(target) }
-        #expect(retained.performIfCurrent { true } == true)
+        #expect(retained.performIfCurrent { true } == nil)
         #expect(await unchanged.host.currentPolicy == original)
+        #expect(try #require(await unchanged.host.replyPublicationPermit(for: unchanged.binding))
+            .performIfCurrent { true } == true)
         let committed = try await fixture(store: InMemoryPolicyStore(original, durabilityFailure: failure))
         let revoked = try #require(await committed.host.replyPublicationPermit(for: committed.binding))
         await #expect(throws: failure) { try await committed.host.deny(target) }
         #expect(revoked.performIfCurrent { true } == nil)
         #expect(await committed.host.replyPublicationPermit(for: committed.binding) == nil)
+    }
+
+    @Test func unchangedFailedSavePreservesGenericConfirmationWhileRetiringReplyPermit() async throws {
+        var original = Policy()
+        try original.allow(target, binding: sessionID, tier: .confirm)
+        let failure = PolicyFileError.unwritable("synthetic persistence failure")
+        let fixture = try await fixture(store: InMemoryPolicyStore(original, saveError: failure))
+        guard case .needsConfirmation(let readBack) = try await fixture.host.send("synthetic input", to: target) else {
+            Issue.record("expected synthetic confirmation")
+            return
+        }
+        let permit = try #require(await fixture.host.replyPublicationPermit(for: fixture.binding))
+        await #expect(throws: failure) { try await fixture.host.deny(target) }
+        #expect(permit.performIfCurrent { true } == nil)
+        #expect(try await fixture.host.send("synthetic input", to: target, confirmedHash: readBack.hash)
+            == .delivered(["synthetic input"]))
+    }
+
+    @Test func failedTransactionLoadRevokesPermitAndRefusesNewAuthorityUntilRecovery() async throws {
+        let fixture = try await fixture()
+        let permit = try #require(await fixture.host.replyPublicationPermit(for: fixture.binding))
+        let failure = PolicyFileError.malformed("synthetic transaction failure")
+        fixture.store.setLoadError(failure)
+        await #expect(throws: failure) { try await fixture.host.deny(target) }
+        #expect(permit.performIfCurrent { true } == nil)
+        #expect(await fixture.host.policyFailure != nil)
+        #expect(await fixture.host.replyPublicationPermit(for: fixture.binding) == nil)
+        fixture.store.setLoadError(nil)
+        _ = try await fixture.host.allow(target, tier: .open)
+        #expect(permit.performIfCurrent { true } == nil)
+        #expect(try #require(await fixture.host.replyPublicationPermit(for: fixture.binding))
+            .performIfCurrent { true } == true)
     }
 }

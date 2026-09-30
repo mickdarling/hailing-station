@@ -289,9 +289,19 @@ extension HailHost {
     /// One store transaction: applied to what is stored now (not this process's snapshot), compiled
     /// before it is written, then adopted here; memory never holds a policy the store does not.
     private func commit(_ change: (inout Policy) throws -> Void) throws {
-        let update = try store.update { policy in
-            try change(&policy)
-            _ = try PolicyEvaluator(policy: policy)
+        let update: PolicyUpdate
+        do {
+            update = try store.update { policy in
+                try change(&policy)
+                _ = try PolicyEvaluator(policy: policy)
+            }
+        } catch {
+            // Unknown transaction phases cannot prove continuous authority, even after a repair.
+            // Retire reply permits conservatively; unchanged save failures keep generic confirmations.
+            // Reconcile the current view and preserve the original transaction diagnostic.
+            replyPublicationAuthority.invalidate()
+            _ = try? refreshPolicy()
+            throw error
         }
         let compiled: PolicyEvaluator
         do {
