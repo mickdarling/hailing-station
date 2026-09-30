@@ -5,12 +5,13 @@ import Testing
 @testable import HailDaemonKit
 
 /// Invented input and PCM only. No terminal, process, device or provider endpoint is accessed.
-actor RecipientContextAdapter: ProviderContextDelivering {
+actor RecipientContextAdapter: ProviderContextDelivering, ProviderReplyBindingLeasing {
     nonisolated let kind = "recipient"
     private var targets = [
         AdapterTarget(name: "reply", binding: "reply-binding"),
         AdapterTarget(name: "other", binding: "other-binding")
     ]
+    private var authorities: [String: ReplyPublicationAuthority] = [:]
     private(set) var contexts: [ProviderTurnContext] = []
     private(set) var legacy: [String] = []
     private var held = false
@@ -35,7 +36,18 @@ actor RecipientContextAdapter: ProviderContextDelivering {
         }
         if failing { throw ProviderCoordinatorSyntheticError.arbitraryFailure }
     }
-    func setTargets(_ targets: [AdapterTarget]) { self.targets = targets }
+    func acquireReplyBindingLease(_ binding: ProviderSessionBinding) async throws -> ProviderReplyBindingLease {
+        guard targets.contains(where: {
+            Registry.id(kind: kind, name: $0.name) == binding.targetID && $0.binding == binding.sessionID && $0.alive
+        }) else { throw AdapterError.rebound(binding.targetID) }
+        let authority = authorities[binding.targetID] ?? ReplyPublicationAuthority()
+        authorities[binding.targetID] = authority
+        return ProviderReplyBindingLease(binding: binding, permit: authority.issuePermit())
+    }
+    func setTargets(_ targets: [AdapterTarget]) {
+        for authority in authorities.values { authority.invalidate() }
+        self.targets = targets
+    }
     func failHandoff() { failing = true }
     func holdHandoff() { held = true; entered = false }
     func waitForHandoff() async {
@@ -47,6 +59,11 @@ actor RecipientContextAdapter: ProviderContextDelivering {
         release?.resume()
         release = nil
     }
+}
+
+// Direct admission tests use a synthetic synchronous enqueue, never a production authorization Boolean.
+extension HostSession {
+    func acceptsHostReply(_ frame: Frame) -> Bool { enqueueHostReply(frame, enqueue: { true }) }
 }
 
 final class RecipientTestClock: Sendable {

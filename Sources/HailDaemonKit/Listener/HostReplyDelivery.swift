@@ -9,6 +9,8 @@ struct HostReplyRequest {
     let context: ProviderTurnContext
     let generation: UUID
     let createdAt: ContinuousClock.Instant
+    let policyPermit: ReplyPublicationPermit
+    let bindingLease: ProviderReplyBindingLease
     var committed = false
     var descriptor: ReplyDescriptor?
     var textDelivered = false
@@ -19,6 +21,14 @@ struct HostReplyRequest {
     func isCurrent(at timestamp: ContinuousClock.Instant) -> Bool {
         let elapsed = createdAt.duration(to: timestamp)
         return elapsed >= .zero && elapsed < Self.lifetime
+    }
+
+    /// Keep these exact admission tickets: revocation followed by restoration cannot revive a request.
+    func withAuthority<Result>(_ operation: () -> Result) -> Result? {
+        guard let result = policyPermit.performIfCurrent({ bindingLease.performIfCurrent(operation) }) else {
+            return nil
+        }
+        return result
     }
 
     mutating func accept(_ frame: Frame, descriptor reply: ReplyDescriptor) -> Bool {
@@ -48,7 +58,8 @@ extension HostSession {
     }
 
     /// Pending/failed, legacy, stale and other-connection requests never acquire recipient authority.
-    func acceptsHostReply(_ frame: Frame) async -> Bool {
+    /// The enqueue must be synchronous and non-reentrant; no Boolean authorization leaves this actor.
+    func enqueueHostReply(_ frame: Frame, enqueue: @Sendable () -> Bool) -> Bool {
         let reply: ReplyDescriptor?
         switch frame.payload {
         case .text(let text): reply = text.reply
@@ -56,35 +67,23 @@ extension HostSession {
         default: return false
         }
         pruneReplyRequests()
-        guard let reply, let requestID = reply.requestID, let original = replyRequests[requestID],
-              original.committed, frame.target == original.context.binding.targetID else { return false }
-        guard let listing = try? await host.registry.listing(),
-              let listed = listing.first(where: { $0.info.id == original.context.binding.targetID }),
-              listed.info.alive, listed.binding == original.context.binding.sessionID,
-              listed.info.kind == original.context.binding.providerID else {
-            replyRequests[requestID] = nil
-            return false
-        }
-        guard await host.permitsReply(original.context.binding) else {
-            replyRequests[requestID] = nil
-            return false
-        }
-        // Recheck after every actor hop: selection or closure may have invalidated the original request.
+        guard let reply, let requestID = reply.requestID else { return false }
         guard case .ready(let version) = state, frame.version == version,
               var request = replyRequests[requestID], request.committed, request.isCurrent(at: requestClock()),
               request.generation == selectionGeneration, selectedTarget == frame.target,
-              request.context == original.context, request.accept(frame, descriptor: reply) else { return false }
-        replyRequests[requestID] = request
-        return true
-    }
-}
-
-extension HailHost {
-    /// Read the host's in-memory authority in one actor turn, not across separate reentrant snapshots.
-    func permitsReply(_ binding: ProviderSessionBinding) -> Bool {
-        guard policyFailure == nil, !lockdown.isOn,
-              let allowed = currentPolicy.targets[binding.targetID],
-              allowed.binding == binding.sessionID, allowed.tier != .locked else { return false }
+              request.context.connectionID == connectionID,
+              frame.target == request.context.binding.targetID,
+              request.accept(frame, descriptor: reply) else { return false }
+        // Policy, cooperative binding, recipient/media state and actual network submission share one
+        // no-await commit. Recheck expiry after waiting for the gates; completion is awaited outside them.
+        guard request.withAuthority({
+            guard !Task.isCancelled, request.isCurrent(at: requestClock()), enqueue() else { return false }
+            replyRequests[requestID] = request
+            return true
+        }) == true else {
+            replyRequests[requestID] = nil
+            return false
+        }
         return true
     }
 }
@@ -92,8 +91,9 @@ extension HailHost {
 extension WebSocketPeer {
     /// Returns true only for this negotiated connection's successfully dispatched, still-current request.
     func deliverHostReply(_ frame: Frame) async -> Bool {
-        guard !ended, await session.acceptsHostReply(frame) else { return false }
-        guard await send(frame) else {
+        guard !ended, let prepared = prepareReplyPublication(frame),
+              await session.enqueueHostReply(frame, enqueue: prepared.enqueue) else { return false }
+        guard await prepared.result() else {
             finish(reason: "host reply send failed")
             return false
         }

@@ -31,6 +31,10 @@ Host ingress and publication now enforce connection-owned request identity as
 described in [recipient enforcement](request-recipient-enforcement.md). Synthetic
 two-client isolation is not physical proof, and a concrete programmatic bridge
 is still needed before migrating the live Claude route. Do not close #161.
+This describes the source implementation, not the running daemon or installed
+TestFlight builds. Admission also requires cooperative binding leases and retains
+its original revocable policy/binding tickets through actual network enqueue;
+snapshots alone do not establish continuous authority (#167).
 
 ## Remaining implementation and proof
 
@@ -63,6 +67,10 @@ registers it only when the operator explicitly supplies a nonempty JSON array of
 adapter-local session names in `HAIL_REPLY_BRIDGE_TARGETS`. Missing configuration
 or an empty array leaves it off; invalid, duplicate, oversized or control-bearing
 names fail closed. This is local configuration, never mobile-supplied settings.
+It does not implement cooperative `ProviderReplyBindingLeasing`: external tmux
+rebinding cannot participate in host publication locks. Consequently personal
+contextual ingress refuses this adapter until a concrete supervised bridge owns
+the binding authority. A configured session name is not such a lease.
 
 Only named bridge sessions are listed as `tmux-reply:<name>`. Their distinct IDs
 require separate exact-binding target policy approval: permission for

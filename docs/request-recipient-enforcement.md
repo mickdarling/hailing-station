@@ -6,13 +6,18 @@ provider bridge, or physical-device proof.
 
 ## Ingress and handoff
 
-For adapters implementing `ProviderContextDelivering`, each final input gets a
+For adapters implementing `ProviderContextDelivering` and cooperative
+`ProviderReplyBindingLeasing`, each final input gets a
 fresh host UUID and `ProviderTurnContext` bound to this HostSession's fresh
 connection ID, selection generation and exact listed target/provider/session
-binding. Neither the Hello name nor a client frame ID supplies recipient
+binding. The request retains its original policy permit and binding lease, not
+freshly reissued tickets on each reply. Neither the Hello name nor a client frame ID supplies recipient
 authority. Existing sanitizer, shape, policy and binding checks still run in
 `HailHost.send`. Only a successful complete dispatch commits the request.
-Failed, partial and confirmation-required dispatches remove its record.
+Failed, partial and confirmation-required dispatches remove its record. Authority
+revocation during handoff prevents commitment. Contextual adapters without a
+cooperative lease refuse before dispatch; ordinary `tmux-reply` does not yet own
+such a lease. A concrete supervised bridge remains required in #166.
 
 Ordinary legacy tmux input still sends literal original text. It cannot create a
 private reply owner. Missing, unknown or expired request references deliver to
@@ -32,9 +37,13 @@ prematurely expire ownership. A destination change clears all records, including
 partially accepted audio; selecting the same destination again is idempotent.
 A new connection never inherits an old connection's records.
 
-Publication rechecks the current listed exact binding and the host's in-memory
-policy/failure/lockdown atomically. An observed binding or permission refusal
-retires the record, so restoring the target/grant does not revive it. The first
+Publication composes the retained policy, cooperative binding and peer-transport
+permits with final recipient, selection, expiry and media checks in one
+non-suspending HostSession turn. Network send enqueue is the publication boundary;
+completion is awaited only after releasing the gates. Completed revocation
+prevents any subsequent enqueue; already-enqueued bytes cannot be recalled and
+may still arrive. Restoring a target/grant cannot revive its old admission tickets,
+even if no reply was attempted while it was revoked. The first
 valid frame pins the complete reply descriptor; subsequent text/audio cannot
 change its reply, stream or request identity. Text is accepted once, audio starts
 at zero and advances contiguously to one final segment, and repeated frame IDs
@@ -46,7 +55,9 @@ can return output earlier must retry the same frame within a bounded window;
 zero recipients is refusal, not success. No early-output buffering or output
 capture is introduced here. Authority checks are not disk-policy refresh or
 authenticated continuity, and no inference about semantic output attribution is
-made. A programmatic bridge must retain context outside generated text.
+made. External tmux changes cannot participate in a cooperative gate merely by
+being listed repeatedly. No invented lease is granted to them. A programmatic
+bridge must retain context outside generated text and own binding invalidation.
 
 ## Validation status
 

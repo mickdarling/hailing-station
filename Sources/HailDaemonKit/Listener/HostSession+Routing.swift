@@ -31,7 +31,14 @@ extension HostSession {
                         return failure(.notAllowed, "request destination changed", close: false, version: version)
                     }
                     request.committed = true
-                    replyRequests[context.id] = request
+                    guard request.withAuthority({
+                        guard request.isCurrent(at: requestClock()) else { return false }
+                        replyRequests[context.id] = request
+                        return true
+                    }) == true else {
+                        replyRequests[context.id] = nil
+                        return failure(.notAllowed, "reply authority changed", close: false, version: version)
+                    }
                 }
                 return HostSessionResult(frames: [])
             case .needsConfirmation:
@@ -69,11 +76,18 @@ extension HostSession {
             // Legacy generic input is unchanged; it cannot establish a private reply recipient.
             return nil
         }
+        // Listings are snapshots, not leases. Contextual adapters without cooperative binding authority
+        // refuse before dispatch; they must not masquerade as safe private reply bridges.
+        let lease = try await host.registry.acquireReplyBindingLease(context.binding)
+        guard let permit = await host.replyPublicationPermit(for: context.binding) else {
+            throw HostError.denied(.notAllowed(target))
+        }
         pruneReplyRequests()
         guard case .ready = state, generation == selectionGeneration, selectedTarget == target,
               replyRequests.count < HostReplyRequest.capacity else { throw ProviderContractError.capacityExceeded }
         replyRequests[context.id] = HostReplyRequest(
-            context: context, generation: generation, createdAt: requestClock()
+            context: context, generation: generation, createdAt: requestClock(),
+            policyPermit: permit, bindingLease: lease
         )
         return context
     }
