@@ -67,3 +67,18 @@ and drained on acknowledgement failure. No production audio source is changed.
 `AudioSessionLifecycleTests` covers this separate test-harness issue. Normal full
 verification, simulator build and uncached strict lint remain required on the
 finished PR head; this repair is not permission to waive checks or physical proof.
+
+## Guard language fixture contract (#176)
+
+CI also reported an extra `disk write` hit for the synthetic `truncate log` language
+fixture. The production matcher deliberately treats its 20 ms deadline as a hit,
+even when a rule does not match; the CI output did not record the matching clock
+or establish the historical scheduling sequence.
+
+Exact language and multiline fixtures now use the existing explicit matcher budget
+with a generous five-second **test-only** deadline, preserving every complete
+ordered expectation. A separate exhausted-budget default-rule test independently
+proves its input has no regex match, then expects a conservative hit with a zero
+deadline. Production rules and the 20 ms default are unchanged, as are invalid-rule,
+custom exhausted-budget and bounded worst-case tests. The semantic fixtures do not
+measure production latency; dedicated budget tests exercise fail-closed behavior.
