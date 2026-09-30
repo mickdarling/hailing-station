@@ -4,11 +4,11 @@ public import HailProtocol
 /// A host-minted request belongs to this HostSession only. Neither device names nor wire UUIDs create it.
 struct HostReplyRequest {
     static let capacity = 64
-    static let lifetimeMilliseconds: Int64 = 120_000
+    static let lifetime: Duration = .seconds(120)
     static let frameLimit = 1_024
     let context: ProviderTurnContext
     let generation: UUID
-    let createdAt: Int64
+    let createdAt: ContinuousClock.Instant
     var committed = false
     var descriptor: ReplyDescriptor?
     var textDelivered = false
@@ -16,9 +16,9 @@ struct HostReplyRequest {
     var audioFinished = false
     var frames: Set<UUID> = []
 
-    func isCurrent(at timestamp: Int64) -> Bool {
-        let elapsed = timestamp.subtractingReportingOverflow(createdAt)
-        return !elapsed.overflow && elapsed.partialValue >= 0 && elapsed.partialValue < Self.lifetimeMilliseconds
+    func isCurrent(at timestamp: ContinuousClock.Instant) -> Bool {
+        let elapsed = createdAt.duration(to: timestamp)
+        return elapsed >= .zero && elapsed < Self.lifetime
     }
 
     mutating func accept(_ frame: Frame, descriptor reply: ReplyDescriptor) -> Bool {
@@ -43,7 +43,7 @@ struct HostReplyRequest {
 
 extension HostSession {
     func pruneReplyRequests() {
-        let timestamp = now()
+        let timestamp = requestClock()
         replyRequests = replyRequests.filter { $0.value.isCurrent(at: timestamp) }
     }
 
@@ -71,7 +71,7 @@ extension HostSession {
         }
         // Recheck after every actor hop: selection or closure may have invalidated the original request.
         guard case .ready(let version) = state, frame.version == version,
-              var request = replyRequests[requestID], request.committed, request.isCurrent(at: now()),
+              var request = replyRequests[requestID], request.committed, request.isCurrent(at: requestClock()),
               request.generation == selectionGeneration, selectedTarget == frame.target,
               request.context == original.context, request.accept(frame, descriptor: reply) else { return false }
         replyRequests[requestID] = request

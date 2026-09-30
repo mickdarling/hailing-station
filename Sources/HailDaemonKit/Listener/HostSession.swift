@@ -76,6 +76,7 @@ public actor HostSession {
     private let authorizer: any HostSessionAuthorizing
     let hostName: String
     let now: @Sendable () -> Int64
+    let requestClock: @Sendable () -> ContinuousClock.Instant
     var state = State.awaitingHello
     var peerName = "terminal"
     var selectedTarget: String?
@@ -88,12 +89,14 @@ public actor HostSession {
         hostName: String = "haild",
         now: @escaping @Sendable () -> Int64 = {
             Int64((Date().timeIntervalSince1970 * 1_000).rounded(.down))
-        }
+        },
+        requestClock: @escaping @Sendable () -> ContinuousClock.Instant = { .now }
     ) {
         self.host = host
         self.authorizer = authorizer
         self.hostName = hostName
         self.now = now
+        self.requestClock = requestClock
     }
 
     /// Applies the whole-frame bound before JSON decoding. Listener options enforce the same bound at the

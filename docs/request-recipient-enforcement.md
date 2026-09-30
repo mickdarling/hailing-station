@@ -26,8 +26,9 @@ configured and the migration is tested.
 
 Each connection retains at most 64 requests for 120 seconds from admission and
 at most 1,024 frame IDs per request. Capacity is refused before target dispatch;
-expired records are reclaimed. Clock rollback/overflow expires records rather
-than extending authority. A destination change clears all records, including
+expired records are reclaimed. Admission and expiry use `ContinuousClock`,
+separate from wall-clock wire timestamps. Clock adjustments cannot extend or
+prematurely expire ownership. A destination change clears all records, including
 partially accepted audio; selecting the same destination again is idempotent.
 A new connection never inherits an old connection's records.
 

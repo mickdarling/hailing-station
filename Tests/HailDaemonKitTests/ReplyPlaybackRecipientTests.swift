@@ -82,6 +82,25 @@ import Testing
         #expect(!(await session.acceptsHostReply(recipientAudio(reply, sequence: 2))))
     }
 
+    @Test func repeatedFrameIDCannotAdvanceValidAudioOrConsumeText() async throws {
+        let rig = try await RecipientTestRig.make()
+        let session = await rig.session()
+        let reply = recipientDescriptor(try await rig.submit(on: session), audio: true)
+        let first = recipientAudio(reply, sequence: 0)
+        #expect(await session.acceptsHostReply(first))
+        var next = recipientAudio(reply, sequence: 1, final: true)
+        next.id = first.id
+        #expect(!(await session.acceptsHostReply(next)))
+        var text = recipientText(reply)
+        text.id = first.id
+        #expect(!(await session.acceptsHostReply(text)))
+        // Only the reused envelope ID was invalid; neither refusal consumes a valid media transition.
+        text.id = UUID()
+        #expect(await session.acceptsHostReply(text))
+        next.id = UUID()
+        #expect(await session.acceptsHostReply(next))
+    }
+
     @Test func earlyReplyRequiresSuccessfulCommittedHandoff() async throws {
         let rig = try await RecipientTestRig.make()
         let session = await rig.session()

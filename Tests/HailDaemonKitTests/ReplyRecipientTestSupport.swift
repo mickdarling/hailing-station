@@ -51,8 +51,15 @@ actor RecipientContextAdapter: ProviderContextDelivering {
 
 final class RecipientTestClock: Sendable {
     private let value = Mutex<Int64>(1_700_000_000_000)
+    private let origin = ContinuousClock.now
+    private let elapsed = Mutex<Int64>(0)
     func now() -> Int64 { value.withLock { $0 } }
-    func advance(_ milliseconds: Int64) { value.withLock { $0 += milliseconds } }
+    func instant() -> ContinuousClock.Instant { origin.advanced(by: .milliseconds(elapsed.withLock { $0 })) }
+    func advance(_ milliseconds: Int64) {
+        value.withLock { $0 += milliseconds }
+        elapsed.withLock { $0 += milliseconds }
+    }
+    func adjustWallClock(_ milliseconds: Int64) { value.withLock { $0 += milliseconds } }
 }
 
 struct RecipientTestRig {
@@ -73,7 +80,8 @@ struct RecipientTestRig {
 
     func session() async -> HostSession {
         let session = HostSession(
-            host: host, authorizer: PersonalTerminalAuthorizer(), hostName: "mac-test", now: clock.now
+            host: host, authorizer: PersonalTerminalAuthorizer(), hostName: "mac-test", now: clock.now,
+            requestClock: clock.instant
         )
         _ = await session.receive(helloFrame())
         _ = await session.receive(sessionFrame(payload: .control(.select(targetID: Self.target))))
