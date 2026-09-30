@@ -83,8 +83,10 @@ extension HostSession {
             throw HostError.denied(.notAllowed(target))
         }
         pruneReplyRequests()
-        guard case .ready = state, generation == selectionGeneration, selectedTarget == target,
-              replyRequests.count < HostReplyRequest.capacity else { throw ProviderContractError.capacityExceeded }
+        guard case .ready = state, generation == selectionGeneration, selectedTarget == target else {
+            throw HostError.denied(.notAllowed(target))
+        }
+        guard replyRequests.count < HostReplyRequest.capacity else { throw ProviderContractError.capacityExceeded }
         replyRequests[context.id] = HostReplyRequest(
             context: context, generation: generation, createdAt: requestClock(),
             policyPermit: permit, bindingLease: lease
@@ -150,6 +152,7 @@ extension HostSession {
         switch error {
         case HostError.unknownTarget: code = .unknownTarget
         case HostError.denied(.lockdown): code = .lockdown
+        case ProviderContractError.capacityExceeded: code = .rateLimited
         case is HostError, is AdapterError, is RegistryError: code = .notAllowed
         default: code = .malformed
         }

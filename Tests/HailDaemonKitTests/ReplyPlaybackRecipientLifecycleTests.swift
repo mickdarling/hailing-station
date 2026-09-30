@@ -68,7 +68,8 @@ import Testing
         let refused = await session.receive(sessionFrame(
             target: RecipientTestRig.target, payload: .text(TextPayload(text: "capacity probe"))
         ))
-        #expect(!refused.frames.isEmpty)
+        #expect(try onlyControl(refused) == .error(code: .rateLimited, message: "target action was refused"))
+        #expect(refused.disposition == .keepOpen)
         #expect(await rig.adapter.contexts.count == 64)
         #expect(await session.acceptsHostReply(recipientText(recipientDescriptor(contexts[0]))))
         rig.clock.advance(120_000)

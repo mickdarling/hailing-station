@@ -64,6 +64,12 @@ bridge must retain context outside generated text and own binding invalidation.
 
 ## Validation status
 
+At 64 retained live requests, another valid request is refused with the existing
+`rate_limited` control code before provider dispatch, not mislabeled `malformed`.
+The connection stays open; capacity and expiry limits are unchanged. This code
+does not authorize automatic retry. A changed selection is a separate `not_allowed`
+refusal and is not confused with capacity exhaustion.
+
 Synthetic direct-session and real two-WebSocket tests cover both request orders,
 interleaving, identical display names/frame IDs, unknown/legacy origin, failed and
 early handoffs, changed selections, reconnect, lifetime/capacity, pinned media,
