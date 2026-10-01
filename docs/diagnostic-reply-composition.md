@@ -1,6 +1,6 @@
 # Explicit library composition (#166)
 
-Source 0.1.59 joins the managed diagnostic adapter, owned publisher and owner-only local reply
+Source 0.1.60 joins the managed diagnostic adapter, owned publisher and owner-only local reply
 endpoint in one explicit library lifetime. The daemon still has no diagnostic profile flag or
 automatic registration. Existing runtime, grants, target selections and installed apps are unchanged.
 This is not a Claude session bridge, deployment or controlled physical proof of #161.
@@ -40,3 +40,24 @@ failed dispatch, unknown/stale request and malformed envelope tests remain uncha
 not physical hearing, elapsed kernel cleanup guarantees or a diagnosis of historical timing/network
 failures. Daemon profile/configuration wiring, separately agreed operator target choice and physical
 two-device validation remain deferred; keep #166/#161 open.
+
+## Independent review correction: endpoint cleanup ownership
+
+The finished unpublished 0.1.59 slice received a genuine independent REQUEST CHANGES. A never-started
+composition could stop its inherited endpoint, whose cleanup previously unlinked any same-owner socket
+at the configured path. Two lifetimes constructed before either started let the second remove the
+first's live socket; the first's utility remained registered/alive. Existing verifier passes were not
+proof against this gap.
+
+Version 0.1.60 records socket device/inode only on actual listener readiness, verifies it again after
+permission hardening, and unlinks on stop only when that recorded identity, owner and socket type still
+match. Never-started or failed-bind lifetimes have no cleanup identity. Late readiness after stop cannot
+secure/claim a socket. A removed/replaced path is preserved, not repaired or automatically adopted.
+Unknown pre-readiness residue may require operator recovery; no borrowed socket is deleted to make
+startup appear clean. A private trusted-owner directory remains a precondition: POSIX has no atomic
+inode-conditional unlink against hostile concurrent same-UID renames.
+
+`LocalReplyEndpointOwnershipTests` failed before the correction for both the never-started composition
+and an old ready endpoint stopping after a new live socket replaced its path. They verify retained
+device/inode and normal removal of the new endpoint's own socket. No real endpoints or child ownership
+were disturbed. This fixes endpoint lifetime cleanup ownership, not historical network/timing causes.
