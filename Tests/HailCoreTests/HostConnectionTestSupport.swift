@@ -2,7 +2,10 @@ import Foundation
 import HailCore
 import HailProtocol
 
-enum SocketTestError: Error, Sendable { case closed, unavailable }
+enum SocketTestError: Error, Sendable {
+    case closed, unavailable
+    case conditionTimedOut(file: String, line: Int)
+}
 
 actor ScriptedSocket: WebSocketTransport {
     private var incoming: [Result<Data, any Error>] = []
@@ -154,8 +157,11 @@ private func requireURL(_ value: String) -> URL {
     return url
 }
 
+// Fixture scheduling watchdog; protocol deadlines use injected clocks and separate assertions.
 func waitUntil(
-    timeout: Duration = .seconds(2),
+    timeout: Duration = .seconds(10),
+    file: String = #fileID,
+    line: Int = #line,
     _ condition: @escaping @Sendable () async throws -> Bool
 ) async throws {
     let clock = ContinuousClock()
@@ -164,7 +170,7 @@ func waitUntil(
         if try await condition() { return }
         try await Task.sleep(for: .milliseconds(5))
     }
-    throw SocketTestError.unavailable
+    throw SocketTestError.conditionTimedOut(file: file, line: line)
 }
 
 func hostHello(version: Int = ProtocolVersion.current) -> ControlPayload {

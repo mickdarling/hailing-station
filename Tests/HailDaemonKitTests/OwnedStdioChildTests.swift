@@ -79,9 +79,11 @@ private struct WeakStdioChild: Sendable { weak var value: OwnedStdioChild? }
     }
     @Test func closedPipeDoesNotRaiseSIGPIPEOrExposeErrno() async throws {
         let command = CodexStdioFixtures.command(
-            #"close STDIN; print "ready\n"; while(1) { select undef,undef,undef,1; }"#)
+            #"close STDIN or die "synthetic stdin close failed"; print "ready\n"; "#
+                + #"while(1) { select undef,undef,undef,1; }"#)
         let child = try await CodexStdioFixtures.withChild(command) { child in
-            _ = try await CodexStdioFixtures.firstChunk(child)
+            let ready = try await CodexStdioFixtures.firstChunk(child)
+            #expect(ready == Data("ready\n".utf8))
             await #expect(throws: CodexStdioError.transportLost) { try await child.write(Data([65])) }
             await child.join(); return child
         }
