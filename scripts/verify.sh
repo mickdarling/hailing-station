@@ -24,7 +24,21 @@ tools() {
 }
 
 build() { echo "== build"; swift build ${SWIFT_FLAGS[@]+"${SWIFT_FLAGS[@]}"}; }
-test_() { echo "== test";  swift test --parallel ${SWIFT_FLAGS[@]+"${SWIFT_FLAGS[@]}"}; }
+test_() {
+  echo "== test"
+  # Slow console consumers must not occupy test executor workers while deadlines run (#185).
+  # Replay the entire output after execution; retain failed captures and never mask either failure.
+  local test_log test_status=0 report_status=0
+  test_log="$(mktemp "${TMPDIR:-/tmp}/hailing-swift-tests.XXXXXX")"
+  swift test --parallel ${SWIFT_FLAGS[@]+"${SWIFT_FLAGS[@]}"} > "$test_log" 2>&1 || test_status=$?
+  cat "$test_log" || report_status=$?
+  if [[ "$test_status" -ne 0 || "$report_status" -ne 0 ]]; then
+    printf 'Preserved Swift test output: %s\n' "$test_log" >&2 || :
+    [[ "$test_status" -eq 0 ]] || return "$test_status"
+    return "$report_status"
+  fi
+  rm -f -- "$test_log"
+}
 lint()  { echo "== lint";  swiftlint lint --strict --quiet; }
 
 trace_tests() (
@@ -51,6 +65,7 @@ scripts_() {
   scripts/tests/test-testflight.sh
   trace_tests
   python3 -m unittest discover -s Tests/LocalIntentEvalTests
+  python3 -m unittest scripts/tests/test_verify_test_output.py
   # `scripts` is also a standalone entry point; the CLI integration must not rely on `all` building first.
   swift build --product haild ${SWIFT_FLAGS[@]+"${SWIFT_FLAGS[@]}"}
   python3 -m unittest discover -s Tests/ReplyCLITests
