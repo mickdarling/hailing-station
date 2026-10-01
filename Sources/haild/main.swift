@@ -1,3 +1,4 @@
+import Darwin
 import Foundation
 import HailDaemonKit
 
@@ -18,7 +19,7 @@ let tmuxPath = configuredTmux.flatMap { $0.isEmpty ? nil : $0 }
         .first { FileManager.default.isExecutableFile(atPath: $0) }
     ?? "tmux"
 let standardError = FileHandle.standardError
-func makeHost() async throws -> HailHost {
+func makeHost(sanitizing: SanitizePolicy = .init()) async throws -> HailHost {
     let registry = Registry()
     let terminal = TmuxAdapter(runner: ProcessCommandRunner(), tmux: tmuxPath)
     try await registry.register(terminal)
@@ -26,7 +27,7 @@ func makeHost() async throws -> HailHost {
     if !bridges.isEmpty {
         try await registry.register(TmuxReplyAdapter(terminal: terminal, targets: bridges))
     }
-    return try HailHost(registry: registry, store: PolicyFile.standard())
+    return try HailHost(registry: registry, sanitizing: sanitizing, store: PolicyFile.standard())
 }
 
 func usage() -> Never {
@@ -39,6 +40,8 @@ func usage() -> Never {
            haild reply <target-id> [--host <host-id>] [--text <text>] [--pcm16 <path>|--say <text>]
       [--request <opaque-request-UUID>] [--sample-rate <hz>] [--socket <path>]
       [--renderer-output-root <private-existing-directory>]
+           haild rightyo <target-id> --session <producer-session-id> [--allow-synthetic]
+           haild rightyo --session <producer-session-id> --dry-run  (JSONL on stdin)
            haild status
            haild audit verify|tail|today
            haild run --bind <address> --port <port> --connection-probe
@@ -166,6 +169,64 @@ func status(_ host: HailHost) async throws {
     if failure != nil { exit(9) }
 }
 
+/// Foreground local stdin only. The caller opts into both the target and producer session (#183).
+func rightyo(_ arguments: ArraySlice<String>) async throws {
+    var options = Array(arguments)
+    let dryRun = options.last == "--dry-run"
+    let allowSynthetic = options.last == "--allow-synthetic"
+    if dryRun || allowSynthetic { options.removeLast() }
+    let target: String
+    if dryRun { target = "dry-run" } else {
+        guard !options.isEmpty else { usage() }
+        target = options.removeFirst()
+    }
+    guard options.count == 2, options[0] == "--session", !options[1].isEmpty else { usage() }
+    let host = dryRun ? nil : try await makeHost(sanitizing: .init(
+        maxCharacters: 1_200_000, maxUTF8Bytes: 1_200_000
+    ))
+    let consumer = try RightyoInputConsumer(host: host, target: target,
+        binding: try await rightyoBinding(host, target: target), session: options[1], allowSynthetic: allowSynthetic)
+    note("RightyO local input ready; finalized-turn events only. No microphone capture started.")
+    var buffer = Data()
+    while let chunk = try rightyoReadChunk() {
+        buffer.append(chunk)
+        while let newline = buffer.firstIndex(of: 10) {
+            let line = buffer.prefix(upTo: newline)
+            buffer.removeSubrange(...newline)
+            try await consumeRightyo(Data(line), with: consumer, dryRun: dryRun)
+        }
+        guard buffer.count <= 1_200_000 else { throw RightyoInputError.capacity }
+    }
+    if !buffer.isEmpty { try await consumeRightyo(buffer, with: consumer, dryRun: dryRun) }
+    try await consumer.finish()
+}
+
+private func rightyoReadChunk() throws -> Data? {
+    var bytes = [UInt8](repeating: 0, count: 4096)
+    while true {
+        let count = bytes.withUnsafeMutableBytes { Darwin.read(STDIN_FILENO, $0.baseAddress, $0.count) }
+        if count > 0 { return Data(bytes.prefix(count)) }
+        if count == 0 { return nil }
+        if errno != EINTR { throw RightyoInputError.invalidEvent }
+    }
+}
+
+private func rightyoBinding(_ host: HailHost?, target: String) async throws -> String {
+    guard let host else { return "dry-run" }
+    let listing = try await host.registry.listing()
+    guard let listed = listing.first(where: { $0.info.id == target }),
+          let binding = listed.binding, !binding.isEmpty else { throw RightyoInputError.unavailableBinding }
+    return binding
+}
+
+private func consumeRightyo(_ line: Data, with consumer: RightyoInputConsumer, dryRun: Bool) async throws {
+    let event = try RightyoInputEvent.decode(line)
+    if try await consumer.consume(event) {
+        let receipt = dryRun ? "rightyo: request validated (dry run; no delivery)" : "rightyo: request delivered"
+        FileHandle.standardOutput.write(Data((receipt + "\n").utf8))
+    }
+}
+
 func exitCode(for denial: Denial) -> Int32 {
     if case .unbound = denial { return 5 }
     return 7
@@ -187,6 +248,7 @@ do {
         try await send(try await makeHost(), id: arguments[1], text: arguments[2])
     case "status": try await status(try await makeHost())
     case "reply": try await reply(arguments.dropFirst())
+    case "rightyo": try await rightyo(arguments.dropFirst())
     case "audit": try audit(arguments.dropFirst())
     case "run":
         try await ConnectionProbeDaemon.run(
@@ -213,6 +275,8 @@ do {
     fail("policy: \(error)", code: 9)
 } catch let error as AdapterError {
     fail("\(error)", code: 4)
+} catch is RightyoInputError {
+    fail("RightyO input refused; no automatic retry. Check session, lifecycle, limits and target policy.", code: 8)
 } catch ReplyCommandError.usage {
     usage()
 } catch {
