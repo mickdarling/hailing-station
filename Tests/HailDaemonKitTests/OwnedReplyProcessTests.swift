@@ -53,22 +53,6 @@ import Testing
         }
     }
 
-    @Test func deadlineEscalatesTERMignoringGroupAndExitedLeadersDescendant() async throws {
-        for mode in ["ignore", "descendant"] {
-            let fixture = try PublisherFixture(mode: mode)
-            let signals = Mutex<[Int32]>([])
-            var hooks = OwnedReplyGroupHooks()
-            hooks.signal = { signal in signals.withLock { $0.append(signal) } }
-            let publisher = try fixture.publisher(deadline: .milliseconds(400), hooks: hooks)
-            await #expect(throws: OwnedReplyPublisherError.deadline) { try await publisher.publish(fixture.reply()) }
-            #expect(FileManager.default.fileExists(atPath: fixture.record.path))
-            try await fixture.shutdown(publisher)
-            let observed = signals.withLock { $0 }
-            #expect(observed.filter { $0 == SIGTERM }.count == 1)
-            #expect(observed.filter { $0 == SIGKILL }.count == 1)
-        }
-    }
-
     @Test func unknownInventoryRetainsAdmissionAndFourResourceSlots() async throws {
         let fixture = try PublisherFixture()
         let unknown = Mutex(true)

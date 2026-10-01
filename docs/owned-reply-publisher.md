@@ -1,6 +1,6 @@
 # Owned diagnostic publisher prerequisite (#177)
 
-Source 0.1.57 adds an unregistered, default-off publisher. This is not #166 daemon composition,
+Source 0.1.58 adds an unregistered, default-off publisher. This is not #166 daemon composition,
 a target grant/selection, TestFlight delivery or physically validated origin routing (#161).
 The only payload is the retained `DiagnosticBridgeReply` UUID and its explicitly labelled fixed
 diagnostic phrase; no model chooses a recipient or supplies executable, environment or working directory.
@@ -192,3 +192,16 @@ before entering the injected terminal-observation stage (zero injected attempts)
 the harness's standard three-second deadline with the same outcome/signal/cleanup assertions. With
 that final test, the old inspection branch still reproduces both deadline failures; this test setup
 change is not a production timeout change or a claimed fix for historical timing/network failures.
+
+Fresh independent review of the local 0.1.57 head separately reproduced a readiness-dependent
+failure in the pre-existing escalation test, both in full and focused runs. Its 400 ms admission
+deadline could retire a valid startup before the TERM-ignore/descendant fixture wrote its record.
+That assertion neither established the intended escalation premise nor identified a kernel cause.
+
+Version 0.1.58 separates those phases in `OwnedReplyDeadlineEscalationTests`: activate the actual
+owned job, wait for its fixture record proving installed TERM behavior/descendant creation, then
+invoke the same fixed deadline transition used by the timer. Assert the deadline outcome, one TERM
+and one KILL, successful pinned cleanup and an empty root. This test does not claim elapsed timer
+expiry. Existing queued-deadline and actual CLI socket-wait deadline tests retain real timer-expiry
+coverage unchanged, including bounded admission/caller retirement. Production deadlines and
+ownership assertions are not weakened. Missing readiness still fails the fixture watchdog.
