@@ -1,6 +1,7 @@
 """Verification logging must not block test execution or hide its exit status (#185)."""
 import os
 from pathlib import Path
+import shutil
 import subprocess
 import sys
 import tempfile
@@ -20,7 +21,21 @@ sys.exit(int(os.environ["FAKE_SWIFT_STATUS"]))
 '''
 
 
-class VerifyTestOutputTests(unittest.TestCase):
+class SuccessfulFixtureCleanup(unittest.TestCase):
+    def run(self, result=None):
+        result = result if result is not None else self.defaultTestResult()
+        before = (len(result.errors), len(result.failures), len(result.unexpectedSuccesses))
+        super().run(result)
+        after = (len(result.errors), len(result.failures), len(result.unexpectedSuccesses))
+        if before == after and hasattr(self, "scratch"):
+            try:
+                shutil.rmtree(self.scratch)
+            except OSError:
+                result.addError(self, sys.exc_info())
+        return result
+
+
+class VerifyTestOutputTests(SuccessfulFixtureCleanup):
     def setUp(self):
         self.scratch = Path(tempfile.mkdtemp(prefix="hailing-verify-output-test-"))
         self.bin = self.scratch / "bin"
@@ -82,6 +97,40 @@ class VerifyTestOutputTests(unittest.TestCase):
         self.assertEqual(result.returncode, 7)
         self.assertIn("fixture stdout\n", result.stdout)
         self.assertEqual(len(list(self.scratch.glob("hailing-swift-tests.*"))), 1)
+
+
+class VerifyFixtureCleanupTests(SuccessfulFixtureCleanup):
+    def test_passing_fixture_removes_scratch_after_retention_assertions(self):
+        case = VerifyTestOutputTests("test_failure_preserves_output_and_exact_test_status")
+        result = case.run()
+        self.assertTrue(result.wasSuccessful(), result.errors + result.failures)
+        self.assertFalse(case.scratch.exists())
+
+    def test_failed_fixture_preserves_scratch_and_capture_for_diagnosis(self):
+        class FailingFixture(VerifyTestOutputTests):
+            def test_controlled_failure(self):
+                self.captures_regular_private_output_and_replays_every_byte(7)
+                self.fail("controlled cleanup-policy failure")
+
+        case = FailingFixture("test_controlled_failure")
+        result = case.run()
+        self.scratch = case.scratch
+        self.assertEqual(len(result.failures), 1)
+        self.assertTrue(case.scratch.is_dir())
+        self.assertEqual(len(list(case.scratch.glob("hailing-swift-tests.*"))), 1)
+
+    def test_errored_fixture_preserves_scratch_and_capture_for_diagnosis(self):
+        class ErroredFixture(VerifyTestOutputTests):
+            def test_controlled_error(self):
+                self.captures_regular_private_output_and_replays_every_byte(7)
+                raise RuntimeError("controlled cleanup-policy error")
+
+        case = ErroredFixture("test_controlled_error")
+        result = case.run()
+        self.scratch = case.scratch
+        self.assertEqual(len(result.errors), 1)
+        self.assertTrue(case.scratch.is_dir())
+        self.assertEqual(len(list(case.scratch.glob("hailing-swift-tests.*"))), 1)
 
 
 if __name__ == "__main__":

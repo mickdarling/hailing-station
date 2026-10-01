@@ -39,6 +39,15 @@ The completed independent first review rejected an unguarded notification under
 These regressions failed on the
 old direct-console implementation; they are run by the required verifier.
 
+The regression fixtures remove their own scratch directories only after their
+assertions pass, including assertions about intentionally retained verifier logs.
+Actual assertion failures or errors preserve their fixture directory and captures
+for diagnosis. Cleanup failures are test errors, not silent successes. Nested
+controlled failure/error probes assert this retention before their successful
+outer test removes only that new probe's scratch directory. Historical failed
+artifacts are untouched. This test-fixture policy does not change the verifier's
+production failed/interrupted-log retention contract.
+
 This does not solve arbitrary disk exhaustion, hostile temporary directories,
 production guard-budget determinism (#50/#56), unrelated network errors (#144),
 or every cooperative-fixture scheduling risk. #185 remains open for its other
