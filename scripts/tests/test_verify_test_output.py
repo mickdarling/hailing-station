@@ -74,6 +74,15 @@ class VerifyTestOutputTests(unittest.TestCase):
         self.assertEqual(self.run_lane().returncode, 8)
         self.assertEqual(list(self.scratch.glob("hailing-swift-tests.*")), [])
 
+    def test_unwritable_notification_stderr_cannot_mask_test_failure(self):
+        self.env["FAKE_SWIFT_STATUS"] = "7"
+        with open(os.devnull, "rb") as unwritable:
+            result = subprocess.run(["bash", str(self.script), "test"], env=self.env,
+                                    stdout=subprocess.PIPE, stderr=unwritable, text=True, timeout=20)
+        self.assertEqual(result.returncode, 7)
+        self.assertIn("fixture stdout\n", result.stdout)
+        self.assertEqual(len(list(self.scratch.glob("hailing-swift-tests.*"))), 1)
+
 
 if __name__ == "__main__":
     unittest.main()

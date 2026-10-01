@@ -33,7 +33,7 @@ test_() {
   swift test --parallel ${SWIFT_FLAGS[@]+"${SWIFT_FLAGS[@]}"} > "$test_log" 2>&1 || test_status=$?
   cat "$test_log" || report_status=$?
   if [[ "$test_status" -ne 0 || "$report_status" -ne 0 ]]; then
-    printf 'Preserved Swift test output: %s\n' "$test_log" >&2
+    printf 'Preserved Swift test output: %s\n' "$test_log" >&2 || :
     [[ "$test_status" -eq 0 ]] || return "$test_status"
     return "$report_status"
   fi

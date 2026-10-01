@@ -22,6 +22,8 @@ selection, assertions, production deadlines and guard budgets are unchanged.
 ## Failure contract
 
 - Test failure returns the original nonzero status, even if printing also fails.
+- The preserved-log path notification is best-effort; an unwritable stderr cannot
+  mask the test or printing status.
 - Printing failure after test success also fails verification.
 - Capture creation failure prevents test execution.
 - Failed captures remain for inspection; successful captures alone are removed.
@@ -31,7 +33,10 @@ selection, assertions, production deadlines and guard budgets are unchanged.
 `scripts/tests/test_verify_test_output.py` asserts a regular owner-only output
 descriptor, unchanged parallel/warnings-as-errors arguments, complete stdout and
 stderr replay including output larger than a pipe buffer, exact failure status,
-printing failure and capture creation failure. These regressions failed on the
+printing failure, capture creation failure and an unwritable notification stderr.
+The completed independent first review rejected an unguarded notification under
+`set -e`; its regression returned1 rather than the actual test7 before correction.
+These regressions failed on the
 old direct-console implementation; they are run by the required verifier.
 
 This does not solve arbitrary disk exhaustion, hostile temporary directories,
