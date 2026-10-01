@@ -1,0 +1,90 @@
+# Owned diagnostic publisher prerequisite (#177)
+
+Source 0.1.52 adds an unregistered, default-off publisher. This is not #166 daemon composition,
+a target grant/selection, TestFlight delivery or physically validated origin routing (#161).
+The only payload is the retained `DiagnosticBridgeReply` UUID and its explicitly labelled fixed
+diagnostic phrase; no model chooses a recipient or supplies executable, environment or working directory.
+
+## Admission and caller retirement
+
+Trusted local construction supplies the exact CLI executable, matching host, reply socket and existing
+private output root. Public construction uses the local environment and a 30-second admission-to-outcome
+deadline. These are operator choices, not client-controlled command execution. argv is a fixed `reply`
+invocation with the diagnostic target, retained `--request`, fixed `--say`, socket and explicit
+`--renderer-output-root`. No shell is used. stdout/stderr are discarded; command exit, cancellation,
+deadline, startup, ownership and cleanup failures use fixed categories without private output.
+
+There are at most **16 total admissions**, including queued callers and returned callers whose resources
+still await cleanup. At most **four resource-bearing slots** can start; starting, running and retired
+cleanup-pending groups/directories all occupy this limit. The diagnostic `running` count means occupied
+resource slots, not a claim that those kernels are executing instructions. A queued caller also has a
+deadline and can cancel without creating a directory or child. Failed directory identity/removal retains
+its admission instead of permitting unbounded residue. Cleanup failure remains separately diagnosable
+after cancellation already returned its one-shot outcome.
+
+The callback continuation is separate from cleanup ownership. After pinned quiescence and exact reap,
+the fixed CLI outcome is reported before potentially blocking directory deletion. A successful
+acknowledgement does not promise deletion completed; subsequent cleanup failure is separately visible
+in `lastCleanupFailure` and retains the slot, never a contradictory second command outcome.
+No task-group timeout joins a
+non-cooperative CLI transaction, and no blocking `waitUntilExit` is used. Deadline/cancellation returns a
+fixed failure while the lifetime owner remains held. Dispatch scheduling, filesystem/kernel operations
+and supervisor death preclude an absolute wall-clock cleanup guarantee. The bound is resource admission
+in a live publisher instance, not automatic recovery of stale files across process restart.
+
+## Group ownership and cleanup proof
+
+`posix_spawn` atomically sets a new group with SETPGROUP(0) and starts the direct leader suspended.
+Ownership state and exit observation are installed before exposure to resume/cancellation. Startup
+cancellation is latched; a cancelled suspended leader is killed without executing CLI work. A raced
+late installation still receives cancellation. Uncertainty in complete membership prevents signaling;
+pending escalation can resume only after fresh ownership/membership observations become valid.
+
+All signal admission and exit/cutoff transitions share one lock. Non-consuming `waitid` with WNOWAIT
+pins the exact waitable direct child. Only CLD_EXITED/KILLED/DUMPED are terminal events; stopped or
+continued metadata cannot authorize reaping. TERM is followed by KILL after a short signal-submission
+grace, with fresh nonblocking observation and group inventory at each submission. Exclusive waitable
+ownership/default SIGCHLD and no unrelated child reaper throughout the lifetime are preconditions.
+
+An exited leader plus submitted KILL does **not** prove descendants are gone. A successful complete
+bounded `proc_listpgrppids` inventory must contain exactly the exited unreaped leader. This API returns
+a PID count, not byte count. Missing, zero, negative, full-capacity, duplicate or otherwise invalid
+inventory is unknown, not quiescence. Surviving descendants retain the slot/root and are checked again.
+The PID reservation is retained until the group-signal gate permanently closes, then only the direct
+leader is reaped. No raw PGID observation after reaping can restore signaling. ECHILD/terminal observation
+failure permanently forbids later signals and deletion and retains resource admission for local recovery.
+The parent does not reap grandchildren; orphan reaping is the operating system's responsibility.
+
+Only after that quiescence proof and exact reap may the job directory be removed. Deletion is bounded,
+descriptor-relative, identity-checked and no-follow (depth eight, 1,024 names per directory and 4,096
+total entries); symlinks are unlinked, not traversed. Neither the
+configured root nor arbitrary external directories are recursively removed. Unexpected identity/depth/
+entry-count failure retains the resource. POSIX has no inode-conditional rmdir: concurrent hostile
+same-UID path rebinding is outside the trusted private-root contract. A committed normal cleanup is
+irrevocable; later cancellation cannot submit another signal or contradict its outcome.
+
+This is a process-group contract for trusted non-daemonizing/non-escaping CLI/renderers, **not a sandbox**.
+Uncooperative kernel exits remain retained; deliberate setpgid/daemonization, unrelated group joiners,
+external reapers and abrupt supervisor death are not claimed to be contained. Renderer abnormal leaves
+retained by #179 can now be removed only by this outer owner's actual group-quiescence proof.
+
+## Synthetic evidence and limitations
+
+OwnedReplyProcessTests / OwnedReplyProcessIntegrationTests use only controlled Perl fixtures and the
+actual built CLI against an owner-only test endpoint. They cover pre-spawn/pre-resume cancellation,
+zero early work, stopped-event/lost-identity/permanent-cutoff gates, TERM-ignore escalation including an
+exited leader's descendant, independent group isolation, unknown-inventory retained admission, cap16/
+four-slot refusal before a fifth resource, queued deadline, late-cancel cleanup commitment, and directory
+replacement/no-follow behavior. Actual CLI fixtures prove three correlated text/PCM/final frames,
+inherited group and explicit-root identity/0700 containment, held text and audio acknowledgements,
+cancel/deadline retirement without waiting for the CLI's 15-second transaction, and no whole-command retry.
+OwnedReplyPublisherCleanupTests additionally prove caller acknowledgement during a deliberately blocked
+cleanup and separately visible cleanup failure with retained admission and no second command outcome.
+
+Initial unpublished testing exposed a draft event-classification error: treating any siginfo PID as an
+exit caused a premature closed-gate reap attempt. That failed safely, retained artifacts/resources and
+was corrected before review; those old attempts are not proof of cleanup. The fixture also replaced a
+misleading path-string-prefix check with actual ancestor device/inode identity because Foundation and
+kernel canonical path spellings differ. These are synthetic process/control proofs, not real speech,
+provider-session capture, authentication, a live enabled bridge, device hearing or two-client validation.
+#177, #166 and #161 remain open until their remaining applicable acceptance and independent review.
