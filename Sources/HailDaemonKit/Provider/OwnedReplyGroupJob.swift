@@ -14,6 +14,11 @@ struct OwnedReplyGroupHooks: Sendable {
     var inventory: @Sendable (pid_t) -> [pid_t]? = OwnedReplyGroupJob.inventory
     var signal: @Sendable (Int32) -> Void = { _ in }
     var beforeReap: @Sendable () -> Void = {}
+    var reap: @Sendable (pid_t) -> (pid_t, Int32) = { leader in
+        var status: Int32 = 0
+        let result = waitpid(leader, &status, WNOHANG)
+        return (result, errno)
+    }
     var observation: @Sendable (Int32, Int32) -> Void = { _, _ in }
     var escalation: @Sendable () -> Void = {}
     var beforeCleanup: @Sendable (URL) -> Void = { _ in }
@@ -220,9 +225,7 @@ final class OwnedReplyGroupJob: Sendable {
     private func finishPinned() {
         hooks.beforeReap()
         let failure = state.withLock { current -> OwnedReplyPublisherError? in
-            var status: Int32 = 0
-            let reaped = waitpid(current.identity.leader, &status, WNOHANG)
-            guard reaped == current.identity.leader else { return .ownershipLost }
+            guard Self.reapPinnedLeader(current.identity.leader, using: hooks.reap) else { return .ownershipLost }
             return current.failure ?? (current.identity.status == 0 ? nil : .commandFailed)
         }
         source.setEventHandler {}; source.cancel()
@@ -252,6 +255,15 @@ final class OwnedReplyGroupJob: Sendable {
 }
 
 extension OwnedReplyGroupJob {
+    // Called only after pinned terminal exit, exact group quiescence and permanent signal cutoff.
+    // EINTR does not consume the child or invalidate that proof. Every retry remains exact-PID,
+    // nonblocking; other unexpected results still retain admission and prohibit directory cleanup.
+    static func reapPinnedLeader(_ leader: pid_t, using reap: (pid_t) -> (pid_t, Int32)) -> Bool {
+        var result = reap(leader)
+        while result.0 == -1, result.1 == EINTR { result = reap(leader) }
+        return result.0 == leader
+    }
+
     // All observation, signal admission and permanent cutoff share this lock. Exclusive waitable
     // ownership/default SIGCHLD throughout the job is a precondition, not coordinated external reaping.
     private func observe(_ current: inout ReplyGroupState) {

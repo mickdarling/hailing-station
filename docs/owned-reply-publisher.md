@@ -1,6 +1,6 @@
 # Owned diagnostic publisher prerequisite (#177)
 
-Source 0.1.55 adds an unregistered, default-off publisher. This is not #166 daemon composition,
+Source 0.1.56 adds an unregistered, default-off publisher. This is not #166 daemon composition,
 a target grant/selection, TestFlight delivery or physically validated origin routing (#161).
 The only payload is the retained `DiagnosticBridgeReply` UUID and its explicitly labelled fixed
 diagnostic phrase; no model chooses a recipient or supplies executable, environment or working directory.
@@ -142,3 +142,27 @@ startup/acknowledgement milestones. After inspecting those failures, the full ve
 concurrent simulator load passed all 760 Swift tests/119 suites and 26 CLI fixtures; simulator and
 strict uncached lint also passed. No publisher implementation or test was changed to obtain that
 result, and the initial failures remain recorded rather than claimed to be a fixed scheduling bug.
+
+## Review correction: interrupted exact reap
+
+GitHub review of 0.1.55 found that EINTR from the final nonblocking `waitpid` was treated as lost
+ownership. After the signal gate had closed, that transient interruption could leave the exited
+direct child unreaped and retain its directory/admission indefinitely.
+
+Version 0.1.56 retries only EINTR against the same pinned direct leader, still using WNOHANG and
+without reopening signal authority. Only that exact leader's returned PID authorizes cleanup.
+Zero, wrong PID, ECHILD and other errors remain failures with retained ownership/cleanup resources.
+The controlled real-child regression injects three interruptions before the real exact-PID reap;
+it failed on the previous single-call implementation and now proves successful outcome, normal
+admission/root cleanup and no signals after cutoff. Separate synthetic-result coverage proves other
+unexpected results are not retried; it does not deliberately destroy a real child's ownership.
+
+The first refreshed GitHub CI run separately passed all 760 Swift tests but failed one inherited CLI
+retry fixture with POSIX error 50 (Network is down), rather than its expected retry-budget error.
+The exact log is preserved; cause remains unproven. This reap correction does not claim to fix that
+socket failure, and the failed required check is not waived or manually rerun on unchanged code.
+
+The finished correction passes the full local verifier (762 Swift tests/120 suites, 45 trace tests,
+five intent tests and all 26 synthetic CLI fixtures), simulator build-for-testing, strict uncached
+lint and full actual-base diff check. The two new regressions live in `OwnedReplyPinnedReapTests`
+to retain the existing per-file lint limit; existing correlated CLI tests remain unchanged.
