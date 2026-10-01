@@ -8,6 +8,8 @@ import Synchronization
 
 struct OwnedReplyGroupHooks: Sendable {
     var beforeSpawn: @Sendable () -> Void = {}
+    var beforeInstall: @Sendable () -> Void = {}
+    var afterCancellationLatch: @Sendable () -> Void = {}
     var beforeResume: @Sendable () -> Void = {}
     var inventory: @Sendable (pid_t) -> [pid_t]? = OwnedReplyGroupJob.inventory
     var signal: @Sendable (Int32) -> Void = { _ in }

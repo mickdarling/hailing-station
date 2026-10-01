@@ -124,6 +124,7 @@ public final class OwnedReplyPublisher: Sendable {
             let job = try OwnedReplyGroupJob(configuration: configuration, reply: reply,
                                             cancelled: { self.cancelled(id) },
                                             outcome: { self.outcome(id, $0) }, cleaned: { self.cleaned(id) })
+            configuration.hooks.beforeInstall()
             let cancel = state.withLock { current -> Bool in
                 guard var entry = current.entries[id] else { return true }
                 entry.starting = false; entry.job = job; current.entries[id] = entry
@@ -175,9 +176,12 @@ public final class OwnedReplyPublisher: Sendable {
             return entry.job
         }
         if let job { job.cancel(failure) } else {
+            configuration.hooks.afterCancellationLatch()
             outcome(id, .failure(failure))
             let queued = state.withLock { current -> Bool in
-                guard current.entries[id]?.starting == false else { return false }
+                // Startup may have installed a job since cancellation latched. That job sees the
+                // latch during activation and retains its admission until cleanup succeeds.
+                guard let entry = current.entries[id], !entry.starting, entry.job == nil else { return false }
                 current.queued.removeAll { $0 == id }; current.entries.removeValue(forKey: id)
                 return true
             }

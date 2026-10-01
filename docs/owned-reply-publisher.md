@@ -1,6 +1,6 @@
 # Owned diagnostic publisher prerequisite (#177)
 
-Source 0.1.52 adds an unregistered, default-off publisher. This is not #166 daemon composition,
+Source 0.1.53 adds an unregistered, default-off publisher. This is not #166 daemon composition,
 a target grant/selection, TestFlight delivery or physically validated origin routing (#161).
 The only payload is the retained `DiagnosticBridgeReply` UUID and its explicitly labelled fixed
 diagnostic phrase; no model chooses a recipient or supplies executable, environment or working directory.
@@ -88,3 +88,20 @@ misleading path-string-prefix check with actual ancestor device/inode identity b
 kernel canonical path spellings differ. These are synthetic process/control proofs, not real speech,
 provider-session capture, authentication, a live enabled bridge, device hearing or two-client validation.
 #177, #166 and #161 remain open until their remaining applicable acceptance and independent review.
+
+## Review correction: cancellation racing job installation
+
+Independent security audit of 0.1.52 found a split-lock cancellation race. Cancellation could latch
+while no job was installed, then mistake a subsequently installed job for a queued entry because
+startup had cleared `starting`. Removing that entry released admission before its suspended child and
+private directory were cleaned. This violated the resource bound even though activation observed the
+cancellation latch.
+
+Version 0.1.53 revalidates both startup and installed-job ownership under the removal lock. A raced
+installation keeps its resource admission and receives the existing cancellation latch; only an entry
+with neither startup nor an installed job may be removed as queued. The deterministic regression
+holds cancellation after its first lock, installs the suspended job before the removal lock, and
+keeps group inventory unknown. It proves the retired caller still occupies a slot, four retained
+resources prevent a fifth startup, and all 16 admissions (including 12 queued callers) reject a 17th.
+The regression failed on the previous implementation at retained admission before this correction;
+no real renderer or live device was involved.
