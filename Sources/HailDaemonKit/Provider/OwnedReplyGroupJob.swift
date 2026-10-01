@@ -20,6 +20,11 @@ struct OwnedReplyGroupHooks: Sendable {
         return (result, errno)
     }
     var observation: @Sendable (Int32, Int32) -> Void = { _, _ in }
+    var exitNotification: @Sendable () -> Void = {}
+    var wait: @Sendable (pid_t, inout siginfo_t) -> (Int32, Int32) = { leader, information in
+        let result = waitid(P_PID, id_t(leader), &information, WEXITED | WNOHANG | WNOWAIT)
+        return (result, errno)
+    }
     var escalation: @Sendable () -> Void = {}
     var beforeCleanup: @Sendable (URL) -> Void = { _ in }
 }
@@ -86,6 +91,7 @@ private struct ReplyGroupState {
     var identity: ReplyGroupIdentity
     var activated = false
     var resumed = false
+    var exitNotified = false
     var failure: OwnedReplyPublisherError?
     var reported = false
     var escalationScheduled = false
@@ -130,7 +136,7 @@ final class OwnedReplyGroupJob: Sendable {
         state = Mutex(ReplyGroupState(identity: ReplyGroupIdentity(leader: pid)))
         source = DispatchSource.makeProcessSource(identifier: pid, eventMask: .exit, queue: .global(qos: .utility))
         timer = DispatchSource.makeTimerSource(queue: .global(qos: .utility))
-        source.setEventHandler { self.inspect() }
+        source.setEventHandler { self.hooks.exitNotification(); self.inspect(exitNotified: true) }
         timer.setEventHandler { self.cancel(.deadline) }
         timer.schedule(deadline: .now() + configuration.deadline.timeInterval)
         source.activate()
@@ -177,9 +183,10 @@ final class OwnedReplyGroupJob: Sendable {
         inspect()
     }
 
-    private func inspect() {
+    private func inspect(exitNotified: Bool = false) {
         let action = state.withLock { current -> Int in
             guard !current.cleanupStarted else { return 0 }
+            current.exitNotified = current.exitNotified || exitNotified
             observe(&current)
             if current.identity.lost { return 1 }
             if current.killRequested, !current.killSubmitted {
@@ -188,7 +195,9 @@ final class OwnedReplyGroupJob: Sendable {
                 current.resumed = signal(SIGCONT, current: &current)
             }
             guard current.identity.exited else {
-                return current.failure == nil && current.resumed ? 0 : 2
+                // Exit readiness is not terminal proof. Once notified, keep one scheduled
+                // inspection until waitable status is conclusive, even for a resumed normal job.
+                return current.exitNotified || current.failure != nil || !current.resumed ? 2 : 0
             }
             let members = hooks.inventory(current.identity.leader)
             guard current.identity.closeForReaping(members: members) else { return 2 }
@@ -271,8 +280,7 @@ extension OwnedReplyGroupJob {
         var information = siginfo_t()
         // WNOHANG may leave siginfo untouched. Explicitly clear the sentinel before every call.
         information.si_pid = 0; information.si_code = 0
-        let result = waitid(P_PID, id_t(current.identity.leader), &information, WEXITED | WNOHANG | WNOWAIT)
-        let error = errno
+        let (result, error) = hooks.wait(current.identity.leader, &information)
         hooks.observation(result, error)
         current.identity.observe(result: result, information: information, error: error)
     }

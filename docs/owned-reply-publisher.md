@@ -1,6 +1,6 @@
 # Owned diagnostic publisher prerequisite (#177)
 
-Source 0.1.56 adds an unregistered, default-off publisher. This is not #166 daemon composition,
+Source 0.1.57 adds an unregistered, default-off publisher. This is not #166 daemon composition,
 a target grant/selection, TestFlight delivery or physically validated origin routing (#161).
 The only payload is the retained `DiagnosticBridgeReply` UUID and its explicitly labelled fixed
 diagnostic phrase; no model chooses a recipient or supplies executable, environment or working directory.
@@ -166,3 +166,29 @@ The finished correction passes the full local verifier (762 Swift tests/120 suit
 five intent tests and all 26 synthetic CLI fixtures), simulator build-for-testing, strict uncached
 lint and full actual-base diff check. The two new regressions live in `OwnedReplyPinnedReapTests`
 to retain the existing per-file lint limit; existing correlated CLI tests remain unchanged.
+
+## Review correction: inconclusive exit notification
+
+The ready-trigger code review of 0.1.56 found that a resumed normal job's process-exit callback
+could receive EINTR or no terminal status from nonblocking waitid and return without scheduling
+another inspection. With no second exit notification, a successful child could be reported as a
+deadline failure even though its exact waitable identity remained owned.
+
+Version 0.1.57 remembers exit notification under the existing state lock and uses the existing
+single scheduled inspection slot to retry inconclusive status reads. Readiness is not proof of
+terminal exit, quiescence or permission to reap: the existing terminal-status, complete inventory,
+permanent signal-cutoff and exact-reap checks remain necessary. Unknown ownership still fails
+closed; no signal gate is reopened and ordinary running jobs are not continuously polled.
+
+A controlled real-child regression holds terminal metadata until the actual exit notification,
+then injects two EINTR or two empty-status observations. Both cases failed on the prior branch
+with deadline outcomes and now succeed without cancellation/escalation signals, releasing admission
+and cleaning the private job root. WNOWAIT preserves the child's exact ownership throughout; no
+external reaper, live renderer, device action or deliberately lost real-child identity is used.
+Historical timing/network failures remain separate, unproven causes.
+
+The first full run used a one-second deadline for the new fixture and one case reached its deadline
+before entering the injected terminal-observation stage (zero injected attempts). The final test uses
+the harness's standard three-second deadline with the same outcome/signal/cleanup assertions. With
+that final test, the old inspection branch still reproduces both deadline failures; this test setup
+change is not a production timeout change or a claimed fix for historical timing/network failures.
