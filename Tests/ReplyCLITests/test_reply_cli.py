@@ -57,6 +57,97 @@ class ReplyCLITests(unittest.TestCase):
         self.assert_audio_identity(frames[1:])
         self.assertEqual([frame["payload"]["final"] for frame in frames[1:]], [False, True])
 
+    def test_owned_renderer_inherits_job_group_and_uses_explicit_private_root(self):
+        request_id = str(uuid.uuid4()).upper()
+        with tempfile.TemporaryDirectory(prefix="hail-renderer-owned-") as scratch:
+            root = Path(scratch) / "output"
+            root.mkdir(mode=0o700)
+            record = Path(scratch) / "record.json"
+            environment = os.environ.copy()
+            environment["PATH"] = str(Path(__file__).parent / "fixtures") + os.pathsep + environment["PATH"]
+            environment["REPLY_RENDERER_TEST_ROOT"] = str(root)
+            environment["REPLY_RENDERER_TEST_RECORD"] = str(record)
+            # This caller-created job group is inherited by haild and its exact renderer child.
+            frames = self.submit_frames(
+                ["--say", "synthetic reply", "--request", request_id, "--renderer-output-root", str(root)],
+                3, environment,
+            )
+            proof = json.loads(record.read_text())
+            self.assertTrue(all(proof.values()), proof)
+            self.assertEqual(list(root.iterdir()), [])
+            self.assertTrue(root.is_dir())
+        self.assert_reply_identity(frames, request_id)
+        self.assert_audio_identity(frames[1:])
+        self.assertEqual([frame["payload"]["final"] for frame in frames[1:]], [False, True])
+
+    def test_renderer_root_is_validated_before_text_publication(self):
+        with tempfile.TemporaryDirectory(prefix="hail-renderer-invalid-") as scratch:
+            root = Path(scratch) / "root"
+            root.mkdir(mode=0o755)
+            alias = Path(scratch) / "alias"
+            alias.symlink_to(root, target_is_directory=True)
+            for path in [root, alias, Path(scratch) / "missing"]:
+                with self.subTest(path=path.name):
+                    result = subprocess.run(
+                        [str(HAILD), "reply", "tmux:test", "--say", "synthetic reply",
+                         "--renderer-output-root", str(path), "--socket", str(Path(scratch) / "absent.sock")],
+                        cwd=REPO, capture_output=True, text=True, timeout=15, check=False,
+                    )
+                    self.assertEqual(result.returncode, 1)
+                    self.assertIn("invalid private renderer output root", result.stderr)
+                    self.assertNotIn("absent.sock", result.stderr)
+                    self.assertEqual(result.stdout, "")
+            self.assertEqual(list(root.iterdir()), [])
+
+    def test_nonzero_renderer_is_visible_failure_and_defers_owned_leaf_cleanup(self):
+        with tempfile.TemporaryDirectory(prefix="hail-renderer-nonzero-") as scratch:
+            root = Path(scratch) / "output"
+            root.mkdir(mode=0o700)
+            environment = os.environ.copy()
+            environment["PATH"] = str(Path(__file__).parent / "fixtures") + os.pathsep + environment["PATH"]
+            environment["REPLY_RENDERER_TEST_NONZERO"] = "1"
+            result, requests = self.submit_responses(
+                [{"delivered": 1}], ["--say", "synthetic", "--renderer-output-root", str(root)], environment,
+            )
+            self.assertEqual(result.returncode, 1)
+            self.assertIn("speech renderer exited unsuccessfully", result.stderr)
+            self.assertEqual(len(requests), 1)
+            self.assertEqual(result.stdout, "")
+            self.assertIn("owned output cleanup deferred", result.stderr)
+            self.assertEqual(len(list(root.iterdir())), 1)
+
+    def test_accepted_text_then_refused_audio_preserves_fixed_primary_publication_failure(self):
+        self.assert_audio_publication_failure(
+            {"delivered": 0, "code": "noRecipient", "error": "synthetic-private-endpoint-detail"},
+        )
+
+    def test_accepted_text_then_lost_audio_ack_preserves_primary_failure_without_whole_command_retry(self):
+        self.assert_audio_publication_failure(None)
+
+    def assert_audio_publication_failure(self, audio_response):
+        environment = os.environ.copy()
+        environment["PATH"] = str(Path(__file__).parent / "fixtures") + os.pathsep + environment["PATH"]
+        with tempfile.TemporaryDirectory(prefix="hail-renderer-publication-") as scratch:
+            root = Path(scratch) / "output"
+            root.mkdir(mode=0o700)
+            result, requests = self.submit_responses(
+                [{"delivered": 1}, audio_response],
+                ["--say", "synthetic", "--renderer-output-root", str(root)], environment,
+            )
+            self.assertEqual(result.returncode, 1)
+            self.assertIn("speech reply publication failed", result.stderr)
+            self.assertIn("owned output cleanup deferred", result.stderr)
+            self.assertNotIn("synthetic-private-endpoint-detail", result.stderr)
+            self.assertNotIn(str(root), result.stderr)
+            self.assertEqual(result.stdout, "")
+            self.assertEqual(len(requests), 2)
+            frames = [json.loads(request) for request in requests]
+            self.assertEqual([frame["type"] for frame in frames], ["text", "audio"])
+            self.assertEqual(frames[0]["payload"]["reply"], frames[1]["payload"]["reply"])
+            self.assertEqual(frames[1]["payload"]["sequence"], 0)
+            self.assertFalse(frames[1]["payload"]["final"])
+            self.assertEqual(len(list(root.iterdir())), 1)
+
     def test_legacy_text_does_not_invent_request_identity(self):
         frames = self.submit_frames(["--text", "synthetic reply"], 1)
         self.assertNotIn("request", frames[0]["payload"]["reply"])
@@ -155,7 +246,7 @@ class ReplyCLITests(unittest.TestCase):
         )
         self.assertEqual(result.returncode, 1)
         self.assertEqual(len(requests), 1)
-        self.assertIn("vbsay exited with status", result.stderr)
+        self.assertIn("speech renderer unavailable", result.stderr)
         self.assertEqual(result.stdout, "")
 
     def submit_responses(self, responses, arguments=None, environment=None):
@@ -203,6 +294,7 @@ class ReplyCLITests(unittest.TestCase):
                         [str(HAILD), "reply", "tmux:test", "--host", "mac-test", *arguments,
                          "--request", request_id, "--socket", path],
                         cwd=REPO, capture_output=True, text=True, timeout=15, check=False, env=environment,
+                        start_new_session=True,
                     )
                 finally:
                     finished.set()
@@ -271,6 +363,7 @@ class ReplyCLITests(unittest.TestCase):
                 result = subprocess.run(
                     [str(HAILD), "reply", "tmux:test", "--host", "mac-test", *arguments, "--socket", path],
                     cwd=REPO, capture_output=True, text=True, timeout=15, check=False, env=environment,
+                    start_new_session=True,
                 )
                 worker.join(timeout=12)
                 self.assertFalse(worker.is_alive())

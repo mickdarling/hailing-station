@@ -37,7 +37,8 @@ func usage() -> Never {
            haild targets tier <target-id> <open|confirm|locked>
            haild send <target-id> <text>      (text is one argument; quote it)
            haild reply <target-id> [--host <host-id>] [--text <text>] [--pcm16 <path>|--say <text>]
-                       [--request <opaque-request-UUID>] [--sample-rate <hz>] [--socket <path>]
+      [--request <opaque-request-UUID>] [--sample-rate <hz>] [--socket <path>]
+      [--renderer-output-root <private-existing-directory>]
            haild status
            haild audit verify|tail|today
            haild run --bind <address> --port <port> --connection-probe
