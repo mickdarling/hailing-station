@@ -27,40 +27,62 @@ struct RendererFixture: Sendable {
         try OwnedReplyRenderer(text: "synthetic", outputRoot: outputRoot, environment: environment)
     }
     func remove() { try? FileManager.default.removeItem(at: base) }
-    func until(_ condition: () -> Bool) async throws {
+    func until(_ phase: String, _ condition: () -> Bool) async throws {
         let deadline = ContinuousClock.now.advanced(by: .seconds(3))
         while !condition() {
-            guard ContinuousClock.now < deadline else { throw RendererFixtureFailure.watchdog }
+            guard ContinuousClock.now < deadline else {
+                throw RendererFixtureFailure.watchdog(
+                    phase: phase, started: FileManager.default.fileExists(atPath: record.path + ".started"),
+                    ready: FileManager.default.fileExists(atPath: record.path))
+            }
             try await Task.sleep(for: .milliseconds(10))
         }
     }
 
     static let script = """
-    #!/usr/bin/python3
-    import os, signal, stat, time
-    from pathlib import Path
-    output = Path(os.environ["VBSAY_OUT"])
-    assert os.environ["VBSAY_NOPLAY"] == "1"
-    assert os.getpgrp() == os.getpgid(os.getppid())
-    assert stat.S_IMODE(output.stat().st_mode) == 0o700
-    mode = os.environ["RENDERER_TEST_MODE"]
-    if mode == "ignore-term":
-        signal.signal(signal.SIGTERM, signal.SIG_IGN)
-    if mode == "descendant-writer":
-        child = os.fork()
-        if child == 0:
-            time.sleep(0.5)
-            (output / "late-descendant.raw").write_bytes(bytes([0, 0]))
-            Path(os.environ["RENDERER_TEST_RECORD"] + ".done").write_text("normal-descendant-completion")
-            os._exit(0)
-    Path(os.environ["RENDERER_TEST_RECORD"]).write_text("same-group-private-output")
-    if mode == "nonzero":
-        raise SystemExit(23)
-    (output / "synthetic.raw").write_bytes(bytes([0, 0, 1, 0]))
-    if mode in ("ignore-term", "descendant-writer"):
-        time.sleep(5)
+    #!/usr/bin/perl
+    use strict;
+    use warnings;
+    sub write_file {
+        my ($path, $bytes) = @_;
+        open(my $file, '>', $path) or die "fixture open failed";
+        binmode($file);
+        print {$file} $bytes or die "fixture write failed";
+        close($file) or die "fixture close failed";
+    }
+    my $output = $ENV{VBSAY_OUT};
+    my $record = $ENV{RENDERER_TEST_RECORD};
+    write_file("$record.started", "fixture-started");
+    die "fixture playback configuration" unless $ENV{VBSAY_NOPLAY} eq '1';
+    die "fixture group mismatch" unless getpgrp(0) == getpgrp(getppid());
+    die "fixture directory permissions" unless ((stat($output))[2] & 07777) == 0700;
+    my $mode = $ENV{RENDERER_TEST_MODE};
+    $SIG{TERM} = 'IGNORE' if $mode eq 'ignore-term';
+    if ($mode eq 'descendant-writer') {
+        my $child = fork();
+        die "fixture fork failed" unless defined($child);
+        if ($child == 0) {
+            select(undef, undef, undef, 0.5);
+            write_file("$output/late-descendant.raw", pack('C*', 0, 0));
+            write_file("$record.done", "normal-descendant-completion");
+            exit(0);
+        }
+    }
+    write_file($record, "same-group-private-output");
+    exit(23) if $mode eq 'nonzero';
+    write_file("$output/synthetic.raw", pack('C*', 0, 0, 1, 0));
+    select(undef, undef, undef, 5) if $mode eq 'ignore-term' || $mode eq 'descendant-writer';
     """
 }
 
-private enum RendererFixtureFailure: Error { case watchdog }
+private enum RendererFixtureFailure: Error, CustomStringConvertible {
+    case watchdog(phase: String, started: Bool, ready: Bool)
+
+    var description: String {
+        switch self {
+        case let .watchdog(phase, started, ready):
+            "renderer fixture watchdog: \(phase); interpreter started: \(started); assertions ready: \(ready)"
+        }
+    }
+}
 #endif

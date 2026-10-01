@@ -1,3 +1,4 @@
+import Darwin
 import Foundation
 import Testing
 @testable import HailDaemonKit
@@ -107,18 +108,40 @@ import Testing
         #expect(expired.matches(in: [line]) == ["disk write"])
     }
 
-    @Test func worstCaseUtteranceStaysCheap() throws {
+    @Test func worstCaseUtteranceHasBoundedThreadCPUCost() throws {
         // The sanitizer's cap: 2,000 characters per line, 20 lines. Command words repeated to provoke
         // rescans; anchored lookaheads keep each rule linear.
+        // CPU-work regression contract (#56), not a wall-time latency SLO. Synchronous matching
+        // stays on this thread; other tests and scheduler pauses do not consume its CPU budget.
+        // Production still uses wall-time match deadlines and may fail closed before a full scan;
+        // this metric does not establish uninterrupted scanning or resolve budget contention (#50).
         let words = String(repeating: "chmod push rm dd branch reset git ", count: 60).prefix(2_000)
         let flags = "rm push branch chmod sh dd git reset -" + String(repeating: "r", count: 900)
             + String(repeating: "f", count: 900) + "9"
         let guards = try CompiledGuards(DangerousPatternGuard.defaults)
-        let clock = ContinuousClock()
         for line in [String(words), flags] {
             let lines = Array(repeating: line, count: 20)
-            let elapsed = clock.measure { _ = guards.matches(in: lines) }
-            #expect(elapsed < .milliseconds(500), "\(elapsed) for the worst case \(line.prefix(12))")
+            let cost = try GuardCPUCostTestClock.measure { _ = guards.matches(in: lines) }
+            #expect(cost < .milliseconds(500), "\(cost) thread CPU for the worst case \(line.prefix(12))")
+        }
+    }
+
+    @Test func CPUCostMeasurementHandlesSecondBoundariesAndRefusesBrokenSamples() throws {
+        var samples = [timespec(tv_sec: 3, tv_nsec: 999_000_000), timespec(tv_sec: 4, tv_nsec: 1_000_000)]
+        let cost = try GuardCPUCostTestClock.measure({}, sample: { samples.removeFirst() })
+        #expect(cost == .milliseconds(2))
+        #expect(throws: GuardCPUCostTestClock.Failure.unreadableClock) {
+            try GuardCPUCostTestClock.measure({}, sample: { throw GuardCPUCostTestClock.Failure.unreadableClock })
+        }
+        for invalid in [timespec(tv_sec: -1, tv_nsec: 0), timespec(tv_sec: 0, tv_nsec: -1),
+                        timespec(tv_sec: 0, tv_nsec: 1_000_000_000)] {
+            #expect(throws: GuardCPUCostTestClock.Failure.invalidSample) {
+                try GuardCPUCostTestClock.measure({}, sample: { invalid })
+            }
+        }
+        var backwards = [timespec(tv_sec: 5, tv_nsec: 0), timespec(tv_sec: 4, tv_nsec: 999_999_999)]
+        #expect(throws: GuardCPUCostTestClock.Failure.backwardsClock) {
+            try GuardCPUCostTestClock.measure({}, sample: { backwards.removeFirst() })
         }
     }
 
@@ -131,5 +154,32 @@ import Testing
         #expect(guards.matches(in: ["rm \\", "-rf /"]) == ["rm -rf"])
         #expect(guards.matches(in: ["git push \\", "--force origin main"]) == ["force push"])
         #expect(guards.matches(in: ["chmod \\", "777 x"]) == ["permissions"])
+    }
+}
+
+private enum GuardCPUCostTestClock {
+    enum Failure: Error, Equatable { case unreadableClock, invalidSample, backwardsClock }
+
+    // Non-escaping synchronous operation prevents a cooperative suspension/thread change between samples.
+    static func measure(_ operation: () -> Void, sample: () throws -> timespec = read) throws -> Duration {
+        let start = try duration(sample())
+        operation()
+        let end = try duration(sample())
+        guard end >= start else { throw Failure.backwardsClock }
+        return end - start
+    }
+
+    private static func read() throws -> timespec {
+        var sample = timespec()
+        guard clock_gettime(CLOCK_THREAD_CPUTIME_ID, &sample) == 0 else { throw Failure.unreadableClock }
+        return sample
+    }
+
+    private static func duration(_ sample: timespec) throws -> Duration {
+        guard sample.tv_sec >= 0, sample.tv_nsec >= 0, sample.tv_nsec < 1_000_000_000 else {
+            throw Failure.invalidSample
+        }
+        // Duration arithmetic avoids overflowing a seconds-to-nanoseconds integer multiplication.
+        return .seconds(Int64(sample.tv_sec)) + .nanoseconds(Int64(sample.tv_nsec))
     }
 }

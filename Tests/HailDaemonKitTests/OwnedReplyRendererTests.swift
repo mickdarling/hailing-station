@@ -54,13 +54,13 @@ extension OwnedReplyRendererTests {
         let fixture = try RendererFixture(mode: "normal")
         defer { fixture.remove() }
         let renderer = try fixture.start()
-        try await fixture.until { !renderer.isRunning }
+        try await fixture.until("normal exit observed") { !renderer.isRunning }
         try await renderer.requireSuccessfulExit()
         #expect(FileManager.default.fileExists(atPath: renderer.outputDirectory.path))
         #expect(!renderer.cleanupComplete)
         #expect(try String(contentsOf: fixture.record, encoding: .utf8) == "same-group-private-output")
         renderer.retire(cancel: false)
-        try await fixture.until { renderer.cleanupComplete }
+        try await fixture.until("normal cleanup completed") { renderer.cleanupComplete }
         try await renderer.waitForCleanup()
         #expect(!FileManager.default.fileExists(atPath: renderer.outputDirectory.path))
         #expect(FileManager.default.fileExists(atPath: fixture.outputRoot.path))
@@ -70,9 +70,11 @@ extension OwnedReplyRendererTests {
         let fixture = try RendererFixture(mode: "ignore-term")
         defer { fixture.remove() }
         let renderer = try fixture.start()
-        try await fixture.until { FileManager.default.fileExists(atPath: fixture.record.path) }
+        try await fixture.until("TERM-ignore fixture ready") {
+            FileManager.default.fileExists(atPath: fixture.record.path)
+        }
         renderer.cancel()
-        try await fixture.until { !renderer.isRunning }
+        try await fixture.until("cancelled child reaped") { !renderer.isRunning }
         await #expect(throws: OwnedReplyRendererError.cancelled) { try await renderer.requireSuccessfulExit() }
         #expect(FileManager.default.fileExists(atPath: renderer.outputDirectory.path))
         #expect(!renderer.cleanupComplete)
@@ -91,9 +93,11 @@ extension OwnedReplyRendererTests {
             environment: fixture.environment,
             hooks: ReplyRendererLifecycleHooks(reaped: { reaped.withLock { $0 = true } }))
         let output = try #require(renderer).outputDirectory
-        try await fixture.until { FileManager.default.fileExists(atPath: fixture.record.path) }
+        try await fixture.until("facade-drop fixture ready") {
+            FileManager.default.fileExists(atPath: fixture.record.path)
+        }
         renderer = nil
-        try await fixture.until { reaped.withLock { $0 } }
+        try await fixture.until("dropped facade child reaped") { reaped.withLock { $0 } }
         #expect(FileManager.default.fileExists(atPath: output.path))
         #expect(try FileManager.default.contentsOfDirectory(atPath: fixture.outputRoot.path).count == 1)
     }
@@ -103,7 +107,7 @@ extension OwnedReplyRendererTests {
             let fixture = try RendererFixture(mode: mode)
             defer { fixture.remove() }
             let renderer = try fixture.start()
-            try await fixture.until { !renderer.isRunning }
+            try await fixture.until("failed renderer reaped") { !renderer.isRunning }
             let expected: OwnedReplyRendererError = mode == "missing" ? .rendererUnavailable : .nonzeroExit
             await #expect(throws: expected) { try await renderer.requireSuccessfulExit() }
             renderer.retire(cancel: false)
@@ -132,7 +136,7 @@ extension OwnedReplyRendererTests {
             }
         }
         _ = await during.value
-        try await fixture.until { reaped.withLock { $0 } }
+        try await fixture.until("startup-cancelled child reaped") { reaped.withLock { $0 } }
         #expect(try FileManager.default.contentsOfDirectory(atPath: fixture.outputRoot.path).count == 1)
     }
 
@@ -158,7 +162,7 @@ extension OwnedReplyRendererTests {
         let fixture = try RendererFixture(mode: "normal")
         defer { fixture.remove() }
         let renderer = try fixture.start()
-        try await fixture.until { !renderer.isRunning }
+        try await fixture.until("replacement fixture exit observed") { !renderer.isRunning }
         let original = fixture.outputRoot.appendingPathComponent("original-owned-leaf")
         try FileManager.default.moveItem(at: renderer.outputDirectory, to: original)
         try FileManager.default.createDirectory(at: renderer.outputDirectory, withIntermediateDirectories: false)

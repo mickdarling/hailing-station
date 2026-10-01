@@ -2,7 +2,7 @@
 
 This host-local prerequisite is not diagnostic publisher composition (#166), whole-job supervision
 (#177), an enabled target, or a delivered/physically validated device build. The source version is
-0.1.49. Synthetic tests do not establish real Voicebox quality or two-device routing.
+0.1.50. Synthetic tests do not establish real Voicebox quality or two-device routing.
 
 ## Trusted launch and output configuration
 
@@ -90,3 +90,28 @@ Actual CLI fixtures now prove both text-accepted/audio-refused and text-accepted
 exit unsuccessfully with the primary category and deferred disposition, produce no success summary,
 send exactly the original text and first audio attempt, preserve their descriptor, and leave the
 private leaf for the future whole-job owner. This is synthetic evidence only.
+
+## CI fixture correction: startup versus lifecycle progress
+
+CI run 36793620859 on version 0.1.49 failed ten renderer tests at their three-second fixture
+watchdog. Several failures waited for the fixture's first readiness record, before any cancellation,
+exit observation or cleanup assertion. Pre/during-start cancellation succeeded. The log's anonymous
+watchdog did not identify interpreter startup, fixture assertions or a later lifecycle stage, so it
+does not establish a production reaping defect or prove a specific cold-start schedule.
+
+Version 0.1.50 replaces the Python/pathlib test fixture with a smaller built-in Perl fixture. It keeps
+actual subprocess launch, inherited-group and 0700 assertions, synthetic PCM, TERM-ignore escalation,
+ordinary forked descendant behavior and the **unchanged three-second watchdog**. Watchdog diagnostics
+now name the fixed test phase and report only interpreter-started/assertions-ready booleans, never
+private paths or identifiers. Local startup-only comparisons with 1, 12 and 24 concurrent synthetic
+children measured Python maxima of 77, 143 and 167 milliseconds versus Perl maxima of 6, 9 and 12
+milliseconds. Both completed successfully; these measurements support reducing fixture overhead, not
+a claimed reproduction of the failed CI schedule. No renderer production lifecycle, cancellation
+grace, authority or publication deadline changed.
+
+That run also exceeded the existing guard-performance test's 500-millisecond wall-time limit during
+parallel process fixtures. Its issue-backed test correction measures same-thread CPU work, so
+unrelated scheduling delays do not masquerade as regex computation; the limit remains 500 milliseconds.
+Production guard rules and the 20-millisecond fail-closed elapsed-time budget are unchanged, as are
+the dedicated expired-budget and language assertions. A CPU-work benchmark does not prove an elapsed
+latency bound on a contended machine.
