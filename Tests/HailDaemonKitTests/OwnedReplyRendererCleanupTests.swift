@@ -6,6 +6,42 @@ import Testing
 
 @Suite("Owned renderer descriptor cleanup")
 struct OwnedReplyRendererCleanupTests {
+    @Test func cancellationRetirementCannotBecomeNormalCleanupDuringConcurrentSuccessfulExit() async throws {
+        let fixture = try RendererFixture(mode: "retirement-race")
+        defer { fixture.remove() }
+        let reported = DispatchSemaphore(value: 0)
+        let hookReturned = Mutex(false)
+        let renderer = try OwnedReplyRenderer(text: "synthetic", outputRoot: fixture.outputRoot,
+            environment: fixture.environment, hooks: ReplyRendererLifecycleHooks(retired: { _ in reported.signal() },
+                retirementRecorded: {
+                    // This exact checkpoint was between the old retirement and cancellation locks.
+                    // The fixture ignores TERM and exits normally only after this explicit release.
+                    do { try Data().write(to: fixture.base.appendingPathComponent("record.exit")) } catch {
+                        Issue.record("controlled exit release failed")
+                    }
+                    if reported.wait(timeout: .now() + 3) == .timedOut {
+                        Issue.record("controlled retirement disposition watchdog")
+                    }
+                    hookReturned.withLock { $0 = true }
+                }))
+        try await fixture.until("retirement-race fixture ready") {
+            FileManager.default.fileExists(atPath: fixture.record.path)
+        }
+        await withCheckedContinuation { done in
+            DispatchQueue.global().async { renderer.retire(cancel: true); done.resume() }
+        }
+        await #expect(throws: OwnedReplyRendererError.cleanupDeferred) { try await renderer.waitForCleanup() }
+        await renderer.waitForCancellationSignals()
+        #expect(hookReturned.withLock { $0 })
+        #expect(!renderer.isRunning)
+        #expect(renderer.cleanupDisposition == .deferred)
+        #expect(!renderer.cleanupComplete)
+        #expect(FileManager.default.fileExists(atPath: fixture.record.path + ".normal-exit"))
+        let retainedPCM = FileManager.default.fileExists(atPath: renderer.outputDirectory
+            .appendingPathComponent("synthetic.raw").path)
+        #expect(retainedPCM)
+    }
+
     @Test func deferredDispositionPrecedesEscalationCompletionAndKernelReaping() async throws {
         let fixture = try RendererFixture(mode: "ignore-term")
         defer { fixture.remove() }

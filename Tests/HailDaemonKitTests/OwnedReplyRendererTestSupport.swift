@@ -57,7 +57,7 @@ struct RendererFixture: Sendable {
     die "fixture group mismatch" unless getpgrp(0) == getpgrp(getppid());
     die "fixture directory permissions" unless ((stat($output))[2] & 07777) == 0700;
     my $mode = $ENV{RENDERER_TEST_MODE};
-    $SIG{TERM} = 'IGNORE' if $mode eq 'ignore-term';
+    $SIG{TERM} = 'IGNORE' if $mode eq 'ignore-term' || $mode eq 'retirement-race';
     if ($mode eq 'descendant-writer') {
         my $child = fork();
         die "fixture fork failed" unless defined($child);
@@ -71,6 +71,11 @@ struct RendererFixture: Sendable {
     write_file($record, "same-group-private-output");
     exit(23) if $mode eq 'nonzero';
     write_file("$output/synthetic.raw", pack('C*', 0, 0, 1, 0));
+    if ($mode eq 'retirement-race') {
+        select(undef, undef, undef, 0.01) until -e "$record.exit";
+        write_file("$record.normal-exit", "controlled-successful-exit");
+        exit(0);
+    }
     select(undef, undef, undef, 5) if $mode eq 'ignore-term' || $mode eq 'descendant-writer';
     """
 }

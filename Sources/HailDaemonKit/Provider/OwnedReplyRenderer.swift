@@ -35,6 +35,7 @@ struct ReplyRendererLifecycleHooks: Sendable {
     var retired: @Sendable (OwnedReplyRendererCleanupDisposition) -> Void = { _ in }
     var reaped: @Sendable () -> Void = {}
     var beforeEscalation: @Sendable () -> Void = {}
+    var retirementRecorded: @Sendable () -> Void = {}
 }
 
 // Pure exact-PID cutoff state, separately testable without process-wide SIGCHLD changes or signals.
@@ -166,20 +167,36 @@ private final class ReplyRendererLifetime: Sendable {
     /// Consumer retirement follows stable-file/finalization reads. Abnormal retirement reports
     /// deferred cleanup immediately, but the source retains exact-child responsibility while alive.
     func retire(cancel: Bool) {
-        state.withLock { $0.retired = true }
-        if cancel { self.cancel() }
+        let transition = state.withLock { current -> (first: Bool, signal: Bool) in
+            let first = !current.retired
+            current.retired = true
+            // Reaping must never observe retirement without this abnormal outcome's intent.
+            let signal = cancel && recordCancellation(&current)
+            return (first, signal)
+        }
+        if transition.first { hooks.retirementRecorded() }
+        scheduleEscalation(ifNeeded: transition.signal)
         reportDeferredRetirement()
         cleanupIfReady()
     }
 
     func cancel() {
-        let signal = state.withLock { current -> Bool in
-            guard !current.cancelled else { return false }
-            current.cancelled = true
-            current.child.signalIfOwned { _ = kill($0, SIGTERM) }
-            if current.child.pid != nil { signals.enter() }
-            return current.child.pid != nil
-        }
+        let signal = state.withLock { recordCancellation(&$0) }
+        scheduleEscalation(ifNeeded: signal)
+    }
+
+    // Caller holds state lock. A cleanup claim after successful exit/consumer retirement is an
+    // irrevocable normal outcome: late facade deinit cannot relabel already authorized deletion.
+    // Pending retirement of a still-running child has no claim and remains cancellable.
+    private func recordCancellation(_ current: inout ReplyRendererState) -> Bool {
+        guard !current.cancelled, !current.cleanupStarted else { return false }
+        current.cancelled = true
+        current.child.signalIfOwned { _ = kill($0, SIGTERM) }
+        if current.child.pid != nil { signals.enter() }
+        return current.child.pid != nil
+    }
+
+    private func scheduleEscalation(ifNeeded signal: Bool) {
         if signal {
             DispatchQueue.global(qos: .utility).asyncAfter(deadline: .now() + 0.1) {
                 self.hooks.beforeEscalation()
@@ -246,18 +263,17 @@ private final class ReplyRendererLifetime: Sendable {
     }
 
     private func cleanupIfReady() {
-        let ready = state.withLock { current -> Bool in
-            guard current.retired, current.child.pid == nil, !current.cleanupStarted else { return false }
+        let disposition = state.withLock { current -> OwnedReplyRendererCleanupDisposition? in
+            guard current.retired, current.child.pid == nil, !current.cleanupStarted else { return nil }
             current.cleanupStarted = true
-            return true
+            // Commit the outcome with eligibility, not a later queue snapshot. Cancellation cannot
+            // contradict a legitimate normal deletion after this claim.
+            if current.child.ownershipLost { return .ownershipLost }
+            if current.cancelled || current.child.status != 0 { return .deferred }
+            return .pending
         }
-        guard ready else { return }
+        guard let disposition else { return }
         cleanupQueue.async {
-            let disposition = self.state.withLock { current -> OwnedReplyRendererCleanupDisposition in
-                if current.child.ownershipLost { return .ownershipLost }
-                if current.cancelled || current.child.status != 0 { return .deferred }
-                return .pending
-            }
             let completed: OwnedReplyRendererCleanupDisposition
             if disposition == .pending {
                 completed = self.folder.remove(checkpoint: self.hooks.cleanup) ? .completed : .failed

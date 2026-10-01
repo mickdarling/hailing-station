@@ -2,7 +2,7 @@
 
 This host-local prerequisite is not diagnostic publisher composition (#166), whole-job supervision
 (#177), an enabled target, or a delivered/physically validated device build. The source version is
-0.1.50. Synthetic tests do not establish real Voicebox quality or two-device routing.
+0.1.51. Synthetic tests do not establish real Voicebox quality or two-device routing.
 
 ## Trusted launch and output configuration
 
@@ -115,3 +115,24 @@ unrelated scheduling delays do not masquerade as regex computation; the limit re
 Production guard rules and the 20-millisecond fail-closed elapsed-time budget are unchanged, as are
 the dedicated expired-budget and language assertions. A CPU-work benchmark does not prove an elapsed
 latency bound on a contended machine.
+
+## Review correction: atomic abnormal retirement and normal-cleanup commitment
+
+Review of version 0.1.50 identified a real split-lock race: cancellation retirement first recorded
+consumer retirement, then cancellation intent. A successful concurrent child exit could authorize
+normal deletion between those transitions, even though the caller was retiring an abnormal outcome.
+A controlled synthetic regression reproduced normal completion and removed PCM at that checkpoint;
+this is direct evidence, unlike the earlier CI startup hypothesis.
+
+Version 0.1.51 records retirement and cancellation intent in one state-lock transition, including
+exact-child signal-window ownership. The exit observer cannot see an abnormal retirement as normal.
+Escalation scheduling remains outside the state lock; repeated cancellation does not create another
+signal window and signaling still stops permanently after reaping or lost child ownership.
+
+Once a successful, reaped child and legitimate consumer retirement authorize normal cleanup, that
+claim is irrevocable. Later facade deinit or cancellation cannot relabel the already authorized
+normal deletion as deferred. A merely pending normal retirement of a still-running child is **not**
+that claim and remains cancellable. Controlled checkpoint tests prove both orderings, retained output
+on abnormal retirement, consistent normal cleanup after facade drop, and idempotent pending
+cancellation. They release/drain their own synthetic process work without changing any production
+deadline, exposing PID configuration or claiming descendant quiescence.
