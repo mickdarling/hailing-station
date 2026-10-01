@@ -2,6 +2,20 @@ import Foundation
 import Darwin
 
 extension LocalReplyEndpoint {
+    func secureSocket() throws {
+        guard let created = try PolicyFile.info(socketURL),
+              created.st_uid == getuid(), created.st_mode & S_IFMT == S_IFSOCK else {
+            throw LocalReplyEndpointError.failed("socket identity unavailable")
+        }
+        socketIdentity = (created.st_dev, created.st_ino)
+        guard chmod(socketURL.path, 0o600) == 0,
+              let info = try PolicyFile.info(socketURL),
+              info.st_dev == created.st_dev, info.st_ino == created.st_ino else {
+            throw LocalReplyEndpointError.failed("socket mode unavailable")
+        }
+        try PolicyFile.check(info, at: socketURL, type: S_IFSOCK)
+    }
+
     static func resolvedDirectory(_ directory: URL) throws -> URL {
         guard let resolved = realpath(directory.path, nil) else {
             throw LocalReplyEndpointError.failed("socket directory could not be resolved")
