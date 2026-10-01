@@ -5,6 +5,30 @@ import Testing
 @testable import HailDaemonKit
 
 @Suite(.serialized) struct OwnedReplyPublisherCleanupTests {
+    @Test func latestCleanupEventSurvivesOlderObservationAndUnrelatedEntryMutation() async throws {
+        let fixture = try PublisherFixture()
+        let publisher = try fixture.publisher()
+        // Synthetic event producers exercise the same callback used by actual job cleanup. No
+        // child identity is deliberately lost, reaped externally or signalled after cutoff.
+        let older = ReplyCleanupFailureReporter { publisher.recordCleanupFailure($0) }
+        let newer = ReplyCleanupFailureReporter { publisher.recordCleanupFailure($0) }
+        older.report(.ownershipLost)
+        #expect(publisher.diagnostics().lastCleanupFailure == .ownershipLost)
+        newer.report(.cleanupFailed)
+        #expect(publisher.diagnostics().lastCleanupFailure == .cleanupFailed)
+        older.report(.ownershipLost)
+        #expect(publisher.diagnostics().lastCleanupFailure == .cleanupFailed)
+        try await publisher.publish(fixture.reply())
+        try await PublisherFixture.until { publisher.diagnostics().retained == 0 }
+        #expect(publisher.diagnostics().lastCleanupFailure == .cleanupFailed)
+        #expect(publisher.diagnostics().completed == 1 && publisher.diagnostics().failed == 0)
+        let latest = ReplyCleanupFailureReporter { publisher.recordCleanupFailure($0) }
+        latest.report(.ownershipLost)
+        #expect(publisher.diagnostics().lastCleanupFailure == .ownershipLost)
+        try await fixture.shutdown(publisher)
+        #expect(publisher.diagnostics().lastCleanupFailure == .ownershipLost)
+    }
+
     @Test func blockedCleanupDoesNotHoldCallerAndStillOccupiesAdmission() async throws {
         let fixture = try PublisherFixture()
         let checkpoint = PublisherCheckpoint()

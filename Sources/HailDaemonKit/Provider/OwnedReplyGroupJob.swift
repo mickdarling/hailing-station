@@ -23,6 +23,25 @@ struct ReplyJobStartupRetention: Error {
     let directory: OwnedReplyJobDirectory
 }
 
+/// Each retained job emits its cleanup failure once; later observations are not new failures.
+final class ReplyCleanupFailureReporter: Sendable {
+    private let failure = Mutex<OwnedReplyPublisherError?>(nil)
+    private let record: @Sendable (OwnedReplyPublisherError) -> Void
+    init(record: @escaping @Sendable (OwnedReplyPublisherError) -> Void) { self.record = record }
+    func report(_ value: OwnedReplyPublisherError) {
+        failure.withLock { current in
+            guard current == nil else { return }
+            current = value
+            record(value)
+        }
+    }
+}
+
+struct ReplyCleanupCallbacks: Sendable {
+    let cleaned: @Sendable () -> Void
+    let failed: @Sendable (OwnedReplyPublisherError) -> Void
+}
+
 /// No caller-supplied PID. The reservation is held by our unreaped child; terminal uncertainty
 /// permanently retires signaling, and reaping happens only after the signal gate closes.
 struct ReplyGroupIdentity: Sendable {
@@ -69,7 +88,6 @@ private struct ReplyGroupState {
     var killSubmitted = false
     var pollScheduled = false
     var cleanupStarted = false
-    var cleanupFailure: OwnedReplyPublisherError?
 }
 
 /// Fixed trusted, non-escaping CLI and renderer only. Not a sandbox or a kernel deadline guarantee.
@@ -82,11 +100,12 @@ final class OwnedReplyGroupJob: Sendable {
     private let hooks: OwnedReplyGroupHooks
     private let outcome: @Sendable (Result<Void, OwnedReplyPublisherError>) -> Void
     private let cleaned: @Sendable () -> Void
+    private let cleanupFailure: ReplyCleanupFailureReporter
 
     init(configuration: OwnedReplyPublisherConfiguration, reply: DiagnosticBridgeReply,
          cancelled: @Sendable () -> Bool,
          outcome: @escaping @Sendable (Result<Void, OwnedReplyPublisherError>) -> Void,
-         cleaned: @escaping @Sendable () -> Void) throws {
+         cleanup: ReplyCleanupCallbacks) throws {
         try ReplyRendererChildIdentity.requireOwnedRuntime()
         guard !cancelled() else { throw OwnedReplyPublisherError.cancelled }
         configuration.hooks.beforeSpawn()
@@ -101,7 +120,8 @@ final class OwnedReplyGroupJob: Sendable {
             throw error
         }
         hooks = configuration.hooks
-        self.outcome = outcome; self.cleaned = cleaned
+        self.outcome = outcome; self.cleaned = cleanup.cleaned
+        cleanupFailure = ReplyCleanupFailureReporter(record: cleanup.failed)
         state = Mutex(ReplyGroupState(identity: ReplyGroupIdentity(leader: pid)))
         source = DispatchSource.makeProcessSource(identifier: pid, eventMask: .exit, queue: .global(qos: .utility))
         timer = DispatchSource.makeTimerSource(queue: .global(qos: .utility))
@@ -128,8 +148,6 @@ final class OwnedReplyGroupJob: Sendable {
         }
         inspect()
     }
-
-    var cleanupFailure: OwnedReplyPublisherError? { state.withLock { $0.cleanupFailure } }
 
     func cancel(_ failure: OwnedReplyPublisherError) {
         let transition = state.withLock { current -> (Bool, Bool) in
@@ -158,7 +176,7 @@ final class OwnedReplyGroupJob: Sendable {
         let action = state.withLock { current -> Int in
             guard !current.cleanupStarted else { return 0 }
             observe(&current)
-            if current.identity.lost { current.cleanupFailure = .ownershipLost; return 1 }
+            if current.identity.lost { return 1 }
             if current.killRequested, !current.killSubmitted {
                 current.killSubmitted = signal(SIGKILL, current: &current)
             } else if current.activated, !current.resumed, current.failure == nil {
@@ -174,6 +192,7 @@ final class OwnedReplyGroupJob: Sendable {
         }
         switch action {
         case 1:
+            cleanupFailure.report(.ownershipLost)
             report(.failure(.ownershipLost))
             source.setEventHandler {}; source.cancel()
             timer.setEventHandler {}; timer.cancel()
@@ -209,7 +228,7 @@ final class OwnedReplyGroupJob: Sendable {
         source.setEventHandler {}; source.cancel()
         timer.setEventHandler {}; timer.cancel()
         if failure == .ownershipLost {
-            state.withLock { $0.cleanupFailure = .ownershipLost }
+            cleanupFailure.report(.ownershipLost)
             report(.failure(.ownershipLost)); return
         }
         // CLI acknowledgement and caller retirement are independent of potentially blocking IO.
@@ -217,7 +236,7 @@ final class OwnedReplyGroupJob: Sendable {
         if let failure { report(.failure(failure)) } else { report(.success(())) }
         hooks.beforeCleanup(folder.url)
         guard folder.remove() else {
-            state.withLock { $0.cleanupFailure = .cleanupFailed }
+            cleanupFailure.report(.cleanupFailed)
             return
         }
         cleaned()

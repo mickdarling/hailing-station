@@ -123,7 +123,9 @@ public final class OwnedReplyPublisher: Sendable {
         do {
             let job = try OwnedReplyGroupJob(configuration: configuration, reply: reply,
                                             cancelled: { self.cancelled(id) },
-                                            outcome: { self.outcome(id, $0) }, cleaned: { self.cleaned(id) })
+                                            outcome: { self.outcome(id, $0) }, cleanup: .init(
+                                                cleaned: { self.cleaned(id) },
+                                                failed: { self.recordCleanupFailure($0) }))
             configuration.hooks.beforeInstall()
             let cancel = state.withLock { current -> Bool in
                 guard var entry = current.entries[id] else { return true }
@@ -135,6 +137,7 @@ public final class OwnedReplyPublisher: Sendable {
             if let retention = error as? ReplyJobStartupRetention {
                 state.withLock { current in
                     current.entries[id]?.retainedDirectory = retention.directory
+                    current.status.lastCleanupFailure = .cleanupFailed
                 }
                 outcome(id, .failure(.cleanupFailed))
                 return // Unknown directory identity/removal never releases the resource admission.
@@ -197,15 +200,17 @@ public final class OwnedReplyPublisher: Sendable {
         for id in ids { cancel(id) }
     }
 
+    // Internal fixed-category lifecycle event, not a client diagnostic/configuration operation.
+    func recordCleanupFailure(_ failure: OwnedReplyPublisherError) {
+        state.withLock { $0.status.lastCleanupFailure = failure }
+    }
+
     public func diagnostics() -> OwnedReplyPublisherDiagnostics {
         state.withLock { current in
             var value = current.status
             value.queued = current.queued.count
             value.retained = current.entries.count - value.queued
             value.running = current.entries.values.filter { $0.starting || $0.job != nil }.count
-            value.lastCleanupFailure = current.entries.values.compactMap {
-                $0.retainedDirectory != nil ? .cleanupFailed : $0.job?.cleanupFailure
-            }.first
             return value
         }
     }

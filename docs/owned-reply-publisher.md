@@ -1,6 +1,6 @@
 # Owned diagnostic publisher prerequisite (#177)
 
-Source 0.1.53 adds an unregistered, default-off publisher. This is not #166 daemon composition,
+Source 0.1.54 adds an unregistered, default-off publisher. This is not #166 daemon composition,
 a target grant/selection, TestFlight delivery or physically validated origin routing (#161).
 The only payload is the retained `DiagnosticBridgeReply` UUID and its explicitly labelled fixed
 diagnostic phrase; no model chooses a recipient or supplies executable, environment or working directory.
@@ -105,3 +105,24 @@ keeps group inventory unknown. It proves the retired caller still occupies a slo
 resources prevent a fifth startup, and all 16 admissions (including 12 queued callers) reject a 17th.
 The regression failed on the previous implementation at retained admission before this correction;
 no real renderer or live device was involved.
+
+## Review correction: latest cleanup failure is an event record
+
+GitHub review of 0.1.53 found that `lastCleanupFailure` chose the first failing retained dictionary
+entry. Dictionary order is not failure order: different retained failures could report the wrong
+category or change after unrelated admission mutations.
+
+Version 0.1.54 records cleanup-failure events directly in publisher status under its state lock.
+Startup directory-retention failure, lost observation/failed exact reap, and failed directory removal
+all record their fixed category. Each installed job reports its cleanup failure once, so repeated
+observations of an older retained failure cannot overwrite a newer event. The field is the latest
+reported cleanup-failure category (historical, like `lastFailure`), not an arbitrary current job or a
+kernel wall-clock ordering claim. Successful cleanup, entry mutations and stop do not clear it.
+Admission/cleanup ownership and the caller's one-shot command outcome are unchanged.
+
+A deterministic synthetic event regression proves both category orderings, repeated older observation,
+successful unrelated entry creation/removal, and stop persistence. It failed before the diagnostic
+correction and passes after it. Existing actual-process directory-replacement coverage separately
+proves a real cleanup failure reaches this status without contradicting successful acknowledgement.
+The synthetic event test deliberately does not destroy a real child's waitable ownership or signal a
+lost/reaped identity; no deployment, real speech or physical-device proof is claimed.
