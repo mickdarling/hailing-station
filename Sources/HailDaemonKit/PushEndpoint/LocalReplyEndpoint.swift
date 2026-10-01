@@ -73,6 +73,8 @@ public actor LocalReplyEndpoint {
     private var readyWaiters: [CheckedContinuation<Void, any Error>] = []
     var readyResult: Result<Void, LocalReplyEndpointError>?
     private var started = false
+    // Construction/failed bind grants no cleanup ownership of somebody else's socket path.
+    var socketIdentity: (device: dev_t, inode: ino_t)?
     var stopped = false
 
     public static func standardSocket(
@@ -140,7 +142,8 @@ public actor LocalReplyEndpoint {
         for connection in connections.values { connection.cancel() }
         connections.removeAll()
         awaitingFrames.removeAll()
-        if let info = try? PolicyFile.info(socketURL),
+        if let identity = socketIdentity, let info = try? PolicyFile.info(socketURL),
+           info.st_dev == identity.device, info.st_ino == identity.inode,
            info.st_uid == getuid(), info.st_mode & S_IFMT == S_IFSOCK {
             unlink(socketURL.path)
         }
@@ -150,6 +153,7 @@ public actor LocalReplyEndpoint {
     private func listenerChanged(_ state: NWListener.State) {
         switch state {
         case .ready:
+            guard !stopped else { return }
             do {
                 try secureSocket()
                 finishReady(.success(()))
@@ -168,14 +172,6 @@ public actor LocalReplyEndpoint {
             finishReady(.failure(.failed("unknown listener state")))
             stop()
         }
-    }
-
-    private func secureSocket() throws {
-        guard chmod(socketURL.path, 0o600) == 0,
-              let info = try PolicyFile.info(socketURL) else {
-            throw LocalReplyEndpointError.failed("socket mode unavailable")
-        }
-        try PolicyFile.check(info, at: socketURL, type: S_IFSOCK)
     }
 
     private func finishReady(_ result: Result<Void, LocalReplyEndpointError>) {
