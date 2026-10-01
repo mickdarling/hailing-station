@@ -1,6 +1,6 @@
 # Owned diagnostic publisher prerequisite (#177)
 
-Source 0.1.54 adds an unregistered, default-off publisher. This is not #166 daemon composition,
+Source 0.1.55 adds an unregistered, default-off publisher. This is not #166 daemon composition,
 a target grant/selection, TestFlight delivery or physically validated origin routing (#161).
 The only payload is the retained `DiagnosticBridgeReply` UUID and its explicitly labelled fixed
 diagnostic phrase; no model chooses a recipient or supplies executable, environment or working directory.
@@ -126,3 +126,19 @@ correction and passes after it. Existing actual-process directory-replacement co
 proves a real cleanup failure reaches this status without contradicting successful acknowledgement.
 The synthetic event test deliberately does not destroy a real child's waitable ownership or signal a
 lost/reaped identity; no deployment, real speech or physical-device proof is claimed.
+
+## Base refresh after #184
+
+Version 0.1.55 merges current main `f6e4deb79afee82835e161f40796284ead3a2fa2`
+without rewriting published history. The sole merge conflict was the marketing version in
+`project.yml`: #184 advanced main to 0.1.52 while this prerequisite had reached 0.1.54.
+The resolution advances to 0.1.55 and retains both prior publisher review corrections unchanged.
+The inherited RightyO consumer and its fixture improvements remain main's changes, not new
+publisher composition or deployment. Verification and independent review must cover the full
+publisher diff against this actual new base; earlier-head approvals remain historical.
+
+The initial refreshed full test run, concurrent with simulator build, missed two short fixture
+startup/acknowledgement milestones. After inspecting those failures, the full verifier run without
+concurrent simulator load passed all 760 Swift tests/119 suites and 26 CLI fixtures; simulator and
+strict uncached lint also passed. No publisher implementation or test was changed to obtain that
+result, and the initial failures remain recorded rather than claimed to be a fixed scheduling bug.
