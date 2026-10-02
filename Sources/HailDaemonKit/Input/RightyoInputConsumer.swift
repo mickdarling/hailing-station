@@ -13,6 +13,9 @@ public actor RightyoInputConsumer {
     private var requests = Set<String>()
     private var superseded = Set<String>()
     private var decided = Set<String>()
+    /// Utterance ids whose admitted transcript carried `role: owner` and whose admitted attention record, if any,
+    /// carried it too (#188 item 3). A subset of `finals`, so the 1,000-finals cap bounds it.
+    private var owners = Set<String>()
     private var finals: [String: Data] = [:]
     private var attentions: [String: Data] = [:]
     private var seen: [Int: Data] = [:]
@@ -127,6 +130,7 @@ extension RightyoInputConsumer {
                 throw RightyoInputError.invalidEvent
             }
             finals[turn.utteranceId] = try RightyoInputEvent.fingerprint(turn)
+            if turn.role == "owner" { owners.insert(turn.utteranceId) }
         case "attention": try attention(event)
         case "override": try supersede(event)
         case "request":
@@ -150,6 +154,8 @@ extension RightyoInputConsumer {
               ["attend", "ignore", "uncertain"].contains(decision.label) else {
             throw RightyoInputError.invalidEvent
         }
+        // An attention record that does not repeat `owner` demotes the utterance; it can never promote one.
+        if decision.role != "owner" { owners.remove(utterance) }
         if decision.label == "attend" {
             guard activationEnabled, decision.recipientKind == "system",
                   event.requestId == "\(session):\(utterance)", attentions.count < 1000,
@@ -159,13 +165,14 @@ extension RightyoInputConsumer {
             attentions[event.requestId ?? ""] = try RightyoInputEvent.fingerprint(decision)
         }
     }
-    /// An owner `override` (#188 item 3) must follow the owner's own admitted transcript and attention
-    /// records. The superseded id is recorded whether or not this consumer ever admitted it (a producer may
-    /// supersede a request the host refused), idempotently, under the same cap as `requests`. A request
-    /// already sent to the pane stays sent: this records precedence and refuses a later request with that id.
+    /// An owner `override` (#188 item 3) must cite the owner's own admitted transcript and attention records:
+    /// both must have carried `role: owner` (`owners`), so an absent, anonymous or non-owner cited turn is
+    /// refused (fail closed). The superseded id is recorded whether or not this consumer ever admitted it (a
+    /// producer may supersede a request the host refused), idempotently, under the same cap as `requests`. A
+    /// request already sent to the pane stays sent: this records precedence and refuses a later request with that id.
     private func supersede(_ event: RightyoInputEvent) throws {
         guard let requestID = event.supersededRequestId, let utterance = event.byUtteranceId,
-              finals[utterance] != nil, decided.contains(utterance),
+              owners.contains(utterance), decided.contains(utterance),
               superseded.contains(requestID) || superseded.count < 1000 else {
             throw RightyoInputError.invalidEvent
         }
