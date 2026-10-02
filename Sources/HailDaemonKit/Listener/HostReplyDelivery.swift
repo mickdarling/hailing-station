@@ -1,8 +1,18 @@
 import Foundation
 public import HailProtocol
 
+// Correlated and single-terminal fallback publication share one admission-and-enqueue boundary.
+// swiftlint:disable file_length
+
 enum ReplyPublicationStatus: Equatable, Sendable {
     case absent, pending, ready
+}
+
+/// Single-terminal fallback admission (#188). `ownsRequest` means this connection holds a current record
+/// for the frame's request, so the correlated path already judged the frame; the fallback never overrides
+/// a media, duplicate or expiry refusal of a known request.
+enum UncorrelatedReplyAdmission: Equatable, Sendable {
+    case unrelated, ownsRequest, selectsTarget
 }
 
 /// A host-minted request belongs to this HostSession only. Neither device names nor wire UUIDs create it.
@@ -73,14 +83,16 @@ extension HostSession {
         } ?? .absent
     }
 
-    private func replyCandidate(_ frame: Frame) -> (UUID, HostReplyRequest)? {
-        let reply: ReplyDescriptor?
+    private func replyDescriptor(_ frame: Frame) -> ReplyDescriptor? {
         switch frame.payload {
-        case .text(let text): reply = text.reply
-        case .audio(let audio): reply = audio.reply
-        default: return nil
+        case .text(let text): text.reply
+        case .audio(let audio): audio.reply
+        default: nil
         }
-        guard !Task.isCancelled, let reply, let requestID = reply.requestID else { return nil }
+    }
+
+    private func replyCandidate(_ frame: Frame) -> (UUID, HostReplyRequest)? {
+        guard !Task.isCancelled, let reply = replyDescriptor(frame), let requestID = reply.requestID else { return nil }
         guard case .ready(let version) = state, frame.version == version,
               var request = replyRequests[requestID], request.isCurrent(at: requestClock()),
               request.generation == selectionGeneration, selectedTarget == frame.target,
@@ -107,6 +119,43 @@ extension HostSession {
         }
         return true
     }
+
+    /// Side-effect-free fallback snapshot: live selection of the frame's target plus a currently issuable
+    /// host permit (policy binding, tier, policy health, lockdown). No ticket is retained from it.
+    func uncorrelatedReplyAdmission(_ frame: Frame) async -> UncorrelatedReplyAdmission {
+        let selection = uncorrelatedReplySelection(frame)
+        guard selection == .selectsTarget else { return selection }
+        guard await uncorrelatedReplyPermit(frame) != nil else { return .unrelated }
+        return uncorrelatedReplySelection(frame)
+    }
+
+    private func uncorrelatedReplySelection(_ frame: Frame) -> UncorrelatedReplyAdmission {
+        guard !Task.isCancelled, case .ready(let version) = state, frame.version == version else { return .unrelated }
+        if let requestID = replyDescriptor(frame)?.requestID, let request = replyRequests[requestID],
+           request.isCurrent(at: requestClock()) { return .ownsRequest }
+        guard let target = frame.target, target == selectedTarget else { return .unrelated }
+        return .selectsTarget
+    }
+
+    /// Policy, exact binding, tier and lockdown are re-read from the host for every fallback attempt.
+    /// There is no retained request ticket, cooperative lease or media pinning for an uncorrelated reply.
+    private func uncorrelatedReplyPermit(_ frame: Frame) async -> ReplyPublicationPermit? {
+        guard let target = frame.target, let listing = try? await host.registry.listing(),
+              let listed = listing.first(where: { $0.info.id == target }), let binding = listed.binding,
+              listed.info.alive, let sessionBinding = try? ProviderSessionBinding(
+                hostID: hostName, providerID: listed.info.kind, targetID: target, sessionID: binding
+              ) else { return nil }
+        return await host.replyPublicationPermit(for: sessionBinding)
+    }
+
+    /// Delivers to this connection only while it still selects the target and the host permit is current.
+    func enqueueUncorrelatedReply(_ frame: Frame, enqueue: @Sendable () -> Bool) async -> Bool {
+        guard uncorrelatedReplySelection(frame) == .selectsTarget,
+              let permit = await uncorrelatedReplyPermit(frame) else { return false }
+        // Selection or state may have moved during the awaits; the gate itself rejects a revoked permit.
+        guard uncorrelatedReplySelection(frame) == .selectsTarget else { return false }
+        return permit.performIfCurrent { !Task.isCancelled && enqueue() } == true
+    }
 }
 
 extension WebSocketPeer {
@@ -123,6 +172,23 @@ extension WebSocketPeer {
     func deliverHostReply(_ frame: Frame) async -> Bool {
         guard !ended, let prepared = prepareReplyPublication(frame),
               await session.enqueueHostReply(frame, enqueue: prepared.enqueue) else { return false }
+        guard await prepared.result() else {
+            finish(reason: "host reply send failed")
+            return false
+        }
+        return true
+    }
+
+    func uncorrelatedReplyAdmission(_ frame: Frame) async -> UncorrelatedReplyAdmission {
+        let admission = await session.uncorrelatedReplyAdmission(frame)
+        // A retiring transport cannot be the single recipient; a known request stays known regardless.
+        if admission == .selectsTarget, prepareReplyPublication(frame) == nil { return .unrelated }
+        return admission
+    }
+
+    func deliverUncorrelatedReply(_ frame: Frame) async -> Bool {
+        guard !ended, let prepared = prepareReplyPublication(frame),
+              await session.enqueueUncorrelatedReply(frame, enqueue: prepared.enqueue) else { return false }
         guard await prepared.result() else {
             finish(reason: "host reply send failed")
             return false
@@ -150,12 +216,37 @@ extension WebSocketListener {
         }
         try Task.checkCancellation()
         guard !stopped else { throw WebSocketListenerError.stoppedBeforeReady }
-        guard let (peer, status) = candidate else { throw LocalReplyRefusal.noRecipient }
+        guard let (peer, status) = candidate else { return try await publishUncorrelated(validated) }
         // This refusal has made zero enqueue attempts. Only this code permits bounded same-frame retry.
         guard status == .ready else { throw LocalReplyRefusal.requestPending }
         // The snapshot may already be stale. Final synchronous gates decide; later send completion
         // failure is ambiguous and must never be treated as a safe pre-publication retry.
         guard await peer.deliverHostReply(validated) else { throw LocalReplyRefusal.publicationFailed }
+        return 1
+    }
+
+    /// Demo-era single-terminal bridge (#188): with the opt-in flag, an uncorrelated reply (no request, or
+    /// one unknown or expired everywhere) reaches the one live connection selecting its target. Zero or
+    /// several selecting connections keep today's refusals; this is bounded, not a return to broadcast.
+    /// Like the correlated scan, this is an admission snapshot; the chosen peer's gates decide at enqueue.
+    private func publishUncorrelated(_ frame: Frame) async throws -> Int {
+        guard singleTerminalReplyFallback else { throw LocalReplyRefusal.noRecipient }
+        var candidates: [WebSocketPeer] = []
+        var known = false
+        for peer in Array(peers.values) {
+            switch await peer.uncorrelatedReplyAdmission(frame) {
+            case .unrelated: continue
+            case .ownsRequest: known = true
+            case .selectsTarget: candidates.append(peer)
+            }
+        }
+        try Task.checkCancellation()
+        guard !stopped else { throw WebSocketListenerError.stoppedBeforeReady }
+        // The whole scan completes first so the refusal code never depends on peer iteration order.
+        guard !known else { throw LocalReplyRefusal.noRecipient }
+        guard candidates.count <= 1 else { throw LocalReplyRefusal.notUniqueRecipient }
+        guard let candidate = candidates.first else { throw LocalReplyRefusal.noRecipient }
+        guard await candidate.deliverUncorrelatedReply(frame) else { throw LocalReplyRefusal.publicationFailed }
         return 1
     }
 

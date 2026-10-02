@@ -21,7 +21,10 @@ such a lease. A concrete supervised bridge remains required in #166.
 
 Ordinary legacy tmux input still sends literal original text. It cannot create a
 private reply owner. Missing, unknown or expired request references deliver to
-nobody; there is no legacy broadcast or last-speaker fallback. This is an
+nobody; there is no legacy broadcast or last-speaker fallback. The only exception
+is the default-off, single-phone [single-terminal reply fallback](single-terminal-reply-fallback.md)
+(#188), which delivers such a reply to exactly one connection selecting the
+target and otherwise keeps these refusals. This is an
 intentional publication compatibility change: existing voluntary Claude reply
 commands without programmatically retained context no longer produce personal
 replies. Do not change the running host until a reviewed programmatic bridge is

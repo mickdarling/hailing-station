@@ -37,6 +37,9 @@ public actor WebSocketListener {
     private let host: HailHost
     private let authorizer: any HostSessionAuthorizing
     let hostName: String
+    /// Opt-in single-terminal bridge (#188): uncorrelated replies may reach the one connection selecting
+    /// their target. Off by default; multi-terminal hosts keep owner-only delivery.
+    let singleTerminalReplyFallback: Bool
     private let maxConnections: Int
     private let helloTimeout: Duration
     private let log: @Sendable (WebSocketListenerEvent) -> Void
@@ -53,12 +56,11 @@ public actor WebSocketListener {
         hostName: String = "haild",
         maxConnections: Int = 64,
         helloTimeout: Duration = .seconds(10),
+        singleTerminalReplyFallback: Bool = false,
         log: @escaping @Sendable (WebSocketListenerEvent) -> Void = { _ in }
     ) throws {
         let address = bindAddress.trimmingCharacters(in: .whitespacesAndNewlines)
-        guard maxConnections > 0, helloTimeout > .zero else {
-            throw WebSocketListenerError.invalidArguments
-        }
+        guard maxConnections > 0, helloTimeout > .zero else { throw WebSocketListenerError.invalidArguments }
         guard let parsedAddress = parseBindAddress(address) else {
             throw WebSocketListenerError.invalidBindAddress(bindAddress)
         }
@@ -84,6 +86,7 @@ public actor WebSocketListener {
         self.host = host
         self.authorizer = authorizer
         self.hostName = hostName
+        self.singleTerminalReplyFallback = singleTerminalReplyFallback
         self.maxConnections = maxConnections
         self.helloTimeout = helloTimeout
         self.log = log
