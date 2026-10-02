@@ -23,8 +23,9 @@ import Testing
         return session
     }
 
-    private func input() -> HostInput {
-        HostInput(text: "synthetic input", target: Self.target, utteranceID: UUID(), device: "phone")
+    private func input(_ session: HostSession) async throws -> AuthorizedInput {
+        let frame = sessionFrame(target: Self.target, payload: .text(TextPayload(text: "synthetic input")))
+        return try #require(await session.authorize(frame))
     }
 
     @Test func selectionChangeDuringTheListingRefusesBeforeAnyHandoff() async throws {
@@ -32,7 +33,8 @@ import Testing
         let session = try await session(with: adapter)
         await adapter.gateNextListing()
         async let arrival: Void = adapter.nextListingArrival()
-        let delivery = Task { await session.deliver(input()) }
+        let input = try await input(session)
+        let delivery = Task { await session.deliver(input) }
         await arrival
         // The phone selects elsewhere while the input is parked in the registry listing.
         let selected = await session.receive(sessionFrame(payload: .control(.select(targetID: Self.other))))
@@ -58,7 +60,8 @@ import Testing
         let adapter = GatedFakeAdapter(AdapterTarget(name: "reply", binding: "binding"))
         let session = try await session(with: adapter)
         async let arrival: Void = adapter.nextArrival()
-        let delivery = Task { await session.deliver(input()) }
+        let input = try await input(session)
+        let delivery = Task { await session.deliver(input) }
         await arrival
         _ = await session.receive(sessionFrame(payload: .control(.select(targetID: Self.other))))
         await adapter.release()
@@ -71,7 +74,8 @@ import Testing
         let adapter = GatedFakeAdapter(AdapterTarget(name: "reply", binding: "binding"))
         let session = try await session(with: adapter)
         async let arrival: Void = adapter.nextArrival()
-        let delivery = Task { await session.deliver(input()) }
+        let input = try await input(session)
+        let delivery = Task { await session.deliver(input) }
         await arrival
         // A protocol closure (version mismatch) ends the session while the text is inside the adapter.
         _ = await session.receive(sessionFrame(version: 2, payload: .control(.ping(nonce: "x"))))
@@ -84,7 +88,8 @@ import Testing
         let adapter = GatedFakeAdapter(AdapterTarget(name: "reply", binding: "binding"))
         let session = try await session(with: adapter)
         async let arrival: Void = adapter.nextArrival()
-        let delivery = Task { await session.deliver(input()) }
+        let input = try await input(session)
+        let delivery = Task { await session.deliver(input) }
         await arrival
         await adapter.release()
         #expect(await delivery.value == .delivered(request: nil))

@@ -4,22 +4,10 @@ import HailProtocol
 // The phone frame and local dispatch ingress paths share one handoff-and-commit boundary here.
 // swiftlint:disable file_length
 
-/// One final input for a selected target: the phone's text frame or a local dispatch (#188).
-struct HostInput: Sendable {
-    let text: String
-    let target: String
-    let utteranceID: UUID
-    let device: String
-    /// A dispatch pins the listing binding its caller saw; a changed binding refuses, never follows the rebind.
-    var expectedBinding: String?
-}
-
 /// Both ingress paths share one lease, permit, handoff and commit; they differ only in how they report it.
 enum HostDeliveryOutcome: Sendable, Equatable {
     /// Handed off; `request` is this connection's committed reply owner, or nil for legacy generic input.
     case delivered(request: UUID?)
-    /// The session's authorizer denies the equivalent final text frame, or the session is not negotiated.
-    case unauthorized
     case confirmationRequired
     /// The connection selected another target while this input was suspended; nothing was handed off.
     case selectionChanged
@@ -29,29 +17,25 @@ enum HostDeliveryOutcome: Sendable, Equatable {
 }
 
 extension HostSession {
-    func route(_ frame: Frame, version: Int) async -> HostSessionResult {
-        switch frame.payload {
-        case .text(let text):
-            return await deliver(text, frame: frame, version: version)
+    func route(_ admitted: AdmittedFrame, version: Int) async -> HostSessionResult {
+        switch admitted {
+        case .input(let input):
+            return await deliver(input, version: version)
         case .control(let control):
             return await route(control, version: version)
-        default:
+        case .nonFinalText:
+            return failure(.malformed, "only final text can be delivered", close: false, version: version)
+        case .untargetedText:
+            return failure(.notAllowed, "select the destination before speaking", close: false, version: version)
+        case .unsupported:
             return failure(.unauthorized, "terminal action is not authorized", close: false, version: version)
         }
     }
 
-    private func deliver(_ text: TextPayload, frame: Frame, version: Int) async -> HostSessionResult {
-        guard text.isFinal else {
-            return failure(.malformed, "only final text can be delivered", close: false, version: version)
-        }
-        guard let target = frame.target else {
-            return failure(.notAllowed, "select the destination before speaking", close: false, version: version)
-        }
-        switch await deliver(HostInput(text: text.text, target: target, utteranceID: frame.id, device: peerName)) {
+    private func deliver(_ input: AuthorizedInput, version: Int) async -> HostSessionResult {
+        switch await deliver(input) {
         case .delivered:
             return HostSessionResult(frames: [])
-        case .unauthorized:
-            return failure(.unauthorized, "terminal action is not authorized", close: false, version: version)
         case .confirmationRequired:
             return failure(.notAllowed, "target requires confirmation at the Mac", close: false, version: version)
         case .selectionChanged:
@@ -63,16 +47,10 @@ extension HostSession {
         }
     }
 
-    /// Authorization of this exact input, then lease, permit, capacity, lifetime and generation checks, then
-    /// `HailHost.send` with its sanitizer, shape and policy gates; only a successful complete handoff commits
-    /// the request record. No caller reaches the host without the session's authorizer allowing the input.
-    func deliver(_ input: HostInput) async -> HostDeliveryOutcome {
-        // The query is derived from the input itself, so it cannot be answered for a different frame. For
-        // the phone's own frame `receive` already asked; the answer is the same and nothing was sent.
-        guard case .ready(let version) = state, await authorizes(Frame(
-            version: version, timestamp: now(), target: input.target, source: input.device,
-            payload: .text(TextPayload(text: input.text))
-        )) else { return .unauthorized }
+    /// Lease, permit, capacity, lifetime and generation checks, then `HailHost.send` with its sanitizer,
+    /// shape and policy gates; only a successful complete handoff commits the request record. The input
+    /// type is the authorization proof: nothing reaches the host that the session's authorizer did not allow.
+    func deliver(_ input: AuthorizedInput) async -> HostDeliveryOutcome {
         guard input.target == selectedTarget else {
             return .refused(.notAllowed, "select the destination before speaking")
         }
@@ -125,7 +103,7 @@ extension HostSession {
         return .delivered(request: context.id)
     }
 
-    private func send(_ input: HostInput, context: ProviderTurnContext?) async throws -> SendOutcome {
+    private func send(_ input: AuthorizedInput, context: ProviderTurnContext?) async throws -> SendOutcome {
         do {
             if let context { return try await host.send(input.text, context: context, from: input.device) }
             return try await host.send(
@@ -138,7 +116,7 @@ extension HostSession {
     }
 
     /// Capability preflight does not grant execution. HailHost still checks shape, exact binding and policy.
-    private func replyContext(for input: HostInput, generation: UUID) async throws -> ProviderTurnContext? {
+    private func replyContext(for input: AuthorizedInput, generation: UUID) async throws -> ProviderTurnContext? {
         let target = input.target
         let listing = try await host.registry.listing()
         guard let listed = listing.first(where: { $0.info.id == target }), let binding = listed.binding,
