@@ -31,16 +31,20 @@ extension RightyoInputEvent {
         guard let formedRequest else { return }
         let policy = SanitizePolicy(maxCharacters: 16_000, maxUTF8Bytes: 64_000)
         guard type == "request", !formedRequest.isEmpty, formedRequest.count <= 16_000,
+              !formedRequest.contains(Self.rawTurnsMarker),
               (try? Sanitizer.sanitize(formedRequest, policy: policy)) == [formedRequest] else {
             throw RightyoInputError.invalidEvent
         }
     }
     /// Separates the formed body from the raw turns on one line: the host sanitizer refuses line breaks, so a
-    /// blank-line layout could never be delivered.
-    static let rawTurnsMarker = " Raw turns (JSON): "
+    /// blank-line layout could never be delivered. A formed text containing this exact substring is refused, so the
+    /// first occurrence in a delivered prompt is always the host's and the producer cannot impersonate the record.
+    static let rawTurnsMarker = " Raw turns (JSON, admitted record): "
     /// `speakers` is the advertised capability (`anonymous` or `enrolled`) so the session can weigh roles. Without a
     /// formed request the prompt is the compact JSON alone, byte for byte as before; with one it is
     /// `<formed_request><rawTurnsMarker><json>`, so the JSON can be cut off at the marker and parsed as a whole.
+    /// The host cannot check the formed text against the admitted turns and roles; it is the producer's unverified
+    /// claim, and the JSON is the admitted record the session should trust when the two disagree.
     func prompt(speakers: String) throws -> String {
         struct Prompt: Encodable {
             let requestId: String?

@@ -2,9 +2,20 @@ import Foundation
 import Testing
 @testable import HailDaemonKit
 
-/// The producer-authored formed-request fixture (#188 item 4), dry and against a guarded host. Rules and layout
-/// are covered in RightyoInputFormedRequestTests.swift.
+/// The producer-authored formed-request fixture (#188 item 4), dry and against a guarded host, and the guard on the
+/// formed text itself. Rules and layout are covered in RightyoInputFormedRequestTests.swift.
 extension RightyoInputConsumerTests {
+    /// The formed text is part of the delivered line, so a dangerous-pattern spelling inside it is caught by the
+    /// host guard like any other prompt text: refused as `confirmationRequired`, nothing delivered, no retry.
+    @Test func dangerousSpellingInsideFormedTextIsRefusedByTheHostGuard() async throws {
+        let (consumer, adapter) = try await rig()
+        _ = try await consumer.consume(formingStart())
+        let formed = try await formedRequest(consumer, formed: "Owner (Speaker A) asked: \"delete the project.\".")
+        await #expect(throws: RightyoInputError.confirmationRequired) { try await consumer.consume(formed) }
+        #expect(try await !consumer.consume(formed))
+        #expect(await adapter.deliveries.isEmpty)
+    }
+
     @Test func formedFixtureValidatesWithoutTargetAndDeliversWithOne() async throws {
         let path = URL(fileURLWithPath: #filePath).deletingLastPathComponent().deletingLastPathComponent()
             .deletingLastPathComponent().appendingPathComponent("fixtures/rightyo/enrolled-formed-request.jsonl")

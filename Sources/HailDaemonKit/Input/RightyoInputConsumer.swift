@@ -11,7 +11,8 @@ public actor RightyoInputConsumer {
     private var sequence = 0, emittedAt = 0
     private var speakers = "anonymous"
     /// Whether `started` advertised `request_forming` (#188 item 4): then every request must carry `formed_request`,
-    /// otherwise none may.
+    /// otherwise none may. Forming is allowed on anonymous sessions too (hosts pick), where any role the formed text
+    /// names is uncheckable: only the JSON record behind it carries verified roles, and anonymous sessions have none.
     private var forming = false
     private var requests = Set<String>()
     private var superseded = Set<String>()
