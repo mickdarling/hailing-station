@@ -1,6 +1,9 @@
 public import Foundation
 public import HailProtocol
 
+// Authorization proof, admission and negotiation stay beside the private authorizer they protect.
+// swiftlint:disable file_length
+
 /// The authorization decision is separate from framing and routing so authenticated sessions can replace
 /// the read-only probe without replacing the WebSocket listener (#98, then #39/#40).
 public enum HostSessionAuthorization: Sendable, Equatable {
@@ -51,6 +54,41 @@ public enum HostSessionDisposition: Sendable, Equatable {
     case close
 }
 
+/// Proof that this session's authorizer allowed exactly one final, targeted text frame. Only `HostSession`
+/// constructs it, from the frame it authorized, so `deliver` can never be reached with text, target or
+/// utterance identity the authorizer did not see. It is noncopyable and `deliver` consumes it: one
+/// decision admits one handoff, never a replay.
+struct AuthorizedInput: ~Copyable, Sendable {
+    let text: String
+    let target: String
+    /// The authorized frame's own id: an authorizer keyed on frame identity sees the utterance the host gets.
+    let utteranceID: UUID
+    /// The session's attribution of the sender (its negotiated Hello name, or a fixed local constant);
+    /// never the frame's own `source`, which a client controls per frame.
+    let device: String
+    let version: Int
+    /// A caller's listing pin, not part of the authorized identity; a changed binding refuses, never follows.
+    var expectedBinding: String?
+
+    fileprivate init(text: String, target: String, frame: Frame, device: String, version: Int) {
+        self.text = text
+        self.target = target
+        utteranceID = frame.id
+        self.device = device
+        self.version = version
+    }
+}
+
+/// One authorizer decision per frame, taken exactly once. The allowed frame is classified here so routing
+/// answers each shape exactly as before without consulting the authorizer again.
+enum AdmittedFrame: ~Copyable, Sendable {
+    case control(ControlPayload)
+    case input(AuthorizedInput)
+    case nonFinalText
+    case untargetedText
+    case unsupported
+}
+
 public struct HostSessionResult: Sendable, Equatable {
     public var frames: [Frame]
     public var disposition: HostSessionDisposition
@@ -61,8 +99,9 @@ public struct HostSessionResult: Sendable, Equatable {
     }
 }
 
-/// One peer's protocol state. It deliberately has no delivery method: a probe session cannot reach
-/// `HailHost.send`, even if a caller constructs action-bearing frames directly.
+/// One peer's protocol state. Every path to `HailHost.send` runs through this session's authorizer exactly
+/// once per frame and through its captured selection: `deliver` accepts only an `AuthorizedInput`, which
+/// only the authorizer's own allow decision on that frame can produce.
 public actor HostSession {
     enum State: Sendable, Equatable {
         case awaitingHello
@@ -119,10 +158,40 @@ public actor HostSession {
             guard frame.version == version else {
                 return failure(.protocolVersion, "frame version does not match the session", close: true)
             }
-            guard await authorizer.authorize(frame) == .allow else {
+            // The phone is attributed by its negotiated Hello name, never by the frame's own `source`.
+            guard let admitted = await admit(frame, version: version, device: peerName) else {
                 return failure(.unauthorized, "terminal action is not authorized", close: false, version: version)
             }
-            return await route(frame, version: version)
+            return await route(admitted, version: version)
+        }
+    }
+
+    /// The single authorizer call for `frame`. An allowed final targeted text frame becomes the only
+    /// `AuthorizedInput` that frame will ever yield; `deliver` accepts nothing else. `device` is the
+    /// session's attribution of the sender and is supplied by the session, not read from the frame.
+    private func admit(_ frame: Frame, version: Int, device: String) async -> AdmittedFrame? {
+        guard await authorizer.authorize(frame) == .allow else { return nil }
+        switch frame.payload {
+        case .control(let control): return .control(control)
+        case .text(let text):
+            guard text.isFinal else { return .nonFinalText }
+            guard let target = frame.target else { return .untargetedText }
+            return .input(AuthorizedInput(
+                text: text.text, target: target, frame: frame, device: device, version: version
+            ))
+        default: return .unsupported
+        }
+    }
+
+    /// Authorization for an ingress path that does not arrive over the socket (#188 local dispatch): the
+    /// caller builds the exact frame it wants delivered, names the fixed device it attributes it to, and
+    /// gets back the proof, or nothing. Only a negotiated session answers, and the frame must speak the
+    /// negotiated version.
+    func authorize(_ frame: Frame, device: String) async -> AuthorizedInput? {
+        guard case .ready(let version) = state, frame.version == version else { return nil }
+        switch await admit(frame, version: version, device: device) {
+        case .input(let input)?: return input
+        default: return nil
         }
     }
 
