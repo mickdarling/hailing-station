@@ -221,10 +221,14 @@ private func rightyoBinding(_ host: HailHost?, target: String) async throws -> S
 
 private func consumeRightyo(_ line: Data, with consumer: RightyoInputConsumer, dryRun: Bool) async throws {
     let event = try RightyoInputEvent.decode(line)
-    if try await consumer.consume(event) {
-        let receipt = dryRun ? "rightyo: request validated (dry run; no delivery)" : "rightyo: request delivered"
-        FileHandle.standardOutput.write(Data((receipt + "\n").utf8))
+    guard try await consumer.consume(event) else { return }
+    let receipt: String
+    if let superseded = event.supersededRequestId {
+        receipt = "rightyo: override \(superseded)"
+    } else {
+        receipt = dryRun ? "rightyo: request validated (dry run; no delivery)" : "rightyo: request delivered"
     }
+    FileHandle.standardOutput.write(Data((receipt + "\n").utf8))
 }
 
 func exitCode(for denial: Denial) -> Int32 {
