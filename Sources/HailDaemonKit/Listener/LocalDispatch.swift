@@ -104,17 +104,11 @@ extension WebSocketListener {
 }
 
 extension WebSocketPeer {
-    private static let lifecycleProbe = Frame(
-        timestamp: 0, source: "haild", payload: .control(.ping(nonce: "dispatch"))
-    )
-
-    /// Side-effect-free lifecycle check: preparation is refused once the peer is closing, ended or its
-    /// transport is retired, the same gate `deliverHostReply` relies on.
-    private var isLive: Bool { !ended && prepareReplyPublication(Self.lifecycleProbe) != nil }
-
-    /// Binds the dispatch to this peer's lifecycle at both ends of the session handoff. The handoff itself
-    /// cannot hold the transport gate (the session cannot read it synchronously), so a peer that ends during
-    /// the handoff has its minted record revoked and the caller is told the connection was lost.
+    /// Binds the dispatch to this peer's own lifecycle (ended, closing, retired transport) at both ends of
+    /// the session handoff; the caller's task cancellation is a separate outcome and never revokes a live
+    /// peer's record. The handoff itself cannot hold the transport gate (the session cannot read it
+    /// synchronously), so a peer that ends during the handoff has its minted record revoked and the caller
+    /// is told the connection was lost.
     func dispatch(_ request: LocalDispatchRequest) async throws -> UUID? {
         guard isLive else { throw LocalDispatchRefusal.connectionEnded }
         let owner = try await session.dispatch(request)
@@ -134,6 +128,7 @@ extension HostSession {
     /// `HailHost.send`, then commit after delivery. Returns the committed request id, or nil when the
     /// adapter accepts only legacy generic input and so cannot own a reply.
     func dispatch(_ request: LocalDispatchRequest) async throws -> UUID? {
+        try Task.checkCancellation()
         let version = try requireSelection(of: request)
         // One final text frame, judged once by the authorizer every phone frame passes; its id is the
         // utterance id the host receives, and the session attributes it to the fixed local device, not to
@@ -154,6 +149,9 @@ extension HostSession {
         case .confirmationRequired: throw LocalDispatchRefusal.confirmationRequired
         case .unowned: throw LocalDispatchRefusal.ownershipLost
         case .refused(.rateLimited, _): throw LocalDispatchRefusal.capacityExceeded
+        // The host refuses a cancelled caller before its handoff; that is the caller's outcome, not a refusal
+        // of the target, and nothing was sent.
+        case .refused where Task.isCancelled: throw CancellationError()
         case .refused: throw LocalDispatchRefusal.deliveryRefused
         }
     }
@@ -188,9 +186,14 @@ extension LocalReplyEndpoint {
             try Task.checkCancellation()
             guard !stopped, connections[client.id] != nil else { throw CancellationError() }
             let owner = try await destination.dispatch(request)
-            guard !Task.isCancelled, !stopped, connections[client.id] != nil else { throw CancellationError() }
+            guard !Task.isCancelled, !stopped, connections[client.id] != nil else {
+                // The handoff completed; the named connection keeps its ownership. Only the answer is lost.
+                dispatchLogger.notice("Local dispatch handed off, but its caller went away before the answer")
+                throw CancellationError()
+            }
             await respond(.dispatch(delivered: 1, request: owner), to: client)
         } catch is CancellationError {
+            // Before the handoff nothing was sent; after it, the record stands. Neither is a refusal.
             retire(client.id)
         } catch {
             let refusal = error as? LocalDispatchRefusal

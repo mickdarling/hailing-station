@@ -73,11 +73,16 @@ listings refuses too. A dispatched request then lives exactly like a spoken one:
 admission, cleared when the connection selects another target, pruned on disconnect, and never revived
 by reselecting or restoring authority.
 
-The dispatch is bound to the peer's lifecycle at both ends of the session handoff, through the same
-preparation gate correlated delivery uses (`connectionEnded` before, `connectionLost` after). The handoff
-itself cannot hold the peer's transport gate, because the session actor cannot read it synchronously, so a
-phone that disconnects while the adapter is accepting the prompt is treated like a spoken utterance in
-flight at disconnect: the prompt may still execute, but no owner is reported and no record survives.
+The dispatch is bound to the peer's own lifecycle (ended, closing, or retired transport) at both ends of
+the session handoff (`connectionEnded` before, `connectionLost` after). The handoff itself cannot hold the
+peer's transport gate, because the session actor cannot read it synchronously, so a phone that disconnects
+while the adapter is accepting the prompt is treated like a spoken utterance in flight at disconnect: the
+prompt may still execute, but no owner is reported and no record survives.
+
+The caller's own cancellation (the socket's 10-second submission deadline, or a client that hangs up) is
+a separate outcome and never counts as the peer's state. Before the handoff the host refuses the cancelled
+caller and nothing is sent; after it, the named connection keeps its ownership and only the answer is
+lost: the socket retires the caller without a response and logs that the handoff completed.
 
 ## Legacy adapters: no invented lease
 
@@ -106,15 +111,22 @@ Synthetic only, with `DEVELOPER_DIR=/Applications/Xcode.app/Contents/Developer`:
   owner's duplicate is refused; the response encoding carries `request` (UUID or explicit `null`) only
   for dispatch answers and round-trips.
 - `LocalDispatchRefusalTests` (never-started transports and direct sessions): unknown and ended
-  connections, a stopped listener, unnegotiated, unselected and elsewhere-selected sessions, a wrong
-  target, a stale pinned binding, a rebound target, selection change and lifetime expiry after dispatch,
-  confirmation required, the 64-request capacity, a legacy adapter delivering with `request: null`, and
-  a contextual adapter without a lease refusing before handoff.
+  connections, a stopped listener, unnegotiated, unselected and elsewhere-selected sessions, a
+  connection-probe session with a forced selection refused `notAuthorized`, a wrong target, a stale
+  pinned binding, a rebound target, selection change and lifetime expiry after dispatch, confirmation
+  required, the 64-request capacity, a legacy adapter delivering with `request: null`, and a contextual
+  adapter without a lease refusing before handoff.
+- `LocalDispatchLifecycleTests`: a peer that ends while the adapter holds the prompt has its record
+  revoked and answers `connectionLost`, a closing peer refuses `connectionEnded`, a caller cancelled after
+  the handoff leaves a live peer's record intact and routable, a caller cancelled before the handoff
+  sends nothing, a `select` landing while the dispatch is suspended in the listing refuses before any
+  handoff, and the dispatch authorizes exactly one frame whose id is the utterance id.
 - `HostReplyRecipientRoutingTests`: a spoken and a dispatched request interleave on one connection while
   a second connection selecting the same target stays silent.
 - `LocalReplyEndpointTests`: the exact wire shape over the socket mints an owned request that the pane's
   reply reaches, a `kind: "reply"` frame and a stale connection id refuse in their own shapes, dispatches
-  are audited as `local-dispatch`, a legacy adapter answers `request: null`, and both kinds share the
-  admission budget.
+  are audited as `local-dispatch`, a legacy adapter answers `request: null`, `ownershipLost` answers
+  `delivered: 1` with explicit null `request` and its named reason, and both kinds share the admission
+  budget. `LocalDispatchTests` also pins the response encoding (`request` only on dispatch answers).
 
 No device, running daemon or installed build is involved.
