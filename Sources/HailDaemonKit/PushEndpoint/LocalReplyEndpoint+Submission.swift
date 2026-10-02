@@ -1,7 +1,10 @@
-import Foundation
+public import Foundation
 import OSLog
 public import HailProtocol
 import Network
+
+// Reply and dispatch requests share one socket admission, response and retirement path.
+// swiftlint:disable file_length
 
 private let replyLogger = Logger(subsystem: "com.mickdarling.hailing-station", category: "local-reply")
 
@@ -9,6 +12,16 @@ public protocol HostReplyPublishing: Sendable {
     /// requestPending may be thrown only for a unique valid uncommitted request, before any enqueue.
     /// Later failures must not use that retryable code, even when delivery completion is unknown.
     func publish(_ frame: Frame) async throws -> Int
+    /// Runs the named connection's own ingress path for `request.text` (#188); the result is the committed
+    /// request id, or nil when the target's adapter cannot own a reply. Refusals throw.
+    func dispatch(_ request: LocalDispatchRequest) async throws -> UUID?
+}
+
+extension HostReplyPublishing {
+    /// A destination that cannot dispatch fails closed rather than publishing input anywhere.
+    public func dispatch(_ request: LocalDispatchRequest) async throws -> UUID? {
+        throw LocalDispatchRefusal.unsupported
+    }
 }
 
 extension WebSocketListener: HostReplyPublishing {}
@@ -24,12 +37,49 @@ public struct LocalReplyResponse: Codable, Equatable, Sendable {
     /// Only explicit requestPending with zero deliveries permits bounded same-frame retry.
     /// Older hosts omit this field; absence never implies retry permission.
     public var code: LocalReplyRefusal?
+    /// Dispatch responses (#188) always carry this key: the host-minted request the pane must echo back
+    /// through `haild reply --request`, or explicit `null` when no reply ownership exists. Reply
+    /// responses omit the key, byte for byte as before.
+    public var request: UUID?
+    public private(set) var isDispatch = false
 
     public init(delivered: Int, error: String? = nil, code: LocalReplyRefusal? = nil) {
         self.delivered = delivered
         self.error = error
         self.code = code
     }
+
+    public static func dispatch(
+        delivered: Int, request: UUID?, error: String? = nil, code: LocalReplyRefusal? = nil
+    ) -> Self {
+        var response = Self(delivered: delivered, error: error, code: code)
+        (response.request, response.isDispatch) = (request, true)
+        return response
+    }
+
+    private enum CodingKeys: String, CodingKey { case delivered, error, code, request }
+
+    public init(from decoder: any Decoder) throws {
+        let container = try decoder.container(keyedBy: CodingKeys.self)
+        delivered = try container.decode(Int.self, forKey: .delivered)
+        error = try container.decodeIfPresent(String.self, forKey: .error)
+        code = try container.decodeIfPresent(LocalReplyRefusal.self, forKey: .code)
+        isDispatch = container.contains(.request)
+        request = try container.decodeIfPresent(UUID.self, forKey: .request)
+    }
+
+    public func encode(to encoder: any Encoder) throws {
+        var container = encoder.container(keyedBy: CodingKeys.self)
+        try container.encode(delivered, forKey: .delivered)
+        try container.encodeIfPresent(error, forKey: .error)
+        try container.encodeIfPresent(code, forKey: .code)
+        if isDispatch { try container.encode(request, forKey: .request) }
+    }
+}
+
+/// The optional top-level discriminator of a local request; a frame has none and keeps today's path.
+private struct LocalRequestKind: Decodable {
+    var kind: String?
 }
 
 extension LocalReplyEndpoint {
@@ -132,6 +182,14 @@ extension LocalReplyEndpoint {
             return
         }
         limiter.record("local-reply", at: now)
+        // Only the exact `dispatch` kind leaves the reply path; a frame or any other shape is a reply.
+        if (try? JSONDecoder().decode(LocalRequestKind.self, from: data))?.kind == LocalDispatchRequest.kind {
+            return await submitDispatch(data, from: client)
+        }
+        await submitReply(data, from: client)
+    }
+
+    private func submitReply(_ data: Data, from client: LocalReplyConnection) async {
         do {
             try Task.checkCancellation()
             guard !stopped, connections[client.id] != nil else { throw CancellationError() }

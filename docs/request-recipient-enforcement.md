@@ -25,7 +25,10 @@ nobody; there is no legacy broadcast or last-speaker fallback. The only exceptio
 is the default-off, single-phone [single-terminal reply fallback](single-terminal-reply-fallback.md)
 (#188), which delivers a reply carrying no request reference at all to exactly
 one connection selecting the target; explicit unknown or expired references and
-every other case keep these refusals. This is an
+every other case keep these refusals. A locally dispatched prompt
+([local dispatch](local-dispatch.md), #188) mints its request through the same
+HostSession path on behalf of a named connection id, so its reply is owned like a
+spoken one. This is an
 intentional publication compatibility change: existing voluntary Claude reply
 commands without programmatically retained context no longer produce personal
 replies. Do not change the running host until a reviewed programmatic bridge is
