@@ -99,8 +99,9 @@ and always present.
 
 The consumer records the advertisement at `started` the way it records `speakers`, and fails closed on every
 mismatch as `invalidEvent`: `request_forming` is accepted only on the `started` session event, only with `kind`
-from the allowlist (`template` for now) and with no other keys; `formed_request` is accepted only on `request`
-events, must be 1 to 16,000 characters (64,000 UTF-8 bytes, the same 4:1 ratio as turn text) and must pass the
+from the allowlist (`template` for now) and with no other keys; an explicit `null` for either field is refused at
+decode on every event kind (it is neither the documented value nor an absent key, so it can never select legacy
+prompting by mistake); `formed_request` is accepted only on `request` events, must be 1 to 16,000 characters (64,000 UTF-8 bytes, the same 4:1 ratio as turn text) and must pass the
 same sanitizer-stability check as turn text (no line breaks, hidden characters, controls, escapes or trailing
 whitespace; every sanitizer refusal is `invalidEvent`), and may neither contain the marker substring
 ` Raw turns (JSON, admitted record): ` nor end in that marker minus its trailing space (a literal code-unit check, not
@@ -236,7 +237,8 @@ one in `RightyoInputFormedFixtureTests.swift` consuming the formed fixture dry, 
 and refusing it with the text stripped), 45 trace checker tests, five intent tests, 29 CLI tests (nine RightyO
 dry-run tests), audit CLI, strict lint and scripts. The second-key review round added the marker refusal (a case in
 the bounds test) and a guard test (`dangerousSpellingInsideFormedTextIsRefusedByTheHostGuard`, 801 Swift tests); round two made the marker check
-literal and added the trailing-prefix rule (`markerCheckIsLiteralAndCoversTheTrailingPrefix`, 802 Swift tests). The formed fixture SHA-256 is
+literal and added the trailing-prefix rule (`markerCheckIsLiteralAndCoversTheTrailingPrefix`, 802 Swift tests); round
+three refused explicit nulls (`explicitNullFormingFieldsAreRefusedOnEveryKind`, 803 Swift tests). The formed fixture SHA-256 is
 `80525a07a0d055f3264bfa297ef6c4834f4e1d22bd67ad810ccf3212656ecb4c`; the other fixtures are unchanged. The CLI is
 untouched. All input is authored; no device, microphone or real target was used.
 

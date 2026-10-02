@@ -78,3 +78,35 @@ private struct RightyoInputKey: CodingKey {
     init(stringValue: String) { self.stringValue = stringValue }
     init?(intValue: Int) { nil }
 }
+/// An optional field that may be absent but never an explicit `null` (fail closed). Synthesized `Optional` decoding
+/// collapses `null` to `nil`, so `request_forming: null` would silently select legacy prompting and
+/// `formed_request: null` would pass on kinds where the field is forbidden; this wrapper refuses the null instead.
+/// Absent keys stay absent on both sides (the keyed-container overloads below), so fingerprints are unchanged.
+@propertyWrapper
+struct RefusingNull<Value: Codable & Sendable>: Codable, Sendable {
+    var wrappedValue: Value?
+    init(wrappedValue: Value?) { self.wrappedValue = wrappedValue }
+    init(from decoder: any Decoder) throws {
+        let container = try decoder.singleValueContainer()
+        guard !container.decodeNil() else {
+            throw DecodingError.valueNotFound(Value.self, .init(codingPath: decoder.codingPath,
+                                                                debugDescription: "explicit null is refused"))
+        }
+        wrappedValue = try container.decode(Value.self)
+    }
+    func encode(to encoder: any Encoder) throws {
+        var container = encoder.singleValueContainer()
+        try container.encode(wrappedValue)
+    }
+}
+extension KeyedDecodingContainer {
+    func decode<Value>(_: RefusingNull<Value>.Type, forKey key: Key) throws -> RefusingNull<Value> {
+        guard contains(key) else { return RefusingNull(wrappedValue: nil) }
+        return try RefusingNull(from: superDecoder(forKey: key))
+    }
+}
+extension KeyedEncodingContainer {
+    mutating func encode<Value>(_ value: RefusingNull<Value>, forKey key: Key) throws {
+        try encodeIfPresent(value.wrappedValue, forKey: key)
+    }
+}

@@ -50,8 +50,8 @@ public struct RightyoInputEvent: Codable, Sendable {
     let capabilities: Capabilities?
     /// Request forming (#188 item 4): advertised once at `started`, then `formed_request` is the prompt body on
     /// every request of that session and on nothing else. Rules and layout: RightyoInputFormedRequest.swift.
-    let requestForming: RequestForming?
-    let formedRequest: String?
+    @RefusingNull var requestForming: RequestForming?
+    @RefusingNull var formedRequest: String?
     let requestId: String?
     let turn: Turn?
     let decision: Decision?

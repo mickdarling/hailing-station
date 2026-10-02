@@ -24,8 +24,8 @@ extension RightyoInputConsumerTests {
     }
 
     /// Transcript and attention at twenty minutes (owner unless `role` says otherwise), then the unconsumed request
-    /// event carrying `formed`.
-    func formedRequest(_ consumer: RightyoInputConsumer, formed: String?, priors: [[String: Any]] = [],
+    /// event carrying `formed` (`nil` leaves the key out; `NSNull()` sends an explicit null).
+    func formedRequest(_ consumer: RightyoInputConsumer, formed: Any?, priors: [[String: Any]] = [],
                        role: String? = "owner") async throws -> RightyoInputEvent {
         let at = 1_200_100
         var sequence = 2

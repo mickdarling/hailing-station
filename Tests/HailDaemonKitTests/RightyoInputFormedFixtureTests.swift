@@ -5,6 +5,35 @@ import Testing
 /// The producer-authored formed-request fixture (#188 item 4), dry and against a guarded host, and the guard on the
 /// formed text itself. Rules and layout are covered in RightyoInputFormedRequestTests.swift.
 extension RightyoInputConsumerTests {
+    /// An explicit `null` is neither the documented object/string nor an absent key: it is refused at decode on every
+    /// kind, so `request_forming: null` cannot silently select legacy prompting and `formed_request: null` cannot
+    /// pass where the field is forbidden.
+    @Test func explicitNullFormingFieldsAreRefusedOnEveryKind() async throws {
+        #expect(throws: RightyoInputError.invalidEvent) { try formingStart(NSNull()) }
+        #expect(throws: RightyoInputError.invalidEvent) {
+            try event("transcript", sequence: 2, extra: ["turn": turn(), "formed_request": NSNull()])
+        }
+        #expect(throws: RightyoInputError.invalidEvent) {
+            try event("session", sequence: 2, extra: ["phase": "stopped", "request_forming": NSNull()])
+        }
+        for start in [try formingStart(), try start()] {
+            let (consumer, adapter) = try await rig()
+            _ = try await consumer.consume(start)
+            await #expect(throws: RightyoInputError.invalidEvent) {
+                _ = try await formedRequest(consumer, formed: NSNull(), role: nil)
+            }
+            #expect(await adapter.deliveries.isEmpty)
+        }
+        let path = URL(fileURLWithPath: #filePath).deletingLastPathComponent().deletingLastPathComponent()
+            .deletingLastPathComponent().appendingPathComponent("fixtures/rightyo/enrolled-formed-request.jsonl")
+        let lines = try String(contentsOf: path, encoding: .utf8).split(separator: "\n")
+        var request = try #require(JSONSerialization.jsonObject(with: Data(lines[5].utf8)) as? [String: Any])
+        request["formed_request"] = NSNull()
+        #expect(throws: RightyoInputError.invalidEvent) {
+            try RightyoInputEvent.decode(JSONSerialization.data(withJSONObject: request))
+        }
+    }
+
     /// The marker check is literal, so a combining mark right after the marker (sanitizer-stable text that
     /// `contains` would miss) and the marker minus its trailing space at the end are both caught; near misses pass.
     @Test func markerCheckIsLiteralAndCoversTheTrailingPrefix() async throws {
