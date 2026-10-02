@@ -437,6 +437,26 @@ import Testing
         await listener.stop(reason: "test complete")
     }
 
+    @Test func ownershipLostAfterHandoffReportsDeliveredWithoutARequest() async throws {
+        let scratch = FileManager.default.temporaryDirectory.appendingPathComponent(
+            "hs-ol-\(UUID().uuidString.prefix(8))", isDirectory: true
+        )
+        defer { try? FileManager.default.removeItem(at: scratch) }
+        let socket = scratch.appendingPathComponent("config", isDirectory: true)
+            .appendingPathComponent(LocalReplyEndpoint.socketName)
+        let endpoint = try LocalReplyEndpoint(
+            socketURL: socket, destination: RefusingDispatchPublisher(reason: .ownershipLost),
+            audit: AuditLog(directory: scratch.appendingPathComponent("audit"))
+        )
+        try await endpoint.start()
+        let request = LocalDispatchRequest(connection: UUID(), target: "tmux:reply", binding: "binding", text: "x")
+        // The handoff completed, so `delivered` is honest; `request` is explicit null and the reason is named.
+        #expect(try await submit(JSONEncoder().encode(request), socket: socket.path) == .dispatch(
+            delivered: 1, request: nil, error: LocalDispatchRefusal.ownershipLost.message, code: .publicationFailed
+        ))
+        await endpoint.stop()
+    }
+
     @Test func dispatchSharesTheReplyAdmissionBudget() async throws {
         let scratch = FileManager.default.temporaryDirectory.appendingPathComponent(
             "hs-db-\(UUID().uuidString.prefix(8))", isDirectory: true
@@ -470,6 +490,12 @@ import Testing
 private struct RefusingReplyPublisher: HostReplyPublishing {
     let reason: LocalReplyRefusal
     func publish(_ frame: Frame) async throws -> Int { throw reason }
+}
+
+private struct RefusingDispatchPublisher: HostReplyPublishing {
+    let reason: LocalDispatchRefusal
+    func publish(_ frame: Frame) async throws -> Int { throw LocalReplyRefusal.noRecipient }
+    func dispatch(_ request: LocalDispatchRequest) async throws -> UUID? { throw reason }
 }
 
 private struct CountingReplyPublisher: HostReplyPublishing {

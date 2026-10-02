@@ -129,6 +129,8 @@ extension LocalReplyEndpoint {
     /// 0600/uid boundary for the caller; the prompt still takes the full sanitizer and policy path.
     func submitDispatch(_ data: Data, from client: LocalReplyConnection) async {
         do {
+            try Task.checkCancellation()
+            guard !stopped, connections[client.id] != nil else { throw CancellationError() }
             let request = try Self.decodeDispatch(data)
             do {
                 _ = try await audit.record(.pushed(tool: "local-dispatch", target: request.target, bytes: data.count))

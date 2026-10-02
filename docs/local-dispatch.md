@@ -60,7 +60,7 @@ Each gate refuses before the handoff; nothing falls back to whichever connection
 | `bindingMismatch` | the current listing binding differs from the pinned one, or the target is not listed alive |
 | `confirmationRequired` | the policy answered with a read-back; the minted record is removed and nothing is delivered |
 | `capacityExceeded` | the connection already holds 64 live requests |
-| `deliveryRefused` | sanitizer, policy, lockdown, unknown target, a contextual adapter without a cooperative lease, or an adapter failure |
+| `deliveryRefused` | sanitizer, policy, lockdown, unknown target, a contextual adapter without a cooperative lease, or an adapter failure. A multi-line prompt whose later line needs confirmation or is denied is `HostError.partial`: earlier lines have landed, the minted record is removed, and the answer is still `deliveryRefused` with `delivered: 0` |
 | `ownershipLost` | the handoff completed but the selection or authority changed before commit; `delivered` is 1 and `request` is `null` |
 
 The dispatch and the phone's text frame share one `HostSession.deliver` path: listing, cooperative

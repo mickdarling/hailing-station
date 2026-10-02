@@ -52,12 +52,18 @@ import Testing
 
     @Test func responseShapeDistinguishesDispatchFromReply() throws {
         let owner = UUID()
+        // Reply answers are the exact bytes the endpoint wrote before this slice; no sorting, no `request` key.
+        let success = try JSONEncoder().encode(LocalReplyResponse(delivered: 1))
+        #expect(success == Data(#"{"delivered":1}"#.utf8))
+        let refused = try JSONEncoder().encode(LocalReplyResponse(delivered: 0, error: "x", code: .noRecipient))
+        #expect(String(data: refused, encoding: .utf8)?.contains("request") == false)
         for (response, expected) in [
-            (LocalReplyResponse(delivered: 1), #"{"delivered":1}"#),
             (LocalReplyResponse(delivered: 0, error: "x", code: .noRecipient),
              #"{"code":"noRecipient","delivered":0,"error":"x"}"#),
             (.dispatch(delivered: 1, request: owner), #"{"delivered":1,"request":"\#(owner.uuidString)"}"#),
-            (.dispatch(delivered: 1, request: nil), #"{"delivered":1,"request":null}"#)
+            (.dispatch(delivered: 1, request: nil), #"{"delivered":1,"request":null}"#),
+            (.dispatch(delivered: 1, request: nil, error: "e", code: .publicationFailed),
+             #"{"code":"publicationFailed","delivered":1,"error":"e","request":null}"#)
         ] {
             let encoder = JSONEncoder()
             encoder.outputFormatting = .sortedKeys
@@ -65,6 +71,7 @@ import Testing
             #expect(String(data: data, encoding: .utf8) == expected)
             #expect(try JSONDecoder().decode(LocalReplyResponse.self, from: data) == response)
         }
+        #expect(try JSONDecoder().decode(LocalReplyResponse.self, from: success) == LocalReplyResponse(delivered: 1))
         #expect(LocalReplyResponse(delivered: 1) != .dispatch(delivered: 1, request: nil))
     }
 }
