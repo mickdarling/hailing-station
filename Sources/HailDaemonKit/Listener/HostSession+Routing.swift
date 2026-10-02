@@ -1,6 +1,31 @@
 import Foundation
 import HailProtocol
 
+// The phone frame and local dispatch ingress paths share one handoff-and-commit boundary here.
+// swiftlint:disable file_length
+
+/// One final input for a selected target: the phone's text frame or a local dispatch (#188).
+struct HostInput: Sendable {
+    let text: String
+    let target: String
+    let utteranceID: UUID
+    let device: String
+    /// A dispatch pins the listing binding its caller saw; a changed binding refuses, never follows the rebind.
+    var expectedBinding: String?
+}
+
+/// Both ingress paths share one lease, permit, handoff and commit; they differ only in how they report it.
+enum HostDeliveryOutcome: Sendable, Equatable {
+    /// Handed off; `request` is this connection's committed reply owner, or nil for legacy generic input.
+    case delivered(request: UUID?)
+    case confirmationRequired
+    /// The connection selected another target while this input was suspended; nothing was handed off.
+    case selectionChanged
+    /// The target may have received the text, but no reply ownership survived the handoff.
+    case unowned(String)
+    case refused(ErrorCode, String)
+}
+
 extension HostSession {
     func route(_ frame: Frame, version: Int) async -> HostSessionResult {
         switch frame.payload {
@@ -17,43 +42,84 @@ extension HostSession {
         guard text.isFinal else {
             return failure(.malformed, "only final text can be delivered", close: false, version: version)
         }
-        guard let target = frame.target, target == selectedTarget else {
+        guard let target = frame.target else {
             return failure(.notAllowed, "select the destination before speaking", close: false, version: version)
         }
-        do {
-            let generation = selectionGeneration
-            let context = try await replyContext(target: target, utteranceID: frame.id, generation: generation)
-            let outcome = try await send(text.text, target: target, context: context)
-            switch outcome {
-            case .delivered:
-                if let context {
-                    guard generation == selectionGeneration, var request = replyRequests[context.id] else {
-                        return failure(.notAllowed, "request destination changed", close: false, version: version)
-                    }
-                    request.committed = true
-                    guard request.withAuthority({
-                        guard request.isCurrent(at: requestClock()) else { return false }
-                        replyRequests[context.id] = request
-                        return true
-                    }) == true else {
-                        replyRequests[context.id] = nil
-                        return failure(.notAllowed, "reply authority changed", close: false, version: version)
-                    }
-                }
-                return HostSessionResult(frames: [])
-            case .needsConfirmation:
-                if let context { replyRequests[context.id] = nil }
-                return failure(.notAllowed, "target requires confirmation at the Mac", close: false, version: version)
-            }
-        } catch {
-            return deliveryFailure(error, version: version)
+        switch await deliver(HostInput(text: text.text, target: target, utteranceID: frame.id, device: peerName)) {
+        case .delivered:
+            return HostSessionResult(frames: [])
+        case .confirmationRequired:
+            return failure(.notAllowed, "target requires confirmation at the Mac", close: false, version: version)
+        case .selectionChanged:
+            return failure(.notAllowed, "request destination changed", close: false, version: version)
+        case .unowned(let message):
+            return failure(.notAllowed, message, close: false, version: version)
+        case .refused(let code, let message):
+            return failure(code, message, close: false, version: version)
         }
     }
 
-    private func send(_ text: String, target: String, context: ProviderTurnContext?) async throws -> SendOutcome {
+    /// Lease, permit, capacity, lifetime and generation checks, then `HailHost.send` with its sanitizer,
+    /// shape and policy gates; only a successful complete handoff commits the request record.
+    func deliver(_ input: HostInput) async -> HostDeliveryOutcome {
+        guard input.target == selectedTarget else {
+            return .refused(.notAllowed, "select the destination before speaking")
+        }
         do {
-            if let context { return try await host.send(text, context: context, from: peerName) }
-            return try await host.send(text, to: target, from: peerName)
+            let generation = selectionGeneration
+            let context = try await replyContext(for: input, generation: generation)
+            // Legacy generic input has no retained record, so the captured selection is checked here and
+            // again after the handoff; a caller outside the peer's serialized receive loop can race `select`.
+            guard selects(input.target, generation: generation) else {
+                if let context { replyRequests[context.id] = nil }
+                return .selectionChanged
+            }
+            switch try await send(input, context: context) {
+            case .delivered:
+                guard let context else {
+                    guard selects(input.target, generation: generation) else {
+                        return .unowned("request destination changed")
+                    }
+                    return .delivered(request: nil)
+                }
+                return commit(context, generation: generation)
+            case .needsConfirmation:
+                if let context { replyRequests[context.id] = nil }
+                return .confirmationRequired
+            }
+        } catch {
+            return .refused(deliveryCode(error), "target action was refused")
+        }
+    }
+
+    /// The captured selection authority: still negotiated, same selection generation, same target.
+    private func selects(_ target: String, generation: UUID) -> Bool {
+        guard case .ready = state else { return false }
+        return generation == selectionGeneration && selectedTarget == target
+    }
+
+    private func commit(_ context: ProviderTurnContext, generation: UUID) -> HostDeliveryOutcome {
+        guard selects(context.binding.targetID, generation: generation), var request = replyRequests[context.id] else {
+            return .unowned("request destination changed")
+        }
+        request.committed = true
+        guard request.withAuthority({
+            guard request.isCurrent(at: requestClock()) else { return false }
+            replyRequests[context.id] = request
+            return true
+        }) == true else {
+            replyRequests[context.id] = nil
+            return .unowned("reply authority changed")
+        }
+        return .delivered(request: context.id)
+    }
+
+    private func send(_ input: HostInput, context: ProviderTurnContext?) async throws -> SendOutcome {
+        do {
+            if let context { return try await host.send(input.text, context: context, from: input.device) }
+            return try await host.send(
+                input.text, to: input.target, from: input.device, expectedBinding: input.expectedBinding
+            )
         } catch {
             if let context { replyRequests[context.id] = nil }
             throw error
@@ -61,15 +127,16 @@ extension HostSession {
     }
 
     /// Capability preflight does not grant execution. HailHost still checks shape, exact binding and policy.
-    private func replyContext(
-        target: String, utteranceID: UUID, generation: UUID
-    ) async throws -> ProviderTurnContext? {
+    private func replyContext(for input: HostInput, generation: UUID) async throws -> ProviderTurnContext? {
+        let target = input.target
         let listing = try await host.registry.listing()
         guard let listed = listing.first(where: { $0.info.id == target }), let binding = listed.binding,
               listed.info.alive else { throw HostError.unknownTarget(target) }
-        let context = ProviderTurnContext(utteranceID: utteranceID, connectionID: connectionID, binding: try .init(
-            hostID: hostName, providerID: listed.info.kind, targetID: target, sessionID: binding
-        ))
+        if let expected = input.expectedBinding, expected != binding { throw HostError.denied(.rebound(target)) }
+        let context = ProviderTurnContext(
+            utteranceID: input.utteranceID, connectionID: connectionID,
+            binding: try .init(hostID: hostName, providerID: listed.info.kind, targetID: target, sessionID: binding)
+        )
         do {
             try await host.registry.requireInputDelivery(to: target, context: context, lineCount: 1)
         } catch RegistryError.contextualDeliveryUnsupported {
@@ -148,15 +215,17 @@ extension HostSession {
     }
 
     private func deliveryFailure(_ error: any Error, version: Int) -> HostSessionResult {
-        let code: ErrorCode
+        failure(deliveryCode(error), "target action was refused", close: false, version: version)
+    }
+
+    private func deliveryCode(_ error: any Error) -> ErrorCode {
         switch error {
-        case HostError.unknownTarget: code = .unknownTarget
-        case HostError.denied(.lockdown): code = .lockdown
-        case ProviderContractError.capacityExceeded: code = .rateLimited
-        case is HostError, is AdapterError, is RegistryError: code = .notAllowed
-        default: code = .malformed
+        case HostError.unknownTarget: .unknownTarget
+        case HostError.denied(.lockdown): .lockdown
+        case ProviderContractError.capacityExceeded: .rateLimited
+        case is HostError, is AdapterError, is RegistryError: .notAllowed
+        default: .malformed
         }
-        return failure(code, "target action was refused", close: false, version: version)
     }
 
     private func policyFilteredTargets() async throws -> [TargetInfo] {

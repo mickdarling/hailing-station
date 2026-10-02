@@ -61,8 +61,9 @@ public struct HostSessionResult: Sendable, Equatable {
     }
 }
 
-/// One peer's protocol state. It deliberately has no delivery method: a probe session cannot reach
-/// `HailHost.send`, even if a caller constructs action-bearing frames directly.
+/// One peer's protocol state. Every path to `HailHost.send` runs through this session's authorizer and
+/// its captured selection: a probe session refuses action-bearing frames, and a non-frame caller must ask
+/// `authorizes(_:)` before `deliver`; neither can reach the host by constructing frames directly.
 public actor HostSession {
     enum State: Sendable, Equatable {
         case awaitingHello
@@ -145,6 +146,12 @@ public actor HostSession {
             deviceName: hostName
         )
         return HostSessionResult(frames: [response(.hello(info), version: version)])
+    }
+
+    /// The one authorization gate every phone frame passes, for an ingress path that does not arrive as a
+    /// frame (#188 local dispatch). It answers allow or deny only and never reveals the authorizer itself.
+    func authorizes(_ frame: Frame) async -> Bool {
+        await authorizer.authorize(frame) == .allow
     }
 
     func response(_ control: ControlPayload, version: Int) -> Frame {
