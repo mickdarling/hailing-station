@@ -89,9 +89,12 @@ An `enrolled` producer may emit `{"type":"override","superseded_request_id":"<se
 owner's own `request`, when an owner utterance takes precedence over an open non-owner request. The consumer
 admits it only when the session advertised `speakers: enrolled`, `role` is exactly `owner`, both identifiers are
 identifier-safe, `superseded_request_id` has this session's `session:utterance` request-id shape, and
-`by_utterance_id` names a transcript and attention record this consumer already admitted. An `override` on an
-`anonymous` session, any other role, or override fields on another event kind are refused as `invalidEvent`
-(fail closed). Sequence, stream-time, fingerprint and duplicate rules are the same as for every other event.
+`by_utterance_id` names a transcript and attention record this consumer already admitted, both of which carried
+`role: "owner"`. The consumer records owner utterance ids at transcript admission (a subset of the finals set, so
+the same 1,000 cap bounds it) and drops the id if the attention record does not repeat `owner`. An `override` on an
+`anonymous` session, any other role on the override, a cited turn that is absent, carries no role, or carries a
+non-owner role on either record, or override fields on another event kind are refused as `invalidEvent` (fail
+closed). Sequence, stream-time, fingerprint and duplicate rules are the same as for every other event.
 
 What an admitted override does at this slice: the superseded request id is recorded in a bounded set (1,000, the
 same cap as requests; recording is idempotent, and an id this consumer never admitted is recorded too, because
@@ -168,6 +171,15 @@ tests, five intent tests, 28 CLI tests (eight RightyO dry-run tests), audit CLI,
 override fixture SHA-256 is `f4ce8f71c3d123a6d5fce9261cca13fe5a099534021e746bb81d3a11fa48a11f`; the shared
 `tool-events.jsonl` SHA-256 above is unchanged. All input is authored; no device, microphone or real target was
 used.
+
+On the #188 owner-check follow-up (P3 carried from the override slice's review), the cited utterance's admitted
+transcript and attention records must both have carried `role: owner`. `RightyoInputOverrideTests.swift` adds two
+tests: a cited transcript with a participant, trusted, unknown or absent role on an enrolled session is refused, and
+records that disagree on the owner role (owner transcript with a non-owner or absent decision role, or the reverse)
+are refused. The override fixture is unchanged (same SHA-256) and still admits end to end. With the same
+`DEVELOPER_DIR`, `scripts/verify.sh all` passed: 792 Swift tests in 124 suites (35 RightyO tests, two new), 45 trace
+checker tests, five intent tests, 28 CLI tests (eight RightyO dry-run tests), audit CLI, strict lint and scripts. All
+input is authored; no device, microphone or real target was used.
 
 Independent preflight inspection found that Foundation's buffered stdin read could wait for 4 KiB or
 EOF before handling an attended request. The CLI uses an available-chunk POSIX read and an unbuffered

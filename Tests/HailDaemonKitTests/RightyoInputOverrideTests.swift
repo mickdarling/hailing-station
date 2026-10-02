@@ -5,15 +5,16 @@ import Testing
 /// Owner override (#188 item 3). Roles live in RightyoInputSpeakersTests.swift.
 extension RightyoInputConsumerTests {
     /// Owner transcript and attention for utterance `override`, then the `override` event superseding `superseding`.
+    /// `turnRole` is the cited transcript's role and `decisionRole` the cited attention record's role.
     func ownerOverride(_ consumer: RightyoInputConsumer, sequence: Int, superseding: String, role: String? = "owner",
-                       turnRole: String? = "owner", by: String = "override", at: Int = 1_201_000) async throws
-    -> RightyoInputEvent {
+                       turnRole: String? = "owner", decisionRole: String? = "owner", by: String = "override",
+                       at: Int = 1_201_000) async throws -> RightyoInputEvent {
         _ = try await consumer.consume(event("transcript", sequence: sequence, extra: [
             "turn": roleTurn("override", role: turnRole, start: at - 500, end: at), "emitted_at_ms": at
         ]))
         var decision: [String: Any] = ["label": "uncertain", "recipient_kind": "unknown", "confidence": 0.5,
                                        "provider": "authored", "model": "fake-v1"]
-        if let turnRole { decision["role"] = turnRole }
+        if let decisionRole { decision["role"] = decisionRole }
         _ = try await consumer.consume(event("attention", sequence: sequence + 1, extra: [
             "utterance_id": "override", "decision": decision, "emitted_at_ms": at
         ]))
@@ -38,7 +39,7 @@ extension RightyoInputConsumerTests {
         let (consumer, adapter) = try await rig()
         _ = try await consumer.consume(start())
         let override = try await ownerOverride(consumer, sequence: 2, superseding: "\(session):request",
-                                               turnRole: nil, at: 2000)
+                                               turnRole: nil, decisionRole: nil, at: 2000)
         await #expect(throws: RightyoInputError.invalidEvent) { try await consumer.consume(override) }
         await #expect(throws: RightyoInputError.invalidLifecycle) { try await consumer.consume(request(sequence: 5)) }
         #expect(await adapter.deliveries.isEmpty)
@@ -49,6 +50,34 @@ extension RightyoInputConsumerTests {
             let (consumer, adapter) = try await rig()
             _ = try await consumer.consume(start(speakers: "enrolled"))
             let override = try await ownerOverride(consumer, sequence: 2, superseding: "\(session):request", role: role)
+            await #expect(throws: RightyoInputError.invalidEvent) { try await consumer.consume(override) }
+            #expect(await adapter.deliveries.isEmpty)
+        }
+    }
+
+    /// The cited utterance's admitted transcript must have carried `role: owner`; a participant, trusted, unknown
+    /// or absent role on an enrolled session is refused (fail closed) even though the override itself says `owner`.
+    @Test func overrideCitingNonOwnerOrRolelessTranscriptIsRefused() async throws {
+        for cited in ["participant", "trusted", "unknown", nil] {
+            let (consumer, adapter) = try await rig()
+            _ = try await consumer.consume(start(speakers: "enrolled"))
+            let override = try await ownerOverride(consumer, sequence: 2, superseding: "\(session):request",
+                                                   turnRole: cited, decisionRole: cited)
+            await #expect(throws: RightyoInputError.invalidEvent) { try await consumer.consume(override) }
+            #expect(await adapter.deliveries.isEmpty)
+        }
+    }
+
+    /// Both admitted records must say `owner`: an owner transcript whose attention record carries another role, or
+    /// none, is refused, and a non-owner transcript is never promoted by an owner attention record.
+    @Test func overrideCitingRecordsThatDisagreeOnOwnerRoleIsRefused() async throws {
+        let mismatches: [(turn: String?, decision: String?)] = [("owner", "participant"), ("owner", nil),
+                                                                 ("participant", "owner"), (nil, "owner")]
+        for pair in mismatches {
+            let (consumer, adapter) = try await rig()
+            _ = try await consumer.consume(start(speakers: "enrolled"))
+            let override = try await ownerOverride(consumer, sequence: 2, superseding: "\(session):request",
+                                                   turnRole: pair.turn, decisionRole: pair.decision)
             await #expect(throws: RightyoInputError.invalidEvent) { try await consumer.consume(override) }
             #expect(await adapter.deliveries.isEmpty)
         }
