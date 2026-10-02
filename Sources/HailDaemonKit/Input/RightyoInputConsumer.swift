@@ -6,16 +6,19 @@ public actor RightyoInputConsumer {
     private let target: String
     private let binding: String
     private let session: String
+    private let streamBudgetMs: Int?
     private var started = false, terminal = false, busy = false, activationEnabled = false, failed = false
     private var sequence = 0, emittedAt = 0
+    private var speakers = "anonymous"
     private var requests = Set<String>()
     private var decided = Set<String>()
     private var finals: [String: Data] = [:]
     private var attentions: [String: Data] = [:]
     private var seen: [Int: Data] = [:]
+    /// `streamBudgetMs` is an optional ceiling on producer stream time; the default is no ceiling (#188).
     public init(host: HailHost?, target: String, binding: String, session: String,
-                allowSynthetic: Bool = false) throws {
-        guard !binding.isEmpty, RightyoInputEvent.identifier(session) else {
+                allowSynthetic: Bool = false, streamBudgetMs: Int? = nil) throws {
+        guard !binding.isEmpty, RightyoInputEvent.identifier(session), streamBudgetMs.map({ $0 >= 0 }) ?? true else {
             throw RightyoInputError.unavailableBinding
         }
         self.host = host
@@ -23,6 +26,7 @@ public actor RightyoInputConsumer {
         self.target = target
         self.binding = binding
         self.session = session
+        self.streamBudgetMs = streamBudgetMs
     }
     /// True means handled: guarded delivery, or validation only when initialized with no host.
     public func consume(_ event: RightyoInputEvent) async throws -> Bool {
@@ -41,8 +45,8 @@ public actor RightyoInputConsumer {
             defer { busy = false }
             do {
                 try Task.checkCancellation()
-                let outcome = try await host.send(event.prompt(), to: target, from: "rightyo-local",
-                                                  expectedBinding: binding)
+                let outcome = try await host.send(event.prompt(speakers: speakers), to: target,
+                                                  from: "rightyo-local", expectedBinding: binding)
                 if case .needsConfirmation(let readBack) = outcome {
                     await host.cancel(readBack.hash)
                     throw RightyoInputError.confirmationRequired
@@ -59,7 +63,7 @@ public actor RightyoInputConsumer {
         }
     }
     private func admit(_ event: RightyoInputEvent) throws -> Bool {
-        try event.validate(session: session)
+        try event.validate(session: session, enrolled: speakers == "enrolled", budgetMs: streamBudgetMs)
         guard !busy else { throw RightyoInputError.invalidLifecycle }
         let fingerprint = try RightyoInputEvent.fingerprint(event)
         if let old = seen[event.sequence] {
@@ -77,8 +81,11 @@ public actor RightyoInputConsumer {
             if event.phase == "started" {
                 guard let caps = event.capabilities,
                       ["finalized-turn", "disabled"].contains(caps.activation), !caps.partials,
-                      caps.speakers == "anonymous", caps.context else { throw RightyoInputError.invalidEvent }
+                      ["anonymous", "enrolled"].contains(caps.speakers), caps.context else {
+                    throw RightyoInputError.invalidEvent
+                }
                 activationEnabled = caps.activation == "finalized-turn"
+                speakers = caps.speakers
             }
             try lifecycle(event.phase)
         } else if !started { throw RightyoInputError.invalidLifecycle }
