@@ -10,6 +10,7 @@ from pathlib import Path
 REPO = Path(__file__).resolve().parents[2]
 HAILD = REPO / ".build" / "debug" / "haild"
 FIXTURE = REPO / "fixtures" / "rightyo" / "tool-events.jsonl"
+ENROLLED = REPO / "fixtures" / "rightyo" / "enrolled-speakers.jsonl"
 
 
 class RightyoCLITests(unittest.TestCase):
@@ -77,3 +78,12 @@ class RightyoCLITests(unittest.TestCase):
         result = self.invoke("\n".join(json.dumps(event) for event in selected))
         self.assertEqual(result.returncode, 0, result.stderr)
         self.assertEqual(result.stdout, "")
+
+    def test_enrolled_speakers_past_fifteen_minutes_validate_one_request(self):
+        result = self.invoke(ENROLLED.read_text(), "enrolled-demo")
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertEqual(result.stdout.count("request validated"), 1)
+        self.assertNotIn("check our discussion", result.stdout + result.stderr)
+        events = [json.loads(line) for line in ENROLLED.read_text().splitlines()]
+        events[0]["capabilities"]["speakers"] = "verified"
+        self.assertEqual(self.invoke("\n".join(json.dumps(event) for event in events), "enrolled-demo").returncode, 8)

@@ -16,6 +16,8 @@ public struct RightyoInputEvent: Codable, Sendable {
         let overlap: Bool
         let recognizerId: String
         let provenance: String, speakerProvenance: String
+        /// Enrolled-speaker role (#188). Descriptive data for the prompt; it never bypasses policy.
+        let role: String?
     }
     struct Decision: Codable, Sendable {
         let label: String
@@ -23,6 +25,7 @@ public struct RightyoInputEvent: Codable, Sendable {
         let confidence: Double
         let provider: String
         let model: String
+        let role: String?
     }
     struct Retention: Codable, Sendable {
         let retentionMs: Int?, maxTurns: Int?, maxBytes: Int?, expiredTurns: Int?, capacityEvictedTurns: Int?
@@ -56,18 +59,21 @@ public struct RightyoInputEvent: Codable, Sendable {
         decoder.keyDecodingStrategy = .convertFromSnakeCase
         do { return try decoder.decode(Self.self, from: data) } catch { throw RightyoInputError.invalidEvent }
     }
-    func validate(session: String) throws {
-        guard schemaVersion == 1, sessionId == session, sequence > 0,
-              (0...(type == "session" ? 905_000 : 900_000)).contains(emittedAtMs),
+    /// Stream time has no default ceiling for ambient listening (#188); `Int` decoding already rejects values
+    /// past Int64 and `budgetMs` is the caller's optional explicit limit.
+    func validate(session: String, enrolled: Bool, budgetMs: Int? = nil) throws {
+        guard schemaVersion == 1, sessionId == session, sequence > 0, emittedAtMs >= 0,
+              emittedAtMs <= budgetMs ?? Int.max,
               ["session", "transcript", "attention", "request"].contains(type) else {
             throw RightyoInputError.invalidEvent
         }
-        if let turn { try validate(turn, session: session) }
+        if let turn { try validate(turn, session: session, enrolled: enrolled) }
         if let decision {
             guard decision.confidence.isFinite, (0...1).contains(decision.confidence),
                   Self.identifier(decision.provider), Self.identifier(decision.model),
                   ["attend", "ignore", "uncertain"].contains(decision.label),
-                  ["system", "other_human", "unknown", "known_speaker"].contains(decision.recipientKind) else {
+                  ["system", "other_human", "unknown", "known_speaker"].contains(decision.recipientKind),
+                  Self.role(decision.role, enrolled: enrolled) else {
                 throw RightyoInputError.invalidEvent
             }
         }
@@ -81,7 +87,7 @@ public struct RightyoInputEvent: Codable, Sendable {
         var identities = Set<String>()
         var previousEnd = 0
         for prior in context.turns {
-            try validate(prior, session: session)
+            try validate(prior, session: session, enrolled: enrolled)
             guard prior.endMs <= turn.startMs, prior.endMs >= previousEnd,
                   prior.utteranceId != turn.utteranceId,
                   identities.insert(prior.utteranceId).inserted else { throw RightyoInputError.invalidEvent }
@@ -89,17 +95,23 @@ public struct RightyoInputEvent: Codable, Sendable {
         }
         guard try JSONEncoder().encode(context).count <= 1_048_576 else { throw RightyoInputError.capacity }
     }
-    private func validate(_ turn: Turn, session: String) throws {
+    private func validate(_ turn: Turn, session: String, enrolled: Bool) throws {
         guard turn.sessionId == session, Self.identifier(turn.sessionId), Self.identifier(turn.utteranceId),
               turn.revision > 0, turn.finalized, turn.startMs >= 0, turn.endMs >= turn.startMs,
               turn.endMs <= emittedAtMs, !turn.text.isEmpty, turn.text.count <= 4000,
               Self.identifier(turn.recognizerId), turn.speakerId.map(Self.identifier) ?? true,
+              Self.role(turn.role, enrolled: enrolled),
               ["synthetic", "recorded-file", "causal-replay", "live-microphone"].contains(turn.provenance),
               ["authored-fixture", "diarization-timeline", "unknown"].contains(turn.speakerProvenance) else {
             throw RightyoInputError.invalidEvent
         }
         guard try Sanitizer.sanitize(turn.text, policy: .init(maxCharacters: 4000, maxUTF8Bytes: 16_000)) == [turn.text]
         else { throw RightyoInputError.invalidEvent }
+    }
+    /// Anonymous sessions may only say `unknown`; enrolled sessions may name a role. Absent is always allowed.
+    static func role(_ value: String?, enrolled: Bool) -> Bool {
+        guard let value else { return true }
+        return enrolled ? ["owner", "trusted", "participant", "unknown"].contains(value) : value == "unknown"
     }
     static func identifier(_ value: String) -> Bool {
         let allowed = Set("ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789_. -")
@@ -110,9 +122,11 @@ public struct RightyoInputEvent: Codable, Sendable {
         encoder.outputFormatting = [.sortedKeys]
         return Data(SHA256.hash(data: try encoder.encode(value)))
     }
-    func prompt() throws -> String {
+    /// `speakers` is the advertised capability (`anonymous` or `enrolled`) so the session can weigh roles.
+    func prompt(speakers: String) throws -> String {
         struct Prompt: Encodable {
             let requestId: String?
+            let speakers: String
             let request: Turn?
             let decision: Decision?
             let context: Context?
@@ -120,7 +134,7 @@ public struct RightyoInputEvent: Codable, Sendable {
         let encoder = JSONEncoder()
         encoder.outputFormatting = [.sortedKeys, .withoutEscapingSlashes]
         encoder.keyEncodingStrategy = .convertToSnakeCase
-        let data = try encoder.encode(Prompt(requestId: requestId, request: turn,
+        let data = try encoder.encode(Prompt(requestId: requestId, speakers: speakers, request: turn,
                                              decision: decision, context: context))
         guard let text = String(data: data, encoding: .utf8) else { throw RightyoInputError.invalidEvent }
         return text
