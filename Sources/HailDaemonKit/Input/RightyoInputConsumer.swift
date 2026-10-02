@@ -10,6 +10,10 @@ public actor RightyoInputConsumer {
     private var started = false, terminal = false, busy = false, activationEnabled = false, failed = false
     private var sequence = 0, emittedAt = 0
     private var speakers = "anonymous"
+    /// Whether `started` advertised `request_forming` (#188 item 4): then every request must carry `formed_request`,
+    /// otherwise none may. Forming is allowed on anonymous sessions too (hosts pick), where any role the formed text
+    /// names is uncheckable: only the JSON record behind it carries verified roles, and anonymous sessions have none.
+    private var forming = false
     private var requests = Set<String>()
     private var superseded = Set<String>()
     private var decided = Set<String>()
@@ -89,6 +93,7 @@ public actor RightyoInputConsumer {
             if let caps {
                 activationEnabled = caps.activation == "finalized-turn"
                 speakers = caps.speakers
+                forming = event.requestForming != nil
             }
         } else if !started { throw RightyoInputError.invalidLifecycle }
         try correlate(event)
@@ -135,7 +140,7 @@ extension RightyoInputConsumer {
         case "override": try supersede(event)
         case "request":
             guard activationEnabled, let turn = event.turn, let decision = event.decision,
-                  !superseded.contains(event.requestId ?? ""),
+                  (event.formedRequest != nil) == forming, !superseded.contains(event.requestId ?? ""),
                   finals[turn.utteranceId] == (try RightyoInputEvent.fingerprint(turn)),
                   attentions[event.requestId ?? ""] == (try RightyoInputEvent.fingerprint(decision)) else {
                 throw RightyoInputError.invalidEvent

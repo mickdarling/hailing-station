@@ -48,6 +48,10 @@ public struct RightyoInputEvent: Codable, Sendable {
     let utteranceId: String?
     let phase: String?
     let capabilities: Capabilities?
+    /// Request forming (#188 item 4): advertised once at `started`, then `formed_request` is the prompt body on
+    /// every request of that session and on nothing else. Rules and layout: RightyoInputFormedRequest.swift.
+    @RefusingNull var requestForming: RequestForming?
+    @RefusingNull var formedRequest: String?
     let requestId: String?
     let turn: Turn?
     let decision: Decision?
@@ -73,6 +77,7 @@ public struct RightyoInputEvent: Codable, Sendable {
             throw RightyoInputError.invalidEvent
         }
         try validateOverride(session: session, enrolled: enrolled)
+        try validateFormed()
         if let turn { try validate(turn, session: session, enrolled: enrolled) }
         if let decision {
             guard decision.confidence.isFinite, (0...1).contains(decision.confidence),
@@ -123,7 +128,8 @@ public struct RightyoInputEvent: Codable, Sendable {
               Self.identifier(turn.recognizerId), turn.speakerId.map(Self.identifier) ?? true,
               Self.role(turn.role, enrolled: enrolled),
               ["synthetic", "recorded-file", "causal-replay", "live-microphone"].contains(turn.provenance),
-              ["authored-fixture", "diarization-timeline", "unknown"].contains(turn.speakerProvenance) else {
+              ["authored-fixture", "diarization-timeline", "diarization-utterance", "unknown"]
+                .contains(turn.speakerProvenance) else {
             throw RightyoInputError.invalidEvent
         }
         guard try Sanitizer.sanitize(turn.text, policy: .init(maxCharacters: 4000, maxUTF8Bytes: 16_000)) == [turn.text]
@@ -142,22 +148,5 @@ public struct RightyoInputEvent: Codable, Sendable {
         let encoder = JSONEncoder()
         encoder.outputFormatting = [.sortedKeys]
         return Data(SHA256.hash(data: try encoder.encode(value)))
-    }
-    /// `speakers` is the advertised capability (`anonymous` or `enrolled`) so the session can weigh roles.
-    func prompt(speakers: String) throws -> String {
-        struct Prompt: Encodable {
-            let requestId: String?
-            let speakers: String
-            let request: Turn?
-            let decision: Decision?
-            let context: Context?
-        }
-        let encoder = JSONEncoder()
-        encoder.outputFormatting = [.sortedKeys, .withoutEscapingSlashes]
-        encoder.keyEncodingStrategy = .convertToSnakeCase
-        let data = try encoder.encode(Prompt(requestId: requestId, speakers: speakers, request: turn,
-                                             decision: decision, context: context))
-        guard let text = String(data: data, encoding: .utf8) else { throw RightyoInputError.invalidEvent }
-        return text
     }
 }

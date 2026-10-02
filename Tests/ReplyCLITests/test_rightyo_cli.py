@@ -12,6 +12,7 @@ HAILD = REPO / ".build" / "debug" / "haild"
 FIXTURE = REPO / "fixtures" / "rightyo" / "tool-events.jsonl"
 ENROLLED = REPO / "fixtures" / "rightyo" / "enrolled-speakers.jsonl"
 OVERRIDE = REPO / "fixtures" / "rightyo" / "enrolled-override.jsonl"
+FORMED = REPO / "fixtures" / "rightyo" / "enrolled-formed-request.jsonl"
 
 
 class RightyoCLITests(unittest.TestCase):
@@ -99,3 +100,12 @@ class RightyoCLITests(unittest.TestCase):
         events = [json.loads(line) for line in OVERRIDE.read_text().splitlines()]
         events[-2]["role"] = "participant"
         self.assertEqual(self.invoke("\n".join(json.dumps(event) for event in events), "enrolled-demo").returncode, 8)
+
+    def test_formed_request_fixture_validates_one_request_and_requires_the_text_once_advertised(self):
+        result = self.invoke(FORMED.read_text(), "formed-demo")
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertEqual(result.stdout.count("request validated"), 1)
+        self.assertNotIn("archive the project", result.stdout + result.stderr)
+        events = [json.loads(line) for line in FORMED.read_text().splitlines()]
+        del events[-2]["formed_request"]
+        self.assertEqual(self.invoke("\n".join(json.dumps(event) for event in events), "formed-demo").returncode, 8)
