@@ -18,6 +18,8 @@ struct HostInput: Sendable {
 enum HostDeliveryOutcome: Sendable, Equatable {
     /// Handed off; `request` is this connection's committed reply owner, or nil for legacy generic input.
     case delivered(request: UUID?)
+    /// The session's authorizer denies the equivalent final text frame, or the session is not negotiated.
+    case unauthorized
     case confirmationRequired
     /// The connection selected another target while this input was suspended; nothing was handed off.
     case selectionChanged
@@ -48,6 +50,8 @@ extension HostSession {
         switch await deliver(HostInput(text: text.text, target: target, utteranceID: frame.id, device: peerName)) {
         case .delivered:
             return HostSessionResult(frames: [])
+        case .unauthorized:
+            return failure(.unauthorized, "terminal action is not authorized", close: false, version: version)
         case .confirmationRequired:
             return failure(.notAllowed, "target requires confirmation at the Mac", close: false, version: version)
         case .selectionChanged:
@@ -59,9 +63,16 @@ extension HostSession {
         }
     }
 
-    /// Lease, permit, capacity, lifetime and generation checks, then `HailHost.send` with its sanitizer,
-    /// shape and policy gates; only a successful complete handoff commits the request record.
+    /// Authorization of this exact input, then lease, permit, capacity, lifetime and generation checks, then
+    /// `HailHost.send` with its sanitizer, shape and policy gates; only a successful complete handoff commits
+    /// the request record. No caller reaches the host without the session's authorizer allowing the input.
     func deliver(_ input: HostInput) async -> HostDeliveryOutcome {
+        // The query is derived from the input itself, so it cannot be answered for a different frame. For
+        // the phone's own frame `receive` already asked; the answer is the same and nothing was sent.
+        guard case .ready(let version) = state, await authorizes(Frame(
+            version: version, timestamp: now(), target: input.target, source: input.device,
+            payload: .text(TextPayload(text: input.text))
+        )) else { return .unauthorized }
         guard input.target == selectedTarget else {
             return .refused(.notAllowed, "select the destination before speaking")
         }

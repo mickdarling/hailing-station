@@ -62,8 +62,8 @@ public struct HostSessionResult: Sendable, Equatable {
 }
 
 /// One peer's protocol state. Every path to `HailHost.send` runs through this session's authorizer and
-/// its captured selection: a probe session refuses action-bearing frames, and a non-frame caller must ask
-/// `authorizes(_:)` before `deliver`; neither can reach the host by constructing frames directly.
+/// its captured selection: `receive` authorizes each frame, and `deliver` authorizes the exact input it
+/// hands off, so neither a probe session nor an in-module caller can reach the host unauthorized.
 public actor HostSession {
     enum State: Sendable, Equatable {
         case awaitingHello
@@ -148,8 +148,8 @@ public actor HostSession {
         return HostSessionResult(frames: [response(.hello(info), version: version)])
     }
 
-    /// The one authorization gate every phone frame passes, for an ingress path that does not arrive as a
-    /// frame (#188 local dispatch). It answers allow or deny only and never reveals the authorizer itself.
+    /// The one authorization gate every phone frame passes; `deliver` asks it again for the exact input it
+    /// is about to hand off. It answers allow or deny only and never reveals the authorizer itself.
     func authorizes(_ frame: Frame) async -> Bool {
         await authorizer.authorize(frame) == .allow
     }
