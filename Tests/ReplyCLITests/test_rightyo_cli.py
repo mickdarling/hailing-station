@@ -11,6 +11,7 @@ REPO = Path(__file__).resolve().parents[2]
 HAILD = REPO / ".build" / "debug" / "haild"
 FIXTURE = REPO / "fixtures" / "rightyo" / "tool-events.jsonl"
 ENROLLED = REPO / "fixtures" / "rightyo" / "enrolled-speakers.jsonl"
+OVERRIDE = REPO / "fixtures" / "rightyo" / "enrolled-override.jsonl"
 
 
 class RightyoCLITests(unittest.TestCase):
@@ -86,4 +87,15 @@ class RightyoCLITests(unittest.TestCase):
         self.assertNotIn("check our discussion", result.stdout + result.stderr)
         events = [json.loads(line) for line in ENROLLED.read_text().splitlines()]
         events[0]["capabilities"]["speakers"] = "verified"
+        self.assertEqual(self.invoke("\n".join(json.dumps(event) for event in events), "enrolled-demo").returncode, 8)
+
+    def test_owner_override_fixture_prints_receipt_after_the_superseded_request(self):
+        result = self.invoke(OVERRIDE.read_text(), "enrolled-demo")
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertEqual(result.stdout.count("request validated"), 1)
+        self.assertEqual(result.stdout.count("rightyo: override enrolled-demo:request\n"), 1)
+        self.assertLess(result.stdout.index("request validated"), result.stdout.index("rightyo: override"))
+        self.assertNotIn("delete the project", result.stdout + result.stderr)
+        events = [json.loads(line) for line in OVERRIDE.read_text().splitlines()]
+        events[-2]["role"] = "participant"
         self.assertEqual(self.invoke("\n".join(json.dumps(event) for event in events), "enrolled-demo").returncode, 8)

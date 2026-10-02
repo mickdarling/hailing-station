@@ -2,7 +2,8 @@
 
 Implementation slice [#183](https://github.com/mickdarling/hailing-station/issues/183), part of
 [#136](https://github.com/mickdarling/hailing-station/issues/136), extended for enrolled speakers and
-unbounded stream time by [#188](https://github.com/mickdarling/hailing-station/issues/188) items 2 and 5.
+unbounded stream time by [#188](https://github.com/mickdarling/hailing-station/issues/188) items 2 and 5, and
+for the owner `override` event by #188 item 3.
 This consumes the producer's version-one JSONL contract from RightyO #43/#40. The RightyO website is a test/demo rig; applications consume the tool
 interface independently of that website.
 
@@ -21,7 +22,11 @@ validation receipt. It does not construct a host, discover targets, capture audi
 input. The copied fixture is byte-identical to RightyO's `examples/tool-events.jsonl`; update both sides
 when changing the shared contract. `fixtures/rightyo/enrolled-speakers.jsonl` is a Hail-authored companion:
 an `enrolled` session whose owner request arrives at twenty minutes of stream time with a participant turn as
-context (`--session enrolled-demo`).
+context (`--session enrolled-demo`). `fixtures/rightyo/enrolled-override.jsonl` is byte-identical to RightyO's
+`examples/enrolled-override.jsonl` and must stay so; update both sides together. It is an `enrolled` session in
+which a participant's attended request is followed by the owner's "Ignore that." and an `override` naming that
+request (`--session enrolled-demo`); dry run prints one request receipt and then
+`rightyo: override enrolled-demo:request`.
 
 ## Opt into one explicitly selected local target
 
@@ -75,7 +80,32 @@ the fingerprinted turn/decision record, so a request must repeat exactly what th
 events said. The prompt JSON carries the advertised `speakers` value and each role through unchanged so the
 receiving session can see who is who. Role is descriptive producer data: it never selects a target, bypasses
 policy, tiers, confirmation or lockdown, and a `known_speaker` recipient still cannot submit a request.
-Owner override and formed requests are later #188 slices, not this consumer.
+Formed requests are a later #188 slice, not this consumer.
+
+## Owner override
+
+An `enrolled` producer may emit `{"type":"override","superseded_request_id":"<session>:<utterance>",
+"by_utterance_id":"<utterance>","role":"owner", ...}` after the owner's `attention` record and before the
+owner's own `request`, when an owner utterance takes precedence over an open non-owner request. The consumer
+admits it only when the session advertised `speakers: enrolled`, `role` is exactly `owner`, both identifiers are
+identifier-safe, `superseded_request_id` has this session's `session:utterance` request-id shape, and
+`by_utterance_id` names a transcript and attention record this consumer already admitted. An `override` on an
+`anonymous` session, any other role, or override fields on another event kind are refused as `invalidEvent`
+(fail closed). Sequence, stream-time, fingerprint and duplicate rules are the same as for every other event.
+
+What an admitted override does at this slice: the superseded request id is recorded in a bounded set (1,000, the
+same cap as requests; recording is idempotent, and an id this consumer never admitted is recorded too, because
+the producer may supersede a request the host refused), any later `request` carrying that id is refused as
+`invalidEvent`, and the CLI prints the receipt `rightyo: override <superseded_request_id>`. Nothing is sent to
+the target.
+
+What it does not do: it does not retract a prompt already delivered to the pane, and it adds no cancellation path
+into the session. There is nothing pending host-side to cancel: `consume` awaits `send` to completion, and a
+confirmation-required result is cancelled by the consumer itself before it returns, so by the time an override
+arrives the superseded request is either delivered, refused or already cancelled. Speaker roles and overrides are
+descriptive upstream data; they never select a target or bypass policy, tiers, confirmation, guards or lockdown.
+Against a real host the override fixture's participant request ("delete the project") trips the dangerous-pattern
+guard and is refused as `confirmationRequired` before the override is even read.
 
 Each JSONL record is limited to 1,200,000 bytes, context to 1 MiB/1,000 turns and each text to 4,000
 characters. Stream time (`emitted_at_ms`) must be non-negative and never decrease, with no ceiling by
@@ -128,6 +158,16 @@ On the #188 enrolled-speakers slice (items 2 and 5), with the same `DEVELOPER_DI
 passed: 770 Swift tests in 122 suites (24 RightyO tests, seven new), 45 trace checker tests, five intent
 tests, 27 CLI tests (seven RightyO dry-run tests), audit CLI, strict lint and scripts. The shared fixture
 SHA-256 above is unchanged. All input is authored; no device, microphone or real target was used.
+
+On the #188 owner-override slice (item 3), with the same `DEVELOPER_DIR`, `scripts/verify.sh all` passed:
+790 Swift tests in 124 suites (33 RightyO tests, seven new in `RightyoInputOverrideTests.swift`: override admitted
+after a delivered request without a new delivery, refused on anonymous sessions, refused without the `owner` role,
+a later request named by an earlier override refused, an unknown superseded id admitted idempotently, malformed
+and stray override fields refused, and the override fixture dry and against a guarded host), 45 trace checker
+tests, five intent tests, 28 CLI tests (eight RightyO dry-run tests), audit CLI, strict lint and scripts. The
+override fixture SHA-256 is `f4ce8f71c3d123a6d5fce9261cca13fe5a099534021e746bb81d3a11fa48a11f`; the shared
+`tool-events.jsonl` SHA-256 above is unchanged. All input is authored; no device, microphone or real target was
+used.
 
 Independent preflight inspection found that Foundation's buffered stdin read could wait for 4 KiB or
 EOF before handling an attended request. The CLI uses an available-chunk POSIX read and an unbuffered

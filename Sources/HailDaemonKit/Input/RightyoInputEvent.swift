@@ -53,6 +53,11 @@ public struct RightyoInputEvent: Codable, Sendable {
     let decision: Decision?
     let context: Context?
     let decisionAtMs: Int?
+    /// Owner `override` fields (#188 item 3): the request this owner utterance supersedes. Public so the CLI
+    /// can print the receipt; never transcript content.
+    public let supersededRequestId: String?
+    let byUtteranceId: String?
+    let role: String?
     public static func decode(_ data: Data) throws -> Self {
         guard !data.isEmpty, data.count <= 1_200_000 else { throw RightyoInputError.capacity }
         let decoder = JSONDecoder()
@@ -64,9 +69,10 @@ public struct RightyoInputEvent: Codable, Sendable {
     func validate(session: String, enrolled: Bool, budgetMs: Int? = nil) throws {
         guard schemaVersion == 1, sessionId == session, sequence > 0, emittedAtMs >= 0,
               emittedAtMs <= budgetMs ?? Int.max,
-              ["session", "transcript", "attention", "request"].contains(type) else {
+              ["session", "transcript", "attention", "request", "override"].contains(type) else {
             throw RightyoInputError.invalidEvent
         }
+        try validateOverride(session: session, enrolled: enrolled)
         if let turn { try validate(turn, session: session, enrolled: enrolled) }
         if let decision {
             guard decision.confidence.isFinite, (0...1).contains(decision.confidence),
@@ -94,6 +100,21 @@ public struct RightyoInputEvent: Codable, Sendable {
             previousEnd = prior.endMs
         }
         guard try JSONEncoder().encode(context).count <= 1_048_576 else { throw RightyoInputError.capacity }
+    }
+    /// Only an enrolled session's owner may supersede a request, and the superseded id must carry this
+    /// session's `session:utterance` shape. Other event kinds may not carry override fields (fail closed).
+    private func validateOverride(session: String, enrolled: Bool) throws {
+        guard type == "override" else {
+            guard supersededRequestId == nil, byUtteranceId == nil, role == nil else {
+                throw RightyoInputError.invalidEvent
+            }
+            return
+        }
+        guard enrolled, role == "owner", let supersededRequestId, let byUtteranceId,
+              Self.identifier(byUtteranceId), supersededRequestId.hasPrefix("\(session):"),
+              Self.identifier(String(supersededRequestId.dropFirst(session.count + 1))) else {
+            throw RightyoInputError.invalidEvent
+        }
     }
     private func validate(_ turn: Turn, session: String, enrolled: Bool) throws {
         guard turn.sessionId == session, Self.identifier(turn.sessionId), Self.identifier(turn.utteranceId),

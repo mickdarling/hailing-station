@@ -11,6 +11,7 @@ public actor RightyoInputConsumer {
     private var sequence = 0, emittedAt = 0
     private var speakers = "anonymous"
     private var requests = Set<String>()
+    private var superseded = Set<String>()
     private var decided = Set<String>()
     private var finals: [String: Data] = [:]
     private var attentions: [String: Data] = [:]
@@ -32,6 +33,7 @@ public actor RightyoInputConsumer {
     public func consume(_ event: RightyoInputEvent) async throws -> Bool {
         do {
             guard try admit(event) else { return false }
+            if event.type == "override" { return true }
             guard event.type == "request", let requestID = event.requestId else { return false }
             guard requests.count < 1000, requests.insert(requestID).inserted else {
                 throw RightyoInputError.invalidEvent
@@ -99,6 +101,25 @@ public actor RightyoInputConsumer {
         }
         return caps
     }
+    public func finish() throws {
+        guard terminal, !busy else { throw RightyoInputError.invalidLifecycle }
+        if failed { throw RightyoInputError.producerFailed }
+    }
+    private func lifecycle(_ phase: String?) throws {
+        switch phase {
+        case "started":
+            guard !started else { throw RightyoInputError.invalidLifecycle }
+            started = true
+        case "stopped", "cancelled", "error":
+            guard started else { throw RightyoInputError.invalidLifecycle }
+            terminal = true
+            failed = phase == "error"
+        default: throw RightyoInputError.invalidLifecycle
+        }
+    }
+}
+/// Correlation against admitted records lives here so the actor body stays within the type-length limit.
+extension RightyoInputConsumer {
     private func correlate(_ event: RightyoInputEvent) throws {
         switch event.type {
         case "transcript":
@@ -107,8 +128,10 @@ public actor RightyoInputConsumer {
             }
             finals[turn.utteranceId] = try RightyoInputEvent.fingerprint(turn)
         case "attention": try attention(event)
+        case "override": try supersede(event)
         case "request":
             guard activationEnabled, let turn = event.turn, let decision = event.decision,
+                  !superseded.contains(event.requestId ?? ""),
                   finals[turn.utteranceId] == (try RightyoInputEvent.fingerprint(turn)),
                   attentions[event.requestId ?? ""] == (try RightyoInputEvent.fingerprint(decision)) else {
                 throw RightyoInputError.invalidEvent
@@ -136,20 +159,16 @@ public actor RightyoInputConsumer {
             attentions[event.requestId ?? ""] = try RightyoInputEvent.fingerprint(decision)
         }
     }
-    public func finish() throws {
-        guard terminal, !busy else { throw RightyoInputError.invalidLifecycle }
-        if failed { throw RightyoInputError.producerFailed }
-    }
-    private func lifecycle(_ phase: String?) throws {
-        switch phase {
-        case "started":
-            guard !started else { throw RightyoInputError.invalidLifecycle }
-            started = true
-        case "stopped", "cancelled", "error":
-            guard started else { throw RightyoInputError.invalidLifecycle }
-            terminal = true
-            failed = phase == "error"
-        default: throw RightyoInputError.invalidLifecycle
+    /// An owner `override` (#188 item 3) must follow the owner's own admitted transcript and attention
+    /// records. The superseded id is recorded whether or not this consumer ever admitted it (a producer may
+    /// supersede a request the host refused), idempotently, under the same cap as `requests`. A request
+    /// already sent to the pane stays sent: this records precedence and refuses a later request with that id.
+    private func supersede(_ event: RightyoInputEvent) throws {
+        guard let requestID = event.supersededRequestId, let utterance = event.byUtteranceId,
+              finals[utterance] != nil, decided.contains(utterance),
+              superseded.contains(requestID) || superseded.count < 1000 else {
+            throw RightyoInputError.invalidEvent
         }
+        superseded.insert(requestID)
     }
 }
