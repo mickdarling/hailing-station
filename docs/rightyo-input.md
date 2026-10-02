@@ -79,8 +79,9 @@ Owner override and formed requests are later #188 slices, not this consumer.
 
 Each JSONL record is limited to 1,200,000 bytes, context to 1 MiB/1,000 turns and each text to 4,000
 characters. Stream time (`emitted_at_ms`) must be non-negative and never decrease, with no ceiling by
-default so ambient listening can run for hours; `RightyoInputConsumer(streamBudgetMs:)` is an optional
-explicit budget and the CLI does not yet expose it. The local RightyO command alone uses an
+default so ambient listening can run for hours, although the session is still bounded by the admitted-event,
+finals and requests capacities (4,096 / 1,000 / 1,000) and ends with `capacity` when one is reached;
+`RightyoInputConsumer(streamBudgetMs:)` is an optional explicit budget and the CLI does not yet expose it. The local RightyO command alone uses an
 explicit 1,200,000 character/byte whole-prompt sanitizer cap; other CLI and mobile input retain their
 existing limits. Original turn text must already satisfy control/escape/newline sanitization so JSON
 escaping cannot hide dangerous-pattern spelling. The ordinary host sanitizer, fresh policy, target
@@ -105,9 +106,11 @@ adapters. It covers exact binding, confirmation/lock/guards, complete request an
 ordered lifecycle, sequence gaps, duplicates, cancellation, schema/session/timing refusal, legacy-cap
 exceedance under the explicit local cap, synthetic opt-in, unknown/overlapping speakers and control
 spelling. The shared JSONL fixture is also consumed without a target. `RightyoInputSpeakersTests.swift`
-(#188) adds enrolled roles reaching the prompt, an anonymous request at twenty minutes, named roles refused
-on anonymous sessions, invalid speakers/role values, `known_speaker` requests still refused, the explicit
-stream budget and the enrolled fixture both dry and delivered. Synthetic success is not evidence
+(#188) adds enrolled roles reaching the prompt, named roles refused on anonymous sessions, invalid
+speakers/role values, `known_speaker` requests still refused, enrolled sessions without roles, context roles
+that differ from the admitted transcript and the enrolled fixture both dry and delivered;
+`RightyoInputStreamTimeTests.swift` covers the anonymous request at twenty minutes and the explicit stream
+budget. Synthetic success is not evidence
 of live recognition accuracy, measured speech-end latency or a real application round trip.
 
 On the completed implementation, with `DEVELOPER_DIR=/Applications/Xcode.app/Contents/Developer`:

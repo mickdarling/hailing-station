@@ -78,22 +78,26 @@ public actor RightyoInputConsumer {
         }
         guard seen.count < 4096 else { throw RightyoInputError.capacity }
         if event.type == "session" {
-            if event.phase == "started" {
-                guard let caps = event.capabilities,
-                      ["finalized-turn", "disabled"].contains(caps.activation), !caps.partials,
-                      ["anonymous", "enrolled"].contains(caps.speakers), caps.context else {
-                    throw RightyoInputError.invalidEvent
-                }
+            let caps = try event.phase == "started" ? startCapabilities(event) : nil
+            try lifecycle(event.phase)
+            // Only an accepted first `started` mutates session state; a rejected repeat changes nothing.
+            if let caps {
                 activationEnabled = caps.activation == "finalized-turn"
                 speakers = caps.speakers
             }
-            try lifecycle(event.phase)
         } else if !started { throw RightyoInputError.invalidLifecycle }
         try correlate(event)
         sequence = event.sequence
         emittedAt = event.emittedAtMs
         seen[event.sequence] = fingerprint
         return true
+    }
+    private func startCapabilities(_ event: RightyoInputEvent) throws -> RightyoInputEvent.Capabilities {
+        guard let caps = event.capabilities, ["finalized-turn", "disabled"].contains(caps.activation),
+              !caps.partials, ["anonymous", "enrolled"].contains(caps.speakers), caps.context else {
+            throw RightyoInputError.invalidEvent
+        }
+        return caps
     }
     private func correlate(_ event: RightyoInputEvent) throws {
         switch event.type {
