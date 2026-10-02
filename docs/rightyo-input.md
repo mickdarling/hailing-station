@@ -102,16 +102,18 @@ mismatch as `invalidEvent`: `request_forming` is accepted only on the `started` 
 from the allowlist (`template` for now) and with no other keys; `formed_request` is accepted only on `request`
 events, must be 1 to 16,000 characters (64,000 UTF-8 bytes, the same 4:1 ratio as turn text) and must pass the
 same sanitizer-stability check as turn text (no line breaks, hidden characters, controls, escapes or trailing
-whitespace; every sanitizer refusal is `invalidEvent`), and must not contain the exact marker substring
-` Raw turns (JSON, admitted record): ` (case-sensitive), so a producer cannot append fake JSON that impersonates the
-admitted record; once the session advertised forming every request must carry the text, and when it did not, no
+whitespace; every sanitizer refusal is `invalidEvent`), and may neither contain the marker substring
+` Raw turns (JSON, admitted record): ` nor end in that marker minus its trailing space (a literal code-unit check, not
+a grapheme one, so a combining mark after the marker does not hide it), so the first literal occurrence of the
+marker in a delivered prompt is the host's and a producer cannot append fake JSON that impersonates the admitted
+record; once the session advertised forming every request must carry the text, and when it did not, no
 request may. The text is part of the fingerprinted event, so a changed
 duplicate is refused like any other. Sequence, stream-time, correlation, duplicate and override rules are unchanged.
 
 When `formed_request` is present the prompt body is the formed text, followed on the same line by the marker
 ` Raw turns (JSON, admitted record): ` and then the same compact JSON as before (`request_id`, `speakers`,
 `request`, `decision`, `context`), so the receiving session still has the diarized turns and can cut the JSON off
-at the first marker, which is always the host's. The host cannot verify the formed text against the admitted turns
+at the first literal occurrence of the marker, which is the host's under the rule above. The host cannot verify the formed text against the admitted turns
 and roles: it is an unverified producer claim that may contradict them (for example by attributing a participant's
 words to the owner), and the JSON block is the admitted record the session should trust when the two disagree. On
 an `anonymous` session forming is still allowed, but any role the formed text names is uncheckable because the
@@ -233,7 +235,8 @@ advertisements refused, and the `diarization-utterance` provenance value admitte
 one in `RightyoInputFormedFixtureTests.swift` consuming the formed fixture dry, delivering it through a guarded host
 and refusing it with the text stripped), 45 trace checker tests, five intent tests, 29 CLI tests (nine RightyO
 dry-run tests), audit CLI, strict lint and scripts. The second-key review round added the marker refusal (a case in
-the bounds test) and a guard test (`dangerousSpellingInsideFormedTextIsRefusedByTheHostGuard`, 801 Swift tests). The formed fixture SHA-256 is
+the bounds test) and a guard test (`dangerousSpellingInsideFormedTextIsRefusedByTheHostGuard`, 801 Swift tests); round two made the marker check
+literal and added the trailing-prefix rule (`markerCheckIsLiteralAndCoversTheTrailingPrefix`, 802 Swift tests). The formed fixture SHA-256 is
 `80525a07a0d055f3264bfa297ef6c4834f4e1d22bd67ad810ccf3212656ecb4c`; the other fixtures are unchanged. The CLI is
 untouched. All input is authored; no device, microphone or real target was used.
 

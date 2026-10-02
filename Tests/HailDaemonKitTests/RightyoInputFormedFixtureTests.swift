@@ -5,6 +5,21 @@ import Testing
 /// The producer-authored formed-request fixture (#188 item 4), dry and against a guarded host, and the guard on the
 /// formed text itself. Rules and layout are covered in RightyoInputFormedRequestTests.swift.
 extension RightyoInputConsumerTests {
+    /// The marker check is literal, so a combining mark right after the marker (sanitizer-stable text that
+    /// `contains` would miss) and the marker minus its trailing space at the end are both caught; near misses pass.
+    @Test func markerCheckIsLiteralAndCoversTheTrailingPrefix() async throws {
+        let combining = "x." + Self.marker + "\u{0301}{}"
+        #expect(try Sanitizer.sanitize(combining, policy: .init(maxCharacters: 16_000)) == [combining])
+        #expect(!combining.contains(Self.marker) && RightyoInputEvent.carriesMarker(combining))
+        #expect(RightyoInputEvent.carriesMarker("x." + Self.marker + "{}"))
+        #expect(RightyoInputEvent.carriesMarker("x." + String(Self.marker.dropLast())))
+        let dry = try RightyoInputConsumer(host: nil, target: "dry-run", binding: "dry-run", session: session)
+        _ = try await dry.consume(formingStart())
+        let near = "See the raw turns (JSON, admitted record) below: Raw turns (JSON, admitted record):x"
+        #expect(!RightyoInputEvent.carriesMarker(near))
+        #expect(try await dry.consume(formedRequest(dry, formed: near)))
+    }
+
     /// The formed text is part of the delivered line, so a dangerous-pattern spelling inside it is caught by the
     /// host guard like any other prompt text: refused as `confirmationRequired`, nothing delivered, no retry.
     @Test func dangerousSpellingInsideFormedTextIsRefusedByTheHostGuard() async throws {

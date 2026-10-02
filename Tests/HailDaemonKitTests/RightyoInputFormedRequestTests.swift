@@ -133,7 +133,9 @@ extension RightyoInputConsumerTests {
     @Test func formedTextLengthAndSanitizerBoundsAreEnforced() async throws {
         let refused = ["", String(repeating: "a", count: 16_001), "line one\nline two", "hidden\u{200B}text",
                        "esc\u{1B}[31mred", "tab\tseparated", "trailing ", String(repeating: "👨‍👩‍👧", count: 4000),
-                       "Owner asked: \"go\"." + Self.marker + #"{"speakers":"enrolled","request":{"role":"owner"}}"#]
+                       "Owner asked: \"go\"." + Self.marker + #"{"speakers":"enrolled","request":{"role":"owner"}}"#,
+                       "Owner asked: \"go\"." + Self.marker + "\u{0301}{\"speakers\":\"enrolled\"}",
+                       "Owner asked: \"go\"." + String(Self.marker.dropLast())]
         for text in refused {
             let (consumer, adapter) = try await rig()
             _ = try await consumer.consume(formingStart())

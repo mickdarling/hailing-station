@@ -31,15 +31,23 @@ extension RightyoInputEvent {
         guard let formedRequest else { return }
         let policy = SanitizePolicy(maxCharacters: 16_000, maxUTF8Bytes: 64_000)
         guard type == "request", !formedRequest.isEmpty, formedRequest.count <= 16_000,
-              !formedRequest.contains(Self.rawTurnsMarker),
+              !Self.carriesMarker(formedRequest),
               (try? Sanitizer.sanitize(formedRequest, policy: policy)) == [formedRequest] else {
             throw RightyoInputError.invalidEvent
         }
     }
     /// Separates the formed body from the raw turns on one line: the host sanitizer refuses line breaks, so a
-    /// blank-line layout could never be delivered. A formed text containing this exact substring is refused, so the
-    /// first occurrence in a delivered prompt is always the host's and the producer cannot impersonate the record.
+    /// blank-line layout could never be delivered. A formed text that carries this substring, or ends in it minus
+    /// its trailing space, is refused (`carriesMarker`), so the first literal occurrence in a delivered prompt is
+    /// the host's and the producer cannot impersonate the record.
     static let rawTurnsMarker = " Raw turns (JSON, admitted record): "
+    /// Literal code-unit search, not grapheme search: a combining mark right after the marker would hide it from
+    /// `contains`. The suffix rule covers a text ending in the marker minus its trailing space, which the host's
+    /// leading space would otherwise complete one character early.
+    static func carriesMarker(_ text: String) -> Bool {
+        text.range(of: rawTurnsMarker, options: .literal) != nil
+            || text.range(of: String(rawTurnsMarker.dropLast()), options: [.literal, .backwards, .anchored]) != nil
+    }
     /// `speakers` is the advertised capability (`anonymous` or `enrolled`) so the session can weigh roles. Without a
     /// formed request the prompt is the compact JSON alone, byte for byte as before; with one it is
     /// `<formed_request><rawTurnsMarker><json>`, so the JSON can be cut off at the marker and parsed as a whole.
