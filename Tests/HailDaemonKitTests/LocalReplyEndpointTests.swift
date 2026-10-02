@@ -318,6 +318,165 @@ import Testing
         )
     }
 
+    // The full socket-to-pane-to-terminal dispatch proof keeps setup, assertions and teardown in one scope.
+    // swiftlint:disable:next function_body_length
+    @Test func dispatchOverTheSocketMintsAnOwnedRequestWhileRepliesAreUnchanged() async throws {
+        let scratch = FileManager.default.temporaryDirectory.appendingPathComponent(
+            "hs-dispatch-\(UUID().uuidString.prefix(8))", isDirectory: true
+        )
+        defer { try? FileManager.default.removeItem(at: scratch) }
+        let rig = try await RecipientTestRig.make()
+        let (listener, connected) = try dispatchListener(rig: rig)
+        let port = try await listener.start()
+        let config = scratch.appendingPathComponent("config", isDirectory: true)
+        let socket = config.appendingPathComponent(LocalReplyEndpoint.socketName)
+        let auditDirectory = config.appendingPathComponent("audit", isDirectory: true)
+        let endpoint = try LocalReplyEndpoint(
+            socketURL: socket, destination: listener, audit: AuditLog(directory: auditDirectory)
+        )
+        try await endpoint.start()
+        let (session, terminal) = try terminalClient(port: port)
+        defer {
+            terminal.cancel(with: .normalClosure, reason: nil)
+            session.invalidateAndCancel()
+        }
+        do {
+            try await terminal.send(.data(FrameCoding.encode(helloFrame())))
+            _ = try await terminal.receive()
+            try await terminal.send(.data(FrameCoding.encode(
+                sessionFrame(payload: .control(.select(targetID: RecipientTestRig.target)))
+            )))
+            try await recipientSocketBarrier(on: terminal)
+            let connection = try #require(connected.all.first)
+            // The exact wire shape `haild rightyo --reply-to` will write, by hand.
+            let raw = Data("""
+            {"kind":"dispatch","connection":"\(connection.uuidString)","target":"\(RecipientTestRig.target)",\
+            "binding":"reply-binding","text":"synthetic input"}
+            """.utf8)
+            let dispatched = try await submit(raw, socket: socket.path)
+            let owner = try #require(dispatched.request)
+            #expect(dispatched == .dispatch(delivered: 1, request: owner))
+            let context = try #require(await rig.adapter.contexts.last)
+            #expect(context.id == owner)
+            try await recipientSocketBarrier(on: terminal)
+            // The pane answers through the unchanged correlated path; the reply response carries no `request`.
+            let frame = recipientText(recipientDescriptor(context))
+            let replied = try await submit(frame, socket: socket.path)
+            #expect(replied == LocalReplyResponse(delivered: 1))
+            #expect(!replied.isDispatch)
+            #expect(try await terminalFrame(terminal) == frame)
+            // An explicit legacy `kind` is still a reply frame; a stale connection id refuses in dispatch shape.
+            var tagged = try #require(JSONSerialization.jsonObject(with: FrameCoding.encode(frame)) as? [String: Any])
+            tagged["kind"] = "reply"
+            let duplicate = try await submit(JSONSerialization.data(withJSONObject: tagged), socket: socket.path)
+            #expect(duplicate == LocalReplyResponse(
+                delivered: 0, error: LocalReplyRefusal.noRecipient.message, code: .noRecipient
+            ))
+            let stale = LocalDispatchRequest(
+                connection: UUID(), target: RecipientTestRig.target, binding: "reply-binding", text: "x"
+            )
+            let refused = try await submit(JSONEncoder().encode(stale), socket: socket.path)
+            #expect(refused == .dispatch(
+                delivered: 0, request: nil, error: LocalDispatchRefusal.unknownConnection.message,
+                code: .noRecipient
+            ))
+            try await recipientSocketBarrier(on: terminal)
+            #expect(await rig.adapter.contexts.count == 1)
+            let history = try AuditHistory(directory: auditDirectory).today()
+            #expect(history.filter { $0.contains("\"kind\":\"pushed\"") }.count == 4)
+            #expect(history.filter { $0.contains("local-dispatch") }.count == 2)
+        } catch {
+            await endpoint.stop()
+            await listener.stop(reason: "test failed")
+            throw error
+        }
+        await endpoint.stop()
+        await listener.stop(reason: "test complete")
+    }
+
+    @Test func dispatchToALegacyAdapterReportsAnExplicitNullRequest() async throws {
+        let scratch = FileManager.default.temporaryDirectory.appendingPathComponent(
+            "hs-ld-\(UUID().uuidString.prefix(8))", isDirectory: true
+        )
+        defer { try? FileManager.default.removeItem(at: scratch) }
+        let (listener, adapter) = try await legacyReplyListener()
+        let port = try await listener.start()
+        let socket = scratch.appendingPathComponent("config", isDirectory: true)
+            .appendingPathComponent(LocalReplyEndpoint.socketName)
+        let endpoint = try LocalReplyEndpoint(
+            socketURL: socket, destination: listener,
+            audit: AuditLog(directory: scratch.appendingPathComponent("audit"))
+        )
+        try await endpoint.start()
+        let (session, terminal) = try terminalClient(port: port)
+        defer {
+            terminal.cancel(with: .normalClosure, reason: nil)
+            session.invalidateAndCancel()
+        }
+        do {
+            try await terminal.send(.data(FrameCoding.encode(helloFrame())))
+            _ = try await terminal.receive()
+            let select = sessionFrame(payload: .control(.select(targetID: "tmux:reply")))
+            try await recipientSocketSend(select, on: terminal)
+            try await recipientSocketBarrier(on: terminal)
+            let peers = await listener.peers
+            let connection = try #require(peers.keys.first)
+            let request = LocalDispatchRequest(
+                connection: connection, target: "tmux:reply", binding: "binding", text: "ready"
+            )
+            let response = try await submit(JSONEncoder().encode(request), socket: socket.path)
+            #expect(response == .dispatch(delivered: 1, request: nil))
+            #expect(response.isDispatch)
+            #expect(await adapter.deliveries == [.init(target: "reply", text: "ready", binding: "binding")])
+        } catch {
+            await endpoint.stop()
+            await listener.stop(reason: "test failed")
+            throw error
+        }
+        await endpoint.stop()
+        await listener.stop(reason: "test complete")
+    }
+
+    @Test func ownershipLostAfterHandoffReportsDeliveredWithoutARequest() async throws {
+        let scratch = FileManager.default.temporaryDirectory.appendingPathComponent(
+            "hs-ol-\(UUID().uuidString.prefix(8))", isDirectory: true
+        )
+        defer { try? FileManager.default.removeItem(at: scratch) }
+        let socket = scratch.appendingPathComponent("config", isDirectory: true)
+            .appendingPathComponent(LocalReplyEndpoint.socketName)
+        let endpoint = try LocalReplyEndpoint(
+            socketURL: socket, destination: RefusingDispatchPublisher(reason: .ownershipLost),
+            audit: AuditLog(directory: scratch.appendingPathComponent("audit"))
+        )
+        try await endpoint.start()
+        let request = LocalDispatchRequest(connection: UUID(), target: "tmux:reply", binding: "binding", text: "x")
+        // The handoff completed, so `delivered` is honest; `request` is explicit null and the reason is named.
+        #expect(try await submit(JSONEncoder().encode(request), socket: socket.path) == .dispatch(
+            delivered: 1, request: nil, error: LocalDispatchRefusal.ownershipLost.message, code: .publicationFailed
+        ))
+        await endpoint.stop()
+    }
+
+    @Test func dispatchSharesTheReplyAdmissionBudget() async throws {
+        let scratch = FileManager.default.temporaryDirectory.appendingPathComponent(
+            "hs-db-\(UUID().uuidString.prefix(8))", isDirectory: true
+        )
+        defer { try? FileManager.default.removeItem(at: scratch) }
+        let socket = scratch.appendingPathComponent("config", isDirectory: true)
+            .appendingPathComponent(LocalReplyEndpoint.socketName)
+        let endpoint = try LocalReplyEndpoint(
+            socketURL: socket, destination: await testListener(),
+            audit: AuditLog(directory: scratch.appendingPathComponent("audit"))
+        )
+        try await endpoint.start()
+        await endpoint.exhaustAdmissionBudget()
+        let request = LocalDispatchRequest(connection: UUID(), target: "tmux:reply", binding: "binding", text: "x")
+        let limited = LocalReplyResponse(delivered: 0, error: "rate limited")
+        #expect(try await submit(JSONEncoder().encode(request), socket: socket.path) == limited)
+        #expect(try await submit(replyFrame(), socket: socket.path) == limited)
+        await endpoint.stop()
+    }
+
     @Test func localRefusalCodesRemainBoundedAndStable() throws {
         for reason in [LocalReplyRefusal.sourceHostMismatch, .listenerNotReady, .invalidReplyPayload,
                        .replyTargetMissing, .auditFailure, .decodeFailure, .internalFailure,
@@ -331,6 +490,12 @@ import Testing
 private struct RefusingReplyPublisher: HostReplyPublishing {
     let reason: LocalReplyRefusal
     func publish(_ frame: Frame) async throws -> Int { throw reason }
+}
+
+private struct RefusingDispatchPublisher: HostReplyPublishing {
+    let reason: LocalDispatchRefusal
+    func publish(_ frame: Frame) async throws -> Int { throw LocalReplyRefusal.noRecipient }
+    func dispatch(_ request: LocalDispatchRequest) async throws -> UUID? { throw reason }
 }
 
 private struct CountingReplyPublisher: HostReplyPublishing {
@@ -361,6 +526,19 @@ private func expectRefusal(
     let response = try await submit(data, socket: socket.path)
     #expect(response == LocalReplyResponse(delivered: 0, error: expected.message, code: expected))
     await endpoint.stop()
+}
+
+/// One allowed legacy `tmux:` target: generic input only, so no reply ownership can be minted for it.
+private func legacyReplyListener() async throws -> (WebSocketListener, FakeAdapter) {
+    var policy = Policy()
+    try policy.allow("tmux:reply", binding: "binding", tier: .open)
+    let (host, adapter) = try await sessionHost(
+        targets: [AdapterTarget(name: "reply", binding: "binding")], policy: policy
+    )
+    let listener = try WebSocketListener(
+        bindAddress: "127.0.0.1", port: 0, host: host, authorizer: PersonalTerminalAuthorizer(), hostName: "mac-main"
+    )
+    return (listener, adapter)
 }
 
 private func testListener() async throws -> WebSocketListener {
