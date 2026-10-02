@@ -30,6 +30,8 @@ request (`--session enrolled-demo`); dry run prints one request receipt and then
 RightyO's authored formed-request fixture and must stay so; update both sides together. It is an `enrolled`
 session that advertises `request_forming` and whose owner request carries a `formed_request` with one participant
 turn as context (`--session formed-demo`); dry run prints one request receipt.
+Since RightyO main `6594c65` the fixture's terminal `session` event also
+carries `role_status: "ready"` (SHA-256 `d003d834cc3b826f09cd45df426d8dc4644eb93af5dfdebb1134832ca2bc53b3`).
 
 ## Opt into one explicitly selected local target
 
@@ -130,6 +132,11 @@ whole line and exceeding it is a hit, so a near-maximal formed text on a slow ho
 `confirmationRequired` rather than delivered (fail closed; the test for the longest text therefore runs without a
 host). The CLI receipt is unchanged (`rightyo: request validated (dry run; no delivery)` /
 `rightyo: request delivered`) and never includes the formed text.
+
+RightyO may also put an optional `role_status` string on `session` events and on the degrading turn's `decision`
+when a priority provider is configured. The consumer decodes past it and ignores it: it is not part of the
+fingerprinted record, it is not forwarded in the prompt JSON, and it never changes admission, roles or policy.
+`RightyoInputRoleStatusTests.swift` covers a session start, a decision and a terminal session event that carry it.
 
 ## Owner override
 
@@ -244,6 +251,12 @@ literal and added the trailing-prefix rule (`markerCheckIsLiteralAndCoversTheTra
 three refused explicit nulls (`explicitNullFormingFieldsAreRefusedOnEveryKind`, 803 Swift tests). The formed fixture SHA-256 is
 `80525a07a0d055f3264bfa297ef6c4834f4e1d22bd67ad810ccf3212656ecb4c`; the other fixtures are unchanged. The CLI is
 untouched. All input is authored; no device, microphone or real target was used.
+
+On the fixture resync to RightyO main `6594c65` (#188), `fixtures/rightyo/enrolled-override.jsonl` was refetched
+byte-identically (SHA-256 `d003d834cc3b826f09cd45df426d8dc4644eb93af5dfdebb1134832ca2bc53b3`); the only change is
+`role_status: "ready"` on its terminal `session` event. No consumer code changed: the synthesized `Codable` decoder
+already ignores unknown keys, and `RightyoInputRoleStatusTests.swift` adds one test proving `role_status` on a session
+event and on a decision is decoded past and neither forwarded nor acted on. Source marketing version is 0.1.64.
 
 Independent preflight inspection found that Foundation's buffered stdin read could wait for 4 KiB or
 EOF before handling an attended request. The CLI uses an available-chunk POSIX read and an unbuffered
