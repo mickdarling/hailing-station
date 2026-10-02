@@ -23,9 +23,12 @@ import Testing
         return session
     }
 
-    private func input(_ session: HostSession) async throws -> AuthorizedInput {
-        let frame = sessionFrame(target: Self.target, payload: .text(TextPayload(text: "synthetic input")))
-        return try #require(await session.authorize(frame))
+    /// Authorizes inside the task so the proof is minted and consumed by one owner.
+    private func deliverTask(_ session: HostSession) -> Task<HostDeliveryOutcome, any Error> {
+        Task {
+            let frame = sessionFrame(target: Self.target, payload: .text(TextPayload(text: "synthetic input")))
+            return await session.deliver(try authorizedInput(session, frame, device: "phone"))
+        }
     }
 
     @Test func selectionChangeDuringTheListingRefusesBeforeAnyHandoff() async throws {
@@ -33,14 +36,13 @@ import Testing
         let session = try await session(with: adapter)
         await adapter.gateNextListing()
         async let arrival: Void = adapter.nextListingArrival()
-        let input = try await input(session)
-        let delivery = Task { await session.deliver(input) }
+        let delivery = deliverTask(session)
         await arrival
         // The phone selects elsewhere while the input is parked in the registry listing.
         let selected = await session.receive(sessionFrame(payload: .control(.select(targetID: Self.other))))
         #expect(selected.frames.isEmpty)
         await adapter.releaseListing()
-        #expect(await delivery.value == .selectionChanged)
+        #expect(try await delivery.value == .selectionChanged)
         #expect(await adapter.deliveries.isEmpty)
         // The frame path reports the same refusal the contextual path already used for this case.
         _ = await session.receive(sessionFrame(payload: .control(.select(targetID: Self.target))))
@@ -60,13 +62,12 @@ import Testing
         let adapter = GatedFakeAdapter(AdapterTarget(name: "reply", binding: "binding"))
         let session = try await session(with: adapter)
         async let arrival: Void = adapter.nextArrival()
-        let input = try await input(session)
-        let delivery = Task { await session.deliver(input) }
+        let delivery = deliverTask(session)
         await arrival
         _ = await session.receive(sessionFrame(payload: .control(.select(targetID: Self.other))))
         await adapter.release()
         // The text had already reached the adapter; the outcome says so without claiming a current recipient.
-        #expect(await delivery.value == .unowned("request destination changed"))
+        #expect(try await delivery.value == .unowned("request destination changed"))
         #expect(await adapter.deliveries == ["synthetic input"])
     }
 
@@ -74,13 +75,12 @@ import Testing
         let adapter = GatedFakeAdapter(AdapterTarget(name: "reply", binding: "binding"))
         let session = try await session(with: adapter)
         async let arrival: Void = adapter.nextArrival()
-        let input = try await input(session)
-        let delivery = Task { await session.deliver(input) }
+        let delivery = deliverTask(session)
         await arrival
         // A protocol closure (version mismatch) ends the session while the text is inside the adapter.
         _ = await session.receive(sessionFrame(version: 2, payload: .control(.ping(nonce: "x"))))
         await adapter.release()
-        #expect(await delivery.value == .unowned("request destination changed"))
+        #expect(try await delivery.value == .unowned("request destination changed"))
         #expect(await session.state == .closed)
     }
 
@@ -88,10 +88,9 @@ import Testing
         let adapter = GatedFakeAdapter(AdapterTarget(name: "reply", binding: "binding"))
         let session = try await session(with: adapter)
         async let arrival: Void = adapter.nextArrival()
-        let input = try await input(session)
-        let delivery = Task { await session.deliver(input) }
+        let delivery = deliverTask(session)
         await arrival
         await adapter.release()
-        #expect(await delivery.value == .delivered(request: nil))
+        #expect(try await delivery.value == .delivered(request: nil))
     }
 }

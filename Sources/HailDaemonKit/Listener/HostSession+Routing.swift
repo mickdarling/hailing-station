@@ -17,8 +17,8 @@ enum HostDeliveryOutcome: Sendable, Equatable {
 }
 
 extension HostSession {
-    func route(_ admitted: AdmittedFrame, version: Int) async -> HostSessionResult {
-        switch admitted {
+    func route(_ admitted: consuming AdmittedFrame, version: Int) async -> HostSessionResult {
+        switch consume admitted {
         case .input(let input):
             return await deliver(input, version: version)
         case .control(let control):
@@ -32,7 +32,7 @@ extension HostSession {
         }
     }
 
-    private func deliver(_ input: AuthorizedInput, version: Int) async -> HostSessionResult {
+    private func deliver(_ input: consuming AuthorizedInput, version: Int) async -> HostSessionResult {
         switch await deliver(input) {
         case .delivered:
             return HostSessionResult(frames: [])
@@ -49,8 +49,9 @@ extension HostSession {
 
     /// Lease, permit, capacity, lifetime and generation checks, then `HailHost.send` with its sanitizer,
     /// shape and policy gates; only a successful complete handoff commits the request record. The input
-    /// type is the authorization proof: nothing reaches the host that the session's authorizer did not allow.
-    func deliver(_ input: AuthorizedInput) async -> HostDeliveryOutcome {
+    /// type is the authorization proof: nothing reaches the host that the session's authorizer did not
+    /// allow, and the proof is consumed here, so one decision admits exactly one handoff.
+    func deliver(_ input: consuming AuthorizedInput) async -> HostDeliveryOutcome {
         guard input.target == selectedTarget else {
             return .refused(.notAllowed, "select the destination before speaking")
         }
@@ -103,7 +104,7 @@ extension HostSession {
         return .delivered(request: context.id)
     }
 
-    private func send(_ input: AuthorizedInput, context: ProviderTurnContext?) async throws -> SendOutcome {
+    private func send(_ input: borrowing AuthorizedInput, context: ProviderTurnContext?) async throws -> SendOutcome {
         do {
             if let context { return try await host.send(input.text, context: context, from: input.device) }
             return try await host.send(
@@ -116,7 +117,9 @@ extension HostSession {
     }
 
     /// Capability preflight does not grant execution. HailHost still checks shape, exact binding and policy.
-    private func replyContext(for input: AuthorizedInput, generation: UUID) async throws -> ProviderTurnContext? {
+    private func replyContext(
+        for input: borrowing AuthorizedInput, generation: UUID
+    ) async throws -> ProviderTurnContext? {
         let target = input.target
         let listing = try await host.registry.listing()
         guard let listed = listing.first(where: { $0.info.id == target }), let binding = listed.binding,
