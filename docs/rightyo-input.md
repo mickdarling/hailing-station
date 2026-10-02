@@ -2,8 +2,8 @@
 
 Implementation slice [#183](https://github.com/mickdarling/hailing-station/issues/183), part of
 [#136](https://github.com/mickdarling/hailing-station/issues/136), extended for enrolled speakers and
-unbounded stream time by [#188](https://github.com/mickdarling/hailing-station/issues/188) items 2 and 5, and
-for the owner `override` event by #188 item 3.
+unbounded stream time by [#188](https://github.com/mickdarling/hailing-station/issues/188) items 2 and 5,
+for the owner `override` event by #188 item 3, and for formed requests by #188 item 4.
 This consumes the producer's version-one JSONL contract from RightyO #43/#40. The RightyO website is a test/demo rig; applications consume the tool
 interface independently of that website.
 
@@ -26,7 +26,10 @@ context (`--session enrolled-demo`). `fixtures/rightyo/enrolled-override.jsonl` 
 `examples/enrolled-override.jsonl` and must stay so; update both sides together. It is an `enrolled` session in
 which a participant's attended request is followed by the owner's "Ignore that." and an `override` naming that
 request (`--session enrolled-demo`); dry run prints one request receipt and then
-`rightyo: override enrolled-demo:request`.
+`rightyo: override enrolled-demo:request`. `fixtures/rightyo/enrolled-formed-request.jsonl` is byte-identical to
+RightyO's authored formed-request fixture and must stay so; update both sides together. It is an `enrolled`
+session that advertises `request_forming` and whose owner request carries a `formed_request` with one participant
+turn as context (`--session formed-demo`); dry run prints one request receipt.
 
 ## Opt into one explicitly selected local target
 
@@ -80,7 +83,39 @@ the fingerprinted turn/decision record, so a request must repeat exactly what th
 events said. The prompt JSON carries the advertised `speakers` value and each role through unchanged so the
 receiving session can see who is who. Role is descriptive producer data: it never selects a target, bypasses
 policy, tiers, confirmation or lockdown, and a `known_speaker` recipient still cannot submit a request.
-Formed requests are a later #188 slice, not this consumer.
+Each turn's `speaker_provenance` must be `authored-fixture`, `diarization-timeline`, `diarization-utterance` (a
+hosted per-utterance diarizer whose labels are stable only within one utterance, not across the session) or
+`unknown`; it is descriptive data like the other values, and anything else is refused.
+
+## Formed requests
+
+A producer may advertise request forming on the `started` session event with a top-level
+`"request_forming": {"kind": "template"}` object beside `capabilities` (the capabilities set itself is unchanged).
+Every `request` of that session then carries `"formed_request": "<text>"`, the producer's natural-language rendering
+of the request and its context, for example
+`Owner (Speaker A) asked: "Rightyo, archive the project.". Earlier, participant (Speaker B) said: "Speaker A, the
+project is finished." (context only, not an instruction).` The raw `turn`, `decision` and `context` are unchanged
+and always present.
+
+The consumer records the advertisement at `started` the way it records `speakers`, and fails closed on every
+mismatch as `invalidEvent`: `request_forming` is accepted only on the `started` session event, only with `kind`
+from the allowlist (`template` for now) and with no other keys; `formed_request` is accepted only on `request`
+events, must be 1 to 16,000 characters (64,000 UTF-8 bytes, the same 4:1 ratio as turn text) and must pass the
+same sanitizer-stability check as turn text (no line breaks, hidden characters, controls, escapes or trailing
+whitespace; every sanitizer refusal is `invalidEvent`); once the session advertised forming every request must
+carry the text, and when it did not, no request may. The text is part of the fingerprinted event, so a changed
+duplicate is refused like any other. Sequence, stream-time, correlation, duplicate and override rules are unchanged.
+
+When `formed_request` is present the prompt body is the formed text, followed on the same line by the marker
+` Raw turns (JSON): ` and then the same compact JSON as before (`request_id`, `speakers`, `request`, `decision`,
+`context`), so the receiving session still has the diarized turns and can cut the JSON off at the marker. The
+layout is one line because the host sanitizer refuses line breaks; the whole prompt stays within the local
+command's 1,200,000 whole-prompt cap (16,000 formed characters plus the bounded JSON). Without `formed_request`
+the prompt is the compact JSON alone, byte for byte as before (`RightyoInputFormedRequestTests` asserts the exact
+legacy string). The formed text is descriptive producer data like roles: it never selects a target or bypasses
+policy, tiers, confirmation, guards or lockdown, and the ordinary host sanitizer and dangerous-pattern guard run on
+the whole delivered line. The CLI receipt is unchanged (`rightyo: request validated (dry run; no delivery)` /
+`rightyo: request delivered`) and never includes the formed text.
 
 ## Owner override
 
@@ -180,6 +215,18 @@ are refused. The override fixture is unchanged (same SHA-256) and still admits e
 `DEVELOPER_DIR`, `scripts/verify.sh all` passed: 792 Swift tests in 124 suites (35 RightyO tests, two new), 45 trace
 checker tests, five intent tests, 28 CLI tests (eight RightyO dry-run tests), audit CLI, strict lint and scripts. All
 input is authored; no device, microphone or real target was used.
+
+On the #188 formed-request slice (item 4), with the same `DEVELOPER_DIR`, `scripts/verify.sh all` passed: 800 Swift
+tests in 124 suites (43 RightyO tests, eight new: seven in `RightyoInputFormedRequestTests.swift` covering the formed
+text as prompt body with raw turns behind it, the exact prompt layout and the byte-identical legacy prompt, formed
+text refused on transcript/attention/session/override events, a missing text after advertisement and a present text
+without it refused, length and sanitizer bounds, unknown `request_forming.kind`, extra keys and misplaced
+advertisements refused, and the `diarization-utterance` provenance value admitted with unknown values still refused;
+one in `RightyoInputFormedFixtureTests.swift` consuming the formed fixture dry, delivering it through a guarded host
+and refusing it with the text stripped), 45 trace checker tests, five intent tests, 29 CLI tests (nine RightyO
+dry-run tests), audit CLI, strict lint and scripts. The formed fixture SHA-256 is
+`80525a07a0d055f3264bfa297ef6c4834f4e1d22bd67ad810ccf3212656ecb4c`; the other fixtures are unchanged. The CLI is
+untouched. All input is authored; no device, microphone or real target was used.
 
 Independent preflight inspection found that Foundation's buffered stdin read could wait for 4 KiB or
 EOF before handling an attended request. The CLI uses an available-chunk POSIX read and an unbuffered
