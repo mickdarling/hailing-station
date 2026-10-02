@@ -1,6 +1,9 @@
 import Foundation
 public import HailProtocol
 
+// Correlated and single-terminal fallback publication share one admission-and-enqueue boundary.
+// swiftlint:disable file_length
+
 enum ReplyPublicationStatus: Equatable, Sendable {
     case absent, pending, ready
 }
@@ -73,14 +76,16 @@ extension HostSession {
         } ?? .absent
     }
 
-    private func replyCandidate(_ frame: Frame) -> (UUID, HostReplyRequest)? {
-        let reply: ReplyDescriptor?
+    private func replyDescriptor(_ frame: Frame) -> ReplyDescriptor? {
         switch frame.payload {
-        case .text(let text): reply = text.reply
-        case .audio(let audio): reply = audio.reply
-        default: return nil
+        case .text(let text): text.reply
+        case .audio(let audio): audio.reply
+        default: nil
         }
-        guard !Task.isCancelled, let reply, let requestID = reply.requestID else { return nil }
+    }
+
+    private func replyCandidate(_ frame: Frame) -> (UUID, HostReplyRequest)? {
+        guard !Task.isCancelled, let reply = replyDescriptor(frame), let requestID = reply.requestID else { return nil }
         guard case .ready(let version) = state, frame.version == version,
               var request = replyRequests[requestID], request.isCurrent(at: requestClock()),
               request.generation == selectionGeneration, selectedTarget == frame.target,
@@ -107,6 +112,43 @@ extension HostSession {
         }
         return true
     }
+
+    /// Side-effect-free single-terminal fallback snapshot (#188): a request-less reply, live selection of
+    /// its target and a currently issuable host permit (policy binding, tier, policy health, lockdown).
+    /// No ticket is retained from it.
+    func admitsRequestlessReply(_ frame: Frame) async -> Bool {
+        guard selectsRequestlessReplyTarget(frame), await requestlessReplyPermit(frame) != nil else { return false }
+        return selectsRequestlessReplyTarget(frame)
+    }
+
+    /// Any explicit request reference, owned or not, stays on the correlated path. Only the plain
+    /// `haild reply --say` shape may fall back, so a stale reference can never reach another connection.
+    private func selectsRequestlessReplyTarget(_ frame: Frame) -> Bool {
+        guard !Task.isCancelled, case .ready(let version) = state, frame.version == version,
+              let reply = replyDescriptor(frame), reply.requestID == nil,
+              let target = frame.target, target == selectedTarget else { return false }
+        return true
+    }
+
+    /// Policy, exact binding, tier and lockdown are re-read from the host for every fallback attempt.
+    /// There is no retained request ticket, cooperative lease or media pinning for a request-less reply.
+    private func requestlessReplyPermit(_ frame: Frame) async -> ReplyPublicationPermit? {
+        guard let target = frame.target, let listing = try? await host.registry.listing(),
+              let listed = listing.first(where: { $0.info.id == target }), let binding = listed.binding,
+              listed.info.alive, let sessionBinding = try? ProviderSessionBinding(
+                hostID: hostName, providerID: listed.info.kind, targetID: target, sessionID: binding
+              ) else { return nil }
+        return await host.replyPublicationPermit(for: sessionBinding)
+    }
+
+    /// Delivers to this connection only while it still selects the target and the host permit is current.
+    func enqueueRequestlessReply(_ frame: Frame, enqueue: @Sendable () -> Bool) async -> Bool {
+        guard selectsRequestlessReplyTarget(frame),
+              let permit = await requestlessReplyPermit(frame) else { return false }
+        // Selection or state may have moved during the awaits; the gate itself rejects a revoked permit.
+        guard selectsRequestlessReplyTarget(frame) else { return false }
+        return permit.performIfCurrent { !Task.isCancelled && enqueue() } == true
+    }
 }
 
 extension WebSocketPeer {
@@ -123,6 +165,22 @@ extension WebSocketPeer {
     func deliverHostReply(_ frame: Frame) async -> Bool {
         guard !ended, let prepared = prepareReplyPublication(frame),
               await session.enqueueHostReply(frame, enqueue: prepared.enqueue) else { return false }
+        guard await prepared.result() else {
+            finish(reason: "host reply send failed")
+            return false
+        }
+        return true
+    }
+
+    func admitsRequestlessReply(_ frame: Frame) async -> Bool {
+        guard await session.admitsRequestlessReply(frame) else { return false }
+        // A retiring transport cannot be the single recipient.
+        return prepareReplyPublication(frame) != nil
+    }
+
+    func deliverRequestlessReply(_ frame: Frame) async -> Bool {
+        guard !ended, let prepared = prepareReplyPublication(frame),
+              await session.enqueueRequestlessReply(frame, enqueue: prepared.enqueue) else { return false }
         guard await prepared.result() else {
             finish(reason: "host reply send failed")
             return false
@@ -150,12 +208,31 @@ extension WebSocketListener {
         }
         try Task.checkCancellation()
         guard !stopped else { throw WebSocketListenerError.stoppedBeforeReady }
-        guard let (peer, status) = candidate else { throw LocalReplyRefusal.noRecipient }
+        guard let (peer, status) = candidate else { return try await publishUncorrelated(validated) }
         // This refusal has made zero enqueue attempts. Only this code permits bounded same-frame retry.
         guard status == .ready else { throw LocalReplyRefusal.requestPending }
         // The snapshot may already be stale. Final synchronous gates decide; later send completion
         // failure is ambiguous and must never be treated as a safe pre-publication retry.
         guard await peer.deliverHostReply(validated) else { throw LocalReplyRefusal.publicationFailed }
+        return 1
+    }
+
+    /// Demo-era single-terminal bridge (#188): with the opt-in flag, a reply carrying no request reference
+    /// reaches the one live connection selecting its target. Any explicit reference that is not currently
+    /// owned keeps today's refusal, as do zero or several selecting connections; this is bounded, not a
+    /// return to broadcast. The scan is a snapshot; uniqueness is not rescanned at enqueue.
+    private func publishUncorrelated(_ frame: Frame) async throws -> Int {
+        guard singleTerminalReplyFallback else { throw LocalReplyRefusal.noRecipient }
+        var candidates: [WebSocketPeer] = []
+        for peer in Array(peers.values) where await peer.admitsRequestlessReply(frame) {
+            candidates.append(peer)
+        }
+        try Task.checkCancellation()
+        guard !stopped else { throw WebSocketListenerError.stoppedBeforeReady }
+        // The whole scan completes first so the refusal code never depends on peer iteration order.
+        guard candidates.count <= 1 else { throw LocalReplyRefusal.notUniqueRecipient }
+        guard let candidate = candidates.first else { throw LocalReplyRefusal.noRecipient }
+        guard await candidate.deliverRequestlessReply(frame) else { throw LocalReplyRefusal.publicationFailed }
         return 1
     }
 

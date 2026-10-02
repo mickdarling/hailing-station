@@ -11,7 +11,8 @@ public enum ConnectionProbeDaemon {
         let options = try options(arguments)
         let listener = try WebSocketListener(
             bindAddress: options.address, port: options.port, host: host,
-            authorizer: options.authorizer, hostName: hostName, log: log
+            authorizer: options.authorizer, hostName: hostName,
+            singleTerminalReplyFallback: options.singleTerminalReplyFallback, log: log
         )
         let replyEndpoint: LocalReplyEndpoint? = try options.personalTerminal.map { socket in
             try LocalReplyEndpoint(
@@ -53,20 +54,23 @@ public enum ConnectionProbeDaemon {
         }
     }
 
-    private struct Options {
+    struct Options {
         var address: String
         var port: UInt16
         var authorizer: any HostSessionAuthorizing
         var personalTerminal: URL?
+        /// `--single-terminal-reply-fallback`: a single-phone demo bridge, only with `--personal-terminal`.
+        var singleTerminalReplyFallback = false
     }
 
     // Each accepted flag is an explicit branch; combinations are validated after parsing.
     // swiftlint:disable:next cyclomatic_complexity
-    private static func options(_ arguments: [String]) throws -> Options {
+    static func options(_ arguments: [String]) throws -> Options {
         var address: String?
         var port: UInt16?
         var authorizer: (any HostSessionAuthorizing)?
         var personalTerminal = false
+        var singleTerminalReplyFallback = false
         var replySocket: URL?
         var rest = arguments[...]
         while let flag = rest.popFirst() {
@@ -86,14 +90,18 @@ public enum ConnectionProbeDaemon {
                     throw WebSocketListenerError.invalidArguments
                 }
                 replySocket = URL(fileURLWithPath: path)
+            case "--single-terminal-reply-fallback": singleTerminalReplyFallback = true
             default: throw WebSocketListenerError.invalidArguments
             }
         }
         guard let address, let port, let authorizer,
-              personalTerminal || replySocket == nil else { throw WebSocketListenerError.invalidArguments }
+              personalTerminal || (replySocket == nil && !singleTerminalReplyFallback) else {
+            throw WebSocketListenerError.invalidArguments
+        }
         return Options(
             address: address, port: port, authorizer: authorizer,
-            personalTerminal: personalTerminal ? (replySocket ?? LocalReplyEndpoint.standardSocket()) : nil
+            personalTerminal: personalTerminal ? (replySocket ?? LocalReplyEndpoint.standardSocket()) : nil,
+            singleTerminalReplyFallback: singleTerminalReplyFallback
         )
     }
 }

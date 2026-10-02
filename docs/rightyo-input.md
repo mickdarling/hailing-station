@@ -80,7 +80,8 @@ Owner override and formed requests are later #188 slices, not this consumer.
 Each JSONL record is limited to 1,200,000 bytes, context to 1 MiB/1,000 turns and each text to 4,000
 characters. Stream time (`emitted_at_ms`) must be non-negative and never decrease, with no ceiling by
 default so ambient listening can run for hours, although the session is still bounded by the admitted-event,
-finals and requests capacities (4,096 / 1,000 / 1,000) and ends with `capacity` when one is reached;
+finals and requests capacities (4,096 / 1,000 / 1,000). Only the admitted-event cap ends the session with
+`capacity`; a finals or requests cap is refused as `invalidEvent`, like any other rejected record;
 `RightyoInputConsumer(streamBudgetMs:)` is an optional explicit budget and the CLI does not yet expose it. The local RightyO command alone uses an
 explicit 1,200,000 character/byte whole-prompt sanitizer cap; other CLI and mobile input retain their
 existing limits. Original turn text must already satisfy control/escape/newline sanitization so JSON
