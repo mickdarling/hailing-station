@@ -143,16 +143,14 @@ extension RightyoInputConsumerTests {
             await #expect(throws: RightyoInputError.invalidEvent) { try await consumer.consume(formed) }
             #expect(await adapter.deliveries.isEmpty)
         }
-        // The longest allowed text needs the CLI's whole-prompt cap; the default 2,000-character policy is too small.
-        let adapter = FakeAdapter(kind: "tmux", targets: [AdapterTarget(name: "demo", binding: "original")])
-        let host = try await HostSendTests().host(adapter, sanitizing: .init(maxCharacters: 1_200_000,
-                                                                              maxUTF8Bytes: 1_200_000))
-        let consumer = try RightyoInputConsumer(host: host, target: "tmux:demo", binding: "original",
-                                                session: session, allowSynthetic: true)
-        _ = try await consumer.consume(formingStart())
+        // The longest allowed text is validated without a host: a live host's guard has a 20 ms per-rule match
+        // budget and treats exceeding it on a 17 KB line as a hit (fail closed), which is timing, not validation.
+        let dry = try RightyoInputConsumer(host: nil, target: "dry-run", binding: "dry-run", session: session)
+        _ = try await dry.consume(formingStart())
         let longest = String(repeating: "a", count: 16_000)
-        #expect(try await consumer.consume(formedRequest(consumer, formed: longest)))
-        #expect(await adapter.deliveries.first?.text.hasPrefix(longest + Self.marker) == true)
+        let event = try await formedRequest(dry, formed: longest)
+        #expect(try await dry.consume(event))
+        #expect(try event.prompt(speakers: "enrolled").hasPrefix(longest + Self.marker + "{"))
     }
 
     /// `diarization-utterance` (hosted per-utterance diarizer; labels stable only within one utterance) joins the

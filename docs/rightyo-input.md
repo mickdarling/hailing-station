@@ -125,7 +125,10 @@ the prompt is the compact JSON alone, byte for byte as before (`RightyoInputForm
 legacy string). The formed text is descriptive producer data like roles: it never selects a target or bypasses
 policy, tiers, confirmation, guards or lockdown, and the ordinary host sanitizer and dangerous-pattern guard run on
 the whole delivered line, so a dangerous-pattern spelling inside the formed text is refused as
-`confirmationRequired` like any other prompt text. The CLI receipt is unchanged (`rightyo: request validated (dry run; no delivery)` /
+`confirmationRequired` like any other prompt text. The guard's 20 ms per-rule match budget also applies to the
+whole line and exceeding it is a hit, so a near-maximal formed text on a slow host can be refused as
+`confirmationRequired` rather than delivered (fail closed; the test for the longest text therefore runs without a
+host). The CLI receipt is unchanged (`rightyo: request validated (dry run; no delivery)` /
 `rightyo: request delivered`) and never includes the formed text.
 
 ## Owner override
