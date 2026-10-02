@@ -73,7 +73,7 @@ public actor HostSession {
     public static let capabilities = ["connection_probe", "list_targets", "ping"]
 
     let host: HailHost
-    private let authorizer: any HostSessionAuthorizing
+    let authorizer: any HostSessionAuthorizing
     let hostName: String
     let now: @Sendable () -> Int64
     let requestClock: @Sendable () -> ContinuousClock.Instant

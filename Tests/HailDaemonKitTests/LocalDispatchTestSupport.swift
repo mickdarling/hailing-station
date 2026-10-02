@@ -31,6 +31,11 @@ func dispatchRequest(
     LocalDispatchRequest(connection: connection, target: target, binding: binding, text: text)
 }
 
+extension HostSession {
+    /// Test-only: a selection no authorizer granted, to prove the dispatch authorizer gate is not transitive.
+    func forceSelection(_ target: String) { selectedTarget = target }
+}
+
 extension WebSocketListener {
     func connectionID(of peer: WebSocketPeer) -> UUID? {
         peers.first { $0.value === peer }?.key

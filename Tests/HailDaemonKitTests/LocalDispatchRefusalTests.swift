@@ -45,6 +45,20 @@ import Testing
         #expect(await rig.adapter.contexts.isEmpty)
     }
 
+    @Test func connectionProbeSessionsAreRefusedByTheAuthorizerBeforeAnythingElse() async throws {
+        let rig = try await RecipientTestRig.make()
+        let probe = HostSession(host: rig.host, hostName: "mac-test")
+        _ = await probe.receive(helloFrame())
+        // Force the state a probe can never reach through its own frames; the authorizer still refuses.
+        await probe.forceSelection(RecipientTestRig.target)
+        #expect(await probe.selectedTarget == RecipientTestRig.target)
+        await #expect(throws: LocalDispatchRefusal.notAuthorized) {
+            try await probe.dispatch(dispatchRequest(connection: UUID()))
+        }
+        #expect(await rig.adapter.contexts.isEmpty)
+        #expect(await probe.replyRequests.isEmpty)
+    }
+
     @Test func pinnedBindingMustEqualTheCurrentListing() async throws {
         let rig = try await RecipientTestRig.make()
         let session = await rig.session()

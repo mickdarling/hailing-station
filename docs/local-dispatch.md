@@ -56,6 +56,7 @@ Each gate refuses before the handoff; nothing falls back to whichever connection
 | `unknownConnection` | no live peer has that id (never connected, or already removed) |
 | `connectionEnded` | the peer is still listed but its transport has ended |
 | `sessionNotReady` | the connection has not completed Hello |
+| `notAuthorized` | the session's authorizer would refuse the equivalent final text frame (a connection-probe session, which can select nothing, is refused here before anything else) |
 | `targetNotSelected` | the connection selects nothing or another target; rechecked after the listing |
 | `bindingMismatch` | the current listing binding differs from the pinned one, or the target is not listed alive |
 | `confirmationRequired` | the policy answered with a read-back; the minted record is removed and nothing is delivered |

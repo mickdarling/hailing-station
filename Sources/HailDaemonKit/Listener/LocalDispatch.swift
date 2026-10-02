@@ -51,7 +51,7 @@ public struct LocalDispatchRequest: Codable, Sendable, Equatable {
 
 /// Stable dispatch refusals. The wire `code` reuses the reply vocabulary; `error` names the exact reason.
 public enum LocalDispatchRefusal: String, Error, Sendable, Equatable {
-    case unsupported, unknownConnection, connectionEnded, sessionNotReady, targetNotSelected
+    case unsupported, unknownConnection, connectionEnded, sessionNotReady, notAuthorized, targetNotSelected
     case bindingMismatch, confirmationRequired, capacityExceeded, deliveryRefused, ownershipLost
 
     public var message: String {
@@ -60,6 +60,7 @@ public enum LocalDispatchRefusal: String, Error, Sendable, Equatable {
         case .unknownConnection: "no live connection has that id"
         case .connectionEnded: "connection has ended"
         case .sessionNotReady: "connection has not negotiated"
+        case .notAuthorized: "connection is not authorized to send text"
         case .targetNotSelected: "connection does not select that target"
         case .bindingMismatch: "target binding differs from the pinned binding"
         case .confirmationRequired: "target requires confirmation at the Mac"
@@ -72,7 +73,7 @@ public enum LocalDispatchRefusal: String, Error, Sendable, Equatable {
 
     public var code: LocalReplyRefusal {
         switch self {
-        case .unknownConnection, .connectionEnded, .sessionNotReady, .targetNotSelected: .noRecipient
+        case .unknownConnection, .connectionEnded, .sessionNotReady, .notAuthorized, .targetNotSelected: .noRecipient
         default: .publicationFailed
         }
     }
@@ -100,6 +101,12 @@ extension HostSession {
     /// nil when the adapter accepts only legacy generic input and so cannot own a reply.
     func dispatch(_ request: LocalDispatchRequest) async throws -> UUID? {
         try requireSelection(of: request)
+        // The same authorizer that gates every phone frame gates the dispatch: a connection-probe session
+        // can never reach `HailHost.send` this way, whatever its state or selection says.
+        guard case .ready(let version) = state, await authorizer.authorize(Frame(
+            version: version, timestamp: now(), target: request.target, source: Self.dispatchDevice,
+            payload: .text(TextPayload(text: request.text))
+        )) == .allow else { throw LocalDispatchRefusal.notAuthorized }
         let listing = try await host.registry.listing()
         guard let listed = listing.first(where: { $0.info.id == request.target }), listed.info.alive,
               listed.binding == request.binding else { throw LocalDispatchRefusal.bindingMismatch }
