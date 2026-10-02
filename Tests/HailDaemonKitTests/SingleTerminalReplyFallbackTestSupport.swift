@@ -20,14 +20,17 @@ func uncorrelatedDescriptor(audio: Bool = false) -> ReplyDescriptor {
 }
 
 extension WebSocketListener {
-    func installFallbackSyntheticPeers(_ sessions: [HostSession]) {
+    @discardableResult
+    func installFallbackSyntheticPeers(_ sessions: [HostSession]) -> [WebSocketPeer] {
         readyResult = .success(0)
-        for session in sessions {
+        return sessions.map { session in
             let id = UUID()
             let connection = NWConnection(host: "127.0.0.1", port: 9, using: .tcp)
-            peers[id] = WebSocketPeer(id: id, connection: connection, session: session,
+            let peer = WebSocketPeer(id: id, connection: connection, session: session,
                                      queue: DispatchQueue(label: "synthetic.fallback"),
                                      helloTimeout: .seconds(1), log: { _ in }, onEnd: { _ in })
+            peers[id] = peer
+            return peer
         }
     }
 }
@@ -62,6 +65,11 @@ struct FallbackSocketPair {
     /// Every socket must be idle: a stray reply is a failure, never a timing inference.
     func barrier() async throws {
         for socket in sockets { try await recipientSocketBarrier(on: socket) }
+    }
+
+    func select(_ target: String, on index: Int) async throws {
+        try await recipientSocketSend(sessionFrame(payload: .control(.select(targetID: target))), on: sockets[index])
+        try await recipientSocketBarrier(on: sockets[index])
     }
 
     func submitInput(on index: Int, rig: RecipientTestRig) async throws -> ProviderTurnContext {

@@ -8,13 +8,6 @@ enum ReplyPublicationStatus: Equatable, Sendable {
     case absent, pending, ready
 }
 
-/// Single-terminal fallback admission (#188). `ownsRequest` means this connection holds a current record
-/// for the frame's request, so the correlated path already judged the frame; the fallback never overrides
-/// a media, duplicate or expiry refusal of a known request.
-enum UncorrelatedReplyAdmission: Equatable, Sendable {
-    case unrelated, ownsRequest, selectsTarget
-}
-
 /// A host-minted request belongs to this HostSession only. Neither device names nor wire UUIDs create it.
 struct HostReplyRequest {
     static let capacity = 64
@@ -120,26 +113,26 @@ extension HostSession {
         return true
     }
 
-    /// Side-effect-free fallback snapshot: live selection of the frame's target plus a currently issuable
-    /// host permit (policy binding, tier, policy health, lockdown). No ticket is retained from it.
-    func uncorrelatedReplyAdmission(_ frame: Frame) async -> UncorrelatedReplyAdmission {
-        let selection = uncorrelatedReplySelection(frame)
-        guard selection == .selectsTarget else { return selection }
-        guard await uncorrelatedReplyPermit(frame) != nil else { return .unrelated }
-        return uncorrelatedReplySelection(frame)
+    /// Side-effect-free single-terminal fallback snapshot (#188): a request-less reply, live selection of
+    /// its target and a currently issuable host permit (policy binding, tier, policy health, lockdown).
+    /// No ticket is retained from it.
+    func admitsRequestlessReply(_ frame: Frame) async -> Bool {
+        guard selectsRequestlessReplyTarget(frame), await requestlessReplyPermit(frame) != nil else { return false }
+        return selectsRequestlessReplyTarget(frame)
     }
 
-    private func uncorrelatedReplySelection(_ frame: Frame) -> UncorrelatedReplyAdmission {
-        guard !Task.isCancelled, case .ready(let version) = state, frame.version == version else { return .unrelated }
-        if let requestID = replyDescriptor(frame)?.requestID, let request = replyRequests[requestID],
-           request.isCurrent(at: requestClock()) { return .ownsRequest }
-        guard let target = frame.target, target == selectedTarget else { return .unrelated }
-        return .selectsTarget
+    /// Any explicit request reference, owned or not, stays on the correlated path. Only the plain
+    /// `haild reply --say` shape may fall back, so a stale reference can never reach another connection.
+    private func selectsRequestlessReplyTarget(_ frame: Frame) -> Bool {
+        guard !Task.isCancelled, case .ready(let version) = state, frame.version == version,
+              let reply = replyDescriptor(frame), reply.requestID == nil,
+              let target = frame.target, target == selectedTarget else { return false }
+        return true
     }
 
     /// Policy, exact binding, tier and lockdown are re-read from the host for every fallback attempt.
-    /// There is no retained request ticket, cooperative lease or media pinning for an uncorrelated reply.
-    private func uncorrelatedReplyPermit(_ frame: Frame) async -> ReplyPublicationPermit? {
+    /// There is no retained request ticket, cooperative lease or media pinning for a request-less reply.
+    private func requestlessReplyPermit(_ frame: Frame) async -> ReplyPublicationPermit? {
         guard let target = frame.target, let listing = try? await host.registry.listing(),
               let listed = listing.first(where: { $0.info.id == target }), let binding = listed.binding,
               listed.info.alive, let sessionBinding = try? ProviderSessionBinding(
@@ -149,11 +142,11 @@ extension HostSession {
     }
 
     /// Delivers to this connection only while it still selects the target and the host permit is current.
-    func enqueueUncorrelatedReply(_ frame: Frame, enqueue: @Sendable () -> Bool) async -> Bool {
-        guard uncorrelatedReplySelection(frame) == .selectsTarget,
-              let permit = await uncorrelatedReplyPermit(frame) else { return false }
+    func enqueueRequestlessReply(_ frame: Frame, enqueue: @Sendable () -> Bool) async -> Bool {
+        guard selectsRequestlessReplyTarget(frame),
+              let permit = await requestlessReplyPermit(frame) else { return false }
         // Selection or state may have moved during the awaits; the gate itself rejects a revoked permit.
-        guard uncorrelatedReplySelection(frame) == .selectsTarget else { return false }
+        guard selectsRequestlessReplyTarget(frame) else { return false }
         return permit.performIfCurrent { !Task.isCancelled && enqueue() } == true
     }
 }
@@ -179,16 +172,15 @@ extension WebSocketPeer {
         return true
     }
 
-    func uncorrelatedReplyAdmission(_ frame: Frame) async -> UncorrelatedReplyAdmission {
-        let admission = await session.uncorrelatedReplyAdmission(frame)
-        // A retiring transport cannot be the single recipient; a known request stays known regardless.
-        if admission == .selectsTarget, prepareReplyPublication(frame) == nil { return .unrelated }
-        return admission
+    func admitsRequestlessReply(_ frame: Frame) async -> Bool {
+        guard await session.admitsRequestlessReply(frame) else { return false }
+        // A retiring transport cannot be the single recipient.
+        return prepareReplyPublication(frame) != nil
     }
 
-    func deliverUncorrelatedReply(_ frame: Frame) async -> Bool {
+    func deliverRequestlessReply(_ frame: Frame) async -> Bool {
         guard !ended, let prepared = prepareReplyPublication(frame),
-              await session.enqueueUncorrelatedReply(frame, enqueue: prepared.enqueue) else { return false }
+              await session.enqueueRequestlessReply(frame, enqueue: prepared.enqueue) else { return false }
         guard await prepared.result() else {
             finish(reason: "host reply send failed")
             return false
@@ -225,28 +217,22 @@ extension WebSocketListener {
         return 1
     }
 
-    /// Demo-era single-terminal bridge (#188): with the opt-in flag, an uncorrelated reply (no request, or
-    /// one unknown or expired everywhere) reaches the one live connection selecting its target. Zero or
-    /// several selecting connections keep today's refusals; this is bounded, not a return to broadcast.
-    /// Like the correlated scan, this is an admission snapshot; the chosen peer's gates decide at enqueue.
+    /// Demo-era single-terminal bridge (#188): with the opt-in flag, a reply carrying no request reference
+    /// reaches the one live connection selecting its target. Any explicit reference that is not currently
+    /// owned keeps today's refusal, as do zero or several selecting connections; this is bounded, not a
+    /// return to broadcast. The scan is a snapshot; uniqueness is not rescanned at enqueue.
     private func publishUncorrelated(_ frame: Frame) async throws -> Int {
         guard singleTerminalReplyFallback else { throw LocalReplyRefusal.noRecipient }
         var candidates: [WebSocketPeer] = []
-        var known = false
-        for peer in Array(peers.values) {
-            switch await peer.uncorrelatedReplyAdmission(frame) {
-            case .unrelated: continue
-            case .ownsRequest: known = true
-            case .selectsTarget: candidates.append(peer)
-            }
+        for peer in Array(peers.values) where await peer.admitsRequestlessReply(frame) {
+            candidates.append(peer)
         }
         try Task.checkCancellation()
         guard !stopped else { throw WebSocketListenerError.stoppedBeforeReady }
         // The whole scan completes first so the refusal code never depends on peer iteration order.
-        guard !known else { throw LocalReplyRefusal.noRecipient }
         guard candidates.count <= 1 else { throw LocalReplyRefusal.notUniqueRecipient }
         guard let candidate = candidates.first else { throw LocalReplyRefusal.noRecipient }
-        guard await candidate.deliverUncorrelatedReply(frame) else { throw LocalReplyRefusal.publicationFailed }
+        guard await candidate.deliverRequestlessReply(frame) else { throw LocalReplyRefusal.publicationFailed }
         return 1
     }
 

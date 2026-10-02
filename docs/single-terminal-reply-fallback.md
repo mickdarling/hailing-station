@@ -17,21 +17,28 @@ a prompt with no reply owner at all, so the ambient path (RightyO → request in
 ## The rule
 
 With `haild run … --personal-terminal --single-terminal-reply-fallback` (off by default, and refused
-without `--personal-terminal`), the listener handles an **uncorrelated** reply as follows. Uncorrelated
-means the descriptor carries no `request`, or carries one that no live connection currently holds
-(unknown, or expired after the 120-second request lifetime).
+without `--personal-terminal`), the listener handles a **request-less** reply as follows. Request-less
+means the descriptor carries no `request` at all: the plain `haild reply --say …` shape. A reply that
+carries an explicit `request` which no live connection currently owns (unknown, expired after the
+120-second lifetime, or whose owner disconnected or selected away) is **not** eligible; it keeps today's
+`noRecipient`. Only the request-less shape may fall back, so a stale reference can never deliver one
+requester's answer to another phone.
 
 1. The correlated scan runs first, unchanged. A reply whose request is owned by a connection goes only to
    that owner, pending handoffs still answer `requestPending`, and ambiguous owners still answer
    `notUniqueRecipient`. The flag never changes a correlated reply's recipient.
-2. If no owner exists, every live negotiated connection is asked whether it currently selects the reply's
-   target and whether the host would issue a reply permit for that exact target binding right now.
+2. If no owner exists and the reply is request-less, every live negotiated connection is asked whether it
+   currently selects the reply's target and whether the host would issue a reply permit for that exact
+   target binding right now.
 3. **Exactly one** selecting connection receives the reply. Zero selecting connections answers
    `noRecipient`; two or more answer `notUniqueRecipient`. Both are the existing refusal codes, logged and
    returned over the local reply socket the same way; neither permits retry.
-4. A connection that holds a current record for the reply's request is reported as the owner even when the
-   correlated path refused the frame (duplicate frame ID, wrong audio sequence, pinned descriptor
-   mismatch). The fallback never second-guesses that refusal: the result is `noRecipient`, not delivery.
+4. A correlated refusal of a known request (duplicate frame ID, wrong audio sequence, pinned descriptor
+   mismatch) stays `noRecipient`; the fallback never second-guesses it, because the frame carries a
+   request reference. That rule holds while the record exists. Records are pruned on new input from the
+   connection, on selecting another target, on disconnect and after the 120-second lifetime, so a late
+   reply with an explicit reference is refused after pruning too. A late request-less reply after pruning
+   may fall back; on a single-terminal host the consequence is the same phone hearing it.
 
 The check lives in the listener's publication path (`HostReplyDelivery.swift`). It reads the existing
 `WebSocketListener.peers` set and each `HostSession`'s `selectedTarget`, `state` and `replyRequests`;
@@ -52,12 +59,16 @@ no second registry or selection cache is introduced.
 - **Rate limit and shape**: the local reply socket's admission budget, audit record, frame size, provenance
   (`source` must be this host) and descriptor validation run before the fallback is consulted, unchanged.
 
-Like the correlated scan, the single-connection decision is an admission snapshot across actors, not a
-transactional directory: a second phone selecting the target between the scan and the enqueue is a race
-the existing design also accepts. Uncorrelated replies have no retained request record, so there is no
-host-side pinning of reply, stream or request identity across their frames; the terminal's own
-descriptor and `streamId` checks ([reply protocol](reply-protocol.md)) remain the guard against
-cross-reply contamination. Operate this flag only on a host with a single terminal.
+The correlated path has no uniqueness race: a host-minted request UUID identifies one connection. The
+fallback's uniqueness decision is new and is a snapshot: a second connection selecting the target between
+the scan and the enqueue is a window bounded to one actor hop, and it resolves in favour of the peer that
+was sole at the snapshot; uniqueness is not rescanned at enqueue. Request-less replies hold no retained
+request record and no cooperative binding lease inside the gate: a provider rebind between the registry
+listing and `performIfCurrent` is not caught (policy and lockdown revocation still are), and the
+consequence is a reply reaching the same selecting phone, not another device. There is also no host-side
+pinning of reply, stream or request identity across their frames; the terminal's own descriptor and
+`streamId` checks ([reply protocol](reply-protocol.md)) remain the guard against cross-reply
+contamination. Operate this flag only on a host with a single terminal.
 
 ## Not in this slice
 
@@ -70,13 +81,17 @@ cross-reply contamination. Operate this flag only on a host with a single termin
 
 Synthetic only, with `DEVELOPER_DIR=/Applications/Xcode.app/Contents/Developer`:
 
-- `SingleTerminalReplyFallbackTests` (loopback sockets): the only selecting connection receives text, audio
-  and an unknown-request reply while a second connection on another target hears nothing; a correlated
-  reply still reaches its owner and the owner's refused duplicate is `noRecipient`; with two connections
-  selecting the target a correlated reply reaches its owner and an uncorrelated one is
-  `notUniqueRecipient`; the flag is off by default; the option requires `--personal-terminal`.
+- `SingleTerminalReplyFallbackTests` (loopback sockets): the only selecting connection receives request-less
+  text and audio while a second connection on another target hears nothing; an explicit reference nobody
+  holds is `noRecipient`; a correlated reply still reaches its owner, the owner's refused duplicate is
+  `noRecipient`, and the owner still hears a request-less reply; a stale reference after the requester
+  selected away is refused while the new sole selector hears a request-less reply; with two connections
+  selecting the target a correlated reply reaches its owner, its duplicate is `noRecipient` rather than
+  falling back, and a request-less one is `notUniqueRecipient`; the flag is off by default; the option
+  requires `--personal-terminal`.
 - `SingleTerminalReplyFallbackRefusalTests` (never-started transports): zero selecting connections,
-  three selecting connections, a known request's media refusal, lockdown, deny, locked tier, rebound
-  binding and deselection each refuse before any enqueue; an expired request becomes uncorrelated again.
+  three selecting connections, an ended peer still listed, a known request's media refusal, lockdown,
+  deny, locked tier, rebound binding and deselection each refuse before any enqueue; an explicit
+  reference never falls back even after expiry.
 - Existing reply suites (`HostReplyDeliveryTests`, `HostReplyRecipientRoutingTests`,
   `CorrelatedReplyPublicationTests`, `LocalReplyEndpointTests`) are unchanged and pass with the flag off.

@@ -30,6 +30,18 @@ import Testing
         await listener.stop(reason: "synthetic test complete")
     }
 
+    @Test func endedPeerStillListedCannotBeTheRecipient() async throws {
+        let rig = try await RecipientTestRig.make()
+        let listener = try fallbackListener(rig: rig, enabled: true)
+        let peer = try #require(await listener.installFallbackSyntheticPeers([await rig.session()]).first)
+        await peer.finish(reason: "synthetic close")
+        #expect(await listener.peers.count == 1)
+        await #expect(throws: LocalReplyRefusal.noRecipient) {
+            try await listener.publish(recipientText(uncorrelatedDescriptor()))
+        }
+        await listener.stop(reason: "synthetic test complete")
+    }
+
     @Test func fallbackNeverOverridesTheOwnersMediaRefusal() async throws {
         let rig = try await RecipientTestRig.make()
         let session = await rig.session()
@@ -50,7 +62,7 @@ import Testing
         let listener = try fallbackListener(rig: rig, enabled: true)
         await listener.installFallbackSyntheticPeers([session])
         let frame = recipientText(uncorrelatedDescriptor())
-        #expect(await session.uncorrelatedReplyAdmission(frame) == .selectsTarget)
+        #expect(await session.admitsRequestlessReply(frame))
         switch change {
         case "lockdown": _ = await rig.host.engageLockdown(reason: "synthetic panic")
         case "deny": _ = try await rig.host.deny(RecipientTestRig.target)
@@ -58,19 +70,21 @@ import Testing
         case "rebound": await rig.adapter.setTargets([AdapterTarget(name: "reply", binding: "replacement")])
         default: _ = await session.receive(sessionFrame(payload: .control(.select(targetID: "recipient:other"))))
         }
-        #expect(await session.uncorrelatedReplyAdmission(frame) == .unrelated)
+        #expect(!(await session.admitsRequestlessReply(frame)))
         await #expect(throws: LocalReplyRefusal.noRecipient) { try await listener.publish(frame) }
         await listener.stop(reason: "synthetic test complete")
     }
 
-    @Test func expiredRequestsAreUncorrelatedAgain() async throws {
+    @Test func explicitRequestReferencesNeverFallBackEvenAfterExpiry() async throws {
         let rig = try await RecipientTestRig.make()
         let session = await rig.session()
         let frame = recipientText(recipientDescriptor(try await rig.submit(on: session)))
-        #expect(await session.uncorrelatedReplyAdmission(frame) == .ownsRequest)
+        #expect(!(await session.admitsRequestlessReply(frame)))
         rig.clock.advance(120_000)
-        #expect(await session.uncorrelatedReplyAdmission(frame) == .selectsTarget)
-        #expect(!(await session.enqueueUncorrelatedReply(frame, enqueue: { false })))
-        #expect(await session.enqueueUncorrelatedReply(frame, enqueue: { true }))
+        #expect(!(await session.admitsRequestlessReply(frame)))
+        #expect(!(await session.enqueueRequestlessReply(frame, enqueue: { true })))
+        let requestless = recipientText(uncorrelatedDescriptor())
+        #expect(!(await session.enqueueRequestlessReply(requestless, enqueue: { false })))
+        #expect(await session.enqueueRequestlessReply(requestless, enqueue: { true }))
     }
 }
