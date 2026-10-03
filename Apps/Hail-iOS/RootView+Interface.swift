@@ -33,6 +33,7 @@ extension RootView {
         return layout {
             VStack(spacing: 18) {
                 conversationSurface
+                ambientListeningSurface
                 if let reply = playback.latest {
                     ReplyPlaybackView(reply: reply, playback: playback)
                 }
