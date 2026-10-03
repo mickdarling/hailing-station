@@ -93,12 +93,7 @@ extension HostConnection {
         }
         if let refusal = ambientRefusal, refusal.stream == stream { throw refusal.failure }
         let connection = snapshot.connectionGeneration
-        if let current = ambientStream, current.id == stream, current.connection != connection {
-            throw HostConnectionFailure.notReady
-        }
-        if ambientStream?.id != stream, audio.sequence != 0 {
-            throw HostConnectionFailure.malformed("ambient stream must start at sequence 0")
-        }
+        try checkAmbientSequence(audio, stream: stream, connection: connection)
         if confirmedSelectionGeneration != connection {
             // Re-select and wait for the round trip so no segment can precede the restored selection.
             let token = generation
@@ -112,6 +107,7 @@ extension HostConnection {
             confirmedSelectionGeneration = connection
         }
         ambientStream = (stream, connection)
+        ambientLastSequence = audio.sequence
         let frame = Frame(
             version: snapshot.negotiatedVersion ?? ProtocolVersion.current,
             timestamp: wallNow(), target: targetID, source: deviceName, payload: .audio(audio)
@@ -120,6 +116,20 @@ extension HostConnection {
             throw HostConnectionFailure.notReady
         }
         try await current.send(FrameCoding.encode(frame))
+    }
+
+    /// A stream stays on the connection it started on, starts at 0 and strictly increases (gaps allowed), as the
+    /// gate (#205) requires; otherwise the host would end the stream.
+    private func checkAmbientSequence(_ audio: AudioPayload, stream: UUID, connection: UUID) throws {
+        if let current = ambientStream, current.id == stream, current.connection != connection {
+            throw HostConnectionFailure.notReady
+        }
+        if ambientStream?.id != stream, audio.sequence != 0 {
+            throw HostConnectionFailure.malformed("ambient stream must start at sequence 0")
+        }
+        if ambientStream?.id == stream, audio.sequence <= ambientLastSequence {
+            throw HostConnectionFailure.malformed("ambient sequence must increase")
+        }
     }
 
     func sendPing(generation token: UInt64, requiresDeadline: Bool = false) async throws {

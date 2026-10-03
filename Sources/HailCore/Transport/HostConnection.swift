@@ -51,9 +51,9 @@ public actor HostConnection {
     var desiredTargetID: String?
     /// The ambient stream last sent (#203), the socket generation it is bound to, and a gate refusal for it.
     var ambientStream: (id: UUID, connection: UUID)?
+    var ambientLastSequence = -1
     var ambientRefusal: (stream: UUID, failure: HostConnectionFailure)?
-    /// The socket generation on which the host acknowledged `desiredTargetID`. A reconnect's restored selection
-    /// is sent but not acknowledged, so ambient audio confirms it before its first segment.
+    /// Generation on which the host acked `desiredTargetID`; a reconnect's restored select is not acked.
     var confirmedSelectionGeneration: UUID?
     /// Only the latest selectTarget serial settles a selection; until then (or after it fails) audio is refused.
     var selectionSerial: UInt64 = 0
