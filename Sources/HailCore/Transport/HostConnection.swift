@@ -52,6 +52,9 @@ public actor HostConnection {
     /// The ambient stream last sent (#203), the socket generation it is bound to, and a gate refusal for it.
     var ambientStream: (id: UUID, connection: UUID)?
     var ambientRefusal: (stream: UUID, failure: HostConnectionFailure)?
+    /// The socket generation on which the host acknowledged `desiredTargetID`. A reconnect's restored selection
+    /// is sent but not acknowledged, so ambient audio confirms it before its first segment.
+    var confirmedSelectionGeneration: UUID?
     public init(
         endpoint: HostEndpoint,
         connector: any WebSocketConnecting = URLSessionWebSocketConnector(),
@@ -98,6 +101,7 @@ public actor HostConnection {
         try await send(.select(targetID: targetID), generation: token)
         try await confirmRoundTrip(generation: token)
         desiredTargetID = targetID
+        confirmedSelectionGeneration = snapshot.connectionGeneration
     }
 
     public func sendFinalText(_ text: String, to targetID: String) async throws {

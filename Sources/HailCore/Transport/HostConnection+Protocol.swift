@@ -82,7 +82,7 @@ extension HostConnection {
     /// a gate refusal for it, every further segment of that stream throws so the streamer releases the mic.
     public func sendAudio(_ audio: AudioPayload) async throws {
         try requireReady(capability: Self.streamAudioCapability)
-        guard let targetID = desiredTargetID, let socket else { throw HostConnectionFailure.notReady }
+        guard let targetID = desiredTargetID, socket != nil else { throw HostConnectionFailure.notReady }
         guard audio.reply == nil, let stream = audio.streamID, audio.codec == .pcm16,
               audio.sampleRate == AmbientAudioFormat.sampleRate, audio.channels == AmbientAudioFormat.channels,
               audio.bytes.count <= AmbientAudioFormat.maxSegmentBytes else {
@@ -90,19 +90,31 @@ extension HostConnection {
         }
         if let refusal = ambientRefusal, refusal.stream == stream { throw refusal.failure }
         let connection = snapshot.connectionGeneration
-        if let current = ambientStream, current.id == stream {
-            guard current.connection == connection else { throw HostConnectionFailure.notReady }
-        } else {
-            guard audio.sequence == 0 else {
-                throw HostConnectionFailure.malformed("ambient stream must start at sequence 0")
-            }
-            ambientStream = (stream, connection)
+        if let current = ambientStream, current.id == stream, current.connection != connection {
+            throw HostConnectionFailure.notReady
         }
+        if ambientStream?.id != stream, audio.sequence != 0 {
+            throw HostConnectionFailure.malformed("ambient stream must start at sequence 0")
+        }
+        if confirmedSelectionGeneration != connection {
+            // Re-select and wait for the round trip so no segment can precede the restored selection.
+            let token = generation
+            try await send(.select(targetID: targetID), generation: token)
+            try await confirmRoundTrip(generation: token)
+            guard snapshot.connectionGeneration == connection, desiredTargetID == targetID else {
+                throw HostConnectionFailure.notReady
+            }
+            confirmedSelectionGeneration = connection
+        }
+        ambientStream = (stream, connection)
         let frame = Frame(
             version: snapshot.negotiatedVersion ?? ProtocolVersion.current,
             timestamp: wallNow(), target: targetID, source: deviceName, payload: .audio(audio)
         )
-        try await socket.send(FrameCoding.encode(frame))
+        guard let current = self.socket, snapshot.connectionGeneration == connection else {
+            throw HostConnectionFailure.notReady
+        }
+        try await current.send(FrameCoding.encode(frame))
     }
 
     func sendPing(generation token: UInt64, requiresDeadline: Bool = false) async throws {

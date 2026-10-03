@@ -117,24 +117,69 @@ func audioFrames(_ socket: ScriptedSocket) async throws -> [Frame] {
     }
 
     @Test func aStreamIsBoundToTheConnectionItStartedOn() async throws {
+        let (connection, second) = try await reconnectedAfterStreaming()
+        let stream = UUID()
+        await #expect(throws: HostConnectionFailure.notReady) {
+            try await connection.sendAudio(ambientSegment(stream: firstStream, sequence: 1))
+        }
+        let next = Task { try await connection.sendAudio(ambientSegment(stream: stream)) }
+        try await answerSelectionConfirmation(on: second)
+        try await next.value
+        let frames = try await audioFrames(second)
+        #expect(frames.count == 1)
+        #expect(frames.first?.target == ambientTarget)
+        await connection.disconnect()
+    }
+
+    /// After a reconnect the restored selection is sent but unacknowledged; audio must wait for a confirmed one.
+    @Test func audioWaitsForTheSelectionToBeConfirmedAfterAReconnect() async throws {
+        let (connection, second) = try await reconnectedAfterStreaming()
+        let send = Task { try await connection.sendAudio(ambientSegment()) }
+        let select = ControlPayload.select(targetID: ambientTarget)
+        try await waitUntil { try await second.sentFrames().count { $0.payload == .control(select) } == 2 }
+        try await Task.sleep(for: .milliseconds(30))
+        #expect(try await audioFrames(second).isEmpty)
+
+        try await answerSelectionConfirmation(on: second)
+        try await send.value
+        let frames = try await second.sentFrames()
+        let lastSelect = try #require(frames.lastIndex { $0.payload == .control(.select(targetID: ambientTarget)) })
+        let audio = try #require(frames.firstIndex { if case .audio = $0.payload { return true }; return false })
+        #expect(audio > lastSelect)
+
+        // Confirmed once per connection: the next segment goes straight out.
+        try await connection.sendAudio(ambientSegment())
+        #expect(try await audioFrames(second).count == 2)
+        await connection.disconnect()
+    }
+
+    private let firstStream = UUID()
+
+    private func reconnectedAfterStreaming() async throws -> (HostConnection, ScriptedSocket) {
         let first = ScriptedSocket()
         let second = ScriptedSocket()
         let (connection, _) = try await readyAudioConnection(
             capabilities: ["select_target", "stream_audio"], sockets: [first, second]
         )
-        let stream = UUID()
-        try await connection.sendAudio(ambientSegment(stream: stream))
-
+        try await connection.sendAudio(ambientSegment(stream: firstStream))
         await connection.disconnect()
         await connection.connect()
         try await awaitHello(connection, second, capabilities: ["select_target", "stream_audio"])
-        await #expect(throws: HostConnectionFailure.notReady) {
-            try await connection.sendAudio(ambientSegment(stream: stream, sequence: 1))
+        return (connection, second)
+    }
+
+    private func answerSelectionConfirmation(on socket: ScriptedSocket) async throws {
+        try await waitUntil {
+            let frames = try await socket.sentFrames()
+            guard let select = frames.lastIndex(where: { $0.payload == .control(.select(targetID: ambientTarget)) })
+            else { return false }
+            return frames[select...].contains { if case .control(.ping) = $0.payload { return true }; return false }
         }
-        try await connection.sendAudio(ambientSegment())
-        let frames = try await audioFrames(second)
-        #expect(frames.count == 1)
-        #expect(frames.first?.target == ambientTarget)
-        await connection.disconnect()
+        let frames = try await socket.sentFrames()
+        guard case .control(.ping(let nonce))? = frames.last(where: {
+            if case .control(.ping) = $0.payload { return true }
+            return false
+        })?.payload else { throw SocketTestError.unavailable }
+        try await socket.push(.pong(nonce: nonce))
     }
 }
