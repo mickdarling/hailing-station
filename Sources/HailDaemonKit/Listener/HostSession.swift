@@ -13,7 +13,13 @@ public enum HostSessionAuthorization: Sendable, Equatable {
 
 public protocol HostSessionAuthorizing: Sendable {
     var capabilities: [String] { get }
+    /// The daemon's ambient audio gate when ambient listening was explicitly enabled (#203); nil otherwise.
+    var ambientAudio: AmbientAudioGate? { get }
     func authorize(_ frame: Frame) async -> HostSessionAuthorization
+}
+
+extension HostSessionAuthorizing {
+    public var ambientAudio: AmbientAudioGate? { nil }
 }
 
 /// The temporary connection proof can negotiate and inspect liveness, but it grants no target authority.
@@ -32,13 +38,21 @@ public struct ConnectionProbeAuthorizer: HostSessionAuthorizing {
 
 /// Explicitly enabled personal-testing mode. It exposes only target selection, final text delivery,
 /// and literal Escape in addition to the probe operations; the default listener remains read-only.
+/// Ambient audio (#203) is admitted, and `stream_audio` advertised, only when a gate is supplied.
 public struct PersonalTerminalAuthorizer: HostSessionAuthorizing {
-    public init() {}
-    public let capabilities = ["list_targets", "ping", "select_target", "send_text", "escape", "receive_replies"]
+    public let capabilities: [String]
+    public let ambientAudio: AmbientAudioGate?
+
+    public init(ambientAudio: AmbientAudioGate? = nil) {
+        self.ambientAudio = ambientAudio
+        capabilities = ["list_targets", "ping", "select_target", "send_text", "escape", "receive_replies"]
+            + (ambientAudio == nil ? [] : ["stream_audio"])
+    }
 
     public func authorize(_ frame: Frame) async -> HostSessionAuthorization {
         switch frame.payload {
         case .text(let text): text.isFinal ? .allow : .deny
+        case .audio: ambientAudio == nil ? .deny : .allow
         case .control(let control):
             switch control {
             case .hello, .ping, .listTargets, .select, .escape: .allow
@@ -86,6 +100,8 @@ enum AdmittedFrame: ~Copyable, Sendable {
     case input(AuthorizedInput)
     case nonFinalText
     case untargetedText
+    /// An ambient segment the authorizer allowed; the gate still checks shape, target, sequence and rate.
+    case audio(AudioPayload, target: String?)
     case unsupported
 }
 
@@ -112,7 +128,7 @@ public actor HostSession {
     public static let capabilities = ["connection_probe", "list_targets", "ping"]
 
     let host: HailHost
-    private let authorizer: any HostSessionAuthorizing
+    let authorizer: any HostSessionAuthorizing
     let hostName: String
     let now: @Sendable () -> Int64
     let requestClock: @Sendable () -> ContinuousClock.Instant
@@ -179,6 +195,7 @@ public actor HostSession {
             return .input(AuthorizedInput(
                 text: text.text, target: target, frame: frame, device: device, version: version
             ))
+        case .audio(let audio): return .audio(audio, target: frame.target)
         default: return .unsupported
         }
     }

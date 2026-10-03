@@ -27,9 +27,22 @@ extension HostSession {
             return failure(.malformed, "only final text can be delivered", close: false, version: version)
         case .untargetedText:
             return failure(.notAllowed, "select the destination before speaking", close: false, version: version)
+        case .audio(let audio, let target):
+            return await ambient(audio, target: target, version: version)
         case .unsupported:
             return failure(.unauthorized, "terminal action is not authorized", close: false, version: version)
         }
+    }
+
+    /// Ambient segments never reach `HailHost.send`; the gate hands admitted bytes to its injected sink.
+    private func ambient(_ audio: AudioPayload, target: String?, version: Int) async -> HostSessionResult {
+        guard let gate = authorizer.ambientAudio else {
+            return failure(.unauthorized, "terminal action is not authorized", close: false, version: version)
+        }
+        guard let (code, message) = await gate.admit(
+            audio, frameTarget: target, selectedTarget: selectedTarget, connection: connectionID
+        ) else { return HostSessionResult(frames: []) }
+        return failure(code, message, close: false, version: version)
     }
 
     private func deliver(_ input: consuming AuthorizedInput, version: Int) async -> HostSessionResult {
