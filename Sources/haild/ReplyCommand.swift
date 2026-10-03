@@ -340,7 +340,8 @@ enum ReplyClient {
     /// this; `submit` adds the reply-only pending retry window around the same transaction.
     static func transact(_ line: Data, socketURL: URL) async throws -> LocalReplyResponse {
         try requireOwnerSocket(socketURL)
-        guard line.count <= PayloadLimits.defaultMaxFrameBytes + 1 else {
+        // The daemon's socket line cap (#200): a dispatch line may exceed the reply frame cap.
+        guard line.count <= max(PayloadLimits.defaultMaxFrameBytes, LocalDispatchRequest.maxLineBytes) + 1 else {
             throw ReplyClientError.failed("frame too large")
         }
         return try await ReplyTransaction(socketURL: socketURL).perform(line)
@@ -389,8 +390,9 @@ struct RightyoSocketDispatcher: RightyoDispatching {
 
     func dispatch(text: String, target: String, binding: String) async throws -> RightyoDispatchReceipt {
         // The daemon refuses a longer prompt at decode; say why here instead of reporting a decode failure.
-        guard text.utf8.count <= PayloadLimits.maxTextBytes else {
-            throw ReplyClientError.refused("prompt exceeds the \(PayloadLimits.maxTextBytes)-byte dispatch text cap")
+        let cap = LocalDispatchRequest.maxTextBytes
+        guard text.utf8.count <= cap else {
+            throw ReplyClientError.refused("prompt exceeds the \(cap)-byte dispatch text cap")
         }
         let request = LocalDispatchRequest(connection: connection, target: target, binding: binding, text: text)
         var line = try JSONEncoder().encode(request)

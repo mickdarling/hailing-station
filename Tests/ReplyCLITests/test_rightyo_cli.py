@@ -233,7 +233,23 @@ class RightyoReplyToCLITests(unittest.TestCase):
         self.assertIn("invalid owner-only reply socket", result.stderr)
         self.assertEqual(result.stdout, "")
 
-    def dispatch(self, responses):
+    def test_prompt_past_the_phone_text_cap_is_sent_whole_under_the_daemon_dispatch_cap(self):
+        # #200: a formed request near its 16,000-character limit makes the prompt larger than the 8,192-byte
+        # phone text payload; the client sends it whole and the daemon's dispatch cap (1,200,000) decides.
+        events = [json.loads(line) for line in FORMED.read_text().splitlines()]
+        events[-2]["formed_request"] = ("Check the plan for the release review. " * 400).rstrip()
+        content = "\n".join(json.dumps(event) for event in events) + "\n"
+        owner = str(uuid.uuid4()).upper()
+        result, requests = self.dispatch([{"delivered": 1, "request": owner}], content, "formed-demo")
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertEqual(len(requests), 1)
+        text = json.loads(requests[0])["text"]
+        self.assertGreater(len(text.encode()), 8192)
+        self.assertIn(events[-2]["formed_request"], text)
+        self.assertNotIn("dispatch text cap", result.stderr)
+        self.assertIn(f"(reply request {owner})", result.stdout)
+
+    def dispatch(self, responses, content=None, session="tool-demo"):
         with tempfile.TemporaryDirectory(prefix="hail-rightyo-dispatch-") as scratch:
             path = os.path.join(scratch, "replies.sock")
             with socket.socket(socket.AF_UNIX, socket.SOCK_STREAM) as server:
@@ -272,7 +288,7 @@ class RightyoReplyToCLITests(unittest.TestCase):
                 worker = threading.Thread(target=answer, daemon=True)
                 worker.start()
                 try:
-                    result = self.run_rightyo(path, scratch)
+                    result = self.run_rightyo(path, scratch, content, session)
                 finally:
                     finished.set()
                     worker.join(timeout=12)
@@ -280,14 +296,14 @@ class RightyoReplyToCLITests(unittest.TestCase):
                 self.assertFalse(errors, errors)
                 return result, requests
 
-    def run_rightyo(self, socket_path, scratch):
+    def run_rightyo(self, socket_path, scratch, content=None, session="tool-demo"):
         environment = os.environ.copy()
         environment["HAIL_TMUX"] = str(SYNTHETIC_TMUX)
         environment["HAIL_CONFIG_DIR"] = os.path.join(scratch, "config")
         environment.pop("HAIL_REPLY_BRIDGE_TARGETS", None)
         return subprocess.run(
-            [str(HAILD), "rightyo", "tmux:demo", "--session", "tool-demo", "--allow-synthetic",
+            [str(HAILD), "rightyo", "tmux:demo", "--session", session, "--allow-synthetic",
              "--reply-to", self.CONNECTION, "--socket", socket_path],
-            input=FIXTURE.read_text(), cwd=REPO, capture_output=True, text=True, timeout=30, check=False,
+            input=FIXTURE.read_text() if content is None else content, cwd=REPO, capture_output=True, text=True, timeout=30, check=False,
             env=environment, start_new_session=True,
         )

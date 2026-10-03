@@ -95,10 +95,16 @@ rightyo listen … --session-id "$rightyo_session_id" |
   the length cap differs: the newline rule, the whole-prompt dangerous-pattern guard (including its 20 ms
   per-rule budget, see [Formed requests](#formed-requests)), tier, binding, rate limit and lockdown give the
   direct path's outcome. The socket accepts a dispatch line of up to `2 × 1,200,000 + 4,096` bytes so JSON
-  escaping cannot push a capped prompt over it; reply frames keep their existing frame cap. **Client caveat:**
-  the `haild rightyo --reply-to` client in this build still refuses a prompt over the 8,192-byte text payload
-  before connecting and says why, so the end-to-end path stays unusable for real requests until the client
-  adopts the daemon cap in a follow-up under #200. The [reply block](#the-reply-block) (228 characters plus
+  escaping cannot push a capped prompt over it; reply frames keep their existing frame cap. The client
+  checks the same constants before connecting (`LocalDispatchRequest.maxTextBytes`, and the line cap) and says
+  why when a prompt is larger. **Which targets this reaches:** a generic `tmux:` target receives the whole
+  prompt in 400-character `send-keys` chunks, with `request: null` (no reply ownership), exactly as the direct
+  path delivers it. A `tmux-reply:` bridge target cannot grant a reply-binding lease, so a dispatch to it is
+  refused `deliveryRefused` before any text is sent, at any size; the Codex app-server adapter is not
+  registered by `haild run`. **Time bound:** the daemon answers a dispatch within its 10-second submission
+  deadline; a prompt near 1 MiB is about 2,600 tmux invocations, which can approach that deadline on a slow
+  host, and a deadline that fires after the handoff began drops the answer while the pane's typing completes (the
+  client then reports a socket failure, exit 1, although the prompt was delivered). The [reply block](#the-reply-block) (228 characters plus
   the target id) counts toward every cap.
 
 Each admitted request sends one `{"kind":"dispatch","connection","target","binding","text"}` line and reads
@@ -174,7 +180,7 @@ the phone hears it. For the target `tmux:demo` it is, byte for byte (it begins w
   (`RightyoInputReplyBlockTests`).
 - The block counts toward every prompt bound: the local command's 1,200,000 whole-prompt cap (arithmetic under
   [Formed requests](#formed-requests)), which with `--reply-to` is also the daemon's dispatch cap
-  ([#200](https://github.com/mickdarling/hailing-station/issues/200)), and the client caveat above while it lasts.
+  ([#200](https://github.com/mickdarling/hailing-station/issues/200)).
 - Dry run (`--dry-run`) validates and prints receipts; it forms no prompt, so no block exists and the fixture
   dry-run output is unchanged. No receipt includes the prompt or the block.
 
