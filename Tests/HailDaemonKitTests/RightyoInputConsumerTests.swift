@@ -2,7 +2,7 @@ import Foundation
 import Testing
 @testable import HailDaemonKit
 
-@Suite struct RightyoInputConsumerTests {
+@Suite(.frozenGuardBudget) struct RightyoInputConsumerTests {
     let session = "tool-demo"
 
     func event(_ type: String, sequence: Int, extra: [String: Any] = [:]) throws -> RightyoInputEvent {
