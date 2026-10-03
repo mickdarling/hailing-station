@@ -101,17 +101,24 @@ rightyo listen … --session-id "$rightyo_session_id" |
   prompt in 400-character `send-keys` chunks, with `request: null` (no reply ownership), exactly as the direct
   path delivers it. A `tmux-reply:` bridge target cannot grant a reply-binding lease, so a dispatch to it is
   refused `deliveryRefused` before any text is sent, at any size; the Codex app-server adapter is not
-  registered by `haild run`. **Time bound (fail closed):** the daemon answers a
-  dispatch within its 10-second socket submission deadline, and real `send-keys` costs about 5.5 ms per
-  400-character chunk, so a 1 MiB prompt (about 2,600 chunks) cannot be typed in time. The client therefore
-  caps a `--reply-to` prompt at `RightyoSocketDispatcher.maxPromptBytes` = 333,200 bytes: what fits in half the
+  registered by `haild run`. **Time bound and the commit point:** the daemon
+  answers a dispatch within its 10-second socket submission deadline, and real `send-keys` costs about 5.5 ms
+  per 400-character chunk, so a 1 MiB prompt (about 2,600 chunks) cannot be typed in time. The client therefore
+  caps a `--reply-to` prompt at `RightyoSocketDispatcher.maxPromptBytes` = 333,200 bytes, what fits in half the
   deadline at 6 ms per chunk (833 chunks), and refuses a longer prompt before connecting, with the reason
-  (exit 1). The direct path keeps 1,200,000. If the deadline (or any caller cancellation) fires anyway, the tmux
-  adapter abandons the delivery: no further chunk is typed, Enter is never pressed, and text already typed is
-  cleared with one `C-u` (line kill in shells and the readline-style agent inputs these panes run; best effort,
-  so a pane application that does not treat `C-u` as line kill may keep the prefix, still unsubmitted). The
-  client reports the lost answer as a socket failure, exit 1, and nothing ran, so a retry submits the prompt
-  once (`LocalReplyEndpointTests.timedOutDispatchNeverPressesEnterAndARetrySubmitsOnce`). The [reply block](#the-reply-block) (228 characters plus
+  (exit 1). The direct path keeps 1,200,000. The cap budgets one delivery: the tmux adapter types one delivery
+  at a time, so concurrent dispatches queue, and a queued one can still reach the deadline.
+  If the deadline (or any caller cancellation) fires, the tmux adapter's submit decision is one atomic step,
+  taken right before Enter:
+  - **Before the commit point:** the delivery is abandoned. No further chunk is typed and Enter is not sent.
+    A delivery abandoned while queued types nothing. Text already typed stays in the pane's input line,
+    unsubmitted. There is no rollback, because no key clears input in every application.
+  - **After the commit point:** the Enter is sent and the prompt runs, even though the daemon's answer is lost.
+
+  Either way the client gets no answer, and it reports that the outcome is unknown: the prompt may have run,
+  or it may sit unsubmitted in the input line. Check the pane before retrying, since a retry types after
+  any leftover text (exit 1). Covered by `LocalReplyEndpointTests.timedOutDispatchNeverPressesEnterAndARetrySubmitsOnce`
+  and `TmuxDeliveryCommitTests`. The [reply block](#the-reply-block) (228 characters plus
   the target id) counts toward every cap.
 
 Each admitted request sends one `{"kind":"dispatch","connection","target","binding","text"}` line and reads

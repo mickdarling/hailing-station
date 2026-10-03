@@ -478,9 +478,9 @@ import Testing
         await listener.stop(reason: "test complete")
     }
 
-    /// #204 round 1: a dispatch whose typing outlives the endpoint's submission deadline is abandoned
-    /// unsubmitted (no further chunk, never Enter, the typed prefix cleared), and a retry through a patient
-    /// endpoint submits the prompt exactly once with nothing left over from the abandoned attempt.
+    /// #204: a dispatch whose typing outlives the endpoint's submission deadline is abandoned before its commit
+    /// point (no further chunk, no Enter; the typed prefix stays unsubmitted, there is no rollback), and a retry
+    /// through a patient endpoint presses Enter exactly once.
     @Test func timedOutDispatchNeverPressesEnterAndARetrySubmitsOnce() async throws {
         let scratch = FileManager.default.temporaryDirectory
             .appendingPathComponent("hs-dl-\(UUID().uuidString.prefix(8))", isDirectory: true)
@@ -511,11 +511,13 @@ import Testing
             await #expect(throws: (any Error).self) { try await submit(line, socket: hasty.socketURL.path) }
             #expect(try await submit(line, socket: patient.socketURL.path) == .dispatch(delivered: 1, request: nil))
             let keys = await runner.calls.compactMap { $0.contains("send-keys") ? $0.last : nil }
-            let abandonedAt = try #require(keys.firstIndex(of: "C-u"))
+            #expect(!keys.contains("C-u"))
             #expect(keys.filter { $0 == "Enter" } == ["Enter"])
-            #expect(keys.firstIndex(of: "Enter") ?? 0 > abandonedAt)
-            #expect(keys[..<abandonedAt].count < 40)
-            #expect(keys[(abandonedAt + 1)...].dropLast().joined() == text)
+            #expect(keys.last == "Enter")
+            // The abandoned attempt typed fewer than its 40 chunks; the retry typed all 40 after them.
+            let typed = keys.dropLast()
+            #expect(typed.count > 40 && typed.count < 80)
+            #expect(typed.suffix(40).joined() == text)
         } catch {
             await stopAll(hasty, patient, listener)
             throw error

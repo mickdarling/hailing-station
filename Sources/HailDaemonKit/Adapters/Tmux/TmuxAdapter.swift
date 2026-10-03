@@ -67,8 +67,9 @@ public actor TmuxAdapter: Adapter {
             try await self.performDelivery(text, to: target, binding: binding, abandoned: abandoned)
         }
         lastDelivery = Task { _ = await delivery.result }
-        // The caller's cancellation (a timed-out socket submission, #200) abandons the delivery: no further
-        // chunk and never the Enter. The delivery task itself is not cancelled, so its cleanup still runs.
+        // The caller's cancellation (a timed-out socket submission, #200) abandons a delivery that has not yet
+        // committed to its Enter: no further chunk and no Enter. One that already committed completes, and its
+        // outcome is returned to a caller that may no longer be listening.
         try await withTaskCancellationHandler { try await delivery.value } onCancel: { abandoned.abandon() }
     }
 
@@ -80,29 +81,21 @@ public actor TmuxAdapter: Adapter {
     private func performDelivery(
         _ text: String, to target: String, binding: String?, abandoned: DeliveryAbandonment
     ) async throws {
+        // A delivery abandoned while queued behind another types nothing.
         try abandoned.check()
         let session = try await verified(target, binding: binding)
-        var typed = false
         for chunk in Self.chunks(text, size: chunkSize) {
-            guard !abandoned.isAbandoned else { return try await clear(session, typed: typed) }
+            try abandoned.check()
             let send = ["send-keys", "-t", session.paneID, "-l", "--", chunk]
-            typed = true
             try await tmux(send, failure: AdapterError.deliveryFailed)
         }
         // The Enter is what runs the text; the identity is checked once more right before it.
         _ = try await verified(target, binding: session.binding)
-        guard !abandoned.isAbandoned else { return try await clear(session, typed: typed) }
+        // The commit point: abandonment and commitment are one atomic decision, so either nothing is
+        // submitted (typed text, if any, stays unsubmitted in the input line; there is no rollback) or the
+        // Enter is sent whatever the caller does afterwards.
+        guard abandoned.commit() else { throw CancellationError() }
         try await tmux(["send-keys", "-t", session.paneID, "Enter"], failure: AdapterError.deliveryFailed)
-    }
-
-    /// An abandoned delivery is never submitted. Typed text is cleared with one `C-u` (line kill in shells,
-    /// readline-style inputs and the agent TUIs this targets) so a retry cannot submit the leftover prefix
-    /// together with its own text; the clear is best effort, and its failure is not reported as delivery.
-    private func clear(_ session: Session, typed: Bool) async throws {
-        if typed {
-            _ = try? await tmux(["send-keys", "-t", session.paneID, "C-u"], failure: AdapterError.deliveryFailed)
-        }
-        throw CancellationError()
     }
 
     /// The session behind `name` now, refused unless its binding is the one the caller holds.
@@ -138,10 +131,19 @@ public actor TmuxAdapter: Adapter {
     }
 }
 
-/// Set once by the caller's cancellation; read by the delivery task between tmux invocations.
+/// One delivery's submit decision: the caller's cancellation and the Enter race for it under one lock.
 final class DeliveryAbandonment: Sendable {
-    private let state = Mutex(false)
-    var isAbandoned: Bool { state.withLock { $0 } }
-    func abandon() { state.withLock { $0 = true } }
-    func check() throws { if isAbandoned { throw CancellationError() } }
+    private enum State { case pending, abandoned, committed }
+    private let state = Mutex(State.pending)
+    /// Abandons a delivery that has not committed; a committed one is unaffected.
+    func abandon() { state.withLock { if $0 == .pending { $0 = .abandoned } } }
+    func check() throws { if state.withLock({ $0 == .abandoned }) { throw CancellationError() } }
+    /// True exactly once, for a delivery not yet abandoned; from then on abandonment cannot stop the Enter.
+    func commit() -> Bool {
+        state.withLock {
+            guard $0 == .pending else { return false }
+            $0 = .committed
+            return true
+        }
+    }
 }

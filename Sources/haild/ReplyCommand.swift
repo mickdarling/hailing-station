@@ -314,6 +314,8 @@ private enum ReplyClientError: Error, CustomStringConvertible {
     case timeout
     case failed(String)
     case refused(String)
+    /// The request was written but no answer came back: the outcome on the daemon side is unknown.
+    case unanswered(String)
 
     var description: String {
         switch self {
@@ -321,6 +323,9 @@ private enum ReplyClientError: Error, CustomStringConvertible {
         case .timeout: "local reply timed out"
         case .failed(let reason): reason
         case .refused(let reason): reason
+        case .unanswered(let reason):
+            "no answer after the dispatch was sent (\(reason)): the prompt may have been submitted, or typed and "
+                + "left unsubmitted in the target's input line; check the pane before retrying"
         }
     }
 }
@@ -344,7 +349,12 @@ enum ReplyClient {
         guard line.count <= max(PayloadLimits.defaultMaxFrameBytes, LocalDispatchRequest.maxLineBytes) + 1 else {
             throw ReplyClientError.failed("frame too large")
         }
-        return try await ReplyTransaction(socketURL: socketURL).perform(line)
+        let transaction = ReplyTransaction(socketURL: socketURL)
+        do { return try await transaction.perform(line) } catch {
+            // Once written, a lost answer is not a refusal: the daemon may have delivered (#204).
+            guard transaction.didSend else { throw error }
+            throw ReplyClientError.unanswered("\(error)")
+        }
     }
 
     static func submit(_ frame: Frame, socketURL: URL) async throws -> Int {
@@ -447,6 +457,8 @@ private final class ReplyTransaction: @unchecked Sendable {
     private let lock = NSLock()
     private var continuation: CheckedContinuation<LocalReplyResponse, any Error>?
     private var sent = false
+    /// Whether the request was handed to the socket; a failure after that has an unknown outcome.
+    var didSend: Bool { lock.withLock { sent } }
 
     init(socketURL: URL) {
         connection = NWConnection(to: .unix(path: socketURL.path), using: .tcp)
