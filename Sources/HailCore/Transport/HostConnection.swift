@@ -13,6 +13,8 @@ public enum HostConnectionFailure: Error, Equatable, Sendable {
 /// Owns exactly one endpoint's socket lifecycle. Generation checks make callbacks from replaced sockets inert.
 public actor HostConnection {
     public static let subprotocolName = "hail.v1"
+    /// Advertised only when the host's ambient-listening flags are set (#203).
+    public static let streamAudioCapability = "stream_audio"
     public typealias Observer = @Sendable (HostConnectionSnapshot) async -> Void
     public typealias ReplyObserver = @Sendable (HostReplyEvent) async -> Void
     public typealias Sleep = @Sendable (Duration) async throws -> Void
@@ -47,6 +49,15 @@ public actor HostConnection {
     var wantsConnection = false
     var pendingPings: [String: ContinuousClock.Instant] = [:]
     var desiredTargetID: String?
+    /// The ambient stream last sent (#203), the socket generation it is bound to, and a gate refusal for it.
+    var ambientStream: (id: UUID, connection: UUID)?
+    var ambientLastSequence = -1
+    var ambientRefusal: (stream: UUID, failure: HostConnectionFailure)?
+    /// Generation on which the host acked `desiredTargetID`; a reconnect's restored select is not acked.
+    var confirmedSelectionGeneration: UUID?
+    /// Only the latest selectTarget serial settles a selection; until then (or after it fails) audio is refused.
+    var selectionSerial: UInt64 = 0
+    var selectionSettled = true
     public init(
         endpoint: HostEndpoint,
         connector: any WebSocketConnecting = URLSessionWebSocketConnector(),
@@ -54,13 +65,13 @@ public actor HostConnection {
         deviceName: String = "hail terminal",
         pongTimeout: Duration = .seconds(5),
         negotiationTimeout: Duration = .seconds(10),
-        deadlineSleep: @escaping Sleep = { try await Task.sleep(for: $0) },
+        deadlineSleep: @escaping Sleep = HostConnection.taskSleep,
         negotiationScheduler: DeadlineScheduler? = nil,
         monotonicNow: @escaping MonotonicNow = { ContinuousClock().now },
         wallNow: @escaping WallNow = {
             Int64((Date().timeIntervalSince1970 * 1_000).rounded(.down))
         },
-        sleep: @escaping Sleep = { try await Task.sleep(for: $0) },
+        sleep: @escaping Sleep = HostConnection.taskSleep,
         jitter: @escaping Jitter = { Double.random(in: 0...1) },
         observer: @escaping Observer = { _ in },
         replyObserver: @escaping ReplyObserver = { _ in }
@@ -86,14 +97,6 @@ public actor HostConnection {
     }
 
     public func currentSnapshot() -> HostConnectionSnapshot { snapshot }
-
-    public func selectTarget(_ targetID: String) async throws {
-        try requireReady(capability: "select_target")
-        let token = generation
-        try await send(.select(targetID: targetID), generation: token)
-        try await confirmRoundTrip(generation: token)
-        desiredTargetID = targetID
-    }
 
     public func sendFinalText(_ text: String, to targetID: String) async throws {
         try requireReady(capability: "send_text")
@@ -123,7 +126,7 @@ public actor HostConnection {
         _ = await beginDisconnect()
     }
 
-    private func requireReady(capability: String) throws {
+    func requireReady(capability: String) throws {
         guard snapshot.state == .ready, socket != nil else { throw HostConnectionFailure.notReady }
         guard snapshot.capabilities.contains(capability) else {
             throw HostConnectionFailure.unsupportedCapability(capability)
@@ -168,5 +171,30 @@ public actor HostConnection {
         case .disconnected, .reconnecting, .failed:
             await replaceLoop()
         }
+    }
+}
+
+extension HostConnection {
+    public func selectTarget(_ targetID: String) async throws {
+        try requireReady(capability: "select_target")
+        let token = generation
+        // Until the host confirms the new target, no ambient segment may be tagged for either one.
+        selectionSerial &+= 1
+        let serial = selectionSerial
+        selectionSettled = false
+        confirmedSelectionGeneration = nil
+        try await send(.select(targetID: targetID), generation: token)
+        try await confirmRoundTrip(generation: token)
+        // A later selection owns the outcome; this superseded confirmation must not settle it.
+        guard selectionSerial == serial else { return }
+        desiredTargetID = targetID
+        confirmedSelectionGeneration = snapshot.connectionGeneration
+        selectionSettled = true
+    }
+
+    /// The default sleeps. A closure literal in this actor's default arguments compiled to a task whose
+    /// allocations were freed out of order when a pong deadline woke (`swift_task_dealloc` abort, #206).
+    public nonisolated static func taskSleep(_ duration: Duration) async throws {
+        try await Task.sleep(for: duration)
     }
 }
