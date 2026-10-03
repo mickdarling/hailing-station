@@ -3,19 +3,6 @@ import Darwin
 public import Foundation
 import Synchronization
 
-/// Why the RightyO child refused to start or its output ended (#203). Cases name rules, never content.
-public enum RightyoChildError: Error, Sendable, Equatable {
-    /// Not absolute, not a regular file, not executable, or group/world-writable.
-    case unsafeExecutable
-    /// Not absolute or not a regular readable file.
-    case unsafeConfig
-    /// A stdout line passed `maxLineBytes` before its newline; `backlog`: untaken lines passed `maxQueuedBytes`.
-    case lineTooLong, backlog, transportLost
-}
-
-/// How a reaped child ended.
-public enum RightyoChildExit: Sendable, Equatable { case exited(Int32), signaled(Int32) }
-
 /// One `rightyo listen --mode stdin` child (#203): raw mono 16 kHz s16le in, JSONL out. Fixed argv, no shell,
 /// minimal environment, working directory = the config's directory. Audio and stdout lines are never logged;
 /// stderr is drained and only its byte count kept.
@@ -146,8 +133,8 @@ final class RightyoStdinWriter: Sendable {
     }
 
     private func drain() {
-        while let chunk = next() {
-            guard push(chunk) else {
+        while let (chunk, at) = next() {
+            guard push(chunk, at: at) else {
                 state.withLock { state in
                     while !state.queue.isEmpty { Self.dropOldest(&state) }
                     (state.closing, state.writing) = (true, false)
@@ -158,7 +145,7 @@ final class RightyoStdinWriter: Sendable {
         }
     }
 
-    private func next() -> Data? {
+    private func next() -> (Data, UInt64)? {
         state.withLock { state in
             let limit = UInt64(timing.backlogAge * 1e9), now = DispatchTime.now().uptimeNanoseconds
             while let first = state.queue.first, now - first.at > limit { Self.dropOldest(&state) }
@@ -168,14 +155,15 @@ final class RightyoStdinWriter: Sendable {
                 if state.closing, !state.closed { state.closed = true; Darwin.close(input) }
                 return nil
             }
-            let chunk = state.queue.removeFirst().data
-            state.queued -= chunk.count
+            let chunk = state.queue.removeFirst()
+            state.queued -= chunk.data.count
             return chunk
         }
     }
 
-    /// Non-blocking writes with `F_SETNOSIGPIPE`: a dead child is EPIPE, never a signal.
-    private func push(_ chunk: Data) -> Bool {
+    /// Non-blocking writes with `F_SETNOSIGPIPE`: a dead child is EPIPE, never a signal. A chunk waiting on a full
+    /// pipe ages like a queued one: past `backlogAge` its unsent rest (from a sample boundary) is dropped.
+    private func push(_ chunk: Data, at: UInt64) -> Bool {
         var offset = 0
         while offset < chunk.count {
             let count = chunk.withUnsafeBytes {
@@ -187,6 +175,11 @@ final class RightyoStdinWriter: Sendable {
             } else if count < 0, errno == EINTR { continue } else {
                 guard count < 0, errno == EAGAIN, exit.value == nil, !state.withLock({ $0.abandoned }) else {
                     return false
+                }
+                let age = DispatchTime.now().uptimeNanoseconds - at
+                if offset.isMultiple(of: 2), age > UInt64(timing.backlogAge * 1e9) {
+                    state.withLock { $0.counters.droppedChunks += 1; $0.counters.droppedBytes += chunk.count - offset }
+                    return true
                 }
                 var ready = pollfd(fd: input, events: Int16(POLLOUT), revents: 0)
                 _ = poll(&ready, 1, 100)

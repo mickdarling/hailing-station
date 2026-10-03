@@ -1,7 +1,6 @@
 #if os(macOS)
 import Darwin
 public import Foundation
-import HailProtocol
 
 /// The final delivery step for ambient RightyO requests (#203): the daemon's own local dispatch for one named
 /// connection, so the phone's authorizer, selection generation, rate limits and sanitizer all apply. Returns
@@ -18,7 +17,8 @@ struct RightyoAmbientDispatchStep: RightyoDispatching {
     let dispatcher: any RightyoAmbientDispatching
 
     func dispatch(text: String, target: String, binding: String) async throws -> RightyoDispatchReceipt {
-        guard text.utf8.count <= PayloadLimits.maxTextBytes else { throw RightyoInputError.capacity }
+        // The daemon's own local-dispatch cap, as for `--reply-to`; in process there is no socket answer deadline.
+        guard text.utf8.count <= LocalDispatchRequest.maxTextBytes else { throw RightyoInputError.capacity }
         let request = LocalDispatchRequest(connection: connection, target: target, binding: binding, text: text)
         do {
             return RightyoDispatchReceipt(request: try await dispatcher.dispatch(request))

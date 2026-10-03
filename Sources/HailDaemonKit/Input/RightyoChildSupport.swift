@@ -4,6 +4,19 @@ public import Foundation
 import Synchronization
 
 /// The RightyO child's launch rules, stdout/stderr readers and exit latch (#203), beside RightyoChildProcess.swift.
+/// Why the RightyO child refused to start or its output ended (#203). Cases name rules, never content.
+public enum RightyoChildError: Error, Sendable, Equatable {
+    /// Not absolute, not a regular file, not executable, or group/world-writable.
+    case unsafeExecutable
+    /// Not absolute or not a regular readable file.
+    case unsafeConfig
+    /// A stdout line passed `maxLineBytes` before its newline; `backlog`: untaken lines passed `maxQueuedBytes`.
+    case lineTooLong, backlog, transportLost
+}
+
+/// How a reaped child ended.
+public enum RightyoChildExit: Sendable, Equatable { case exited(Int32), signaled(Int32) }
+
 extension RightyoChildProcess {
     public struct Timing: Sendable {
         /// After stdin closes, how long the child has to emit `stopped` and exit before SIGTERM.

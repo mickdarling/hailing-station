@@ -104,6 +104,25 @@ import Testing
         #expect(await child.stop() == .signaled(SIGTERM))
     }
 
+    /// The chunk already taken while the pipe was full ages like a queued one: once the child resumes after
+    /// `backlogAge`, nothing taken before the stall is written.
+    @Test func aChunkWaitingOnAFullPipeExpiresLikeTheQueue() async throws {
+        let fake = try FakeRightyo("echo ready\n/bin/sleep 3\n/usr/bin/wc -c | /usr/bin/tr -d ' ' > stdin-bytes.txt")
+        defer { fake.cleanUp() }
+        let child = try fake.child(.init(eofGrace: 20, termGrace: 20, backlogAge: 0.5))
+        var lines = child.lines.makeAsyncIterator()
+        #expect(try await lines.next() == Data("ready".utf8))
+        let chunks = 60, size = 3_200
+        for _ in 0..<chunks { #expect(child.write(Data(repeating: 9, count: size))) }
+        try await Task.sleep(for: .milliseconds(1_500))
+        let stalled = child.counters.writtenBytes
+        #expect(await child.stop() == .exited(0))
+        let counters = child.counters
+        #expect(counters.writtenBytes == stalled)
+        #expect(counters.writtenBytes + counters.droppedBytes == chunks * size)
+        #expect(try fake.recorded("stdin-bytes.txt") == "\(stalled)\n")
+    }
+
     @Test func refusesOversizedOddOrEmptyChunks() async throws {
         let fake = try FakeRightyo("/usr/bin/wc -c > /dev/null")
         defer { fake.cleanUp() }

@@ -104,8 +104,14 @@ actor RecordingAmbientDispatcher: RightyoAmbientDispatching {
         await #expect(throws: LocalDispatchRefusal.selectionChanged) {
             try await step(.selectionChanged).dispatch(text: "hi", target: "tmux:demo", binding: "pinned")
         }
+        // Prompts with context pass the 8 KiB frame cap: the daemon's local-dispatch cap governs, as for --reply-to.
+        let recorder = RecordingAmbientDispatcher()
+        let large = RightyoAmbientDispatchStep(connection: UUID(), dispatcher: recorder)
+        _ = try await large.dispatch(text: String(repeating: "a", count: 100_000), target: "tmux:demo",
+                                     binding: "pinned")
+        #expect(await recorder.requests.first?.text.utf8.count == 100_000)
         await #expect(throws: RightyoInputError.capacity) {
-            try await step(.ownershipLost).dispatch(text: String(repeating: "a", count: 8 * 1024 + 1),
+            try await large.dispatch(text: String(repeating: "a", count: LocalDispatchRequest.maxTextBytes + 1),
                                                     target: "tmux:demo", binding: "pinned")
         }
     }
