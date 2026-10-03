@@ -137,12 +137,20 @@ the phone hears it. For the target `tmux:demo` it is, byte for byte (it begins w
 
 - The block is the tail of the prompt: after the compact JSON (legacy layout), or after the formed text, the
   marker and the JSON (formed layout). The session cuts the prompt at the **last** occurrence of
-  ` Reply: run haild reply `. Producer text (a formed request or a turn) may repeat those words earlier and the
-  host does not refuse that, but nothing follows the host's block; the JSON is then parsed as before.
+  ` Reply: run haild reply `. A formed text that carries that prefix, or ends in it minus its trailing space, is
+  refused as `invalidEvent` under the same literal code-unit rule as the raw-turns marker
+  (`carriesReplyPrefix`), so a producer cannot put a fake instruction in front of the JSON. Raw turn text is not
+  checked: it rides JSON-escaped inside a string value of the data block, where a quote is `\"` and the object
+  closes with `}` before the host's block, so a prefix inside a turn never reaches the top level of the prompt;
+  the last occurrence is still the host's and the body cut there still parses (tested).
 - `tmux:demo` stands for the real target id the command was started with (the listed id whose binding was pinned
-  at startup); it appears twice and is the block's only variable part. The block is ASCII, one line (a target
-  containing a line break, or an empty one, is refused at startup as `unavailableBinding`), 208 characters plus
-  twice the target id, never contains the raw-turns marker, and passes the host sanitizer and the
+  at startup); it appears twice and is the block's only variable part. Because the block is a shell-shaped
+  instruction that quotes the target verbatim, a target id that could break out of that shape is refused at
+  startup as `unavailableBinding` (`RightyoInputConsumer.replyBlockSafe`): empty, or containing whitespace of any
+  kind (a space, tab, line or paragraph separator, no-break space), `"`, `'`, a backtick, a backslash, or a
+  control or format character. tmux and configured `tmux-reply:` session names may legally contain spaces; such
+  a target is unusable for `haild rightyo` until it is renamed. The block is ASCII, one unbroken line, 208
+  characters plus twice the target id, never contains the raw-turns marker, and passes the host sanitizer and the
   dangerous-pattern guard unchanged (`RightyoInputReplyBlockTests`).
 - The request id is not embedded. The daemon mints the reply request UUID after the prompt text is formed, when
   the dispatch is admitted, so the block points the session at the envelope instead: on a contextual adapter (a
@@ -211,7 +219,8 @@ whitespace; every sanitizer refusal is `invalidEvent`), and may neither contain 
 ` Raw turns (JSON, admitted record): ` nor end in that marker minus its trailing space (a literal code-unit check, not
 a grapheme one, so a combining mark after the marker does not hide it), so the first literal occurrence of the
 marker in a delivered prompt is the host's and a producer cannot append fake JSON that impersonates the admitted
-record; once the session advertised forming every request must carry the text, and when it did not, no
+record; the same rule refuses the [reply block](#the-reply-block)'s prefix ` Reply: run haild reply ` in a formed
+text; once the session advertised forming every request must carry the text, and when it did not, no
 request may. The text is part of the fingerprinted event, so a changed
 duplicate is refused like any other. Sequence, stream-time, correlation, duplicate and override rules are unchanged.
 
@@ -389,16 +398,20 @@ session and refuses everything else; no daemon, device or real target was used. 
 
 On the #188 reply-block slice (item 1, part B, PR 3 of 3), with the same `DEVELOPER_DIR`: `prompt(speakers:target:)`
 appends `RightyoInputEvent.replyBlock(target:)` to both layouts and the consumer threads its own target into it; a
-target with a line break, or an empty one, is refused at startup. `RightyoInputReplyBlockTests.swift` adds three
-tests: the block is one ASCII line without the marker, passes the sanitizer and guard, is the exact golden string
-for `tmux:demo`, the pre-block part of each layout is byte-identical to the previous golden prompts, and a formed
-text that repeats the block's prefix is admitted with the host's block still the last occurrence; the consumer
-names its own target (a `tmux-reply:` bridge target through a recording dispatcher, `tmux:demo` through a real
-host) and refuses line-break and empty targets; and the whole prompt at every maximum (a 16,000-character,
-64,000-byte formed text over 245 turns of 4,000 characters, one turn short of the 1 MiB context cap, which the
-246th turn trips as `capacity`) stays under 1,200,000 in characters and bytes with the sum asserted.
+target that is not `replyBlockSafe` (empty, whitespace, quotes, backtick, backslash, control or format characters)
+is refused at startup, and a formed text carrying the block's prefix is refused like the marker (both from the
+first review round). `RightyoInputReplyBlockTests.swift` adds four tests: the block is one ASCII line without the
+marker, passes the sanitizer and guard, is the exact golden string for `tmux:demo`, the pre-block part of each
+layout is byte-identical to the previous golden prompts, and the host's block is the last occurrence of its
+prefix; the consumer names its own target (a `tmux-reply:` bridge target through a recording dispatcher,
+`tmux:demo` through a real host) and refuses fourteen unsafe targets while accepting four plain ones; a formed
+text carrying the prefix literally, with a combining mark after it, or as its own trailing end minus the space is
+refused, a near miss is admitted, and a raw turn whose text carries the prefix is admitted JSON-escaped inside the
+data block with the host's block still last and the body still parsing; and the whole prompt at every maximum (a
+16,000-character, 64,000-byte formed text over 245 turns of 4,000 characters, one turn short of the 1 MiB context
+cap, which the 246th turn trips as `capacity`) stays under 1,200,000 in characters and bytes with the sum asserted.
 `RightyoInputFormedRequestTests` asserts both exact strings with the block; the other suites and the CLI dispatch
 test cut the block at the last occurrence of its prefix before parsing the JSON. `scripts/verify.sh all` passed:
-845 Swift tests in 129 suites (three new), 45 trace checker tests, five intent tests, 34 CLI tests, audit CLI,
+846 Swift tests in 129 suites (four new), 45 trace checker tests, five intent tests, 34 CLI tests, audit CLI,
 strict lint and scripts; all four fixtures dry-run with unchanged receipts and unchanged SHA-256s. All input is
 authored; no device, microphone, daemon or real target was used. Source marketing version is 0.1.68.

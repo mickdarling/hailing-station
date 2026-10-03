@@ -31,7 +31,7 @@ extension RightyoInputEvent {
         guard let formedRequest else { return }
         let policy = SanitizePolicy(maxCharacters: 16_000, maxUTF8Bytes: 64_000)
         guard type == "request", !formedRequest.isEmpty, formedRequest.count <= 16_000,
-              !Self.carriesMarker(formedRequest),
+              !Self.carriesMarker(formedRequest), !Self.carriesReplyPrefix(formedRequest),
               (try? Sanitizer.sanitize(formedRequest, policy: policy)) == [formedRequest] else {
             throw RightyoInputError.invalidEvent
         }
@@ -44,13 +44,19 @@ extension RightyoInputEvent {
     /// Literal code-unit search, not grapheme search: a combining mark right after the marker would hide it from
     /// `contains`. The suffix rule covers a text ending in the marker minus its trailing space, which the host's
     /// leading space would otherwise complete one character early.
-    static func carriesMarker(_ text: String) -> Bool {
-        text.range(of: rawTurnsMarker, options: .literal) != nil
-            || text.range(of: String(rawTurnsMarker.dropLast()), options: [.literal, .backwards, .anchored]) != nil
+    static func carriesMarker(_ text: String) -> Bool { carries(rawTurnsMarker, in: text) }
+    /// The same rule for the reply block's prefix: a formed text may not impersonate the host's instruction
+    /// either. Raw turn text is not checked: it rides JSON-escaped inside a string value of the data block, where
+    /// a quote is `\"` and the object closes before the host's block, so it never reaches the top level.
+    static func carriesReplyPrefix(_ text: String) -> Bool { carries(replyBlockPrefix, in: text) }
+    private static func carries(_ marker: String, in text: String) -> Bool {
+        text.range(of: marker, options: .literal) != nil
+            || text.range(of: String(marker.dropLast()), options: [.literal, .backwards, .anchored]) != nil
     }
     /// Tells the receiving session how to answer so the phone hears it (#188 item 1). Appended last to both
-    /// layouts, after the JSON, so the session cuts the prompt at the LAST occurrence of `replyBlockPrefix`:
-    /// producer text before it may repeat these words, but nothing follows the host's block. The reply request
+    /// layouts, after the JSON, so the session cuts the prompt at the LAST occurrence of `replyBlockPrefix`: a
+    /// formed text carrying it is refused (`carriesReplyPrefix`), raw turn text stays inside the JSON's string
+    /// values, and nothing follows the host's block. The reply request
     /// id is minted by the daemon after this text is formed, so the block points at the `request` field of the
     /// `BridgeRequest` envelope the pane receives rather than embedding it; a legacy adapter delivers no
     /// envelope, and there the request-less shape reaches a phone only under the single-terminal fallback.

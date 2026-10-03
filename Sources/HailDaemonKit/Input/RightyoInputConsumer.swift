@@ -68,13 +68,13 @@ public actor RightyoInputConsumer {
     /// `streamBudgetMs` is an optional ceiling on producer stream time; the default is no ceiling (#188).
     /// `dispatcher` replaces the direct `HailHost.send` step (#188 item 1); without it, `host` delivers directly
     /// and nil `host` validates only. A dispatcher with no host still delivers (it owns its own host access).
-    /// `target` is named in every prompt's reply block, so a target with a line break is refused at startup:
-    /// the block is one line by construction, not only because the host sanitizer would refuse the prompt.
+    /// `target` is quoted verbatim into every prompt's reply block, so one that is not `replyBlockSafe` is
+    /// refused at startup rather than delivered.
     public init(host: HailHost?, target: String, binding: String, session: String,
                 allowSynthetic: Bool = false, streamBudgetMs: Int? = nil,
                 dispatcher: (any RightyoDispatching)? = nil) throws {
-        guard !binding.isEmpty, !target.isEmpty, !target.contains(where: \.isNewline),
-              RightyoInputEvent.identifier(session), streamBudgetMs.map({ $0 >= 0 }) ?? true else {
+        guard !binding.isEmpty, Self.replyBlockSafe(target), RightyoInputEvent.identifier(session),
+              streamBudgetMs.map({ $0 >= 0 }) ?? true else {
             throw RightyoInputError.unavailableBinding
         }
         self.dispatcher = dispatcher ?? host.map { RightyoHostDispatcher(host: $0) }
@@ -83,6 +83,17 @@ public actor RightyoInputConsumer {
         self.binding = binding
         self.session = session
         self.streamBudgetMs = streamBudgetMs
+    }
+    /// The reply block is a shell-shaped instruction that names the target verbatim, so a target id that could
+    /// break out of that shape (whitespace of any kind, `"`, `'`, a backtick, a backslash, or a control or format
+    /// character) is refused. tmux and configured `tmux-reply:` names may legally contain spaces; such a target
+    /// is unusable for `haild rightyo` until it is renamed. The block is then one unbroken line by construction.
+    public static func replyBlockSafe(_ target: String) -> Bool {
+        let unsafe: Set<Unicode.GeneralCategory> = [.control, .format, .lineSeparator, .paragraphSeparator]
+        return !target.isEmpty && !target.unicodeScalars.contains { scalar in
+            scalar.properties.isWhitespace || "\"'`\\".unicodeScalars.contains(scalar)
+                || unsafe.contains(scalar.properties.generalCategory)
+        }
     }
     /// True means handled: guarded delivery, or validation only when initialized with no host.
     public func consume(_ event: RightyoInputEvent) async throws -> Bool {
