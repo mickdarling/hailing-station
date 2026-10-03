@@ -25,7 +25,7 @@
 	<key>CFBundleVersion</key>
 	<string>$(CURRENT_PROJECT_VERSION)</string>
 	<key>NSMicrophoneUsageDescription</key>
-	<string>Hailing Station captures speech to send it to a host you choose.</string>
+	<string>Hailing Station captures speech to send it to a host you choose. While ambient listening is on, it may also send room audio to your Mac.</string>
 	<key>NSSpeechRecognitionUsageDescription</key>
 	<string>Hailing Station transcribes speech on this device.</string>
 	<key>UIBackgroundModes</key>

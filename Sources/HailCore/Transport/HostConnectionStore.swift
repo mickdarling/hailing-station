@@ -15,6 +15,9 @@ public final class HostConnectionStore {
 
     /// Bumped on every target selection, per host, so an ambient stream ends on any target change (#203).
     private var selectionSerials: [HostEndpoint.Identifier: UInt64] = [:]
+    /// The target each host last confirmed through `selectTarget`, the one its connection addresses audio to.
+    /// Ambient bindings exist only for it (#218).
+    private var selectedTargets: [HostEndpoint.Identifier: String] = [:]
 
     @ObservationIgnored private var connections: [HostEndpoint.Identifier: HostConnection] = [:]
     @ObservationIgnored private var tokens: [HostEndpoint.Identifier: UUID] = [:]
@@ -59,6 +62,7 @@ public final class HostConnectionStore {
     public func upsert(_ endpoint: HostEndpoint) async {
         if snapshots[endpoint.id]?.endpoint == endpoint { return }
         let existing = connections.removeValue(forKey: endpoint.id)
+        forgetSelection(endpoint.id)
         let retainedBarrier = retiredBarriers.removeValue(forKey: endpoint.id)
         tokens[endpoint.id] = nil
         let inheritedBarrier = existing.map(drainingTransportBarrier(for:)) ?? retainedBarrier
@@ -91,9 +95,12 @@ public final class HostConnectionStore {
     public func connect(_ id: HostEndpoint.Identifier) async { await connections[id]?.connect() }
     public func disconnect(_ id: HostEndpoint.Identifier) async { await connections[id]?.disconnect() }
     public func selectTarget(host id: HostEndpoint.Identifier, targetID: String) async throws {
-        selectionSerials[id, default: 0] &+= 1
+        forgetSelection(id)
+        let serial = selectionSerials[id]
         guard let connection = connections[id] else { throw HostConnectionFailure.notReady }
         try await connection.selectTarget(targetID)
+        // A later selection, endpoint change or removal owns the outcome.
+        if selectionSerials[id] == serial, connections[id] === connection { selectedTargets[id] = targetID }
     }
     public func sendFinalText(_ text: String, host id: HostEndpoint.Identifier, targetID: String) async throws {
         guard let connection = connections[id] else { throw HostConnectionFailure.notReady }
@@ -103,9 +110,11 @@ public final class HostConnectionStore {
         guard let connection = connections[id] else { throw HostConnectionFailure.notReady }
         try await connection.sendEscape(to: targetID)
     }
-    /// The ambient binding for a destination, or nil unless the host is ready and advertises `stream_audio`.
+    /// The ambient binding for a destination, or nil unless the host is ready, advertises `stream_audio`, and
+    /// `targetID` is the target its connection has confirmed: the connection addresses every segment to that
+    /// selection, so a binding for any other target would misstate where audio goes (#218).
     public func ambientBinding(host id: HostEndpoint.Identifier, targetID: String) -> AmbientAudioBinding? {
-        guard let snapshot = snapshots[id], snapshot.state == .ready,
+        guard selectedTargets[id] == targetID, let snapshot = snapshots[id], snapshot.state == .ready,
               snapshot.capabilities.contains(HostConnection.streamAudioCapability) else { return nil }
         return AmbientAudioBinding(
             hostID: id, targetID: targetID, connectionGeneration: snapshot.connectionGeneration,
@@ -113,8 +122,10 @@ public final class HostConnectionStore {
         )
     }
 
-    /// Sends one ambient segment to the host the binding names (#203). A reconnect or any target selection on
-    /// that host since the binding was taken makes every further segment throw, so the streamer releases the mic.
+    /// Sends one ambient segment to the host and target the binding names (#203). The binding is authoritative:
+    /// it must still be the current one for the connection's confirmed target, so a reconnect, an endpoint change
+    /// or any target selection since it was taken makes every further segment throw and the streamer releases
+    /// the mic.
     public func sendAudio(_ audio: AudioPayload, to binding: AmbientAudioBinding) async throws {
         guard ambientBinding(host: binding.hostID, targetID: binding.targetID) == binding,
               let connection = connections[binding.hostID] else { throw HostConnectionFailure.notReady }
@@ -122,6 +133,7 @@ public final class HostConnectionStore {
     }
     public func remove(_ id: HostEndpoint.Identifier) async {
         tokens[id] = nil
+        forgetSelection(id)
         let connection = connections.removeValue(forKey: id)
         let barrier = connection.map(drainingTransportBarrier(for:)) ?? retiredBarriers[id]
         if let barrier { retiredBarriers[id] = barrier }
@@ -133,6 +145,12 @@ public final class HostConnectionStore {
         for id in order {
             await connections[id]?.foregrounded()
         }
+    }
+
+    /// Every selection change, endpoint change or removal invalidates outstanding bindings for the host.
+    private func forgetSelection(_ id: HostEndpoint.Identifier) {
+        selectionSerials[id, default: 0] &+= 1
+        selectedTargets[id] = nil
     }
 
     private func receive(_ snapshot: HostConnectionSnapshot, token: UUID) {
@@ -189,13 +207,24 @@ public final class AmbientListeningController {
     @ObservationIgnored private var awaitingPermission = false
     @ObservationIgnored private var pendingStart = false
     @ObservationIgnored private var sendFailure: String?
+    /// The session that most recently began activating the audio session. Only it may release the audio session,
+    /// so a slow teardown of an earlier session cannot deactivate the one a fast off→on started (#218).
+    @ObservationIgnored private var activation: UUID?
+    /// The release in flight, if any; a new activation waits for it so the two never interleave.
+    @ObservationIgnored private var pendingRelease: Task<Void, Never>?
+    @ObservationIgnored private let notificationCenter: NotificationCenter
+    /// Watches for capture ended by the system, so the toggle drops before queued audio finishes draining.
+    @ObservationIgnored private var systemEndObserver: (any NSObjectProtocol)?
 
+    /// `notificationCenter` is where capture posts `AVAudioEngineCapture.endedBySystem`.
     public init(
+        notificationCenter: NotificationCenter = .default,
         requestPermission: @escaping @MainActor () async -> Bool,
         makeStreamer: @escaping MakeStreamer,
         releaseSession: @escaping @MainActor () async -> Void,
         send: @escaping Send
     ) {
+        self.notificationCenter = notificationCenter
         self.requestPermission = requestPermission
         self.makeStreamer = makeStreamer
         self.releaseSession = releaseSession
@@ -248,6 +277,11 @@ public final class AmbientListeningController {
     private func start(_ current: UUID) async {
         guard let binding else { return }
         let send = send
+        await pendingRelease?.value
+        guard session == current, scene == .active else {
+            return await end(current, reason: "Stopped: Hailing Station left the foreground.")
+        }
+        activation = current
         do {
             let streamer = try await makeStreamer { [weak self] payload in
                 do {
@@ -258,15 +292,16 @@ public final class AmbientListeningController {
                 }
             }
             guard session == current, scene == .active else {
-                await releaseSession()
+                await release(current)
                 return await end(current, reason: "Stopped: Hailing Station left the foreground.")
             }
             try streamer.start()
             self.streamer = streamer
             isListening = true
+            observeSystemEnd(session: current)
             watch(streamer, session: current)
         } catch {
-            await releaseSession()
+            await release(current)
             await end(current, reason: "Could not start listening: \(Self.describe(error))")
         }
     }
@@ -276,7 +311,9 @@ public final class AmbientListeningController {
             Task { @MainActor in self?.watch(streamer, session: current) }
         }
         guard !streaming, session == current else { return }
-        Task { await end(current, reason: sendFailure ?? "Stopped: the microphone ended.") }
+        Task {
+            await end(current, reason: sendFailure ?? "Stopped: the microphone was interrupted or ended.")
+        }
     }
 
     private func recordSendFailure(_ error: any Error, session current: UUID) {
@@ -293,17 +330,44 @@ public final class AmbientListeningController {
         awaitingPermission = false
         stopReason = reason
         binding = nil
+        if let systemEndObserver {
+            notificationCenter.removeObserver(systemEndObserver)
+            self.systemEndObserver = nil
+        }
         guard let streamer else { return }
         self.streamer = nil
         await streamer.stop()
-        await releaseSession()
+        await release(current)
+    }
+}
+
+extension AmbientListeningController {
+    /// Releases the audio session for `owner` unless a newer session has begun activating it since.
+    private func release(_ owner: UUID) async {
+        guard activation == owner else { return }
+        activation = nil
+        let releaseSession = releaseSession
+        let task = Task { @MainActor in await releaseSession() }
+        pendingRelease = task
+        await task.value
+    }
+
+    static let interruptedReason = "Stopped: a call, Siri or an audio route change interrupted the microphone."
+
+    /// A call, Siri or a route change ended capture: turn off now rather than after the backlog drains (#218).
+    private func observeSystemEnd(session current: UUID) {
+        systemEndObserver = notificationCenter.addObserver(
+            forName: AVAudioEngineCapture.endedBySystem, object: nil, queue: nil
+        ) { [weak self] _ in
+            Task { @MainActor in await self?.end(current, reason: Self.interruptedReason) }
+        }
     }
 
     static func describe(_ error: any Error) -> String {
         switch error {
         case HostConnectionFailure.notReady: "the connection changed."
-        case HostConnectionFailure.unsupportedCapability: "this Mac does not accept ambient audio."
-        case HostConnectionFailure.remote(let message): "the Mac ended listening (\(message))."
+        case HostConnectionFailure.unsupportedCapability: "this host does not accept ambient audio."
+        case HostConnectionFailure.remote(let message): "the host ended listening (\(message))."
         case HostConnectionFailure.malformed(let message): "\(message)."
         default: error.localizedDescription
         }
