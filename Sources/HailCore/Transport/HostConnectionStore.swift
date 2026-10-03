@@ -212,13 +212,19 @@ public final class AmbientListeningController {
     @ObservationIgnored private var activation: UUID?
     /// The release in flight, if any; a new activation waits for it so the two never interleave.
     @ObservationIgnored private var pendingRelease: Task<Void, Never>?
+    @ObservationIgnored private let notificationCenter: NotificationCenter
+    /// Watches for capture ended by the system, so the toggle drops before queued audio finishes draining.
+    @ObservationIgnored private var systemEndObserver: (any NSObjectProtocol)?
 
+    /// `notificationCenter` is where capture posts `AVAudioEngineCapture.endedBySystem`.
     public init(
+        notificationCenter: NotificationCenter = .default,
         requestPermission: @escaping @MainActor () async -> Bool,
         makeStreamer: @escaping MakeStreamer,
         releaseSession: @escaping @MainActor () async -> Void,
         send: @escaping Send
     ) {
+        self.notificationCenter = notificationCenter
         self.requestPermission = requestPermission
         self.makeStreamer = makeStreamer
         self.releaseSession = releaseSession
@@ -292,21 +298,12 @@ public final class AmbientListeningController {
             try streamer.start()
             self.streamer = streamer
             isListening = true
+            observeSystemEnd(session: current)
             watch(streamer, session: current)
         } catch {
             await release(current)
             await end(current, reason: "Could not start listening: \(Self.describe(error))")
         }
-    }
-
-    /// Releases the audio session for `owner` unless a newer session has begun activating it since.
-    private func release(_ owner: UUID) async {
-        guard activation == owner else { return }
-        activation = nil
-        let releaseSession = releaseSession
-        let task = Task { @MainActor in await releaseSession() }
-        pendingRelease = task
-        await task.value
     }
 
     private func watch(_ streamer: AmbientAudioStreamer, session current: UUID) {
@@ -333,10 +330,37 @@ public final class AmbientListeningController {
         awaitingPermission = false
         stopReason = reason
         binding = nil
+        if let systemEndObserver {
+            notificationCenter.removeObserver(systemEndObserver)
+            self.systemEndObserver = nil
+        }
         guard let streamer else { return }
         self.streamer = nil
         await streamer.stop()
         await release(current)
+    }
+}
+
+extension AmbientListeningController {
+    /// Releases the audio session for `owner` unless a newer session has begun activating it since.
+    private func release(_ owner: UUID) async {
+        guard activation == owner else { return }
+        activation = nil
+        let releaseSession = releaseSession
+        let task = Task { @MainActor in await releaseSession() }
+        pendingRelease = task
+        await task.value
+    }
+
+    static let interruptedReason = "Stopped: a call, Siri or an audio route change interrupted the microphone."
+
+    /// A call, Siri or a route change ended capture: turn off now rather than after the backlog drains (#218).
+    private func observeSystemEnd(session current: UUID) {
+        systemEndObserver = notificationCenter.addObserver(
+            forName: AVAudioEngineCapture.endedBySystem, object: nil, queue: nil
+        ) { [weak self] _ in
+            Task { @MainActor in await self?.end(current, reason: Self.interruptedReason) }
+        }
     }
 
     static func describe(_ error: any Error) -> String {
