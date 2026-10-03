@@ -9,7 +9,7 @@ public enum RightyoChildError: Error, Sendable, Equatable {
     case unsafeExecutable
     /// Not absolute or not a regular readable file.
     case unsafeConfig
-    /// A stdout line passed `maxLineBytes` before its newline; `backlog`: more lines waited than were taken.
+    /// A stdout line passed `maxLineBytes` before its newline; `backlog`: untaken lines passed `maxQueuedBytes`.
     case lineTooLong, backlog, transportLost
 }
 
@@ -21,7 +21,8 @@ public enum RightyoChildExit: Sendable, Equatable { case exited(Int32), signaled
 /// stderr is drained and only its byte count kept.
 public final class RightyoChildProcess: Sendable {
     public static let maxLineBytes = 1_200_000
-    /// Lines read but not yet taken are bounded in bytes too; past this the stream ends with `backlog`.
+    /// Lines read but not yet taken are bounded by total bytes only (no line count); past this the stream ends
+    /// with `backlog`.
     public static let maxQueuedBytes = 4_000_000
     /// stdout split on newlines (empty lines skipped). Ends at EOF, or throws a `RightyoChildError`.
     public let lines: RightyoChildLines
@@ -42,7 +43,8 @@ public final class RightyoChildProcess: Sendable {
         let child = try Self.spawn(resolved, arguments: argv,
                                    environment: Self.environment().map { "\($0.key)=\($0.value)" },
                                    directory: config.deletingLastPathComponent().path)
-        let pair = AsyncThrowingStream<Data, any Error>.makeStream(bufferingPolicy: .bufferingOldest(256))
+        // No line-count cap: untaken lines are bounded by `maxQueuedBytes` alone (checked before each yield).
+        let pair = AsyncThrowingStream<Data, any Error>.makeStream(bufferingPolicy: .unbounded)
         let queued = RightyoByteCount()
         lines = RightyoChildLines(stream: pair.stream, queued: queued)
         input = RightyoStdinWriter(input: child.input, exit: exit, timing: timing)

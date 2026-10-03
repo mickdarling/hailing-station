@@ -464,12 +464,11 @@ working directory is the config's directory. The executable, after symlinks, mus
 - a regular executable file
 - owned by the daemon's user or root
 - not group- or world-writable
-- in a directory that is not group- or world-writable
+- in directories, from its parent up to `/`, that are owned by the daemon's user or root and not group- or world-writable
 
-Writable ancestors further up are not checked.
 
 stdin is a bounded, non-blocking writer: 64 KB or 2 s, dropping the oldest whole chunks with a gap counter. stdout
-lines are capped at 1.2 MB each and 4 MB in total while untaken. Past either cap the stream ends fail-closed. stderr is
+lines are capped at 1.2 MB each and 4 MB in total while untaken (bytes only, no line-count cap). Past either cap the stream ends fail-closed. stderr is
 drained, and only its byte count is kept.
 
 Stopping closes stdin, then sends SIGTERM after 3 s, then SIGKILL after 2 s. Dropping the last reference closes stdin

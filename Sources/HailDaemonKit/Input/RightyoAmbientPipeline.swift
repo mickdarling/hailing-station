@@ -164,7 +164,7 @@ public struct RightyoChildLines: AsyncSequence, Sendable {
         return true
     }
 
-    /// False once the reader is gone; throws `backlog` past either queue bound.
+    /// False once the reader is gone; throws `backlog` past the queued-byte bound (the stream itself is unbounded).
     private static func emit(_ line: Data, into lines: AsyncThrowingStream<Data, any Error>.Continuation,
                              queued: RightyoByteCount) throws -> Bool {
         let fits = queued.withLock { total in

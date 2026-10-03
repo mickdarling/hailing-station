@@ -138,6 +138,16 @@ import Testing
         #expect(taken == 4)
     }
 
+    @Test func manySmallUntakenLinesStayWithinTheByteBudget() async throws {
+        let fake = try FakeRightyo("i=0; while [ $i -lt 2000 ]; do echo \"{\\\"n\\\": $i}\"; i=$((i + 1)); done")
+        defer { fake.cleanUp() }
+        let child = try fake.child()
+        #expect(await child.stop() == .exited(0)) // All 2,000 lines are queued before any is taken.
+        var taken = 0
+        for try await _ in child.lines { taken += 1 }
+        #expect(taken == 2_000)
+    }
+
     @Test func aLineAtTheCapIsDelivered() async throws {
         let fake = try FakeRightyo("/bin/dd if=/dev/zero bs=1000 count=1200 2>/dev/null | /usr/bin/tr '\\0' a; echo")
         defer { fake.cleanUp() }

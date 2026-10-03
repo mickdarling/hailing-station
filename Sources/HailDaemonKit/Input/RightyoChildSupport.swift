@@ -37,8 +37,8 @@ extension RightyoChildProcess {
     }
 
     /// The executable (after symlinks) must be a regular executable file owned by this user or root and not
-    /// group/world-writable, in a directory that is not group/world-writable either, which narrows the window
-    /// between this check and the spawn. A writable ancestor further up is not checked.
+    /// group/world-writable, and every directory from its parent up to `/` must be too, so no other user can
+    /// unlink or replace it between this check and the spawn.
     /// Returns the resolved absolute path, which is the one spawned.
     @discardableResult public static func validate(executable: URL, config: URL) throws -> String {
         var info = stat(), parent = stat()
@@ -47,9 +47,15 @@ extension RightyoChildProcess {
         let path = resolved.map { String(cString: $0) } ?? ""
         let owners: Set<uid_t> = [0, getuid()]
         guard executable.isFileURL, !path.isEmpty, stat(path, &info) == 0, info.st_mode & S_IFMT == S_IFREG,
-              info.st_mode & (S_IWGRP | S_IWOTH) == 0, owners.contains(info.st_uid), access(path, X_OK) == 0,
-              stat((path as NSString).deletingLastPathComponent, &parent) == 0,
-              parent.st_mode & (S_IWGRP | S_IWOTH) == 0 else { throw RightyoChildError.unsafeExecutable }
+              info.st_mode & (S_IWGRP | S_IWOTH) == 0, owners.contains(info.st_uid), access(path, X_OK) == 0
+        else { throw RightyoChildError.unsafeExecutable }
+        var directory = (path as NSString).deletingLastPathComponent
+        while true {
+            guard stat(directory, &parent) == 0, parent.st_mode & S_IFMT == S_IFDIR, owners.contains(parent.st_uid),
+                  parent.st_mode & (S_IWGRP | S_IWOTH) == 0 else { throw RightyoChildError.unsafeExecutable }
+            if directory == "/" { break }
+            directory = (directory as NSString).deletingLastPathComponent
+        }
         guard config.isFileURL, config.path.hasPrefix("/"), stat(config.path, &info) == 0,
               info.st_mode & S_IFMT == S_IFREG, access(config.path, R_OK) == 0 else {
             throw RightyoChildError.unsafeConfig

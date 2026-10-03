@@ -43,5 +43,24 @@ extension RightyoChildProcessTests {
                                              config: fake.directory.appendingPathComponent("missing.json"))
         }
     }
+
+    @Test func refusesAWritableAncestorAboveTheParent() throws {
+        let owned = try FakeRightyo("exit 0", mode: 0o750)
+        defer { owned.cleanUp() }
+        let nested = owned.directory.appendingPathComponent("bin")
+        try FileManager.default.createDirectory(at: nested, withIntermediateDirectories: false,
+                                                attributes: [.posixPermissions: 0o755])
+        let inner = nested.appendingPathComponent("rightyo")
+        try FileManager.default.copyItem(at: owned.executable, to: inner)
+        #expect(chmod(inner.path, 0o750) == 0)
+        #expect(throws: Never.self) { try RightyoChildProcess.validate(executable: inner, config: owned.config) }
+        for mode: mode_t in [0o770, 0o707] {
+            #expect(chmod(owned.directory.path, mode) == 0)
+            #expect(throws: RightyoChildError.unsafeExecutable) {
+                try RightyoChildProcess.validate(executable: inner, config: owned.config)
+            }
+        }
+        #expect(chmod(owned.directory.path, 0o700) == 0)
+    }
 }
 #endif
