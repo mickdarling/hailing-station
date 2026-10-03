@@ -82,7 +82,9 @@ extension HostConnection {
     /// a gate refusal for it, every further segment of that stream throws so the streamer releases the mic.
     public func sendAudio(_ audio: AudioPayload) async throws {
         try requireReady(capability: Self.streamAudioCapability)
-        guard let targetID = desiredTargetID, socket != nil else { throw HostConnectionFailure.notReady }
+        guard let targetID = desiredTargetID, selectionsInFlight == 0, socket != nil else {
+            throw HostConnectionFailure.notReady
+        }
         guard audio.reply == nil, let stream = audio.streamID, audio.codec == .pcm16,
               audio.sampleRate == AmbientAudioFormat.sampleRate, audio.channels == AmbientAudioFormat.channels,
               audio.bytes.count <= AmbientAudioFormat.maxSegmentBytes else {
@@ -101,7 +103,8 @@ extension HostConnection {
             let token = generation
             try await send(.select(targetID: targetID), generation: token)
             try await confirmRoundTrip(generation: token)
-            guard snapshot.connectionGeneration == connection, desiredTargetID == targetID else {
+            guard snapshot.connectionGeneration == connection, desiredTargetID == targetID,
+                  selectionsInFlight == 0 else {
                 throw HostConnectionFailure.notReady
             }
             confirmedSelectionGeneration = connection

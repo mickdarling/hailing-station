@@ -55,6 +55,7 @@ public actor HostConnection {
     /// The socket generation on which the host acknowledged `desiredTargetID`. A reconnect's restored selection
     /// is sent but not acknowledged, so ambient audio confirms it before its first segment.
     var confirmedSelectionGeneration: UUID?
+    var selectionsInFlight = 0
     public init(
         endpoint: HostEndpoint,
         connector: any WebSocketConnecting = URLSessionWebSocketConnector(),
@@ -94,15 +95,6 @@ public actor HostConnection {
     }
 
     public func currentSnapshot() -> HostConnectionSnapshot { snapshot }
-
-    public func selectTarget(_ targetID: String) async throws {
-        try requireReady(capability: "select_target")
-        let token = generation
-        try await send(.select(targetID: targetID), generation: token)
-        try await confirmRoundTrip(generation: token)
-        desiredTargetID = targetID
-        confirmedSelectionGeneration = snapshot.connectionGeneration
-    }
 
     public func sendFinalText(_ text: String, to targetID: String) async throws {
         try requireReady(capability: "send_text")
@@ -181,6 +173,19 @@ public actor HostConnection {
 }
 
 extension HostConnection {
+    public func selectTarget(_ targetID: String) async throws {
+        try requireReady(capability: "select_target")
+        let token = generation
+        // Until the host confirms the new target, no ambient segment may be tagged for either one.
+        confirmedSelectionGeneration = nil
+        selectionsInFlight += 1
+        defer { selectionsInFlight -= 1 }
+        try await send(.select(targetID: targetID), generation: token)
+        try await confirmRoundTrip(generation: token)
+        desiredTargetID = targetID
+        confirmedSelectionGeneration = snapshot.connectionGeneration
+    }
+
     /// The default sleeps. A closure literal in this actor's default arguments compiled to a task whose
     /// allocations were freed out of order when a pong deadline woke (`swift_task_dealloc` abort, #206).
     public nonisolated static func taskSleep(_ duration: Duration) async throws {

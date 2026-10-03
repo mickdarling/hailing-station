@@ -35,6 +35,9 @@ struct AmbientAudioEncoder {
     private let outputFormat: AVAudioFormat
     private var converter: AVAudioConverter?
     private var pending = Data()
+    /// The newest full segment, held until another follows or the stream ends, so `final: true` always rides
+    /// on audio: the host gate (#205) refuses empty segments.
+    private var held: Data?
     private(set) var nextSequence = 0
 
     init(streamID: UUID) throws {
@@ -43,7 +46,7 @@ struct AmbientAudioEncoder {
         outputFormat = format
     }
 
-    /// Returns every complete segment the buffer completes. A partial tail waits for the next buffer.
+    /// Returns the segments the buffer completes, one segment behind. A partial tail waits for the next buffer.
     mutating func encode(_ buffer: AVAudioPCMBuffer) throws -> [AudioPayload] {
         if let converter, converter.inputFormat != buffer.format { try flushConverter() }
         if converter == nil {
@@ -65,7 +68,8 @@ struct AmbientAudioEncoder {
         return takeSegments(includingTail: false)
     }
 
-    /// Flushes converter latency and returns the remaining segments; the last one carries `final: true`.
+    /// Flushes converter latency and returns the remaining segments; the last carries `final: true`. A stream
+    /// that never produced audio returns none.
     mutating func finish() throws -> [AudioPayload] {
         try flushConverter()
         return takeSegments(includingTail: true)
@@ -80,20 +84,24 @@ struct AmbientAudioEncoder {
         })
     }
 
-    /// An empty closing segment for a stream whose remaining audio could not be converted.
-    mutating func finalMarker() -> AudioPayload { payload(Data(), isFinal: true) }
+    /// Ends a stream whose remaining audio could not be converted: the held segment becomes the final one.
+    mutating func abandon() -> [AudioPayload] {
+        pending = Data()
+        return takeSegments(includingTail: true)
+    }
 
     private mutating func takeSegments(includingTail: Bool) -> [AudioPayload] {
         var segments: [AudioPayload] = []
         let size = AmbientAudioFormat.chunkBytes
-        while pending.count >= size {
+        while pending.count >= size || (includingTail && !pending.isEmpty) {
             let bytes = Data(pending.prefix(size))
-            pending.removeFirst(size)
-            segments.append(payload(bytes, isFinal: false))
+            pending.removeFirst(bytes.count)
+            if let previous = held { segments.append(payload(previous, isFinal: false)) }
+            held = bytes
         }
-        if includingTail {
-            segments.append(payload(pending, isFinal: true))
-            pending = Data()
+        if includingTail, let last = held {
+            segments.append(payload(last, isFinal: true))
+            held = nil
         }
         return segments
     }
@@ -321,7 +329,7 @@ public final class AmbientAudioStreamer {
             }
             for segment in segments { await queue.enqueue(segment) }
         }
-        let tail = converted ? ((try? encoder.finish()) ?? [encoder.finalMarker()]) : [encoder.finalMarker()]
+        let tail = converted ? ((try? encoder.finish()) ?? encoder.abandon()) : encoder.abandon()
         for segment in tail { await queue.enqueue(segment) }
         await queue.waitUntilIdle()
     }

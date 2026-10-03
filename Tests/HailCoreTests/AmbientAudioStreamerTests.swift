@@ -67,7 +67,8 @@ private func int16Samples(_ payloads: [AudioPayload]) -> [Int16] {
         #expect(streamer.isStreaming)
         #expect(throws: AudioCaptureError.alreadyRunning) { try streamer.start() }
         for block in 0..<5 { try capture.yield(sineBuffer(offset: block * 4_800)) }
-        try await waitUntil { await sent.payloads.count >= 4 }
+        // One segment is held back so the final flag can ride on audio.
+        try await waitUntil { await sent.payloads.count >= 3 }
         #expect(await sent.payloads.allSatisfy { !$0.isFinal })
 
         await streamer.stop()
@@ -80,6 +81,7 @@ private func int16Samples(_ payloads: [AudioPayload]) -> [Int16] {
         #expect(payloads.dropLast().allSatisfy { $0.bytes.count == AmbientAudioFormat.chunkBytes && !$0.isFinal })
         #expect(payloads.last?.isFinal == true)
         #expect(payloads.reduce(0) { $0 + $1.bytes.count } / 2 > 7_900)
+        #expect(payloads.allSatisfy { !$0.bytes.isEmpty })
     }
 
     @Test func eachStartIsANewStreamFromSequenceZero() async throws {
@@ -163,11 +165,11 @@ private func int16Samples(_ payloads: [AudioPayload]) -> [Int16] {
         let streamer = AmbientAudioStreamer(capture: capture) { try await connection.sendAudio($0) }
 
         try streamer.start()
-        for block in 0..<2 { try capture.yield(sineBuffer(offset: block * 4_800)) }
+        for block in 0..<3 { try capture.yield(sineBuffer(offset: block * 4_800)) }
         try await waitUntil { try await !audioFrames(socket).isEmpty }
         try await socket.push(.error(code: .rateLimited, message: "ambient rate exceeded"))
         // Live capture keeps producing audio; the next segment of the refused stream ends it.
-        for block in 2..<100 where streamer.isStreaming {
+        for block in 3..<100 where streamer.isStreaming {
             try capture.yield(sineBuffer(offset: block * 4_800))
             try await Task.sleep(for: .milliseconds(20))
         }
