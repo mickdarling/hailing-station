@@ -96,15 +96,22 @@ rightyo listen … --session-id "$rightyo_session_id" |
   per-rule budget, see [Formed requests](#formed-requests)), tier, binding, rate limit and lockdown give the
   direct path's outcome. The socket accepts a dispatch line of up to `2 × 1,200,000 + 4,096` bytes so JSON
   escaping cannot push a capped prompt over it; reply frames keep their existing frame cap. The client
-  checks the same constants before connecting (`LocalDispatchRequest.maxTextBytes`, and the line cap) and says
-  why when a prompt is larger. **Which targets this reaches:** a generic `tmux:` target receives the whole
+  applies a tighter, deadline-derived prompt cap before connecting (see the time bound below) and says why
+  when a prompt is larger. **Which targets this reaches:** a generic `tmux:` target receives the whole
   prompt in 400-character `send-keys` chunks, with `request: null` (no reply ownership), exactly as the direct
   path delivers it. A `tmux-reply:` bridge target cannot grant a reply-binding lease, so a dispatch to it is
   refused `deliveryRefused` before any text is sent, at any size; the Codex app-server adapter is not
-  registered by `haild run`. **Time bound:** the daemon answers a dispatch within its 10-second submission
-  deadline; a prompt near 1 MiB is about 2,600 tmux invocations, which can approach that deadline on a slow
-  host, and a deadline that fires after the handoff began drops the answer while the pane's typing completes (the
-  client then reports a socket failure, exit 1, although the prompt was delivered). The [reply block](#the-reply-block) (228 characters plus
+  registered by `haild run`. **Time bound (fail closed):** the daemon answers a
+  dispatch within its 10-second socket submission deadline, and real `send-keys` costs about 5.5 ms per
+  400-character chunk, so a 1 MiB prompt (about 2,600 chunks) cannot be typed in time. The client therefore
+  caps a `--reply-to` prompt at `RightyoSocketDispatcher.maxPromptBytes` = 333,200 bytes: what fits in half the
+  deadline at 6 ms per chunk (833 chunks), and refuses a longer prompt before connecting, with the reason
+  (exit 1). The direct path keeps 1,200,000. If the deadline (or any caller cancellation) fires anyway, the tmux
+  adapter abandons the delivery: no further chunk is typed, Enter is never pressed, and text already typed is
+  cleared with one `C-u` (line kill in shells and the readline-style agent inputs these panes run; best effort,
+  so a pane application that does not treat `C-u` as line kill may keep the prefix, still unsubmitted). The
+  client reports the lost answer as a socket failure, exit 1, and nothing ran, so a retry submits the prompt
+  once (`LocalReplyEndpointTests.timedOutDispatchNeverPressesEnterAndARetrySubmitsOnce`). The [reply block](#the-reply-block) (228 characters plus
   the target id) counts toward every cap.
 
 Each admitted request sends one `{"kind":"dispatch","connection","target","binding","text"}` line and reads

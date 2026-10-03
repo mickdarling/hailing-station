@@ -385,14 +385,27 @@ enum ReplyClient {
 /// (`confirmationRequired` → 8, `bindingMismatch` → 7 as a rebound denial); every other dispatch or socket
 /// refusal is reported with the daemon's reason and exits 1, as `haild reply` does.
 struct RightyoSocketDispatcher: RightyoDispatching {
+    /// Measured real `tmux send-keys` cost per chunk (~5.5 ms, #204 review), rounded up.
+    static let sendKeysCost: Duration = .milliseconds(6)
+    /// Half the daemon's 10-second socket submission deadline (`LocalReplyEndpoint`): the rest is margin for
+    /// listing, binding checks and a slower host. Past the deadline the daemon abandons the typing unsent.
+    static let typingBudget: Duration = .seconds(5)
+    /// The largest prompt this client dispatches: what the daemon can type within `typingBudget` in
+    /// `TmuxAdapter.defaultChunkSize`-character chunks (833 chunks, 333,200 bytes; a UTF-8 byte cap also bounds
+    /// characters), never above the daemon's own dispatch cap. Realistic RightyO prompts are tens of KB.
+    static let maxPromptBytes = min(
+        LocalDispatchRequest.maxTextBytes, Int(typingBudget / sendKeysCost) * TmuxAdapter.defaultChunkSize
+    )
+
     let connection: UUID
     let socketURL: URL
 
     func dispatch(text: String, target: String, binding: String) async throws -> RightyoDispatchReceipt {
-        // The daemon refuses a longer prompt at decode; say why here instead of reporting a decode failure.
-        let cap = LocalDispatchRequest.maxTextBytes
+        // Refused before connecting, with the reason: a longer prompt could not be typed within the daemon's
+        // answer deadline (and past 1,200,000 bytes the daemon refuses it at decode).
+        let cap = Self.maxPromptBytes
         guard text.utf8.count <= cap else {
-            throw ReplyClientError.refused("prompt exceeds the \(cap)-byte dispatch text cap")
+            throw ReplyClientError.refused("prompt exceeds the \(cap)-byte --reply-to dispatch cap")
         }
         let request = LocalDispatchRequest(connection: connection, target: target, binding: binding, text: text)
         var line = try JSONEncoder().encode(request)

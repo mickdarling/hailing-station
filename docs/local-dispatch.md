@@ -156,8 +156,12 @@ maps the answer as documented in [rightyo-input.md](rightyo-input.md#reply-owner
 `delivered: 1` with a `request` is an owned reply, with `null` is "no reply ownership" (the daemon's reason,
 if any, is noted on stderr), and a refusal keeps the direct path's exit code where the outcome is the same
 (`confirmationRequired` 8, `bindingMismatch` 7) and otherwise exits 1 with the daemon's reason. The client
-refuses a prompt over `LocalDispatchRequest.maxTextBytes` (the daemon's 1,200,000-byte dispatch cap,
-[#200](https://github.com/mickdarling/hailing-station/issues/200)) before connecting and says why.
+refuses a prompt over `RightyoSocketDispatcher.maxPromptBytes` (333,200 bytes: what the daemon can type within
+half its 10-second submission deadline; never above the daemon's 1,200,000-byte dispatch cap,
+[#200](https://github.com/mickdarling/hailing-station/issues/200)) before connecting and says why. A dispatch
+whose submission deadline fires mid-delivery is abandoned by the tmux adapter without Enter, its typed prefix
+cleared with `C-u` (best effort), so a retry runs the prompt once
+(`LocalReplyEndpointTests.timedOutDispatchNeverPressesEnterAndARetrySubmitsOnce`, slow scripted runner).
 `LocalDispatchProductionAdapterTests` (scripted runner, no tmux process) dispatches 1 MiB through the
 production `TmuxAdapter` and sees the whole text chunked into the pane, and shows a `tmux-reply:` bridge
 target refusing a dispatch before any text at 16 bytes and at 1 MiB (it grants no reply-binding lease).

@@ -1,4 +1,5 @@
 import Foundation
+import Synchronization
 
 /// Every tmux session on one server is a target (#11). Delivery goes through `send-keys -l --`, so text is
 /// never interpreted as key names. The binding is session id, creation time, and the active pane's pid,
@@ -60,12 +61,15 @@ public actor TmuxAdapter: Adapter {
         // A bare Enter would accept whatever prompt is pending in an agent's pane.
         guard text.contains(where: { !$0.isWhitespace }) else { throw AdapterError.deliveryFailed("empty text") }
         let previous = lastDelivery
+        let abandoned = DeliveryAbandonment()
         let delivery = Task<Void, any Error> {
             await previous?.value
-            try await self.performDelivery(text, to: target, binding: binding)
+            try await self.performDelivery(text, to: target, binding: binding, abandoned: abandoned)
         }
         lastDelivery = Task { _ = await delivery.result }
-        try await delivery.value
+        // The caller's cancellation (a timed-out socket submission, #200) abandons the delivery: no further
+        // chunk and never the Enter. The delivery task itself is not cancelled, so its cleanup still runs.
+        try await withTaskCancellationHandler { try await delivery.value } onCancel: { abandoned.abandon() }
     }
 
     public func escape(_ target: String, binding: String?) async throws {
@@ -73,15 +77,32 @@ public actor TmuxAdapter: Adapter {
         try await tmux(["send-keys", "-t", session.paneID, "Escape"], failure: AdapterError.deliveryFailed)
     }
 
-    private func performDelivery(_ text: String, to target: String, binding: String?) async throws {
+    private func performDelivery(
+        _ text: String, to target: String, binding: String?, abandoned: DeliveryAbandonment
+    ) async throws {
+        try abandoned.check()
         let session = try await verified(target, binding: binding)
+        var typed = false
         for chunk in Self.chunks(text, size: chunkSize) {
+            guard !abandoned.isAbandoned else { return try await clear(session, typed: typed) }
             let send = ["send-keys", "-t", session.paneID, "-l", "--", chunk]
+            typed = true
             try await tmux(send, failure: AdapterError.deliveryFailed)
         }
         // The Enter is what runs the text; the identity is checked once more right before it.
         _ = try await verified(target, binding: session.binding)
+        guard !abandoned.isAbandoned else { return try await clear(session, typed: typed) }
         try await tmux(["send-keys", "-t", session.paneID, "Enter"], failure: AdapterError.deliveryFailed)
+    }
+
+    /// An abandoned delivery is never submitted. Typed text is cleared with one `C-u` (line kill in shells,
+    /// readline-style inputs and the agent TUIs this targets) so a retry cannot submit the leftover prefix
+    /// together with its own text; the clear is best effort, and its failure is not reported as delivery.
+    private func clear(_ session: Session, typed: Bool) async throws {
+        if typed {
+            _ = try? await tmux(["send-keys", "-t", session.paneID, "C-u"], failure: AdapterError.deliveryFailed)
+        }
+        throw CancellationError()
     }
 
     /// The session behind `name` now, refused unless its binding is the one the caller holds.
@@ -115,4 +136,12 @@ public actor TmuxAdapter: Adapter {
         guard result.exitCode == 0 else { throw failure(result.errorText) }
         return result
     }
+}
+
+/// Set once by the caller's cancellation; read by the delivery task between tmux invocations.
+final class DeliveryAbandonment: Sendable {
+    private let state = Mutex(false)
+    var isAbandoned: Bool { state.withLock { $0 } }
+    func abandon() { state.withLock { $0 = true } }
+    func check() throws { if isAbandoned { throw CancellationError() } }
 }
