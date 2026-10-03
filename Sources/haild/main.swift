@@ -345,6 +345,8 @@ do {
     fail("policy: \(error)", code: 9)
 } catch let error as AdapterError {
     fail("\(error)", code: 4)
+} catch let error as RightyoTargetError {
+    fail("RightyO target refused: \(error)", code: 64)
 } catch let error as RightyoChildError {
     fail("ambient RightyO refused (\(error)): use an absolute executable and config path, owned by you or root"
          + " and not group- or world-writable, including every parent directory", code: 64)

@@ -205,7 +205,7 @@ public protocol AmbientListenerWiring: AnyObject, Sendable {
     func attach(_ listener: WebSocketListener)
     /// Stops every child serving `connection`; never cancels a run, so an in-flight dispatch finishes typing.
     func stop(connection: UUID)
-    /// Stops every child, then waits until each is reaped and each run (with any in-flight dispatch) returns.
+    /// Stops every child, then waits (bounded) until each is reaped and each run returns.
     func shutdown() async
 }
 
@@ -215,8 +215,8 @@ extension WebSocketListener {
         await endAmbient(of: peer)
     }
 
-    /// Ends every stream, then waits for each ambient child to be reaped and each in-flight dispatch to finish
-    /// typing (#203).
+    /// Ends every stream, then waits (bounded) for each ambient child to be reaped and each in-flight dispatch
+    /// to finish typing (#203).
     fileprivate func stopAmbient(_ peers: [WebSocketPeer]) async {
         for peer in peers { await endAmbient(of: peer) }
         await ambient?.shutdown()
@@ -240,6 +240,35 @@ extension WebSocketListener {
         named.connection = peer.key
         return try await dispatch(named)
     }
+
+    /// Ambient failed for `stream` (#203): end it at the gate if it is still the active one, so audio stops
+    /// being admitted and another device may start, and tell the peer with an `ambient`-prefixed error that
+    /// keeps the connection open (the phone stops streaming and releases the microphone on it).
+    func ambientFailed(stream: UUID, connection: UUID, message: String) async {
+        guard !stopped else { return }
+        _ = await authorizer.ambientAudio?.end(stream: stream, connection: connection)
+        guard let peer = peers.values.first(where: { $0.session.connectionID == connection }),
+              let frame = await peer.session.ambientFailureFrame(message) else { return }
+        _ = await peer.send(frame)
+    }
+}
+
+extension AmbientAudioGate {
+    /// Ends `stream` only if it is still the active one and `connection` owns it; one actor hop, so a newer
+    /// stream from the same connection is never ended by a stale failure.
+    func end(stream: UUID, connection: UUID) -> Bool {
+        guard activeStream == stream else { return false }
+        end(connection: connection)
+        return true
+    }
+}
+
+extension HostSession {
+    /// A non-closing error on this negotiated session; nil before negotiation or after close.
+    func ambientFailureFrame(_ message: String) -> Frame? {
+        guard case .ready(let version) = state else { return nil }
+        return response(.error(code: .notAllowed, message: message), version: version)
+    }
 }
 
 #if os(macOS)
@@ -249,7 +278,9 @@ import Synchronization
 /// one `RightyoAmbientPipeline` for its connection; segments are handed to the child without blocking; an ended
 /// stream closes the child's input and stops it (EOF, then SIGTERM, then SIGKILL). Admitted requests are
 /// dispatched in process on behalf of the streaming peer. A run is never cancelled: teardown stops the child,
-/// and an in-flight dispatch finishes typing before its run returns. Audio and transcripts are never logged.
+/// and an in-flight dispatch finishes typing before its run returns. Any failure (a refused start, a run that
+/// throws, a child that ends while its stream is open) ends the stream at the gate and sends the peer an
+/// `ambient`-prefixed error. Audio and transcripts are never logged.
 public final class AmbientRightyoRouter: AmbientAudioSink, AmbientListenerWiring {
     public struct Configuration: Sendable {
         public var executable: URL
@@ -260,33 +291,48 @@ public final class AmbientRightyoRouter: AmbientAudioSink, AmbientListenerWiring
         /// Admit turns that are not `live-microphone`. Tests only; the daemon leaves it false.
         public var allowSynthetic: Bool
         public var timing: RightyoChildProcess.Timing
+        /// How long daemon shutdown waits for runs still dispatching. Past it the daemon exits anyway: a tmux
+        /// prompt still being typed may be left partly typed and unsubmitted in the pane (as #204's taint rule
+        /// describes for an abandoned send); nothing is retried.
+        public var shutdownGrace: TimeInterval
+        /// Each ambient dispatch is recorded as `pushed(tool: "ambient-dispatch")` (target and byte count, never
+        /// text), as the `--reply-to` socket records `local-dispatch`; a failed record refuses the dispatch.
+        public var audit: AuditLog?
 
         public init(executable: URL, config: URL, target: String, binding: String, allowSynthetic: Bool = false,
-                    timing: RightyoChildProcess.Timing = .init()) {
+                    timing: RightyoChildProcess.Timing = .init(),
+                    shutdownGrace: TimeInterval = AmbientRightyoRouter.defaultShutdownGrace, audit: AuditLog? = nil) {
+            self.audit = audit
             (self.executable, self.config, self.target, self.binding) = (executable, config, target, binding)
-            (self.allowSynthetic, self.timing) = (allowSynthetic, timing)
+            (self.allowSynthetic, self.timing, self.shutdownGrace) = (allowSynthetic, timing, shutdownGrace)
         }
     }
 
-    /// Children alive at once: the active stream plus one still finishing. A start past this spawns nothing.
+    public static let defaultShutdownGrace: TimeInterval = 20
+    /// Unreaped children at once: the active stream plus one still finishing.
     public static let maxLiveChildren = 2
+    /// Runs at once, including those whose child is reaped but whose dispatch is still typing. A run stuck in a
+    /// dispatch therefore blocks new starts only once this many are stuck.
+    public static let maxRuns = 4
 
-    private struct Run {
+    fileprivate struct Run {
         let connection: UUID
         let pipeline: RightyoAmbientPipeline
+        var reaped = false
         var task: Task<Void, Never>?
     }
-    private struct State {
+    fileprivate struct State {
         var listener: WeakListener?
         var active: (stream: UUID, pipeline: RightyoAmbientPipeline)?
         var runs: [UUID: Run] = [:]
         var shuttingDown = false
+        var drainWaiters: [UUID: CheckedContinuation<Void, Never>] = [:]
     }
-    private struct WeakListener { weak var value: WebSocketListener? }
+    fileprivate struct WeakListener { weak var value: WebSocketListener? }
 
     public let configuration: Configuration
-    private let state = Mutex(State())
-    private let log: @Sendable (WebSocketListenerEvent) -> Void
+    fileprivate let state = Mutex(State())
+    fileprivate let log: @Sendable (WebSocketListenerEvent) -> Void
 
     public init(configuration: Configuration, log: @escaping @Sendable (WebSocketListenerEvent) -> Void = { _ in }) {
         (self.configuration, self.log) = (configuration, log)
@@ -302,7 +348,7 @@ public final class AmbientRightyoRouter: AmbientAudioSink, AmbientListenerWiring
         case .started(let stream, let connection): start(stream, connection: connection)
         case .segment(let stream, _, let bytes):
             let pipeline = state.withLock { $0.active?.stream == stream ? $0.active?.pipeline : nil }
-            // Overload and a child that already ended both drop audio; neither blocks the gate.
+            // Overload drops the oldest audio; it never blocks the gate. A dead child ends the stream instead.
             pipeline?.send(audio: bytes)
         case .ended(let stream, _):
             let pipeline = state.withLock { state -> RightyoAmbientPipeline? in
@@ -310,97 +356,149 @@ public final class AmbientRightyoRouter: AmbientAudioSink, AmbientListenerWiring
                 state.active = nil
                 return active.pipeline
             }
-            if let pipeline { Self.retire(pipeline) }
+            if pipeline != nil { retire(stream) }
         }
     }
 
     public func stop(connection: UUID) {
-        let pipelines = state.withLock { state -> [RightyoAmbientPipeline] in
+        let streams = state.withLock { state -> [UUID] in
             if let active = state.active, state.runs[active.stream]?.connection == connection { state.active = nil }
-            return state.runs.values.filter { $0.connection == connection }.map(\.pipeline)
+            return state.runs.filter { $0.value.connection == connection }.map(\.key)
         }
-        pipelines.forEach(Self.retire)
+        streams.forEach(retire)
     }
 
     public func shutdown() async {
-        let (pipelines, tasks) = state.withLock { state in
+        let pipelines = state.withLock { state in
             state.shuttingDown = true
             state.active = nil
-            return (state.runs.values.map(\.pipeline), state.runs.values.compactMap(\.task))
+            return state.runs.values.map(\.pipeline)
         }
         await withTaskGroup(of: Void.self) { group in
             for pipeline in pipelines { group.addTask { await pipeline.stop() } }
         }
-        for task in tasks { await task.value }
+        if await !drain(within: configuration.shutdownGrace) {
+            emit("ambient_shutdown_timeout", detail: "runs=\(liveRuns)")
+        }
     }
 
-    /// Children not yet reaped and runs not yet returned (tests).
+    /// Runs not yet returned (tests).
     var liveRuns: Int { state.withLock { $0.runs.count } }
 
     /// Waits for every current run to return (tests).
     func settle() async {
         for task in state.withLock({ $0.runs.values.compactMap(\.task) }) { await task.value }
     }
+}
 
-    private static func retire(_ pipeline: RightyoAmbientPipeline) {
+extension AmbientRightyoRouter {
+    /// Closes the child's input and stops it; once it is reaped it no longer counts against `maxLiveChildren`.
+    fileprivate func retire(_ stream: UUID) {
+        guard let pipeline = state.withLock({ $0.runs[stream]?.pipeline }) else { return }
         pipeline.finishInput()
-        Task { await pipeline.stop() }
+        Task {
+            await pipeline.stop()
+            self.state.withLock { $0.runs[stream]?.reaped = true }
+        }
     }
 
-    private func start(_ stream: UUID, connection: UUID) {
-        let listener = state.withLock { state in
-            state.shuttingDown || state.runs.count >= Self.maxLiveChildren ? nil : state.listener?.value
+    /// True once no run remains; false when `grace` passes first.
+    fileprivate func drain(within grace: TimeInterval) async -> Bool {
+        let id = UUID()
+        await withCheckedContinuation { (waiter: CheckedContinuation<Void, Never>) in
+            let empty = state.withLock { state -> Bool in
+                if state.runs.isEmpty { return true }
+                state.drainWaiters[id] = waiter
+                return false
+            }
+            if empty { return waiter.resume() }
+            DispatchQueue.global().asyncAfter(deadline: .now() + grace) {
+                self.state.withLock { $0.drainWaiters.removeValue(forKey: id) }?.resume()
+            }
         }
-        guard let listener else { return emit("ambient_refused", detail: "busy") }
+        return state.withLock { $0.runs.isEmpty }
+    }
+
+    fileprivate func start(_ stream: UUID, connection: UUID) {
+        let (listener, refusal) = state.withLock { state -> (WebSocketListener?, String?) in
+            let live = state.runs.values.filter { !$0.reaped }.count
+            if state.shuttingDown { return (nil, "stopping") }
+            if live >= Self.maxLiveChildren || state.runs.count >= Self.maxRuns { return (nil, "busy") }
+            return (state.listener?.value, state.listener?.value == nil ? "stopping" : nil)
+        }
+        guard let listener, refusal == nil else {
+            return refuse(stream, connection: connection, reason: refusal ?? "stopping")
+        }
         let pipeline: RightyoAmbientPipeline
         do {
             pipeline = try RightyoAmbientPipeline(configuration: .init(
                 executable: configuration.executable, config: configuration.config, target: configuration.target,
                 binding: configuration.binding, connection: connection,
                 allowSynthetic: configuration.allowSynthetic, timing: configuration.timing
-            ), dispatcher: AmbientListenerDispatcher(listener: listener))
+            ), dispatcher: AmbientListenerDispatcher(listener: listener, audit: configuration.audit))
         } catch {
-            return emit("ambient_refused", detail: Self.describe(error))
+            return refuse(stream, connection: connection, reason: Self.describe(error))
         }
         let admitted = state.withLock { state -> Bool in
             guard !state.shuttingDown else { return false }
             state.active = (stream, pipeline)
             state.runs[stream] = Run(connection: connection, pipeline: pipeline)
             // Created under the lock, so the run's own removal cannot precede its registration.
-            state.runs[stream]?.task = Task { [weak self] in
-                let detail: String
-                do {
-                    let summary = try await pipeline.run()
-                    detail = "delivered=\(summary.delivered) written=\(summary.child.writtenBytes)"
-                        + " dropped=\(summary.child.droppedBytes) exit=\(summary.exit)"
-                } catch { detail = Self.describe(error) }
-                self?.finished(stream, detail: detail)
-            }
+            state.runs[stream]?.task = Task { [weak self] in await self?.run(pipeline, stream, connection) }
             return true
         }
-        guard admitted else { return Self.retire(pipeline) }
+        guard admitted else {
+            Task { await pipeline.stop() }
+            return
+        }
         emit("ambient_started", detail: nil)
     }
 
-    private func finished(_ stream: UUID, detail: String) {
-        state.withLock { state in
-            state.runs[stream] = nil
-            if state.active?.stream == stream { state.active = nil }
+    private func run(_ pipeline: RightyoAmbientPipeline, _ stream: UUID, _ connection: UUID) async {
+        var failure: String?
+        do {
+            let summary = try await pipeline.run()
+            emit("ambient_ended", detail: "delivered=\(summary.delivered) written=\(summary.child.writtenBytes)"
+                 + " dropped=\(summary.child.droppedBytes) exit=\(summary.exit)")
+        } catch {
+            failure = Self.describe(error)
+            emit("ambient_ended", detail: failure)
         }
-        emit("ambient_ended", detail: detail)
+        let (stillActive, listener, waiters) = state.withLock { state in
+            state.runs[stream] = nil
+            let active = state.active?.stream == stream
+            if active { state.active = nil }
+            let waiters = state.runs.isEmpty ? Array(state.drainWaiters.values) : []
+            if state.runs.isEmpty { state.drainWaiters = [:] }
+            return (active, state.shuttingDown ? nil : state.listener?.value, waiters)
+        }
+        waiters.forEach { $0.resume() }
+        // A clean run whose stream already ended is the normal path; anything else ends the stream and tells
+        // the phone, even a refusal after the stream ended (for example confirmation required).
+        guard failure != nil || stillActive, let listener else { return }
+        await listener.ambientFailed(stream: stream, connection: connection,
+                                     message: "ambient stopped: \(failure ?? "listener exited")")
+    }
+
+    private func refuse(_ stream: UUID, connection: UUID, reason: String) {
+        emit("ambient_refused", detail: reason)
+        let listener = state.withLock { $0.listener?.value }
+        Task { await listener?.ambientFailed(stream: stream, connection: connection,
+                                             message: "ambient unavailable: \(reason)") }
     }
 
     /// Rule names only: every error reaching here is a content-free case.
-    private static func describe(_ error: any Error) -> String {
+    fileprivate static func describe(_ error: any Error) -> String {
         switch error {
         case let error as RightyoChildError: "child \(error)"
         case let error as RightyoInputError: "input \(error)"
         case let error as LocalDispatchRefusal: "dispatch \(error.rawValue)"
+        case let error as LocalReplyRefusal: "dispatch \(error.rawValue)"
         default: "failed"
         }
     }
 
-    private func emit(_ event: String, detail: String?) {
+    fileprivate func emit(_ event: String, detail: String?) {
         log(WebSocketListenerEvent(event: event, detail: detail))
     }
 }
@@ -408,8 +506,15 @@ public final class AmbientRightyoRouter: AmbientAudioSink, AmbientListenerWiring
 /// The pipeline's delivery step: the listener's own in-process dispatch for the streaming peer.
 struct AmbientListenerDispatcher: RightyoAmbientDispatching {
     let listener: WebSocketListener
+    let audit: AuditLog?
     func dispatch(_ request: LocalDispatchRequest) async throws -> UUID? {
-        try await listener.dispatchAmbient(request)
+        if let audit {
+            do {
+                _ = try await audit.record(.pushed(tool: "ambient-dispatch", target: request.target,
+                                                   bytes: request.text.utf8.count))
+            } catch { throw LocalReplyRefusal.auditFailure }
+        }
+        return try await listener.dispatchAmbient(request)
     }
 }
 #endif

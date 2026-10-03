@@ -1,5 +1,6 @@
 import Dispatch
 import Foundation
+import Synchronization
 
 public enum ConnectionProbeDaemon {
     // Signal ownership and two coordinated listeners make the composition root intentionally linear.
@@ -13,7 +14,9 @@ public enum ConnectionProbeDaemon {
         var ambient: (any AmbientListenerWiring)?
         #if os(macOS)
         if let ambientOptions = options.ambient {
-            let router = try await ambientRouter(ambientOptions, host: host, log: log)
+            let router = try await ambientRouter(
+                ambientOptions, host: host, audit: AuditLog(directory: AuditHistory.standard().directory), log: log
+            )
             authorizer = PersonalTerminalAuthorizer(ambientAudio: AmbientAudioGate(target: ambientOptions.target,
                                                                                   sink: router))
             ambient = router
@@ -34,16 +37,19 @@ public enum ConnectionProbeDaemon {
         signal(SIGINT, SIG_IGN)
         let termination = DispatchSource.makeSignalSource(signal: SIGTERM, queue: .global(qos: .utility))
         let interruption = DispatchSource.makeSignalSource(signal: SIGINT, queue: .global(qos: .utility))
-        termination.setEventHandler {
-            Task {
-                await replyEndpoint?.stop()
-                await listener.stop(reason: "SIGTERM")
-            }
-        }
-        interruption.setEventHandler {
-            Task {
-                await replyEndpoint?.stop()
-                await listener.stop(reason: "SIGINT")
+        // The first signal stops gracefully (bounded by the ambient shutdown grace); a second exits at once.
+        let signalled = Mutex(false)
+        for (source, name) in [(termination, "SIGTERM"), (interruption, "SIGINT")] {
+            source.setEventHandler {
+                let again = signalled.withLock { seen in
+                    defer { seen = true }
+                    return seen
+                }
+                if again { exit(1) }
+                Task {
+                    await replyEndpoint?.stop()
+                    await listener.stop(reason: name)
+                }
             }
         }
         termination.resume()
@@ -74,12 +80,6 @@ public enum ConnectionProbeDaemon {
         /// `--ambient-rightyo`, `--ambient-rightyo-config`, `--ambient-target` (#203): all three or none, only
         /// with `--personal-terminal --single-terminal-reply-fallback` (replies reach the phone only that way).
         var ambient: AmbientOptions?
-    }
-
-    struct AmbientOptions: Equatable {
-        var executable: URL
-        var config: URL
-        var target: String
     }
 
     // Each accepted flag is an explicit branch; combinations are validated after parsing.
@@ -126,9 +126,17 @@ public enum ConnectionProbeDaemon {
             singleTerminalReplyFallback: singleTerminalReplyFallback, ambient: try ambientOptions(ambient)
         )
     }
+}
+
+extension ConnectionProbeDaemon {
+    struct AmbientOptions: Equatable {
+        var executable: URL
+        var config: URL
+        var target: String
+    }
 
     /// Each ambient flag once, with a value: paths absolute, the target never another option.
-    private static func parseAmbient(
+    fileprivate static func parseAmbient(
         _ flag: String, from rest: inout ArraySlice<String>, into ambient: inout [String: String]
     ) throws {
         guard ambient[flag] == nil, let value = rest.popFirst(), !value.isEmpty, !value.hasPrefix("-"),
@@ -138,7 +146,7 @@ public enum ConnectionProbeDaemon {
         ambient[flag] = value
     }
 
-    private static func ambientOptions(_ ambient: [String: String]) throws -> AmbientOptions? {
+    fileprivate static func ambientOptions(_ ambient: [String: String]) throws -> AmbientOptions? {
         guard !ambient.isEmpty else { return nil }
         guard let executable = ambient["--ambient-rightyo"], let config = ambient["--ambient-rightyo-config"],
               let target = ambient["--ambient-target"] else { throw WebSocketListenerError.invalidArguments }
@@ -151,8 +159,10 @@ public enum ConnectionProbeDaemon {
     /// listed, alive and bound. The binding is pinned for the daemon's lifetime, as `haild rightyo` pins it.
     static func ambientRouter(
         _ options: AmbientOptions, host: HailHost, timing: RightyoChildProcess.Timing = .init(),
-        log: @escaping @Sendable (WebSocketListenerEvent) -> Void
+        audit: AuditLog? = nil, log: @escaping @Sendable (WebSocketListenerEvent) -> Void
     ) async throws -> AmbientRightyoRouter {
+        // The reply block quotes the target: an unsafe or guarded id would refuse every stream, so refuse now.
+        try RightyoInputConsumer.validateTarget(options.target)
         try RightyoChildProcess.validate(executable: options.executable, config: options.config)
         let listing = try await host.registry.listing()
         guard let listed = listing.first(where: { $0.info.id == options.target }) else {
@@ -163,7 +173,7 @@ public enum ConnectionProbeDaemon {
         }
         return AmbientRightyoRouter(configuration: .init(
             executable: options.executable, config: options.config, target: options.target, binding: binding,
-            timing: timing
+            timing: timing, audit: audit
         ), log: log)
     }
     #endif
