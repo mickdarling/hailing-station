@@ -15,8 +15,8 @@ public enum AmbientAudioFormat {
     public static let maxSegmentBytes = 8 * 1_024
     /// Pending segments allowed before the oldest is dropped: one second of audio.
     public static let maxBacklogChunks = 10
-    /// Capture buffers allowed to wait for conversion (about 1 s at 4,096 frames and 48 kHz); oldest dropped.
-    public static let maxPendingCaptureBuffers = 12
+    /// Source audio allowed to wait for conversion, measured from each buffer's frames and rate; oldest dropped.
+    public static let maxPendingCaptureSeconds = 1.0
 
     public static func outputFormat() -> AVAudioFormat? {
         AVAudioFormat(commonFormat: .pcmFormatInt16, sampleRate: 16_000, channels: 1, interleaved: true)
@@ -194,6 +194,55 @@ actor AmbientAudioSendQueue {
     }
 }
 
+/// Capture buffers waiting for conversion, bounded by the source audio they hold rather than their count, since
+/// tap buffer sizes and route sample rates vary. The newest buffer is always kept.
+actor AmbientCaptureBacklog {
+    private let limit: Double
+    private var buffers: [AudioCaptureBuffer] = []
+    private var seconds = 0.0
+    private var finished = false
+    private var waiter: CheckedContinuation<AudioCaptureBuffer?, Never>?
+
+    init(limit: Double) { self.limit = limit }
+
+    /// Returns how many of the oldest buffers were dropped to stay within the limit.
+    func push(_ buffer: AudioCaptureBuffer) -> Int {
+        if let waiter {
+            self.waiter = nil
+            waiter.resume(returning: buffer)
+            return 0
+        }
+        buffers.append(buffer)
+        seconds += Self.duration(buffer)
+        var dropped = 0
+        while seconds > limit, buffers.count > 1 {
+            seconds -= Self.duration(buffers.removeFirst())
+            dropped += 1
+        }
+        return dropped
+    }
+
+    func finish() {
+        finished = true
+        waiter?.resume(returning: nil)
+        waiter = nil
+    }
+
+    func next() async -> AudioCaptureBuffer? {
+        if !buffers.isEmpty {
+            let buffer = buffers.removeFirst()
+            seconds -= Self.duration(buffer)
+            return buffer
+        }
+        guard !finished else { return nil }
+        return await withCheckedContinuation { waiter = $0 }
+    }
+
+    private static func duration(_ buffer: AudioCaptureBuffer) -> Double {
+        Double(buffer.pcmBuffer.frameLength) / max(buffer.pcmBuffer.format.sampleRate, 1)
+    }
+}
+
 /// Streams the microphone to a host as ambient audio (#203). It reuses the injected capture seam instead of
 /// owning an audio session: `ManagedAudioSession` still activates and configures the session, and the caller
 /// decides when streaming may run (PR 5 limits it to the foreground). One stream identity per `start()`;
@@ -298,30 +347,27 @@ public final class AmbientAudioStreamer {
     }
 
     /// The capture seam's stream is unbounded and fed from the audio tap without blocking. A forwarder drains it
-    /// promptly into a drop-oldest stream, so a slow converter cannot accumulate stale microphone audio.
+    /// promptly into a backlog bounded by audio duration, so a slow converter cannot accumulate stale audio.
     private nonisolated static func bound(
         _ buffers: AsyncStream<AudioCaptureBuffer>, queue: AmbientAudioSendQueue
-    ) -> AsyncStream<AudioCaptureBuffer> {
-        let (stream, continuation) = AsyncStream<AudioCaptureBuffer>.makeStream(
-            bufferingPolicy: .bufferingNewest(AmbientAudioFormat.maxPendingCaptureBuffers)
-        )
-        let forwarder = Task.detached {
+    ) -> AmbientCaptureBacklog {
+        let backlog = AmbientCaptureBacklog(limit: AmbientAudioFormat.maxPendingCaptureSeconds)
+        Task.detached {
             for await buffer in buffers {
-                if case .dropped = continuation.yield(buffer) { await queue.recordCaptureDrop() }
+                for _ in 0..<(await backlog.push(buffer)) { await queue.recordCaptureDrop() }
             }
-            continuation.finish()
+            await backlog.finish()
         }
-        continuation.onTermination = { _ in forwarder.cancel() }
-        return stream
+        return backlog
     }
 
     private nonisolated static func pump(
-        _ buffers: AsyncStream<AudioCaptureBuffer>, encoder initial: AmbientAudioEncoder,
+        _ buffers: AmbientCaptureBacklog, encoder initial: AmbientAudioEncoder,
         queue: AmbientAudioSendQueue, beforeEncode: (@Sendable () async -> Void)?
     ) async {
         var encoder = initial
         var converted = true
-        for await buffer in buffers {
+        while let buffer = await buffers.next() {
             await beforeEncode?()
             guard !(await queue.hasFailed), let segments = try? encoder.encode(buffer.pcmBuffer) else {
                 converted = false

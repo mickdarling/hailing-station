@@ -55,7 +55,9 @@ public actor HostConnection {
     /// The socket generation on which the host acknowledged `desiredTargetID`. A reconnect's restored selection
     /// is sent but not acknowledged, so ambient audio confirms it before its first segment.
     var confirmedSelectionGeneration: UUID?
-    var selectionsInFlight = 0
+    /// Only the latest selectTarget serial settles a selection; until then (or after it fails) audio is refused.
+    var selectionSerial: UInt64 = 0
+    var selectionSettled = true
     public init(
         endpoint: HostEndpoint,
         connector: any WebSocketConnecting = URLSessionWebSocketConnector(),
@@ -177,13 +179,17 @@ extension HostConnection {
         try requireReady(capability: "select_target")
         let token = generation
         // Until the host confirms the new target, no ambient segment may be tagged for either one.
+        selectionSerial &+= 1
+        let serial = selectionSerial
+        selectionSettled = false
         confirmedSelectionGeneration = nil
-        selectionsInFlight += 1
-        defer { selectionsInFlight -= 1 }
         try await send(.select(targetID: targetID), generation: token)
         try await confirmRoundTrip(generation: token)
+        // A later selection owns the outcome; this superseded confirmation must not settle it.
+        guard selectionSerial == serial else { return }
         desiredTargetID = targetID
         confirmedSelectionGeneration = snapshot.connectionGeneration
+        selectionSettled = true
     }
 
     /// The default sleeps. A closure literal in this actor's default arguments compiled to a task whose

@@ -93,7 +93,13 @@ func audioFrames(_ socket: ScriptedSocket) async throws -> [Frame] {
         let stream = UUID()
         try await connection.sendAudio(ambientSegment(stream: stream, bytes: 8 * 1_024))
         await #expect(throws: HostConnectionFailure.malformed("ambient audio segment is malformed")) {
-            try await connection.sendAudio(ambientSegment(stream: stream, sequence: 1, bytes: 8 * 1_024 + 1))
+            try await connection.sendAudio(ambientSegment(stream: stream, sequence: 1, bytes: 8 * 1_024 + 2))
+        }
+        // The gate (#205) ends the whole stream on these, so they are refused before sending.
+        for bytes in [0, 3_199] {
+            await #expect(throws: HostConnectionFailure.malformed("ambient audio segment is malformed")) {
+                try await connection.sendAudio(ambientSegment(stream: stream, sequence: 1, bytes: bytes))
+            }
         }
         var unidentified = ambientSegment()
         unidentified.streamID = nil
