@@ -167,8 +167,16 @@ class RightyoReplyToCLITests(unittest.TestCase):
         self.assertEqual(request["connection"].upper(), self.CONNECTION)
         self.assertEqual(request["target"], "tmux:demo")
         self.assertEqual(request["binding"], SYNTHETIC_BINDING)
-        prompt = json.loads(request["text"])
+        # The prompt is the compact JSON followed by the host's reply block, which names the real target.
+        body, _, block = request["text"].rpartition(" Reply: answer briefly; ")
+        prompt = json.loads(body)
         self.assertEqual(prompt["request_id"], "tool-demo:request")
+        self.assertTrue(block.endswith(
+            "run haild reply tmux:demo --say '<spoken answer>' (single-quote the answer and keep it free of "
+            "single quotes; single-terminal fallback only)."), block)
+        self.assertNotIn('"', block)
+        self.assertNotIn("--request", block)
+        self.assertNotIn("\n", block)
         self.assertEqual(
             result.stdout,
             f"rightyo: request delivered to tmux:demo for connection {self.CONNECTION} (reply request {owner})\n",

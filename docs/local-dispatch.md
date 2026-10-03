@@ -5,8 +5,8 @@ Part of [#188](https://github.com/mickdarling/hailing-station/issues/188) item 1
 locally submitted prompt a reply owner: the host runs the named connection's own ingress path, so the phone
 that selected the target hears the answer through the unchanged correlated path. It is source behaviour; the
 running daemon and installed builds are unchanged until deployed. The CLI side is `haild rightyo --reply-to`
-([rightyo-input.md](rightyo-input.md#reply-ownership-with---reply-to)); the prompt wording that tells the AI
-how to reply is the next slice.
+([rightyo-input.md](rightyo-input.md#reply-ownership-with---reply-to)); the prompt's
+[reply block](rightyo-input.md#the-reply-block) tells the AI how to reply.
 
 ## Shape
 
@@ -40,8 +40,9 @@ The response extends the reply response with one field that only dispatch answer
 {"delivered":0,"request":null,"error":"dispatch refused [unknownConnection]: no live connection has that id","code":"noRecipient"}
 ```
 
-`request` is the ID the pane receives in the `TmuxReplyAdapter` bridge envelope. `haild reply --request
-<uuid>` then publishes through the existing correlated path to exactly that connection; a reply carrying
+`request` is the ID the pane receives in the `TmuxReplyAdapter` bridge envelope; the bridge retains it outside
+the model prompt and attaches it itself, while the prompt's [reply block](rightyo-input.md#the-reply-block)
+asks the session only for a brief spoken answer. `haild reply --request <uuid>` then publishes through the existing correlated path to exactly that connection; a reply carrying
 that ID reaches nobody else, and once the record is gone it reaches nobody. Reply responses omit the key
 byte for byte as before. `code` reuses the reply vocabulary (`noRecipient` for a connection that cannot be
 the recipient, `publicationFailed` for every refusal of a live, selecting connection); `error` names the

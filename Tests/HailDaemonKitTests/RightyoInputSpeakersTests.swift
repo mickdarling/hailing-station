@@ -52,7 +52,7 @@ extension RightyoInputConsumerTests {
     }
 
     func delivered(_ adapter: FakeAdapter) async throws -> [String: Any] {
-        let text = try #require(await adapter.deliveries.first?.text)
+        let text = try promptBody(#require(await adapter.deliveries.first?.text))
         return try #require(JSONSerialization.jsonObject(with: Data(text.utf8)) as? [String: Any])
     }
 

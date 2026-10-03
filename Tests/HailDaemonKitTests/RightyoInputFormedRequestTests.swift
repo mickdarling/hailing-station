@@ -51,8 +51,9 @@ extension RightyoInputConsumerTests {
 
     /// The JSON behind the marker, parsed; fails when the marker is absent.
     func rawTurns(in prompt: String) throws -> [String: Any] {
-        let range = try #require(prompt.range(of: Self.marker))
-        let data = Data(prompt[range.upperBound...].utf8)
+        let body = try promptBody(prompt)
+        let range = try #require(body.range(of: Self.marker))
+        let data = Data(body[range.upperBound...].utf8)
         return try #require(JSONSerialization.jsonObject(with: data) as? [String: Any])
     }
 
@@ -77,16 +78,16 @@ extension RightyoInputConsumerTests {
 
     @Test func promptLayoutIsExactAndLegacyPromptIsByteIdentical() async throws {
         let legacy = try request()
-        #expect(try legacy.prompt(speakers: "anonymous") == Self.legacyPrompt)
+        #expect(try legacy.prompt(speakers: "anonymous", target: "tmux:demo") == Self.legacyPrompt + Self.replyBlock)
         var body = try #require(JSONSerialization.jsonObject(with: JSONEncoder().encode(legacy)) as? [String: Any])
         body["formed_request"] = "Owner asked: \"summarize\"."
         let formed = try RightyoInputEvent.decode(JSONSerialization.data(withJSONObject: body))
         let expected = "Owner asked: \"summarize\". Raw turns (JSON, admitted record): " + Self.legacyPrompt
-        #expect(try formed.prompt(speakers: "anonymous") == expected)
+        #expect(try formed.prompt(speakers: "anonymous", target: "tmux:demo") == expected + Self.replyBlock)
         let (consumer, adapter) = try await rig()
         _ = try await consumer.consume(start())
         #expect(try await consumer.consume(preparedRequest(consumer)))
-        #expect(await adapter.deliveries.first?.text == Self.legacyPrompt)
+        #expect(await adapter.deliveries.first?.text == Self.legacyPrompt + Self.replyBlock)
     }
 
     @Test func formedRequestOnNonRequestEventsIsRefused() async throws {
@@ -150,7 +151,7 @@ extension RightyoInputConsumerTests {
         let longest = String(repeating: "a", count: 16_000)
         let event = try await formedRequest(dry, formed: longest)
         #expect(try await dry.consume(event))
-        #expect(try event.prompt(speakers: "enrolled").hasPrefix(longest + Self.marker + "{"))
+        #expect(try event.prompt(speakers: "enrolled", target: "dry-run").hasPrefix(longest + Self.marker + "{"))
     }
 
     /// `diarization-utterance` (hosted per-utterance diarizer; labels stable only within one utterance) joins the
