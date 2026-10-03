@@ -172,7 +172,9 @@ class RightyoReplyToCLITests(unittest.TestCase):
         prompt = json.loads(body)
         self.assertEqual(prompt["request_id"], "tool-demo:request")
         self.assertTrue(block.endswith(
-            'run haild reply tmux:demo --say "<spoken answer>" (single-terminal fallback only).'), block)
+            "run haild reply tmux:demo --say '<spoken answer>' (single-quote the answer and keep it free of "
+            "single quotes; single-terminal fallback only)."), block)
+        self.assertNotIn('"', block)
         self.assertNotIn("--request", block)
         self.assertNotIn("\n", block)
         self.assertEqual(

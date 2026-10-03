@@ -95,7 +95,7 @@ rightyo listen … --session-id "$rightyo_session_id" |
   ([#200](https://github.com/mickdarling/hailing-station/issues/200)),
   `--reply-to` is unusable for requests whose prompt exceeds 2,000 characters: in practice any request
   carrying context turns or a `formed_request`, which the compact JSON alone can exceed. The
-  [reply block](#the-reply-block) (169 characters plus the target id) is part of the prompt and counts
+  [reply block](#the-reply-block) (228 characters plus the target id) is part of the prompt and counts
   toward the same cap, so the headroom is smaller than the JSON alone suggests. The client refuses a
   prompt over the 8,192-byte dispatch text payload before connecting and says why; a prompt between the two
   limits is sent and refused by the daemon.
@@ -133,7 +133,7 @@ Part of [#188](https://github.com/mickdarling/hailing-station/issues/188) item 1
 the phone hears it. For the target `tmux:demo` it is, byte for byte (it begins with a space):
 
 ```
- Reply: answer briefly; it is spoken aloud. If no reply bridge publishes this session's output, run haild reply tmux:demo --say "<spoken answer>" (single-terminal fallback only).
+ Reply: answer briefly; it is spoken aloud. If no reply bridge publishes this session's output, run haild reply tmux:demo --say '<spoken answer>' (single-quote the answer and keep it free of single quotes; single-terminal fallback only).
 ```
 
 - What it asks: a short spoken answer. On a conforming programmatic bridge (a `tmux-reply:` target,
@@ -141,9 +141,12 @@ the phone hears it. For the target `tmux:demo` it is, byte for byte (it begins w
   outside the model prompt, submits only `text` to the session and publishes the session's output itself through
   `haild reply <target> --request <UUID>`; the session runs no command and never sees, selects or echoes the
   UUID, which is why the block names none. On the live plain `tmux:` pane path there is no envelope and no
-  bridge: the only route is the request-less `haild reply <target> --say "<spoken answer>"`, which reaches a
+  bridge: the only route is the request-less `haild reply <target> --say '<spoken answer>'`, which reaches a
   phone only when the daemon runs with [`--single-terminal-reply-fallback`](single-terminal-reply-fallback.md)
-  and exactly one connection selects the target; otherwise it reaches nobody (`noRecipient`), as before.
+  and exactly one connection selects the target; otherwise it reaches nobody (`noRecipient`), as before. The
+  block tells the session to single-quote the answer and keep it free of single quotes: inside double quotes a
+  shell would expand `$()`, backticks, `$VAR` and backslashes in the spoken text, and a double quote would end
+  the argument. The block itself contains no double quote.
 - Layout: the block is the tail of the prompt, after the compact JSON (legacy layout) or after the formed text,
   the marker and the JSON (formed layout). The session cuts the prompt at the **last** occurrence of
   ` Reply: answer briefly; `. A formed text that carries that prefix, or ends in it minus its trailing space, is
@@ -165,7 +168,7 @@ the phone hears it. For the target `tmux:demo` it is, byte for byte (it begins w
   an authorized name carrying a guarded word (`tmux:sudo`) is refused as `RightyoTargetError.guarded` (`target
   name would trigger the content guard (sudo)`) instead of turning every otherwise benign request into
   `confirmationRequired`; a daemon policy with additional custom guard patterns can still require confirmation,
-  which is refused per request as before. The block is ASCII, one unbroken line, 169 characters plus the target
+  which is refused per request as before. The block is ASCII, one unbroken line, 228 characters plus the target
   id, never contains the raw-turns marker, and passes the host sanitizer and the default guard unchanged
   (`RightyoInputReplyBlockTests`).
 - The block counts toward every prompt bound: the local command's 1,200,000 whole-prompt cap (arithmetic under
@@ -241,7 +244,7 @@ layout is one line because the host sanitizer refuses line breaks; the whole pro
 command's 1,200,000 whole-prompt cap: 16,000 formed characters, the 36-character marker, the JSON (the context's
 1 MiB cap is measured with camel-case keys, so the snake-case prompt keys add at most 7 bytes per turn, 7,000 for
 1,000 turns, plus a request turn of at most 16,000 bytes, a decision and two bounded identifiers, about 1,075,000
-bytes at the extreme) and the reply block (169 characters plus the target id), which together stay under
+bytes at the extreme) and the reply block (228 characters plus the target id), which together stay under
 the cap by about 100,000 characters and, with a 64,000-byte formed text, by about 60,000 bytes;
 `RightyoInputReplyBlockTests` builds a 16,000-character, 64,000-byte text over a context one turn short of its cap
 and asserts the sum in both units. Without `formed_request` the body is the compact JSON
@@ -406,7 +409,8 @@ appends `RightyoInputEvent.replyBlock(target:)` to both layouts and the consumer
 block would match a default guard rule, each with a diagnostic that never echoes the id, and a formed text carrying
 the block's prefix is refused like the marker (the review rounds: the block names no request UUID, because a
 conforming bridge retains and attaches its own). `RightyoInputReplyBlockTests.swift` adds four tests: the block is
-one ASCII line without the marker or a `--request`, passes the sanitizer and guard, is the exact golden string for
+one ASCII line without the marker, a `--request` or a double quote (the answer placeholder is single-quoted so a
+shell expands nothing inside it), passes the sanitizer and guard, is the exact golden string for
 `tmux:demo`, the pre-block part of each layout is byte-identical to the previous golden prompts, and the host's
 block is the last occurrence of its prefix; the consumer names its own target (a `tmux-reply:` bridge target
 through a recording dispatcher, `tmux:demo` through a real host), refuses twenty unsafe ids (the review's

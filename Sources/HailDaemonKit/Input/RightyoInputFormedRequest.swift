@@ -60,12 +60,15 @@ extension RightyoInputEvent {
     /// programmatic bridge the bridge retains the envelope's `request` outside the model prompt and publishes
     /// the session's output with it itself (request-origin-routing.md), so asking the session to echo one is
     /// forbidden; on a plain pane there is no envelope, and the request-less `haild reply --say` reaches a phone
-    /// only under the single-terminal fallback. ASCII, one line, never the marker, deterministic: `target` (the
-    /// listed id the binding was pinned from, allowlisted by the consumer) is its only variable part.
+    /// only under the single-terminal fallback; the answer is single-quoted there, since `$()`, backticks, `$VAR`,
+    /// backslashes and double quotes would expand inside double quotes. ASCII, one line, no double quote, never
+    /// the marker, deterministic: `target` (the listed id the binding was pinned from, allowlisted by the
+    /// consumer) is its only variable part.
     static let replyBlockPrefix = " Reply: answer briefly; "
     static func replyBlock(target: String) -> String {
         replyBlockPrefix + "it is spoken aloud. If no reply bridge publishes this session's output, run haild reply "
-            + target + " --say \"<spoken answer>\" (single-terminal fallback only)."
+            + target + " --say '<spoken answer>' (single-quote the answer and keep it free of single quotes;"
+            + " single-terminal fallback only)."
     }
     /// `speakers` is the advertised capability (`anonymous` or `enrolled`) so the session can weigh roles. Without a
     /// formed request the body is the compact JSON alone, byte for byte as before; with one it is
