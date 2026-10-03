@@ -75,6 +75,10 @@ actor WebSocketPeer {
 
     func stop(reason: String) { finish(reason: reason) }
 
+    /// This peer's own lifecycle only: not ended, not closing, transport not retired. A caller's task
+    /// cancellation is never this peer's state, so it cannot make a live peer look gone (#188 dispatch).
+    var isLive: Bool { !ended && !closing && !replyTransport.isRetired }
+
     private func connectionChanged(_ state: NWConnection.State) {
         guard !ended else { return }
         switch state {
@@ -245,6 +249,8 @@ final class ReplyTransportLifecycle: Sendable {
             authority.invalidate()
         }
     }
+
+    var isRetired: Bool { retired.withLock { $0 } }
 
     fileprivate func performIfCurrent<Result: Sendable>(
         _ permit: ReplyPublicationPermit, operation: () throws -> Result

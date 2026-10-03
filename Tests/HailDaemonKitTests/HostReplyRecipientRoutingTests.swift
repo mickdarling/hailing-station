@@ -66,4 +66,46 @@ import Testing
         await #expect(throws: LocalReplyRefusal.noRecipient) { try await listener.publish(recipientText(legacy)) }
         for socket in sockets { try await recipientSocketBarrier(on: socket) }
     }
+
+    /// A spoken request and a locally dispatched one (#188) on the same connection interleave like two
+    /// spoken ones; a second connection selecting the same target stays silent throughout.
+    @Test func phoneAndDispatchedRequestsInterleaveOnOneConnection() async throws {
+        let rig = try await RecipientTestRig.make()
+        let (listener, connected) = try dispatchListener(rig: rig)
+        let port = try await listener.start()
+        do {
+            try await exerciseInterleaved(listener: listener, rig: rig, port: port, connected: connected)
+        } catch {
+            await listener.stop(reason: "synthetic test failed")
+            throw error
+        }
+        await listener.stop(reason: "synthetic test complete")
+    }
+
+    private func exerciseInterleaved(
+        listener: WebSocketListener, rig: RecipientTestRig, port: UInt16, connected: ConnectedPeerIDs
+    ) async throws {
+        let pair = try await FallbackSocketPair.connect(
+            port: port, selecting: [RecipientTestRig.target, RecipientTestRig.target]
+        )
+        defer { pair.close() }
+        let ids = connected.all
+        try #require(ids.count == 2)
+        let spoken = recipientDescriptor(try await pair.submitInput(on: 0, rig: rig), audio: true)
+        let owner = try #require(await listener.dispatch(dispatchRequest(connection: ids[0])))
+        let dispatched = recipientDescriptor(try #require(await rig.adapter.contexts.last), audio: true)
+        #expect(dispatched.requestID == owner)
+        #expect(spoken.requestID != owner)
+        for (reply, sequence, isText, final) in [
+            (dispatched, 0, false, false), (spoken, 0, true, false), (dispatched, 0, true, false),
+            (spoken, 0, false, false), (dispatched, 1, false, true), (spoken, 1, false, true)
+        ] {
+            let frame = isText ? recipientText(reply) : recipientAudio(reply, sequence: sequence, final: final)
+            try #require(await listener.publish(frame) == 1)
+            #expect(try await recipientSocketReceive(on: pair.sockets[0]) == frame)
+            try await pair.barrier()
+        }
+        await #expect(throws: LocalReplyRefusal.noRecipient) { try await listener.publish(recipientText(spoken)) }
+        try await pair.barrier()
+    }
 }
