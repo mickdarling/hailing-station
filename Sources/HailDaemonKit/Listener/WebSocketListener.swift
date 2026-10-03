@@ -207,6 +207,9 @@ public protocol AmbientListenerWiring: AnyObject, Sendable {
     func stop(connection: UUID)
     /// Stops every child, then waits (bounded) until each is reaped and each run returns.
     func shutdown() async
+    /// True while `stream` is the most recent stream `connection` started, active or ended, and the connection
+    /// has not ended since; false once it is superseded.
+    func isLatest(stream: UUID, connection: UUID) -> Bool
 }
 
 extension WebSocketListener {
@@ -245,9 +248,14 @@ extension WebSocketListener {
     /// being admitted and another device may start, and tell the peer with an `ambient`-prefixed error that
     /// keeps the connection open (the phone stops streaming and releases the microphone on it).
     func ambientFailed(stream: UUID, connection: UUID, message: String) async {
-        // Only the current stream is reported: the phone applies an `ambient` error to whatever stream it is
-        // sending now, so a failure of a superseded or already-ended stream is logged by the router only.
-        guard !stopped, await authorizer.ambientAudio?.end(stream: stream, connection: connection) == true,
+        // The phone applies an `ambient` error to whatever stream it is sending now, so a failure is reported
+        // only while no newer stream has started on the connection: an active stream, or one that ended
+        // normally and is still dispatching after EOF. A superseded stream's failure is logged by the router.
+        let latest: @Sendable (UUID, UUID) -> Bool = { [ambient] stream, connection in
+            ambient?.isLatest(stream: stream, connection: connection) ?? false
+        }
+        guard !stopped, let gate = authorizer.ambientAudio,
+              await gate.endForFailure(stream: stream, connection: connection, latest: latest),
               let peer = peers.values.first(where: { $0.session.connectionID == connection }),
               let frame = await peer.session.ambientFailureFrame(message) else { return }
         _ = await peer.send(frame)
@@ -255,10 +263,12 @@ extension WebSocketListener {
 }
 
 extension AmbientAudioGate {
-    /// Ends `stream` only if it is still the active one and `connection` owns it; one actor hop, so a newer
-    /// stream from the same connection is never ended by a stale failure.
-    func end(stream: UUID, connection: UUID) -> Bool {
-        guard activeStream == stream else { return false }
+    /// Ends `stream` only if it is still the active one and `connection` owns it, and says whether its failure
+    /// is reportable: it was active, or `latest` says no newer stream has started on `connection`. One actor
+    /// hop, and starts are announced from this actor, so a newer stream can neither be ended by a stale failure
+    /// nor start between the two checks.
+    func endForFailure(stream: UUID, connection: UUID, latest: @Sendable (UUID, UUID) -> Bool) -> Bool {
+        guard activeStream == stream else { return latest(stream, connection) }
         end(connection: connection)
         return true
     }
@@ -328,6 +338,9 @@ public final class AmbientRightyoRouter: AmbientAudioSink, AmbientListenerWiring
         var runs: [UUID: Run] = [:]
         var shuttingDown = false
         var drainWaiters: [UUID: CheckedContinuation<Void, Never>] = [:]
+        /// Each live connection's most recent started stream (one entry per connection, dropped when it ends),
+        /// so a normally ended stream's late failure is still reported until the connection starts another.
+        var latest: [UUID: UUID] = [:]
     }
     fileprivate struct WeakListener { weak var value: WebSocketListener? }
 
@@ -346,7 +359,9 @@ public final class AmbientRightyoRouter: AmbientAudioSink, AmbientListenerWiring
     /// Called in order from the gate's actor; only spawns, enqueues or signals, never awaits.
     public func ambientAudio(_ event: AmbientAudioEvent) {
         switch event {
-        case .started(let stream, let connection): start(stream, connection: connection)
+        case .started(let stream, let connection):
+            state.withLock { $0.latest[connection] = stream }
+            start(stream, connection: connection)
         case .segment(let stream, _, let bytes):
             let pipeline = state.withLock { $0.active?.stream == stream ? $0.active?.pipeline : nil }
             // Overload drops the oldest audio; it never blocks the gate. Refused input means the child is gone
@@ -364,6 +379,7 @@ public final class AmbientRightyoRouter: AmbientAudioSink, AmbientListenerWiring
 
     public func stop(connection: UUID) {
         let streams = state.withLock { state -> [UUID] in
+            state.latest[connection] = nil
             if let active = state.active, state.runs[active.stream]?.connection == connection { state.active = nil }
             return state.runs.filter { $0.value.connection == connection }.map(\.key)
         }
@@ -374,6 +390,7 @@ public final class AmbientRightyoRouter: AmbientAudioSink, AmbientListenerWiring
         let pipelines = state.withLock { state in
             state.shuttingDown = true
             state.active = nil
+            state.latest = [:]
             return state.runs.values.map(\.pipeline)
         }
         await withTaskGroup(of: Void.self) { group in
@@ -382,6 +399,10 @@ public final class AmbientRightyoRouter: AmbientAudioSink, AmbientListenerWiring
         if await !drain(within: configuration.shutdownGrace) {
             emit("ambient_shutdown_timeout", detail: "runs=\(liveRuns)")
         }
+    }
+
+    public func isLatest(stream: UUID, connection: UUID) -> Bool {
+        state.withLock { $0.latest[connection] == stream }
     }
 
     /// Runs not yet returned (tests).

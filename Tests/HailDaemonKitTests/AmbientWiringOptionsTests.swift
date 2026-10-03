@@ -51,3 +51,37 @@ import Testing
         #expect(throws: WebSocketListenerError.invalidArguments) { try ConnectionProbeDaemon.options(arguments) }
     }
 }
+
+#if os(macOS)
+@Suite(.timeLimit(.minutes(1))) struct AmbientStartupValidationTests {
+    @Test func startupPinsTheListedBindingAndRefusesUnknownTargetsAndUnsafeExecutables() async throws {
+        let rig = try await RecipientTestRig.make()
+        let fake = try FakeRightyo("exit 0")
+        defer { fake.cleanUp() }
+        let options = ConnectionProbeDaemon.AmbientOptions(
+            executable: fake.executable, config: fake.config, target: RecipientTestRig.target
+        )
+        let router = try await ConnectionProbeDaemon.ambientRouter(options, host: rig.host, log: { _ in })
+        #expect(router.configuration.binding == "reply-binding")
+        #expect(!router.configuration.allowSynthetic)
+        var unknown = options
+        unknown.target = "recipient:missing"
+        await #expect(throws: HostError.unknownTarget("recipient:missing")) {
+            try await ConnectionProbeDaemon.ambientRouter(unknown, host: rig.host, log: { _ in })
+        }
+        let writable = try FakeRightyo("exit 0", mode: 0o775)
+        defer { writable.cleanUp() }
+        var unsafe = options
+        unsafe.executable = writable.executable
+        await #expect(throws: RightyoChildError.unsafeExecutable) {
+            try await ConnectionProbeDaemon.ambientRouter(unsafe, host: rig.host, log: { _ in })
+        }
+        // The reply block quotes the target, so an unsafe id refuses startup instead of every stream.
+        var quoted = options
+        quoted.target = "recipient:reply; rm"
+        await #expect(throws: RightyoTargetError.unsafeIdentifier) {
+            try await ConnectionProbeDaemon.ambientRouter(quoted, host: rig.host, log: { _ in })
+        }
+    }
+}
+#endif
