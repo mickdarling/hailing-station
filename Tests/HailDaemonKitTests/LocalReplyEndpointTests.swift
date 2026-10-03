@@ -479,9 +479,9 @@ import Testing
     }
 
     /// #204: a dispatch whose typing outlives the endpoint's submission deadline is abandoned before its commit
-    /// point (no further chunk, no Enter; the typed prefix stays unsubmitted, there is no rollback), and a retry
-    /// through a patient endpoint presses Enter exactly once.
-    @Test func timedOutDispatchNeverPressesEnterAndARetrySubmitsOnce() async throws {
+    /// point (no further chunk, no Enter; the typed prefix stays unsubmitted, there is no rollback), and the pane
+    /// is tainted: a retry, even through a patient endpoint, is refused before typing anything.
+    @Test func timedOutDispatchNeverPressesEnterAndARetryRefusesOnTheTaintedPane() async throws {
         let scratch = FileManager.default.temporaryDirectory
             .appendingPathComponent("hs-dl-\(UUID().uuidString.prefix(8))", isDirectory: true)
         defer { try? FileManager.default.removeItem(at: scratch) }
@@ -509,15 +509,15 @@ import Testing
                 connection: connection, target: "tmux:ordinary", binding: "$2@1758230001/%2:502", text: text
             ))
             await #expect(throws: (any Error).self) { try await submit(line, socket: hasty.socketURL.path) }
-            #expect(try await submit(line, socket: patient.socketURL.path) == .dispatch(delivered: 1, request: nil))
+            let abandoned = await runner.calls.compactMap { $0.contains("send-keys") ? $0.last : nil }
+            let retry = try await submit(line, socket: patient.socketURL.path)
+            #expect(retry.delivered == 0 && retry.request == nil)
+            #expect(retry.error == LocalDispatchRefusal.deliveryRefused.message)
             let keys = await runner.calls.compactMap { $0.contains("send-keys") ? $0.last : nil }
-            #expect(!keys.contains("C-u"))
-            #expect(keys.filter { $0 == "Enter" } == ["Enter"])
-            #expect(keys.last == "Enter")
-            // The abandoned attempt typed fewer than its 40 chunks; the retry typed all 40 after them.
-            let typed = keys.dropLast()
-            #expect(typed.count > 40 && typed.count < 80)
-            #expect(typed.suffix(40).joined() == text)
+            // The abandoned attempt typed some of its 40 chunks; the refused retry typed nothing, no Enter anywhere.
+            #expect(keys == abandoned)
+            #expect(!keys.contains("Enter") && !keys.contains("C-u"))
+            #expect(!keys.isEmpty && keys.count < 40)
         } catch {
             await stopAll(hasty, patient, listener)
             throw error

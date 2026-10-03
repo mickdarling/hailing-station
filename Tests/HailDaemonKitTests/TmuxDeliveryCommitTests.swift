@@ -58,3 +58,52 @@ import Testing
         #expect(await keys(runner) == ["first input", "Enter"])
     }
 }
+
+/// #204 round 5: a pane left holding an abandoned delivery's typed prefix refuses every later delivery.
+@Suite struct TmuxTaintedPaneTests {
+    private static let binding = "$2@1758230001/%2:502"
+
+    private func keys(_ runner: FakeCommandRunner) async -> [String] {
+        await runner.calls.compactMap { $0.contains("send-keys") ? $0.last : nil }
+    }
+
+    @Test func abandonedPrefixRefusesTheQueuedAndEveryLaterDelivery() async throws {
+        let runner = FakeCommandRunner.serving(SessionListing(bridgeListing), delay: .milliseconds(20))
+        let adapter = TmuxAdapter(runner: runner, pollInterval: nil)
+        let text = String(repeating: "a", count: 10 * TmuxAdapter.defaultChunkSize)
+        let first = Task { try await adapter.deliver(text, to: "ordinary", binding: Self.binding) }
+        let deadline = ContinuousClock().now.advanced(by: .seconds(5))
+        while await keys(runner).isEmpty {
+            try #require(ContinuousClock().now < deadline)
+            try await Task.sleep(for: .milliseconds(5))
+        }
+        let queued = Task { try await adapter.deliver("queued input", to: "ordinary", binding: Self.binding) }
+        try await Task.sleep(for: .milliseconds(5))
+        first.cancel()
+        await #expect(throws: CancellationError.self) { try await first.value }
+        let typedByFirst = await keys(runner)
+        await #expect(throws: AdapterError.self) { try await queued.value }
+        await #expect(throws: AdapterError.self) {
+            try await adapter.deliver("later input", to: "ordinary", binding: Self.binding)
+        }
+        let sent = await keys(runner)
+        #expect(!sent.contains("Enter"))
+        #expect(!sent.contains("queued input") && !sent.contains("later input"))
+        #expect(sent.count == typedByFirst.count)
+        #expect(sent.count >= 1 && sent.count < 10)
+    }
+
+    @Test func abandonmentBeforeAnyChunkDoesNotTaintThePane() async throws {
+        let runner = FakeCommandRunner.serving(SessionListing(bridgeListing), delay: .milliseconds(20))
+        let adapter = TmuxAdapter(runner: runner, pollInterval: nil)
+        let first = Task { try await adapter.deliver("first input", to: "ordinary", binding: Self.binding) }
+        try await Task.sleep(for: .milliseconds(5))
+        let queued = Task { try await adapter.deliver("queued input", to: "ordinary", binding: Self.binding) }
+        try await Task.sleep(for: .milliseconds(5))
+        queued.cancel()
+        try await first.value
+        await #expect(throws: CancellationError.self) { try await queued.value }
+        try await adapter.deliver("later input", to: "ordinary", binding: Self.binding)
+        #expect(await keys(runner) == ["first input", "Enter", "later input", "Enter"])
+    }
+}

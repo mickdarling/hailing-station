@@ -23,6 +23,10 @@ public actor TmuxAdapter: Adapter {
     /// Deliveries run one at a time: actor reentrancy at each await would otherwise let two deliveries
     /// interleave their chunks and Enters into one concatenated command.
     private var lastDelivery: Task<Void, Never>?
+    /// Panes holding typed text from a delivery that never reached its Enter (abandoned or failed after at
+    /// least one chunk). No later delivery types into them: it would append to that text and submit the
+    /// concatenation, which no guard evaluated. Cleared only by a new adapter (a `haild` restart).
+    private var tainted: Set<String> = []
 
     /// - Parameters:
     ///   - tmux: executable path. A LaunchAgent's PATH lacks Homebrew, so #10's config passes the full path.
@@ -84,18 +88,32 @@ public actor TmuxAdapter: Adapter {
         // A delivery abandoned while queued behind another types nothing.
         try abandoned.check()
         let session = try await verified(target, binding: binding)
-        for chunk in Self.chunks(text, size: chunkSize) {
-            try abandoned.check()
-            let send = ["send-keys", "-t", session.paneID, "-l", "--", chunk]
-            try await tmux(send, failure: AdapterError.deliveryFailed)
+        guard !tainted.contains(session.paneID) else {
+            throw AdapterError.deliveryFailed(
+                "unsubmitted text left in pane \(target); clear it and restart haild before delivering again"
+            )
         }
-        // The Enter is what runs the text; the identity is checked once more right before it.
-        _ = try await verified(target, binding: session.binding)
-        // The commit point: abandonment and commitment are one atomic decision, so either nothing is
-        // submitted (typed text, if any, stays unsubmitted in the input line; there is no rollback) or the
-        // Enter is sent whatever the caller does afterwards.
-        guard abandoned.commit() else { throw CancellationError() }
-        try await tmux(["send-keys", "-t", session.paneID, "Enter"], failure: AdapterError.deliveryFailed)
+        var typed = false
+        do {
+            for chunk in Self.chunks(text, size: chunkSize) {
+                try abandoned.check()
+                let send = ["send-keys", "-t", session.paneID, "-l", "--", chunk]
+                typed = true
+                try await tmux(send, failure: AdapterError.deliveryFailed)
+            }
+            // The Enter is what runs the text; the identity is checked once more right before it.
+            _ = try await verified(target, binding: session.binding)
+            // The commit point: abandonment and commitment are one atomic decision, so either nothing is
+            // submitted (typed text, if any, stays unsubmitted in the input line; there is no rollback) or the
+            // Enter is sent whatever the caller does afterwards.
+            guard abandoned.commit() else { throw CancellationError() }
+            try await tmux(["send-keys", "-t", session.paneID, "Enter"], failure: AdapterError.deliveryFailed)
+        } catch {
+            // Abandonment before the first chunk leaves the pane clean; anything typed and not known to be
+            // submitted (a failed Enter included) taints it.
+            if typed { tainted.insert(session.paneID) }
+            throw error
+        }
     }
 
     /// The session behind `name` now, refused unless its binding is the one the caller holds.

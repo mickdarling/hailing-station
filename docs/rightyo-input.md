@@ -113,12 +113,19 @@ rightyo listen … --session-id "$rightyo_session_id" |
   - **Before the commit point:** the delivery is abandoned. No further chunk is typed and Enter is not sent.
     A delivery abandoned while queued types nothing. Text already typed stays in the pane's input line,
     unsubmitted. There is no rollback, because no key clears input in every application.
+  - **Tainted pane:** if anything was typed, the tmux adapter marks that pane tainted (a failed Enter does
+    too). Every later delivery to it refuses before typing, whether it was already queued or arrives later,
+    because it would otherwise append to the leftover text and submit a concatenation no guard evaluated. The
+    adapter's refusal reads `unsubmitted text left in pane <target>; clear it and restart haild before delivering
+    again`, and a dispatch sees it as `deliveryRefused`. The taint lives in that `haild` process only. Clear the
+    pane's input line by hand, then restart the daemon (`haild run`) to deliver to it again. A delivery
+    abandoned before its first chunk does not taint the pane.
   - **After the commit point:** the Enter is sent and the prompt runs, even though the daemon's answer is lost.
 
   Either way the client gets no answer, and it reports that the outcome is unknown: the prompt may have run,
-  or it may sit unsubmitted in the input line. Check the pane before retrying, since a retry types after
-  any leftover text (exit 1). Covered by `LocalReplyEndpointTests.timedOutDispatchNeverPressesEnterAndARetrySubmitsOnce`
-  and `TmuxDeliveryCommitTests`. The [reply block](#the-reply-block) (228 characters plus
+  or it may sit unsubmitted in the input line. Check the pane before retrying (exit 1). Covered by
+  `LocalReplyEndpointTests.timedOutDispatchNeverPressesEnterAndARetryRefusesOnTheTaintedPane`, `TmuxDeliveryCommitTests`
+  and `TmuxTaintedPaneTests`. The [reply block](#the-reply-block) (228 characters plus
   the target id) counts toward every cap.
 
 Each admitted request sends one `{"kind":"dispatch","connection","target","binding","text"}` line and reads

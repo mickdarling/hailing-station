@@ -161,9 +161,11 @@ half its 10-second submission deadline; never above the daemon's 1,200,000-byte 
 [#200](https://github.com/mickdarling/hailing-station/issues/200)) before connecting and says why. When a dispatch's
 submission deadline fires during delivery, the tmux adapter either abandons it before its commit point
 (no further chunk, no Enter, typed text left unsubmitted with no rollback) or, once committed, sends the Enter
-anyway. The client reports a written-but-unanswered dispatch as an unknown outcome and says to check the pane
+anyway. A pane left holding typed-but-unsubmitted text is tainted: every later delivery to it, queued or new,
+refuses before typing (`deliveryRefused`) until the pane is cleared by hand and `haild` restarted
+(`TmuxTaintedPaneTests`). The client reports a written-but-unanswered dispatch as an unknown outcome and says to check the pane
 before retrying (`TmuxDeliveryCommitTests`,
-`LocalReplyEndpointTests.timedOutDispatchNeverPressesEnterAndARetrySubmitsOnce`, slow scripted runner).
+`LocalReplyEndpointTests.timedOutDispatchNeverPressesEnterAndARetryRefusesOnTheTaintedPane`, slow scripted runner).
 `LocalDispatchProductionAdapterTests` (scripted runner, no tmux process) dispatches 1 MiB through the
 production `TmuxAdapter` and sees the whole text chunked into the pane, and shows a `tmux-reply:` bridge
 target refusing a dispatch before any text at 16 bytes and at 1 MiB (it grants no reply-binding lease).
