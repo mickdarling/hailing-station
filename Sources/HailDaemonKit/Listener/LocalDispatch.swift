@@ -13,6 +13,10 @@ private let dispatchLogger = Logger(subsystem: "com.mickdarling.hailing-station"
 /// `session_connected`), never a Hello device name.
 public struct LocalDispatchRequest: Codable, Sendable, Equatable {
     public static let kind = "dispatch"
+    /// The dispatched prompt's byte cap: the local RightyO prompt cap (#200), not the phone text payload's.
+    public static let maxTextBytes = HailHost.localPromptSanitizing.maxUTF8Bytes
+    /// The socket line cap for one dispatch: JSON escaping (`\"`, `\/`) can double the text, plus the envelope.
+    public static let maxLineBytes = 2 * maxTextBytes + 4 * 1024
     public var connection: UUID
     public var target: String
     /// The listing binding the caller saw. A changed binding refuses rather than following the rebind.
@@ -37,7 +41,7 @@ public struct LocalDispatchRequest: Codable, Sendable, Equatable {
         target = try container.decode(String.self, forKey: .target)
         binding = try container.decode(String.self, forKey: .binding)
         text = try container.decode(String.self, forKey: .text)
-        guard !target.isEmpty, !binding.isEmpty, text.utf8.count <= PayloadLimits.maxTextBytes else {
+        guard !target.isEmpty, !binding.isEmpty, text.utf8.count <= Self.maxTextBytes else {
             throw DecodingError.dataCorruptedError(forKey: .text, in: container, debugDescription: "out of range")
         }
     }
@@ -128,8 +132,13 @@ extension HostSession {
     /// The phone's text-frame path with the caller's pinned binding: the session's own authorizer on the
     /// exact frame that will be delivered, then lease, permit, capacity, lifetime and generation, then
     /// `HailHost.send`, then commit after delivery. Returns the committed request id, or nil when the
-    /// adapter accepts only legacy generic input and so cannot own a reply.
+    /// adapter accepts only legacy generic input and so cannot own a reply. The host sanitises the prompt
+    /// under its local-prompt cap (#200), bound here and nowhere else; every other gate is the phone's.
     func dispatch(_ request: LocalDispatchRequest) async throws -> UUID? {
+        try await HailHost.$localDispatchIngress.withValue(true) { try await dispatchScoped(request) }
+    }
+
+    private func dispatchScoped(_ request: LocalDispatchRequest) async throws -> UUID? {
         try Task.checkCancellation()
         // The selection generation seen here is the one the dispatch is bound to: a reselection of the same
         // target while this call is suspended (A → B → A) revokes it like any other selection change.

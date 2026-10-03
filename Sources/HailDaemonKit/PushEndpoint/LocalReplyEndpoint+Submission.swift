@@ -127,7 +127,7 @@ extension LocalReplyEndpoint {
 
     func receive(_ client: LocalReplyConnection, buffer: Data) {
         client.connection.receive(
-            minimumIncompleteLength: 1, maximumLength: 8 * 1024
+            minimumIncompleteLength: 1, maximumLength: 64 * 1024
         ) { [weak self] data, _, done, error in
             Task { await self?.received(data, done: done, error: error, client: client, buffer: buffer) }
         }
@@ -142,7 +142,8 @@ extension LocalReplyEndpoint {
         }
         var request = buffer
         if let data { request.append(data) }
-        guard request.count <= PayloadLimits.defaultMaxFrameBytes + 1 else {
+        // The line cap is the dispatch cap (#200); `submit` holds reply frames to their own, unchanged.
+        guard request.count <= Self.maxLineBytes + 1 else {
             await respond(.init(delivered: 0, error: "frame too large"), to: client)
             return
         }
@@ -173,7 +174,16 @@ extension LocalReplyEndpoint {
         }
     }
 
+    static let maxLineBytes = max(PayloadLimits.defaultMaxFrameBytes, LocalDispatchRequest.maxLineBytes)
+
     func submit(_ data: Data, from client: LocalReplyConnection) async {
+        // Only the exact `dispatch` kind leaves the reply path; a frame or any other shape is a reply.
+        let isDispatch = (try? JSONDecoder().decode(LocalRequestKind.self, from: data))?.kind
+            == LocalDispatchRequest.kind
+        // A reply frame keeps the pre-#200 line cap and answer; only a dispatch may use the larger line.
+        guard isDispatch || data.count <= PayloadLimits.defaultMaxFrameBytes else {
+            return await respond(.init(delivered: 0, error: "frame too large"), to: client)
+        }
         let now = clock.now
         guard limiter.retryAfter(
             for: "local-reply", now: now, limitPerMinute: Self.maxFramesPerMinute
@@ -182,10 +192,7 @@ extension LocalReplyEndpoint {
             return
         }
         limiter.record("local-reply", at: now)
-        // Only the exact `dispatch` kind leaves the reply path; a frame or any other shape is a reply.
-        if (try? JSONDecoder().decode(LocalRequestKind.self, from: data))?.kind == LocalDispatchRequest.kind {
-            return await submitDispatch(data, from: client)
-        }
+        if isDispatch { return await submitDispatch(data, from: client) }
         await submitReply(data, from: client)
     }
 
