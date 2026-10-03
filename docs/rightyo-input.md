@@ -86,8 +86,15 @@ rightyo listen … --session-id "$rightyo_session_id" |
   targets` and sent with every dispatch, so a target rebound while the stream runs refuses rather than
   following the rebind. Validation, correlation, duplicate detection, the provenance rule
   (`--allow-synthetic` or `live-microphone`) and the receipts' no-transcript rule are unchanged; only the
-  final delivery step differs. The prompt is also capped at the dispatch text payload (8 KB of UTF-8), which
-  the daemon enforces at decode; the client refuses a longer prompt before connecting and says why.
+  final delivery step differs.
+- **Prompt cap (fail closed).** The daemon's host, built by `haild run`, sanitises a dispatched prompt under
+  its default `SanitizePolicy`: 2,000 characters / 8,192 UTF-8 bytes. A longer prompt is refused as
+  `deliveryRefused` and the command exits 1; nothing is delivered. The direct path (no `--reply-to`) allows
+  1,200,000 for the same prompt, so until the daemon accepts a larger dispatch prompt (a follow-up issue),
+  `--reply-to` is unusable for requests whose prompt exceeds 2,000 characters: in practice any request
+  carrying context turns or a `formed_request`, which the compact JSON alone can exceed. The client refuses a
+  prompt over the 8,192-byte dispatch text payload before connecting and says why; a prompt between the two
+  limits is sent and refused by the daemon.
 
 Each admitted request sends one `{"kind":"dispatch","connection","target","binding","text"}` line and reads
 one answer. The receipt is:
