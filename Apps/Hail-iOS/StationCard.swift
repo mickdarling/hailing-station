@@ -1,3 +1,4 @@
+// swiftlint:disable file_length
 import AVFAudio
 import HailCore
 import Speech
@@ -133,6 +134,102 @@ private func requestHailPermissions() async -> Bool {
 extension RootView {
     var hasReadyHost: Bool {
         connections.hosts.contains(where: { $0.state == .ready })
+    }
+
+    /// Ambient listening (#203) appears only for a confirmed destination whose host advertises `stream_audio`.
+    @ViewBuilder
+    var ambientListeningSurface: some View {
+        if let destination,
+           let binding = connections.ambientBinding(host: destination.hostID, targetID: destination.target.id) {
+            AmbientListeningCard(
+                binding: binding, hostName: destination.endpoint.name,
+                connections: connections, audioSession: audioRoutes
+            )
+        }
+    }
+}
+
+/// The toggle starts off whenever the card appears, stops when the scene leaves `.active`, when the binding
+/// changes and when the card goes away, and never restarts by itself.
+struct AmbientListeningCard: View {
+    let binding: AmbientAudioBinding
+    let hostName: String
+    @State private var controller: AmbientListeningController
+    @Environment(\.scenePhase) private var scenePhase
+
+    init(
+        binding: AmbientAudioBinding, hostName: String,
+        connections: HostConnectionStore, audioSession: AudioRouteModel
+    ) {
+        self.binding = binding
+        self.hostName = hostName
+        _controller = State(initialValue: AmbientListeningController(
+            requestPermission: requestMicrophonePermission,
+            makeStreamer: { send in
+                try await audioSession.activate()
+                return AmbientAudioStreamer(capture: try AmbientAudioStreamer.voiceProcessingCapture(), send: send)
+            },
+            releaseSession: { await audioSession.deactivate() },
+            send: { [connections] payload, binding in try await connections.sendAudio(payload, to: binding) }
+        ))
+    }
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 10) {
+            Toggle(isOn: Binding(get: { controller.isOn }, set: { on in
+                Task { on ? await controller.turnOn(for: binding) : await controller.turnOff() }
+            })) {
+                Label("Ambient listening", systemImage: "ear")
+                    .font(.headline)
+            }
+            .accessibilityIdentifier("station.ambient-toggle")
+            if controller.isListening {
+                Label("Listening", systemImage: "mic.fill")
+                    .font(.subheadline.bold())
+                    .foregroundStyle(.white)
+                    .padding(.horizontal, 12)
+                    .padding(.vertical, 5)
+                    .background(.red, in: Capsule())
+                    .accessibilityLabel("Listening: sending microphone audio to \(hostName)")
+                    .accessibilityIdentifier("station.ambient-listening")
+            } else if let reason = controller.stopReason {
+                Text(reason)
+                    .font(.footnote)
+                    .foregroundStyle(.red)
+                    .accessibilityIdentifier("station.ambient-stop-reason")
+            } else {
+                Text("Sends this room's audio to \(hostName) while Hailing Station is open.")
+                    .font(.footnote)
+                    .foregroundStyle(.secondary)
+            }
+        }
+        .padding(16)
+        .frame(maxWidth: .infinity, alignment: .leading)
+        .background(.regularMaterial, in: RoundedRectangle(cornerRadius: 20, style: .continuous))
+        .onChange(of: binding) { _, current in
+            Task { await controller.update(binding: current, scene: scene) }
+        }
+        .onChange(of: scenePhase) { _, _ in
+            Task { await controller.update(binding: binding, scene: scene) }
+        }
+        .onDisappear { Task { await controller.turnOff() } }
+    }
+
+    private var scene: AmbientScene {
+        switch scenePhase {
+        case .active: .active
+        case .background: .background
+        default: .inactive
+        }
+    }
+}
+
+/// TCC invokes the callback on an arbitrary queue, so this bridge must not inherit the view's MainActor.
+private func requestMicrophonePermission() async -> Bool {
+    await withCheckedContinuation(isolation: nil) { continuation in
+        AVAudioApplication.requestRecordPermission { @Sendable granted in
+            continuation.resume(returning: granted)
+        }
     }
 }
 
