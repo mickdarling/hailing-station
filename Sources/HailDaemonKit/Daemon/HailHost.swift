@@ -26,8 +26,17 @@ public actor HailHost {
     public static let confirmationWindow: Duration = .seconds(120)
     /// Read-backs outstanding at once; past this the oldest is dropped, so asking is never a way to grow memory.
     public static let pendingLimit = 64
+    /// The whole-prompt cap for a local RightyO request (#183, #200): the direct `haild rightyo` host and the
+    /// daemon's local-socket dispatch path both sanitise under this one policy. Phone text frames never do.
+    public static let localPromptSanitizing = SanitizePolicy(maxCharacters: 1_200_000, maxUTF8Bytes: 1_200_000)
+    /// Bound to true only by `HostSession.dispatch` (the owner-only local socket, #188) for its own handoff,
+    /// so that send alone sanitises under `dispatchSanitizing`. Every other caller, phone frames included,
+    /// keeps the host's `sanitizing` policy. Only the cap changes: newline rule, guard, tier, lockdown,
+    /// binding and rate limit run exactly as on any other send.
+    @TaskLocal static var localDispatchIngress = false
     public let registry: Registry
     private let sanitizing: SanitizePolicy
+    private let dispatchSanitizing: SanitizePolicy
     private let store: any PolicyStore
     private let clock = ContinuousClock()
     private let window: Duration
@@ -45,6 +54,11 @@ public actor HailHost {
     ) throws {
         self.registry = registry
         self.sanitizing = sanitizing
+        // The host's own newline rule stands; a dispatch only gets the local-prompt length caps.
+        var dispatch = sanitizing
+        dispatch.maxCharacters = max(sanitizing.maxCharacters, Self.localPromptSanitizing.maxCharacters)
+        dispatch.maxUTF8Bytes = max(sanitizing.maxUTF8Bytes, Self.localPromptSanitizing.maxUTF8Bytes)
+        dispatchSanitizing = dispatch
         self.store = store
         window = confirmationWindow
         var loaded = Policy()
@@ -106,7 +120,8 @@ public actor HailHost {
         try requireSendPreflight()
         let lines: [String]
         do {
-            lines = try Sanitizer.sanitize(text, policy: sanitizing)
+            let policy = Self.localDispatchIngress ? dispatchSanitizing : sanitizing
+            lines = try Sanitizer.sanitize(text, policy: policy)
         } catch let error as SanitizeError {
             throw HostError.refused(error)
         }

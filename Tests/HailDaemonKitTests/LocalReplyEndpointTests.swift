@@ -437,6 +437,47 @@ import Testing
         await listener.stop(reason: "test complete")
     }
 
+    /// #200: a RightyO-sized dispatch (1 MiB, every character JSON-escaped, so a ~2 MiB line) crosses the
+    /// socket and is delivered; a reply frame over its own unchanged cap is still refused as before.
+    @Test func mebibyteDispatchCrossesTheSocketWhileReplyFramesKeepTheirCap() async throws {
+        let scratch = FileManager.default.temporaryDirectory
+            .appendingPathComponent("hs-cap-\(UUID().uuidString.prefix(8))", isDirectory: true)
+        defer { try? FileManager.default.removeItem(at: scratch) }
+        // An anchored guard keeps a 1 MiB prompt inside the per-rule budget; guard parity has its own suite.
+        let (listener, adapter) = try await legacyReplyListener(guards: [.init(name: "synthetic", regex: "^x$")])
+        let port = try await listener.start()
+        let socket = scratch.appendingPathComponent("config", isDirectory: true)
+            .appendingPathComponent(LocalReplyEndpoint.socketName)
+        let audit = AuditLog(directory: scratch.appendingPathComponent("audit"))
+        let endpoint = try LocalReplyEndpoint(socketURL: socket, destination: listener, audit: audit)
+        try await endpoint.start()
+        let (session, terminal) = try terminalClient(port: port)
+        defer { terminal.cancel(with: .normalClosure, reason: nil); session.invalidateAndCancel() }
+        do {
+            try await terminal.send(.data(FrameCoding.encode(helloFrame())))
+            _ = try await terminal.receive()
+            let select = sessionFrame(payload: .control(.select(targetID: "tmux:reply")))
+            try await recipientSocketSend(select, on: terminal)
+            try await recipientSocketBarrier(on: terminal)
+            let connection = try #require(await listener.peers.keys.first)
+            let text = String(repeating: #""/"#, count: 1 << 19)
+            let line = try JSONEncoder().encode(LocalDispatchRequest(
+                connection: connection, target: "tmux:reply", binding: "binding", text: text
+            ))
+            #expect(line.count > 2 * (1 << 20) && line.count <= LocalDispatchRequest.maxLineBytes)
+            #expect(try await submit(line, socket: socket.path) == .dispatch(delivered: 1, request: nil))
+            #expect(await adapter.deliveries.map(\.text) == [text])
+            let reply = Data("{\"x\":\"\(String(repeating: "a", count: PayloadLimits.defaultMaxFrameBytes))\"}".utf8)
+            #expect(try await submit(reply, socket: socket.path) == .init(delivered: 0, error: "frame too large"))
+        } catch {
+            await endpoint.stop()
+            await listener.stop(reason: "test failed")
+            throw error
+        }
+        await endpoint.stop()
+        await listener.stop(reason: "test complete")
+    }
+
     @Test func ownershipLostAfterHandoffReportsDeliveredWithoutARequest() async throws {
         let scratch = FileManager.default.temporaryDirectory.appendingPathComponent(
             "hs-ol-\(UUID().uuidString.prefix(8))", isDirectory: true
@@ -529,8 +570,10 @@ private func expectRefusal(
 }
 
 /// One allowed legacy `tmux:` target: generic input only, so no reply ownership can be minted for it.
-private func legacyReplyListener() async throws -> (WebSocketListener, FakeAdapter) {
-    var policy = Policy()
+private func legacyReplyListener(
+    guards: [GuardPattern] = DangerousPatternGuard.defaults
+) async throws -> (WebSocketListener, FakeAdapter) {
+    var policy = Policy(guardPatterns: guards)
     try policy.allow("tmux:reply", binding: "binding", tier: .open)
     let (host, adapter) = try await sessionHost(
         targets: [AdapterTarget(name: "reply", binding: "binding")], policy: policy

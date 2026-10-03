@@ -88,17 +88,18 @@ rightyo listen … --session-id "$rightyo_session_id" |
   following the rebind. Validation, correlation, duplicate detection, the provenance rule
   (`--allow-synthetic` or `live-microphone`) and the receipts' no-transcript rule are unchanged; only the
   final delivery step differs.
-- **Prompt cap (fail closed).** The daemon's host, built by `haild run`, sanitises a dispatched prompt under
-  its default `SanitizePolicy`: 2,000 characters / 8,192 UTF-8 bytes. A longer prompt is refused as
-  `deliveryRefused` and the command exits 1; nothing is delivered. The direct path (no `--reply-to`) allows
-  1,200,000 for the same prompt, so until the daemon accepts a larger dispatch prompt
-  ([#200](https://github.com/mickdarling/hailing-station/issues/200)),
-  `--reply-to` is unusable for requests whose prompt exceeds 2,000 characters: in practice any request
-  carrying context turns or a `formed_request`, which the compact JSON alone can exceed. The
-  [reply block](#the-reply-block) (228 characters plus the target id) is part of the prompt and counts
-  toward the same cap, so the headroom is smaller than the JSON alone suggests. The client refuses a
-  prompt over the 8,192-byte dispatch text payload before connecting and says why; a prompt between the two
-  limits is sent and refused by the daemon.
+- **Prompt cap.** The daemon sanitises a dispatched prompt under the same 1,200,000-character/byte
+  whole-prompt policy as the direct path (`HailHost.localPromptSanitizing`,
+  [#200](https://github.com/mickdarling/hailing-station/issues/200)); the larger cap is bound only for the
+  local-socket `dispatch` handoff, and phone text frames keep the default 2,000 characters / 8,192 bytes. Only
+  the length cap differs: the newline rule, the whole-prompt dangerous-pattern guard (including its 20 ms
+  per-rule budget, see [Formed requests](#formed-requests)), tier, binding, rate limit and lockdown give the
+  direct path's outcome. The socket accepts a dispatch line of up to `2 × 1,200,000 + 4,096` bytes so JSON
+  escaping cannot push a capped prompt over it; reply frames keep their existing frame cap. **Client caveat:**
+  the `haild rightyo --reply-to` client in this build still refuses a prompt over the 8,192-byte text payload
+  before connecting and says why, so the end-to-end path stays unusable for real requests until the client
+  adopts the daemon cap in a follow-up under #200. The [reply block](#the-reply-block) (228 characters plus
+  the target id) counts toward every cap.
 
 Each admitted request sends one `{"kind":"dispatch","connection","target","binding","text"}` line and reads
 one answer. The receipt is:
@@ -172,9 +173,8 @@ the phone hears it. For the target `tmux:demo` it is, byte for byte (it begins w
   id, never contains the raw-turns marker, and passes the host sanitizer and the default guard unchanged
   (`RightyoInputReplyBlockTests`).
 - The block counts toward every prompt bound: the local command's 1,200,000 whole-prompt cap (arithmetic under
-  [Formed requests](#formed-requests)) and, with `--reply-to`, the daemon's 2,000-character / 8,192-byte dispatch
-  cap that the [#200](https://github.com/mickdarling/hailing-station/issues/200) caveat above describes, whose
-  headroom it shrinks by its own length.
+  [Formed requests](#formed-requests)), which with `--reply-to` is also the daemon's dispatch cap
+  ([#200](https://github.com/mickdarling/hailing-station/issues/200)), and the client caveat above while it lasts.
 - Dry run (`--dry-run`) validates and prints receipts; it forms no prompt, so no block exists and the fixture
   dry-run output is unchanged. No receipt includes the prompt or the block.
 
@@ -296,9 +296,9 @@ characters. Stream time (`emitted_at_ms`) must be non-negative and never decreas
 default so ambient listening can run for hours, although the session is still bounded by the admitted-event,
 finals and requests capacities (4,096 / 1,000 / 1,000). Only the admitted-event cap ends the session with
 `capacity`; a finals or requests cap is refused as `invalidEvent`, like any other rejected record;
-`RightyoInputConsumer(streamBudgetMs:)` is an optional explicit budget and the CLI does not yet expose it. The local RightyO command alone uses an
-explicit 1,200,000 character/byte whole-prompt sanitizer cap; other CLI and mobile input retain their
-existing limits. Original turn text must already satisfy control/escape/newline sanitization so JSON
+`RightyoInputConsumer(streamBudgetMs:)` is an optional explicit budget and the CLI does not yet expose it. The local RightyO command and the daemon's
+local-socket `dispatch` path (#200) alone use an explicit 1,200,000 character/byte whole-prompt sanitizer cap;
+other CLI and mobile input retain their existing limits. Original turn text must already satisfy control/escape/newline sanitization so JSON
 escaping cannot hide dangerous-pattern spelling. The ordinary host sanitizer, fresh policy, target
 binding, guards, tiers and rate limits still apply.
 

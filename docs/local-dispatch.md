@@ -23,9 +23,17 @@ request kind on the same one-frame-per-connection, newline-terminated contract:
 - `target` must be the target that connection currently selects.
 - `binding` is the listing binding the caller saw when it chose the target. It pins the program behind
   the name; a different current binding refuses rather than following the rebind.
-- `text` is the prompt, at most the text payload cap (8 KB of UTF-8). It takes the same sanitizer, shape,
-  policy, tier, confirmation, rate-limit and lockdown path as a phone utterance through `HailHost.send`;
-  the audit `delivered` record names the device `rightyo-local`.
+- `text` is the prompt, at most 1,200,000 bytes of UTF-8 (`LocalDispatchRequest.maxTextBytes`, the local
+  RightyO prompt cap, [#200](https://github.com/mickdarling/hailing-station/issues/200)). It takes the same
+  sanitizer, shape, policy, tier, confirmation, rate-limit and lockdown path as a phone utterance through
+  `HailHost.send`, except that the sanitizer's length cap is `HailHost.localPromptSanitizing` (1,200,000
+  characters/bytes, the direct `haild rightyo` policy) instead of the default 2,000 characters / 8,192 bytes.
+  That cap is bound only for the dispatch handoff (a task-local scope set by `HostSession.dispatch`); phone
+  text frames keep the default. The dangerous-pattern guard runs on the whole prompt, so its 20 ms per-rule
+  budget can make a very large prompt `confirmationRequired` on a slow host (fail closed). The socket line
+  cap is `max(frame cap, 2 × 1,200,000 + 4,096)` bytes so JSON escaping fits; a non-dispatch (reply) line over
+  the existing frame cap is still answered `frame too large`. The audit `delivered` record names the device
+  `rightyo-local`.
 
 A submission without `kind`, or with any value other than exactly `dispatch`, is a reply frame and behaves
 as before. A dispatch is audited as `pushed` with tool `local-dispatch` before it reaches the listener and
@@ -133,6 +141,13 @@ Synthetic only, with `DEVELOPER_DIR=/Applications/Xcode.app/Contents/Developer`:
   are audited as `local-dispatch`, a legacy adapter answers `request: null`, `ownershipLost` answers
   `delivered: 1` with explicit null `request` and its named reason, and both kinds share the admission
   budget. `LocalDispatchTests` also pins the response encoding (`request` only on dispatch answers).
+- `LocalDispatchCapTests` (#200, direct sessions): a 1 MiB dispatch is delivered while a 2,001-character phone
+  frame on the same session is refused; a dispatch over 1,200,000 characters is refused; a 3,000-character
+  dispatch carrying a default dangerous pattern is `confirmationRequired`, the same decision the direct
+  `haild rightyo` host gives; a locked tier and host lockdown refuse a large dispatch.
+  `LocalReplyEndpointTests.mebibyteDispatchCrossesTheSocketWhileReplyFramesKeepTheirCap` sends a fully
+  JSON-escaped 1 MiB prompt (a ~2 MiB line) over the socket and sees it delivered, and a reply line over the
+  frame cap is still answered `frame too large`.
 
 No device, running daemon or installed build is involved.
 
@@ -140,7 +155,7 @@ The CLI client (`RightyoSocketDispatcher` in `haild`) sends this shape for each 
 maps the answer as documented in [rightyo-input.md](rightyo-input.md#reply-ownership-with---reply-to):
 `delivered: 1` with a `request` is an owned reply, with `null` is "no reply ownership" (the daemon's reason,
 if any, is noted on stderr), and a refusal keeps the direct path's exit code where the outcome is the same
-(`confirmationRequired` 8, `bindingMismatch` 7) and otherwise exits 1 with the daemon's reason. Note that
-the host behind the socket sanitises a dispatched prompt under its default policy (2,000 characters /
-8,192 bytes), so a RightyO prompt with context turns or a formed request is refused `deliveryRefused`
-until [#200](https://github.com/mickdarling/hailing-station/issues/200) raises the dispatch cap.
+(`confirmationRequired` 8, `bindingMismatch` 7) and otherwise exits 1 with the daemon's reason. The daemon
+accepts a dispatched prompt up to the local RightyO cap (#200), but the client in this build still refuses a
+prompt over the 8,192-byte text payload before connecting; adopting the daemon cap in the client is a
+follow-up under [#200](https://github.com/mickdarling/hailing-station/issues/200).
