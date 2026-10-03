@@ -3,36 +3,16 @@ import Foundation
 import Synchronization
 
 public enum ConnectionProbeDaemon {
-    // Signal ownership and two coordinated listeners make the composition root intentionally linear.
-    // swiftlint:disable:next function_body_length
+    /// Signal ownership and the two coordinated listeners from `compose`.
     public static func run(
         host: HailHost, arguments: [String], hostName: String,
         log: @escaping @Sendable (WebSocketListenerEvent) -> Void
     ) async throws {
-        let options = try options(arguments)
-        var authorizer = options.authorizer
-        var ambient: (any AmbientListenerWiring)?
-        #if os(macOS)
-        if let ambientOptions = options.ambient {
-            let router = try await ambientRouter(
-                ambientOptions, host: host, audit: AuditLog(directory: AuditHistory.standard().directory), log: log
-            )
-            authorizer = PersonalTerminalAuthorizer(ambientAudio: AmbientAudioGate(target: ambientOptions.target,
-                                                                                  sink: router))
-            ambient = router
-        }
-        #endif
-        let listener = try WebSocketListener(
-            bindAddress: options.address, port: options.port, host: host,
-            authorizer: authorizer, hostName: hostName,
-            singleTerminalReplyFallback: options.singleTerminalReplyFallback, ambient: ambient, log: log
+        // One writer per audit directory: a second `AuditLog` on the same day's file is refused `inUse`.
+        let (listener, replyEndpoint) = try await compose(
+            try options(arguments), host: host, hostName: hostName,
+            audit: AuditLog(directory: AuditHistory.standard().directory), log: log
         )
-        let replyEndpoint: LocalReplyEndpoint? = try options.personalTerminal.map { socket in
-            try LocalReplyEndpoint(
-                socketURL: socket, destination: listener,
-                audit: AuditLog(directory: AuditHistory.standard().directory)
-            )
-        }
         signal(SIGTERM, SIG_IGN)
         signal(SIGINT, SIG_IGN)
         let termination = DispatchSource.makeSignalSource(signal: SIGTERM, queue: .global(qos: .utility))
@@ -129,6 +109,33 @@ public enum ConnectionProbeDaemon {
 }
 
 extension ConnectionProbeDaemon {
+    /// The listener and reply endpoint for `options`, sharing `audit` between the `--reply-to` socket and
+    /// ambient dispatches (#203).
+    static func compose(
+        _ options: Options, host: HailHost, hostName: String, audit: AuditLog,
+        log: @escaping @Sendable (WebSocketListenerEvent) -> Void
+    ) async throws -> (WebSocketListener, LocalReplyEndpoint?) {
+        var authorizer = options.authorizer
+        var ambient: (any AmbientListenerWiring)?
+        #if os(macOS)
+        if let ambientOptions = options.ambient {
+            let router = try await ambientRouter(ambientOptions, host: host, audit: audit, log: log)
+            authorizer = PersonalTerminalAuthorizer(ambientAudio: AmbientAudioGate(target: ambientOptions.target,
+                                                                                  sink: router))
+            ambient = router
+        }
+        #endif
+        let listener = try WebSocketListener(
+            bindAddress: options.address, port: options.port, host: host,
+            authorizer: authorizer, hostName: hostName,
+            singleTerminalReplyFallback: options.singleTerminalReplyFallback, ambient: ambient, log: log
+        )
+        let replyEndpoint = try options.personalTerminal.map { socket in
+            try LocalReplyEndpoint(socketURL: socket, destination: listener, audit: audit)
+        }
+        return (listener, replyEndpoint)
+    }
+
     struct AmbientOptions: Equatable {
         var executable: URL
         var config: URL
