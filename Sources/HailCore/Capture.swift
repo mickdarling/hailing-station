@@ -1,4 +1,5 @@
 public import AVFAudio
+public import Foundation
 
 /// Events a trigger emits as the user speaks. Push-to-talk, wake phrase, continuous, and intent-gate
 /// triggers all produce this same stream (#5, #51).
@@ -34,14 +35,19 @@ public protocol AudioCapturing: Sendable {
 }
 
 /// AVAudioEngine-backed capture for the native terminal. The audio session remains owned by AudioSessionController.
+/// The system can stop the engine underneath it (a call, Siri, a route or hardware change); capture then ends its
+/// stream so every consumer sees the microphone stop. It never restarts by itself (#218).
 @MainActor
 public final class AVAudioEngineCapture: AudioCapturing {
     private let engine: AVAudioEngine
+    private let notificationCenter: NotificationCenter
     private var continuation: AsyncStream<AudioCaptureBuffer>.Continuation?
     private var hasTap = false
+    private var observer: AudioCaptureEndingObserver?
 
-    public init(engine: AVAudioEngine = AVAudioEngine()) {
+    public init(engine: AVAudioEngine = AVAudioEngine(), notificationCenter: NotificationCenter = .default) {
         self.engine = engine
+        self.notificationCenter = notificationCenter
     }
 
     public func start() throws -> AsyncStream<AudioCaptureBuffer> {
@@ -68,10 +74,15 @@ public final class AVAudioEngineCapture: AudioCapturing {
             stop()
             throw error
         }
+        let ending = AudioCaptureEndingObserver(center: notificationCenter, engine: engine) { [weak self] signal, id in
+            Task { @MainActor in self?.systemSignal(signal, observer: id) }
+        }
+        observer = ending
         return pair.stream
     }
 
     public func stop() {
+        observer = nil
         if hasTap {
             engine.inputNode.removeTap(onBus: 0)
             hasTap = false
@@ -80,4 +91,94 @@ public final class AVAudioEngineCapture: AudioCapturing {
         continuation?.finish()
         continuation = nil
     }
+
+    /// Only the observer of the current run may end it; a late signal from an earlier run is ignored.
+    private func systemSignal(_ signal: AudioCaptureEndingSignal, observer id: UUID) {
+        guard observer?.id == id, signal.endsCapture(engineRunning: engine.isRunning) else { return }
+        stop()
+    }
+}
+
+/// A system event that may have stopped capture underneath the engine (#218).
+enum AudioCaptureEndingSignal: Equatable, Sendable {
+    case interruptionBegan
+    case interruptionEnded
+    case routeChanged(reason: UInt)
+    case mediaServicesReset
+    case engineConfigurationChanged
+
+    /// Route-change reasons that move the input or output hardware: `newDeviceAvailable`,
+    /// `oldDeviceUnavailable`, `override`, `wakeFromSleep`, `noSuitableRouteForCategory`.
+    static let hardwareRouteReasons: Set<UInt> = [1, 2, 4, 6, 7]
+
+    /// An interruption or a hardware route change always ends capture; there is no auto-resume. Other route
+    /// changes (such as the category change capture's own session activation causes) and engine
+    /// reconfiguration end it only when the engine has actually stopped, so the stream never claims to be live
+    /// while nothing records.
+    func endsCapture(engineRunning: Bool) -> Bool {
+        switch self {
+        case .interruptionBegan, .mediaServicesReset: true
+        case .interruptionEnded: false
+        case .routeChanged(let reason): Self.hardwareRouteReasons.contains(reason) || !engineRunning
+        case .engineConfigurationChanged: !engineRunning
+        }
+    }
+
+    /// Notification names and keys. They are the `AVAudioSession` constants on iOS; macOS has no session, so the
+    /// same names are spelled out for the host-side tests.
+    enum Names {
+        #if os(iOS)
+        static let interruption = AVAudioSession.interruptionNotification
+        static let routeChange = AVAudioSession.routeChangeNotification
+        static let mediaServicesReset = AVAudioSession.mediaServicesWereResetNotification
+        static let interruptionTypeKey = AVAudioSessionInterruptionTypeKey
+        static let routeChangeReasonKey = AVAudioSessionRouteChangeReasonKey
+        #else
+        static let interruption = Notification.Name("AVAudioSessionInterruptionNotification")
+        static let routeChange = Notification.Name("AVAudioSessionRouteChangeNotification")
+        static let mediaServicesReset = Notification.Name("AVAudioSessionMediaServicesWereResetNotification")
+        static let interruptionTypeKey = "AVAudioSessionInterruptionTypeKey"
+        static let routeChangeReasonKey = "AVAudioSessionRouteChangeReasonKey"
+        #endif
+    }
+
+    /// `AVAudioSession.InterruptionType.began` is 1 and `.ended` is 0; a missing type is treated as began.
+    init?(_ notification: Notification) {
+        switch notification.name {
+        case Names.interruption:
+            let type = notification.userInfo?[Names.interruptionTypeKey] as? UInt
+            self = type == 0 ? .interruptionEnded : .interruptionBegan
+        case Names.routeChange:
+            self = .routeChanged(reason: notification.userInfo?[Names.routeChangeReasonKey] as? UInt ?? 0)
+        case Names.mediaServicesReset: self = .mediaServicesReset
+        case .AVAudioEngineConfigurationChange: self = .engineConfigurationChanged
+        default: return nil
+        }
+    }
+}
+
+/// Watches the session notifications and one engine's configuration changes for the life of one capture run.
+/// Handlers run on the posting thread, so only a parsed, sendable signal leaves them.
+final class AudioCaptureEndingObserver {
+    typealias Handler = @Sendable (AudioCaptureEndingSignal, UUID) -> Void
+    let id = UUID()
+    private let center: NotificationCenter
+    private var tokens: [any NSObjectProtocol] = []
+
+    init(center: NotificationCenter, engine: AnyObject?, handler: @escaping Handler) {
+        self.center = center
+        let id = id
+        let names = [Names.interruption, Names.routeChange, Names.mediaServicesReset]
+        let sessionNames = names.map { ($0, nil as AnyObject?) }
+        for (name, object) in sessionNames + [(.AVAudioEngineConfigurationChange, engine)] {
+            tokens.append(center.addObserver(forName: name, object: object, queue: nil) { notification in
+                guard let signal = AudioCaptureEndingSignal(notification) else { return }
+                handler(signal, id)
+            })
+        }
+    }
+
+    private typealias Names = AudioCaptureEndingSignal.Names
+
+    deinit { tokens.forEach(center.removeObserver) }
 }
