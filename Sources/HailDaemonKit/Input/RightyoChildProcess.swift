@@ -42,8 +42,10 @@ public final class RightyoChildProcess: Sendable {
         var writing = false, closing = false, closed = false
     }
     public static let maxLineBytes = 1_200_000
+    /// Lines read but not yet taken are bounded in bytes too; past this the stream ends with `backlog`.
+    public static let maxQueuedBytes = 4_000_000
     /// stdout split on newlines (empty lines skipped). Ends at EOF, or throws a `RightyoChildError`.
-    public let lines: AsyncThrowingStream<Data, any Error>
+    public let lines: RightyoChildLines
     public let processIdentifier: Int32
     private let input: Int32
     private let state = Mutex(State())
@@ -63,12 +65,14 @@ public final class RightyoChildProcess: Sendable {
                                    environment: Self.environment().map { "\($0.key)=\($0.value)" },
                                    directory: config.deletingLastPathComponent().path)
         let pair = AsyncThrowingStream<Data, any Error>.makeStream(bufferingPolicy: .bufferingOldest(256))
-        (lines, processIdentifier, input, self.timing) = (pair.stream, child.pid, child.input, timing)
+        let queued = RightyoByteCount()
+        lines = RightyoChildLines(stream: pair.stream, queued: queued)
+        (processIdentifier, input, self.timing) = (child.pid, child.input, timing)
         let source = DispatchSource.makeProcessSource(identifier: child.pid, eventMask: .exit, queue: reaper)
         source.setEventHandler { [exit] in if Self.reap(child.pid, into: exit, blocking: true) { source.cancel() } }
         source.activate()
         reaper.async { [exit] in if Self.reap(child.pid, into: exit, blocking: false) { source.cancel() } }
-        Thread.detachNewThread { Self.readLines(child.output, into: pair.continuation) }
+        Thread.detachNewThread { RightyoChildLines.read(child.output, into: pair.continuation, queued: queued) }
         // No reader thread retains `self`, so dropping the last reference runs `deinit` and kills the child.
         Thread.detachNewThread { [stderrBytes] in
             Self.drainErrors(child.errors) { count in stderrBytes.withLock { $0 += count } }

@@ -5,7 +5,8 @@ import Testing
 @testable import HailDaemonKit
 
 /// Generous limits: these suites spawn real processes beside every other parallel suite (#203).
-@Suite(.timeLimit(.minutes(1))) struct RightyoChildProcessTests {
+/// Serialized: the repo's own process suites have tight deadlines, so these never add parallel process load.
+@Suite(.serialized, .timeLimit(.minutes(1))) struct RightyoChildProcessTests {
     @Test func launchesExactArgvMinimalEnvironmentAndConfigDirectory() async throws {
         let fake = try FakeRightyo("""
             printf '%s\\n' "$@" > argv.txt
@@ -110,6 +111,22 @@ import Testing
         #expect(await child.stop() == .exited(0))
     }
 
+    @Test func untakenLinesPastTheQueuedByteBoundEndTheStream() async throws {
+        let fake = try FakeRightyo("""
+            for i in 1 2 3 4 5 6 7 8; do
+                /bin/dd if=/dev/zero bs=1000 count=1000 2>/dev/null | /usr/bin/tr '\\0' a; echo
+            done
+            """)
+        defer { fake.cleanUp() }
+        let child = try fake.child()
+        // The fifth line passes the bound; the child cannot exit before lines 6-8 are read, so the stream has
+        // already failed before anything is taken.
+        #expect(await child.stop() == .exited(0))
+        var taken = 0
+        await #expect(throws: RightyoChildError.backlog) { for try await _ in child.lines { taken += 1 } }
+        #expect(taken == 4)
+    }
+
     @Test func aLineAtTheCapIsDelivered() async throws {
         let fake = try FakeRightyo("/bin/dd if=/dev/zero bs=1000 count=1200 2>/dev/null | /usr/bin/tr '\\0' a; echo")
         defer { fake.cleanUp() }
@@ -125,6 +142,15 @@ import Testing
             let fake = try FakeRightyo("exit 0", mode: mode)
             defer { fake.cleanUp() }
             #expect(throws: RightyoChildError.unsafeExecutable) { try fake.child() }
+        }
+        let owned = try FakeRightyo("exit 0", mode: 0o750)
+        defer { owned.cleanUp() }
+        #expect(throws: Never.self) {
+            try RightyoChildProcess.validate(executable: owned.executable, config: owned.config)
+        }
+        #expect(chmod(owned.directory.path, 0o777) == 0)
+        #expect(throws: RightyoChildError.unsafeExecutable) {
+            try RightyoChildProcess.validate(executable: owned.executable, config: owned.config)
         }
         let fake = try FakeRightyo("exit 0")
         defer { fake.cleanUp() }

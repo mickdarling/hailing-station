@@ -20,7 +20,7 @@ actor RecordingAmbientDispatcher: RightyoAmbientDispatching {
     }
 }
 
-@Suite(.timeLimit(.minutes(1))) struct RightyoAmbientPipelineTests {
+@Suite(.serialized, .timeLimit(.minutes(1))) struct RightyoAmbientPipelineTests {
     /// Echoes the canonical fixture under the session it was given, counts stdin to EOF, then emits `stopped`,
     /// as `rightyo listen --mode stdin` does. Argument 7 is the session id in the fixed argv.
     static let echoFixture = """

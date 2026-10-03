@@ -1,4 +1,5 @@
 #if os(macOS)
+import Darwin
 public import Foundation
 import HailProtocol
 
@@ -102,6 +103,81 @@ public final class RightyoAmbientPipeline: Sendable {
         }
         let exit = await child.stop()
         return Summary(delivered: delivered, child: child.counters, exit: exit)
+    }
+}
+
+/// The child's stdout as JSONL lines (#203): read on its own thread, always to EOF so the child never wedges on a
+/// full pipe. Each line is capped at `maxLineBytes`, and lines waiting to be taken at `maxQueuedBytes` in total;
+/// either limit ends the stream fail-closed and the rest is discarded.
+public struct RightyoChildLines: AsyncSequence, Sendable {
+    public typealias Element = Data
+    let stream: AsyncThrowingStream<Data, any Error>
+    let queued: RightyoByteCount
+
+    public struct AsyncIterator: AsyncIteratorProtocol {
+        fileprivate var base: AsyncThrowingStream<Data, any Error>.AsyncIterator
+        fileprivate let queued: RightyoByteCount
+        public mutating func next() async throws -> Data? {
+            let line = try await base.next()
+            if let line { queued.withLock { $0 -= line.count } }
+            return line
+        }
+    }
+
+    public func makeAsyncIterator() -> AsyncIterator { AsyncIterator(base: stream.makeAsyncIterator(), queued: queued) }
+
+    static func read(_ output: Int32, into lines: AsyncThrowingStream<Data, any Error>.Continuation,
+                     queued: RightyoByteCount) {
+        defer { close(output) }
+        var buffer = [UInt8](repeating: 0, count: 16_384), line = Data(), open = true
+        while true {
+            let count = buffer.withUnsafeMutableBytes { Darwin.read(output, $0.baseAddress, $0.count) }
+            if count < 0, errno == EINTR { continue }
+            guard count > 0 else {
+                guard open else { return }
+                do {
+                    guard count == 0 else { throw RightyoChildError.transportLost }
+                    if try line.isEmpty || emit(line, into: lines, queued: queued) { lines.finish() }
+                } catch { lines.finish(throwing: error) }
+                return
+            }
+            guard open else { continue }
+            do { open = try split(buffer[..<count], line: &line, into: lines, queued: queued) } catch {
+                lines.finish(throwing: error)
+                open = false
+            }
+        }
+    }
+
+    /// Appends `bytes` to the pending line and emits each completed non-empty line. False once the reader is gone.
+    private static func split(_ bytes: ArraySlice<UInt8>, line: inout Data,
+                              into lines: AsyncThrowingStream<Data, any Error>.Continuation,
+                              queued: RightyoByteCount) throws -> Bool {
+        let parts = bytes.split(separator: 10, omittingEmptySubsequences: false)
+        for (index, part) in parts.enumerated() {
+            line.append(contentsOf: part)
+            guard line.count <= RightyoChildProcess.maxLineBytes else { throw RightyoChildError.lineTooLong }
+            guard index < parts.count - 1, !line.isEmpty else { continue }
+            guard try emit(line, into: lines, queued: queued) else { return false }
+            line = Data()
+        }
+        return true
+    }
+
+    /// False once the reader is gone; throws `backlog` past either queue bound.
+    private static func emit(_ line: Data, into lines: AsyncThrowingStream<Data, any Error>.Continuation,
+                             queued: RightyoByteCount) throws -> Bool {
+        let fits = queued.withLock { total in
+            guard total + line.count <= RightyoChildProcess.maxQueuedBytes else { return false }
+            total += line.count
+            return true
+        }
+        guard fits else { throw RightyoChildError.backlog }
+        switch lines.yield(line) {
+        case .dropped: throw RightyoChildError.backlog
+        case .terminated: return false
+        default: return true
+        }
     }
 }
 #endif

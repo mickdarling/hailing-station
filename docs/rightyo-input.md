@@ -453,3 +453,32 @@ test cut the block at the last occurrence of its prefix before parsing the JSON.
 846 Swift tests in 129 suites (four new), 45 trace checker tests, five intent tests, 34 CLI tests, audit CLI,
 strict lint and scripts; all four fixtures dry-run with unchanged receipts and unchanged SHA-256s. All input is
 authored; no device, microphone, daemon or real target was used. Source marketing version is 0.1.68.
+
+## Ambient child and pipeline (#203, library only)
+
+`RightyoChildProcess` runs `<exe> listen --mode stdin --provenance live-microphone --session-id hail-<uuid>
+--config <cfg>` through `posix_spawn`. It uses the exact absolute path with no shell, and the environment is a fixed
+`PATH` plus `HOME`/`TMPDIR`. Only stdio crosses (CLOEXEC_DEFAULT). Every catchable signal is reset to default, and the
+working directory is the config's directory. The executable, after symlinks, must be:
+
+- a regular executable file
+- owned by the daemon's user or root
+- not group- or world-writable
+- in a directory that is not group- or world-writable
+
+Writable ancestors further up are not checked.
+
+stdin is a bounded, non-blocking writer: 64 KB or 2 s, dropping the oldest whole chunks with a gap counter. stdout
+lines are capped at 1.2 MB each and 4 MB in total while untaken. Past either cap the stream ends fail-closed. stderr is
+drained, and only its byte count is kept.
+
+Stopping closes stdin, then sends SIGTERM after 3 s, then SIGKILL after 2 s. Dropping the last reference closes stdin
+and sends SIGKILL. Signals go to the child's pid only, not to a process group, so a descendant that RightyO itself
+forks is not killed with it. This matches the repo's other stdio children.
+
+`RightyoAmbientPipeline` feeds the child's lines through `RightyoInputEvent.decode` and `RightyoInputConsumer`. It
+hands admitted requests to a `RightyoAmbientDispatching` (`LocalDispatchRequest`). Any error ends the stream, and
+nothing restarts it.
+
+The consumer still ends a session after 4,096 events, so a long ambient stream stops there. Raising or windowing that
+cap is separate work. Audio and transcript content are never logged.

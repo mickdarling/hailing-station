@@ -19,11 +19,19 @@ extension RightyoChildProcess {
         return environment
     }
 
+    /// The executable (after symlinks) must be a regular executable file owned by this user or root and not
+    /// group/world-writable, in a directory that is not group/world-writable either, which narrows the window
+    /// between this check and the spawn. A writable ancestor further up is not checked.
     public static func validate(executable: URL, config: URL) throws {
-        var info = stat()
-        guard executable.isFileURL, executable.path.hasPrefix("/"), stat(executable.path, &info) == 0,
-              info.st_mode & S_IFMT == S_IFREG, info.st_mode & (S_IWGRP | S_IWOTH) == 0,
-              access(executable.path, X_OK) == 0 else { throw RightyoChildError.unsafeExecutable }
+        var info = stat(), parent = stat()
+        let resolved = executable.path.hasPrefix("/") ? realpath(executable.path, nil) : nil
+        defer { free(resolved) }
+        let path = resolved.map { String(cString: $0) } ?? ""
+        let owners: Set<uid_t> = [0, getuid()]
+        guard executable.isFileURL, !path.isEmpty, stat(path, &info) == 0, info.st_mode & S_IFMT == S_IFREG,
+              info.st_mode & (S_IWGRP | S_IWOTH) == 0, owners.contains(info.st_uid), access(path, X_OK) == 0,
+              stat((path as NSString).deletingLastPathComponent, &parent) == 0,
+              parent.st_mode & (S_IWGRP | S_IWOTH) == 0 else { throw RightyoChildError.unsafeExecutable }
         guard config.isFileURL, config.path.hasPrefix("/"), stat(config.path, &info) == 0,
               info.st_mode & S_IFMT == S_IFREG, access(config.path, R_OK) == 0 else {
             throw RightyoChildError.unsafeConfig
@@ -86,44 +94,6 @@ extension RightyoChildProcess {
     }
 
     struct SpawnedChild { let pid: pid_t, input: Int32, output: Int32, errors: Int32 }
-
-    /// Splits stdout into lines on its own thread and always reads to EOF, so the child never wedges on a full
-    /// pipe; after an error or a gone reader the rest is discarded.
-    static func readLines(_ output: Int32, into lines: AsyncThrowingStream<Data, any Error>.Continuation) {
-        defer { close(output) }
-        var buffer = [UInt8](repeating: 0, count: 16_384), line = Data(), open = true
-        func fail(_ error: RightyoChildError) { lines.finish(throwing: error); open = false }
-        while true {
-            let count = buffer.withUnsafeMutableBytes { read(output, $0.baseAddress, $0.count) }
-            if count < 0, errno == EINTR { continue }
-            guard count > 0 else {
-                if open, count < 0 { fail(.transportLost) }
-                if open, !line.isEmpty, case .dropped = lines.yield(line) { fail(.backlog) }
-                if open { lines.finish() }
-                return
-            }
-            guard open else { continue }
-            do { open = try split(buffer[..<count], line: &line, into: lines) } catch { fail(error) }
-        }
-    }
-
-    /// Appends `bytes` to the pending line and yields each completed non-empty line. False once the reader is gone.
-    private static func split(_ bytes: ArraySlice<UInt8>, line: inout Data,
-                              into lines: AsyncThrowingStream<Data, any Error>.Continuation) throws(RightyoChildError)
-        -> Bool {
-        let parts = bytes.split(separator: 10, omittingEmptySubsequences: false)
-        for (index, part) in parts.enumerated() {
-            line.append(contentsOf: part)
-            guard line.count <= maxLineBytes else { throw .lineTooLong }
-            guard index < parts.count - 1, !line.isEmpty else { continue }
-            switch lines.yield(line) {
-            case .dropped: throw .backlog
-            case .terminated: return false
-            default: line = Data()
-            }
-        }
-        return true
-    }
 
     /// Counts stderr bytes and discards them; diagnostics may quote audio-derived text.
     static func drainErrors(_ errors: Int32, counting: (Int) -> Void) {
