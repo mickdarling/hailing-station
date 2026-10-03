@@ -3,15 +3,11 @@ import Darwin
 public import Foundation
 import Synchronization
 
-/// The RightyO child's launch rules, stdout/stderr readers and exit latch (#203), beside RightyoChildProcess.swift.
-/// Why the RightyO child refused to start or its output ended (#203). Cases name rules, never content.
+/// Why the RightyO child refused to start or its output ended (#203). Cases name rules, never content:
+/// `unsafeExecutable`/`unsafeConfig` (see `validate`), `lineTooLong` (a stdout line past `maxLineBytes`),
+/// `backlog` (untaken lines past `maxQueuedBytes`), `transportLost`.
 public enum RightyoChildError: Error, Sendable, Equatable {
-    /// Not absolute, not a regular file, not executable, or group/world-writable.
-    case unsafeExecutable
-    /// Not absolute or not a regular readable file.
-    case unsafeConfig
-    /// A stdout line passed `maxLineBytes` before its newline; `backlog`: untaken lines passed `maxQueuedBytes`.
-    case lineTooLong, backlog, transportLost
+    case unsafeExecutable, unsafeConfig, lineTooLong, backlog, transportLost
 }
 
 /// How a reaped child ended.
@@ -50,9 +46,8 @@ extension RightyoChildProcess {
     }
 
     /// The executable (after symlinks) must be a regular executable file owned by this user or root and not
-    /// group/world-writable, and every directory from its parent up to `/` must be too, so no other user can
-    /// unlink or replace it between this check and the spawn.
-    /// Returns the resolved absolute path, which is the one spawned.
+    /// group/world-writable, and so must every directory from its parent up to `/`, so no other user can replace
+    /// it between this check and the spawn. Returns the resolved absolute path, which is the one spawned.
     @discardableResult public static func validate(executable: URL, config: URL) throws -> String {
         var info = stat(), parent = stat()
         let resolved = executable.path.hasPrefix("/") ? realpath(executable.path, nil) : nil
@@ -147,15 +142,23 @@ extension RightyoChildProcess {
 }
 
 /// Pending stdin chunks, FIFO with a head index: append, eviction and expiry are O(1) amortised, even at the
-/// gate's 2-byte minimum (32,768 chunks in 64 KB). The consumed prefix is compacted once it is half the array.
+/// gate's 2-byte minimum (32,768 chunks in 64 KB). A taken slot is released at once, so only live chunks hold
+/// audio; the dead prefix is compacted once it reaches the live count, and storage resets when empty.
 struct RightyoChunkQueue {
-    private var items: [(data: Data, at: UInt64)] = [], head = 0
+    typealias Chunk = (data: Data, at: UInt64)
+    private var items: [Chunk?] = [], head = 0
     var isEmpty: Bool { head == items.count }
-    var first: (data: Data, at: UInt64)? { isEmpty ? nil : items[head] }
-    mutating func append(_ item: (data: Data, at: UInt64)) { items.append(item) }
-    mutating func removeFirst() -> (data: Data, at: UInt64) {
-        defer { head += 1; if head >= 1_024, head * 2 >= items.count { items.removeFirst(head); head = 0 } }
-        return items[head]
+    var first: Chunk? { isEmpty ? nil : items[head] }
+    /// Audio bytes the storage still references (tests; O(n)).
+    var storedBytes: Int { items.reduce(0) { $0 + ($1?.data.count ?? 0) } }
+    mutating func append(_ item: Chunk) { items.append(item) }
+    mutating func removeFirst() -> Chunk {
+        guard let chunk = items[head] else { preconditionFailure("RightyoChunkQueue slot already taken") }
+        (items[head], head) = (nil, head + 1)
+        if isEmpty { items.removeAll(keepingCapacity: true); head = 0 } else if head >= items.count - head {
+            items.removeFirst(head); head = 0
+        }
+        return chunk
     }
 }
 

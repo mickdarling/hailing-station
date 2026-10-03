@@ -44,5 +44,26 @@ extension RightyoChildProcessTests {
         #expect(counters.writtenBytes + counters.droppedBytes == chunks * 2)
         #expect(try fake.recorded("stdin-bytes.txt") == "\(counters.writtenBytes)\n")
     }
+
+    /// Taken and evicted chunks are released at once: after any number of large-chunk evictions the storage
+    /// references only the live chunks, so the 64 KB backlog bound holds for memory too.
+    @Test func evictedChunksAreReleasedImmediately() {
+        var queue = RightyoChunkQueue()
+        let size = 65_536
+        for step in 0..<3_000 {
+            queue.append((Data(repeating: UInt8(step % 251), count: size), UInt64(step)))
+            if step >= 1 { _ = queue.removeFirst() } // One live chunk, as at the 64 KB bound with 64 KB chunks.
+            #expect(queue.storedBytes <= size)
+        }
+        #expect(queue.first?.at == 2_999)
+        _ = queue.removeFirst()
+        #expect(queue.isEmpty && queue.storedBytes == 0)
+        // Mixed: a window of 16 small live chunks never retains more than the window.
+        for step in 0..<5_000 {
+            queue.append((Data(repeating: 1, count: 4_096), UInt64(step)))
+            if step >= 16 { _ = queue.removeFirst() }
+            #expect(queue.storedBytes <= 17 * 4_096)
+        }
+    }
 }
 #endif
