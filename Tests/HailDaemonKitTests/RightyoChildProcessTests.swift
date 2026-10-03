@@ -1,0 +1,161 @@
+#if os(macOS)
+import Darwin
+import Foundation
+import Testing
+@testable import HailDaemonKit
+
+/// Generous limits: these suites spawn real processes beside every other parallel suite (#203).
+/// Serialized: the repo's own process suites have tight deadlines, so these never add parallel process load.
+@Suite(.serialized, .timeLimit(.minutes(1))) struct RightyoChildProcessTests {
+    @Test func launchesExactArgvMinimalEnvironmentAndConfigDirectory() async throws {
+        let fake = try FakeRightyo("""
+            printf '%s\\n' "$0" "$@" > argv.txt
+            /usr/bin/env > env.txt
+            /bin/pwd -P > cwd.txt
+            """)
+        defer { fake.cleanUp() }
+        // Launched through a symlink: the child's $0 shows the resolved path was the one spawned.
+        let link = fake.directory.appendingPathComponent("link")
+        try FileManager.default.createSymbolicLink(at: link, withDestinationURL: FakeRightyo.shared)
+        let child = try RightyoChildProcess(executable: link, config: fake.config, session: "hail-test",
+                                            timing: .init(eofGrace: 20, termGrace: 20))
+        #expect(await child.stop() == .exited(0))
+        let argv = try fake.recorded("argv.txt").split(separator: "\n").map(String.init)
+        #expect(argv == [FakeRightyo.shared.path, "listen", "--mode", "stdin", "--provenance", "live-microphone",
+                         "--session-id", "hail-test", "--config", fake.config.path])
+        let keys = Set(try fake.recorded("env.txt").split(separator: "\n")
+            .compactMap { $0.split(separator: "=").first })
+        #expect(keys.isSubset(of: ["PATH", "HOME", "TMPDIR", "PWD", "SHLVL", "_", "OLDPWD"]))
+        #expect(keys.contains("PATH"))
+        #expect(try fake.recorded("cwd.txt") == fake.directory.path + "\n")
+    }
+
+    @Test func stopClosesStdinAfterQueuedAudioAndTheChildExitsOnEOF() async throws {
+        let fake = try FakeRightyo("/usr/bin/wc -c | /usr/bin/tr -d ' ' > stdin-bytes.txt")
+        defer { fake.cleanUp() }
+        let child = try fake.child()
+        for _ in 0..<10 { #expect(child.write(Data(repeating: 1, count: 3_200))) }
+        #expect(await child.stop() == .exited(0))
+        #expect(try fake.recorded("stdin-bytes.txt") == "32000\n")
+        #expect(child.counters.writtenBytes == 32_000)
+        #expect(child.counters.droppedChunks == 0)
+        #expect(!child.write(Data(repeating: 1, count: 2)))
+    }
+
+    @Test func escalatesToSIGKILLWhenTheChildIgnoresEOFAndSIGTERM() async throws {
+        let fake = try FakeRightyo("trap '' TERM\necho ready\nexec /bin/sleep 60")
+        defer { fake.cleanUp() }
+        let child = try fake.child(.init(eofGrace: 0.5, termGrace: 0.5))
+        var lines = child.lines.makeAsyncIterator()
+        #expect(try await lines.next() == Data("ready".utf8)) // The trap is installed before this line.
+        #expect(await child.stop() == .signaled(SIGKILL))
+        #expect(child.exitStatus == .signaled(SIGKILL))
+    }
+
+    /// The last reference dropped without `stop()` or `run()`: no reader thread may keep the owner (and so a live
+    /// microphone child) alive; `deinit` kills it and the exit source reaps it.
+    /// `stalledStdin`: the child never reads while audio keeps arriving, so the stdin writer is mid-write
+    /// (polling a full pipe) when the owner is dropped.
+    @Test(arguments: [false, true]) func droppingTheChildWithoutStopKillsAndReapsIt(stalledStdin: Bool) async throws {
+        let fake = try FakeRightyo("trap '' TERM\necho ready\nexec /bin/sleep 60")
+        defer { fake.cleanUp() }
+        let pid = try await Self.launchAndDrop(fake, flooding: stalledStdin)
+        let deadline = ContinuousClock.now.advanced(by: .seconds(20))
+        // ESRCH only once reaped: a killed but unreaped zombie still answers signal 0.
+        while kill(pid, 0) == 0 || errno != ESRCH {
+            try #require(ContinuousClock.now < deadline, "child \(pid) outlived its dropped owner")
+            try await Task.sleep(for: .milliseconds(50))
+        }
+    }
+
+    private static func launchAndDrop(_ fake: FakeRightyo, flooding: Bool) async throws -> Int32 {
+        let child = try fake.child()
+        var lines = child.lines.makeAsyncIterator()
+        #expect(try await lines.next() == Data("ready".utf8))
+        if flooding {
+            for _ in 0..<200 { child.write(Data(repeating: 5, count: 3_200)) }
+            try await Task.sleep(for: .milliseconds(200))
+            #expect(child.counters.droppedChunks > 0)
+        }
+        return child.processIdentifier
+    }
+
+    @Test func sigtermEndsAChildThatIgnoresEOF() async throws {
+        let fake = try FakeRightyo("echo ready\nexec /bin/sleep 60")
+        defer { fake.cleanUp() }
+        let child = try fake.child(.init(eofGrace: 0.5, termGrace: 20))
+        var lines = child.lines.makeAsyncIterator()
+        #expect(try await lines.next() == Data("ready".utf8))
+        #expect(await child.stop() == .signaled(SIGTERM))
+    }
+
+    @Test func aStalledChildDropsTheOldestAudioWithoutBlockingTheCaller() async throws {
+        let fake = try FakeRightyo("echo ready\nexec /bin/sleep 60")
+        defer { fake.cleanUp() }
+        let child = try fake.child(.init(eofGrace: 0.5, termGrace: 20, backlogAge: 60))
+        var lines = child.lines.makeAsyncIterator()
+        #expect(try await lines.next() == Data("ready".utf8))
+        let chunks = 200, size = 3_200
+        for _ in 0..<chunks { #expect(child.write(Data(repeating: 7, count: size))) }
+        let counters = child.counters
+        // At most the backlog, one in-flight chunk and a full pipe can be held; everything else is dropped whole.
+        #expect(counters.droppedBytes == counters.droppedChunks * size)
+        #expect(counters.droppedBytes >= chunks * size - 65_536 - size - 65_536)
+        #expect(await child.stop() == .signaled(SIGTERM))
+    }
+
+    @Test func refusesOversizedOddOrEmptyChunks() async throws {
+        let fake = try FakeRightyo("/usr/bin/wc -c > /dev/null")
+        defer { fake.cleanUp() }
+        let child = try fake.child()
+        #expect(!child.write(Data()))
+        #expect(!child.write(Data(repeating: 0, count: 3)))
+        #expect(!child.write(Data(repeating: 0, count: 65_538)))
+        #expect(await child.stop() == .exited(0))
+    }
+
+    @Test func aStdoutLinePastTheCapEndsTheStream() async throws {
+        let fake = try FakeRightyo("/bin/dd if=/dev/zero bs=1000 count=1300 2>/dev/null | /usr/bin/tr '\\0' a")
+        defer { fake.cleanUp() }
+        let child = try fake.child()
+        await #expect(throws: RightyoChildError.lineTooLong) { for try await _ in child.lines {} }
+        #expect(await child.stop() == .exited(0))
+    }
+
+    @Test func untakenLinesPastTheQueuedByteBoundEndTheStream() async throws {
+        let fake = try FakeRightyo("""
+            for i in 1 2 3 4 5 6 7 8; do
+                /bin/dd if=/dev/zero bs=1000 count=1000 2>/dev/null | /usr/bin/tr '\\0' a; echo
+            done
+            """)
+        defer { fake.cleanUp() }
+        let child = try fake.child()
+        // The fifth line passes the bound; the child cannot exit before lines 6-8 are read, so the stream has
+        // already failed before anything is taken.
+        #expect(await child.stop() == .exited(0))
+        var taken = 0
+        await #expect(throws: RightyoChildError.backlog) { for try await _ in child.lines { taken += 1 } }
+        #expect(taken == 4)
+    }
+
+    @Test func manySmallUntakenLinesStayWithinTheByteBudget() async throws {
+        let fake = try FakeRightyo("i=0; while [ $i -lt 2000 ]; do echo \"{\\\"n\\\": $i}\"; i=$((i + 1)); done")
+        defer { fake.cleanUp() }
+        let child = try fake.child()
+        #expect(await child.stop() == .exited(0)) // All 2,000 lines are queued before any is taken.
+        var taken = 0
+        for try await _ in child.lines { taken += 1 }
+        #expect(taken == 2_000)
+    }
+
+    @Test func aLineAtTheCapIsDelivered() async throws {
+        let fake = try FakeRightyo("/bin/dd if=/dev/zero bs=1000 count=1200 2>/dev/null | /usr/bin/tr '\\0' a; echo")
+        defer { fake.cleanUp() }
+        let child = try fake.child()
+        var sizes: [Int] = []
+        for try await line in child.lines { sizes.append(line.count) }
+        #expect(sizes == [RightyoChildProcess.maxLineBytes])
+        #expect(await child.stop() == .exited(0))
+    }
+}
+#endif
