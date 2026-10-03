@@ -34,16 +34,43 @@ import Testing
         #expect(sink.endings == [.final, .final, .final])
     }
 
-    @Test func reachingTheEndedIdBoundRefusesNewStreamsRatherThanForgetting() async {
+    @Test func atTheBoundTheOldestEndedIdIsEvictedAndAmbientStaysUsable() async {
         let gate = ambientGate(sink: sink, clock: clock, endedStreamCapacity: 2)
-        let first = UUID()
-        for id in [first, UUID()] {
+        let ids = [UUID(), UUID(), UUID()]
+        for id in ids {
             #expect(await gate.admit(ambientSegment(stream: id, sequence: 0, isFinal: true), connection: phone)
                 == nil)
         }
-        #expect(await gate.admit(ambientSegment(stream: UUID(), sequence: 0), connection: phone) == .notAllowed)
-        #expect(await gate.admit(ambientSegment(stream: first, sequence: 0), connection: phone) == .malformed)
-        #expect(await gate.activeStream == nil)
-        #expect(sink.endings.count == 2)
+        // New streams keep working past the bound, from any device.
+        #expect(await gate.admit(ambientSegment(stream: UUID(), sequence: 0, isFinal: true), connection: UUID())
+            == nil)
+        // The most recently ended ids are still refused; only the oldest was forgotten.
+        #expect(await gate.admit(ambientSegment(stream: ids[2], sequence: 0), connection: phone) == .malformed)
+        #expect(await gate.admit(ambientSegment(stream: ids[0], sequence: 0, isFinal: true), connection: phone)
+            == nil)
+    }
+
+    @Test func refusedStartsAnnounceNothingAndConsumeNoIds() async {
+        let gate = ambientGate(sink: sink, clock: clock, endedStreamCapacity: 2)
+        let recent = UUID()
+        #expect(await gate.admit(ambientSegment(stream: recent, sequence: 0, isFinal: true), connection: phone)
+            == nil)
+        clock.advance(.seconds(2))
+        let size = AmbientAudioGate.maxSegmentBytes
+        for sequence in 0..<(AmbientAudioGate.burstBytes / size) {
+            #expect(await gate.admit(ambientSegment(stream: stream, sequence: sequence, bytes: size), connection: phone)
+                == nil)
+        }
+        await gate.end(connection: phone)
+        let before = sink.events.count
+        for _ in 0..<50 {
+            #expect(await gate.admit(ambientSegment(stream: UUID(), sequence: 0, bytes: size), connection: UUID())
+                == .rateLimited)
+        }
+        #expect(sink.events.count == before)
+        clock.advance(.seconds(60))
+        // The refused starts burned no slots: `recent` is still remembered at capacity 2.
+        #expect(await gate.admit(ambientSegment(stream: recent, sequence: 0), connection: UUID()) == .malformed)
+        #expect(await gate.admit(ambientSegment(stream: UUID(), sequence: 0), connection: UUID()) == nil)
     }
 }

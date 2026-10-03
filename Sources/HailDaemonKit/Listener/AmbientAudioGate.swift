@@ -23,15 +23,17 @@ public protocol AmbientAudioSink: Sendable {
 /// One opt-in ambient microphone stream per daemon (#203). Shape: pcm16, 16 kHz, mono, a stream id, no
 /// reply descriptor, 1 B to 8 KB raw per segment in whole 16-bit samples, strictly increasing sequence (gaps
 /// tolerated). Rate: a 40 KB/s token bucket with a 2 s burst. A violation ends the stream; the connection
-/// stays open. A stream id is never reopened in this gate's lifetime: ended ids are kept up to
-/// `endedStreamCapacity`, and once that bound is reached new streams are refused rather than ids forgotten.
+/// stays open. A recently ended stream id is never reopened: the last `endedStreamCapacity` ended ids are
+/// kept and the oldest is evicted first (FIFO), so reuse is possible only for an id that ended thousands of
+/// streams ago. A start is charged against the bucket before anything is announced or recorded, so a refused
+/// start leaves no trace and cannot burn identities.
 public actor AmbientAudioGate {
     public static let sampleRate = 16_000
     public static let maxSegmentBytes = 8 * 1024
     public static let bytesPerSecond = 40 * 1024
     public static let burstBytes = 2 * bytesPerSecond
     public static let idleTimeout = Duration.seconds(5)
-    /// Default bound on remembered ended ids (16 B each, about 64 KB); a daemon restart clears it.
+    /// Default bound on remembered ended ids (16 B each, about 64 KB); the oldest is evicted at the bound.
     public static let defaultEndedStreamCapacity = 4_096
 
     struct Stream {
@@ -49,6 +51,9 @@ public actor AmbientAudioGate {
     private var active: Stream?
     private let endedStreamCapacity: Int
     private var ended: Set<UUID> = []
+    /// Ended ids in end order, as a ring once full; `evictNext` is the oldest slot.
+    private var endedOrder: [UUID] = []
+    private var evictNext = 0
     private var tokens: Double
     private var refilledAt: ContinuousClock.Instant
     private var sweeper: Task<Void, Never>?
@@ -60,7 +65,7 @@ public actor AmbientAudioGate {
         clock: @escaping @Sendable () -> ContinuousClock.Instant = { .now }
     ) {
         self.target = target
-        self.endedStreamCapacity = endedStreamCapacity
+        self.endedStreamCapacity = max(1, endedStreamCapacity)
         self.sink = sink
         self.clock = clock
         self.sweepInterval = sweepInterval
@@ -83,26 +88,31 @@ public actor AmbientAudioGate {
         }
         if let current = active, current.id != stream { end(.superseded) }
         if active == nil {
-            guard audio.sequence == 0, !ended.contains(stream) else {
-                return refuse(.malformed, "ambient stream must be new and start at sequence 0", connection: connection)
+            if let refusal = start(stream, audio: audio, connection: connection) { return refusal }
+        } else {
+            guard let current = active, audio.sequence > current.lastSequence else {
+                return refuse(.malformed, "ambient sequence must increase", connection: connection)
             }
-            guard ended.count < endedStreamCapacity else {
-                return (.notAllowed, "ambient stream limit reached; restart haild")
+            guard spend(audio.bytes.count) else {
+                return refuse(.rateLimited, "ambient rate exceeded", connection: connection)
             }
-            active = Stream(id: stream, connection: connection, lastSequence: -1, lastActivity: clock())
-            sink.ambientAudio(.started(stream: stream, connection: connection))
-            startSweeper()
-        }
-        guard let current = active, audio.sequence > current.lastSequence else {
-            return refuse(.malformed, "ambient sequence must increase", connection: connection)
-        }
-        guard spend(audio.bytes.count) else {
-            return refuse(.rateLimited, "ambient rate exceeded", connection: connection)
         }
         active?.lastSequence = audio.sequence
         active?.lastActivity = clock()
         sink.ambientAudio(.segment(stream: stream, sequence: audio.sequence, bytes: audio.bytes))
         if audio.isFinal { end(.final) }
+        return nil
+    }
+
+    /// Opens a stream only after its first segment is paid for; a refused start announces and records nothing.
+    private func start(_ stream: UUID, audio: AudioPayload, connection: UUID) -> (ErrorCode, String)? {
+        guard audio.sequence == 0, !ended.contains(stream) else {
+            return (.malformed, "ambient stream must be new and start at sequence 0")
+        }
+        guard spend(audio.bytes.count) else { return (.rateLimited, "ambient rate exceeded") }
+        active = Stream(id: stream, connection: connection, lastSequence: -1, lastActivity: clock())
+        sink.ambientAudio(.started(stream: stream, connection: connection))
+        startSweeper()
         return nil
     }
 
@@ -134,10 +144,18 @@ public actor AmbientAudioGate {
     private func end(_ reason: AmbientStreamEndReason) {
         guard let current = active else { return }
         active = nil
-        ended.insert(current.id)
+        remember(current.id)
         sweeper?.cancel()
         sweeper = nil
         sink.ambientAudio(.ended(stream: current.id, reason: reason))
+    }
+
+    private func remember(_ id: UUID) {
+        guard ended.insert(id).inserted else { return }
+        guard endedOrder.count == endedStreamCapacity else { return endedOrder.append(id) }
+        ended.remove(endedOrder[evictNext])
+        endedOrder[evictNext] = id
+        evictNext = (evictNext + 1) % endedStreamCapacity
     }
 
     /// Non-empty, at most `maxSegmentBytes`, and whole 16-bit samples: an empty segment would cost no tokens.
