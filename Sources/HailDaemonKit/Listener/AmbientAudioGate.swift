@@ -21,14 +21,18 @@ public protocol AmbientAudioSink: Sendable {
 }
 
 /// One opt-in ambient microphone stream per daemon (#203). Shape: pcm16, 16 kHz, mono, a stream id, no
-/// reply descriptor, at most 8 KB raw per segment, strictly increasing sequence (gaps tolerated). Rate: a
-/// 40 KB/s token bucket with a 2 s burst. A violation ends the stream; the connection stays open.
+/// reply descriptor, 1 B to 8 KB raw per segment in whole 16-bit samples, strictly increasing sequence (gaps
+/// tolerated). Rate: a 40 KB/s token bucket with a 2 s burst. A violation ends the stream; the connection
+/// stays open. A stream id is never reopened in this gate's lifetime: ended ids are kept up to
+/// `endedStreamCapacity`, and once that bound is reached new streams are refused rather than ids forgotten.
 public actor AmbientAudioGate {
     public static let sampleRate = 16_000
     public static let maxSegmentBytes = 8 * 1024
     public static let bytesPerSecond = 40 * 1024
     public static let burstBytes = 2 * bytesPerSecond
     public static let idleTimeout = Duration.seconds(5)
+    /// Default bound on remembered ended ids (16 B each, about 64 KB); a daemon restart clears it.
+    public static let defaultEndedStreamCapacity = 4_096
 
     struct Stream {
         let id: UUID
@@ -43,7 +47,8 @@ public actor AmbientAudioGate {
     private let clock: @Sendable () -> ContinuousClock.Instant
     private let sweepInterval: Duration?
     private var active: Stream?
-    private var lastEnded: UUID?
+    private let endedStreamCapacity: Int
+    private var ended: Set<UUID> = []
     private var tokens: Double
     private var refilledAt: ContinuousClock.Instant
     private var sweeper: Task<Void, Never>?
@@ -51,9 +56,11 @@ public actor AmbientAudioGate {
     /// `sweepInterval` drives the 5 s idle end without further traffic; nil leaves expiry to `expireIdle()`.
     public init(
         target: String, sink: any AmbientAudioSink, sweepInterval: Duration? = .seconds(1),
+        endedStreamCapacity: Int = defaultEndedStreamCapacity,
         clock: @escaping @Sendable () -> ContinuousClock.Instant = { .now }
     ) {
         self.target = target
+        self.endedStreamCapacity = endedStreamCapacity
         self.sink = sink
         self.clock = clock
         self.sweepInterval = sweepInterval
@@ -71,13 +78,16 @@ public actor AmbientAudioGate {
             return refuse(.notAllowed, "ambient target is not selected", connection: connection)
         }
         guard audio.codec == .pcm16, audio.sampleRate == Self.sampleRate, audio.channels == 1,
-              audio.reply == nil, audio.bytes.count <= Self.maxSegmentBytes, let stream = audio.streamID else {
+              audio.reply == nil, Self.wholeSamples(audio.bytes.count), let stream = audio.streamID else {
             return refuse(.malformed, "ambient segment shape", connection: connection)
         }
         if let current = active, current.id != stream { end(.superseded) }
         if active == nil {
-            guard audio.sequence == 0, stream != lastEnded else {
-                return refuse(.malformed, "ambient stream must start at sequence 0", connection: connection)
+            guard audio.sequence == 0, !ended.contains(stream) else {
+                return refuse(.malformed, "ambient stream must be new and start at sequence 0", connection: connection)
+            }
+            guard ended.count < endedStreamCapacity else {
+                return (.notAllowed, "ambient stream limit reached; restart haild")
             }
             active = Stream(id: stream, connection: connection, lastSequence: -1, lastActivity: clock())
             sink.ambientAudio(.started(stream: stream, connection: connection))
@@ -124,10 +134,15 @@ public actor AmbientAudioGate {
     private func end(_ reason: AmbientStreamEndReason) {
         guard let current = active else { return }
         active = nil
-        lastEnded = current.id
+        ended.insert(current.id)
         sweeper?.cancel()
         sweeper = nil
         sink.ambientAudio(.ended(stream: current.id, reason: reason))
+    }
+
+    /// Non-empty, at most `maxSegmentBytes`, and whole 16-bit samples: an empty segment would cost no tokens.
+    private static func wholeSamples(_ count: Int) -> Bool {
+        count > 0 && count <= maxSegmentBytes && count.isMultiple(of: MemoryLayout<Int16>.size)
     }
 
     /// The bucket is daemon-wide, so a new stream cannot reset an exhausted budget.

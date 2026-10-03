@@ -23,9 +23,13 @@ final class AmbientTestClock: Sendable {
 }
 
 func ambientGate(
-    target: String = "tmux:a", sink: RecordingAmbientSink, clock: AmbientTestClock
+    target: String = "tmux:a", sink: RecordingAmbientSink, clock: AmbientTestClock,
+    endedStreamCapacity: Int = AmbientAudioGate.defaultEndedStreamCapacity
 ) -> AmbientAudioGate {
-    AmbientAudioGate(target: target, sink: sink, sweepInterval: nil, clock: { clock.now })
+    AmbientAudioGate(
+        target: target, sink: sink, sweepInterval: nil, endedStreamCapacity: endedStreamCapacity,
+        clock: { clock.now }
+    )
 }
 
 func ambientSegment(

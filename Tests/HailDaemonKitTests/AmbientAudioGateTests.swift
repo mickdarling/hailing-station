@@ -31,9 +31,11 @@ import Testing
             ambientSegment(stream: stream, sequence: 1, channels: 2),
             ambientSegment(stream: nil, sequence: 1),
             ambientSegment(stream: stream, sequence: 1, bytes: AmbientAudioGate.maxSegmentBytes + 1),
+            ambientSegment(stream: stream, sequence: 1, bytes: 0),
+            ambientSegment(stream: stream, sequence: 1, bytes: 3_201),
             AudioPayload(
                 codec: .pcm16, sampleRate: 16_000, channels: 1, sequence: 1, streamID: stream, isFinal: false,
-                bytes: Data(),
+                bytes: Data(count: 2),
                 reply: ReplyDescriptor(id: UUID(), hostID: "h", targetID: "tmux:a", audioStreamID: stream)
             )
         ]
