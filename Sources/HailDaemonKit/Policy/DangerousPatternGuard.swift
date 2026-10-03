@@ -16,6 +16,16 @@ public struct InvalidGuardPattern: Error, Equatable, Sendable {
     public var name: String
 }
 
+/// The clock a guard rule's match budget is measured on (#208). Production reads `ContinuousClock`;
+/// nothing in production binds `current`. Module-internal so only this module and `@testable` tests can
+/// bind it: a test whose subject is not guard timing binds a frozen clock so scheduler preemption cannot
+/// turn a benign line into a guard hit, and a test of the fail-closed path binds one that has already
+/// passed every deadline. The budget itself and the timeout-is-a-hit rule are unchanged.
+struct GuardBudgetClock: Sendable {
+    @TaskLocal static var current = GuardBudgetClock { ContinuousClock.now }
+    let now: @Sendable () -> ContinuousClock.Instant
+}
+
 /// The guard rules compiled once. Built from a `Policy` at construction, so an invalid rule is refused
 /// there and never at delivery time. `NSRegularExpression` is immutable and thread-safe, and its `\b` is
 /// the simple word boundary the rules are written for.
@@ -38,9 +48,9 @@ public struct CompiledGuards: Sendable {
     /// under a split policy would otherwise put `rm \` and `-rf /` on different Enters).
     public func matches(in lines: [String]) -> [String] {
         let candidates = lines.count > 1 ? lines + [lines.joined(separator: " ")] : lines
-        let clock = ContinuousClock()
+        let clock = GuardBudgetClock.current
         return rules.compactMap { rule in
-            let deadline = clock.now + matchBudget
+            let deadline = clock.now() + matchBudget
             return candidates.contains { line in
                 boundedMatch(rule.regex, in: line, clock: clock, deadline: deadline)
             } ? rule.name : nil
@@ -49,12 +59,12 @@ public struct CompiledGuards: Sendable {
 
     /// ICU progress callbacks bound custom expressions; exceeding the budget is a guard hit, never a bypass.
     private func boundedMatch(
-        _ regex: NSRegularExpression, in line: String, clock: ContinuousClock, deadline: ContinuousClock.Instant
+        _ regex: NSRegularExpression, in line: String, clock: GuardBudgetClock, deadline: ContinuousClock.Instant
     ) -> Bool {
         var hit = false
         let range = NSRange(line.startIndex..., in: line)
         regex.enumerateMatches(in: line, options: .reportProgress, range: range) { result, _, stop in
-            if result != nil || clock.now >= deadline {
+            if result != nil || clock.now() >= deadline {
                 hit = true
                 stop.pointee = true
             }
