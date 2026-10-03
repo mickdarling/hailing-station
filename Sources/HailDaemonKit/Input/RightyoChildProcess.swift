@@ -48,6 +48,7 @@ public final class RightyoChildProcess: Sendable {
     private let input: Int32
     private let state = Mutex(State())
     private let exit = RightyoExitLatch()
+    private let stderrBytes = RightyoByteCount()
     private let timing: Timing
     private let writer = DispatchQueue(label: "hailing.rightyo-child.stdin")
     /// Reaps the child and sends every signal, so a signal can never reach a reused pid.
@@ -68,14 +69,23 @@ public final class RightyoChildProcess: Sendable {
         source.activate()
         reaper.async { [exit] in if Self.reap(child.pid, into: exit, blocking: false) { source.cancel() } }
         Thread.detachNewThread { Self.readLines(child.output, into: pair.continuation) }
-        Thread.detachNewThread { [self] in
-            Self.drainErrors(child.errors) { count in state.withLock { $0.counters.stderrBytes += count } }
+        // No reader thread retains `self`, so dropping the last reference runs `deinit` and kills the child.
+        Thread.detachNewThread { [stderrBytes] in
+            Self.drainErrors(child.errors) { count in stderrBytes.withLock { $0 += count } }
         }
     }
 
-    deinit { signal(SIGKILL) }
+    /// Dropped without `stop()`: EOF and SIGKILL at once; the exit source still reaps the child.
+    deinit {
+        state.withLock { if !$0.closed, !$0.writing { $0.closed = true; close(input) } }
+        signal(SIGKILL)
+    }
 
-    public var counters: Counters { state.withLock { $0.counters } }
+    public var counters: Counters {
+        var counters = state.withLock { $0.counters }
+        counters.stderrBytes = stderrBytes.withLock { $0 }
+        return counters
+    }
     public var exitStatus: RightyoChildExit? { exit.value }
 
     /// Queues one audio chunk and returns at once; never blocks on the child. False when input is closed or the

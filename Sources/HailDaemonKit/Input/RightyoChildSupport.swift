@@ -144,6 +144,12 @@ public enum RightyoAudioProvenance: String, Sendable {
     case synthetic
 }
 
+/// The stderr byte count, shared with the drain thread without retaining the child.
+final class RightyoByteCount: Sendable {
+    private let count = Mutex(0)
+    func withLock<Result: Sendable>(_ body: (inout Int) -> Result) -> Result { count.withLock { body(&$0) } }
+}
+
 /// The reaped child's exit, with timed waits.
 final class RightyoExitLatch: Sendable {
     private struct Waiting {
