@@ -1,7 +1,46 @@
-import Foundation
+public import Foundation
+
+// The delivery-step protocol and its direct implementation stay beside the consumer that owns their contract.
+// swiftlint:disable file_length
+
+/// What an admitted RightyO request becomes once delivered (#188 item 1, part B). `request` is the host-minted
+/// reply request the named connection now owns, or nil when no reply ownership was established: the direct
+/// `HailHost.send` path never mints one, and a dispatch to a legacy adapter answers `request: null`.
+public struct RightyoDispatchReceipt: Sendable, Equatable {
+    public var request: UUID?
+    /// The deliverer's own explanation when the prompt landed but no reply ownership survived (for example
+    /// the daemon's `ownershipLost` or `connectionLost`); nil when there is nothing to explain.
+    public var caveat: String?
+    public init(request: UUID?, caveat: String? = nil) {
+        self.request = request
+        self.caveat = caveat
+    }
+}
+/// The final delivery step of an admitted request. The consumer keeps every validation and correlation rule
+/// in front of this call and treats any thrown error as terminal; implementations must not retry on their own.
+/// `RightyoHostDispatcher` is the direct path; `haild rightyo --reply-to` supplies a reply-socket dispatcher.
+public protocol RightyoDispatching: Sendable {
+    func dispatch(text: String, target: String, binding: String) async throws -> RightyoDispatchReceipt
+}
+/// The direct path: `HailHost.send` from the fixed `rightyo-local` device with the pinned binding. A
+/// confirmation read-back is cancelled and refused; this consumer never confirms on the person's behalf.
+public struct RightyoHostDispatcher: RightyoDispatching {
+    public static let device = "rightyo-local"
+    private let host: HailHost
+    public init(host: HailHost) { self.host = host }
+    public func dispatch(text: String, target: String, binding: String) async throws -> RightyoDispatchReceipt {
+        let outcome = try await host.send(text, to: target, from: Self.device, expectedBinding: binding)
+        if case .needsConfirmation(let readBack) = outcome {
+            await host.cancel(readBack.hash)
+            throw RightyoInputError.confirmationRequired
+        }
+        return RightyoDispatchReceipt(request: nil)
+    }
+}
 /// One explicit producer session and immutable target binding. Failures never imply rollback or permit retry.
 public actor RightyoInputConsumer {
-    private let host: HailHost?
+    /// nil validates only (dry run): no delivery step exists.
+    private let dispatcher: (any RightyoDispatching)?
     private let allowSynthetic: Bool
     private let target: String
     private let binding: String
@@ -23,13 +62,19 @@ public actor RightyoInputConsumer {
     private var finals: [String: Data] = [:]
     private var attentions: [String: Data] = [:]
     private var seen: [Int: Data] = [:]
+    /// The receipt of the most recent delivered request; nil until one is delivered and cleared as each event
+    /// is consumed, so a caller reads only the receipt of the event it just passed in.
+    public private(set) var lastReceipt: RightyoDispatchReceipt?
     /// `streamBudgetMs` is an optional ceiling on producer stream time; the default is no ceiling (#188).
+    /// `dispatcher` replaces the direct `HailHost.send` step (#188 item 1); without it, `host` delivers directly
+    /// and nil `host` validates only. A dispatcher with no host still delivers (it owns its own host access).
     public init(host: HailHost?, target: String, binding: String, session: String,
-                allowSynthetic: Bool = false, streamBudgetMs: Int? = nil) throws {
+                allowSynthetic: Bool = false, streamBudgetMs: Int? = nil,
+                dispatcher: (any RightyoDispatching)? = nil) throws {
         guard !binding.isEmpty, RightyoInputEvent.identifier(session), streamBudgetMs.map({ $0 >= 0 }) ?? true else {
             throw RightyoInputError.unavailableBinding
         }
-        self.host = host
+        self.dispatcher = dispatcher ?? host.map { RightyoHostDispatcher(host: $0) }
         self.allowSynthetic = allowSynthetic
         self.target = target
         self.binding = binding
@@ -38,6 +83,7 @@ public actor RightyoInputConsumer {
     }
     /// True means handled: guarded delivery, or validation only when initialized with no host.
     public func consume(_ event: RightyoInputEvent) async throws -> Bool {
+        lastReceipt = nil
         do {
             guard try admit(event) else { return false }
             if event.type == "override" { return true }
@@ -45,21 +91,18 @@ public actor RightyoInputConsumer {
             guard requests.count < 1000, requests.insert(requestID).inserted else {
                 throw RightyoInputError.invalidEvent
             }
-            guard host == nil || allowSynthetic || event.turn?.provenance == "live-microphone" else {
+            guard dispatcher == nil || allowSynthetic || event.turn?.provenance == "live-microphone" else {
                 terminal = true
                 throw RightyoInputError.invalidEvent
             }
-            guard let host else { return true }
+            guard let dispatcher else { return true }
             busy = true
             defer { busy = false }
             do {
                 try Task.checkCancellation()
-                let outcome = try await host.send(event.prompt(speakers: speakers), to: target,
-                                                  from: "rightyo-local", expectedBinding: binding)
-                if case .needsConfirmation(let readBack) = outcome {
-                    await host.cancel(readBack.hash)
-                    throw RightyoInputError.confirmationRequired
-                }
+                lastReceipt = try await dispatcher.dispatch(
+                    text: event.prompt(speakers: speakers), target: target, binding: binding
+                )
                 return true
             } catch {
                 terminal = true

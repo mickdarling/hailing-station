@@ -1,0 +1,11 @@
+#!/usr/bin/python3
+# Synthetic tmux for the RightyO CLI tests: lists one session so `haild rightyo <target>` can pin a binding.
+# It never contacts a real tmux server and refuses every other command, so nothing can be delivered through it.
+import sys
+
+arguments = sys.argv[1:]
+if arguments[:1] == ["list-sessions"]:
+    sys.stdout.write("$1|1700000000|%1|4242|demo\n")
+    sys.exit(0)
+sys.stderr.write("synthetic tmux: unsupported command\n")
+sys.exit(1)

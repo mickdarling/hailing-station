@@ -325,14 +325,29 @@ private enum ReplyClientError: Error, CustomStringConvertible {
     }
 }
 
-private enum ReplyClient {
-    static func submit(_ frame: Frame, socketURL: URL) async throws -> Int {
+enum ReplyClient {
+    /// The owner-only socket boundary every local request shares: a socket file this user owns, 0600.
+    static func requireOwnerSocket(_ socketURL: URL) throws {
         var info = stat()
         guard socketURL.isFileURL, lstat(socketURL.path, &info) == 0,
               info.st_uid == getuid(), info.st_mode & S_IFMT == S_IFSOCK,
               info.st_mode & 0o077 == 0 else {
             throw ReplyClientError.invalidSocket(socketURL.path)
         }
+    }
+
+    /// One newline-terminated request, one answer, no retry. `haild rightyo --reply-to` dispatches through
+    /// this; `submit` adds the reply-only pending retry window around the same transaction.
+    static func transact(_ line: Data, socketURL: URL) async throws -> LocalReplyResponse {
+        try requireOwnerSocket(socketURL)
+        guard line.count <= PayloadLimits.defaultMaxFrameBytes + 1 else {
+            throw ReplyClientError.failed("frame too large")
+        }
+        return try await ReplyTransaction(socketURL: socketURL).perform(line)
+    }
+
+    static func submit(_ frame: Frame, socketURL: URL) async throws -> Int {
+        try requireOwnerSocket(socketURL)
         var request = try FrameCoding.encode(frame)
         guard request.count <= PayloadLimits.defaultMaxFrameBytes else {
             throw ReplyClientError.failed("frame too large")
@@ -360,6 +375,54 @@ private enum ReplyClient {
             return response.delivered
         }
         throw ReplyClientError.refused("reply retry budget exhausted")
+    }
+}
+
+/// `haild rightyo --reply-to <connection>`: the running daemon dispatches each admitted prompt on behalf of the
+/// named connection over the owner-only reply socket (#188 item 1, part B), so that phone owns the reply.
+/// Refusals map to the codes `haild rightyo` already uses where the direct path has the same outcome
+/// (`confirmationRequired` → 8, `bindingMismatch` → 7 as a rebound denial); every other dispatch or socket
+/// refusal is reported with the daemon's reason and exits 1, as `haild reply` does.
+struct RightyoSocketDispatcher: RightyoDispatching {
+    let connection: UUID
+    let socketURL: URL
+
+    func dispatch(text: String, target: String, binding: String) async throws -> RightyoDispatchReceipt {
+        // The daemon refuses a longer prompt at decode; say why here instead of reporting a decode failure.
+        guard text.utf8.count <= PayloadLimits.maxTextBytes else {
+            throw ReplyClientError.refused("prompt exceeds the \(PayloadLimits.maxTextBytes)-byte dispatch text cap")
+        }
+        let request = LocalDispatchRequest(connection: connection, target: target, binding: binding, text: text)
+        var line = try JSONEncoder().encode(request)
+        line.append(UInt8(ascii: "\n"))
+        return try Self.receipt(from: try await ReplyClient.transact(line, socketURL: socketURL), target: target)
+    }
+
+    /// `delivered: 1` means the prompt landed; `request` says whether the named connection owns the reply. A
+    /// delivered answer without the `request` key is a reply answer from a daemon that does not dispatch:
+    /// it is refused rather than read as ownership. Refusals carry the daemon's reason whatever their shape
+    /// (the shared rate-limit, decode and audit answers have no `request` key either).
+    static func receipt(from response: LocalReplyResponse, target: String) throws -> RightyoDispatchReceipt {
+        if response.delivered == 1 {
+            guard response.isDispatch else {
+                throw ReplyClientError.refused("daemon answered as a reply, not a dispatch; it may predate --reply-to")
+            }
+            return RightyoDispatchReceipt(request: response.request, caveat: response.error)
+        }
+        let reason = response.error ?? "dispatch refused without a reason"
+        switch Self.refusal(named: reason) {
+        case .confirmationRequired: throw RightyoInputError.confirmationRequired
+        case .bindingMismatch: throw HostError.denied(.rebound(target))
+        default: throw ReplyClientError.refused(reason)
+        }
+    }
+
+    /// The bracketed reason in `dispatch refused [<reason>]: ...`; nil for a socket-level or unknown refusal.
+    static func refusal(named message: String) -> LocalDispatchRefusal? {
+        guard let open = message.firstIndex(of: "["), let close = message[open...].firstIndex(of: "]") else {
+            return nil
+        }
+        return LocalDispatchRefusal(rawValue: String(message[message.index(after: open)..<close]))
     }
 }
 

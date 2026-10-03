@@ -4,8 +4,9 @@ Part of [#188](https://github.com/mickdarling/hailing-station/issues/188) item 1
 [#161](https://github.com/mickdarling/hailing-station/issues/161)'s owner-only rule. This slice gives a
 locally submitted prompt a reply owner: the host runs the named connection's own ingress path, so the phone
 that selected the target hears the answer through the unchanged correlated path. It is source behaviour; the
-running daemon and installed builds are unchanged until deployed. The `haild rightyo --reply-to` flag and
-the prompt wording that tells the AI how to reply are the next two slices.
+running daemon and installed builds are unchanged until deployed. The CLI side is `haild rightyo --reply-to`
+([rightyo-input.md](rightyo-input.md#reply-ownership-with---reply-to)); the prompt wording that tells the AI
+how to reply is the next slice.
 
 ## Shape
 
@@ -133,3 +134,12 @@ Synthetic only, with `DEVELOPER_DIR=/Applications/Xcode.app/Contents/Developer`:
   budget. `LocalDispatchTests` also pins the response encoding (`request` only on dispatch answers).
 
 No device, running daemon or installed build is involved.
+
+The CLI client (`RightyoSocketDispatcher` in `haild`) sends this shape for each admitted RightyO request and
+maps the answer as documented in [rightyo-input.md](rightyo-input.md#reply-ownership-with---reply-to):
+`delivered: 1` with a `request` is an owned reply, with `null` is "no reply ownership" (the daemon's reason,
+if any, is noted on stderr), and a refusal keeps the direct path's exit code where the outcome is the same
+(`confirmationRequired` 8, `bindingMismatch` 7) and otherwise exits 1 with the daemon's reason. Note that
+the host behind the socket sanitises a dispatched prompt under its default policy (2,000 characters /
+8,192 bytes), so a RightyO prompt with context turns or a formed request is refused `deliveryRefused`
+until [#200](https://github.com/mickdarling/hailing-station/issues/200) raises the dispatch cap.

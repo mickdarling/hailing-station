@@ -61,6 +61,68 @@ Only explicitly starting RightyO starts microphone capture. The live command opt
 only after the separate hosted-text consent and local credential configuration. Hail does not read,
 request or forward model credentials. No raw audio is sent through this consumer.
 
+## Reply ownership with --reply-to
+
+Part of [#188](https://github.com/mickdarling/hailing-station/issues/188) item 1 (part B, CLI slice). Without
+`--reply-to`, `haild rightyo <target>` submits each admitted request directly through `HailHost.send` with no
+reply owner, byte for byte as before: no socket is touched and `haild reply --say …` reaches nobody unless the
+[single-terminal fallback](single-terminal-reply-fallback.md) is on. With `--reply-to <connection>` the command
+instead asks the running daemon to [dispatch](local-dispatch.md) each admitted request on behalf of that
+connection, so the named phone owns the reply:
+
+```sh
+rightyo listen … --session-id "$rightyo_session_id" |
+  /path/to/haild rightyo <selected-target-id> --session "$rightyo_session_id" \
+    --reply-to <connection-UUID> [--socket <path>]
+```
+
+- `<connection-UUID>` is the listener's own peer id for the phone: the `sessionID` the daemon logs on
+  `session_connected` (and `session_disconnected`) on stderr, minted when the socket was accepted. It is
+  never a Hello device name. Anything that is not a UUID is a usage error (exit 64).
+- `--socket` is the daemon's owner-only reply socket, defaulting to `replies.sock` in the private config
+  directory exactly as `haild reply` does (`--reply-socket` on `haild run`). It is only meaningful with
+  `--reply-to`; either flag with `--dry-run` is a usage error, because dry run never touches a socket.
+- The host is still constructed for the target listing: the binding is pinned at startup from `haild
+  targets` and sent with every dispatch, so a target rebound while the stream runs refuses rather than
+  following the rebind. Validation, correlation, duplicate detection, the provenance rule
+  (`--allow-synthetic` or `live-microphone`) and the receipts' no-transcript rule are unchanged; only the
+  final delivery step differs.
+- **Prompt cap (fail closed).** The daemon's host, built by `haild run`, sanitises a dispatched prompt under
+  its default `SanitizePolicy`: 2,000 characters / 8,192 UTF-8 bytes. A longer prompt is refused as
+  `deliveryRefused` and the command exits 1; nothing is delivered. The direct path (no `--reply-to`) allows
+  1,200,000 for the same prompt, so until the daemon accepts a larger dispatch prompt
+  ([#200](https://github.com/mickdarling/hailing-station/issues/200)),
+  `--reply-to` is unusable for requests whose prompt exceeds 2,000 characters: in practice any request
+  carrying context turns or a `formed_request`, which the compact JSON alone can exceed. The client refuses a
+  prompt over the 8,192-byte dispatch text payload before connecting and says why; a prompt between the two
+  limits is sent and refused by the daemon.
+
+Each admitted request sends one `{"kind":"dispatch","connection","target","binding","text"}` line and reads
+one answer. The receipt is:
+
+- `rightyo: request delivered to <target> for connection <uuid> (reply request <request-uuid>)`: the
+  prompt landed and the named connection owns `<request-uuid>`. The session answers with
+  `haild reply <target> --request <request-uuid> --say …`, which reaches exactly that phone through the
+  unchanged correlated path.
+- `rightyo: request delivered to <target> for connection <uuid> (no reply ownership)`: the prompt landed
+  but nobody can be answered through `haild reply --request`. This is the documented answer for a target
+  whose adapter accepts only legacy generic input (a plain `tmux:` session): the literal text is delivered,
+  no lease is invented and `request` is `null`. It is also what `ownershipLost` and `connectionLost` produce
+  (the handoff completed, then the selection or the connection went away); the daemon's reason is printed on
+  stderr as a note.
+
+Refusals are terminal, as on the direct path, with no automatic retry. `confirmationRequired` exits 8 and
+`bindingMismatch` exits 7, the codes the direct path uses for the same outcomes; every other dispatch refusal
+(unknown, ended, unnegotiated, unauthorized, unselected, reselected or lost connection, capacity,
+`deliveryRefused` for sanitizer/policy/lockdown/adapter refusals the daemon does not distinguish) and every
+socket-level refusal (rate limited, decode, audit, listener not ready, a missing or badly owned socket) exits 1
+with the daemon's reason, as `haild reply` does. A delivered answer that carries no `request` key at all is a
+reply answer from a daemon that does not dispatch and is refused rather than read as ownership.
+
+What this slice does not do: the prompt that reaches the pane does not yet tell the AI which target and
+request to reply to; that wording is the next slice. There is no physical-device proof; the CLI tests run the
+real `haild rightyo <target>` against a synthetic `tmux` listing and a test-owned socket.
+
 ## Ownership, bounds and refusal
 
 The consumer pins the supplied producer session and the target's opaque binding at startup. Version,
@@ -264,3 +326,16 @@ receipt write instead. The streaming CLI regression writes a complete request pr
 4 KiB and requires its receipt while stdin remains open, before sending the terminal record. All test
 input is authored and no actual application target was used. Source marketing version is 0.1.52; no
 archive, upload, installation, existing capture state or active checkout was changed.
+
+On the #188 `--reply-to` slice (item 1, part B, PR 2 of 3), with the same `DEVELOPER_DIR`: `RightyoInputConsumer`
+gained the injectable `RightyoDispatching` delivery step (`RightyoHostDispatcher` is the direct path, unchanged),
+`haild rightyo` gained `--reply-to`/`--socket`, and the usage text gained the `--single-terminal-reply-fallback`
+line PR #191 deferred. `RightyoInputDispatcherTests.swift` adds five tests: a recording dispatcher receives exactly
+the prompt, target and pinned binding (the prompt byte-equal to the direct path's delivery), a dispatcher refusal is
+terminal and never retried, a null-ownership receipt is delivered not refused, the provenance rule still gates the
+dispatcher, and the host dispatcher cancels confirmation, refuses a rebound binding and mints no ownership.
+`test_rightyo_cli.py` adds five CLI tests (`RightyoReplyToCLITests`): eight usage shapes exit 64 with the new usage
+lines, the dispatch wire shape and owned-request receipt, null ownership with and without the daemon's reason, the
+refusal exit-code mapping (8, 7, and 1 with the reason for connection, delivery, rate-limit, reply-shaped and
+missing answers), and a missing socket refusing before any dispatch. Synthetic only: `fixtures/tmux` lists one
+session and refuses everything else; no daemon, device or real target was used. Source marketing version is 0.1.67.
