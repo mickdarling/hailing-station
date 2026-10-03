@@ -206,18 +206,22 @@ private struct RightyoOptions {
         switch flag {
         case "--dry-run": dryRun = true
         case "--allow-synthetic": allowSynthetic = true
-        case "--session":
-            guard let value = rest.popFirst() else { usage() }
-            session = value
+        case "--session": session = Self.value(for: flag, from: &rest)
         case "--reply-to":
-            guard let value = rest.popFirst(), let id = UUID(uuidString: value) else { usage() }
+            guard let id = UUID(uuidString: Self.value(for: flag, from: &rest)) else { usage() }
             replyTo = id
         case "--socket":
-            guard let value = rest.popFirst(), !value.isEmpty else { usage() }
-            socket = URL(fileURLWithPath: value)
+            socket = URL(fileURLWithPath: Self.value(for: flag, from: &rest))
             socketGiven = true
         default: usage()
         }
+    }
+
+    /// The value of a value-taking option: present, non-empty and never another option. `--session --dry-run`
+    /// is usage, not a session named `--dry-run` that would build a live host under the dry-run shape.
+    private static func value(for flag: String, from rest: inout ArraySlice<String>) -> String {
+        guard let value = rest.popFirst(), !value.isEmpty, !value.hasPrefix("-") else { usage() }
+        return value
     }
 }
 

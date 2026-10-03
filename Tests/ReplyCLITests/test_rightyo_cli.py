@@ -136,6 +136,15 @@ class RightyoReplyToCLITests(unittest.TestCase):
             ["tmux:demo", "--session", "tool-demo", "--socket", "/nonexistent/replies.sock"],
             ["tmux:demo", "--session", "tool-demo", "--reply-to", self.CONNECTION, "--socket"],
             ["tmux:demo", "--session", "tool-demo", "--dry-run"],
+            # A value-taking option never consumes another option or runs out of arguments.
+            ["tmux:demo", "--session", "--dry-run"],
+            ["tmux:demo", "--session"],
+            ["tmux:demo", "--session", ""],
+            ["tmux:demo", "--session", "tool-demo", "--reply-to", "--socket", "/nonexistent/replies.sock"],
+            ["tmux:demo", "--session", "tool-demo", "--reply-to", self.CONNECTION, "--socket", "-"],
+            ["tmux:demo", "--session", "tool-demo", "--reply-to", self.CONNECTION, "--socket", ""],
+            ["tmux:demo", "--session", "tool-demo", "--reply-to", self.CONNECTION, "--socket"],
+            ["--session", "--dry-run"],
         ]
         for arguments in shapes:
             with self.subTest(arguments=arguments):
