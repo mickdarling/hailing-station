@@ -62,13 +62,13 @@ public actor HostConnection {
         deviceName: String = "hail terminal",
         pongTimeout: Duration = .seconds(5),
         negotiationTimeout: Duration = .seconds(10),
-        deadlineSleep: @escaping Sleep = { try await Task.sleep(for: $0) },
+        deadlineSleep: @escaping Sleep = HostConnection.taskSleep,
         negotiationScheduler: DeadlineScheduler? = nil,
         monotonicNow: @escaping MonotonicNow = { ContinuousClock().now },
         wallNow: @escaping WallNow = {
             Int64((Date().timeIntervalSince1970 * 1_000).rounded(.down))
         },
-        sleep: @escaping Sleep = { try await Task.sleep(for: $0) },
+        sleep: @escaping Sleep = HostConnection.taskSleep,
         jitter: @escaping Jitter = { Double.random(in: 0...1) },
         observer: @escaping Observer = { _ in },
         replyObserver: @escaping ReplyObserver = { _ in }
@@ -177,5 +177,13 @@ public actor HostConnection {
         case .disconnected, .reconnecting, .failed:
             await replaceLoop()
         }
+    }
+}
+
+extension HostConnection {
+    /// The default sleeps. A closure literal in this actor's default arguments compiled to a task whose
+    /// allocations were freed out of order when a pong deadline woke (`swift_task_dealloc` abort, #206).
+    public nonisolated static func taskSleep(_ duration: Duration) async throws {
+        try await Task.sleep(for: duration)
     }
 }

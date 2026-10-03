@@ -108,14 +108,23 @@ private func int16Samples(_ payloads: [AudioPayload]) -> [Int16] {
     @Test func dropsTheOldestAudioOnceTheBacklogExceedsOneSecond() async throws {
         let capture = FakeAudioCapture()
         let sent = SentAudio(holding: true)
-        let streamer = AmbientAudioStreamer(capture: capture) { await sent.send($0) }
+        let encoded = SentAudio()
+        let streamer = AmbientAudioStreamer(
+            capture: capture, maxBacklogChunks: AmbientAudioFormat.maxBacklogChunks, makeStreamID: { UUID() },
+            beforeEncode: { await encoded.send(encodeMarker) }, send: { await sent.send($0) }
+        )
 
         try streamer.start()
-        for block in 0..<25 { try capture.yield(sineBuffer(offset: block * 4_800)) }
+        // Hand over one buffer at a time so the capture bound (tested separately) never drops here.
+        for block in 0..<25 {
+            try capture.yield(sineBuffer(offset: block * 4_800))
+            try await waitUntil { await encoded.payloads.count == block + 1 }
+        }
         // About 24 segments: one in flight, ten pending, the rest dropped oldest-first.
         try await waitUntil { await streamer.droppedChunkCount >= 12 }
         await sent.release()
         await streamer.stop()
+        #expect(await streamer.droppedCaptureBufferCount == 0)
 
         let payloads = await sent.payloads
         let sequences = payloads.map(\.sequence)

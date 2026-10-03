@@ -15,6 +15,8 @@ public enum AmbientAudioFormat {
     public static let maxSegmentBytes = 8 * 1_024
     /// Pending segments allowed before the oldest is dropped: one second of audio.
     public static let maxBacklogChunks = 10
+    /// Capture buffers allowed to wait for conversion (about 1 s at 4,096 frames and 48 kHz); oldest dropped.
+    public static let maxPendingCaptureBuffers = 12
 
     public static func outputFormat() -> AVAudioFormat? {
         AVAudioFormat(commonFormat: .pcmFormatInt16, sampleRate: 16_000, channels: 1, interleaved: true)
@@ -146,6 +148,10 @@ actor AmbientAudioSendQueue {
 
     var hasFailed: Bool { failure != nil }
 
+    private(set) var droppedCaptureBuffers = 0
+    /// Counts a capture buffer discarded before conversion (a gap in audio, not in sequence numbers).
+    func recordCaptureDrop() { droppedCaptureBuffers += 1 }
+
     func enqueue(_ payload: AudioPayload) {
         guard failure == nil else { return }
         pending.append(payload)
@@ -202,15 +208,29 @@ public final class AmbientAudioStreamer {
     public private(set) var isStreaming = false
     public private(set) var streamID: UUID?
 
-    public init(
+    @ObservationIgnored let beforeEncode: (@Sendable () async -> Void)?
+
+    public convenience init(
         capture: any AudioCapturing,
         maxBacklogChunks: Int = AmbientAudioFormat.maxBacklogChunks,
         makeStreamID: @escaping StreamIdentity = { UUID() },
         send: @escaping Send
     ) {
+        self.init(
+            capture: capture, maxBacklogChunks: maxBacklogChunks, makeStreamID: makeStreamID,
+            beforeEncode: nil, send: send
+        )
+    }
+
+    /// `beforeEncode` lets tests model a converter slower than real time.
+    init(
+        capture: any AudioCapturing, maxBacklogChunks: Int, makeStreamID: @escaping StreamIdentity,
+        beforeEncode: (@Sendable () async -> Void)?, send: @escaping Send
+    ) {
         self.capture = capture
         self.maxBacklogChunks = maxBacklogChunks
         self.makeStreamID = makeStreamID
+        self.beforeEncode = beforeEncode
         self.send = send
     }
 
@@ -231,6 +251,8 @@ public final class AmbientAudioStreamer {
 
     /// Segments dropped because the send backlog exceeded one second.
     public var droppedChunkCount: Int { get async { await queue?.droppedCount ?? 0 } }
+    /// Capture buffers dropped because more than about one second waited for conversion.
+    public var droppedCaptureBufferCount: Int { get async { await queue?.droppedCaptureBuffers ?? 0 } }
     /// The send error that ended the current or last stream, if any.
     public var failure: (any Error)? { get async { await queue?.failure } }
 
@@ -246,8 +268,10 @@ public final class AmbientAudioStreamer {
         self.queue = queue
         streamID = identity
         isStreaming = true
+        let bounded = Self.bound(buffers, queue: queue)
+        let beforeEncode = beforeEncode
         pump = Task.detached { [weak self] in
-            await Self.pump(buffers, encoder: encoder, queue: queue)
+            await Self.pump(bounded, encoder: encoder, queue: queue, beforeEncode: beforeEncode)
             await self?.stopCapture(ifCurrent: identity, finished: true)
         }
     }
@@ -265,12 +289,32 @@ public final class AmbientAudioStreamer {
         if finished { pump = nil; isStreaming = false }
     }
 
+    /// The capture seam's stream is unbounded and fed from the audio tap without blocking. A forwarder drains it
+    /// promptly into a drop-oldest stream, so a slow converter cannot accumulate stale microphone audio.
+    private nonisolated static func bound(
+        _ buffers: AsyncStream<AudioCaptureBuffer>, queue: AmbientAudioSendQueue
+    ) -> AsyncStream<AudioCaptureBuffer> {
+        let (stream, continuation) = AsyncStream<AudioCaptureBuffer>.makeStream(
+            bufferingPolicy: .bufferingNewest(AmbientAudioFormat.maxPendingCaptureBuffers)
+        )
+        let forwarder = Task.detached {
+            for await buffer in buffers {
+                if case .dropped = continuation.yield(buffer) { await queue.recordCaptureDrop() }
+            }
+            continuation.finish()
+        }
+        continuation.onTermination = { _ in forwarder.cancel() }
+        return stream
+    }
+
     private nonisolated static func pump(
-        _ buffers: AsyncStream<AudioCaptureBuffer>, encoder initial: AmbientAudioEncoder, queue: AmbientAudioSendQueue
+        _ buffers: AsyncStream<AudioCaptureBuffer>, encoder initial: AmbientAudioEncoder,
+        queue: AmbientAudioSendQueue, beforeEncode: (@Sendable () async -> Void)?
     ) async {
         var encoder = initial
         var converted = true
         for await buffer in buffers {
+            await beforeEncode?()
             guard !(await queue.hasFailed), let segments = try? encoder.encode(buffer.pcmBuffer) else {
                 converted = false
                 break

@@ -1,3 +1,4 @@
+import Foundation
 import AVFAudio
 import HailProtocol
 import Testing
@@ -64,3 +65,6 @@ func sineBuffer(
     }
     return buffer
 }
+
+/// Recorded by a test's `beforeEncode` hook to count buffers reaching the converter.
+let encodeMarker = AudioPayload(codec: .pcm16, sampleRate: 16_000, channels: 1, sequence: 0, bytes: Data())

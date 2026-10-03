@@ -13,7 +13,12 @@ func readyAudioConnection(
     let connector = ScriptedConnector()
     for socket in sockets { await connector.enqueue(.socket(socket), for: endpoint.url) }
     let socket = sockets[0]
-    let connection = HostConnection(endpoint: endpoint, connector: connector, deviceName: "iPad")
+    // Pong deadlines are not under test here. Ending them at once keeps no five-second sleeper alive past the
+    // test, where its task teardown aborted the parallel test helper (signal 6 in schedulePongDeadline).
+    let connection = HostConnection(
+        endpoint: endpoint, connector: connector, deviceName: "iPad",
+        deadlineSleep: { _ in throw CancellationError() }
+    )
     await connection.connect()
     try await awaitHello(connection, socket, capabilities: capabilities)
     guard select else { return (connection, socket) }
