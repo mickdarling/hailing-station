@@ -1,6 +1,7 @@
 #if os(macOS)
 import Darwin
 public import Foundation
+import Synchronization
 
 /// The final delivery step for ambient RightyO requests (#203): the daemon's own local dispatch for one named
 /// connection, so the phone's authorizer, selection generation, rate limits and sanitizer all apply. Returns
@@ -179,5 +180,17 @@ public struct RightyoChildLines: AsyncSequence, Sendable {
         default: return true
         }
     }
+}
+
+/// The stderr byte count, shared with the drain thread without retaining the child.
+final class RightyoByteCount: Sendable {
+    private let count = Mutex(0)
+    func withLock<Result: Sendable>(_ body: (inout Int) -> Result) -> Result { count.withLock { body(&$0) } }
+}
+
+/// What the piped audio is, as RightyO's required `--provenance` flag names it; stamped on every turn.
+public enum RightyoAudioProvenance: String, Sendable {
+    case liveMicrophone = "live-microphone", recordedFile = "recorded-file", causalReplay = "causal-replay"
+    case synthetic
 }
 #endif

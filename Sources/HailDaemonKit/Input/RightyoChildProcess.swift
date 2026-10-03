@@ -87,7 +87,7 @@ public final class RightyoChildProcess: Sendable {
 /// only the fd, its own state and the exit latch, never the child, so a stalled child cannot keep its owner alive.
 final class RightyoStdinWriter: Sendable {
     private struct State {
-        var queue: [(data: Data, at: UInt64)] = [], queued = 0, counters = RightyoChildProcess.Counters()
+        var queue = RightyoChunkQueue(), queued = 0, counters = RightyoChildProcess.Counters()
         var writing = false, closing = false, closed = false, abandoned = false
     }
     private let input: Int32

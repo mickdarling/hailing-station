@@ -146,16 +146,17 @@ extension RightyoChildProcess {
     }
 }
 
-/// What the piped audio is, as RightyO's required `--provenance` flag names it; stamped on every turn.
-public enum RightyoAudioProvenance: String, Sendable {
-    case liveMicrophone = "live-microphone", recordedFile = "recorded-file", causalReplay = "causal-replay"
-    case synthetic
-}
-
-/// The stderr byte count, shared with the drain thread without retaining the child.
-final class RightyoByteCount: Sendable {
-    private let count = Mutex(0)
-    func withLock<Result: Sendable>(_ body: (inout Int) -> Result) -> Result { count.withLock { body(&$0) } }
+/// Pending stdin chunks, FIFO with a head index: append, eviction and expiry are O(1) amortised, even at the
+/// gate's 2-byte minimum (32,768 chunks in 64 KB). The consumed prefix is compacted once it is half the array.
+struct RightyoChunkQueue {
+    private var items: [(data: Data, at: UInt64)] = [], head = 0
+    var isEmpty: Bool { head == items.count }
+    var first: (data: Data, at: UInt64)? { isEmpty ? nil : items[head] }
+    mutating func append(_ item: (data: Data, at: UInt64)) { items.append(item) }
+    mutating func removeFirst() -> (data: Data, at: UInt64) {
+        defer { head += 1; if head >= 1_024, head * 2 >= items.count { items.removeFirst(head); head = 0 } }
+        return items[head]
+    }
 }
 
 /// The reaped child's exit, with timed waits.
