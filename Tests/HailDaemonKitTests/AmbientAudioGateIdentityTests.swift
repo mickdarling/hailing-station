@@ -73,4 +73,33 @@ import Testing
         #expect(await gate.admit(ambientSegment(stream: recent, sequence: 0), connection: UUID()) == .malformed)
         #expect(await gate.admit(ambientSegment(stream: UUID(), sequence: 0), connection: UUID()) == nil)
     }
+
+    @Test func aRefusedReplacementLeavesTheCurrentStreamUntouched() async {
+        let gate = ambientGate(sink: sink, clock: clock)
+        let old = UUID()
+        #expect(await gate.admit(ambientSegment(stream: old, sequence: 0, isFinal: true), connection: phone) == nil)
+        #expect(await gate.admit(ambientSegment(stream: stream, sequence: 0), connection: phone) == nil)
+        let before = sink.events
+        // A late segment from the ended stream, a fresh id not at sequence 0, and a retried start all refuse.
+        #expect(await gate.admit(ambientSegment(stream: old, sequence: 0), connection: phone) == .malformed)
+        #expect(await gate.admit(ambientSegment(stream: old, sequence: 5), connection: phone) == .malformed)
+        #expect(await gate.admit(ambientSegment(stream: UUID(), sequence: 3), connection: phone) == .malformed)
+        #expect(sink.events == before)
+        #expect(await gate.activeStream == stream)
+        #expect(await gate.admit(ambientSegment(stream: stream, sequence: 1), connection: phone) == nil)
+        #expect(sink.endings == [.final])
+    }
+
+    @Test func aRateLimitedReplacementLeavesTheCurrentStreamUntouched() async {
+        let gate = ambientGate(sink: sink, clock: clock)
+        let size = AmbientAudioGate.maxSegmentBytes
+        for sequence in 0..<(AmbientAudioGate.burstBytes / size) {
+            #expect(await gate.admit(ambientSegment(stream: stream, sequence: sequence, bytes: size), connection: phone)
+                == nil)
+        }
+        #expect(await gate.admit(ambientSegment(stream: UUID(), sequence: 0, bytes: size), connection: phone)
+            == .rateLimited)
+        #expect(await gate.activeStream == stream)
+        #expect(sink.endings.isEmpty)
+    }
 }

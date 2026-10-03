@@ -86,8 +86,7 @@ public actor AmbientAudioGate {
               audio.reply == nil, Self.wholeSamples(audio.bytes.count), let stream = audio.streamID else {
             return refuse(.malformed, "ambient segment shape", connection: connection)
         }
-        if let current = active, current.id != stream { end(.superseded) }
-        if active == nil {
+        if active?.id != stream {
             if let refusal = start(stream, audio: audio, connection: connection) { return refusal }
         } else {
             guard let current = active, audio.sequence > current.lastSequence else {
@@ -104,12 +103,14 @@ public actor AmbientAudioGate {
         return nil
     }
 
-    /// Opens a stream only after its first segment is paid for; a refused start announces and records nothing.
+    /// Opens a stream only after its first segment is validated and paid for. Only then is the owner's current
+    /// stream superseded: a refused start (stale or retried id, rate) announces, records and disturbs nothing.
     private func start(_ stream: UUID, audio: AudioPayload, connection: UUID) -> (ErrorCode, String)? {
         guard audio.sequence == 0, !ended.contains(stream) else {
             return (.malformed, "ambient stream must be new and start at sequence 0")
         }
         guard spend(audio.bytes.count) else { return (.rateLimited, "ambient rate exceeded") }
+        end(.superseded)
         active = Stream(id: stream, connection: connection, lastSequence: -1, lastActivity: clock())
         sink.ambientAudio(.started(stream: stream, connection: connection))
         startSweeper()
