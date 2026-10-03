@@ -50,6 +50,10 @@ func usage() -> Never {
            haild run --bind <address> --port <port> --connection-probe
            haild run --bind <address> --port <port> --personal-terminal [--reply-socket <path>]
       [--single-terminal-reply-fallback]
+           haild run --bind <address> --port <port> --personal-terminal [--reply-socket <path>]
+      --single-terminal-reply-fallback --ambient-rightyo <absolute-rightyo-path>
+      --ambient-rightyo-config <absolute-config-path> --ambient-target <target-id>
+      (opt-in ambient listening; trusted network only: no TLS or peer authentication yet)
 
     """.utf8))
     exit(64)
@@ -341,6 +345,11 @@ do {
     fail("policy: \(error)", code: 9)
 } catch let error as AdapterError {
     fail("\(error)", code: 4)
+} catch let error as RightyoTargetError {
+    fail("RightyO target refused: \(error)", code: 64)
+} catch let error as RightyoChildError {
+    fail("ambient RightyO refused (\(error)): use an absolute executable and config path, owned by you or root"
+         + " and not group- or world-writable, including every parent directory", code: 64)
 } catch is RightyoInputError {
     fail("RightyO input refused; no automatic retry. Check session, lifecycle, limits and target policy.", code: 8)
 } catch ReplyCommandError.usage {
