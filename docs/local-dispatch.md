@@ -155,7 +155,17 @@ The CLI client (`RightyoSocketDispatcher` in `haild`) sends this shape for each 
 maps the answer as documented in [rightyo-input.md](rightyo-input.md#reply-ownership-with---reply-to):
 `delivered: 1` with a `request` is an owned reply, with `null` is "no reply ownership" (the daemon's reason,
 if any, is noted on stderr), and a refusal keeps the direct path's exit code where the outcome is the same
-(`confirmationRequired` 8, `bindingMismatch` 7) and otherwise exits 1 with the daemon's reason. The daemon
-accepts a dispatched prompt up to the local RightyO cap (#200), but the client in this build still refuses a
-prompt over the 8,192-byte text payload before connecting; adopting the daemon cap in the client is a
-follow-up under [#200](https://github.com/mickdarling/hailing-station/issues/200).
+(`confirmationRequired` 8, `bindingMismatch` 7) and otherwise exits 1 with the daemon's reason. The client
+refuses a prompt over `RightyoSocketDispatcher.maxPromptBytes` (333,200 bytes: what the daemon can type within
+half its 10-second submission deadline; never above the daemon's 1,200,000-byte dispatch cap,
+[#200](https://github.com/mickdarling/hailing-station/issues/200)) before connecting and says why. When a dispatch's
+submission deadline fires during delivery, the tmux adapter either abandons it before its commit point
+(no further chunk, no Enter, typed text left unsubmitted with no rollback) or, once committed, sends the Enter
+anyway. A pane left holding typed-but-unsubmitted text is tainted: every later delivery to it, queued or new,
+refuses before typing (`deliveryRefused`) until the pane is cleared by hand and `haild` restarted
+(`TmuxTaintedPaneTests`). The client reports a written-but-unanswered dispatch as an unknown outcome and says to check the pane
+before retrying (`TmuxDeliveryCommitTests`,
+`LocalReplyEndpointTests.timedOutDispatchNeverPressesEnterAndARetryRefusesOnTheTaintedPane`, slow scripted runner).
+`LocalDispatchProductionAdapterTests` (scripted runner, no tmux process) dispatches 1 MiB through the
+production `TmuxAdapter` and sees the whole text chunked into the pane, and shows a `tmux-reply:` bridge
+target refusing a dispatch before any text at 16 bytes and at 1 MiB (it grants no reply-binding lease).

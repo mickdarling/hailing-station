@@ -95,10 +95,37 @@ rightyo listen … --session-id "$rightyo_session_id" |
   the length cap differs: the newline rule, the whole-prompt dangerous-pattern guard (including its 20 ms
   per-rule budget, see [Formed requests](#formed-requests)), tier, binding, rate limit and lockdown give the
   direct path's outcome. The socket accepts a dispatch line of up to `2 × 1,200,000 + 4,096` bytes so JSON
-  escaping cannot push a capped prompt over it; reply frames keep their existing frame cap. **Client caveat:**
-  the `haild rightyo --reply-to` client in this build still refuses a prompt over the 8,192-byte text payload
-  before connecting and says why, so the end-to-end path stays unusable for real requests until the client
-  adopts the daemon cap in a follow-up under #200. The [reply block](#the-reply-block) (228 characters plus
+  escaping cannot push a capped prompt over it; reply frames keep their existing frame cap. The client
+  applies a tighter, deadline-derived prompt cap before connecting (see the time bound below) and says why
+  when a prompt is larger. **Which targets this reaches:** a generic `tmux:` target receives the whole
+  prompt in 400-character `send-keys` chunks, with `request: null` (no reply ownership), exactly as the direct
+  path delivers it. A `tmux-reply:` bridge target cannot grant a reply-binding lease, so a dispatch to it is
+  refused `deliveryRefused` before any text is sent, at any size; the Codex app-server adapter is not
+  registered by `haild run`. **Time bound and the commit point:** the daemon
+  answers a dispatch within its 10-second socket submission deadline, and real `send-keys` costs about 5.5 ms
+  per 400-character chunk, so a 1 MiB prompt (about 2,600 chunks) cannot be typed in time. The client therefore
+  caps a `--reply-to` prompt at `RightyoSocketDispatcher.maxPromptBytes` = 333,200 bytes, what fits in half the
+  deadline at 6 ms per chunk (833 chunks), and refuses a longer prompt before connecting, with the reason
+  (exit 1). The direct path keeps 1,200,000. The cap budgets one delivery: the tmux adapter types one delivery
+  at a time, so concurrent dispatches queue, and a queued one can still reach the deadline.
+  If the deadline (or any caller cancellation) fires, the tmux adapter's submit decision is one atomic step,
+  taken right before Enter:
+  - **Before the commit point:** the delivery is abandoned. No further chunk is typed and Enter is not sent.
+    A delivery abandoned while queued types nothing. Text already typed stays in the pane's input line,
+    unsubmitted. There is no rollback, because no key clears input in every application.
+  - **Tainted pane:** if anything was typed, the tmux adapter marks that pane tainted (a failed Enter does
+    too). Every later delivery to it refuses before typing, whether it was already queued or arrives later,
+    because it would otherwise append to the leftover text and submit a concatenation no guard evaluated. The
+    adapter's refusal reads `unsubmitted text left in pane <target>; clear it and restart haild before delivering
+    again`, and a dispatch sees it as `deliveryRefused`. The taint lives in that `haild` process only. Clear the
+    pane's input line by hand, then restart the daemon (`haild run`) to deliver to it again. A delivery
+    abandoned before its first chunk does not taint the pane.
+  - **After the commit point:** the Enter is sent and the prompt runs, even though the daemon's answer is lost.
+
+  Either way the client gets no answer, and it reports that the outcome is unknown: the prompt may have run,
+  or it may sit unsubmitted in the input line. Check the pane before retrying (exit 1). Covered by
+  `LocalReplyEndpointTests.timedOutDispatchNeverPressesEnterAndARetryRefusesOnTheTaintedPane`, `TmuxDeliveryCommitTests`
+  and `TmuxTaintedPaneTests`. The [reply block](#the-reply-block) (228 characters plus
   the target id) counts toward every cap.
 
 Each admitted request sends one `{"kind":"dispatch","connection","target","binding","text"}` line and reads
@@ -174,7 +201,7 @@ the phone hears it. For the target `tmux:demo` it is, byte for byte (it begins w
   (`RightyoInputReplyBlockTests`).
 - The block counts toward every prompt bound: the local command's 1,200,000 whole-prompt cap (arithmetic under
   [Formed requests](#formed-requests)), which with `--reply-to` is also the daemon's dispatch cap
-  ([#200](https://github.com/mickdarling/hailing-station/issues/200)), and the client caveat above while it lasts.
+  ([#200](https://github.com/mickdarling/hailing-station/issues/200)).
 - Dry run (`--dry-run`) validates and prints receipts; it forms no prompt, so no block exists and the fixture
   dry-run output is unchanged. No receipt includes the prompt or the block.
 

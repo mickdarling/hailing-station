@@ -478,6 +478,53 @@ import Testing
         await listener.stop(reason: "test complete")
     }
 
+    /// #204: a dispatch whose typing outlives the endpoint's submission deadline is abandoned before its commit
+    /// point (no further chunk, no Enter; the typed prefix stays unsubmitted, there is no rollback), and the pane
+    /// is tainted: a retry, even through a patient endpoint, is refused before typing anything.
+    @Test func timedOutDispatchNeverPressesEnterAndARetryRefusesOnTheTaintedPane() async throws {
+        let scratch = FileManager.default.temporaryDirectory
+            .appendingPathComponent("hs-dl-\(UUID().uuidString.prefix(8))", isDirectory: true)
+        defer { try? FileManager.default.removeItem(at: scratch) }
+        let runner = FakeCommandRunner.serving(SessionListing(bridgeListing), delay: .milliseconds(20))
+        let listener = try await slowTmuxListener(runner)
+        let port = try await listener.start()
+        let config = scratch.appendingPathComponent("config", isDirectory: true)
+        let audit = AuditLog(directory: scratch.appendingPathComponent("audit"))
+        let hasty = try LocalReplyEndpoint(
+            socketURL: config.appendingPathComponent("hasty.sock"), destination: listener, audit: audit,
+            submissionTimeout: .milliseconds(300)
+        )
+        let patient = try LocalReplyEndpoint(
+            socketURL: config.appendingPathComponent("patient.sock"), destination: listener, audit: audit
+        )
+        try await hasty.start()
+        try await patient.start()
+        let (session, terminal) = try terminalClient(port: port)
+        defer { terminal.cancel(with: .normalClosure, reason: nil); session.invalidateAndCancel() }
+        do {
+            let connection = try await selectOrdinary(on: terminal, listener: listener)
+            // 40 chunks at 20 ms each: far past the 300 ms deadline.
+            let text = String(repeating: "a", count: 40 * TmuxAdapter.defaultChunkSize)
+            let line = try JSONEncoder().encode(LocalDispatchRequest(
+                connection: connection, target: "tmux:ordinary", binding: "$2@1758230001/%2:502", text: text
+            ))
+            await #expect(throws: (any Error).self) { try await submit(line, socket: hasty.socketURL.path) }
+            let abandoned = await runner.calls.compactMap { $0.contains("send-keys") ? $0.last : nil }
+            let retry = try await submit(line, socket: patient.socketURL.path)
+            #expect(retry.delivered == 0 && retry.request == nil)
+            #expect(retry.error == LocalDispatchRefusal.deliveryRefused.message)
+            let keys = await runner.calls.compactMap { $0.contains("send-keys") ? $0.last : nil }
+            // The abandoned attempt typed some of its 40 chunks; the refused retry typed nothing, no Enter anywhere.
+            #expect(keys == abandoned)
+            #expect(!keys.contains("Enter") && !keys.contains("C-u"))
+            #expect(!keys.isEmpty && keys.count < 40)
+        } catch {
+            await stopAll(hasty, patient, listener)
+            throw error
+        }
+        await stopAll(hasty, patient, listener)
+    }
+
     @Test func ownershipLostAfterHandoffReportsDeliveredWithoutARequest() async throws {
         let scratch = FileManager.default.temporaryDirectory.appendingPathComponent(
             "hs-ol-\(UUID().uuidString.prefix(8))", isDirectory: true
@@ -567,6 +614,32 @@ private func expectRefusal(
     let response = try await submit(data, socket: socket.path)
     #expect(response == LocalReplyResponse(delivered: 0, error: expected.message, code: expected))
     await endpoint.stop()
+}
+
+private func selectOrdinary(on terminal: URLSessionWebSocketTask, listener: WebSocketListener) async throws -> UUID {
+    try await terminal.send(.data(FrameCoding.encode(helloFrame())))
+    _ = try await terminal.receive()
+    try await recipientSocketSend(sessionFrame(payload: .control(.select(targetID: "tmux:ordinary"))), on: terminal)
+    try await recipientSocketBarrier(on: terminal)
+    return try #require(await listener.peers.keys.first)
+}
+
+private func stopAll(_ first: LocalReplyEndpoint, _ second: LocalReplyEndpoint, _ listener: WebSocketListener) async {
+    await first.stop()
+    await second.stop()
+    await listener.stop(reason: "test complete")
+}
+
+/// The production `TmuxAdapter` behind a scripted, slow runner; `tmux:ordinary` allowed at the open tier.
+private func slowTmuxListener(_ runner: FakeCommandRunner) async throws -> WebSocketListener {
+    let registry = Registry()
+    try await registry.register(TmuxAdapter(runner: runner, pollInterval: nil))
+    var policy = Policy(guardPatterns: [.init(name: "synthetic", regex: "^x$")])
+    try policy.allow("tmux:ordinary", binding: "$2@1758230001/%2:502", tier: .open)
+    let host = try HailHost(registry: registry, store: InMemoryPolicyStore(policy))
+    return try WebSocketListener(
+        bindAddress: "127.0.0.1", port: 0, host: host, authorizer: PersonalTerminalAuthorizer(), hostName: "mac-main"
+    )
 }
 
 /// One allowed legacy `tmux:` target: generic input only, so no reply ownership can be minted for it.

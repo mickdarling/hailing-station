@@ -314,6 +314,8 @@ private enum ReplyClientError: Error, CustomStringConvertible {
     case timeout
     case failed(String)
     case refused(String)
+    /// The request was written but no answer came back: the outcome on the daemon side is unknown.
+    case unanswered(String)
 
     var description: String {
         switch self {
@@ -321,6 +323,9 @@ private enum ReplyClientError: Error, CustomStringConvertible {
         case .timeout: "local reply timed out"
         case .failed(let reason): reason
         case .refused(let reason): reason
+        case .unanswered(let reason):
+            "no answer after the dispatch was sent (\(reason)): the prompt may have been submitted, or typed and "
+                + "left unsubmitted in the target's input line; check the pane before retrying"
         }
     }
 }
@@ -340,10 +345,16 @@ enum ReplyClient {
     /// this; `submit` adds the reply-only pending retry window around the same transaction.
     static func transact(_ line: Data, socketURL: URL) async throws -> LocalReplyResponse {
         try requireOwnerSocket(socketURL)
-        guard line.count <= PayloadLimits.defaultMaxFrameBytes + 1 else {
+        // The daemon's socket line cap (#200): a dispatch line may exceed the reply frame cap.
+        guard line.count <= max(PayloadLimits.defaultMaxFrameBytes, LocalDispatchRequest.maxLineBytes) + 1 else {
             throw ReplyClientError.failed("frame too large")
         }
-        return try await ReplyTransaction(socketURL: socketURL).perform(line)
+        let transaction = ReplyTransaction(socketURL: socketURL)
+        do { return try await transaction.perform(line) } catch {
+            // Once written, a lost answer is not a refusal: the daemon may have delivered (#204).
+            guard transaction.didSend else { throw error }
+            throw ReplyClientError.unanswered("\(error)")
+        }
     }
 
     static func submit(_ frame: Frame, socketURL: URL) async throws -> Int {
@@ -384,13 +395,27 @@ enum ReplyClient {
 /// (`confirmationRequired` → 8, `bindingMismatch` → 7 as a rebound denial); every other dispatch or socket
 /// refusal is reported with the daemon's reason and exits 1, as `haild reply` does.
 struct RightyoSocketDispatcher: RightyoDispatching {
+    /// Measured real `tmux send-keys` cost per chunk (~5.5 ms, #204 review), rounded up.
+    static let sendKeysCost: Duration = .milliseconds(6)
+    /// Half the daemon's 10-second socket submission deadline (`LocalReplyEndpoint`): the rest is margin for
+    /// listing, binding checks and a slower host. Past the deadline the daemon abandons the typing unsent.
+    static let typingBudget: Duration = .seconds(5)
+    /// The largest prompt this client dispatches: what the daemon can type within `typingBudget` in
+    /// `TmuxAdapter.defaultChunkSize`-character chunks (833 chunks, 333,200 bytes; a UTF-8 byte cap also bounds
+    /// characters), never above the daemon's own dispatch cap. Realistic RightyO prompts are tens of KB.
+    static let maxPromptBytes = min(
+        LocalDispatchRequest.maxTextBytes, Int(typingBudget / sendKeysCost) * TmuxAdapter.defaultChunkSize
+    )
+
     let connection: UUID
     let socketURL: URL
 
     func dispatch(text: String, target: String, binding: String) async throws -> RightyoDispatchReceipt {
-        // The daemon refuses a longer prompt at decode; say why here instead of reporting a decode failure.
-        guard text.utf8.count <= PayloadLimits.maxTextBytes else {
-            throw ReplyClientError.refused("prompt exceeds the \(PayloadLimits.maxTextBytes)-byte dispatch text cap")
+        // Refused before connecting, with the reason: a longer prompt could not be typed within the daemon's
+        // answer deadline (and past 1,200,000 bytes the daemon refuses it at decode).
+        let cap = Self.maxPromptBytes
+        guard text.utf8.count <= cap else {
+            throw ReplyClientError.refused("prompt exceeds the \(cap)-byte --reply-to dispatch cap")
         }
         let request = LocalDispatchRequest(connection: connection, target: target, binding: binding, text: text)
         var line = try JSONEncoder().encode(request)
@@ -432,6 +457,8 @@ private final class ReplyTransaction: @unchecked Sendable {
     private let lock = NSLock()
     private var continuation: CheckedContinuation<LocalReplyResponse, any Error>?
     private var sent = false
+    /// Whether the request was handed to the socket; a failure after that has an unknown outcome.
+    var didSend: Bool { lock.withLock { sent } }
 
     init(socketURL: URL) {
         connection = NWConnection(to: .unix(path: socketURL.path), using: .tcp)
