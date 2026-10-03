@@ -5,6 +5,23 @@ import Synchronization
 
 /// The RightyO child's launch rules, stdout/stderr readers and exit latch (#203), beside RightyoChildProcess.swift.
 extension RightyoChildProcess {
+    public struct Timing: Sendable {
+        /// After stdin closes, how long the child has to emit `stopped` and exit before SIGTERM.
+        public var eofGrace: TimeInterval
+        /// After SIGTERM, how long before SIGKILL.
+        public var termGrace: TimeInterval
+        /// Pending stdin audio is bounded by bytes and age; the oldest whole chunks are dropped first.
+        public var backlogBytes: Int
+        public var backlogAge: TimeInterval
+        public init(eofGrace: TimeInterval = 3, termGrace: TimeInterval = 2, backlogBytes: Int = 65_536,
+                    backlogAge: TimeInterval = 2) {
+            (self.eofGrace, self.termGrace) = (eofGrace, termGrace)
+            (self.backlogBytes, self.backlogAge) = (backlogBytes, backlogAge)
+        }
+    }
+    public struct Counters: Sendable, Equatable {
+        public var writtenBytes = 0, droppedChunks = 0, droppedBytes = 0, stderrBytes = 0
+    }
     /// RightyO requires `--provenance` with `--mode stdin`; the phone microphone is `live-microphone`.
     public static func arguments(session: String, config: URL,
                                  provenance: RightyoAudioProvenance = .liveMicrophone) -> [String] {
@@ -22,7 +39,8 @@ extension RightyoChildProcess {
     /// The executable (after symlinks) must be a regular executable file owned by this user or root and not
     /// group/world-writable, in a directory that is not group/world-writable either, which narrows the window
     /// between this check and the spawn. A writable ancestor further up is not checked.
-    public static func validate(executable: URL, config: URL) throws {
+    /// Returns the resolved absolute path, which is the one spawned.
+    @discardableResult public static func validate(executable: URL, config: URL) throws -> String {
         var info = stat(), parent = stat()
         let resolved = executable.path.hasPrefix("/") ? realpath(executable.path, nil) : nil
         defer { free(resolved) }
@@ -36,6 +54,7 @@ extension RightyoChildProcess {
               info.st_mode & S_IFMT == S_IFREG, access(config.path, R_OK) == 0 else {
             throw RightyoChildError.unsafeConfig
         }
+        return path
     }
 
     /// `posix_spawn` of the exact path, never a shell: only the three stdio pipes cross (CLOEXEC_DEFAULT), every

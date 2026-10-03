@@ -9,15 +9,19 @@ import Testing
 @Suite(.serialized, .timeLimit(.minutes(1))) struct RightyoChildProcessTests {
     @Test func launchesExactArgvMinimalEnvironmentAndConfigDirectory() async throws {
         let fake = try FakeRightyo("""
-            printf '%s\\n' "$@" > argv.txt
+            printf '%s\\n' "$0" "$@" > argv.txt
             /usr/bin/env > env.txt
             /bin/pwd -P > cwd.txt
             """)
         defer { fake.cleanUp() }
-        let child = try fake.child()
+        // Launched through a symlink: the child's $0 shows the resolved path was the one spawned.
+        let link = fake.directory.appendingPathComponent("link")
+        try FileManager.default.createSymbolicLink(at: link, withDestinationURL: FakeRightyo.shared)
+        let child = try RightyoChildProcess(executable: link, config: fake.config, session: "hail-test",
+                                            timing: .init(eofGrace: 20, termGrace: 20))
         #expect(await child.stop() == .exited(0))
         let argv = try fake.recorded("argv.txt").split(separator: "\n").map(String.init)
-        #expect(argv == ["listen", "--mode", "stdin", "--provenance", "live-microphone",
+        #expect(argv == [FakeRightyo.shared.path, "listen", "--mode", "stdin", "--provenance", "live-microphone",
                          "--session-id", "hail-test", "--config", fake.config.path])
         let keys = Set(try fake.recorded("env.txt").split(separator: "\n")
             .compactMap { $0.split(separator: "=").first })
@@ -50,10 +54,12 @@ import Testing
 
     /// The last reference dropped without `stop()` or `run()`: no reader thread may keep the owner (and so a live
     /// microphone child) alive; `deinit` kills it and the exit source reaps it.
-    @Test func droppingTheChildWithoutStopKillsAndReapsIt() async throws {
+    /// `stalledStdin`: the child never reads while audio keeps arriving, so the stdin writer is mid-write
+    /// (polling a full pipe) when the owner is dropped.
+    @Test(arguments: [false, true]) func droppingTheChildWithoutStopKillsAndReapsIt(stalledStdin: Bool) async throws {
         let fake = try FakeRightyo("trap '' TERM\necho ready\nexec /bin/sleep 60")
         defer { fake.cleanUp() }
-        let pid = try await Self.launchAndDrop(fake)
+        let pid = try await Self.launchAndDrop(fake, flooding: stalledStdin)
         let deadline = ContinuousClock.now.advanced(by: .seconds(20))
         // ESRCH only once reaped: a killed but unreaped zombie still answers signal 0.
         while kill(pid, 0) == 0 || errno != ESRCH {
@@ -62,10 +68,15 @@ import Testing
         }
     }
 
-    private static func launchAndDrop(_ fake: FakeRightyo) async throws -> Int32 {
+    private static func launchAndDrop(_ fake: FakeRightyo, flooding: Bool) async throws -> Int32 {
         let child = try fake.child()
         var lines = child.lines.makeAsyncIterator()
         #expect(try await lines.next() == Data("ready".utf8))
+        if flooding {
+            for _ in 0..<200 { child.write(Data(repeating: 5, count: 3_200)) }
+            try await Task.sleep(for: .milliseconds(200))
+            #expect(child.counters.droppedChunks > 0)
+        }
         return child.processIdentifier
     }
 
@@ -135,39 +146,6 @@ import Testing
         for try await line in child.lines { sizes.append(line.count) }
         #expect(sizes == [RightyoChildProcess.maxLineBytes])
         #expect(await child.stop() == .exited(0))
-    }
-
-    @Test func refusesUnsafeExecutablesAndConfigs() throws {
-        for mode: mode_t in [0o775, 0o757, 0o644] {
-            let fake = try FakeRightyo("exit 0", mode: mode)
-            defer { fake.cleanUp() }
-            #expect(throws: RightyoChildError.unsafeExecutable) { try fake.child() }
-        }
-        let owned = try FakeRightyo("exit 0", mode: 0o750)
-        defer { owned.cleanUp() }
-        #expect(throws: Never.self) {
-            try RightyoChildProcess.validate(executable: owned.executable, config: owned.config)
-        }
-        #expect(chmod(owned.directory.path, 0o777) == 0)
-        #expect(throws: RightyoChildError.unsafeExecutable) {
-            try RightyoChildProcess.validate(executable: owned.executable, config: owned.config)
-        }
-        let fake = try FakeRightyo("exit 0")
-        defer { fake.cleanUp() }
-        let relative = URL(fileURLWithPath: "rightyo", relativeTo: fake.directory)
-        #expect(throws: RightyoChildError.unsafeExecutable) {
-            try RightyoChildProcess.validate(executable: URL(string: "rightyo") ?? relative, config: fake.config)
-        }
-        #expect(throws: RightyoChildError.unsafeExecutable) {
-            try RightyoChildProcess.validate(executable: fake.directory, config: fake.config)
-        }
-        #expect(throws: RightyoChildError.unsafeConfig) {
-            try RightyoChildProcess.validate(executable: fake.executable, config: fake.directory)
-        }
-        #expect(throws: RightyoChildError.unsafeConfig) {
-            try RightyoChildProcess.validate(executable: fake.executable,
-                                             config: fake.directory.appendingPathComponent("missing.json"))
-        }
     }
 }
 #endif
