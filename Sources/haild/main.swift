@@ -9,7 +9,9 @@ import HailDaemonKit
 // probe (#98); the push endpoint, LaunchAgent, and `pair` arrive with their slices. Exit codes: 2 unknown
 // target, 3 refused by the sanitizer, 4 adapter
 // unavailable or adapter error, 5 unbound, 6 partial, 7 denied by policy, 8 confirmation needed or cancelled,
-// 9 policy file unusable, 64 usage.
+// 9 policy file unusable, 64 usage. A `rightyo --reply-to` dispatch the daemon refuses keeps the direct
+// path's code where the outcome is the same (8 confirmation needed, 7 rebound); every other dispatch or
+// socket refusal exits 1 with the daemon's reason, as `haild reply` does.
 
 // A launchd job often inherits only the system PATH, which omits Homebrew on Apple Silicon and Intel.
 // Keep an explicit override for nonstandard installations, then try the two standard Homebrew prefixes.
@@ -41,11 +43,13 @@ func usage() -> Never {
       [--request <opaque-request-UUID>] [--sample-rate <hz>] [--socket <path>]
       [--renderer-output-root <private-existing-directory>]
            haild rightyo <target-id> --session <producer-session-id> [--allow-synthetic]
+      [--reply-to <connection-UUID>] [--socket <path>]
            haild rightyo --session <producer-session-id> --dry-run  (JSONL on stdin)
            haild status
            haild audit verify|tail|today
            haild run --bind <address> --port <port> --connection-probe
            haild run --bind <address> --port <port> --personal-terminal [--reply-socket <path>]
+      [--single-terminal-reply-fallback]
 
     """.utf8))
     exit(64)
@@ -169,35 +173,81 @@ func status(_ host: HailHost) async throws {
     if failure != nil { exit(9) }
 }
 
-/// Foreground local stdin only. The caller opts into both the target and producer session (#183).
-func rightyo(_ arguments: ArraySlice<String>) async throws {
-    var options = Array(arguments)
-    let dryRun = options.last == "--dry-run"
-    let allowSynthetic = options.last == "--allow-synthetic"
-    if dryRun || allowSynthetic { options.removeLast() }
-    let target: String
-    if dryRun { target = "dry-run" } else {
-        guard !options.isEmpty else { usage() }
-        target = options.removeFirst()
+/// `rightyo` arguments: the target first unless dry run, then flags in any order. `--reply-to` names the
+/// listener connection (its peer UUID, as logged on `session_connected`) that will own each reply (#188);
+/// `--socket` is the daemon's owner-only reply socket and is only meaningful with it. Dry run never
+/// touches a socket, so neither flag is accepted with `--dry-run`. Any other shape is usage (64).
+private struct RightyoOptions {
+    var target = "dry-run"
+    var session = ""
+    var dryRun = false
+    var allowSynthetic = false
+    var replyTo: UUID?
+    var socket = LocalReplyEndpoint.standardSocket()
+    var socketGiven = false
+
+    static func parse(_ arguments: ArraySlice<String>) -> RightyoOptions {
+        var options = RightyoOptions()
+        var rest = arguments
+        var targetGiven = false
+        if let first = rest.first, !first.hasPrefix("--") {
+            options.target = first
+            targetGiven = true
+            rest = rest.dropFirst()
+        }
+        while let flag = rest.popFirst() { options.apply(flag, &rest) }
+        guard !options.session.isEmpty, targetGiven != options.dryRun,
+              !options.dryRun || (options.replyTo == nil && !options.socketGiven),
+              options.replyTo != nil || !options.socketGiven else { usage() }
+        return options
     }
-    guard options.count == 2, options[0] == "--session", !options[1].isEmpty else { usage() }
-    let host = dryRun ? nil : try await makeHost(sanitizing: .init(
+
+    private mutating func apply(_ flag: String, _ rest: inout ArraySlice<String>) {
+        switch flag {
+        case "--dry-run": dryRun = true
+        case "--allow-synthetic": allowSynthetic = true
+        case "--session":
+            guard let value = rest.popFirst() else { usage() }
+            session = value
+        case "--reply-to":
+            guard let value = rest.popFirst(), let id = UUID(uuidString: value) else { usage() }
+            replyTo = id
+        case "--socket":
+            guard let value = rest.popFirst(), !value.isEmpty else { usage() }
+            socket = URL(fileURLWithPath: value)
+            socketGiven = true
+        default: usage()
+        }
+    }
+}
+
+/// Foreground local stdin only. The caller opts into both the target and producer session (#183). With
+/// `--reply-to` the host is used for the pinned binding only and every admitted request is dispatched by
+/// the running daemon on behalf of that connection; without it, delivery is the direct path, unchanged.
+func rightyo(_ arguments: ArraySlice<String>) async throws {
+    let options = RightyoOptions.parse(arguments)
+    let host = options.dryRun ? nil : try await makeHost(sanitizing: .init(
         maxCharacters: 1_200_000, maxUTF8Bytes: 1_200_000
     ))
-    let consumer = try RightyoInputConsumer(host: host, target: target,
-        binding: try await rightyoBinding(host, target: target), session: options[1], allowSynthetic: allowSynthetic)
+    let dispatcher = options.replyTo.map { RightyoSocketDispatcher(connection: $0, socketURL: options.socket) }
+    let consumer = try RightyoInputConsumer(host: host, target: options.target,
+        binding: try await rightyoBinding(host, target: options.target), session: options.session,
+        allowSynthetic: options.allowSynthetic, dispatcher: dispatcher)
     note("RightyO local input ready; finalized-turn events only. No microphone capture started.")
+    if let connection = options.replyTo {
+        note("requests are dispatched by the running daemon for connection \(connection.uuidString)")
+    }
     var buffer = Data()
     while let chunk = try rightyoReadChunk() {
         buffer.append(chunk)
         while let newline = buffer.firstIndex(of: 10) {
             let line = buffer.prefix(upTo: newline)
             buffer.removeSubrange(...newline)
-            try await consumeRightyo(Data(line), with: consumer, dryRun: dryRun)
+            try await consumeRightyo(Data(line), with: consumer, options: options)
         }
         guard buffer.count <= 1_200_000 else { throw RightyoInputError.capacity }
     }
-    if !buffer.isEmpty { try await consumeRightyo(buffer, with: consumer, dryRun: dryRun) }
+    if !buffer.isEmpty { try await consumeRightyo(buffer, with: consumer, options: options) }
     try await consumer.finish()
 }
 
@@ -219,14 +269,24 @@ private func rightyoBinding(_ host: HailHost?, target: String) async throws -> S
     return binding
 }
 
-private func consumeRightyo(_ line: Data, with consumer: RightyoInputConsumer, dryRun: Bool) async throws {
+private func consumeRightyo(_ line: Data, with consumer: RightyoInputConsumer, options: RightyoOptions) async throws {
     let event = try RightyoInputEvent.decode(line)
     guard try await consumer.consume(event) else { return }
     let receipt: String
     if let superseded = event.supersededRequestId {
         receipt = "rightyo: override \(superseded)"
+    } else if options.dryRun {
+        receipt = "rightyo: request validated (dry run; no delivery)"
+    } else if let connection = options.replyTo {
+        // The receipt names who owns the reply, never the prompt. No request means the prompt landed but
+        // nobody can be answered through `haild reply --request` (legacy adapter, or ownership lost).
+        let delivered = await consumer.lastReceipt
+        if let caveat = delivered?.caveat { note(caveat) }
+        let ownership = delivered?.request.map { "reply request \($0.uuidString)" } ?? "no reply ownership"
+        receipt = "rightyo: request delivered to \(options.target) for connection \(connection.uuidString)"
+            + " (\(ownership))"
     } else {
-        receipt = dryRun ? "rightyo: request validated (dry run; no delivery)" : "rightyo: request delivered"
+        receipt = "rightyo: request delivered"
     }
     FileHandle.standardOutput.write(Data((receipt + "\n").utf8))
 }
