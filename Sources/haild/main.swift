@@ -230,9 +230,7 @@ private struct RightyoOptions {
 /// the running daemon on behalf of that connection; without it, delivery is the direct path, unchanged.
 func rightyo(_ arguments: ArraySlice<String>) async throws {
     let options = RightyoOptions.parse(arguments)
-    let host = options.dryRun ? nil : try await makeHost(sanitizing: .init(
-        maxCharacters: 1_200_000, maxUTF8Bytes: 1_200_000
-    ))
+    let host = options.dryRun ? nil : try await makeHost(sanitizing: HailHost.localPromptSanitizing)
     let dispatcher = options.replyTo.map { RightyoSocketDispatcher(connection: $0, socketURL: options.socket) }
     let consumer = try RightyoInputConsumer(host: host, target: options.target,
         binding: try await rightyoBinding(host, target: options.target), session: options.session,
