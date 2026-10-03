@@ -116,7 +116,7 @@ extension RightyoInputConsumerTests {
         for line in try String(contentsOf: path, encoding: .utf8).split(separator: "\n") {
             _ = try await consumer.consume(RightyoInputEvent.decode(Data(line.utf8)))
         }
-        let text = try #require(await adapter.deliveries.first?.text)
+        let text = try promptBody(#require(await adapter.deliveries.first?.text))
         let body = try #require(JSONSerialization.jsonObject(with: Data(text.utf8)) as? [String: Any])
         let context = try #require(body["context"] as? [String: Any])
         let retention = try #require(context["retention"] as? [String: Any])

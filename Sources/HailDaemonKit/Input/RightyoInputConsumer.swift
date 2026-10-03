@@ -68,10 +68,13 @@ public actor RightyoInputConsumer {
     /// `streamBudgetMs` is an optional ceiling on producer stream time; the default is no ceiling (#188).
     /// `dispatcher` replaces the direct `HailHost.send` step (#188 item 1); without it, `host` delivers directly
     /// and nil `host` validates only. A dispatcher with no host still delivers (it owns its own host access).
+    /// `target` is named in every prompt's reply block, so a target with a line break is refused at startup:
+    /// the block is one line by construction, not only because the host sanitizer would refuse the prompt.
     public init(host: HailHost?, target: String, binding: String, session: String,
                 allowSynthetic: Bool = false, streamBudgetMs: Int? = nil,
                 dispatcher: (any RightyoDispatching)? = nil) throws {
-        guard !binding.isEmpty, RightyoInputEvent.identifier(session), streamBudgetMs.map({ $0 >= 0 }) ?? true else {
+        guard !binding.isEmpty, !target.isEmpty, !target.contains(where: \.isNewline),
+              RightyoInputEvent.identifier(session), streamBudgetMs.map({ $0 >= 0 }) ?? true else {
             throw RightyoInputError.unavailableBinding
         }
         self.dispatcher = dispatcher ?? host.map { RightyoHostDispatcher(host: $0) }
@@ -101,7 +104,7 @@ public actor RightyoInputConsumer {
             do {
                 try Task.checkCancellation()
                 lastReceipt = try await dispatcher.dispatch(
-                    text: event.prompt(speakers: speakers), target: target, binding: binding
+                    text: event.prompt(speakers: speakers, target: target), target: target, binding: binding
                 )
                 return true
             } catch {

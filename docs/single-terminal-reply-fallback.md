@@ -74,8 +74,9 @@ contamination. Operate this flag only on a host with a single terminal.
 
 - `haild rightyo --reply-to <connection>` request ownership. The host side now exists as
   [local dispatch](local-dispatch.md) over the reply socket (part B) and the CLI flag as
-  [`haild rightyo --reply-to`](rightyo-input.md#reply-ownership-with---reply-to); the prompt wording that
-  names the target and the reply command follows in its own slice.
+  [`haild rightyo --reply-to`](rightyo-input.md#reply-ownership-with---reply-to); the prompt's
+  [reply block](rightyo-input.md#the-reply-block) names the target and the reply command, and its request-less
+  form is what this fallback serves.
 - `haild` usage text for the new flag was deferred by the four-file limit and landed with the `--reply-to`
   CLI slice; the daemon option parser is covered by tests.
 - Live or physical proof. Nothing here changes the running daemon, any device or an installed build.

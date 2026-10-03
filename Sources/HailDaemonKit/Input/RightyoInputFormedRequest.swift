@@ -48,12 +48,27 @@ extension RightyoInputEvent {
         text.range(of: rawTurnsMarker, options: .literal) != nil
             || text.range(of: String(rawTurnsMarker.dropLast()), options: [.literal, .backwards, .anchored]) != nil
     }
+    /// Tells the receiving session how to answer so the phone hears it (#188 item 1). Appended last to both
+    /// layouts, after the JSON, so the session cuts the prompt at the LAST occurrence of `replyBlockPrefix`:
+    /// producer text before it may repeat these words, but nothing follows the host's block. The reply request
+    /// id is minted by the daemon after this text is formed, so the block points at the `request` field of the
+    /// `BridgeRequest` envelope the pane receives rather than embedding it; a legacy adapter delivers no
+    /// envelope, and there the request-less shape reaches a phone only under the single-terminal fallback.
+    /// ASCII, one line, never the marker, deterministic: `target` (the listed id the binding was pinned from)
+    /// is its only variable part and appears twice.
+    static let replyBlockPrefix = " Reply: run haild reply "
+    static func replyBlock(target: String) -> String {
+        replyBlockPrefix + target + " --request <request id from this envelope> --say \"<spoken answer>\""
+            + " (or --text); without an envelope request id run haild reply " + target
+            + " --say \"<spoken answer>\" (single-terminal fallback only)."
+    }
     /// `speakers` is the advertised capability (`anonymous` or `enrolled`) so the session can weigh roles. Without a
-    /// formed request the prompt is the compact JSON alone, byte for byte as before; with one it is
+    /// formed request the body is the compact JSON alone, byte for byte as before; with one it is
     /// `<formed_request><rawTurnsMarker><json>`, so the JSON can be cut off at the marker and parsed as a whole.
-    /// The host cannot check the formed text against the admitted turns and roles; it is the producer's unverified
-    /// claim, and the JSON is the admitted record the session should trust when the two disagree.
-    func prompt(speakers: String) throws -> String {
+    /// Either body is followed by `replyBlock(target:)`. The host cannot check the formed text against the
+    /// admitted turns and roles; it is the producer's unverified claim, and the JSON is the admitted record the
+    /// session should trust when the two disagree.
+    func prompt(speakers: String, target: String) throws -> String {
         struct Prompt: Encodable {
             let requestId: String?
             let speakers: String
@@ -67,8 +82,8 @@ extension RightyoInputEvent {
         let data = try encoder.encode(Prompt(requestId: requestId, speakers: speakers, request: turn,
                                              decision: decision, context: context))
         guard let json = String(data: data, encoding: .utf8) else { throw RightyoInputError.invalidEvent }
-        guard let formedRequest else { return json }
-        return formedRequest + Self.rawTurnsMarker + json
+        let body = formedRequest.map { $0 + Self.rawTurnsMarker + json } ?? json
+        return body + Self.replyBlock(target: target)
     }
 }
 /// Every key a keyed container carries (already converted from snake case), for strict no-extra-keys decoding.

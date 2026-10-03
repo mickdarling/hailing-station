@@ -66,7 +66,7 @@ import Testing
         #expect(try await !consumer.consume(attended))
         let deliveries = await adapter.deliveries
         #expect(deliveries.count == 1)
-        let data = try #require(deliveries.first?.text.data(using: .utf8))
+        let data = try Data(promptBody(#require(deliveries.first?.text)).utf8)
         let decoded = try #require(JSONSerialization.jsonObject(with: data) as? [String: Any])
         let context = try #require(decoded["context"] as? [String: Any])
         #expect((context["turns"] as? [[String: Any]])?.first?["speaker_id"] as? String == "Speaker A")
