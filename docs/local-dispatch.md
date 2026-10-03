@@ -142,4 +142,4 @@ if any, is noted on stderr), and a refusal keeps the direct path's exit code whe
 (`confirmationRequired` 8, `bindingMismatch` 7) and otherwise exits 1 with the daemon's reason. Note that
 the host behind the socket sanitises a dispatched prompt under its default policy (2,000 characters /
 8,192 bytes), so a RightyO prompt with context turns or a formed request is refused `deliveryRefused`
-until a follow-up issue raises the dispatch cap.
+until [#200](https://github.com/mickdarling/hailing-station/issues/200) raises the dispatch cap.

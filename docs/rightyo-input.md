@@ -90,7 +90,8 @@ rightyo listen … --session-id "$rightyo_session_id" |
 - **Prompt cap (fail closed).** The daemon's host, built by `haild run`, sanitises a dispatched prompt under
   its default `SanitizePolicy`: 2,000 characters / 8,192 UTF-8 bytes. A longer prompt is refused as
   `deliveryRefused` and the command exits 1; nothing is delivered. The direct path (no `--reply-to`) allows
-  1,200,000 for the same prompt, so until the daemon accepts a larger dispatch prompt (a follow-up issue),
+  1,200,000 for the same prompt, so until the daemon accepts a larger dispatch prompt
+  ([#200](https://github.com/mickdarling/hailing-station/issues/200)),
   `--reply-to` is unusable for requests whose prompt exceeds 2,000 characters: in practice any request
   carrying context turns or a `formed_request`, which the compact JSON alone can exceed. The client refuses a
   prompt over the 8,192-byte dispatch text payload before connecting and says why; a prompt between the two
