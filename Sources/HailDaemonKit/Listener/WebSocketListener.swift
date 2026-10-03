@@ -245,9 +245,10 @@ extension WebSocketListener {
     /// being admitted and another device may start, and tell the peer with an `ambient`-prefixed error that
     /// keeps the connection open (the phone stops streaming and releases the microphone on it).
     func ambientFailed(stream: UUID, connection: UUID, message: String) async {
-        guard !stopped else { return }
-        _ = await authorizer.ambientAudio?.end(stream: stream, connection: connection)
-        guard let peer = peers.values.first(where: { $0.session.connectionID == connection }),
+        // Only the current stream is reported: the phone applies an `ambient` error to whatever stream it is
+        // sending now, so a failure of a superseded or already-ended stream is logged by the router only.
+        guard !stopped, await authorizer.ambientAudio?.end(stream: stream, connection: connection) == true,
+              let peer = peers.values.first(where: { $0.session.connectionID == connection }),
               let frame = await peer.session.ambientFailureFrame(message) else { return }
         _ = await peer.send(frame)
     }
@@ -348,8 +349,9 @@ public final class AmbientRightyoRouter: AmbientAudioSink, AmbientListenerWiring
         case .started(let stream, let connection): start(stream, connection: connection)
         case .segment(let stream, _, let bytes):
             let pipeline = state.withLock { $0.active?.stream == stream ? $0.active?.pipeline : nil }
-            // Overload drops the oldest audio; it never blocks the gate. A dead child ends the stream instead.
-            pipeline?.send(audio: bytes)
+            // Overload drops the oldest audio; it never blocks the gate. Refused input means the child is gone
+            // (its run may still be finishing a dispatch), so the stream ends instead of absorbing audio.
+            if let pipeline, !pipeline.send(audio: bytes) { inputClosed(stream) }
         case .ended(let stream, _):
             let pipeline = state.withLock { state -> RightyoAmbientPipeline? in
                 guard let active = state.active, active.stream == stream else { return nil }
@@ -400,6 +402,20 @@ extension AmbientRightyoRouter {
             await pipeline.stop()
             self.state.withLock { $0.runs[stream]?.reaped = true }
         }
+    }
+
+    /// The active child refused audio: end its stream at the gate and tell the peer, once.
+    fileprivate func inputClosed(_ stream: UUID) {
+        let (connection, listener) = state.withLock { state -> (UUID?, WebSocketListener?) in
+            guard state.active?.stream == stream else { return (nil, nil) }
+            state.active = nil
+            return (state.runs[stream]?.connection, state.listener?.value)
+        }
+        guard let connection else { return }
+        retire(stream)
+        emit("ambient_input_closed", detail: nil)
+        Task { await listener?.ambientFailed(stream: stream, connection: connection,
+                                             message: "ambient stopped: listener input closed") }
     }
 
     /// True once no run remains; false when `grace` passes first.

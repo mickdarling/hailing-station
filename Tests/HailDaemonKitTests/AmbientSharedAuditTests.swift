@@ -37,7 +37,7 @@ import Testing
         let connected = ConnectedPeerIDs()
         let (listener, endpoint) = try await ConnectionProbeDaemon.compose(
             options, host: rig.host, hostName: "mac-test", audit: AuditLog(directory: auditDirectory),
-            log: { connected.record($0) }
+            timing: .init(eofGrace: 20, termGrace: 20), log: { connected.record($0) }
         )
         let replyEndpoint = try #require(endpoint)
         let port = try await listener.start()

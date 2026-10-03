@@ -113,13 +113,13 @@ extension ConnectionProbeDaemon {
     /// ambient dispatches (#203).
     static func compose(
         _ options: Options, host: HailHost, hostName: String, audit: AuditLog,
-        log: @escaping @Sendable (WebSocketListenerEvent) -> Void
+        timing: RightyoChildProcess.Timing = .init(), log: @escaping @Sendable (WebSocketListenerEvent) -> Void
     ) async throws -> (WebSocketListener, LocalReplyEndpoint?) {
         var authorizer = options.authorizer
         var ambient: (any AmbientListenerWiring)?
         #if os(macOS)
         if let ambientOptions = options.ambient {
-            let router = try await ambientRouter(ambientOptions, host: host, audit: audit, log: log)
+            let router = try await ambientRouter(ambientOptions, host: host, timing: timing, audit: audit, log: log)
             authorizer = PersonalTerminalAuthorizer(ambientAudio: AmbientAudioGate(target: ambientOptions.target,
                                                                                   sink: router))
             ambient = router

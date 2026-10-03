@@ -55,6 +55,61 @@ import Testing
         await env.listener.stop(reason: "synthetic test complete")
     }
 
+    @Test func aChildThatDiesDuringAStuckDispatchEndsTheStreamOnTheNextSegment() async throws {
+        let fake = try FakeRightyo("/usr/bin/sed \"s/tool-demo/$7/g\" events.jsonl\n: > exited.txt")
+        defer { fake.cleanUp() }
+        try fake.install(fixture: "tool-events.jsonl")
+        let env = try await ambientRig(fake, timing: .init(eofGrace: 1, termGrace: 1))
+        await env.rig.adapter.holdHandoff()
+        let pair = try await FallbackSocketPair.connect(port: env.port, selecting: [RecipientTestRig.target])
+        defer { pair.close() }
+        let stream = UUID()
+        try await recipientSocketSend(audio(stream, 0), on: pair.sockets[0])
+        await env.rig.adapter.waitForHandoff()
+        #expect(await eventually { (try? fake.recorded("exited.txt")) != nil })
+        try await Task.sleep(for: .milliseconds(200))
+        // The run is stuck in the held dispatch; the child is gone, so its input refuses audio.
+        for sequence in 1...20 {
+            try await recipientSocketSend(audio(stream, sequence), on: pair.sockets[0])
+            try await Task.sleep(for: .milliseconds(25))
+        }
+        #expect(try await ambientError(on: pair.sockets[0]) == "ambient stopped: listener input closed")
+        #expect(await env.gate.activeStream == nil)
+        #expect(env.router.liveRuns == 1)
+        await env.rig.adapter.releaseHandoff()
+        #expect(await eventually { env.router.liveRuns == 0 })
+        await env.listener.stop(reason: "synthetic test complete")
+    }
+
+    @Test func aSupersededStreamsLateFailureIsNotReportedAgainstTheCurrentStream() async throws {
+        // The first child emits a request and idles; every later child just idles.
+        let fake = try FakeRightyo("""
+            if [ -e first ]; then exec /bin/sleep 60; fi
+            : > first
+            /usr/bin/sed "s/tool-demo/$7/g" events.jsonl
+            exec /bin/sleep 60
+            """)
+        defer { fake.cleanUp() }
+        try fake.install(fixture: "tool-events.jsonl")
+        let env = try await ambientRig(fake, timing: .init(eofGrace: 0.2, termGrace: 2))
+        await env.rig.adapter.holdHandoff()
+        await env.rig.adapter.failHandoff()
+        let pair = try await FallbackSocketPair.connect(port: env.port, selecting: [RecipientTestRig.target])
+        defer { pair.close() }
+        try await recipientSocketSend(audio(UUID(), 0), on: pair.sockets[0])
+        await env.rig.adapter.waitForHandoff()
+        let current = UUID()
+        try await recipientSocketSend(audio(current, 0), on: pair.sockets[0])
+        try await pair.barrier()
+        #expect(await env.gate.activeStream == current)
+        // The old stream's dispatch is now refused; its run fails after the replacement started.
+        await env.rig.adapter.releaseHandoff()
+        #expect(await eventually { env.router.liveRuns == 1 })
+        try await pair.barrier()
+        #expect(await env.gate.activeStream == current)
+        await env.listener.stop(reason: "synthetic test complete")
+    }
+
     @Test func daemonStopIsBoundedWhenADispatchNeverReturns() async throws {
         let fake = try FakeRightyo("/usr/bin/sed \"s/tool-demo/$7/g\" events.jsonl\nexec /bin/sleep 60")
         defer { fake.cleanUp() }
