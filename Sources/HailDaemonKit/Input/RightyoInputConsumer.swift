@@ -37,6 +37,21 @@ public struct RightyoHostDispatcher: RightyoDispatching {
         return RightyoDispatchReceipt(request: nil)
     }
 }
+/// Why a target id cannot be named in the reply block (#188 item 1); refused at startup, before any event. The
+/// diagnostic names the rule, never the id, so `haild rightyo` can print it as is.
+public enum RightyoTargetError: Error, Sendable, Equatable, CustomStringConvertible {
+    /// Outside the allowlist `[A-Za-z0-9][A-Za-z0-9._:-]{0,95}`, the only shape the shell-shaped block quotes safely.
+    case unsafeIdentifier
+    /// The block built for the id matches the named default guard rules, so every request would need confirmation.
+    case guarded([String])
+    public var description: String {
+        switch self {
+        case .unsafeIdentifier:
+            "target id must match [A-Za-z0-9][A-Za-z0-9._:-]{0,95} to be named in the reply block"
+        case .guarded(let rules): "target name would trigger the content guard (\(rules.joined(separator: ", ")))"
+        }
+    }
+}
 /// One explicit producer session and immutable target binding. Failures never imply rollback or permit retry.
 public actor RightyoInputConsumer {
     /// nil validates only (dry run): no delivery step exists.
@@ -68,15 +83,15 @@ public actor RightyoInputConsumer {
     /// `streamBudgetMs` is an optional ceiling on producer stream time; the default is no ceiling (#188).
     /// `dispatcher` replaces the direct `HailHost.send` step (#188 item 1); without it, `host` delivers directly
     /// and nil `host` validates only. A dispatcher with no host still delivers (it owns its own host access).
-    /// `target` is quoted verbatim into every prompt's reply block, so one that is not `replyBlockSafe` is
-    /// refused at startup rather than delivered.
+    /// `target` is quoted verbatim into every prompt's reply block, so `validateTarget` refuses an unsafe or
+    /// guarded id at startup rather than delivering it.
     public init(host: HailHost?, target: String, binding: String, session: String,
                 allowSynthetic: Bool = false, streamBudgetMs: Int? = nil,
                 dispatcher: (any RightyoDispatching)? = nil) throws {
-        guard !binding.isEmpty, Self.replyBlockSafe(target), RightyoInputEvent.identifier(session),
-              streamBudgetMs.map({ $0 >= 0 }) ?? true else {
+        guard !binding.isEmpty, RightyoInputEvent.identifier(session), streamBudgetMs.map({ $0 >= 0 }) ?? true else {
             throw RightyoInputError.unavailableBinding
         }
+        try Self.validateTarget(target)
         self.dispatcher = dispatcher ?? host.map { RightyoHostDispatcher(host: $0) }
         self.allowSynthetic = allowSynthetic
         self.target = target
@@ -84,16 +99,23 @@ public actor RightyoInputConsumer {
         self.session = session
         self.streamBudgetMs = streamBudgetMs
     }
-    /// The reply block is a shell-shaped instruction that names the target verbatim, so a target id that could
-    /// break out of that shape (whitespace of any kind, `"`, `'`, a backtick, a backslash, or a control or format
-    /// character) is refused. tmux and configured `tmux-reply:` names may legally contain spaces; such a target
-    /// is unusable for `haild rightyo` until it is renamed. The block is then one unbroken line by construction.
-    public static func replyBlockSafe(_ target: String) -> Bool {
-        let unsafe: Set<Unicode.GeneralCategory> = [.control, .format, .lineSeparator, .paragraphSeparator]
-        return !target.isEmpty && !target.unicodeScalars.contains { scalar in
-            scalar.properties.isWhitespace || "\"'`\\".unicodeScalars.contains(scalar)
-                || unsafe.contains(scalar.properties.generalCategory)
+    /// The reply block is a shell-shaped instruction that names the target verbatim, so the id must match the
+    /// allowlist `[A-Za-z0-9][A-Za-z0-9._:-]{0,95}`: every listed `kind:name` shape the adapters produce
+    /// (`tmux:demo`, `tmux-reply:main.0`, `tmux:dev.2:0`) and nothing a shell could read as syntax. tmux names may
+    /// legally contain spaces or `;`; such a target is unusable for `haild rightyo` until it is renamed. The block
+    /// for the id is then matched against the default guard rules, so an authorized name carrying a guarded word
+    /// (`tmux:sudo`) is refused here with a diagnostic instead of turning every request into
+    /// `confirmationRequired`; a daemon policy with custom guard patterns can still require confirmation, which
+    /// the consumer refuses per request as before.
+    public static func validateTarget(_ target: String) throws {
+        let alphanumeric = Set("ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789")
+        guard let first = target.first, alphanumeric.contains(first), target.count <= 96,
+              target.allSatisfy({ alphanumeric.contains($0) || "._:-".contains($0) }) else {
+            throw RightyoTargetError.unsafeIdentifier
         }
+        let hits = DangerousPatternGuard.matches(in: [RightyoInputEvent.replyBlock(target: target)],
+                                                 patterns: DangerousPatternGuard.defaults)
+        guard hits.isEmpty else { throw RightyoTargetError.guarded(hits) }
     }
     /// True means handled: guarded delivery, or validation only when initialized with no host.
     public func consume(_ event: RightyoInputEvent) async throws -> Bool {

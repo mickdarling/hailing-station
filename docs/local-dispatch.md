@@ -40,9 +40,9 @@ The response extends the reply response with one field that only dispatch answer
 {"delivered":0,"request":null,"error":"dispatch refused [unknownConnection]: no live connection has that id","code":"noRecipient"}
 ```
 
-`request` is the ID the pane receives in the `TmuxReplyAdapter` bridge envelope; the prompt's
-[reply block](rightyo-input.md#the-reply-block) points the session at that field. `haild reply --request
-<uuid>` then publishes through the existing correlated path to exactly that connection; a reply carrying
+`request` is the ID the pane receives in the `TmuxReplyAdapter` bridge envelope; the bridge retains it outside
+the model prompt and attaches it itself, while the prompt's [reply block](rightyo-input.md#the-reply-block)
+asks the session only for a brief spoken answer. `haild reply --request <uuid>` then publishes through the existing correlated path to exactly that connection; a reply carrying
 that ID reaches nobody else, and once the record is gone it reaches nobody. Reply responses omit the key
 byte for byte as before. `code` reuses the reply vocabulary (`noRecipient` for a connection that cannot be
 the recipient, `publicationFailed` for every refusal of a live, selecting connection); `error` names the

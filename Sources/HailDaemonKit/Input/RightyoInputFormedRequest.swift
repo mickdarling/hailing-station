@@ -56,17 +56,16 @@ extension RightyoInputEvent {
     /// Tells the receiving session how to answer so the phone hears it (#188 item 1). Appended last to both
     /// layouts, after the JSON, so the session cuts the prompt at the LAST occurrence of `replyBlockPrefix`: a
     /// formed text carrying it is refused (`carriesReplyPrefix`), raw turn text stays inside the JSON's string
-    /// values, and nothing follows the host's block. The reply request
-    /// id is minted by the daemon after this text is formed, so the block points at the `request` field of the
-    /// `BridgeRequest` envelope the pane receives rather than embedding it; a legacy adapter delivers no
-    /// envelope, and there the request-less shape reaches a phone only under the single-terminal fallback.
-    /// ASCII, one line, never the marker, deterministic: `target` (the listed id the binding was pinned from)
-    /// is its only variable part and appears twice.
-    static let replyBlockPrefix = " Reply: run haild reply "
+    /// values, and nothing follows the host's block. The block never mentions a request UUID: on a conforming
+    /// programmatic bridge the bridge retains the envelope's `request` outside the model prompt and publishes
+    /// the session's output with it itself (request-origin-routing.md), so asking the session to echo one is
+    /// forbidden; on a plain pane there is no envelope, and the request-less `haild reply --say` reaches a phone
+    /// only under the single-terminal fallback. ASCII, one line, never the marker, deterministic: `target` (the
+    /// listed id the binding was pinned from, allowlisted by the consumer) is its only variable part.
+    static let replyBlockPrefix = " Reply: answer briefly; "
     static func replyBlock(target: String) -> String {
-        replyBlockPrefix + target + " --request <request id from this envelope> --say \"<spoken answer>\""
-            + " (or --text); without an envelope request id run haild reply " + target
-            + " --say \"<spoken answer>\" (single-terminal fallback only)."
+        replyBlockPrefix + "it is spoken aloud. If no reply bridge publishes this session's output, run haild reply "
+            + target + " --say \"<spoken answer>\" (single-terminal fallback only)."
     }
     /// `speakers` is the advertised capability (`anonymous` or `enrolled`) so the session can weigh roles. Without a
     /// formed request the body is the compact JSON alone, byte for byte as before; with one it is
