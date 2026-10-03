@@ -57,7 +57,8 @@ Each gate refuses before the handoff; nothing falls back to whichever connection
 | `connectionEnded` | the peer is still listed but its transport has ended |
 | `sessionNotReady` | the connection has not completed Hello |
 | `notAuthorized` | the session's authorizer refuses the final text frame the dispatch builds (judged exactly once, before the listing; its frame id is the utterance id the host receives), so a connection-probe session can never reach `HailHost.send` whatever its selection says |
-| `targetNotSelected` | the connection selects nothing or another target; rechecked after the listing and, inside `deliver`, again before the handoff, so a `select` that lands while the dispatch is suspended refuses before anything is sent |
+| `targetNotSelected` | the connection selects nothing or another target; rechecked after authorization, after the listing and, inside `deliver`, again before the handoff, so a `select` that lands while the dispatch is suspended refuses before anything is sent |
+| `selectionChanged` | the connection's selection generation moved while the dispatch was suspended, even back to the same target (A → B → A); the generation seen at the first check is required at every later one and is the one `deliver` snapshots, so a reselection revokes the pending dispatch and nothing is sent |
 | `bindingMismatch` | the current listing binding differs from the pinned one, or the target is not listed alive |
 | `confirmationRequired` | the policy answered with a read-back; the minted record is removed and nothing is delivered |
 | `capacityExceeded` | the connection already holds 64 live requests |
@@ -120,7 +121,9 @@ Synthetic only, with `DEVELOPER_DIR=/Applications/Xcode.app/Contents/Developer`:
   revoked and answers `connectionLost`, a closing peer refuses `connectionEnded`, a caller cancelled after
   the handoff leaves a live peer's record intact and routable, a caller cancelled before the handoff
   sends nothing, a `select` landing while the dispatch is suspended in the listing refuses before any
-  handoff, and the dispatch authorizes exactly one frame whose id is the utterance id.
+  handoff, reselecting the same target (A → B → A) during the listing refuses `selectionChanged` with
+  nothing sent and no record minted, and the dispatch authorizes exactly one frame whose id is the
+  utterance id.
 - `HostReplyRecipientRoutingTests`: a spoken and a dispatched request interleave on one connection while
   a second connection selecting the same target stays silent.
 - `LocalReplyEndpointTests`: the exact wire shape over the socket mints an owned request that the pane's

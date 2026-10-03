@@ -55,7 +55,8 @@ public struct LocalDispatchRequest: Codable, Sendable, Equatable {
 /// Stable dispatch refusals. The wire `code` reuses the reply vocabulary; `error` names the exact reason.
 public enum LocalDispatchRefusal: String, Error, Sendable, Equatable {
     case unsupported, unknownConnection, connectionEnded, sessionNotReady, notAuthorized, targetNotSelected
-    case bindingMismatch, confirmationRequired, capacityExceeded, deliveryRefused, ownershipLost, connectionLost
+    case selectionChanged, bindingMismatch, confirmationRequired, capacityExceeded, deliveryRefused
+    case ownershipLost, connectionLost
 
     public var message: String {
         let reason = switch self {
@@ -65,6 +66,7 @@ public enum LocalDispatchRefusal: String, Error, Sendable, Equatable {
         case .sessionNotReady: "connection has not negotiated"
         case .notAuthorized: "connection is not authorized to send text"
         case .targetNotSelected: "connection does not select that target"
+        case .selectionChanged: "connection reselected while the dispatch was pending"
         case .bindingMismatch: "target binding differs from the pinned binding"
         case .confirmationRequired: "target requires confirmation at the Mac"
         case .capacityExceeded: "connection holds too many live requests"
@@ -78,7 +80,7 @@ public enum LocalDispatchRefusal: String, Error, Sendable, Equatable {
     public var code: LocalReplyRefusal {
         switch self {
         case .unknownConnection, .connectionEnded, .sessionNotReady, .notAuthorized, .targetNotSelected,
-             .connectionLost: .noRecipient
+             .selectionChanged, .connectionLost: .noRecipient
         default: .publicationFailed
         }
     }
@@ -129,7 +131,9 @@ extension HostSession {
     /// adapter accepts only legacy generic input and so cannot own a reply.
     func dispatch(_ request: LocalDispatchRequest) async throws -> UUID? {
         try Task.checkCancellation()
-        let version = try requireSelection(of: request)
+        // The selection generation seen here is the one the dispatch is bound to: a reselection of the same
+        // target while this call is suspended (A → B → A) revokes it like any other selection change.
+        let (version, generation) = try requireSelection(of: request)
         // One final text frame, judged once by the authorizer every phone frame passes; its id is the
         // utterance id the host receives, and the session attributes it to the fixed local device, not to
         // anything the caller wrote. A connection-probe session yields nothing, whatever it selects.
@@ -138,14 +142,15 @@ extension HostSession {
             payload: .text(TextPayload(text: request.text))
         ), device: Self.dispatchDevice) else { throw LocalDispatchRefusal.notAuthorized }
         input.expectedBinding = request.binding
+        try requireSelection(of: request, generation: generation)
         let listing = try await host.registry.listing()
         guard let listed = listing.first(where: { $0.info.id == request.target }), listed.info.alive,
               listed.binding == request.binding else { throw LocalDispatchRefusal.bindingMismatch }
-        // Selection may have moved during the listing; `deliver` rechecks it and the binding again.
-        try requireSelection(of: request)
+        // No suspension between this check and `deliver`'s own generation snapshot: the two cannot diverge.
+        try requireSelection(of: request, generation: generation)
         switch await deliver(input) {
         case .delivered(let owner): return owner
-        case .selectionChanged: throw LocalDispatchRefusal.targetNotSelected
+        case .selectionChanged: throw LocalDispatchRefusal.selectionChanged
         case .confirmationRequired: throw LocalDispatchRefusal.confirmationRequired
         case .unowned: throw LocalDispatchRefusal.ownershipLost
         case .refused(.rateLimited, _): throw LocalDispatchRefusal.capacityExceeded
@@ -161,11 +166,15 @@ extension HostSession {
         if let owner { replyRequests[owner] = nil }
     }
 
+    /// Negotiated, selecting the target and, once bound, still on the captured selection generation.
     @discardableResult
-    private func requireSelection(of request: LocalDispatchRequest) throws -> Int {
+    private func requireSelection(
+        of request: LocalDispatchRequest, generation: UUID? = nil
+    ) throws -> (version: Int, generation: UUID) {
         guard case .ready(let version) = state else { throw LocalDispatchRefusal.sessionNotReady }
         guard selectedTarget == request.target else { throw LocalDispatchRefusal.targetNotSelected }
-        return version
+        if let generation, generation != selectionGeneration { throw LocalDispatchRefusal.selectionChanged }
+        return (version, selectionGeneration)
     }
 }
 

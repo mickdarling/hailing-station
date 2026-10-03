@@ -93,6 +93,35 @@ import Testing
         #expect(await session.replyRequests.isEmpty)
     }
 
+    @Test func reselectingTheSameTargetDuringTheListingRevokesTheDispatch() async throws {
+        let adapter = GatedListingFakeAdapter(AdapterTarget(name: "reply", binding: "binding"))
+        let registry = Registry()
+        try await registry.register(adapter)
+        try await registry.register(FakeAdapter(kind: "other", targets: [AdapterTarget(name: "x", binding: "b")]))
+        var policy = Policy()
+        try policy.allow("tmux:reply", binding: "binding", tier: .open)
+        try policy.allow("other:x", binding: "b", tier: .open)
+        let host = try HailHost(registry: registry, store: InMemoryPolicyStore(policy))
+        let session = HostSession(host: host, authorizer: PersonalTerminalAuthorizer(), hostName: "mac-test")
+        _ = await session.receive(helloFrame())
+        _ = await session.receive(sessionFrame(payload: .control(.select(targetID: "tmux:reply"))))
+        let bound = await session.selectionGeneration
+        await adapter.gateNextListing()
+        async let arrival: Void = adapter.nextListingArrival()
+        let request = dispatchRequest(connection: UUID(), target: "tmux:reply", binding: "binding")
+        let dispatch = Task { try await session.dispatch(request) }
+        await arrival
+        // A → B → A: the target reads as selected again, but the generation the dispatch was bound to is gone.
+        _ = await session.receive(sessionFrame(payload: .control(.select(targetID: "other:x"))))
+        _ = await session.receive(sessionFrame(payload: .control(.select(targetID: "tmux:reply"))))
+        #expect(await session.selectedTarget == "tmux:reply")
+        #expect(await session.selectionGeneration != bound)
+        await adapter.releaseListing()
+        await #expect(throws: LocalDispatchRefusal.selectionChanged) { try await dispatch.value }
+        #expect(await adapter.deliveries.isEmpty)
+        #expect(await session.replyRequests.isEmpty)
+    }
+
     @Test func selectionMovingDuringTheListingRefusesTheDispatchBeforeAnyHandoff() async throws {
         let adapter = GatedListingFakeAdapter(AdapterTarget(name: "reply", binding: "binding"))
         let registry = Registry()
