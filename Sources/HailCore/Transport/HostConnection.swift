@@ -13,6 +13,8 @@ public enum HostConnectionFailure: Error, Equatable, Sendable {
 /// Owns exactly one endpoint's socket lifecycle. Generation checks make callbacks from replaced sockets inert.
 public actor HostConnection {
     public static let subprotocolName = "hail.v1"
+    /// Advertised only when the host's ambient-listening flags are set (#203).
+    public static let streamAudioCapability = "stream_audio"
     public typealias Observer = @Sendable (HostConnectionSnapshot) async -> Void
     public typealias ReplyObserver = @Sendable (HostReplyEvent) async -> Void
     public typealias Sleep = @Sendable (Duration) async throws -> Void
@@ -47,6 +49,9 @@ public actor HostConnection {
     var wantsConnection = false
     var pendingPings: [String: ContinuousClock.Instant] = [:]
     var desiredTargetID: String?
+    /// The ambient stream last sent (#203), the socket generation it is bound to, and a gate refusal for it.
+    var ambientStream: (id: UUID, connection: UUID)?
+    var ambientRefusal: (stream: UUID, failure: HostConnectionFailure)?
     public init(
         endpoint: HostEndpoint,
         connector: any WebSocketConnecting = URLSessionWebSocketConnector(),
@@ -123,7 +128,7 @@ public actor HostConnection {
         _ = await beginDisconnect()
     }
 
-    private func requireReady(capability: String) throws {
+    func requireReady(capability: String) throws {
         guard snapshot.state == .ready, socket != nil else { throw HostConnectionFailure.notReady }
         guard snapshot.capabilities.contains(capability) else {
             throw HostConnectionFailure.unsupportedCapability(capability)

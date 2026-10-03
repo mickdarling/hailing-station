@@ -1,5 +1,5 @@
 public import Foundation
-public import HailProtocol
+import HailProtocol
 public import Observation
 /// Main-actor model for the UI. Every endpoint owns a separate actor and a separate stale-callback token.
 @MainActor
@@ -97,11 +97,6 @@ public final class HostConnectionStore {
     public func sendEscape(host id: HostEndpoint.Identifier, targetID: String) async throws {
         guard let connection = connections[id] else { throw HostConnectionFailure.notReady }
         try await connection.sendEscape(to: targetID)
-    }
-    /// Ambient audio pass-through (#203); `HostConnection.sendAudio` enforces readiness and `stream_audio`.
-    public func sendAudio(_ audio: AudioPayload, host id: HostEndpoint.Identifier) async throws {
-        guard let connection = connections[id] else { throw HostConnectionFailure.notReady }
-        try await connection.sendAudio(audio)
     }
     public func remove(_ id: HostEndpoint.Identifier) async {
         tokens[id] = nil

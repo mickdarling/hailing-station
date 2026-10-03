@@ -1,5 +1,5 @@
 import Foundation
-import HailProtocol
+public import HailProtocol
 
 extension HostConnection {
     func negotiate(
@@ -60,7 +60,11 @@ extension HostConnection {
             snapshot.receivedTargetList = true
             await observer(snapshot)
         case .error(let code, let message):
-            throw HostConnectionFailure.remote("\(code.rawValue): \(message)")
+            let failure = HostConnectionFailure.remote("\(code.rawValue): \(message)")
+            // The gate (#205) ends only the ambient stream and keeps the connection. Its error frames carry
+            // no stream id, so they are recognised by the gate's "ambient" message prefix.
+            guard message.hasPrefix("ambient"), let stream = ambientStream else { throw failure }
+            ambientRefusal = (stream.id, failure)
         default:
             throw HostConnectionFailure.malformed("unexpected control frame")
         }
@@ -71,6 +75,34 @@ extension HostConnection {
             throw HostConnectionFailure.unsupportedCapability("receive_replies")
         }
         await replyObserver(HostReplyEvent(endpointID: snapshot.id, frame: frame))
+    }
+
+    /// Sends one ambient segment (#203) in the existing `.audio` frame, addressed to the selected destination as
+    /// the host gate requires. A stream is bound to the socket generation it started on; after a reconnect or
+    /// a gate refusal for it, every further segment of that stream throws so the streamer releases the mic.
+    public func sendAudio(_ audio: AudioPayload) async throws {
+        try requireReady(capability: Self.streamAudioCapability)
+        guard let targetID = desiredTargetID, let socket else { throw HostConnectionFailure.notReady }
+        guard audio.reply == nil, let stream = audio.streamID, audio.codec == .pcm16,
+              audio.sampleRate == AmbientAudioFormat.sampleRate, audio.channels == AmbientAudioFormat.channels,
+              audio.bytes.count <= AmbientAudioFormat.maxSegmentBytes else {
+            throw HostConnectionFailure.malformed("ambient audio segment is malformed")
+        }
+        if let refusal = ambientRefusal, refusal.stream == stream { throw refusal.failure }
+        let connection = snapshot.connectionGeneration
+        if let current = ambientStream, current.id == stream {
+            guard current.connection == connection else { throw HostConnectionFailure.notReady }
+        } else {
+            guard audio.sequence == 0 else {
+                throw HostConnectionFailure.malformed("ambient stream must start at sequence 0")
+            }
+            ambientStream = (stream, connection)
+        }
+        let frame = Frame(
+            version: snapshot.negotiatedVersion ?? ProtocolVersion.current,
+            timestamp: wallNow(), target: targetID, source: deviceName, payload: .audio(audio)
+        )
+        try await socket.send(FrameCoding.encode(frame))
     }
 
     func sendPing(generation token: UInt64, requiresDeadline: Bool = false) async throws {

@@ -147,4 +147,43 @@ private func int16Samples(_ payloads: [AudioPayload]) -> [Int16] {
         #expect(await attempts.payloads.allSatisfy { !$0.isFinal })
         await streamer.stop()
     }
+
+    @Test func aGateRefusalStopsTheStreamerAndReleasesTheMicrophone() async throws {
+        let (connection, socket) = try await readyAudioConnection(capabilities: ["select_target", "stream_audio"])
+        let capture = FakeAudioCapture()
+        let streamer = AmbientAudioStreamer(capture: capture) { try await connection.sendAudio($0) }
+
+        try streamer.start()
+        for block in 0..<2 { try capture.yield(sineBuffer(offset: block * 4_800)) }
+        try await waitUntil { try await !audioFrames(socket).isEmpty }
+        try await socket.push(.error(code: .rateLimited, message: "ambient rate exceeded"))
+        // Live capture keeps producing audio; the next segment of the refused stream ends it.
+        for block in 2..<100 where streamer.isStreaming {
+            try capture.yield(sineBuffer(offset: block * 4_800))
+            try await Task.sleep(for: .milliseconds(20))
+        }
+        #expect(!streamer.isStreaming)
+        #expect(capture.stopCount >= 1)
+        let failure = await streamer.failure as? HostConnectionFailure
+        #expect(failure == .remote("rate_limited: ambient rate exceeded"))
+        #expect(await connection.currentSnapshot().state == .ready)
+        #expect(try await audioFrames(socket).allSatisfy {
+            if case .audio(let audio) = $0.payload { return !audio.isFinal }
+            return false
+        })
+        await connection.disconnect()
+    }
+
+    @Test func droppingTheStreamerStopsCapture() async throws {
+        let capture = FakeAudioCapture()
+        let sent = SentAudio()
+        var streamer: AmbientAudioStreamer? = AmbientAudioStreamer(capture: capture) { await sent.send($0) }
+        try streamer?.start()
+        try capture.yield(sineBuffer())
+        streamer = nil
+        #expect(streamer == nil)
+
+        try await waitUntil { await MainActor.run { capture.stopCount >= 1 } }
+        try await waitUntil { await sent.payloads.last?.isFinal == true }
+    }
 }
