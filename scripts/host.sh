@@ -174,6 +174,17 @@ release_lock() { exec 9>&-; }
 nap() { sleep "$1" 9>&-; }
 lctl() { "$LAUNCHCTL" "$@" 9>&-; }
 
+# The daemon refuses a config directory (policy, audit, reply socket) that is not a real directory owned by this user
+# with no group or other permissions (PolicyFile.check), so it is checked before anything is stopped.
+preflight_config_dir() {
+  local mode owner
+  [[ -d "$CONFIG_DIR" && ! -L "$CONFIG_DIR" ]] || fail "$CONFIG_DIR must be a directory, not a link"
+  mode="$(stat -f %Lp "$CONFIG_DIR")"
+  owner="$(stat -f %u "$CONFIG_DIR")"
+  [[ "$owner" == "$(id -u)" ]] || fail "$CONFIG_DIR must be owned by you"
+  (( (8#$mode & 8#077) == 0 )) || fail "$CONFIG_DIR must be private: chmod 700 \"$CONFIG_DIR\""
+}
+
 # The commit relinks run after rollback is disarmed, so everything they need is checked before anything is stopped.
 preflight_links() {
   local path
@@ -306,14 +317,19 @@ roll_back() {
   rm -f "$PLIST.next"
   if [[ "$STAGE" == stopping ]]; then
     # Nothing new started and the managed agent untouched; a daemon still serving keeps its socket and log.
-    echo "nothing new was started; the legacy job was asked to stop and may still exit; check scripts/host.sh status" >&2
+    echo "nothing new was started; a job that was asked to stop may still exit; check scripts/host.sh status" >&2
     release_lock
     exit 1
   fi
   # From "managed-stopped" on, no other daemon owns the socket (the legacy job unloaded), so clean up before the
   # restore is judged; stop_job is idempotent if the managed job is already down.
   if [[ "$STAGE" != stopping ]]; then
-    stop_job "$LABEL" || echo "error: the managed haild did not unload" >&2
+    if ! stop_job "$LABEL"; then
+      # Still loaded: leave it, its socket and its plist alone; a restore could not start over it anyway.
+      echo "error: the new haild did not unload; it was left running; check scripts/host.sh status" >&2
+      release_lock
+      exit 1
+    fi
     # A crashed daemon can leave its socket behind, which would stop the restored one from starting; its log could
     # also still hold a readiness line, so it is set aside before the restore is judged.
     rm -f "$SOCKET"
@@ -343,6 +359,7 @@ restart() {
   # Peer endpoints and session IDs are not for other local accounts.
   mkdir -p "$AGENTS" "$LOGS" "$BIN"
   chmod 0700 "$LOGS"
+  preflight_config_dir
   preflight_links
   # Everything that can be checked is checked before the running daemon is touched.
   write_plist "$PLIST.next" "$program"
@@ -357,8 +374,9 @@ restart() {
   trap 'roll_back "restart was interrupted"' INT TERM HUP
   trap 'if [[ "$IN_FLIGHT" == true ]]; then roll_back "restart stopped unexpectedly"; fi; release_lock' EXIT
   stop_job "$LEGACY_LABEL" || roll_back "the legacy haild job did not unload within ${READY_SECONDS}s"
-  STAGE=managed-stopped
+  # Still "stopping" until launchd confirms the managed job is gone: one that refuses to unload keeps its socket.
   stop_job "$LABEL" || roll_back "the managed haild job did not unload within ${READY_SECONDS}s"
+  STAGE=managed-stopped
   # Keep the previous run's log for diagnosis; readiness is judged on a fresh one.
   if [[ -f "$LOGS/haild.err.log" ]]; then mv -f "$LOGS/haild.err.log" "$LOGS/haild.err.log.1"; fi
   rm -f "$SOCKET"

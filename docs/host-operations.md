@@ -4,7 +4,7 @@ How to install, run and check the Mac host daemon (#246). The LaunchAgent and th
 
 ## Configure
 
-Create `~/.config/hail/host.json`:
+Create the config directory privately (`mkdir -m 700 ~/.config/hail`; the daemon refuses one that other accounts can read), then `~/.config/hail/host.json`:
 
 ```json
 {

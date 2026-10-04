@@ -17,6 +17,8 @@ export HAIL_LAUNCHCTL="$scratch/launchctl"
 host="$repo_root/scripts/host.sh"
 jobs="$scratch/jobs"
 mkdir -p "$HAIL_CONFIG_DIR" "$jobs"
+# The daemon requires a private config directory.
+chmod 700 "$HAIL_CONFIG_DIR"
 domain="gui/$(id -u)"
 
 fail() { echo "test-host: $*" >&2; exit 1; }
@@ -49,7 +51,9 @@ mode="\$(cat "$scratch/mode")"
 case "\$1" in
   bootout)
     # stuck-legacy: the legacy job ignores bootout, like a daemon that will not shut down.
-    [[ "\$mode" == stuck-legacy && "\$2" == *hailing-station-session ]] || rm -f "$jobs/\${2##*/}" ;;
+    [[ "\$mode" == stuck-legacy && "\$2" == *hailing-station-session ]] && exit 0
+    [[ "\$mode" == stuck-managed && "\$2" == *com.hailingstation.haild ]] && exit 0
+    rm -f "$jobs/\${2##*/}" ;;
   bootstrap)
     [[ "\$mode" == bootstrap-fails ]] && exit 5
     label="\$(plutil -extract Label raw -o - "\$3")"
@@ -257,6 +261,22 @@ ln -s "$scratch/haild-two" "$HAIL_BIN_DIR/haild"
 set +e; "$host" status >/dev/null; code=$?; set -e
 [[ "$code" == 3 ]] || fail "expected status 3 with a PATH haild for another binary, got $code"
 rm -f "$HAIL_BIN_DIR/haild"; mv "$HAIL_BIN_DIR/haild.moved" "$HAIL_BIN_DIR/haild"
+
+# A config directory the daemon would refuse (not private) stops the restart before anything is stopped.
+chmod 755 "$HAIL_CONFIG_DIR"
+: > "$scratch/launchctl.calls"
+expect_failure "config directory that is not private" "$host" restart
+! grep -q '^bootout' "$scratch/launchctl.calls" || fail "a non-private config directory still stopped a job"
+chmod 700 "$HAIL_CONFIG_DIR"
+
+# A managed job that will not unload keeps running with its socket; nothing new is started.
+mode stuck-managed
+managed_before="$(cat "$jobs/com.hailingstation.haild")"
+"$host" restart > "$scratch/stuck-managed.out" 2>&1 && fail "restart succeeded over a managed job that would not unload"
+[[ -S "$HAIL_CONFIG_DIR/replies.sock" ]] || fail "rollback removed the socket of a managed job that was still loaded"
+[[ "$(cat "$jobs/com.hailingstation.haild")" == "$managed_before" ]] || fail "rollback replaced a still-loaded managed job"
+grep -q "nothing new was started" "$scratch/stuck-managed.out" || fail "rollback did not say nothing was started"
+mode ok
 
 # A second install, restart or deploy while one holds the lock is refused before it changes anything; the lock is
 # the kernel's, so it frees as soon as the holder dies.
