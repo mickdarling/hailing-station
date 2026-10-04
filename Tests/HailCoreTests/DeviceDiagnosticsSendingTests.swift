@@ -11,7 +11,7 @@ import Testing
     var defaults: UserDefaults { UserDefaults(suiteName: suite) ?? .standard }
 
     func enabledLog() -> DeviceDiagnostics {
-        let log = DeviceDiagnostics(defaults: defaults, appInfo: [.app: .token("t")], wallNow: { 5 })
+        let log = DeviceDiagnostics(defaults: defaults, appInfo: [.app: .token("0.1.87")], wallNow: { 5 })
         log.setEnabled(true)
         return log
     }
@@ -38,7 +38,7 @@ import Testing
         let store = HostConnectionStore(connector: connector, sleep: { _ in }, jitter: { 0 })
         let log = enabledLog()
         store.diagnostics = log
-        log.record(.ambientStop, [.reason: .token("route_change")])
+        log.record(.ambientStop, [.reason: .token("system_interruption")])
         await store.upsert(host)
         await store.connect(host.id)
         try await waitUntil { try await first.sentFrames().count == 1 }
@@ -80,6 +80,28 @@ import Testing
         await store.disconnect(host.id)
     }
 
+    @Test func nothingTakenBeforeLoggingWasTurnedOffIsSent() async throws {
+        defer { defaults.removePersistentDomain(forName: suite) }
+        let host = try endpoint()
+        let socket = ScriptedSocket()
+        let connector = ScriptedConnector()
+        await connector.enqueue(.socket(socket), for: host.url)
+        let gate = SleepGate()
+        let store = HostConnectionStore(connector: connector, sleep: { try await gate.sleep($0) }, jitter: { 0 })
+        let log = enabledLog()
+        store.diagnostics = log
+        await store.upsert(host)
+        await store.connect(host.id)
+        try await waitUntil { try await socket.sentFrames().count == 1 }
+        try await socket.push(Self.hello(collecting: true))
+        try await waitUntil { await gate.isWaiting() }
+        log.setEnabled(false)
+        await gate.fire()
+        for _ in 0..<50 { await Task.yield() }
+        #expect(try await Self.diagnostics(socket).isEmpty)
+        await store.disconnect(host.id)
+    }
+
     @Test func ambientStartStopCausesAndHostRefusalsAreRecorded() async throws {
         defer { defaults.removePersistentDomain(forName: suite) }
         let harness = AmbientListeningControllerTests.Harness()
@@ -95,7 +117,7 @@ import Testing
         try capture.yield(sineBuffer(offset: 4_800))
         try capture.yield(sineBuffer(offset: 9_600))
         try await waitUntil { await MainActor.run { !controller.isOn } }
-        let events = try #require(log.nextBatch())
+        let events = try #require(log.nextBatch()).events
         #expect(events.map(\.name) == [.ambientStart, .ambientStop, .ambientStart, .hostRefusal, .ambientStop])
         #expect(events[1].fields == [.reason: .token("user")])
         #expect(events[3].fields == [.code: .token("rate_limited")])
