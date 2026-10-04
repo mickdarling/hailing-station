@@ -64,5 +64,16 @@ haild diagnostics clear
 - Reading never creates a file and never follows a link. It refuses a directory open to group or others, and a file that isn't yours or is over 8 MiB. A line that no longer decodes under the strict rules is skipped.
 - `--since` compares against host receive time.
 
+## App log (shipped in the fourth slice; the toggle comes in the fifth)
+
+`HailCore.DeviceDiagnostics` is the phone's log. It is **off by default**; the choice is saved in `UserDefaults` (`hailing-station.device-diagnostics.v1`).
+
+- While it's off, nothing is recorded or sent. Turning it off clears the buffer.
+- While it's on, events go into an in-memory ring buffer of 500 events, oldest dropped first. Nothing is written to disk.
+- Recording is rate-limited (a burst of 60 events, then 1 per second). An event that fails the protocol bounds is dropped. All drops are counted and reported as one `events_dropped` event (`code: app_buffer`) at the head of the next batch.
+- Batches hold at most 32 events. Sending is paced to the host's per-session budget (120, then 2 per second), so haild doesn't drop. Batches go only to the first ready host that advertises `device_diagnostics`. A failed send puts the batch back, and the buffer is flushed when a collecting host is next ready.
+- Recorded: connection state changes (with reconnect attempt), `app_info` on every ready connection (app version and build, OS version, device class; never the device name), ambient start, ambient stop with cause (`user`, `permission_denied`, `binding_changed`, `background`, `start_failed`, `capture_ended`, `system_interruption`, `host_refused` with the host's code, `send_failed`), host refusals, route changes (AVAudioSession reason and input port type), interruptions (reason, should-resume), media-services resets, app background and foreground, capture ended by the system, reply playback start, end and failure, and the echo guard's on and off edges.
+
 ## Controls (planned in the next #234 slice; not shipped yet)
+
 - **App:** a "Diagnostics logging" toggle, off by default. While it is off the app records and sends nothing, and turning it off clears the app's buffer. While it is on the app keeps a bounded ring buffer, sends batches only to a host that advertises `device_diagnostics`, and says when the host isn't collecting.
