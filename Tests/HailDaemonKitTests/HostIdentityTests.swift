@@ -26,6 +26,15 @@ import Testing
         }
     }
 
+    @Test func emptyOverrideIsRefused() {
+        #expect(throws: HostIdentityError.invalidOverride("")) {
+            try HostIdentity.resolve(
+                environment: [HostIdentity.environmentKey: ""],
+                localHostName: { "TheMachine" }, networkHostName: { "other" }
+            )
+        }
+    }
+
     @Test func networkNameIsUsedOnlyWithoutALocalHostName() throws {
         let identity = try HostIdentity.resolve(
             environment: [:], localHostName: { nil }, networkHostName: { "Mac-Mini.LAN." }

@@ -15,7 +15,7 @@ The iOS or iPadOS application owns the audio session, input and output selection
 
 Each Mac runs a small daemon. Today its personal-testing listener negotiates the protocol, applies target policy, lists permitted targets, and routes accepted input through a tmux adapter. It does **not** authenticate terminal identities or provide TLS. The intended design adds those controls and returns provider-neutral typed output events; adapters are not limited to terminals or AI tools.
 
-The daemon and `haild reply` share one host identity (#246): `HAIL_HOST_ID` when set, otherwise the Mac's LocalHostName as `<name>.local`, lowercase. Network name resolution is used only when no LocalHostName exists, because it changes with the network and made replies fail as `sourceHostMismatch`.
+The daemon and `haild reply` share one host identity (#246): `HAIL_HOST_ID` when set, otherwise the Mac's LocalHostName as `<name>.local`, lowercase. Network name resolution is used only when no LocalHostName exists, because it changes with the network and made replies fail as `sourceHostMismatch`. A `HAIL_HOST_ID` override must be set both for the daemon and for the target sessions that run `haild reply`. The daemon resolves its identity once at startup, so restart it after renaming the Mac.
 
 The intended host-owned capture and rendering contract is detailed in [host-owned session I/O](host-owned-session-pipeline.md). Today, ordinary tmux output is **not** automatically captured and returned: the working spoken path depends on the target invoking `haild reply`. The proposal replaces that dependency with observed, normalized provider events while retaining the explicit reply command for manual announcements.
 

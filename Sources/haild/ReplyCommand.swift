@@ -119,7 +119,12 @@ private func replyOptions(_ arguments: ArraySlice<String>) throws -> ReplyOption
         guard let value = rest.popFirst() else { throw ReplyCommandError.usage }
         try options.apply(flag, value: value)
     }
-    if options.host.isEmpty { options.host = try HostIdentity.resolve() }
+    if options.host.isEmpty {
+        options.host = try HostIdentity.resolve()
+    } else {
+        guard let host = HostIdentity.canonical(options.host) else { throw ReplyCommandError.usage }
+        options.host = host
+    }
     guard !options.host.isEmpty, options.text != nil || options.pcm16 != nil,
           options.pcm16 == nil || options.say == nil else {
         throw ReplyCommandError.usage

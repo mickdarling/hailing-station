@@ -359,7 +359,8 @@ do {
 } catch is RightyoInputError {
     fail("RightyO input refused; no automatic retry. Check session, lifecycle, limits and target policy.", code: 8)
 } catch HostIdentityError.invalidOverride(let value) {
-    fail("\(HostIdentity.environmentKey)=\(value) is not a host name: use letters, digits, dots and hyphens", code: 64)
+    fail("\(HostIdentity.environmentKey)=\(String(reflecting: value)) is not a host name:"
+         + " use letters, digits, dots and hyphens", code: 64)
 } catch let error as DiagnosticLogError {
     fail("device diagnostics refused: \(error); the log directory must be yours and closed to others")
 } catch ReplyCommandError.usage {

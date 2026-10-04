@@ -1,5 +1,7 @@
 public import Foundation
+#if os(macOS)
 import SystemConfiguration
+#endif
 
 public enum HostIdentityError: Error, Equatable, Sendable {
     /// `HAIL_HOST_ID` is set but is not a usable host identifier.
@@ -30,7 +32,7 @@ public enum HostIdentity {
     }
 
     /// Lowercase, trailing dot removed; nil unless the result is a DNS-style name of at most 253 bytes.
-    static func canonical(_ name: String) -> String? {
+    public static func canonical(_ name: String) -> String? {
         var value = name.lowercased()
         if value.hasSuffix(".") { value.removeLast() }
         let allowed = Set("abcdefghijklmnopqrstuvwxyz0123456789.-")
@@ -40,6 +42,10 @@ public enum HostIdentity {
     }
 
     public static func systemLocalHostName() -> String? {
+        #if os(macOS)
         SCDynamicStoreCopyLocalHostName(nil) as String?
+        #else
+        nil
+        #endif
     }
 }
