@@ -95,11 +95,14 @@ import Testing
             requestTimeout: .milliseconds(50)
         )
         try await endpoint.start()
+        let opened = ContinuousClock.now
         let idle = NWConnection(to: .unix(path: socket.path), using: .tcp)
         idle.start(queue: DispatchQueue(label: "hail.local-reply-idle-test"))
         // The server closing the idle client is the expiry itself (#208). Polling for the brief accepted state
         // could miss it entirely on a slow runner, because 50 ms can pass between two polls.
         #expect(await closedByServer(idle))
+        // A lower bound only, so a slow runner cannot fail it: the close came from the deadline, not at once.
+        #expect(opened.duration(to: .now) >= .milliseconds(50))
         #expect(await endpoint.activeConnectionCount == 0)
         idle.cancel()
         await endpoint.stop()
