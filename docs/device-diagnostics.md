@@ -45,7 +45,21 @@ haild run --bind <address> --port <port> --personal-terminal --device-diagnostic
 - Rate limits: each session gets a burst of 120 events, refilled at 2 per second. The host as a whole gets a burst of 300, refilled at 5 per second. Excess events are dropped without any reply. The next stored batch from that session starts with an `events_dropped` record (`count`, `code: host_rate_limit`).
 - A storage failure drops the events and is counted; it never reaches the phone.
 
-## Controls (planned in the next #234 slices; not shipped yet)
+## Query and clear (shipped in the third slice)
 
-- **Query and clear:** `haild diagnostics tail [--device <name>] [--since <time>]`, `haild diagnostics show <session>` and `haild diagnostics clear`.
+```sh
+haild diagnostics tail [--device <name>] [--since <90s|15m|2h|1d|ISO-8601>] [--limit <n>] [--json]
+haild diagnostics show <session-id-or-prefix> [--json]
+haild diagnostics clear
+```
+
+- `tail` prints the last 50 matching events by default, oldest first, across the rotated and current files. Each line has the host receive time (UTC), the first 8 characters of the session id, the device name, the event name, its fields as `key=value`, and the device's own time as `device_ts`, so clock skew is visible. For example:
+  `2025-09-18T12:53:21.000Z 4F2A1C3B phone a route_change reason=old_device_unavailable route=BuiltInMic device_ts=...`
+- `show` prints every event from one connection; a session id prefix of at least 4 characters is enough.
+- `--json` prints the stored records, one per line, for tools.
+- `clear` removes both files. It's safe while haild runs, because each append reopens the file.
+- Reading never creates a file and never follows a link. It refuses a directory open to group or others, and a file that isn't yours or is over 8 MiB. A line that no longer decodes under the strict rules is skipped.
+- `--since` compares against host receive time.
+
+## Controls (planned in the next #234 slice; not shipped yet)
 - **App:** a "Diagnostics logging" toggle, off by default. While it is off the app records and sends nothing, and turning it off clears the app's buffer. While it is on the app keeps a bounded ring buffer, sends batches only to a host that advertises `device_diagnostics`, and says when the host isn't collecting.

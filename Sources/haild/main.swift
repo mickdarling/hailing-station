@@ -47,6 +47,9 @@ func usage() -> Never {
            haild rightyo --session <producer-session-id> --dry-run  (JSONL on stdin)
            haild status
            haild audit verify|tail|today
+           haild diagnostics tail [--device <name>] [--since <90s|15m|2h|1d|ISO-8601>] [--limit <n>] [--json]
+           haild diagnostics show <session-id-or-prefix> [--json]
+           haild diagnostics clear
            haild run --bind <address> --port <port> --connection-probe
            haild run --bind <address> --port <port> --personal-terminal [--reply-socket <path>]
       [--single-terminal-reply-fallback]
@@ -54,6 +57,8 @@ func usage() -> Never {
       --single-terminal-reply-fallback --ambient-rightyo <absolute-rightyo-path>
       --ambient-rightyo-config <absolute-config-path> --ambient-target <target-id>
       (opt-in ambient listening; trusted network only: no TLS or peer authentication yet)
+           haild run ... --personal-terminal --device-diagnostics
+      (opt-in device diagnostics log: enumerated events only, owner-only, capped at 5 MiB)
 
     """.utf8))
     exit(64)
@@ -320,6 +325,7 @@ do {
     case "reply": try await reply(arguments.dropFirst())
     case "rightyo": try await rightyo(arguments.dropFirst())
     case "audit": try audit(arguments.dropFirst())
+    case "diagnostics": try diagnostics(arguments.dropFirst())
     case "run":
         try await ConnectionProbeDaemon.run(
             host: try await makeHost(), arguments: Array(arguments.dropFirst()),
@@ -352,6 +358,8 @@ do {
          + " and not group- or world-writable, including every parent directory", code: 64)
 } catch is RightyoInputError {
     fail("RightyO input refused; no automatic retry. Check session, lifecycle, limits and target policy.", code: 8)
+} catch let error as DiagnosticLogError {
+    fail("device diagnostics refused: \(error); the log directory must be yours and closed to others")
 } catch ReplyCommandError.usage {
     usage()
 } catch {
