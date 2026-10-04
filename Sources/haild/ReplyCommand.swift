@@ -21,7 +21,7 @@ enum ReplyCommandError: Error, CustomStringConvertible {
 
 private struct ReplyOptions {
     var target = ""
-    var host = ProcessInfo.processInfo.hostName
+    var host = ""
     var text: String?
     var pcm16: URL?
     var say: String?
@@ -119,6 +119,7 @@ private func replyOptions(_ arguments: ArraySlice<String>) throws -> ReplyOption
         guard let value = rest.popFirst() else { throw ReplyCommandError.usage }
         try options.apply(flag, value: value)
     }
+    if options.host.isEmpty { options.host = try HostIdentity.resolve() }
     guard !options.host.isEmpty, options.text != nil || options.pcm16 != nil,
           options.pcm16 == nil || options.say == nil else {
         throw ReplyCommandError.usage

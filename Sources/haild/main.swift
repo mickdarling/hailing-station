@@ -329,7 +329,7 @@ do {
     case "run":
         try await ConnectionProbeDaemon.run(
             host: try await makeHost(), arguments: Array(arguments.dropFirst()),
-            hostName: ProcessInfo.processInfo.hostName, log: logNetworkEvent
+            hostName: try HostIdentity.resolve(), log: logNetworkEvent
         )
     default: usage()
     }
@@ -358,6 +358,8 @@ do {
          + " and not group- or world-writable, including every parent directory", code: 64)
 } catch is RightyoInputError {
     fail("RightyO input refused; no automatic retry. Check session, lifecycle, limits and target policy.", code: 8)
+} catch HostIdentityError.invalidOverride(let value) {
+    fail("\(HostIdentity.environmentKey)=\(value) is not a host name: use letters, digits, dots and hyphens", code: 64)
 } catch let error as DiagnosticLogError {
     fail("device diagnostics refused: \(error); the log directory must be yours and closed to others")
 } catch ReplyCommandError.usage {
