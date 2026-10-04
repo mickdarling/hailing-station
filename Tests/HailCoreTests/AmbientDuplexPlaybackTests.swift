@@ -123,7 +123,7 @@ import Testing
 
 /// Lets observation-driven Tasks on the main actor run.
 @MainActor
-private func settle() async {
+func settle() async {
     for _ in 0..<20 { await Task.yield() }
 }
 
@@ -158,7 +158,7 @@ final class DuplexPlayer: ReplyAudioPlaying {
     }
 }
 
-private func duplexEvent() -> HostReplyEvent {
+func duplexEvent() -> HostReplyEvent {
     let reply = ReplyDescriptor(id: UUID(), hostID: "main-mac", targetID: "tmux:codex", audioStreamID: UUID())
     let audio = AudioPayload(
         codec: .pcm16, sampleRate: 24_000, channels: 1, sequence: 0,

@@ -3,16 +3,11 @@ import HailProtocol
 import Observation
 import Synchronization
 
-/// Keeps the phone's own reply out of the ambient stream (#227). While a reply is audible on this device, and for a
-/// short tail after it stops, ambient capture yields silence in place of the microphone, so the host's RightyO never
-/// transcribes the reply even where echo cancellation leaks. Only samples are zeroed: segment sizes, timing and
-/// sequence numbers stay continuous, so the host sees an unbroken stream rather than a gap.
-///
-/// Masking rises synchronously inside the guarded player, before any call that can make reply audio audible
-/// (schedule, resume, replay, unmute), so no reply sample can reach the microphone while the guard is still down.
-/// It falls, after the tail, by following `ReplyPlaybackController.isReplyAudioOutputBusy`.
+/// Keeps the phone's own reply out of the ambient stream (#227): while a reply is audible, and for a short tail
+/// after, ambient capture yields zeroed samples (timing and sequence numbers unchanged) so RightyO never hears it.
+/// Masking rises synchronously in the guarded player before any call that can make audio audible, and falls,
+/// after the tail, by following `ReplyPlaybackController.isReplyAudioOutputBusy`.
 public final class AmbientReplyEchoGuard: Sendable {
-    /// Covers output latency and room reverberation after the final reply sample.
     public static let defaultTail: Duration = .milliseconds(400)
     public typealias Now = @Sendable () -> ContinuousClock.Instant
 
@@ -64,20 +59,17 @@ public final class AmbientReplyEchoGuard: Sendable {
         return true
     }
 
-    /// Wraps the reply player so masking rises before it can make audio audible.
     @MainActor
     public func guarding(_ player: any ReplyAudioPlaying) -> any ReplyAudioPlaying {
         EchoGuardedReplyPlayer(player: player, echoGuard: self)
     }
 
-    /// Wraps ambient capture so every buffer is silenced while masking, as it leaves the tap and before any
-    /// conversion backlog, so masking follows the moment the audio was heard.
+    /// Silences each buffer as it leaves the tap, before any conversion backlog, while masking.
     public func masking(_ capture: any AudioCapturing) -> any AudioCapturing {
         EchoMaskedCapture(capture: capture, echoGuard: self)
     }
 
-    /// Voice-processing capture whose processing does not duck the app's reply output, which otherwise left
-    /// replies inaudible until listening stopped (#227).
+    /// Voice-processing capture that does not duck reply output, which otherwise left replies inaudible (#227).
     @MainActor
     public static func voiceProcessingCapture(engine: AVAudioEngine = AVAudioEngine()) throws -> AVAudioEngineCapture {
         let capture = try AmbientAudioStreamer.voiceProcessingCapture(engine: engine)
@@ -89,21 +81,23 @@ public final class AmbientReplyEchoGuard: Sendable {
         enableAdvancedDucking: ObjCBool(false), duckingLevel: .min
     )
 
-    /// Lowers masking, after the tail, when `playback` stops being audible. Only the first call takes effect;
-    /// following ends when either side is released.
+    /// Lowers masking, after the tail, when `playback` stops being audible. Only the first call takes effect.
     @MainActor
     public func follow(_ playback: ReplyPlaybackController) {
         guard state.withLock({ state in
             defer { state.following = true }
             return !state.following
         }) else { return }
+        (playback.player as? EchoGuardedReplyPlayer)?.playback = playback
         track(playback)
     }
 
+    /// Observes every input of the busy flag, past its short-circuit, so masking never outlasts an idle tail.
     @MainActor
     private func track(_ playback: ReplyPlaybackController) {
         let audible = withObservationTracking {
-            playback.isReplyAudioOutputBusy
+            _ = (playback.activeKey, playback.isPaused, playback.isMuted, playback.isCaptureSuppressed)
+            return playback.isReplyAudioOutputBusy
         } onChange: { [weak self, weak playback] in
             Task { @MainActor in
                 guard let self, let playback else { return }
@@ -114,12 +108,13 @@ public final class AmbientReplyEchoGuard: Sendable {
     }
 }
 
-/// Raises the guard before every call that can make reply audio audible. A failed call lowers it again (with the
-/// tail), since nothing became audible.
+/// Raises the guard before every call that can make reply audio audible; a failed call lowers it (with the tail).
+/// Each raise is re-checked one main-actor turn later against the followed controller, as a backstop.
 @MainActor
 final class EchoGuardedReplyPlayer: ReplyAudioPlaying {
     private let player: any ReplyAudioPlaying
     private let echoGuard: AmbientReplyEchoGuard
+    weak var playback: ReplyPlaybackController?
     private var isMuted = false
 
     init(player: any ReplyAudioPlaying, echoGuard: AmbientReplyEchoGuard) {
@@ -139,17 +134,26 @@ final class EchoGuardedReplyPlayer: ReplyAudioPlaying {
         try audible { try player.replaceQueue(with: payloads, onPlayed: onPlayed) }
     }
 
+    /// `isMuted` is already flipped here, so busy says whether unmuting is audible; idle or paused leaves it down.
     func setMuted(_ muted: Bool) {
         isMuted = muted
-        if !muted { echoGuard.setReplyAudible(true) }
+        if !muted, playback?.isReplyAudioOutputBusy ?? true { raise() }
         player.setMuted(muted)
     }
 
     func cancel() { player.cancel() }
     func pause() { player.pause() }
 
+    private func raise() {
+        echoGuard.setReplyAudible(true)
+        Task { @MainActor [weak self] in
+            guard let self, let playback else { return }
+            echoGuard.setReplyAudible(playback.isReplyAudioOutputBusy)
+        }
+    }
+
     private func audible(_ operation: () throws -> Void) throws {
-        if !isMuted { echoGuard.setReplyAudible(true) }
+        if !isMuted { raise() }
         do {
             try operation()
         } catch {
@@ -182,8 +186,7 @@ final class EchoMaskedCapture: AudioCapturing {
             continuation.finish()
         }
         let capture = capture
-        // Only a consumer that walks away stops the source; a normal finish means the source already ended, and a
-        // late stop could otherwise end a newer run.
+        // Only a consumer walking away stops the source; after a normal finish a late stop could end a newer run.
         continuation.onTermination = { @Sendable termination in
             guard case .cancelled = termination else { return }
             forward.cancel()

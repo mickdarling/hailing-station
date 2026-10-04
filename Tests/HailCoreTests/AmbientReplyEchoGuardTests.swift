@@ -82,6 +82,36 @@ final class EchoGuardClock: Sendable {
         #expect(payloads.dropFirst(4).contains { $0.bytes.contains { $0 != 0 } })
     }
 
+    @Test func unmutingWithNothingPlayingLeavesTheMicrophoneOpen() async {
+        let harness = AmbientDuplexPlaybackTests.Harness()
+        harness.playback.toggleMute()
+        harness.playback.toggleMute()
+        #expect(harness.player.calls == [.init(name: "unmute", masking: false)])
+        await settle()
+        #expect(!harness.echoGuard.isMasking)
+    }
+
+    @Test func unmutingAPausedReplyLeavesTheMicrophoneOpen() async {
+        let harness = AmbientDuplexPlaybackTests.Harness()
+        harness.playback.ingest(duplexEvent())
+        harness.playback.togglePause()
+        harness.playback.toggleMute()
+        await harness.quiet()
+        harness.playback.toggleMute()
+        #expect(harness.player.calls.last == .init(name: "unmute", masking: false))
+        await settle()
+        #expect(!harness.echoGuard.isMasking)
+    }
+
+    @Test func aRaiseWithNothingBusyIsLoweredByTheBackstop() async {
+        let harness = AmbientDuplexPlaybackTests.Harness()
+        _ = harness.playback
+        harness.echoGuard.setReplyAudible(true)
+        harness.playback.toggleMute()
+        await harness.quiet()
+        #expect(!harness.echoGuard.isMasking)
+    }
+
     @Test func voiceProcessingKeepsReplyPlaybackAtFullLevel() {
         #expect(!AmbientReplyEchoGuard.replyDucking.enableAdvancedDucking.boolValue)
         #expect(AmbientReplyEchoGuard.replyDucking.duckingLevel == .min)
