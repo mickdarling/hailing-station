@@ -58,7 +58,8 @@ haild diagnostics clear
 - A value prints bare only when it's a plain token. Anything else, for example from a hand-edited file, prints as one double-quoted string of printable ASCII with `\uXXXX` escapes, at most 64 units. A value can't add a field, a line or unquoted text.
 - `--device` takes a device token or a device name; a name is hashed to its token.
 - `show` prints every event from one connection; a session id prefix of at least 4 characters is enough.
-- `--json` prints the stored records, one per line, for tools.
+- `--json` prints the stored records, one per line, for tools. The output is printable ASCII only; any non-ASCII character becomes a `\uXXXX` escape.
+- Readers skip any record whose device isn't a `dev-` token, and check tokens on UTF-8 bytes.
 - `clear` removes both files through the same validated directory as the reads. It refuses a linked directory or one open to group or others. It's safe while haild runs, because each append reopens the file.
 - Reading never creates a file and never follows a link. It refuses a directory open to group or others, and a file that isn't yours or is over 8 MiB. A line that no longer decodes under the strict rules is skipped.
 - `--since` compares against host receive time.
