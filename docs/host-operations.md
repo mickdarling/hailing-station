@@ -45,6 +45,7 @@ scripts/host.sh status    # staged release, running daemon, PATH haild, and prob
 - If the new daemon does not become ready, `restart` restores the previous LaunchAgent, checks that it is ready, says whether it is, and exits non-zero.
 - The first migration from the legacy job has no previous LaunchAgent to restore. The failed agent is kept as `com.hailingstation.haild.plist.failed`, so it does not load at the next login, and no daemon is running. Read the log, fix the cause, and run `restart` again.
 - If an existing job does not unload in time, `restart` stops before starting anything new.
+- An interrupt (Ctrl-C, a closed terminal) during the legacy job's unload is ignored, because that job is not restored; the switch then continues. At any later point before the new daemon is ready, an interrupt rolls back.
 - `install`, `restart` and `deploy` take a per-user lock, so only one runs at a time; they need `python3` (the lock and the `bind` check use it).
 - Make sure `~/.local/bin` is on `PATH` for the target sessions, so the `haild reply` named in reply instructions resolves to the running release.
 

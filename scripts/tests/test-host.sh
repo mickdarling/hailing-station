@@ -53,10 +53,11 @@ case "\$1" in
     # stuck-legacy: the legacy job ignores bootout, like a daemon that will not shut down.
     [[ "\$mode" == stuck-legacy && "\$2" == *hailing-station-session ]] && exit 0
     [[ "\$mode" == stuck-managed && "\$2" == *com.hailingstation.haild ]] && exit 0
-    # slow-managed: the managed job stays loaded for a few more checks, like a graceful shutdown in progress.
-    if [[ "\$mode" == slow-managed && "\$2" == *com.hailingstation.haild && -f "$jobs/\${2##*/}" ]]; then
-      echo 4 > "$scratch/unloading"; exit 0
-    fi
+    # slow-managed, slow-legacy: the job stays loaded for a few more checks, like a graceful shutdown in progress.
+    case "\$mode:\$2" in
+      slow-managed:*com.hailingstation.haild | slow-legacy:*hailing-station-session)
+        [[ -f "$jobs/\${2##*/}" ]] && { echo 4 > "$scratch/unloading-\${2##*/}"; exit 0; } ;;
+    esac
     rm -f "$jobs/\${2##*/}" ;;
   bootstrap)
     [[ "\$mode" == bootstrap-fails ]] && exit 5
@@ -68,9 +69,12 @@ case "\$1" in
     fi ;;
   print)
     job="$jobs/\${2##*/}"
-    if [[ -f "$scratch/unloading" && "\$2" == *com.hailingstation.haild ]]; then
-      left="\$(cat "$scratch/unloading")"
-      if (( left <= 0 )); then rm -f "$scratch/unloading" "\$job"; else echo \$(( left - 1 )) > "$scratch/unloading"; fi
+    unloading="$scratch/unloading-\${2##*/}"
+    if [[ -f "\$unloading" ]]; then
+      # An interrupt lands inside restart's wait for the unload, a call whose output is redirected to /dev/null.
+      if [[ -f "$scratch/interrupt" ]]; then rm -f "$scratch/interrupt"; kill -TERM "\$PPID"; fi
+      left="\$(cat "\$unloading")"
+      if (( left <= 0 )); then rm -f "\$unloading" "\$job"; else echo \$(( left - 1 )) > "\$unloading"; fi
     fi
     [[ -f "\$job" ]] || exit 113
     pid=42; [[ "\$mode" == flapping ]] && pid=\$RANDOM
@@ -299,19 +303,27 @@ mode ok
 # Interrupted while the previous managed job unloads: the rollback waits for it, then restores it.
 mode slow-managed
 managed_before="$(cat "$jobs/com.hailingstation.haild")"
-: > "$scratch/launchctl.calls"
-HAIL_READY_SECONDS=30 "$host" restart > "$scratch/slow.out" 2>&1 &
-restarting=$!
-for (( waited = 0; waited < 300; waited++ )); do
-  grep -q '^bootout .*com.hailingstation.haild' "$scratch/launchctl.calls" 2>/dev/null && break
-  sleep 0.1
-done
-kill -TERM "$restarting"
-set +e; wait "$restarting"; set -e
+touch "$scratch/interrupt"
+HAIL_READY_SECONDS=30 "$host" restart > "$scratch/slow.out" 2>&1 && fail "an interrupted restart succeeded"
 [[ "$(cat "$jobs/com.hailingstation.haild" 2>/dev/null)" == "$managed_before" ]] \
   || fail "interrupting the managed unload left no daemon: $(tr '\n' ' ' < "$scratch/slow.out")"
+[[ ! -e "$scratch/interrupt" ]] || fail "the managed-unload interrupt never fired"
 grep -q "restored the previous LaunchAgent; it is ready" "$scratch/slow.out" || fail "the restore was not reported ready"
 lock_is_free "a restart interrupted during the managed unload"
+mode ok
+
+# Interrupted while the legacy job unloads in a first migration: the unload cannot be undone, so the switch continues.
+rm -f "$jobs/com.hailingstation.haild"
+mv "$HAIL_LAUNCH_AGENTS/com.hailingstation.haild.plist" "$scratch/plist.aside"
+echo "legacy" > "$jobs/com.mickdarling.hailing-station-session"
+mode slow-legacy
+touch "$scratch/interrupt"
+HAIL_READY_SECONDS=30 "$host" restart > "$scratch/slow-legacy.out" 2>&1 || fail "interrupting the legacy unload failed the migration: $(tr '\n' ' ' < "$scratch/slow-legacy.out")"
+[[ ! -e "$scratch/interrupt" ]] || fail "the legacy-unload interrupt never fired"
+[[ -f "$jobs/com.hailingstation.haild" && ! -f "$jobs/com.mickdarling.hailing-station-session" ]] \
+  || fail "interrupting the legacy unload left no managed daemon"
+lock_is_free "a restart interrupted during the legacy unload"
+rm -f "$scratch/plist.aside"
 mode ok
 
 # A second install, restart or deploy while one holds the lock is refused before it changes anything; the lock is

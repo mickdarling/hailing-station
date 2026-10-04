@@ -374,13 +374,19 @@ restart() {
   # Only this run's previous agent may be restored, never a leftover from an earlier one.
   rm -f "$PLIST.prev"
   if [[ -f "$PLIST" ]]; then cp -p "$PLIST" "$PLIST.prev"; fi
+  # A trap can fire inside a call whose output is redirected (`lctl print >/dev/null`), so the rollback reports to
+  # the original stdout and stderr, kept here.
+  exec 7>&1 8>&2
   # From here until the switch is committed, an interruption (including a closed terminal) or any unexpected exit
   # rolls back instead of leaving the host half-changed.
   IN_FLIGHT=true
   STAGE=stopping
-  trap 'roll_back "restart was interrupted"' INT TERM HUP
-  trap 'if [[ "$IN_FLIGHT" == true ]]; then roll_back "restart stopped unexpectedly"; fi; release_lock' EXIT
+  trap 'if [[ "$IN_FLIGHT" == true ]]; then roll_back "restart stopped unexpectedly" >&7 2>&8; fi; release_lock' EXIT
+  # The legacy job is not restored (it is not ours), so its unload is not interrupted: it completes and the switch
+  # continues, or it times out and the rollback leaves it loaded.
+  trap '' INT TERM HUP
   stop_job "$LEGACY_LABEL" || roll_back "the legacy haild job did not unload within ${READY_SECONDS}s"
+  trap 'roll_back "restart was interrupted" >&7 2>&8' INT TERM HUP
   # Interrupted while it unloads: roll_back waits for the unload, then restores the previous agent. If it never
   # unloads, it keeps running with its socket.
   STAGE=managed-stopping
