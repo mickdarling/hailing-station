@@ -492,19 +492,18 @@ import Testing
         // The first chunk is typed, then typing parks until the hasty deadline has fired (#208): the abandoned
         // attempt has always typed something and never finished, however slow the runner is.
         let gate = TypingGate(allowing: 1)
-        let runner = FakeCommandRunner.serving(SessionListing(bridgeListing), delay: .milliseconds(20), gate: gate)
+        defer { gate.open() }
+        let runner = FakeCommandRunner.serving(SessionListing(bridgeListing), gate: gate)
         let listener = try await slowTmuxListener(runner)
-        let port = try await listener.start()
         let config = scratch.appendingPathComponent("config", isDirectory: true)
         let audit = AuditLog(directory: scratch.appendingPathComponent("audit"))
         let hasty = try LocalReplyEndpoint(socketURL: config.appendingPathComponent("hasty.sock"),
                                            destination: listener, audit: audit, submissionTimeout: .seconds(2))
-        let patient = try LocalReplyEndpoint(
-            socketURL: config.appendingPathComponent("patient.sock"), destination: listener, audit: audit
-        )
+        let patient = try LocalReplyEndpoint(socketURL: config.appendingPathComponent("patient.sock"),
+                                             destination: listener, audit: audit)
         try await hasty.start()
         try await patient.start()
-        let (session, terminal) = try terminalClient(port: port)
+        let (session, terminal) = try await terminalClient(port: listener.start())
         defer { terminal.cancel(with: .normalClosure, reason: nil); session.invalidateAndCancel() }
         do {
             let connection = try await selectOrdinary(on: terminal, listener: listener)
@@ -516,6 +515,7 @@ import Testing
             await #expect(throws: (any Error).self) { try await submit(line, socket: hasty.socketURL.path) }
             gate.open()
             let abandoned = await runner.calls.compactMap { $0.contains("send-keys") ? $0.last : nil }
+            try #require(!abandoned.isEmpty, "the hasty deadline fired before typing began")
             let retry = try await submit(line, socket: patient.socketURL.path)
             #expect(retry.delivered == 0 && retry.request == nil)
             #expect(retry.error == LocalDispatchRefusal.deliveryRefused.message)
