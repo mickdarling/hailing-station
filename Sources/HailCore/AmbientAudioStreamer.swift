@@ -266,6 +266,8 @@ public final class AmbientAudioStreamer {
     public private(set) var streamID: UUID?
 
     @ObservationIgnored let beforeEncode: (@Sendable () async -> Void)?
+    /// When set before `start()`, microphone audio is replaced with silence while a reply is audible (#227).
+    @ObservationIgnored public var echoGuard: AmbientReplyEchoGuard?
 
     public convenience init(
         capture: any AudioCapturing,
@@ -300,11 +302,18 @@ public final class AmbientAudioStreamer {
     }
 
     /// Engine capture with voice processing so reply playback is echo-cancelled rather than re-streamed.
-    /// Call after `ManagedAudioSession` has activated a play-and-record session.
+    /// Call after `ManagedAudioSession` has activated a play-and-record session. Voice processing would otherwise
+    /// duck every other output in the app, which left replies inaudible until listening stopped (#227).
     public static func voiceProcessingCapture(engine: AVAudioEngine = AVAudioEngine()) throws -> AVAudioEngineCapture {
         try engine.inputNode.setVoiceProcessingEnabled(true)
+        engine.inputNode.voiceProcessingOtherAudioDuckingConfiguration = Self.replyDucking
         return AVAudioEngineCapture(engine: engine)
     }
+
+    /// Reply playback stays at full level while the microphone is open.
+    static let replyDucking = AVAudioVoiceProcessingOtherAudioDuckingConfiguration(
+        enableAdvancedDucking: ObjCBool(false), duckingLevel: .min
+    )
 
     /// Segments dropped because the send backlog exceeded one second.
     public var droppedChunkCount: Int { get async { await queue?.droppedCount ?? 0 } }
@@ -325,7 +334,7 @@ public final class AmbientAudioStreamer {
         self.queue = queue
         streamID = identity
         isStreaming = true
-        let bounded = Self.bound(buffers, queue: queue)
+        let bounded = Self.bound(buffers, queue: queue, echoGuard: echoGuard)
         let beforeEncode = beforeEncode
         pump = Task.detached { [weak self] in
             await Self.pump(bounded, encoder: encoder, queue: queue, beforeEncode: beforeEncode)
@@ -348,12 +357,15 @@ public final class AmbientAudioStreamer {
 
     /// The capture seam's stream is unbounded and fed from the audio tap without blocking. A forwarder drains it
     /// promptly into a backlog bounded by audio duration, so a slow converter cannot accumulate stale audio.
+    /// The echo guard is consulted here, as each buffer leaves the tap, rather than after a conversion backlog, so
+    /// masking follows the moment the audio was heard.
     private nonisolated static func bound(
-        _ buffers: AsyncStream<AudioCaptureBuffer>, queue: AmbientAudioSendQueue
+        _ buffers: AsyncStream<AudioCaptureBuffer>, queue: AmbientAudioSendQueue, echoGuard: AmbientReplyEchoGuard?
     ) -> AmbientCaptureBacklog {
         let backlog = AmbientCaptureBacklog(limit: AmbientAudioFormat.maxPendingCaptureSeconds)
         Task.detached {
             for await buffer in buffers {
+                echoGuard?.silenceIfMasking(buffer.pcmBuffer)
                 for _ in 0..<(await backlog.push(buffer)) { await queue.recordCaptureDrop() }
             }
             await backlog.finish()

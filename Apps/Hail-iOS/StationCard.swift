@@ -143,31 +143,42 @@ extension RootView {
            let binding = connections.ambientBinding(host: destination.hostID, targetID: destination.target.id) {
             AmbientListeningCard(
                 binding: binding, hostName: destination.endpoint.name,
-                connections: connections, audioSession: audioRoutes
+                connections: connections, audioSession: audioRoutes, playback: playback
             )
         }
     }
 }
 
 /// The toggle starts off whenever the card appears, stops when the scene leaves `.active`, when the binding
-/// changes and when the card goes away, and never restarts by itself.
+/// changes and when the card goes away, and never restarts by itself. Replies play while it is on (#227); the
+/// echo guard sends silence to the host while one is audible, and the card says "Speaking" meanwhile.
 struct AmbientListeningCard: View {
     let binding: AmbientAudioBinding
     let hostName: String
+    let playback: ReplyPlaybackController
     @State private var controller: AmbientListeningController
+    @State private var echoGuard: AmbientReplyEchoGuard
     @Environment(\.scenePhase) private var scenePhase
 
     init(
         binding: AmbientAudioBinding, hostName: String,
-        connections: HostConnectionStore, audioSession: AudioRouteModel
+        connections: HostConnectionStore, audioSession: AudioRouteModel, playback: ReplyPlaybackController
     ) {
         self.binding = binding
         self.hostName = hostName
+        self.playback = playback
+        // State keeps the first guard and controller, so the controller's streamers always use the followed guard.
+        let echoGuard = AmbientReplyEchoGuard()
+        _echoGuard = State(initialValue: echoGuard)
         _controller = State(initialValue: AmbientListeningController(
             requestPermission: requestMicrophonePermission,
             makeStreamer: { send in
                 try await audioSession.activate()
-                return AmbientAudioStreamer(capture: try AmbientAudioStreamer.voiceProcessingCapture(), send: send)
+                let streamer = AmbientAudioStreamer(
+                    capture: try AmbientAudioStreamer.voiceProcessingCapture(), send: send
+                )
+                streamer.echoGuard = echoGuard
+                return streamer
             },
             releaseSession: { await audioSession.deactivate() },
             send: { [connections] payload, binding in try await connections.sendAudio(payload, to: binding) }
@@ -183,7 +194,16 @@ struct AmbientListeningCard: View {
                     .font(.headline)
             }
             .accessibilityIdentifier("station.ambient-toggle")
-            if controller.isListening {
+            if controller.isListening, playback.isReplyAudioOutputBusy {
+                Label("Speaking", systemImage: "speaker.wave.2.fill")
+                    .font(.subheadline.bold())
+                    .foregroundStyle(.white)
+                    .padding(.horizontal, 12)
+                    .padding(.vertical, 5)
+                    .background(.blue, in: Capsule())
+                    .accessibilityLabel("Speaking a reply: sending silence to \(hostName) until it finishes")
+                    .accessibilityIdentifier("station.ambient-speaking")
+            } else if controller.isListening {
                 Label("Listening", systemImage: "mic.fill")
                     .font(.subheadline.bold())
                     .foregroundStyle(.white)
@@ -212,6 +232,7 @@ struct AmbientListeningCard: View {
         .onChange(of: scenePhase) { _, _ in
             Task { await controller.update(binding: binding, scene: scene) }
         }
+        .onAppear { echoGuard.follow(playback) }
         .onDisappear { Task { await controller.turnOff() } }
     }
 
