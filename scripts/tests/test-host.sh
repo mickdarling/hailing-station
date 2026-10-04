@@ -301,6 +301,13 @@ chmod 700 "$HAIL_CONFIG_DIR"
 mv "$HAIL_LAUNCH_AGENTS/com.hailingstation.haild.plist" "$scratch/plist.aside"
 expect_failure "loaded managed job without its plist" "$host" restart
 ! grep -q '^bootout' "$scratch/launchctl.calls" || fail "a managed job without a restorable plist was stopped"
+# Nor one whose LaunchAgent is invalid or names a program that is gone.
+echo "not a plist" > "$HAIL_LAUNCH_AGENTS/com.hailingstation.haild.plist"
+expect_failure "loaded managed job with an invalid plist" "$host" restart
+cp "$scratch/plist.aside" "$HAIL_LAUNCH_AGENTS/com.hailingstation.haild.plist"
+plutil -replace ProgramArguments.0 -string "$scratch/gone/haild" "$HAIL_LAUNCH_AGENTS/com.hailingstation.haild.plist"
+expect_failure "loaded managed job whose program is gone" "$host" restart
+! grep -q '^bootout' "$scratch/launchctl.calls" || fail "a managed job with an unrestorable plist was stopped"
 mv "$scratch/plist.aside" "$HAIL_LAUNCH_AGENTS/com.hailingstation.haild.plist"
 
 # A managed job that will not unload keeps running with its socket; nothing new is started.

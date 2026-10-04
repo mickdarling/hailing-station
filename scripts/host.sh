@@ -374,9 +374,14 @@ restart() {
   chmod 0700 "$LOGS"
   preflight_config_dir
   preflight_links
-  # A loaded managed job is stopped only if its LaunchAgent can be restored should the new one fail.
-  [[ -z "$(job_field "$LABEL" state)" || -f "$PLIST" ]] \
-    || fail "$LABEL is loaded but $PLIST is missing; restore it or unload the job first"
+  # A loaded managed job is stopped only if its LaunchAgent can be restored should the new one fail: present, valid,
+  # and naming a program that still exists.
+  if [[ -n "$(job_field "$LABEL" state)" ]]; then
+    [[ -f "$PLIST" ]] || fail "$LABEL is loaded but $PLIST is missing; restore it or unload the job first"
+    # Extracting fails on an invalid plist, so this one check covers both.
+    [[ -x "$(plutil -extract ProgramArguments.0 raw -o - "$PLIST" 2>/dev/null)" ]] \
+      || fail "$PLIST is invalid or its program is gone; fix it or unload $LABEL first"
+  fi
   # Everything that can be checked is checked before the running daemon is touched.
   write_plist "$PLIST.next" "$program"
   plutil -lint -s "$PLIST.next" >/dev/null
