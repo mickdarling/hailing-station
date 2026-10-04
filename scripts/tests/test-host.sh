@@ -53,6 +53,10 @@ case "\$1" in
     # stuck-legacy: the legacy job ignores bootout, like a daemon that will not shut down.
     [[ "\$mode" == stuck-legacy && "\$2" == *hailing-station-session ]] && exit 0
     [[ "\$mode" == stuck-managed && "\$2" == *com.hailingstation.haild ]] && exit 0
+    # slow-managed: the managed job stays loaded for a few more checks, like a graceful shutdown in progress.
+    if [[ "\$mode" == slow-managed && "\$2" == *com.hailingstation.haild && -f "$jobs/\${2##*/}" ]]; then
+      echo 4 > "$scratch/unloading"; exit 0
+    fi
     rm -f "$jobs/\${2##*/}" ;;
   bootstrap)
     [[ "\$mode" == bootstrap-fails ]] && exit 5
@@ -64,6 +68,10 @@ case "\$1" in
     fi ;;
   print)
     job="$jobs/\${2##*/}"
+    if [[ -f "$scratch/unloading" && "\$2" == *com.hailingstation.haild ]]; then
+      left="\$(cat "$scratch/unloading")"
+      if (( left <= 0 )); then rm -f "$scratch/unloading" "\$job"; else echo \$(( left - 1 )) > "$scratch/unloading"; fi
+    fi
     [[ -f "\$job" ]] || exit 113
     pid=42; [[ "\$mode" == flapping ]] && pid=\$RANDOM
     printf '\tstate = running\n\tprogram = %s\n\tpid = %s\n' "\$(cat "\$job")" "\$pid" ;;
@@ -276,6 +284,24 @@ managed_before="$(cat "$jobs/com.hailingstation.haild")"
 [[ -S "$HAIL_CONFIG_DIR/replies.sock" ]] || fail "rollback removed the socket of a managed job that was still loaded"
 [[ "$(cat "$jobs/com.hailingstation.haild")" == "$managed_before" ]] || fail "rollback replaced a still-loaded managed job"
 grep -q "nothing new was started" "$scratch/stuck-managed.out" || fail "rollback did not say nothing was started"
+mode ok
+
+# Interrupted while the previous managed job unloads: the rollback waits for it, then restores it.
+mode slow-managed
+managed_before="$(cat "$jobs/com.hailingstation.haild")"
+: > "$scratch/launchctl.calls"
+HAIL_READY_SECONDS=30 "$host" restart > "$scratch/slow.out" 2>&1 &
+restarting=$!
+for (( waited = 0; waited < 300; waited++ )); do
+  grep -q '^bootout .*com.hailingstation.haild' "$scratch/launchctl.calls" 2>/dev/null && break
+  sleep 0.1
+done
+kill -TERM "$restarting"
+set +e; wait "$restarting"; set -e
+[[ "$(cat "$jobs/com.hailingstation.haild" 2>/dev/null)" == "$managed_before" ]] \
+  || fail "interrupting the managed unload left no daemon: $(tr '\n' ' ' < "$scratch/slow.out")"
+grep -q "restored the previous LaunchAgent; it is ready" "$scratch/slow.out" || fail "the restore was not reported ready"
+lock_is_free "a restart interrupted during the managed unload"
 mode ok
 
 # A second install, restart or deploy while one holds the lock is refused before it changes anything; the lock is

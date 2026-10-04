@@ -305,8 +305,9 @@ wait_ready() {
 # Undo a restart that did not complete: unload the new agent, restore and start the previous one, and say honestly
 # whether it is ready. Used on failure and on interruption, so the host is not left without a daemon.
 IN_FLIGHT=false
-# How far restart got, so roll_back undoes only what was done: "stopping" (old jobs being unloaded),
-# "managed-stopped" (the previous managed agent is down), "started" (the new agent was handed to launchd).
+# How far restart got, so roll_back undoes only what was done: "stopping" (the legacy job being unloaded),
+# "managed-stopping" (the previous managed agent was asked to unload), "managed-stuck" (it would not unload),
+# "managed-stopped" (it is down), "started" (the new agent was handed to launchd).
 STAGE=""
 roll_back() {
   # Runs to completion: a second signal must not leave the restore half done.
@@ -315,7 +316,7 @@ roll_back() {
   trap - EXIT
   echo "error: $1; see $LOGS/haild.err.log" >&2
   rm -f "$PLIST.next"
-  if [[ "$STAGE" == stopping ]]; then
+  if [[ "$STAGE" == stopping || "$STAGE" == managed-stuck ]]; then
     # Nothing new started and the managed agent untouched; a daemon still serving keeps its socket and log.
     echo "nothing new was started; a job that was asked to stop may still exit; check scripts/host.sh status" >&2
     release_lock
@@ -326,7 +327,9 @@ roll_back() {
   if [[ "$STAGE" != stopping ]]; then
     if ! stop_job "$LABEL"; then
       # Still loaded: leave it, its socket and its plist alone; a restore could not start over it anyway.
-      echo "error: the new haild did not unload; it was left running; check scripts/host.sh status" >&2
+      local which=previous
+      [[ "$STAGE" == started ]] && which=new
+      echo "error: the $which haild did not unload; it was left running; check scripts/host.sh status" >&2
       release_lock
       exit 1
     fi
@@ -374,8 +377,13 @@ restart() {
   trap 'roll_back "restart was interrupted"' INT TERM HUP
   trap 'if [[ "$IN_FLIGHT" == true ]]; then roll_back "restart stopped unexpectedly"; fi; release_lock' EXIT
   stop_job "$LEGACY_LABEL" || roll_back "the legacy haild job did not unload within ${READY_SECONDS}s"
-  # Still "stopping" until launchd confirms the managed job is gone: one that refuses to unload keeps its socket.
-  stop_job "$LABEL" || roll_back "the managed haild job did not unload within ${READY_SECONDS}s"
+  # Interrupted while it unloads: roll_back waits for the unload, then restores the previous agent. If it never
+  # unloads, it keeps running with its socket.
+  STAGE=managed-stopping
+  if ! stop_job "$LABEL"; then
+    STAGE=managed-stuck
+    roll_back "the managed haild job did not unload within ${READY_SECONDS}s"
+  fi
   STAGE=managed-stopped
   # Keep the previous run's log for diagnosis; readiness is judged on a fresh one.
   if [[ -f "$LOGS/haild.err.log" ]]; then mv -f "$LOGS/haild.err.log" "$LOGS/haild.err.log.1"; fi
