@@ -457,7 +457,8 @@ extension AmbientListeningController {
     static func diagnosticCause(_ error: any Error) -> (cause: String, code: String?) {
         guard case HostConnectionFailure.remote(let message) = error else { return ("send_failed", nil) }
         let code = message.split(separator: ":", maxSplits: 1).first.map(String.init) ?? ""
-        return ("host_refused", DiagnosticField.code.tokens.contains(code) ? code : "other")
+        let known = DiagnosticField.code.tokens.contains { DiagnosticLimits.sameBytes($0, code) }
+        return ("host_refused", known ? code : "other")
     }
 
     static func describe(_ error: any Error) -> String {

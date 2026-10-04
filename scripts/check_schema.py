@@ -48,7 +48,7 @@ def validate(value, schema: dict, root: dict, path: str = "$") -> list[str]:
             errors.append(f"{path}: shorter than minLength")
         if "maxLength" in schema and len(value) > schema["maxLength"]:
             errors.append(f"{path}: longer than maxLength")
-        if "pattern" in schema and not re.search(schema["pattern"], value):
+        if "pattern" in schema and not re.fullmatch(schema["pattern"], value):
             errors.append(f"{path}: does not match pattern")
     if isinstance(value, dict):
         for key in schema.get("required", []):
