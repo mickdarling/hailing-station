@@ -9,7 +9,9 @@ struct RootView: View {
     @State var connections = HostConnectionStore()
     @State var audioSession: ManagedAudioSession
     @State var audioRoutes: AudioRouteModel
-    @State var playback = ReplyPlaybackController(player: PCM16AudioPlayer())
+    @State var playback: ReplyPlaybackController
+    /// Shared by reply playback and ambient capture (#227): the player raises it before audio can be heard.
+    @State var echoGuard: AmbientReplyEchoGuard
     @State var selectedHostID: HostEndpoint.Identifier?
     @State var selectedTargetID: String?
     @State var rememberedSelection: DestinationSelection?
@@ -31,6 +33,11 @@ struct RootView: View {
         self.selectionStore = selectionStore
         _audioSession = State(initialValue: session)
         _audioRoutes = State(initialValue: AudioRouteModel(controller: session))
+        let echoGuard = AmbientReplyEchoGuard()
+        let playback = ReplyPlaybackController(player: echoGuard.guarding(PCM16AudioPlayer()))
+        echoGuard.follow(playback)
+        _echoGuard = State(initialValue: echoGuard)
+        _playback = State(initialValue: playback)
     }
 
     var body: some View {

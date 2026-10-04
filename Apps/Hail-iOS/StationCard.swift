@@ -143,7 +143,8 @@ extension RootView {
            let binding = connections.ambientBinding(host: destination.hostID, targetID: destination.target.id) {
             AmbientListeningCard(
                 binding: binding, hostName: destination.endpoint.name,
-                connections: connections, audioSession: audioRoutes, playback: playback
+                connections: connections, audioSession: audioRoutes, playback: playback,
+                echoGuard: echoGuard
             )
         }
     }
@@ -157,28 +158,22 @@ struct AmbientListeningCard: View {
     let hostName: String
     let playback: ReplyPlaybackController
     @State private var controller: AmbientListeningController
-    @State private var echoGuard: AmbientReplyEchoGuard
     @Environment(\.scenePhase) private var scenePhase
 
     init(
         binding: AmbientAudioBinding, hostName: String,
-        connections: HostConnectionStore, audioSession: AudioRouteModel, playback: ReplyPlaybackController
+        connections: HostConnectionStore, audioSession: AudioRouteModel, playback: ReplyPlaybackController,
+        echoGuard: AmbientReplyEchoGuard
     ) {
         self.binding = binding
         self.hostName = hostName
         self.playback = playback
-        // State keeps the first guard and controller, so the controller's streamers always use the followed guard.
-        let echoGuard = AmbientReplyEchoGuard()
-        _echoGuard = State(initialValue: echoGuard)
         _controller = State(initialValue: AmbientListeningController(
             requestPermission: requestMicrophonePermission,
             makeStreamer: { send in
                 try await audioSession.activate()
-                let streamer = AmbientAudioStreamer(
-                    capture: try AmbientAudioStreamer.voiceProcessingCapture(), send: send
-                )
-                streamer.echoGuard = echoGuard
-                return streamer
+                let capture = echoGuard.masking(try AmbientReplyEchoGuard.voiceProcessingCapture())
+                return AmbientAudioStreamer(capture: capture, send: send)
             },
             releaseSession: { await audioSession.deactivate() },
             send: { [connections] payload, binding in try await connections.sendAudio(payload, to: binding) }
@@ -232,7 +227,6 @@ struct AmbientListeningCard: View {
         .onChange(of: scenePhase) { _, _ in
             Task { await controller.update(binding: binding, scene: scene) }
         }
-        .onAppear { echoGuard.follow(playback) }
         .onDisappear { Task { await controller.turnOff() } }
     }
 

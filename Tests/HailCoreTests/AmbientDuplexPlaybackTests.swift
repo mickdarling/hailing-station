@@ -3,10 +3,29 @@ import HailProtocol
 import Testing
 @testable import HailCore
 
-/// Full-duplex ambient listening (#227): replies play while the ambient microphone is open, and the echo guard
-/// follows what is audible. Tap-to-talk capture still holds replies until it finishes.
+/// Full-duplex ambient listening (#227): replies play while the ambient microphone is open, and masking is already
+/// up whenever the player is asked to make audio audible. Tap-to-talk capture still holds replies until it finishes.
 @MainActor
 @Suite struct AmbientDuplexPlaybackTests {
+    @MainActor
+    final class Harness {
+        let clock = EchoGuardClock()
+        lazy var echoGuard = AmbientReplyEchoGuard(tail: .milliseconds(400), now: { [clock] in clock.now })
+        let player = DuplexPlayer()
+        lazy var playback: ReplyPlaybackController = {
+            player.echoGuard = echoGuard
+            let playback = ReplyPlaybackController(player: echoGuard.guarding(player))
+            echoGuard.follow(playback)
+            return playback
+        }()
+
+        /// Lets the follower lower masking, then lets the tail elapse.
+        func quiet() async {
+            await settle()
+            clock.advance(by: .milliseconds(400))
+        }
+    }
+
     @Test func repliesPlayImmediatelyWhileAmbientListeningIsOn() async throws {
         let capture = FakeAudioCapture()
         let ambient = AmbientListeningController(
@@ -15,68 +34,90 @@ import Testing
             releaseSession: {},
             send: { _, _ in }
         )
-        let player = DuplexPlayer()
-        let playback = ReplyPlaybackController(player: player)
+        let harness = Harness()
         await ambient.turnOn(for: try binding())
         #expect(ambient.isListening)
 
-        playback.ingest(duplexEvent())
-        #expect(player.scheduled.count == 1)
-        #expect(!playback.isCaptureSuppressed)
-        #expect(playback.statusForControls == "Playing")
-        #expect(playback.isReplyAudioOutputBusy)
+        harness.playback.ingest(duplexEvent())
+        #expect(harness.player.calls == [.init(name: "schedule", masking: true)])
+        #expect(!harness.playback.isCaptureSuppressed)
+        #expect(harness.playback.statusForControls == "Playing")
         #expect(ambient.isOn && ambient.isListening)
         await ambient.turnOff()
     }
 
-    @Test func echoGuardFollowsAudibleReplyPlaybackAndReleasesAfterTheTail() async throws {
-        let clock = EchoGuardClock()
-        let echoGuard = AmbientReplyEchoGuard(tail: .milliseconds(400), now: { clock.now })
-        let player = DuplexPlayer()
-        let playback = ReplyPlaybackController(player: player)
-        echoGuard.follow(playback)
-        echoGuard.follow(playback)
-        #expect(!echoGuard.isMasking)
-
-        playback.ingest(duplexEvent())
-        try await waitUntil { echoGuard.isMasking }
-
-        player.finish()
-        #expect(!playback.isReplyAudioOutputBusy)
-        await settle()
-        #expect(echoGuard.isMasking)
-        clock.advance(by: .milliseconds(400))
-        #expect(!echoGuard.isMasking)
+    @Test func maskingIsUpBeforeTheFirstSegmentIsScheduled() {
+        let harness = Harness()
+        #expect(!harness.echoGuard.isMasking)
+        harness.playback.ingest(duplexEvent())
+        // No main-actor hop: the guarded player raised masking inside the same call.
+        #expect(harness.player.calls.first == .init(name: "schedule", masking: true))
     }
 
-    @Test func mutedRepliesAreNotMaskedBecauseNothingIsAudible() async {
-        let echoGuard = AmbientReplyEchoGuard(tail: .zero)
-        let playback = ReplyPlaybackController(player: DuplexPlayer())
-        echoGuard.follow(playback)
-        playback.toggleMute()
-        playback.ingest(duplexEvent())
+    @Test func maskingIsUpBeforePausedPlaybackResumes() async {
+        let harness = Harness()
+        harness.playback.ingest(duplexEvent())
+        harness.playback.togglePause()
+        await harness.quiet()
+        #expect(!harness.echoGuard.isMasking)
+
+        harness.playback.togglePause()
+        #expect(harness.player.calls.last == .init(name: "resume", masking: true))
         await settle()
-        #expect(!playback.isReplyAudioOutputBusy)
-        #expect(!echoGuard.isMasking)
+        #expect(harness.echoGuard.isMasking)
+    }
+
+    @Test func maskingIsUpBeforeAMutedReplyIsUnmuted() async {
+        let harness = Harness()
+        harness.playback.toggleMute()
+        harness.playback.ingest(duplexEvent())
+        await harness.quiet()
+        #expect(harness.player.calls.contains(.init(name: "schedule", masking: false)))
+        #expect(!harness.echoGuard.isMasking)
+
+        harness.playback.toggleMute()
+        #expect(harness.player.calls.last == .init(name: "unmute", masking: true))
+        await settle()
+        #expect(harness.echoGuard.isMasking)
+    }
+
+    @Test func maskingIsUpBeforeAReplay() async {
+        let harness = Harness()
+        harness.playback.ingest(duplexEvent())
+        harness.player.finish()
+        #expect(!harness.playback.isReplyAudioOutputBusy)
+        await harness.quiet()
+        #expect(!harness.echoGuard.isMasking)
+
+        harness.playback.replayLatest()
+        #expect(harness.player.calls.last == .init(name: "replay", masking: true))
+    }
+
+    @Test func maskingFallsOnlyAfterTheTailOncePlaybackEnds() async {
+        let harness = Harness()
+        harness.playback.ingest(duplexEvent())
+        harness.player.finish()
+        await settle()
+        harness.clock.advance(by: .milliseconds(399))
+        #expect(harness.echoGuard.isMasking)
+        harness.clock.advance(by: .milliseconds(1))
+        #expect(!harness.echoGuard.isMasking)
     }
 
     @Test func tapToTalkCaptureStillHoldsReplyPlayback() async {
-        let echoGuard = AmbientReplyEchoGuard(tail: .zero)
-        let player = DuplexPlayer()
-        let playback = ReplyPlaybackController(player: player)
-        echoGuard.follow(playback)
-        playback.beginCaptureSuppression()
+        let harness = Harness()
+        harness.playback.beginCaptureSuppression()
 
-        playback.ingest(duplexEvent())
+        harness.playback.ingest(duplexEvent())
         await settle()
-        #expect(player.scheduled.isEmpty)
-        #expect(playback.isCaptureSuppressed)
-        #expect(playback.statusForControls == "Paused while listening")
-        #expect(!echoGuard.isMasking)
+        #expect(harness.player.calls.isEmpty)
+        #expect(harness.playback.isCaptureSuppressed)
+        #expect(harness.playback.statusForControls == "Paused while listening")
+        #expect(!harness.echoGuard.isMasking)
 
-        playback.endCaptureSuppression()
-        #expect(player.scheduled.count == 1)
-        #expect(playback.statusForControls == "Playing")
+        harness.playback.endCaptureSuppression()
+        #expect(harness.player.calls == [.init(name: "schedule", masking: true)])
+        #expect(harness.playback.statusForControls == "Playing")
     }
 }
 
@@ -86,21 +127,35 @@ private func settle() async {
     for _ in 0..<20 { await Task.yield() }
 }
 
+/// Records whether the echo guard was masking at the moment each audible-making call reached the player.
 @MainActor
-private final class DuplexPlayer: ReplyAudioPlaying {
-    var scheduled: [AudioPayload] = []
+final class DuplexPlayer: ReplyAudioPlaying {
+    struct Call: Equatable {
+        var name: String
+        var masking: Bool
+    }
+
+    var echoGuard: AmbientReplyEchoGuard?
+    private(set) var calls: [Call] = []
     private var onPlayed: (@MainActor @Sendable () -> Void)?
 
-    func schedule(_ payload: AudioPayload, onPlayed: (@MainActor @Sendable () -> Void)?) {
-        scheduled.append(payload)
+    func schedule(_: AudioPayload, onPlayed: (@MainActor @Sendable () -> Void)?) {
+        record("schedule")
         if let onPlayed { self.onPlayed = onPlayed }
+    }
+    func resume() { record("resume") }
+    func setMuted(_ muted: Bool) { if !muted { record("unmute") } }
+    func replaceQueue(with _: [AudioPayload], onPlayed: (@MainActor @Sendable () -> Void)?) {
+        record("replay")
+        self.onPlayed = onPlayed
     }
     func finish() { onPlayed?() }
     func cancel() {}
     func pause() {}
-    func resume() {}
-    func setMuted(_: Bool) {}
-    func replaceQueue(with _: [AudioPayload], onPlayed _: (@MainActor @Sendable () -> Void)?) {}
+
+    private func record(_ name: String) {
+        calls.append(Call(name: name, masking: echoGuard?.isMasking == true))
+    }
 }
 
 private func duplexEvent() -> HostReplyEvent {

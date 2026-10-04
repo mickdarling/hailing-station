@@ -62,8 +62,7 @@ final class EchoGuardClock: Sendable {
         let echoGuard = AmbientReplyEchoGuard(tail: .milliseconds(400), now: { clock.now })
         let capture = FakeAudioCapture()
         let sent = SentAudio()
-        let streamer = AmbientAudioStreamer(capture: capture, send: { await sent.send($0) })
-        streamer.echoGuard = echoGuard
+        let streamer = AmbientAudioStreamer(capture: echoGuard.masking(capture), send: { await sent.send($0) })
         echoGuard.setReplyAudible(true)
 
         try streamer.start()
@@ -84,8 +83,8 @@ final class EchoGuardClock: Sendable {
     }
 
     @Test func voiceProcessingKeepsReplyPlaybackAtFullLevel() {
-        #expect(!AmbientAudioStreamer.replyDucking.enableAdvancedDucking.boolValue)
-        #expect(AmbientAudioStreamer.replyDucking.duckingLevel == .min)
+        #expect(!AmbientReplyEchoGuard.replyDucking.enableAdvancedDucking.boolValue)
+        #expect(AmbientReplyEchoGuard.replyDucking.duckingLevel == .min)
     }
 }
 
