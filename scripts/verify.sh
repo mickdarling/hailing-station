@@ -64,6 +64,7 @@ scripts_() {
     shellcheck "$f"
   done < <(find "${dirs[@]}" -type f \( -name '*.sh' -o -name 'hail-*' \) | sort)
   scripts/tests/test-testflight.sh
+  scripts/tests/test-host.sh
   trace_tests
   python3 -m unittest discover -s Tests/LocalIntentEvalTests
   # `scripts` is also a standalone entry point; the CLI integration must not rely on `all` building first.
