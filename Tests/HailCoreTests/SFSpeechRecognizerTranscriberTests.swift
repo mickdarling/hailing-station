@@ -84,11 +84,12 @@ import Testing
         let startup = Task { try await transcriber.start() }
         await backend.waitUntilStartIsBlocked()
         await transcriber.cancel()
-        let prematureRestart = Task { try await transcriber.start() }
+        // Inline, not a detached Task (#208): a Task could be scheduled only after the startup cleanup finished,
+        // when a restart is legitimately allowed. `start()` refuses at once while the cleanup is still pending.
+        await #expect(throws: CancellationError.self) { try await transcriber.start() }
         await backend.resumeStart()
 
         await #expect(throws: CancellationError.self) { try await startup.value }
-        await #expect(throws: CancellationError.self) { try await prematureRestart.value }
         _ = try await transcriber.start()
         #expect(await backend.cancelCount == 2)
         await transcriber.cancel()
