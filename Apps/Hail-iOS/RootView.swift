@@ -12,6 +12,8 @@ struct RootView: View {
     @State var playback: ReplyPlaybackController
     /// Shared by reply playback and ambient capture (#227): the player raises it before audio can be heard.
     @State var echoGuard: AmbientReplyEchoGuard
+    /// The "Diagnostics logging" log (#234): off by default; records and sends nothing until turned on.
+    @State var diagnostics = DeviceDiagnostics()
     @State var selectedHostID: HostEndpoint.Identifier?
     @State var selectedTargetID: String?
     @State var rememberedSelection: DestinationSelection?
@@ -72,6 +74,11 @@ struct RootView: View {
         }
         .task {
             await audioRoutes.observe()
+        }
+        .task {
+            connections.diagnostics = diagnostics
+            diagnostics.observeSystem()
+            diagnostics.watch(playback)
         }
         .task {
             await restoreHostsOnce()
