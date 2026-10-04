@@ -76,10 +76,13 @@ require_config() {
 }
 
 # The addresses the daemon's parseBindAddress accepts (WebSocketPeer.swift): a valid IPv4 or IPv6 literal that is
-# not unspecified (0.0.0.0, ::) and not IPv4-mapped. Python's ipaddress is at least as strict as Network.framework,
-# so this can only refuse more than the daemon, never pass something it would reject after the old one is stopped.
+# not unspecified (0.0.0.0, ::) and not IPv4-mapped. Without a scope suffix (refused here; Network.framework drops
+# an unknown one), every literal Python's ipaddress accepts, Network.framework accepts too, so this never passes
+# something the daemon would reject after the old one is stopped. Isolated mode ignores PYTHON* settings.
 is_ip_literal() {
-  python3 - "$1" <<'PY'
+  [[ "$1" != *%* ]] || return 1
+  command -v python3 >/dev/null || fail "python3 is required to check \"bind\""
+  python3 -I - "$1" <<'PY'
 import ipaddress, sys
 try:
     address = ipaddress.ip_address(sys.argv[1])

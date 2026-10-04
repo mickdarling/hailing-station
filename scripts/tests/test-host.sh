@@ -94,6 +94,7 @@ bad_config "unspecified IPv4" '{"bind": "0.0.0.0", "port": 8765}'
 bad_config "unspecified IPv6" '{"bind": "::", "port": 8765}'
 bad_config "malformed IPv6" '{"bind": "1::2::3", "port": 8765}'
 bad_config "IPv4-mapped IPv6" '{"bind": "::ffff:127.0.0.1", "port": 8765}'
+bad_config "scoped IPv6" '{"bind": "fe80::1%en0", "port": 8765}'
 bad_config "hex word that is not IPv6" '{"bind": "beef", "port": 8765}'
 bad_config "port as a string" '{"bind": "127.0.0.1", "port": "8765"}'
 printf '%s\n' '{"bind": "::1", "port": 8765}' > "$HAIL_CONFIG_DIR/host.json"
