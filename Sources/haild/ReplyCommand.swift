@@ -30,13 +30,19 @@ private struct ReplyOptions {
     var sampleRate = 24_000
     var socket = LocalReplyEndpoint.standardSocket()
 
+    /// Canonical at parse time, so an explicit empty or invalid `--host` is refused, never defaulted.
+    private static func explicitHost(_ value: String) throws -> String {
+        guard let host = HostIdentity.canonical(value) else { throw ReplyCommandError.usage }
+        return host
+    }
+
     mutating func apply(_ flag: String, value: String) throws {
         if flag == "--renderer-output-root" {
             rendererOutputRoot = URL(fileURLWithPath: value, isDirectory: true)
             return
         }
         switch flag {
-        case "--host": host = value
+        case "--host": host = try Self.explicitHost(value)
         case "--text": text = value
         case "--pcm16": pcm16 = URL(fileURLWithPath: value)
         case "--say":
@@ -119,12 +125,7 @@ private func replyOptions(_ arguments: ArraySlice<String>) throws -> ReplyOption
         guard let value = rest.popFirst() else { throw ReplyCommandError.usage }
         try options.apply(flag, value: value)
     }
-    if options.host.isEmpty {
-        options.host = try HostIdentity.resolve()
-    } else {
-        guard let host = HostIdentity.canonical(options.host) else { throw ReplyCommandError.usage }
-        options.host = host
-    }
+    if options.host.isEmpty { options.host = try HostIdentity.resolve() }
     guard !options.host.isEmpty, options.text != nil || options.pcm16 != nil,
           options.pcm16 == nil || options.say == nil else {
         throw ReplyCommandError.usage
