@@ -148,29 +148,25 @@ staged_release() { release_of current || fail "nothing installed; run scripts/ho
 relink() { ln -sfn "$1" "$2.tmp" && mv -fh "$2.tmp" "$2"; }
 
 # One install, restart or deploy at a time per user: they share the release links and the plist transaction files.
-# The lock is a directory (mkdir is atomic) holding the owner's pid; a lock whose owner has died is taken over.
+# A kernel flock on a descriptor this shell holds: exclusive, and released by the kernel when the shell (and any
+# child still holding the descriptor) exits, however it exits, so there is no stale state to take over. bash has no
+# flock builtin; the Python child takes the lock on the inherited descriptor, and the lock stays with the shell's
+# open file after the child exits.
 LOCK="$ROOT/.host.lock"
 acquire_lock() {
-  local owner
   mkdir -p "$ROOT"
-  if ! mkdir "$LOCK" 2>/dev/null; then
-    owner="$(cat "$LOCK/pid" 2>/dev/null || true)"
-    # No pid yet means another run is between mkdir and writing it: busy, not stale.
-    if [[ -z "$owner" ]] || kill -0 "$owner" 2>/dev/null; then
-      fail "another scripts/host.sh install, restart or deploy is running (lock $LOCK)"
-    fi
-    rm -f "$LOCK/pid"
-    rmdir "$LOCK" 2>/dev/null || true
-    mkdir "$LOCK" 2>/dev/null || fail "another scripts/host.sh run took the lock first"
-  fi
-  echo "$$" > "$LOCK/pid"
+  command -v python3 >/dev/null || fail "python3 is required for the host lock"
+  exec 9>>"$LOCK"
+  python3 -I -c 'import fcntl; fcntl.flock(9, fcntl.LOCK_EX | fcntl.LOCK_NB)' 2>/dev/null \
+    || fail "another scripts/host.sh install, restart or deploy is running"
 }
-release_lock() {
-  if [[ "$(cat "$LOCK/pid" 2>/dev/null || true)" == "$$" ]]; then
-    rm -f "$LOCK/pid"
-    rmdir "$LOCK" 2>/dev/null || true
-  fi
-}
+# Closing the descriptor releases the lock once no child still holds it; exiting releases it in any case.
+release_lock() { exec 9>&-; }
+
+# Waits and launchctl calls run without the lock descriptor, so a child that outlives an interrupted run cannot keep
+# the lock held.
+nap() { sleep "$1" 9>&-; }
+lctl() { "$LAUNCHCTL" "$@" 9>&-; }
 
 # The commit relinks run after rollback is disarmed, so everything they need is checked before anything is stopped.
 preflight_links() {
@@ -253,26 +249,26 @@ print_plist() {
 # A field (`pid`, `program`, `state`) of a loaded job, or nothing when it is not loaded.
 job_field() {
   # Everything after "key = ", so a path with spaces (Application Support) stays whole.
-  { "$LAUNCHCTL" print "$DOMAIN/$1" 2>/dev/null || true; } \
+  { lctl print "$DOMAIN/$1" 2>/dev/null || true; } \
     | awk -v key="$2" '$1 == key && $2 == "=" { sub(/^[^=]*= /, ""); print; exit }'
 }
 
 # Unload a job and wait until launchd has let it go. Returns 1 on timeout so the caller can decide what to do.
 stop_job() {
-  "$LAUNCHCTL" bootout "$DOMAIN/$1" >/dev/null 2>&1 || true
+  lctl bootout "$DOMAIN/$1" >/dev/null 2>&1 || true
   local waited=0
   # The daemon shuts down gracefully, so bootout can return while the job is still unloading.
-  while "$LAUNCHCTL" print "$DOMAIN/$1" >/dev/null 2>&1; do
+  while lctl print "$DOMAIN/$1" >/dev/null 2>&1; do
     (( waited++ < READY_SECONDS )) || return 1
-    sleep 1
+    nap 1
   done
 }
 
 start_job() {
   local attempt
   for attempt in 1 2 3; do
-    "$LAUNCHCTL" bootstrap "$DOMAIN" "$PLIST" >/dev/null 2>&1 && return 0
-    sleep "$attempt"
+    lctl bootstrap "$DOMAIN" "$PLIST" >/dev/null 2>&1 && return 0
+    nap "$attempt"
   done
   return 1
 }
@@ -282,10 +278,10 @@ wait_ready() {
   local waited=0 pid
   until grep -q '"event":"listener_ready"' "$LOGS/haild.err.log" 2>/dev/null && [[ -e "$SOCKET" ]]; do
     (( waited++ < READY_SECONDS )) || return 1
-    sleep 1
+    nap 1
   done
   pid="$(job_field "$LABEL" pid)"
-  sleep "$SETTLE_SECONDS"
+  nap "$SETTLE_SECONDS"
   [[ -n "$pid" && "$(job_field "$LABEL" pid)" == "$pid" ]]
 }
 

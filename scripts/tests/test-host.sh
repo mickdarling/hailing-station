@@ -26,6 +26,10 @@ expect_failure() {
 mode() { echo "$1" > "$scratch/mode"; }
 # Wait (up to 30 s, for slow runners) until a backgrounded restart has started the new agent, so a signal sent now
 # lands after the rollback trap is armed.
+lock_is_free() {
+  python3 -c 'import fcntl, sys; fcntl.flock(open(sys.argv[1], "a"), fcntl.LOCK_EX | fcntl.LOCK_NB)' \
+    "$HAIL_HOST_ROOT/.host.lock" 2>/dev/null || fail "the host lock is still held after $1"
+}
 wait_for_bootstrap() {
   local waited
   for (( waited = 0; waited < 300; waited++ )); do
@@ -188,6 +192,7 @@ set +e; wait "$restarting"; interrupted=$?; set -e
 [[ "$interrupted" != 0 ]] || fail "an interrupted restart reported success"
 [[ "$(cat "$jobs/com.hailingstation.haild")" == "$(release_dir one)/haild" ]] || fail "interruption did not restore"
 [[ "$(readlink -f "$HAIL_BIN_DIR/haild")" == "$(release_dir one)/haild" ]] || fail "interruption moved the PATH haild"
+lock_is_free "an interrupted restart"
 grep -q '^bootstrap' "$scratch/launchctl.calls" || fail "interruption did not start the restored agent"
 mode never-ready
 
@@ -204,6 +209,7 @@ set +e; wait "$restarting"; hung_up=$?; set -e
 [[ "$hung_up" != 0 ]] || fail "a hung-up restart reported success"
 [[ "$(cat "$jobs/com.hailingstation.haild")" == "$(release_dir one)/haild" ]] || fail "HUP did not restore"
 [[ "$(readlink -f "$HAIL_BIN_DIR/haild")" == "$(release_dir one)/haild" ]] || fail "HUP moved the PATH haild"
+lock_is_free "a hung-up restart"
 mode never-ready
 
 # A legacy job that will not unload: nothing new is started, the managed daemon and its socket are left alone.
@@ -217,8 +223,6 @@ managed_before="$(cat "$jobs/com.hailingstation.haild")"
 grep -q "nothing new was started" "$scratch/stuck.out" || fail "rollback did not say nothing was started"
 ! grep -q "kept as" "$scratch/stuck.out" || fail "rollback claimed a failed agent it never started"
 rm -f "$jobs/com.mickdarling.hailing-station-session"
-mode never-ready
-
 mode never-ready
 
 # A bootstrap that keeps failing fails the restart without moving PATH.
@@ -246,15 +250,20 @@ set +e; "$host" status >/dev/null; code=$?; set -e
 [[ "$code" == 3 ]] || fail "expected status 3 with a PATH haild for another binary, got $code"
 rm -f "$HAIL_BIN_DIR/haild"; mv "$HAIL_BIN_DIR/haild.moved" "$HAIL_BIN_DIR/haild"
 
-# A second install, restart or deploy while one holds the lock is refused before it changes anything.
+# A second install, restart or deploy while one holds the lock is refused before it changes anything; the lock is
+# the kernel's, so it frees as soon as the holder dies.
 mode ok
-sleep 30 &
+python3 -c 'import fcntl, sys, time; f = open(sys.argv[1], "a"); fcntl.flock(f, fcntl.LOCK_EX); time.sleep(30)' \
+  "$HAIL_HOST_ROOT/.host.lock" &
 holder=$!
-mkdir "$HAIL_HOST_ROOT/.host.lock"
-printf '%s\n' "$holder" > "$HAIL_HOST_ROOT/.host.lock/pid"
+for (( waited = 0; waited < 100; waited++ )); do
+  python3 -c 'import fcntl, sys; fcntl.flock(open(sys.argv[1], "a"), fcntl.LOCK_EX | fcntl.LOCK_NB)' \
+    "$HAIL_HOST_ROOT/.host.lock" 2>/dev/null || break
+  sleep 0.1
+done
 expect_failure "restart while another holds the lock" "$host" restart
-kill "$holder"; wait "$holder" 2>/dev/null || true
-"$host" restart >/dev/null || fail "a lock left by a dead process blocked the next restart"
+kill -9 "$holder"; wait "$holder" 2>/dev/null || true
+"$host" restart >/dev/null || fail "the lock of a killed holder blocked the next restart"
 
 # The commit relinks are checked before anything is stopped: a PATH haild that is a real file stops the restart.
 managed_before="$(cat "$jobs/com.hailingstation.haild")"
@@ -265,6 +274,7 @@ expect_failure "PATH haild that is not a link" "$host" restart
 ! grep -q '^bootout' "$scratch/launchctl.calls" || fail "a link preflight failure still stopped a job"
 [[ "$(cat "$jobs/com.hailingstation.haild")" == "$managed_before" ]] || fail "a link preflight failure touched the daemon"
 rm -f "$HAIL_BIN_DIR/haild"; mv "$scratch/haild-link" "$HAIL_BIN_DIR/haild"
+
 # Not running, or the legacy job loaded, is a problem.
 mode ok
 rm -f "$jobs/com.hailingstation.haild"
