@@ -75,14 +75,19 @@ require_config() {
   plutil -convert xml1 -o /dev/null "$CONFIG" >/dev/null 2>&1 || fail "$CONFIG is not valid JSON"
 }
 
-# IPv4 with octets up to 255, or IPv6 (hex groups with at least one colon).
+# The addresses the daemon's parseBindAddress accepts (WebSocketPeer.swift): a valid IPv4 or IPv6 literal that is
+# not unspecified (0.0.0.0, ::) and not IPv4-mapped. Python's ipaddress is at least as strict as Network.framework,
+# so this can only refuse more than the daemon, never pass something it would reject after the old one is stopped.
 is_ip_literal() {
-  local octet
-  if [[ "$1" =~ ^([0-9]{1,3})\.([0-9]{1,3})\.([0-9]{1,3})\.([0-9]{1,3})$ ]]; then
-    for octet in "${BASH_REMATCH[@]:1}"; do (( 10#$octet <= 255 )) || return 1; done
-    return 0
-  fi
-  [[ "$1" == *:* && "$1" =~ ^[0-9A-Fa-f:]+$ ]]
+  python3 - "$1" <<'PY'
+import ipaddress, sys
+try:
+    address = ipaddress.ip_address(sys.argv[1])
+except ValueError:
+    sys.exit(1)
+mapped = isinstance(address, ipaddress.IPv6Address) and address.ipv4_mapped is not None
+sys.exit(1 if address.is_unspecified or mapped else 0)
+PY
 }
 
 # The arguments after the executable, from host.json, in DAEMON_ARGS. Built as an array, never as joined text,
@@ -291,10 +296,12 @@ restart() {
 }
 
 status() {
-  local staged running path_link program state code=0
+  local staged running path_haild path_link program state code=0
   staged="$(staged_release)"
   running="$(release_of running || true)"
   path_link="$(readlink "$BIN/haild" 2>/dev/null || true)"
+  # What target sessions actually run, through every link.
+  path_haild="$(readlink -f "$BIN/haild" 2>/dev/null || true)"
   program="$(job_field "$LABEL" program)"
   state="$(job_field "$LABEL" state)"
   echo "staged:  $staged"
@@ -307,8 +314,11 @@ status() {
   if [[ "$state" != running ]]; then
     echo "problem: the managed daemon is not running"
     code=3
+  elif [[ -z "$path_haild" || "$path_haild" != "$(readlink -f "$program")" ]]; then
+    echo "problem: the PATH haild is missing or runs a different release from the daemon; run scripts/host.sh restart"
+    code=3
   elif [[ "$program" != "$running" ]]; then
-    echo "problem: the daemon runs a different release from the PATH haild; run scripts/host.sh restart"
+    echo "problem: the daemon runs a different release from the one recorded as running; run scripts/host.sh restart"
     code=3
   elif [[ "$program" != "$staged" ]]; then
     echo "note: a different release is staged and not started yet; run scripts/host.sh restart"

@@ -90,6 +90,10 @@ bad_config "host ID that is a flag" '{"bind": "127.0.0.1", "port": 8765, "hostID
 bad_config "quoted boolean" '{"bind": "127.0.0.1", "port": 8765, "deviceDiagnostics": "true"}'
 bad_config "bind that is an object" '{"bind": {"a": 1}, "port": 8765}'
 bad_config "IPv4 octet over 255" '{"bind": "999.1.1.1", "port": 8765}'
+bad_config "unspecified IPv4" '{"bind": "0.0.0.0", "port": 8765}'
+bad_config "unspecified IPv6" '{"bind": "::", "port": 8765}'
+bad_config "malformed IPv6" '{"bind": "1::2::3", "port": 8765}'
+bad_config "IPv4-mapped IPv6" '{"bind": "::ffff:127.0.0.1", "port": 8765}'
 bad_config "hex word that is not IPv6" '{"bind": "beef", "port": 8765}'
 bad_config "port as a string" '{"bind": "127.0.0.1", "port": "8765"}'
 printf '%s\n' '{"bind": "::1", "port": 8765}' > "$HAIL_CONFIG_DIR/host.json"
@@ -168,6 +172,18 @@ expect_failure "crash-looping daemon" "$host" restart
 # Interrupted installs: an incomplete release directory is refused with a clear message.
 mkdir -p "$(release_dir three)"
 expect_failure "incomplete release directory" "$host" install --binary "$scratch/haild-three"
+
+# A PATH haild that is missing or points elsewhere is a problem, even with a healthy daemon.
+mode ok
+"$host" restart >/dev/null
+"$host" status >/dev/null || fail "healthy status before the PATH check"
+mv "$HAIL_BIN_DIR/haild" "$HAIL_BIN_DIR/haild.moved"
+set +e; "$host" status >/dev/null; code=$?; set -e
+[[ "$code" == 3 ]] || fail "expected status 3 with no PATH haild, got $code"
+ln -s "$scratch/haild-two" "$HAIL_BIN_DIR/haild"
+set +e; "$host" status >/dev/null; code=$?; set -e
+[[ "$code" == 3 ]] || fail "expected status 3 with a PATH haild for another binary, got $code"
+rm -f "$HAIL_BIN_DIR/haild"; mv "$HAIL_BIN_DIR/haild.moved" "$HAIL_BIN_DIR/haild"
 
 # Not running, or the legacy job loaded, is a problem.
 mode ok
