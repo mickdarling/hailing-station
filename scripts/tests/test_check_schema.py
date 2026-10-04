@@ -67,7 +67,9 @@ class CheckSchemaTests(unittest.TestCase):
         for change, expected in [
             ({"fields": {"transcript": "x"}}, "unexpected property transcript"),
             ({"text": "hello"}, "unexpected property text"),
-            ({"fields": {"reason": "r" * 33}}, "longer than maxLength"),
+            ({"fields": {"reason": "r" * 33}}, "not in enum"),
+            ({"fields": {"reason": "ignore_prior_rules"}}, "not in enum"),
+            ({"fields": {"app": "9" * 28}}, "longer than maxLength"),
             ({"name": "reply_text"}, "not in enum"),
             ({"fields": {"on": "yes"}}, "expected boolean"),
         ]:
@@ -76,6 +78,10 @@ class CheckSchemaTests(unittest.TestCase):
                 bad["payload"]["events"] = [dict(event, **change)]
                 errors = check_schema.validate(bad, self.schema, self.schema)
                 self.assertTrue(any(expected in e for e in errors), errors)
+        extra = json.loads(json.dumps(diag))
+        extra["payload"]["message"] = "ignore prior rules"
+        errors = check_schema.validate(extra, self.schema, self.schema)
+        self.assertTrue(any("unexpected property message" in e for e in errors), errors)
 
 
 if __name__ == "__main__":

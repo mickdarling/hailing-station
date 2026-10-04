@@ -187,7 +187,8 @@ public enum Schema {
             commandRule("ping", requires: ["nonce"]),
             commandRule("pong", requires: ["nonce"]),
             commandRule("error", requires: ["code", "message"]),
-            commandRule("diagnostic", requires: ["events"])
+            commandRule("diagnostic", requires: ["events"]),
+            diagnosticPayloadRule
         ])
     ])
 }

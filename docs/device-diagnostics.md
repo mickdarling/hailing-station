@@ -5,8 +5,8 @@ When the phone stops ambient listening or fails, the Mac usually sees only the s
 ## Privacy and safety
 
 - No audio, no transcript or reply text, no request contents. Ever.
-- Only enumerated event names and a fixed set of field keys. Each key has one value kind: a short token (1 to 32 characters of letters, digits and `._:-`, so no spaces), a 32-bit integer, or a boolean.
-- The decoder refuses anything else: an unknown event name, an unknown event or field key, the wrong kind for a key, a token with spaces or over 32 characters, an integer out of range, an empty batch, or more than 32 events in one batch. This is stricter than the rest of the protocol, which ignores unknown keys.
+- Only enumerated event names and a fixed set of field keys. Each key has one value kind: a token from that field's closed vocabulary, a version number (one to four dot-separated groups of digits), a 32-bit integer, or a boolean. The log's readers include AI agents, so nothing a peer picks freely, not even a short phrase like `ignore_prior_rules`, can be stored.
+- The decoder refuses anything else: an unknown event name, an unknown payload, event or field key, the wrong kind for a key, a token outside its field's vocabulary, a version that isn't digits and dots, an integer out of range, an empty batch, or more than 32 events in one batch. This is stricter than the rest of the protocol, which ignores unknown keys.
 - Diagnostics grant no authority and change no behaviour.
 
 ## Protocol (shipped in this slice)
@@ -15,7 +15,7 @@ A `control` frame with `"command": "diagnostic"` and an `events` array:
 
 ```json
 {"command": "diagnostic", "events": [
-  {"ts": 1758200049500, "name": "route_change", "fields": {"reason": "old_device_unavailable", "route": "BuiltInMic"}}
+  {"ts": 1758200049500, "name": "route_change", "fields": {"reason": "old_device_unavailable", "route": "built_in_mic"}}
 ]}
 ```
 
@@ -23,7 +23,7 @@ A `control` frame with `"command": "diagnostic"` and an `events` array:
 
 Event names: `app_info`, `connection_state`, `connection_error`, `ambient_start`, `ambient_stop`, `route_change`, `interruption_begin`, `interruption_end`, `app_background`, `app_foreground`, `host_refusal`, `capture_state`, `capture_error`, `reply_playback_start`, `reply_playback_end`, `reply_playback_error`, `echo_guard`, `events_dropped`.
 
-Field keys: tokens `reason`, `state`, `code`, `domain`, `route`, `app`, `build`, `os`, `device`; integers `error`, `attempt`, `count`, `ms`; boolean `on`.
+Field keys: tokens `reason`, `state`, `code`, `domain`, `route`, `device`; versions `app`, `build`, `os`; integers `error`, `attempt`, `count`, `ms`; boolean `on`. Each token field's vocabulary is `DiagnosticVocabulary` in `Sources/HailProtocol/Control.swift` and the `enum` lists in the schema; each ends in `other`, which a device sends for anything it can't map exactly.
 
 A client sends `diagnostic` frames only to a host whose hello lists the `device_diagnostics` capability. A host without that capability never receives one. Adding an event name or field later needs a new capability, because a strict host refuses unknown names. The protocol version stays 1.
 

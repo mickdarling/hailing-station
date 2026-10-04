@@ -59,10 +59,10 @@ public enum Fixtures {
             .app: .token("0.1.84"), .build: .token("1"), .os: .token("26.0"), .device: .token("phone")
         ]),
         DiagnosticEvent(.routeChange, timestamp: 1_758_200_049_500, fields: [
-            .reason: .token("old_device_unavailable"), .route: .token("BuiltInMic")
+            .reason: .token("old_device_unavailable"), .route: .token("built_in_mic")
         ]),
         DiagnosticEvent(.ambientStop, timestamp: 1_758_200_049_510, fields: [
-            .reason: .token("route_change"), .error: .integer(-10_868)
+            .reason: .token("system_interruption"), .error: .integer(-10_868)
         ]),
         DiagnosticEvent(.echoGuard, timestamp: 1_758_200_049_520, fields: [.on: .boolean(false)])
     ]) ?? []

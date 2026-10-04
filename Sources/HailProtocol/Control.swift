@@ -129,6 +129,12 @@ extension ControlPayload: Codable {
             }
             self = .error(code: try container.decode(ErrorCode.self, forKey: .code), message: message)
         case .diagnostic:
+            // Strict, unlike the other commands (#234): only `command` and `events`, so nothing rides along.
+            let keys = try decoder.container(keyedBy: DiagnosticCodingKey.self).allKeys.map(\.stringValue)
+            guard Set(keys).isSubset(of: ["command", "events"]) else {
+                throw DecodingError.dataCorrupted(.init(codingPath: decoder.codingPath,
+                                                        debugDescription: "unknown diagnostic payload key"))
+            }
             let events = try container.decode([DiagnosticEvent].self, forKey: .events)
             try requireRange(events.count, in: 1...DiagnosticLimits.maxEventsPerBatch, "events", decoder)
             self = .diagnostic(events: events)
@@ -188,19 +194,22 @@ public enum VersionNegotiation {
     }
 }
 
-/// Bounds on device diagnostics (#234). A batch is small, every value is a scalar, and strings are short
-/// tokens with no spaces, so no transcript, reply text or request content fits through this channel.
+/// Bounds on device diagnostics (#234). A batch is small and every value is a scalar: an integer, a boolean,
+/// a version number, or a token from its field's closed vocabulary. The log's readers include AI agents, so
+/// nothing a peer chooses freely, not even a short phrase, can reach it through this channel.
 public enum DiagnosticLimits {
     /// The host capability that admits `diagnostic` frames. A host without it never receives one.
     public static let capability = "device_diagnostics"
     public static let maxEventsPerBatch = 32
-    public static let maxTokenLength = 32
     public static let integers: ClosedRange<Int64> = -2_147_483_648...2_147_483_647
-    /// Letters, digits and `._:-`: enough for versions, enum names and port types, never a sentence.
-    public static let tokenCharacters = Set("abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789._:-")
+    /// One to four dot-separated groups of one to six digits, as in `0.1.84` or `26.0.1`.
+    public static let versionPattern = "^[0-9]{1,6}([.][0-9]{1,6}){0,3}$"
 
-    public static func isToken(_ value: String) -> Bool {
-        (1...maxTokenLength).contains(value.count) && value.allSatisfy(tokenCharacters.contains)
+    public static func isVersion(_ value: String) -> Bool {
+        let groups = value.split(separator: ".", omittingEmptySubsequences: false)
+        return (1...4).contains(groups.count) && groups.allSatisfy { group in
+            (1...6).contains(group.count) && group.allSatisfy { ("0"..."9").contains($0) }
+        }
     }
 }
 
@@ -226,43 +235,81 @@ public enum DiagnosticEventName: String, Codable, Sendable, CaseIterable {
     case eventsDropped = "events_dropped"
 }
 
-/// The closed set of field keys, each with one fixed value kind.
+/// The closed set of field keys, each with one fixed value kind. Token fields accept only their own
+/// vocabulary; anything a device can't map exactly is sent as `other`.
 public enum DiagnosticField: String, Codable, Sendable, CaseIterable, Comparable {
-    case reason, state, code, domain, route, app, build, os, device
+    case reason, state, code, domain, route, device
+    case app, build, os
     case error, attempt, count, ms
     case on
 
-    public enum Kind: Sendable { case token, integer, boolean }
+    public enum Kind: Sendable { case token, version, integer, boolean }
 
     public var kind: Kind {
         switch self {
-        case .reason, .state, .code, .domain, .route, .app, .build, .os, .device: .token
+        case .reason, .state, .code, .domain, .route, .device: .token
+        case .app, .build, .os: .version
         case .error, .attempt, .count, .ms: .integer
         case .on: .boolean
         }
     }
 
+    /// The vocabulary of a token field, empty for every other kind.
+    public var tokens: [String] { DiagnosticVocabulary.tokens[self] ?? [] }
+
     public static func < (lhs: Self, rhs: Self) -> Bool { lhs.rawValue < rhs.rawValue }
 }
 
+/// Every value a token field may take (#234). Each list ends in `other`.
+public enum DiagnosticVocabulary {
+    static let tokens: [DiagnosticField: [String]] = [
+        .reason: [
+            // AVAudioSession route-change reasons
+            "unknown", "new_device_available", "old_device_unavailable", "category_change", "override",
+            "wake_from_sleep", "no_suitable_route", "route_configuration_change",
+            // AVAudioSession interruption reasons
+            "default", "app_was_suspended", "built_in_mic_muted", "scene_was_backgrounded", "route_disconnected",
+            // why ambient listening stopped
+            "user", "permission_denied", "binding_changed", "background", "start_failed", "capture_ended",
+            "system_interruption", "host_refused", "send_failed", "other"
+        ],
+        .state: [
+            "disconnected", "connecting", "negotiating", "ready", "reconnecting", "failed",
+            "ended_by_system", "tap_to_talk_start", "tap_to_talk_end", "other"
+        ],
+        .code: [
+            // host ErrorCode names
+            "unauthorized", "unknown_target", "not_allowed", "lockdown", "rate_limited", "protocol_version",
+            "malformed",
+            // dropped-event sources
+            "host_rate_limit", "app_buffer",
+            // reply playback and capture failures
+            "playback_failed", "resume_failed", "replay_failed", "format_unplayable", "conflicting_segment",
+            "media_services_reset", "other"
+        ],
+        .domain: ["avfoundation", "coreaudio", "network", "posix", "other"],
+        .route: [
+            "none", "built_in_mic", "built_in_speaker", "built_in_receiver", "headphones", "headset_mic",
+            "line_in", "line_out", "bluetooth_a2dp", "bluetooth_hfp", "bluetooth_le", "airplay", "hdmi",
+            "car_audio", "usb_audio", "other"
+        ],
+        .device: ["phone", "pad", "mac", "other"]
+    ]
+}
+
 public enum DiagnosticValue: Sendable, Equatable {
+    /// A token-field vocabulary entry, or a version-field number.
     case token(String)
     case integer(Int64)
     case boolean(Bool)
 
-    var kind: DiagnosticField.Kind {
-        switch self {
-        case .token: .token
-        case .integer: .integer
-        case .boolean: .boolean
-        }
-    }
-
-    var isWithinLimits: Bool {
-        switch self {
-        case .token(let value): DiagnosticLimits.isToken(value)
-        case .integer(let value): DiagnosticLimits.integers.contains(value)
-        case .boolean: true
+    func isValid(for field: DiagnosticField) -> Bool {
+        switch (self, field.kind) {
+        case (.token(let value), .token): field.tokens.contains(value)
+        case (.token(let value), .version): DiagnosticLimits.isVersion(value)
+        case (.integer(let value), .integer): DiagnosticLimits.integers.contains(value)
+        case (.boolean, .boolean): true
+        default: false
         }
     }
 }
@@ -283,7 +330,7 @@ public struct DiagnosticEvent: Sendable, Equatable {
         _ name: DiagnosticEventName, timestamp: Int64, fields: [DiagnosticField: DiagnosticValue] = [:]
     ) throws {
         guard timestamp >= 0 else { throw DiagnosticEventInvalid(field: nil) }
-        for (field, value) in fields where value.kind != field.kind || !value.isWithinLimits {
+        for (field, value) in fields where !value.isValid(for: field) {
             throw DiagnosticEventInvalid(field: field)
         }
         self.timestamp = timestamp
@@ -293,12 +340,7 @@ public struct DiagnosticEvent: Sendable, Equatable {
 }
 
 extension DiagnosticEvent: Codable {
-    private struct Key: CodingKey {
-        let stringValue: String
-        init(stringValue: String) { self.stringValue = stringValue }
-        var intValue: Int? { nil }
-        init?(intValue: Int) { nil }
-    }
+    typealias Key = DiagnosticCodingKey
 
     /// Unknown keys are refused here, unlike the rest of the protocol: free data must not ride along.
     public init(from decoder: any Decoder) throws {
@@ -316,7 +358,7 @@ extension DiagnosticEvent: Codable {
                     throw Self.corrupt(decoder, "unknown diagnostic field")
                 }
                 switch field.kind {
-                case .token: fields[field] = .token(try values.decode(String.self, forKey: key))
+                case .token, .version: fields[field] = .token(try values.decode(String.self, forKey: key))
                 case .integer: fields[field] = .integer(try values.decode(Int64.self, forKey: key))
                 case .boolean: fields[field] = .boolean(try values.decode(Bool.self, forKey: key))
                 }
@@ -363,20 +405,30 @@ extension Schema {
                 "fields": .object([
                     "type": .string("object"), "additionalProperties": .bool(false),
                     "properties": .object(Dictionary(uniqueKeysWithValues: DiagnosticField.allCases.map {
-                        ($0.rawValue, diagnosticValue($0.kind))
+                        ($0.rawValue, diagnosticValue($0))
                     }))
                 ])
             ])
         ])
     ])
 
-    private static func diagnosticValue(_ kind: DiagnosticField.Kind) -> JSONValue {
-        switch kind {
+    /// A `diagnostic` payload carries `command` and `events` and nothing else.
+    static let diagnosticPayloadRule: JSONValue = .object([
+        "if": .object(["properties": .object(["command": .object(["const": .string("diagnostic")])])]),
+        "then": .object([
+            "additionalProperties": .bool(false),
+            "properties": .object(["command": .object([:]), "events": .object([:])])
+        ])
+    ])
+
+    private static func diagnosticValue(_ field: DiagnosticField) -> JSONValue {
+        switch field.kind {
         case .token:
+            .object(["enum": .array(field.tokens.map(JSONValue.string))])
+        case .version:
             .object([
-                "type": .string("string"), "minLength": .integer(1),
-                "maxLength": .integer(Int64(DiagnosticLimits.maxTokenLength)),
-                "pattern": .string("^[A-Za-z0-9._:-]+$")
+                "type": .string("string"), "minLength": .integer(1), "maxLength": .integer(27),
+                "pattern": .string(DiagnosticLimits.versionPattern)
             ])
         case .integer:
             .object([
@@ -386,4 +438,12 @@ extension Schema {
         case .boolean: .object(["type": .string("boolean")])
         }
     }
+}
+
+/// Any string key, so the diagnostic decoders can see and refuse keys they don't know.
+struct DiagnosticCodingKey: CodingKey {
+    let stringValue: String
+    init(stringValue: String) { self.stringValue = stringValue }
+    var intValue: Int? { nil }
+    init?(intValue: Int) { nil }
 }

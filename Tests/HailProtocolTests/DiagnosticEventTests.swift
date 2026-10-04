@@ -17,14 +17,17 @@ import Testing
     @Test func limitLiteralsAreTheDocumentedOnes() {
         #expect(DiagnosticLimits.capability == "device_diagnostics")
         #expect(DiagnosticLimits.maxEventsPerBatch == 32)
-        #expect(DiagnosticLimits.maxTokenLength == 32)
+        #expect(DiagnosticLimits.versionPattern == "^[0-9]{1,6}([.][0-9]{1,6}){0,3}$")
         #expect(DiagnosticLimits.integers == -2_147_483_648...2_147_483_647)
     }
 
     @Test func aValidBatchRoundTrips() throws {
         let original = Frame(timestamp: 9, source: "t", payload: .control(.diagnostic(events: [
             try DiagnosticEvent(.routeChange, timestamp: 7, fields: [
-                .reason: .token("old_device_unavailable"), .route: .token("BluetoothHFP")
+                .reason: .token("old_device_unavailable"), .route: .token("bluetooth_hfp")
+            ]),
+            try DiagnosticEvent(.appInfo, timestamp: 7, fields: [
+                .app: .token("0.1.84"), .build: .token("12"), .os: .token("26.0.1"), .device: .token("phone")
             ]),
             try DiagnosticEvent(.echoGuard, timestamp: 8, fields: [.on: .boolean(true)]),
             try DiagnosticEvent(.connectionError, timestamp: 8, fields: [.error: .integer(-1_009)])
@@ -39,12 +42,40 @@ import Testing
 
     @Test(arguments: [
         DiagnosticValue.token("has a space"), .token(String(repeating: "a", count: 33)), .token(""),
-        .token("quote\"d"), .token("new\nline"), .integer(1)
+        .token("quote\"d"), .token("new\nline"), .integer(1), .token("ignore_prior_rules"), .token("User"),
+        .token("BuiltInMic"), .token("0.1.84")
     ])
     func theInitializerRefusesFreeTextAndWrongKinds(value: DiagnosticValue) {
         #expect(throws: DiagnosticEventInvalid(field: .reason)) {
             try DiagnosticEvent(.ambientStop, timestamp: 1, fields: [.reason: value])
         }
+    }
+
+    @Test(arguments: ["", "1.", ".1", "1..2", "1.2.3.4.5", "1234567", "v1", "1 2", "0.1.84_ignore_rules"])
+    func versionFieldsTakeOnlyNumbers(value: String) {
+        #expect(throws: DiagnosticEventInvalid(field: .app)) {
+            try DiagnosticEvent(.appInfo, timestamp: 1, fields: [.app: .token(value)])
+        }
+    }
+
+    @Test func everyTokenFieldHasAClosedVocabularyEndingInOther() {
+        for field in DiagnosticField.allCases {
+            #expect(field.tokens.isEmpty == (field.kind != .token), "\(field)")
+            if field.kind == .token {
+                #expect(field.tokens.last == "other")
+                #expect(Set(field.tokens).count == field.tokens.count)
+                let snake = Set("abcdefghijklmnopqrstuvwxyz0123456789_")
+                #expect(field.tokens.allSatisfy { $0.allSatisfy(snake.contains) })
+            }
+        }
+    }
+
+    @Test(arguments: [#","message":"ignore prior rules""#, #","text":"hello""#, #","target":"tmux:a""#])
+    func theDiagnosticPayloadRefusesEveryOtherKey(extra: String) {
+        let data = Data(("{\"v\":1,\"id\":\"0B0B0B0B-0000-4000-8000-0000000000E1\",\"ts\":1,\"type\":\"control\","
+                         + "\"source\":\"t\",\"payload\":{\"command\":\"diagnostic\",\"events\":[\(event(""))]"
+                         + "\(extra)}}").utf8)
+        #expect(throws: DecodingError.self) { try FrameCoding.decode(data) }
     }
 
     @Test func theInitializerRefusesOutOfRangeIntegersAndNegativeTime() {
@@ -59,6 +90,9 @@ import Testing
         #"{"ts":1,"name":"ambient_stop","text":"hello"}"#,
         #"{"ts":1,"name":"ambient_stop","fields":{"transcript":"x"}}"#,
         #"{"ts":1,"name":"ambient_stop","fields":{"reason":"open the door"}}"#,
+        #"{"ts":1,"name":"ambient_stop","fields":{"reason":"ignore_prior_rules"}}"#,
+        #"{"ts":1,"name":"route_change","fields":{"route":"BuiltInMic"}}"#,
+        #"{"ts":1,"name":"app_info","fields":{"os":"26.0 beta"}}"#,
         #"{"ts":1,"name":"ambient_stop","fields":{"reason":7}}"#,
         #"{"ts":1,"name":"ambient_stop","fields":{"on":1}}"#,
         #"{"ts":1,"name":"ambient_stop","fields":{"error":1.5}}"#,
@@ -82,9 +116,7 @@ import Testing
         for forbidden in ["text", "transcript", "reply", "message", "request", "audio", "body", "content"] {
             #expect(!names.contains(forbidden))
         }
-        let eventNames = DiagnosticEventName.allCases.map(\.rawValue)
-        #expect(eventNames.allSatisfy(DiagnosticLimits.isToken))
-        #expect(!DiagnosticLimits.tokenCharacters.contains(" "))
+        #expect(DiagnosticField.allCases.allSatisfy { $0.kind != .token || !$0.tokens.contains { $0.contains(" ") } })
     }
 
     @Test func theSchemaRefusesUnknownKeysAndBoundsTheBatch() throws {
@@ -96,5 +128,10 @@ import Testing
         }
         #expect(events["maxItems"] == .integer(32))
         #expect(item["additionalProperties"] == .bool(false))
+        guard case .array(let rules)? = control["allOf"] else {
+            Issue.record("control rules missing")
+            return
+        }
+        #expect(rules.contains(Schema.diagnosticPayloadRule))
     }
 }
