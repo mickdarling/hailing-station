@@ -83,6 +83,24 @@ class CheckSchemaTests(unittest.TestCase):
         errors = check_schema.validate(extra, self.schema, self.schema)
         self.assertTrue(any("unexpected property message" in e for e in errors), errors)
 
+    def test_max_items_and_pattern_are_enforced(self):
+        diag = json.loads((ROOT / "fixtures" / "frames" / "control-diagnostic.json").read_text())
+        event = diag["payload"]["events"][0]
+        big = json.loads(json.dumps(diag))
+        big["payload"]["events"] = [event] * 33
+        self.assertTrue(any("more than maxItems" in e for e in check_schema.validate(big, self.schema, self.schema)))
+        big["payload"]["events"] = [event] * 32
+        self.assertEqual(check_schema.validate(big, self.schema, self.schema), [])
+        phrase = json.loads(json.dumps(diag))
+        phrase["payload"]["events"] = [dict(event, fields={"app": "open door"})]
+        errors = check_schema.validate(phrase, self.schema, self.schema)
+        self.assertEqual(errors, ["$.payload.events[0].fields.app: does not match pattern"])
+        self.assertEqual(check_schema.validate("abc", {"type": "string", "pattern": "^[a-c]+$"}, {}), [])
+        for smuggled in ["1.2\n", "1\U000e0041", "\uff11.0", "1\u0301", "1\u200d2"]:
+            with self.subTest(value=smuggled):
+                phrase["payload"]["events"] = [dict(event, fields={"app": smuggled})]
+                self.assertTrue(check_schema.validate(phrase, self.schema, self.schema))
+
 
 if __name__ == "__main__":
     unittest.main()

@@ -32,6 +32,15 @@ public final class HostConnectionStore {
     @ObservationIgnored private let wallNow: HostConnection.WallNow
     @ObservationIgnored private let sleep: HostConnection.Sleep
     @ObservationIgnored private let jitter: HostConnection.Jitter
+    @ObservationIgnored private var diagnosticsFlush: Task<Void, Never>?
+    /// The device diagnostics log (#234). Connection changes are recorded into it, and its batches go to the first
+    /// ready host that advertises `device_diagnostics`; none goes anywhere else. Nil records and sends nothing.
+    @ObservationIgnored public var diagnostics: DeviceDiagnostics? {
+        didSet {
+            diagnostics?.onPending = { [weak self] in self?.scheduleDiagnosticsFlush() }
+            scheduleDiagnosticsFlush()
+        }
+    }
 
     public var hosts: [HostConnectionSnapshot] { order.compactMap { snapshots[$0] } }
     public init(
@@ -155,7 +164,9 @@ public final class HostConnectionStore {
 
     private func receive(_ snapshot: HostConnectionSnapshot, token: UUID) {
         guard tokens[snapshot.id] == token else { return }
+        let previous = snapshots[snapshot.id]?.state
         snapshots[snapshot.id] = snapshot
+        recordDiagnostics(from: previous, to: snapshot.state)
     }
 
     private func receive(_ event: HostReplyEvent, token: UUID) {
@@ -164,6 +175,69 @@ public final class HostConnectionStore {
         if replyFrames.count > Self.replyFrameLimit {
             replyFrames.removeFirst(replyFrames.count - Self.replyFrameLimit)
         }
+    }
+}
+
+/// Device diagnostics (#234): recording connection changes and sending batches.
+extension HostConnectionStore {
+    /// Each change of connection state, with the reconnect attempt; reaching ready also records `app_info`, so
+    /// every host session starts with the build, and sends what was buffered while offline.
+    func recordDiagnostics(from previous: HostConnectionState?, to state: HostConnectionState) {
+        guard let diagnostics, previous.map(Self.stateToken) != Self.stateToken(state) else { return }
+        var fields: [DiagnosticField: DiagnosticValue] = [.state: .token(Self.stateToken(state))]
+        if case .reconnecting(let attempt, _) = state { fields[.attempt] = .integer(Int64(attempt)) }
+        diagnostics.record(.connectionState, fields)
+        if state == .ready {
+            diagnostics.record(.appInfo, DeviceDiagnostics.appInfo())
+            scheduleDiagnosticsFlush(after: .zero)
+        }
+    }
+
+    /// True when some ready host advertises `device_diagnostics`, so the toggle can say whether anyone collects.
+    public var diagnosticsCollectingHost: HostConnectionSnapshot? {
+        hosts.first { $0.state == .ready && $0.capabilities.contains(DiagnosticLimits.capability) }
+    }
+
+    static func stateToken(_ state: HostConnectionState) -> String {
+        switch state {
+        case .disconnected: "disconnected"
+        case .connecting: "connecting"
+        case .negotiating: "negotiating"
+        case .ready: "ready"
+        case .reconnecting: "reconnecting"
+        case .failed: "failed"
+        }
+    }
+
+    /// One pending send at a time. Each sends the batch the log's budget allows to the first collecting host,
+    /// then reschedules while anything remains; a failed send puts the batch back for the next connection.
+    func scheduleDiagnosticsFlush(after delay: Duration = .seconds(2)) {
+        guard diagnosticsFlush == nil, diagnostics?.hasPending == true, diagnosticsCollectingHost != nil else { return }
+        let sleep = sleep
+        diagnosticsFlush = Task { [weak self] in
+            try? await sleep(delay)
+            await self?.flushDiagnostics()
+        }
+    }
+
+    private func flushDiagnostics() async {
+        diagnosticsFlush = nil
+        guard let diagnostics, let host = diagnosticsCollectingHost, let connection = connections[host.id] else {
+            return
+        }
+        guard let batch = diagnostics.nextBatch() else {
+            if diagnostics.hasPending { scheduleDiagnosticsFlush(after: .seconds(5)) }
+            return
+        }
+        // The toggle's promise: once logging is off, nothing taken before is sent or requeued.
+        guard diagnostics.isCurrent(batch) else { return }
+        do {
+            try await connection.sendDiagnostics(batch.events)
+        } catch {
+            diagnostics.requeue(batch)
+            return
+        }
+        scheduleDiagnosticsFlush()
     }
 }
 
@@ -207,6 +281,10 @@ public final class AmbientListeningController {
     @ObservationIgnored private var awaitingPermission = false
     @ObservationIgnored private var pendingStart = false
     @ObservationIgnored private var sendFailure: String?
+    /// The send failure's cause as a token (`host_refused` with the host's code, or `send_failed`) for diagnostics.
+    @ObservationIgnored private var sendFailureCause: (cause: String, code: String?)?
+    /// The device diagnostics log (#234): ambient start, stop with its cause, and host refusals. Never audio.
+    @ObservationIgnored public var diagnostics: DeviceDiagnostics?
     /// The session that most recently began activating the audio session. Only it may release the audio session,
     /// so a slow teardown of an earlier session cannot deactivate the one a fast off→on started (#218).
     @ObservationIgnored private var activation: UUID?
@@ -238,6 +316,7 @@ public final class AmbientListeningController {
         isOn = true
         stopReason = nil
         sendFailure = nil
+        sendFailureCause = nil
         self.binding = binding
         // The permission alert makes the scene inactive, so only leaving for the background cancels here.
         awaitingPermission = true
@@ -245,12 +324,13 @@ public final class AmbientListeningController {
         awaitingPermission = false
         guard session == current else { return }
         guard granted else {
-            return await end(current, reason: "Microphone access is off. Allow it in Settings to listen.")
+            return await end(current, reason: "Microphone access is off. Allow it in Settings to listen.",
+                             cause: "permission_denied")
         }
         if scene == .active { await start(current) } else { pendingStart = true }
     }
 
-    public func turnOff() async { await end(session, reason: nil) }
+    public func turnOff() async { await end(session, reason: nil, cause: "user") }
 
     /// Called on every scene or binding change. Streaming runs only in the foreground for the binding it began
     /// with; anything else ends it.
@@ -259,7 +339,8 @@ public final class AmbientListeningController {
         self.scene = scene
         guard isOn else { return }
         if current != binding {
-            return await end(session, reason: "Stopped: the destination or connection changed.")
+            return await end(session, reason: "Stopped: the destination or connection changed.",
+                             cause: "binding_changed")
         }
         switch scene {
         case .active where pendingStart:
@@ -270,7 +351,7 @@ public final class AmbientListeningController {
         case .inactive where awaitingPermission || (pendingStart && previous == .inactive):
             break
         case .inactive, .background:
-            await end(session, reason: "Stopped: Hailing Station left the foreground.")
+            await end(session, reason: "Stopped: Hailing Station left the foreground.", cause: "background")
         }
     }
 
@@ -279,7 +360,7 @@ public final class AmbientListeningController {
         let send = send
         await pendingRelease?.value
         guard session == current, scene == .active else {
-            return await end(current, reason: "Stopped: Hailing Station left the foreground.")
+            return await end(current, reason: "Stopped: Hailing Station left the foreground.", cause: "background")
         }
         activation = current
         do {
@@ -293,16 +374,17 @@ public final class AmbientListeningController {
             }
             guard session == current, scene == .active else {
                 await release(current)
-                return await end(current, reason: "Stopped: Hailing Station left the foreground.")
+                return await end(current, reason: "Stopped: Hailing Station left the foreground.", cause: "background")
             }
             try streamer.start()
             self.streamer = streamer
             isListening = true
+            diagnostics?.record(.ambientStart)
             observeSystemEnd(session: current)
             watch(streamer, session: current)
         } catch {
             await release(current)
-            await end(current, reason: "Could not start listening: \(Self.describe(error))")
+            await end(current, reason: "Could not start listening: \(Self.describe(error))", cause: "start_failed")
         }
     }
 
@@ -312,17 +394,23 @@ public final class AmbientListeningController {
         }
         guard !streaming, session == current else { return }
         Task {
-            await end(current, reason: sendFailure ?? "Stopped: the microphone was interrupted or ended.")
+            await end(current, reason: sendFailure ?? "Stopped: the microphone was interrupted or ended.",
+                      cause: sendFailureCause?.cause ?? "capture_ended", code: sendFailureCause?.code)
         }
     }
 
     private func recordSendFailure(_ error: any Error, session current: UUID) {
         guard session == current, sendFailure == nil else { return }
         sendFailure = "Stopped: \(Self.describe(error))"
+        sendFailureCause = Self.diagnosticCause(error)
+        if let code = sendFailureCause?.code { diagnostics?.record(.hostRefusal, [.code: .token(code)]) }
     }
 
-    private func end(_ current: UUID, reason: String?) async {
+    private func end(_ current: UUID, reason: String?, cause: String, code: String? = nil) async {
         guard session == current, isOn else { return }
+        var fields: [DiagnosticField: DiagnosticValue] = [.reason: .token(cause)]
+        if let code { fields[.code] = .token(code) }
+        diagnostics?.record(.ambientStop, fields)
         session = UUID()
         isOn = false
         isListening = false
@@ -359,8 +447,18 @@ extension AmbientListeningController {
         systemEndObserver = notificationCenter.addObserver(
             forName: AVAudioEngineCapture.endedBySystem, object: nil, queue: nil
         ) { [weak self] _ in
-            Task { @MainActor in await self?.end(current, reason: Self.interruptedReason) }
+            Task { @MainActor in
+                await self?.end(current, reason: Self.interruptedReason, cause: "system_interruption")
+            }
         }
+    }
+
+    /// A host refusal carries its `ErrorCode` before the colon (`HostConnectionFailure.remote("code: message")`).
+    static func diagnosticCause(_ error: any Error) -> (cause: String, code: String?) {
+        guard case HostConnectionFailure.remote(let message) = error else { return ("send_failed", nil) }
+        let code = message.split(separator: ":", maxSplits: 1).first.map(String.init) ?? ""
+        let known = DiagnosticField.code.tokens.contains { DiagnosticLimits.sameBytes($0, code) }
+        return ("host_refused", known ? code : "other")
     }
 
     static func describe(_ error: any Error) -> String {

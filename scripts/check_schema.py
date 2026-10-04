@@ -3,11 +3,12 @@
 
 Uses the `jsonschema` package when present; otherwise a small built-in checker covering the subset
 this schema uses (type, required, additionalProperties, properties, enum, const, minimum, maximum,
-minLength, maxLength, allOf/if/then, $ref into $defs). Exit 1 on any failure.
+minLength, maxLength, pattern, minItems, maxItems, allOf/if/then, $ref into $defs). Exit 1 on any failure.
 """
 from __future__ import annotations
 
 import json
+import re
 import sys
 from pathlib import Path
 
@@ -47,6 +48,8 @@ def validate(value, schema: dict, root: dict, path: str = "$") -> list[str]:
             errors.append(f"{path}: shorter than minLength")
         if "maxLength" in schema and len(value) > schema["maxLength"]:
             errors.append(f"{path}: longer than maxLength")
+        if "pattern" in schema and not re.fullmatch(schema["pattern"], value):
+            errors.append(f"{path}: does not match pattern")
     if isinstance(value, dict):
         for key in schema.get("required", []):
             if key not in value:
@@ -60,6 +63,8 @@ def validate(value, schema: dict, root: dict, path: str = "$") -> list[str]:
     if isinstance(value, list):
         if "minItems" in schema and len(value) < schema["minItems"]:
             errors.append(f"{path}: fewer than minItems")
+        if "maxItems" in schema and len(value) > schema["maxItems"]:
+            errors.append(f"{path}: more than maxItems")
         if "items" in schema:
             for index, item in enumerate(value):
                 errors.extend(validate(item, schema["items"], root, f"{path}[{index}]"))
