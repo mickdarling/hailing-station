@@ -9,8 +9,9 @@ scratch="$(cd "$(mktemp -d "${TMPDIR:-/tmp}/hailing-station-host-test.XXXXXX")" 
 # Releases are read-only by design, so make the scratch tree writable before removing it.
 trap 'chmod -R u+w "$scratch" 2>/dev/null; rm -rf -- "$scratch"' EXIT
 
-export HAIL_HOST_ROOT="$scratch/root" HAIL_CONFIG_DIR="$scratch/config" HAIL_LAUNCH_AGENTS="$scratch/agents"
-export HAIL_LOG_DIR="$scratch/logs" HAIL_BIN_DIR="$scratch/bin" HAIL_READY_SECONDS=2 HAIL_SETTLE_SECONDS=0
+# Spaces in the paths, like the real "Application Support", so path handling stays covered.
+export HAIL_HOST_ROOT="$scratch/App Support/root" HAIL_CONFIG_DIR="$scratch/config" HAIL_LAUNCH_AGENTS="$scratch/agents"
+export HAIL_LOG_DIR="$scratch/logs" HAIL_BIN_DIR="$scratch/my bin" HAIL_READY_SECONDS=2 HAIL_SETTLE_SECONDS=0
 export HAIL_LAUNCHCTL="$scratch/launchctl"
 host="$repo_root/scripts/host.sh"
 jobs="$scratch/jobs"
@@ -70,9 +71,11 @@ echo '{"bind": "127.0.0.1", "port": 8765}' > "$HAIL_CONFIG_DIR/host.json"
 "$host" plist > "$scratch/minimal.plist"
 [[ "$(plutil -extract ProgramArguments raw -o - "$scratch/minimal.plist")" == 7 ]] \
   || fail "minimal config produced extra arguments"
-if plutil -extract EnvironmentVariables raw -o - "$scratch/minimal.plist" >/dev/null 2>&1; then
-  fail "minimal config produced an environment"
+if plutil -extract EnvironmentVariables.HAIL_HOST_ID raw -o - "$scratch/minimal.plist" >/dev/null 2>&1; then
+  fail "minimal config produced a host ID"
 fi
+[[ "$(plutil -extract EnvironmentVariables.HAIL_CONFIG_DIR raw -o - "$scratch/minimal.plist")" == "$HAIL_CONFIG_DIR" ]] \
+  || fail "the daemon would not use the config directory this script checks"
 
 # Config validation, all before anything runs.
 bad_config() { printf '%s\n' "$2" > "$HAIL_CONFIG_DIR/host.json"; expect_failure "$1" "$host" plist; }
@@ -82,6 +85,15 @@ bad_config "missing bind" '{"port": 8765}'
 bad_config "bind that is not an IP literal" '{"bind": "localhost", "port": 8765}'
 bad_config "newline smuggling an extra argument" '{"bind": "127.0.0.1\n--bind\n0.0.0.0", "port": 8765}'
 bad_config "invalid host ID" '{"bind": "127.0.0.1", "port": 8765, "hostID": "bad host"}'
+bad_config "host ID with a newline" '{"bind": "127.0.0.1", "port": 8765, "hostID": "a\nb"}'
+bad_config "host ID that is a flag" '{"bind": "127.0.0.1", "port": 8765, "hostID": "-x"}'
+bad_config "quoted boolean" '{"bind": "127.0.0.1", "port": 8765, "deviceDiagnostics": "true"}'
+bad_config "bind that is an object" '{"bind": {"a": 1}, "port": 8765}'
+bad_config "IPv4 octet over 255" '{"bind": "999.1.1.1", "port": 8765}'
+bad_config "hex word that is not IPv6" '{"bind": "beef", "port": 8765}'
+bad_config "port as a string" '{"bind": "127.0.0.1", "port": "8765"}'
+printf '%s\n' '{"bind": "::1", "port": 8765}' > "$HAIL_CONFIG_DIR/host.json"
+"$host" plist >/dev/null || fail "IPv6 loopback was refused"
 bad_config "non-boolean flag" '{"bind": "127.0.0.1", "port": 8765, "deviceDiagnostics": 1}'
 bad_config "invalid JSON" 'not json'
 ambient='"ambient": {"rightyo": "/opt/rightyo", "config": "/opt/r.json", "target": "tmux:t"}'
@@ -107,6 +119,14 @@ expected=("$(release_dir one)/haild" run --bind 127.0.0.1 --port 8765 --personal
 [[ "${arguments[*]}" == "${expected[*]}" ]] || fail "unexpected arguments: ${arguments[*]}"
 [[ "$(plutil -extract EnvironmentVariables.HAIL_HOST_ID raw -o - "$scratch/agent.plist")" == studio.local ]] \
   || fail "host ID not in the environment"
+
+# A failed first migration has nothing to restore; the failed agent is set aside so it cannot load at login.
+mode never-ready
+expect_failure "first restart that never becomes ready" "$host" restart
+[[ -f "$HAIL_LAUNCH_AGENTS/com.hailingstation.haild.plist.failed" ]] || fail "failed first agent not set aside"
+[[ ! -e "$HAIL_LAUNCH_AGENTS/com.hailingstation.haild.plist" ]] || fail "failed first agent left in LaunchAgents"
+[[ ! -e "$HAIL_BIN_DIR/haild" ]] || fail "PATH haild set by a failed restart"
+mode ok
 
 # Restart replaces the legacy job, then the managed one, then starts and waits; PATH follows the running release.
 echo "legacy" > "$jobs/com.mickdarling.hailing-station-session"

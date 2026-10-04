@@ -44,34 +44,45 @@ USAGE
 
 fail() { echo "error: $*" >&2; exit 1; }
 
-# Prints a config value, or nothing when the key is absent. plutil prints its error to stdout, so the value is
-# used only when extraction succeeds.
-config_value() {
-  local value
-  if value="$(plutil -extract "$1" raw -o - "$CONFIG" 2>/dev/null)"; then printf '%s' "$value"; fi
+# Config readers run in the calling shell and set VALUE. They are never called inside $(...): macOS bash 3.2 does
+# not apply `set -e` inside command substitution, so a refusal there would be silently ignored.
+VALUE=""
+read_value() {
+  local key="$1" type="$2" actual
+  VALUE=""
+  # plutil prints a missing-key error on stdout, so nothing is read unless the key exists.
+  actual="$(plutil -type "$key" "$CONFIG" 2>/dev/null)" || return 0
+  [[ "$actual" == "$type" ]] || fail "host.json \"$key\" must be a $type, not a $actual"
+  VALUE="$(plutil -extract "$key" raw -o - "$CONFIG")"
 }
 
-# A config string that is safe to pass as one daemon argument: no control characters, no leading dash.
-checked_value() {
-  local key="$1" value
-  value="$(config_value "$key")"
-  if [[ "$value" == *[[:cntrl:]]* || "$value" == -* ]]; then
-    fail "host.json \"$key\" must not contain control characters or start with '-'"
+# A string that is safe to pass as one daemon argument: no control characters, no leading dash.
+read_string() {
+  read_value "$1" string
+  if [[ "$VALUE" == *[[:cntrl:]]* || "$VALUE" == -* ]]; then
+    fail "host.json \"$1\" must not contain control characters or start with '-'"
   fi
-  printf '%s' "$value"
 }
 
-# A JSON boolean, absent meaning false. Anything else (1, "yes") is refused rather than silently read as false.
-flag_value() {
-  local key="$1" value
-  value="$(config_value "$key")"
-  [[ -z "$value" || "$value" == true || "$value" == false ]] || fail "host.json \"$key\" must be true or false"
-  [[ "$value" == true ]]
+# True only for a JSON true; absent means false.
+read_flag() {
+  read_value "$1" bool
+  [[ "$VALUE" == true ]]
 }
 
 require_config() {
   [[ -f "$CONFIG" ]] || fail "missing $CONFIG; see scripts/host.sh --help"
   plutil -convert xml1 -o /dev/null "$CONFIG" >/dev/null 2>&1 || fail "$CONFIG is not valid JSON"
+}
+
+# IPv4 with octets up to 255, or IPv6 (hex groups with at least one colon).
+is_ip_literal() {
+  local octet
+  if [[ "$1" =~ ^([0-9]{1,3})\.([0-9]{1,3})\.([0-9]{1,3})\.([0-9]{1,3})$ ]]; then
+    for octet in "${BASH_REMATCH[@]:1}"; do (( 10#$octet <= 255 )) || return 1; done
+    return 0
+  fi
+  [[ "$1" == *:* && "$1" =~ ^[0-9A-Fa-f:]+$ ]]
 }
 
 # The arguments after the executable, from host.json, in DAEMON_ARGS. Built as an array, never as joined text,
@@ -80,23 +91,22 @@ DAEMON_ARGS=()
 load_daemon_arguments() {
   require_config
   local bind port rightyo rightyo_config target fallback=false
-  bind="$(checked_value bind)"
-  port="$(config_value port)"
+  read_string bind; bind="$VALUE"
+  read_value port integer; port="$VALUE"
   # An IPv4 or IPv6 literal; a host name would make the listener's exposure depend on name resolution.
-  [[ "$bind" =~ ^[0-9]{1,3}(\.[0-9]{1,3}){3}$ || "$bind" =~ ^[0-9A-Fa-f:]+$ ]] \
-    || fail "host.json needs \"bind\" as an IP address literal"
+  is_ip_literal "$bind" || fail "host.json needs \"bind\" as an IP address literal"
   if ! [[ "$port" =~ ^[0-9]+$ ]] || (( port < 1 || port > 65535 )); then
     fail "host.json needs a numeric \"port\" between 1 and 65535"
   fi
   DAEMON_ARGS=(run --bind "$bind" --port "$port" --personal-terminal)
-  if flag_value singleTerminalReplyFallback; then
+  if read_flag singleTerminalReplyFallback; then
     fallback=true
     DAEMON_ARGS+=(--single-terminal-reply-fallback)
   fi
-  if flag_value deviceDiagnostics; then DAEMON_ARGS+=(--device-diagnostics); fi
-  rightyo="$(checked_value ambient.rightyo)"
-  rightyo_config="$(checked_value ambient.config)"
-  target="$(checked_value ambient.target)"
+  if read_flag deviceDiagnostics; then DAEMON_ARGS+=(--device-diagnostics); fi
+  read_string ambient.rightyo; rightyo="$VALUE"
+  read_string ambient.config; rightyo_config="$VALUE"
+  read_string ambient.target; target="$VALUE"
   if [[ -n "$rightyo$rightyo_config$target" ]]; then
     [[ "$rightyo" == /* && "$rightyo_config" == /* && -n "$target" ]] \
       || fail "ambient needs absolute \"rightyo\" and \"config\" paths and a \"target\""
@@ -105,15 +115,15 @@ load_daemon_arguments() {
   fi
 }
 
-# The optional host ID, held to the same form HostIdentity accepts, so a bad value fails here, not in a
+# The optional host ID in HOST_ID, held to the form HostIdentity accepts, so a bad value fails here, not in a
 # crash-looping daemon.
-host_id() {
-  local value
-  value="$(checked_value hostID)"
-  if [[ -n "$value" ]] && ! [[ "$value" =~ ^[A-Za-z0-9-]+(\.[A-Za-z0-9-]+)*\.?$ && ${#value} -le 253 ]]; then
+HOST_ID=""
+load_host_id() {
+  read_string hostID
+  if [[ -n "$VALUE" ]] && ! [[ "$VALUE" =~ ^[A-Za-z0-9-]+(\.[A-Za-z0-9-]+)*\.?$ && ${#VALUE} -le 253 ]]; then
     fail "host.json \"hostID\" must be a host name: letters, digits, dots and hyphens"
   fi
-  printf '%s' "$value"
+  HOST_ID="$VALUE"
 }
 
 # The haild of the release a link points at.
@@ -162,10 +172,9 @@ install_release() {
 }
 
 write_plist() {
-  local out="$1" program argument host
-  program="$(staged_release)"
+  local out="$1" program="$2" argument
   load_daemon_arguments
-  host="$(host_id)"
+  load_host_id
   rm -f "$out"
   plutil -create xml1 "$out"
   plutil -insert Label -string "$LABEL" "$out"
@@ -175,37 +184,42 @@ write_plist() {
     plutil -insert ProgramArguments -string "$argument" -append "$out"
   done
   plutil -insert RunAtLoad -bool true "$out"
-  # Restart after a crash, not after a clean stop.
-  plutil -insert KeepAlive -dictionary "$out"
-  plutil -insert KeepAlive.SuccessfulExit -bool false "$out"
+  # Always restart: haild exits 0 when its listener fails, and a deliberate stop is a bootout, which unloads it.
+  plutil -insert KeepAlive -bool true "$out"
   plutil -insert ProcessType -string Interactive "$out"
   plutil -insert StandardOutPath -string "$LOGS/haild.out.log" "$out"
   plutil -insert StandardErrorPath -string "$LOGS/haild.err.log" "$out"
-  if [[ -n "$host" ]]; then
-    plutil -insert EnvironmentVariables -dictionary "$out"
-    plutil -insert EnvironmentVariables.HAIL_HOST_ID -string "$host" "$out"
+  if [[ -n "$HOST_ID" || -n "${HAIL_CONFIG_DIR:-}" ]]; then plutil -insert EnvironmentVariables -dictionary "$out"; fi
+  if [[ -n "$HOST_ID" ]]; then plutil -insert EnvironmentVariables.HAIL_HOST_ID -string "$HOST_ID" "$out"; fi
+  # The daemon's config directory (policy, audit, reply socket) is the one this script reads and checks.
+  if [[ -n "${HAIL_CONFIG_DIR:-}" ]]; then
+    plutil -insert EnvironmentVariables.HAIL_CONFIG_DIR -string "$HAIL_CONFIG_DIR" "$out"
   fi
 }
 
 print_plist() {
-  local tmp
+  local tmp program
+  program="$(staged_release)"
   tmp="$(mktemp "${TMPDIR:-/tmp}/hail-plist.XXXXXX")"
-  write_plist "$tmp"
+  write_plist "$tmp" "$program"
   cat "$tmp"
   rm -f "$tmp"
 }
 
 # A field (`pid`, `program`, `state`) of a loaded job, or nothing when it is not loaded.
 job_field() {
-  { "$LAUNCHCTL" print "$DOMAIN/$1" 2>/dev/null || true; } | awk -v key="$2" '$1 == key && $2 == "=" { print $3; exit }'
+  # Everything after "key = ", so a path with spaces (Application Support) stays whole.
+  { "$LAUNCHCTL" print "$DOMAIN/$1" 2>/dev/null || true; } \
+    | awk -v key="$2" '$1 == key && $2 == "=" { sub(/^[^=]*= /, ""); print; exit }'
 }
 
+# Unload a job and wait until launchd has let it go. Returns 1 on timeout so the caller can decide what to do.
 stop_job() {
   "$LAUNCHCTL" bootout "$DOMAIN/$1" >/dev/null 2>&1 || true
   local waited=0
   # The daemon shuts down gracefully, so bootout can return while the job is still unloading.
   while "$LAUNCHCTL" print "$DOMAIN/$1" >/dev/null 2>&1; do
-    (( waited++ < READY_SECONDS )) || fail "$1 did not unload within ${READY_SECONDS}s"
+    (( waited++ < READY_SECONDS )) || return 1
     sleep 1
   done
 }
@@ -238,11 +252,14 @@ restart() {
   mkdir -p "$AGENTS" "$LOGS" "$BIN"
   chmod 0700 "$LOGS"
   # Everything that can be checked is checked before the running daemon is touched.
-  write_plist "$PLIST.next"
+  write_plist "$PLIST.next" "$program"
   plutil -lint -s "$PLIST.next" >/dev/null
-  [[ -f "$PLIST" ]] && cp -p "$PLIST" "$PLIST.prev"
-  stop_job "$LEGACY_LABEL"
-  stop_job "$LABEL"
+  # Only this run's previous agent may be restored, never a leftover from an earlier one.
+  rm -f "$PLIST.prev"
+  if [[ -f "$PLIST" ]]; then cp -p "$PLIST" "$PLIST.prev"; fi
+  if ! stop_job "$LEGACY_LABEL" || ! stop_job "$LABEL"; then
+    fail "an existing haild job did not unload within ${READY_SECONDS}s; the new release was not started"
+  fi
   # Keep the previous run's log for diagnosis; readiness is judged on a fresh one.
   if [[ -f "$LOGS/haild.err.log" ]]; then mv -f "$LOGS/haild.err.log" "$LOGS/haild.err.log.1"; fi
   rm -f "$SOCKET"
@@ -250,14 +267,25 @@ restart() {
   if start_job && wait_ready; then
     relink "$(dirname "$program")" "$ROOT/running"
     relink "$ROOT/running/haild" "$BIN/haild"
+    rm -f "$PLIST.prev"
     echo "haild ready: $program"
     return 0
   fi
   echo "error: the new haild did not become ready; see $LOGS/haild.err.log" >&2
-  stop_job "$LABEL"
+  stop_job "$LABEL" || echo "error: the failed haild did not unload" >&2
+  # A crashed daemon can leave its socket behind, which would stop the restored one from starting.
+  rm -f "$SOCKET"
   if [[ -f "$PLIST.prev" ]]; then
     mv -f "$PLIST.prev" "$PLIST"
-    if start_job; then echo "restored the previous LaunchAgent" >&2; else echo "error: restore failed" >&2; fi
+    if start_job && wait_ready; then
+      echo "restored the previous LaunchAgent; it is ready" >&2
+    else
+      echo "error: the previous LaunchAgent was restored but is not ready; see $LOGS/haild.err.log" >&2
+    fi
+  else
+    # Nothing to restore (first migration): keep the failed agent from loading at the next login.
+    mv -f "$PLIST" "$PLIST.failed"
+    echo "error: no previous LaunchAgent to restore; the failed one is kept as $PLIST.failed" >&2
   fi
   exit 1
 }

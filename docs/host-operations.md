@@ -21,7 +21,7 @@ Create `~/.config/hail/host.json`:
 ```
 
 - `bind` (an IP address literal) and `port` are required. Everything else is optional; leave out `ambient` to run without ambient listening.
-- Flags must be JSON `true` or `false`. Ambient listening requires `"singleTerminalReplyFallback": true`.
+- Values must have the right JSON type: strings for `bind`, `hostID` and the ambient keys, an integer `port`, and `true` or `false` for flags. Ambient listening requires `"singleTerminalReplyFallback": true`.
 - Values may not contain control characters or start with `-`. Bad config is refused before the running daemon is touched.
 - `hostID` is optional. Without it, the daemon and `haild reply` both use the Mac's LocalHostName as `<name>.local`. If you set it, the target sessions that run `haild reply` must use the same value through `HAIL_HOST_ID`.
 - Ambient paths must be absolute. The daemon applies its own ownership and permission checks when ambient listening starts.
@@ -42,7 +42,9 @@ scripts/host.sh status    # staged release, running daemon, PATH haild, and prob
   3. Starts `com.hailingstation.haild`, retrying the bootstrap.
   4. Waits until the listener reports ready, the reply socket exists, and the process stays up.
   5. Only then points `running` and `~/.local/bin/haild` at the new release.
-- If the new daemon does not become ready, `restart` restores and restarts the previous LaunchAgent and exits non-zero. The first migration from the legacy job has no previous LaunchAgent to restore: read the log, fix the cause, and run `restart` again.
+- If the new daemon does not become ready, `restart` restores the previous LaunchAgent, checks that it is ready, says whether it is, and exits non-zero.
+- The first migration from the legacy job has no previous LaunchAgent to restore. The failed agent is kept as `com.hailingstation.haild.plist.failed`, so it does not load at the next login, and no daemon is running. Read the log, fix the cause, and run `restart` again.
+- If an existing job does not unload in time, `restart` stops before starting anything new.
 - Make sure `~/.local/bin` is on `PATH` for the target sessions, so the `haild reply` named in reply instructions resolves to the running release.
 
 ## Logs
@@ -61,4 +63,4 @@ scripts/host.sh status    # staged release, running daemon, PATH haild, and prob
 
 ## Rollback
 
-Releases are never deleted by `install`. `ls -t "$HOME/Library/Application Support/HailingStation/releases"` lists them, newest first. To roll back, run `scripts/host.sh deploy --binary` with the absolute path to the earlier release's `haild`.
+Releases are never deleted by `install`. `ls -t "$HOME/Library/Application Support/HailingStation/releases"` lists them, newest first. To roll back, run `scripts/host.sh deploy --binary` with the absolute path to the earlier release's `haild`. Releases are read-only: to delete an old one, run `chmod -R u+w` on it first.
