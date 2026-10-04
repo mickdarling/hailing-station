@@ -268,11 +268,13 @@ roll_back() {
   rm -f "$PLIST.next"
   if [[ "$STAGE" == stopping ]]; then
     # Nothing new started and the managed agent untouched; a daemon still serving keeps its socket and log.
-    echo "nothing new was started; any daemon still running was left as it was" >&2
+    echo "nothing new was started; the legacy job was asked to stop and may still exit; check scripts/host.sh status" >&2
     exit 1
   fi
-  if [[ "$STAGE" == started ]]; then
-    stop_job "$LABEL" || echo "error: the new haild did not unload" >&2
+  # From "managed-stopped" on, no other daemon owns the socket (the legacy job unloaded), so clean up before the
+  # restore is judged; stop_job is idempotent if the managed job is already down.
+  if [[ "$STAGE" != stopping ]]; then
+    stop_job "$LABEL" || echo "error: the managed haild did not unload" >&2
     # A crashed daemon can leave its socket behind, which would stop the restored one from starting; its log could
     # also still hold a readiness line, so it is set aside before the restore is judged.
     rm -f "$SOCKET"
