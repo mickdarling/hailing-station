@@ -1,6 +1,6 @@
 # Host operations
 
-How to install, run and check the Mac host daemon (#246). One installed release serves both the LaunchAgent and the `haild` on `PATH`, so a rebuild cannot leave the daemon and `haild reply` on different builds (#115).
+How to install, run and check the Mac host daemon (#246). The LaunchAgent and the `haild` on `PATH` always run the same installed release, so a rebuild cannot leave the daemon and `haild reply` on different builds (#115).
 
 ## Configure
 
@@ -20,21 +20,30 @@ Create `~/.config/hail/host.json`:
 }
 ```
 
-- `bind` and `port` are required. Everything else is optional; leave out `ambient` to run without ambient listening.
+- `bind` (an IP address literal) and `port` are required. Everything else is optional; leave out `ambient` to run without ambient listening.
+- Flags must be JSON `true` or `false`. Ambient listening requires `"singleTerminalReplyFallback": true`.
+- Values may not contain control characters or start with `-`. Bad config is refused before the running daemon is touched.
 - `hostID` is optional. Without it, the daemon and `haild reply` both use the Mac's LocalHostName as `<name>.local`. If you set it, the target sessions that run `haild reply` must use the same value through `HAIL_HOST_ID`.
 - Ambient paths must be absolute. The daemon applies its own ownership and permission checks when ambient listening starts.
 
 ## Install and restart
 
 ```sh
-scripts/host.sh install   # build a release haild and install it as an immutable release
-scripts/host.sh restart   # write the LaunchAgent, replace any running haild job, wait for readiness
-scripts/host.sh status    # installed release, PATH link, LaunchAgent program, drift
+scripts/host.sh deploy    # install, then restart: the usual one-command path
+scripts/host.sh install   # build a release haild and stage it; nothing running changes
+scripts/host.sh restart   # start the staged release under launchd and wait until it is ready
+scripts/host.sh status    # staged release, running daemon, PATH haild, and problems
 ```
 
-- `install` builds `haild` in release mode, copies it to `~/Library/Application Support/HailingStation/releases/<sha256-prefix>/haild` (read-only), and switches `current` and `~/.local/bin/haild` to it atomically. `--binary PATH` installs a prebuilt binary instead.
-- `restart` writes `~/Library/LaunchAgents/com.hailingstation.haild.plist`. It removes the managed job and the legacy ad-hoc job (`com.mickdarling.hailing-station-session`), then starts the agent with `KeepAlive`. It fails unless the listener reports ready within 20 seconds.
-- Make sure `~/.local/bin` is on `PATH` for the target sessions, so the `haild reply` named in reply instructions resolves to the installed release.
+- `install` builds `haild` in release mode and stages it read-only at `~/Library/Application Support/HailingStation/releases/<sha256-prefix>/haild`, with `current` pointing at it. `--binary PATH` installs a prebuilt binary instead.
+- `restart`:
+  1. Checks the config and writes the new LaunchAgent before touching anything.
+  2. Stops the legacy ad-hoc job (`com.mickdarling.hailing-station-session`) and the managed job, and waits until they have unloaded.
+  3. Starts `com.hailingstation.haild`, retrying the bootstrap.
+  4. Waits until the listener reports ready, the reply socket exists, and the process stays up.
+  5. Only then points `running` and `~/.local/bin/haild` at the new release.
+- If the new daemon does not become ready, `restart` restores and restarts the previous LaunchAgent and exits non-zero. The first migration from the legacy job has no previous LaunchAgent to restore: read the log, fix the cause, and run `restart` again.
+- Make sure `~/.local/bin` is on `PATH` for the target sessions, so the `haild reply` named in reply instructions resolves to the running release.
 
 ## Logs
 
@@ -42,11 +51,14 @@ scripts/host.sh status    # installed release, PATH link, LaunchAgent program, d
 
 ## When replies stop arriving
 
-1. `scripts/host.sh status`. Exit code 3 means drift: the daemon runs an older release than the one installed. Run `scripts/host.sh restart`.
-2. A warning about the legacy job means a second daemon may still be running. Run `scripts/host.sh restart`.
-3. Read the refusal reason printed by `haild reply` (#85). For example, `sourceHostMismatch` means the host IDs differ (see `hostID` above), and `noRecipient` means no terminal is connected for that target.
-4. Check the end of `haild.err.log` for `session_connected` and `session_disconnected` events.
+1. Run `scripts/host.sh status`. Exit code 3 means one of these:
+   - the managed daemon is not running;
+   - it runs a different release from the `PATH` haild;
+   - the legacy job is still loaded.
+   Run `scripts/host.sh restart`.
+2. Read the refusal reason printed by `haild reply` (#85). For example, `sourceHostMismatch` means the host IDs differ (see `hostID` above), and `noRecipient` means no terminal is connected for that target.
+3. Check the end of `haild.err.log` for `session_connected` and `session_disconnected` events.
 
 ## Rollback
 
-Releases are never deleted by `install`. To roll back, run `scripts/host.sh install --binary` with the earlier release's `haild`, then `scripts/host.sh restart`.
+Releases are never deleted by `install`. `ls -t "$HOME/Library/Application Support/HailingStation/releases"` lists them, newest first. To roll back, run `scripts/host.sh deploy --binary` with the absolute path to the earlier release's `haild`.
