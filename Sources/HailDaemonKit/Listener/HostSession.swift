@@ -15,11 +15,14 @@ public protocol HostSessionAuthorizing: Sendable {
     var capabilities: [String] { get }
     /// The daemon's ambient audio gate when ambient listening was explicitly enabled (#203); nil otherwise.
     var ambientAudio: AmbientAudioGate? { get }
+    /// The device diagnostics sink when haild runs with `--device-diagnostics` (#234); nil otherwise.
+    var diagnostics: DiagnosticLog? { get }
     func authorize(_ frame: Frame) async -> HostSessionAuthorization
 }
 
 extension HostSessionAuthorizing {
     public var ambientAudio: AmbientAudioGate? { nil }
+    public var diagnostics: DiagnosticLog? { nil }
 }
 
 /// The temporary connection proof can negotiate and inspect liveness, but it grants no target authority.
@@ -38,15 +41,19 @@ public struct ConnectionProbeAuthorizer: HostSessionAuthorizing {
 
 /// Explicitly enabled personal-testing mode. It exposes only target selection, final text delivery,
 /// and literal Escape in addition to the probe operations; the default listener remains read-only.
-/// Ambient audio (#203) is admitted, and `stream_audio` advertised, only when a gate is supplied.
+/// Ambient audio (#203) is admitted, and `stream_audio` advertised, only when a gate is supplied. Device
+/// diagnostics (#234) are admitted, and `device_diagnostics` advertised, only when a sink is supplied.
 public struct PersonalTerminalAuthorizer: HostSessionAuthorizing {
     public let capabilities: [String]
     public let ambientAudio: AmbientAudioGate?
+    public let diagnostics: DiagnosticLog?
 
-    public init(ambientAudio: AmbientAudioGate? = nil) {
+    public init(ambientAudio: AmbientAudioGate? = nil, diagnostics: DiagnosticLog? = nil) {
         self.ambientAudio = ambientAudio
+        self.diagnostics = diagnostics
         capabilities = ["list_targets", "ping", "select_target", "send_text", "escape", "receive_replies"]
             + (ambientAudio == nil ? [] : ["stream_audio"])
+            + (diagnostics == nil ? [] : [DiagnosticLimits.capability])
     }
 
     public func authorize(_ frame: Frame) async -> HostSessionAuthorization {
@@ -56,6 +63,7 @@ public struct PersonalTerminalAuthorizer: HostSessionAuthorizing {
         case .control(let control):
             switch control {
             case .hello, .ping, .listTargets, .select, .escape: .allow
+            case .diagnostic: diagnostics == nil ? .deny : .allow
             default: .deny
             }
         default: .deny
@@ -177,6 +185,11 @@ public actor HostSession {
             // The phone is attributed by its negotiated Hello name, never by the frame's own `source`.
             guard let admitted = await admit(frame, version: version, device: peerName) else {
                 return failure(.unauthorized, "terminal action is not authorized", close: false, version: version)
+            }
+            // Diagnostics (#234) are stored and never answered: no error, no selection or delivery change.
+            if case .control(.diagnostic(let events)) = frame.payload, let sink = authorizer.diagnostics {
+                await sink.record(events, session: connectionID, device: peerName)
+                return HostSessionResult(frames: [])
             }
             return await route(admitted, version: version)
         }
