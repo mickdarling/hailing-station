@@ -119,6 +119,12 @@ load_daemon_arguments() {
     [[ "$rightyo" == /* && "$rightyo_config" == /* && -n "$target" ]] \
       || fail "ambient needs absolute \"rightyo\" and \"config\" paths and a \"target\""
     [[ "$fallback" == true ]] || fail "ambient listening requires \"singleTerminalReplyFallback\": true"
+    # The daemon's own target form (RightyoInputConsumer.validateTarget), checked before anything is stopped. Its
+    # guarded-word check still runs only in the daemon; a target that trips it rolls back.
+    [[ "$target" =~ ^[A-Za-z0-9][A-Za-z0-9._:-]{0,95}$ ]] \
+      || fail "ambient \"target\" must be letters, digits and ._:- (at most 96), starting with a letter or digit"
+    [[ -x "$rightyo" && -f "$rightyo_config" ]] \
+      || fail "ambient \"rightyo\" must be an executable and \"config\" an existing file"
     DAEMON_ARGS+=(--ambient-rightyo "$rightyo" --ambient-rightyo-config "$rightyo_config" --ambient-target "$target")
   fi
 }
@@ -188,7 +194,7 @@ install_release() {
     esac
   done
   if [[ -z "$binary" ]]; then
-    (cd "$REPO" && swift build -c release --product haild)
+    (cd "$REPO" && swift build -c release --product haild) 9>&-
     binary="$REPO/.build/release/haild"
   fi
   [[ -x "$binary" ]] || fail "$binary is not an executable"

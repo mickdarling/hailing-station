@@ -24,7 +24,7 @@ Create `~/.config/hail/host.json`:
 - Values must have the right JSON type: strings for `bind`, `hostID` and the ambient keys, an integer `port`, and `true` or `false` for flags. Ambient listening requires `"singleTerminalReplyFallback": true`.
 - Values may not contain control characters or start with `-`. Bad config is refused before the running daemon is touched.
 - `hostID` is optional. Without it, the daemon and `haild reply` both use the Mac's LocalHostName as `<name>.local`. If you set it, the target sessions that run `haild reply` must use the same value through `HAIL_HOST_ID`.
-- Ambient paths must be absolute. The daemon applies its own ownership and permission checks when ambient listening starts.
+- Ambient paths must be absolute and exist, and `target` must be letters, digits and `._:-`. The daemon applies its own ownership, permission and guarded-word checks when ambient listening starts.
 
 ## Install and restart
 
@@ -45,6 +45,7 @@ scripts/host.sh status    # staged release, running daemon, PATH haild, and prob
 - If the new daemon does not become ready, `restart` restores the previous LaunchAgent, checks that it is ready, says whether it is, and exits non-zero.
 - The first migration from the legacy job has no previous LaunchAgent to restore. The failed agent is kept as `com.hailingstation.haild.plist.failed`, so it does not load at the next login, and no daemon is running. Read the log, fix the cause, and run `restart` again.
 - If an existing job does not unload in time, `restart` stops before starting anything new.
+- `install`, `restart` and `deploy` take a per-user lock, so only one runs at a time; they need `python3` (the lock and the `bind` check use it).
 - Make sure `~/.local/bin` is on `PATH` for the target sessions, so the `haild reply` named in reply instructions resolves to the running release.
 
 ## Logs

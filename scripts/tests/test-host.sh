@@ -24,12 +24,12 @@ expect_failure() {
   if "$@" >/dev/null 2>&1; then fail "expected failure: $why"; fi
 }
 mode() { echo "$1" > "$scratch/mode"; }
-# Wait (up to 30 s, for slow runners) until a backgrounded restart has started the new agent, so a signal sent now
-# lands after the rollback trap is armed.
 lock_is_free() {
   python3 -c 'import fcntl, sys; fcntl.flock(open(sys.argv[1], "a"), fcntl.LOCK_EX | fcntl.LOCK_NB)' \
     "$HAIL_HOST_ROOT/.host.lock" 2>/dev/null || fail "the host lock is still held after $1"
 }
+# Wait (up to 30 s, for slow runners) until a backgrounded restart has started the new agent, so a signal sent now
+# lands after the rollback trap is armed.
 wait_for_bootstrap() {
   local waited
   for (( waited = 0; waited < 300; waited++ )); do
@@ -117,11 +117,18 @@ printf '%s\n' '{"bind": "::1", "port": 8765}' > "$HAIL_CONFIG_DIR/host.json"
 "$host" plist >/dev/null || fail "IPv6 loopback was refused"
 bad_config "non-boolean flag" '{"bind": "127.0.0.1", "port": 8765, "deviceDiagnostics": 1}'
 bad_config "invalid JSON" 'not json'
-ambient='"ambient": {"rightyo": "/opt/rightyo", "config": "/opt/r.json", "target": "tmux:t"}'
+# Real paths, because ambient preflight checks that the executable and config exist.
+ambient='"ambient": {"rightyo": "/bin/sh", "config": "/etc/hosts", "target": "tmux:t"}'
 bad_config "ambient without the reply fallback" "{\"bind\": \"127.0.0.1\", \"port\": 8765, $ambient}"
 bad_config "relative ambient path" \
   '{"bind": "127.0.0.1", "port": 8765, "singleTerminalReplyFallback": true,
     "ambient": {"rightyo": "rel", "config": "/c", "target": "t"}}'
+bad_config "target outside the daemon's form" \
+  '{"bind": "127.0.0.1", "port": 8765, "singleTerminalReplyFallback": true,
+    "ambient": {"rightyo": "/bin/sh", "config": "/etc/hosts", "target": "tmux:bad target"}}'
+bad_config "missing RightyO executable" \
+  '{"bind": "127.0.0.1", "port": 8765, "singleTerminalReplyFallback": true,
+    "ambient": {"rightyo": "/nonexistent/rightyo", "config": "/etc/hosts", "target": "tmux:t"}}'
 bad_config "target that is a flag" \
   '{"bind": "127.0.0.1", "port": 8765, "singleTerminalReplyFallback": true,
     "ambient": {"rightyo": "/r", "config": "/c", "target": "--reply-socket"}}'
@@ -136,7 +143,7 @@ count="$(plutil -extract ProgramArguments raw -o - "$scratch/agent.plist")"
 for (( i = 0; i < count; i++ )); do arguments+=("$(plutil -extract "ProgramArguments.$i" raw -o - "$scratch/agent.plist")"); done
 expected=("$(release_dir one)/haild" run --bind 127.0.0.1 --port 8765 --personal-terminal
   --single-terminal-reply-fallback --device-diagnostics
-  --ambient-rightyo /opt/rightyo --ambient-rightyo-config /opt/r.json --ambient-target tmux:t)
+  --ambient-rightyo /bin/sh --ambient-rightyo-config /etc/hosts --ambient-target tmux:t)
 [[ "${arguments[*]}" == "${expected[*]}" ]] || fail "unexpected arguments: ${arguments[*]}"
 [[ "$(plutil -extract EnvironmentVariables.HAIL_HOST_ID raw -o - "$scratch/agent.plist")" == studio.local ]] \
   || fail "host ID not in the environment"
