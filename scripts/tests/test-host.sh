@@ -4,8 +4,9 @@
 set -euo pipefail
 
 repo_root="$(cd "$(dirname "$0")/../.." && pwd)"
-# Canonical (no /var -> /private/var symlink), so resolved links compare equal to scratch paths.
-scratch="$(cd "$(mktemp -d "${TMPDIR:-/tmp}/hailing-station-host-test.XXXXXX")" && pwd -P)"
+# Canonical (no /var -> /private/var symlink), so resolved links compare equal to scratch paths; short, because a
+# Unix socket path is limited to 104 bytes.
+scratch="$(cd "$(mktemp -d /tmp/hst.XXXXXX)" && pwd -P)"
 # Releases are read-only by design, so make the scratch tree writable before removing it.
 trap 'chmod -R u+w "$scratch" 2>/dev/null; rm -rf -- "$scratch"' EXIT
 
@@ -55,7 +56,7 @@ case "\$1" in
     plutil -extract ProgramArguments.0 raw -o - "\$3" > "$jobs/\$label"
     if [[ "\$mode" != never-ready ]]; then
       echo '{"event":"listener_ready"}' > "$HAIL_LOG_DIR/haild.err.log"
-      touch "$HAIL_CONFIG_DIR/replies.sock"
+      python3 -c 'import socket, sys; socket.socket(socket.AF_UNIX).bind(sys.argv[1])' "$HAIL_CONFIG_DIR/replies.sock"
     fi ;;
   print)
     job="$jobs/\${2##*/}"
@@ -222,7 +223,7 @@ mode never-ready
 # A legacy job that will not unload: nothing new is started, the managed daemon and its socket are left alone.
 mode stuck-legacy
 echo "legacy" > "$jobs/com.mickdarling.hailing-station-session"
-touch "$HAIL_CONFIG_DIR/replies.sock"
+[[ -S "$HAIL_CONFIG_DIR/replies.sock" ]] || fail "expected the running daemon's socket"
 managed_before="$(cat "$jobs/com.hailingstation.haild")"
 "$host" restart > "$scratch/stuck.out" 2>&1 && fail "restart succeeded with a legacy job that would not unload"
 [[ -e "$HAIL_CONFIG_DIR/replies.sock" ]] || fail "rollback removed the socket of a daemon that was never stopped"
@@ -281,6 +282,13 @@ expect_failure "PATH haild that is not a link" "$host" restart
 ! grep -q '^bootout' "$scratch/launchctl.calls" || fail "a link preflight failure still stopped a job"
 [[ "$(cat "$jobs/com.hailingstation.haild")" == "$managed_before" ]] || fail "a link preflight failure touched the daemon"
 rm -f "$HAIL_BIN_DIR/haild"; mv "$scratch/haild-link" "$HAIL_BIN_DIR/haild"
+
+# A running daemon whose reply socket is gone is a problem: every haild reply would fail.
+"$host" status >/dev/null || fail "healthy status before the socket check"
+mv "$HAIL_CONFIG_DIR/replies.sock" "$scratch/replies.sock.moved"
+set +e; "$host" status >/dev/null; code=$?; set -e
+[[ "$code" == 3 ]] || fail "expected status 3 without a reply socket, got $code"
+mv "$scratch/replies.sock.moved" "$HAIL_CONFIG_DIR/replies.sock"
 
 # Not running, or the legacy job loaded, is a problem.
 mode ok

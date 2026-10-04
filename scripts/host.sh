@@ -123,7 +123,7 @@ load_daemon_arguments() {
     # guarded-word check still runs only in the daemon; a target that trips it rolls back.
     [[ "$target" =~ ^[A-Za-z0-9][A-Za-z0-9._:-]{0,95}$ ]] \
       || fail "ambient \"target\" must be letters, digits and ._:- (at most 96), starting with a letter or digit"
-    [[ -x "$rightyo" && -f "$rightyo_config" ]] \
+    [[ -f "$rightyo" && -x "$rightyo" && -f "$rightyo_config" ]] \
       || fail "ambient \"rightyo\" must be an executable and \"config\" an existing file"
     DAEMON_ARGS+=(--ambient-rightyo "$rightyo" --ambient-rightyo-config "$rightyo_config" --ambient-target "$target")
   fi
@@ -282,7 +282,7 @@ start_job() {
 # Ready means: the listener reported ready, the reply socket exists, and the process is not restarting.
 wait_ready() {
   local waited=0 pid
-  until grep -q '"event":"listener_ready"' "$LOGS/haild.err.log" 2>/dev/null && [[ -e "$SOCKET" ]]; do
+  until grep -q '"event":"listener_ready"' "$LOGS/haild.err.log" 2>/dev/null && [[ -S "$SOCKET" ]]; do
     (( waited++ < READY_SECONDS )) || return 1
     nap 1
   done
@@ -395,6 +395,9 @@ status() {
   fi
   if [[ "$state" != running ]]; then
     echo "problem: the managed daemon is not running"
+    code=3
+  elif [[ ! -S "$SOCKET" ]]; then
+    echo "problem: the reply socket $SOCKET is missing, so haild reply cannot connect; run scripts/host.sh restart"
     code=3
   elif [[ -z "$path_haild" || "$path_haild" != "$(readlink -f "$program")" ]]; then
     echo "problem: the PATH haild is missing or runs a different release from the daemon; run scripts/host.sh restart"
