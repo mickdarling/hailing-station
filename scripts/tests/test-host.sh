@@ -24,6 +24,16 @@ expect_failure() {
   if "$@" >/dev/null 2>&1; then fail "expected failure: $why"; fi
 }
 mode() { echo "$1" > "$scratch/mode"; }
+# Wait (up to 30 s, for slow runners) until a backgrounded restart has started the new agent, so a signal sent now
+# lands after the rollback trap is armed.
+wait_for_bootstrap() {
+  local waited
+  for (( waited = 0; waited < 300; waited++ )); do
+    grep -q '^bootstrap' "$scratch/launchctl.calls" 2>/dev/null && return 0
+    sleep 0.1
+  done
+  fail "restart never reached bootstrap"
+}
 
 # Loaded jobs are files in $jobs holding the program path. `mode` decides what the next bootstrap does:
 # ok (ready), never-ready, bootstrap-fails, or flapping (a new pid on every print).
@@ -165,12 +175,10 @@ expect_failure "restart that never becomes ready" "$host" restart
 
 # An interrupted restart (TERM while waiting for readiness) rolls back to the previous agent.
 mode never-ready
+: > "$scratch/launchctl.calls"
 HAIL_READY_SECONDS=30 "$host" restart >/dev/null 2>&1 &
 restarting=$!
-for (( waited = 0; waited < 50; waited++ )); do
-  grep -q '^bootstrap' "$scratch/launchctl.calls" 2>/dev/null && break
-  sleep 0.1
-done
+wait_for_bootstrap
 : > "$scratch/launchctl.calls"
 sleep 0.5
 # The new daemon is already started and never ready; the restored one comes up normally.
@@ -184,13 +192,11 @@ grep -q '^bootstrap' "$scratch/launchctl.calls" || fail "interruption did not st
 mode never-ready
 
 # A closed terminal (HUP) mid-restart also rolls back.
+: > "$scratch/launchctl.calls"
 HAIL_READY_SECONDS=30 "$host" restart >/dev/null 2>&1 &
 restarting=$!
+wait_for_bootstrap
 : > "$scratch/launchctl.calls"
-for (( waited = 0; waited < 50; waited++ )); do
-  grep -q '^bootstrap' "$scratch/launchctl.calls" 2>/dev/null && break
-  sleep 0.1
-done
 sleep 0.5
 mode ok
 kill -HUP "$restarting"
@@ -211,6 +217,8 @@ managed_before="$(cat "$jobs/com.hailingstation.haild")"
 grep -q "nothing new was started" "$scratch/stuck.out" || fail "rollback did not say nothing was started"
 ! grep -q "kept as" "$scratch/stuck.out" || fail "rollback claimed a failed agent it never started"
 rm -f "$jobs/com.mickdarling.hailing-station-session"
+mode never-ready
+
 mode never-ready
 
 # A bootstrap that keeps failing fails the restart without moving PATH.
@@ -238,6 +246,25 @@ set +e; "$host" status >/dev/null; code=$?; set -e
 [[ "$code" == 3 ]] || fail "expected status 3 with a PATH haild for another binary, got $code"
 rm -f "$HAIL_BIN_DIR/haild"; mv "$HAIL_BIN_DIR/haild.moved" "$HAIL_BIN_DIR/haild"
 
+# A second install, restart or deploy while one holds the lock is refused before it changes anything.
+mode ok
+sleep 30 &
+holder=$!
+mkdir "$HAIL_HOST_ROOT/.host.lock"
+printf '%s\n' "$holder" > "$HAIL_HOST_ROOT/.host.lock/pid"
+expect_failure "restart while another holds the lock" "$host" restart
+kill "$holder"; wait "$holder" 2>/dev/null || true
+"$host" restart >/dev/null || fail "a lock left by a dead process blocked the next restart"
+
+# The commit relinks are checked before anything is stopped: a PATH haild that is a real file stops the restart.
+managed_before="$(cat "$jobs/com.hailingstation.haild")"
+mv "$HAIL_BIN_DIR/haild" "$scratch/haild-link"
+echo "not a link" > "$HAIL_BIN_DIR/haild"
+: > "$scratch/launchctl.calls"
+expect_failure "PATH haild that is not a link" "$host" restart
+! grep -q '^bootout' "$scratch/launchctl.calls" || fail "a link preflight failure still stopped a job"
+[[ "$(cat "$jobs/com.hailingstation.haild")" == "$managed_before" ]] || fail "a link preflight failure touched the daemon"
+rm -f "$HAIL_BIN_DIR/haild"; mv "$scratch/haild-link" "$HAIL_BIN_DIR/haild"
 # Not running, or the legacy job loaded, is a problem.
 mode ok
 rm -f "$jobs/com.hailingstation.haild"

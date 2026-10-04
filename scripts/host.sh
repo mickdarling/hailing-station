@@ -147,6 +147,42 @@ staged_release() { release_of current || fail "nothing installed; run scripts/ho
 # Replace a symlink atomically: a reader sees the old target or the new one, never neither.
 relink() { ln -sfn "$1" "$2.tmp" && mv -fh "$2.tmp" "$2"; }
 
+# One install, restart or deploy at a time per user: they share the release links and the plist transaction files.
+# The lock is a directory (mkdir is atomic) holding the owner's pid; a lock whose owner has died is taken over.
+LOCK="$ROOT/.host.lock"
+acquire_lock() {
+  local owner
+  mkdir -p "$ROOT"
+  if ! mkdir "$LOCK" 2>/dev/null; then
+    owner="$(cat "$LOCK/pid" 2>/dev/null || true)"
+    # No pid yet means another run is between mkdir and writing it: busy, not stale.
+    if [[ -z "$owner" ]] || kill -0 "$owner" 2>/dev/null; then
+      fail "another scripts/host.sh install, restart or deploy is running (lock $LOCK)"
+    fi
+    rm -f "$LOCK/pid"
+    rmdir "$LOCK" 2>/dev/null || true
+    mkdir "$LOCK" 2>/dev/null || fail "another scripts/host.sh run took the lock first"
+  fi
+  echo "$$" > "$LOCK/pid"
+}
+release_lock() {
+  if [[ "$(cat "$LOCK/pid" 2>/dev/null || true)" == "$$" ]]; then
+    rm -f "$LOCK/pid"
+    rmdir "$LOCK" 2>/dev/null || true
+  fi
+}
+
+# The commit relinks run after rollback is disarmed, so everything they need is checked before anything is stopped.
+preflight_links() {
+  local path
+  for path in "$ROOT/running" "$BIN/haild"; do
+    [[ -w "$(dirname "$path")" ]] || fail "$(dirname "$path") is not writable"
+    [[ ! -d "$path.tmp" || -L "$path.tmp" ]] || fail "$path.tmp is a directory; remove it first"
+    [[ ! -e "$path" || -L "$path" ]] || fail "$path exists and is not a link; move it aside first"
+    rm -f "$path.tmp"
+  done
+}
+
 install_release() {
   local binary=""
   while (( $# )); do
@@ -269,6 +305,7 @@ roll_back() {
   if [[ "$STAGE" == stopping ]]; then
     # Nothing new started and the managed agent untouched; a daemon still serving keeps its socket and log.
     echo "nothing new was started; the legacy job was asked to stop and may still exit; check scripts/host.sh status" >&2
+    release_lock
     exit 1
   fi
   # From "managed-stopped" on, no other daemon owns the socket (the legacy job unloaded), so clean up before the
@@ -294,6 +331,7 @@ roll_back() {
   else
     echo "error: the legacy daemon was stopped and nothing new was started; run scripts/host.sh restart again" >&2
   fi
+  release_lock
   exit 1
 }
 
@@ -303,6 +341,7 @@ restart() {
   # Peer endpoints and session IDs are not for other local accounts.
   mkdir -p "$AGENTS" "$LOGS" "$BIN"
   chmod 0700 "$LOGS"
+  preflight_links
   # Everything that can be checked is checked before the running daemon is touched.
   write_plist "$PLIST.next" "$program"
   plutil -lint -s "$PLIST.next" >/dev/null
@@ -314,7 +353,7 @@ restart() {
   IN_FLIGHT=true
   STAGE=stopping
   trap 'roll_back "restart was interrupted"' INT TERM HUP
-  trap 'if [[ "$IN_FLIGHT" == true ]]; then roll_back "restart stopped unexpectedly"; fi' EXIT
+  trap 'if [[ "$IN_FLIGHT" == true ]]; then roll_back "restart stopped unexpectedly"; fi; release_lock' EXIT
   stop_job "$LEGACY_LABEL" || roll_back "the legacy haild job did not unload within ${READY_SECONDS}s"
   STAGE=managed-stopped
   stop_job "$LABEL" || roll_back "the managed haild job did not unload within ${READY_SECONDS}s"
@@ -328,7 +367,7 @@ restart() {
   # the links on a release launchd no longer runs.
   IN_FLIGHT=false
   trap '' INT TERM HUP
-  trap - EXIT
+  trap release_lock EXIT
   relink "$(dirname "$program")" "$ROOT/running"
   relink "$ROOT/running/haild" "$BIN/haild"
   trap - INT TERM HUP
@@ -368,10 +407,10 @@ status() {
 }
 
 case "${1:-}" in
-  install) shift; install_release "$@" ;;
+  install) shift; acquire_lock; trap release_lock EXIT; install_release "$@" ;;
   plist) print_plist ;;
-  restart) restart ;;
-  deploy) shift; install_release "$@"; restart ;;
+  restart) acquire_lock; trap release_lock EXIT; restart ;;
+  deploy) shift; acquire_lock; trap release_lock EXIT; install_release "$@"; restart ;;
   status) status ;;
   -h|--help) usage ;;
   *) usage >&2; exit 2 ;;
