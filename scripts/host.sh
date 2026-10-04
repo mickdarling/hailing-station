@@ -38,36 +38,66 @@ USAGE
 
 fail() { echo "error: $*" >&2; exit 1; }
 
-# Prints a config value, or nothing when the key is absent.
-config_value() { plutil -extract "$1" raw -o - "$CONFIG" 2>/dev/null || true; }
+# Prints a config value, or nothing when the key is absent. plutil prints its error to stdout, so the value is
+# used only when extraction succeeds.
+config_value() {
+  local value
+  if value="$(plutil -extract "$1" raw -o - "$CONFIG" 2>/dev/null)"; then printf '%s' "$value"; fi
+}
+
+# A config string that is safe to pass as one daemon argument: no control characters, no leading dash.
+checked_value() {
+  local key="$1" value
+  value="$(config_value "$key")"
+  if [[ "$value" == *[[:cntrl:]]* || "$value" == -* ]]; then
+    fail "host.json \"$key\" must not contain control characters or start with '-'"
+  fi
+  printf '%s' "$value"
+}
 
 require_config() {
   [[ -f "$CONFIG" ]] || fail "missing $CONFIG; see scripts/host.sh --help"
   plutil -convert xml1 -o /dev/null "$CONFIG" >/dev/null 2>&1 || fail "$CONFIG is not valid JSON"
 }
 
-# The arguments after the executable, one per line, from host.json.
-daemon_arguments() {
+# The arguments after the executable, from host.json, in DAEMON_ARGS. Built as an array, never as joined text,
+# so no config value can become an extra argument.
+DAEMON_ARGS=()
+load_daemon_arguments() {
   require_config
   local bind port rightyo rightyo_config target
-  bind="$(config_value bind)"
+  bind="$(checked_value bind)"
   port="$(config_value port)"
-  [[ -n "$bind" ]] || fail "host.json needs \"bind\""
+  # An IPv4 or IPv6 literal; a host name would make the listener's exposure depend on name resolution.
+  [[ "$bind" =~ ^[0-9]{1,3}(\.[0-9]{1,3}){3}$ || "$bind" =~ ^[0-9A-Fa-f:]+$ ]] \
+    || fail "host.json needs \"bind\" as an IP address literal"
   if ! [[ "$port" =~ ^[0-9]+$ ]] || (( port < 1 || port > 65535 )); then
     fail "host.json needs a numeric \"port\" between 1 and 65535"
   fi
-  printf '%s\n' run --bind "$bind" --port "$port" --personal-terminal
-  [[ "$(config_value singleTerminalReplyFallback)" == "true" ]] && echo --single-terminal-reply-fallback
-  [[ "$(config_value deviceDiagnostics)" == "true" ]] && echo --device-diagnostics
-  rightyo="$(config_value ambient.rightyo)"
-  rightyo_config="$(config_value ambient.config)"
-  target="$(config_value ambient.target)"
+  DAEMON_ARGS=(run --bind "$bind" --port "$port" --personal-terminal)
+  if [[ "$(config_value singleTerminalReplyFallback)" == "true" ]]; then
+    DAEMON_ARGS+=(--single-terminal-reply-fallback)
+  fi
+  if [[ "$(config_value deviceDiagnostics)" == "true" ]]; then DAEMON_ARGS+=(--device-diagnostics); fi
+  rightyo="$(checked_value ambient.rightyo)"
+  rightyo_config="$(checked_value ambient.config)"
+  target="$(checked_value ambient.target)"
   if [[ -n "$rightyo$rightyo_config$target" ]]; then
     [[ "$rightyo" == /* && "$rightyo_config" == /* && -n "$target" ]] \
       || fail "ambient needs absolute \"rightyo\" and \"config\" paths and a \"target\""
-    printf '%s\n' --ambient-rightyo "$rightyo" --ambient-rightyo-config "$rightyo_config" --ambient-target "$target"
+    DAEMON_ARGS+=(--ambient-rightyo "$rightyo" --ambient-rightyo-config "$rightyo_config" --ambient-target "$target")
   fi
-  return 0
+}
+
+# The optional host ID, held to the same form HostIdentity accepts, so a bad value fails here, not in a
+# crash-looping daemon.
+host_id() {
+  local value
+  value="$(checked_value hostID)"
+  if [[ -n "$value" ]] && ! [[ "$value" =~ ^[A-Za-z0-9-]+(\.[A-Za-z0-9-]+)*\.?$ && ${#value} -le 253 ]]; then
+    fail "host.json \"hostID\" must be a host name: letters, digits, dots and hyphens"
+  fi
+  printf '%s' "$value"
 }
 
 current_release() {
@@ -96,6 +126,9 @@ install_release() {
   release="$ROOT/releases/$digest"
   mkdir -p "$ROOT/releases" "$BIN"
   if [[ ! -x "$release/haild" ]]; then
+    # Clear what an interrupted install may have left, including a read-only partial copy.
+    chmod -R u+w "$release.tmp" "$release" 2>/dev/null || true
+    rm -rf "$release.tmp" "$release"
     mkdir -p "$release.tmp"
     cp "$binary" "$release.tmp/haild"
     chmod 0555 "$release.tmp/haild"
@@ -109,28 +142,26 @@ install_release() {
 }
 
 write_plist() {
-  local out="$1" program arguments argument
+  local out="$1" program argument host
   program="$(current_release)"
-  # Command substitution, not process substitution, so a config error stops the script.
-  arguments="$(daemon_arguments)"
+  load_daemon_arguments
+  host="$(host_id)"
   rm -f "$out"
   plutil -create xml1 "$out"
   plutil -insert Label -string "$LABEL" "$out"
   plutil -insert ProgramArguments -array "$out"
   plutil -insert ProgramArguments -string "$program" -append "$out"
-  while IFS= read -r argument; do
+  for argument in "${DAEMON_ARGS[@]}"; do
     plutil -insert ProgramArguments -string "$argument" -append "$out"
-  done <<< "$arguments"
+  done
   plutil -insert RunAtLoad -bool true "$out"
   plutil -insert KeepAlive -bool true "$out"
   plutil -insert ProcessType -string Interactive "$out"
   plutil -insert StandardOutPath -string "$LOGS/haild.out.log" "$out"
   plutil -insert StandardErrorPath -string "$LOGS/haild.err.log" "$out"
-  local host_id
-  host_id="$(config_value hostID)"
-  if [[ -n "$host_id" ]]; then
+  if [[ -n "$host" ]]; then
     plutil -insert EnvironmentVariables -dictionary "$out"
-    plutil -insert EnvironmentVariables.HAIL_HOST_ID -string "$host_id" "$out"
+    plutil -insert EnvironmentVariables.HAIL_HOST_ID -string "$host" "$out"
   fi
 }
 
@@ -143,7 +174,9 @@ print_plist() {
 }
 
 restart() {
+  # Peer endpoints and session IDs are not for other local accounts.
   mkdir -p "$AGENTS" "$LOGS"
+  chmod 0700 "$LOGS"
   write_plist "$PLIST.tmp"
   plutil -lint -s "$PLIST.tmp" >/dev/null
   mv -f "$PLIST.tmp" "$PLIST"

@@ -30,6 +30,7 @@ chmod +x "$HAIL_LAUNCHCTL"
 make_binary() { printf '#!/bin/sh\n# %s\n' "$1" > "$scratch/haild-$1"; chmod +x "$scratch/haild-$1"; }
 make_binary one
 make_binary two
+make_binary three
 
 # Nothing installed or configured yet.
 expect_failure "plist without an install" "$host" plist
@@ -39,9 +40,29 @@ first="$(readlink "$HAIL_HOST_ROOT/current")"
 [[ "$(readlink "$HAIL_BIN_DIR/haild")" == "$HAIL_HOST_ROOT/current/haild" ]] || { echo "PATH link wrong" >&2; exit 1; }
 expect_failure "plist without host.json" "$host" plist
 
+# A minimal config: absent optional keys add nothing (plutil reports a missing key on stdout).
+echo '{"bind": "127.0.0.1", "port": 8765}' > "$HAIL_CONFIG_DIR/host.json"
+"$host" plist > "$scratch/minimal.plist"
+[[ "$(plutil -extract ProgramArguments raw -o - "$scratch/minimal.plist")" == 7 ]] \
+  || { echo "minimal config produced extra arguments" >&2; exit 1; }
+if plutil -extract EnvironmentVariables raw -o - "$scratch/minimal.plist" >/dev/null 2>&1; then
+  echo "minimal config produced an environment" >&2; exit 1
+fi
+
 # Config validation.
 echo '{"bind": "127.0.0.1"}' > "$HAIL_CONFIG_DIR/host.json"
 expect_failure "missing port" "$host" plist
+echo '{"port": 8765}' > "$HAIL_CONFIG_DIR/host.json"
+expect_failure "missing bind" "$host" plist
+echo '{"bind": "localhost", "port": 8765}' > "$HAIL_CONFIG_DIR/host.json"
+expect_failure "bind that is not an IP literal" "$host" plist
+printf '%s\n' '{"bind": "127.0.0.1\n--bind\n0.0.0.0", "port": 8765}' > "$HAIL_CONFIG_DIR/host.json"
+expect_failure "newline smuggling an extra argument" "$host" plist
+echo '{"bind": "127.0.0.1", "port": 8765, "ambient": {"rightyo": "/r", "config": "/c", "target": "--reply-socket"}}' \
+  > "$HAIL_CONFIG_DIR/host.json"
+expect_failure "target that is a flag" "$host" plist
+echo '{"bind": "127.0.0.1", "port": 8765, "hostID": "bad host"}' > "$HAIL_CONFIG_DIR/host.json"
+expect_failure "invalid host ID" "$host" plist
 echo '{"bind": "127.0.0.1", "port": 70000}' > "$HAIL_CONFIG_DIR/host.json"
 expect_failure "out-of-range port" "$host" plist
 echo '{"bind": "127.0.0.1", "port": 8765, "ambient": {"rightyo": "rel/rightyo", "config": "/c", "target": "t"}}' \
@@ -78,6 +99,16 @@ touch "$scratch/loaded"
 [[ "$(readlink "$HAIL_HOST_ROOT/current")" != "$first" ]] || { echo "second release not current" >&2; exit 1; }
 set +e; "$host" status >/dev/null; drift=$?; set -e
 [[ "$drift" == 3 ]] || { echo "expected drift status 3, got $drift" >&2; exit 1; }
+
+# An interrupted install leaves a read-only partial copy; the next install of that digest still succeeds.
+digest="$(shasum -a 256 "$scratch/haild-three" | cut -c1-16)"
+mkdir -p "$HAIL_HOST_ROOT/releases/$digest.tmp"
+cp "$scratch/haild-three" "$HAIL_HOST_ROOT/releases/$digest.tmp/haild"
+chmod 0555 "$HAIL_HOST_ROOT/releases/$digest.tmp/haild"
+"$host" install --binary "$scratch/haild-three" >/dev/null
+[[ -x "$HAIL_HOST_ROOT/releases/$digest/haild" && ! -e "$HAIL_HOST_ROOT/releases/$digest.tmp" ]] \
+  || { echo "stale partial install was not recovered" >&2; exit 1; }
+[[ "$(stat -f %Lp "$HAIL_LOG_DIR")" == 700 ]] || { echo "log directory is not private" >&2; exit 1; }
 
 # A daemon that never reports ready fails the restart.
 printf '#!/usr/bin/env bash\nexit 0\n' > "$HAIL_LAUNCHCTL"
