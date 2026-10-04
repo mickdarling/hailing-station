@@ -72,7 +72,7 @@ case "\$1" in
     unloading="$scratch/unloading-\${2##*/}"
     if [[ -f "\$unloading" ]]; then
       # An interrupt lands inside restart's wait for the unload, a call whose output is redirected to /dev/null.
-      if [[ -f "$scratch/interrupt" ]]; then rm -f "$scratch/interrupt"; kill -TERM "\$PPID"; fi
+      if [[ -f "$scratch/interrupt" ]]; then kill -TERM "\$PPID" && rm -f "$scratch/interrupt"; fi
       left="\$(cat "\$unloading")"
       if (( left <= 0 )); then rm -f "\$unloading" "\$job"; else echo \$(( left - 1 )) > "\$unloading"; fi
     fi
@@ -97,6 +97,18 @@ expect_failure "plist without an install" "$host" plist
   || fail "release is not immutable"
 [[ ! -e "$HAIL_BIN_DIR/haild" ]] || fail "install changed the PATH haild before a restart"
 "$host" install --binary "$scratch/haild-one" >/dev/null || fail "reinstalling the same release failed"
+# A release left writable by an interrupted install is made read-only again when reused; an altered one is refused.
+chmod u+w "$(release_dir one)"
+"$host" install --binary "$scratch/haild-one" >/dev/null || fail "reinstalling over a writable release failed"
+[[ ! -w "$(release_dir one)" ]] || fail "a reused release was left writable"
+chmod u+w "$(release_dir one)" "$(release_dir one)/haild"
+cp "$scratch/haild-two" "$(release_dir one)/haild"
+expect_failure "release that holds another binary" "$host" install --binary "$scratch/haild-one"
+cp "$scratch/haild-one" "$(release_dir one)/haild"
+chmod 0555 "$(release_dir one)/haild" "$(release_dir one)"
+# Paths launchd will read must not depend on the caller's working directory.
+relative="$(HAIL_CONFIG_DIR=config "$host" status 2>&1 || true)"
+[[ "$relative" == *"config must be an absolute path"* ]] || fail "a relative config directory was accepted: $relative"
 expect_failure "plist without host.json" "$host" plist
 
 # A minimal config: absent optional keys add nothing (plutil reports a missing key on stdout).
@@ -310,6 +322,16 @@ HAIL_READY_SECONDS=30 "$host" restart > "$scratch/slow.out" 2>&1 && fail "an int
 [[ ! -e "$scratch/interrupt" ]] || fail "the managed-unload interrupt never fired"
 grep -q "restored the previous LaunchAgent; it is ready" "$scratch/slow.out" || fail "the restore was not reported ready"
 lock_is_free "a restart interrupted during the managed unload"
+
+# Again with nobody reading its output (a closed terminal, a dead `| tee`): the restore still runs.
+: > "$scratch/launchctl.calls"
+touch "$scratch/interrupt"
+{ HAIL_READY_SECONDS=30 "$host" restart 2>&1 | true; } || true
+[[ ! -e "$scratch/interrupt" ]] || fail "the unread-output interrupt never fired"
+[[ "$(cat "$jobs/com.hailingstation.haild" 2>/dev/null)" == "$managed_before" ]] \
+  || fail "interrupting a restart whose output is unread left no daemon"
+grep -q "^bootstrap" "$scratch/launchctl.calls" || fail "the previous agent was not started again"
+lock_is_free "a restart interrupted with its output unread"
 mode ok
 
 # Interrupted while the legacy job unloads in a first migration: the unload cannot be undone, so the switch continues.

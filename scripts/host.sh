@@ -44,6 +44,11 @@ USAGE
 
 fail() { echo "error: $*" >&2; exit 1; }
 
+# launchd resolves the plist's paths from its own working directory, not the caller's.
+for path in "$CONFIG_DIR" "$ROOT" "$AGENTS" "$LOGS" "$BIN"; do
+  [[ "$path" == /* ]] || fail "$path must be an absolute path"
+done
+
 # Config readers run in the calling shell and set VALUE. They are never called inside $(...): macOS bash 3.2 does
 # not apply `set -e` inside command substitution, so a refusal there would be silently ignored.
 VALUE=""
@@ -214,10 +219,12 @@ install_release() {
   digest="$(shasum -a 256 "$binary" | cut -c1-16)"
   release="$ROOT/releases/$digest"
   mkdir -p "$ROOT/releases"
-  if [[ -e "$release" && ! -x "$release/haild" ]]; then
-    fail "$release exists but is incomplete; remove it and install again"
-  fi
-  if [[ ! -e "$release" ]]; then
+  if [[ -e "$release" ]]; then
+    # An interrupted or altered install is not reused: the release must hold exactly this binary, read-only.
+    [[ -x "$release/haild" && "$(shasum -a 256 "$release/haild" | cut -c1-16)" == "$digest" ]] \
+      || fail "$release exists but does not hold this binary; run chmod -R u+w on it, remove it and install again"
+    chmod 0555 "$release/haild" "$release"
+  else
     staging="$(mktemp -d "$ROOT/releases/.staging.XXXXXX")"
     cp "$binary" "$staging/haild"
     chmod 0555 "$staging/haild"
@@ -310,16 +317,18 @@ IN_FLIGHT=false
 # "managed-stopping" (the previous managed agent was asked to unload), "managed-stuck" (it would not unload),
 # "managed-stopped" (it is down), "started" (the new agent was handed to launchd).
 STAGE=""
+# Rollback messages never stop the rollback, even with nobody left to read them (a closed terminal, a dead `| tee`).
+report() { echo "$*" >&2 || true; }
 roll_back() {
-  # Runs to completion: a second signal must not leave the restore half done.
+  # Runs to completion: a second signal or a vanished reader must not leave the restore half done.
   IN_FLIGHT=false
-  trap '' INT TERM HUP
+  trap '' INT TERM HUP PIPE
   trap - EXIT
-  echo "error: $1; see $LOGS/haild.err.log" >&2
+  report "error: $1; see $LOGS/haild.err.log"
   rm -f "$PLIST.next"
   if [[ "$STAGE" == stopping || "$STAGE" == managed-stuck ]]; then
     # Nothing new started and the managed agent untouched; a daemon still serving keeps its socket and log.
-    echo "nothing new was started; a job that was asked to stop may still exit; check scripts/host.sh status" >&2
+    report "nothing new was started; a job that was asked to stop may still exit; check scripts/host.sh status"
     release_lock
     exit 1
   fi
@@ -330,7 +339,7 @@ roll_back() {
       # Still loaded: leave it, its socket and its plist alone; a restore could not start over it anyway.
       local which=previous
       [[ "$STAGE" == started ]] && which=new
-      echo "error: the $which haild did not unload; it was left running; check scripts/host.sh status" >&2
+      report "error: the $which haild did not unload; it was left running; check scripts/host.sh status"
       release_lock
       exit 1
     fi
@@ -342,16 +351,16 @@ roll_back() {
   if [[ -f "$PLIST.prev" ]]; then
     mv -f "$PLIST.prev" "$PLIST"
     if start_job && wait_ready; then
-      echo "restored the previous LaunchAgent; it is ready" >&2
+      report "restored the previous LaunchAgent; it is ready"
     else
-      echo "error: the previous LaunchAgent was restored but is not ready; see $LOGS/haild.err.log" >&2
+      report "error: the previous LaunchAgent was restored but is not ready; see $LOGS/haild.err.log"
     fi
   elif [[ "$STAGE" == started && -f "$PLIST" ]]; then
     # Nothing to restore (first migration): keep the failed agent from loading at the next login.
     mv -f "$PLIST" "$PLIST.failed"
-    echo "error: no previous LaunchAgent to restore; the failed one is kept as $PLIST.failed" >&2
+    report "error: no previous LaunchAgent to restore; the failed one is kept as $PLIST.failed"
   else
-    echo "error: the legacy daemon was stopped and nothing new was started; run scripts/host.sh restart again" >&2
+    report "error: the legacy daemon was stopped and nothing new was started; run scripts/host.sh restart again"
   fi
   release_lock
   exit 1
@@ -386,10 +395,10 @@ restart() {
   # continues, or it times out and the rollback leaves it loaded.
   trap '' INT TERM HUP
   stop_job "$LEGACY_LABEL" || roll_back "the legacy haild job did not unload within ${READY_SECONDS}s"
-  trap 'roll_back "restart was interrupted" >&7 2>&8' INT TERM HUP
   # Interrupted while it unloads: roll_back waits for the unload, then restores the previous agent. If it never
   # unloads, it keeps running with its socket.
   STAGE=managed-stopping
+  trap 'roll_back "restart was interrupted" >&7 2>&8' INT TERM HUP
   if ! stop_job "$LABEL"; then
     STAGE=managed-stuck
     roll_back "the managed haild job did not unload within ${READY_SECONDS}s"
