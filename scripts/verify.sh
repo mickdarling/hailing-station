@@ -24,7 +24,22 @@ tools() {
 }
 
 build() { echo "== build"; swift build ${SWIFT_FLAGS[@]+"${SWIFT_FLAGS[@]}"}; }
-test_() { echo "== test";  swift test --parallel ${SWIFT_FLAGS[@]+"${SWIFT_FLAGS[@]}"}; }
+# Suites with wall-clock deadlines or real subprocesses (#208) miss their deadlines when they compete with the
+# parallel lane on a loaded runner. They run serially in their own lane until each family gets injected clocks.
+# This changes scheduling only: every test still runs and gates, and no assertion is relaxed.
+TIMING_SUITES=(
+  OwnedReply OwnedStdioChild CodexStdio ProviderObservedSession ProviderInputCoordinator LocalReplyEndpoint
+  TmuxDeliveryCommit AmbientWiring RightyoInput RightyoChildProcess SFSpeechRecognizerTranscriber
+)
+TIMING_PATTERN="($(IFS='|'; echo "${TIMING_SUITES[*]}"))"
+
+test_() {
+  echo "== test (parallel)"
+  swift test --parallel --skip "$TIMING_PATTERN" ${SWIFT_FLAGS[@]+"${SWIFT_FLAGS[@]}"}
+  echo "== test (timing suites, serial, #208)"
+  swift test --no-parallel --filter "$TIMING_PATTERN" ${SWIFT_FLAGS[@]+"${SWIFT_FLAGS[@]}"}
+}
+
 lint()  { echo "== lint";  swiftlint lint --strict --quiet; }
 
 trace_tests() (
