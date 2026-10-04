@@ -148,7 +148,7 @@ public enum Schema {
             "command": .object(["enum": .array(
                 [
                     "hello", "list_targets", "targets", "select", "subscribe", "unsubscribe", "escape", "ping", "pong",
-                    "error"
+                    "error", "diagnostic"
                 ]
                     .map(JSONValue.string)
             )]),
@@ -174,7 +174,8 @@ public enum Schema {
             "code": .object(["type": .string("string")]),
             "message": .object([
                 "type": .string("string"), "maxLength": .integer(Int64(ControlLimits.maxErrorMessage))
-            ])
+            ]),
+            "events": diagnosticEvents
         ]),
         "allOf": .array([
             commandRule("hello", requires: ["hello"]),
@@ -185,7 +186,9 @@ public enum Schema {
             commandRule("escape", requires: ["target"]),
             commandRule("ping", requires: ["nonce"]),
             commandRule("pong", requires: ["nonce"]),
-            commandRule("error", requires: ["code", "message"])
+            commandRule("error", requires: ["code", "message"]),
+            commandRule("diagnostic", requires: ["events"]),
+            diagnosticPayloadRule
         ])
     ])
 }

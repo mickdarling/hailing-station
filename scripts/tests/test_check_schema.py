@@ -60,6 +60,29 @@ class CheckSchemaTests(unittest.TestCase):
     def test_float_typed_integer_is_range_checked(self):
         self.assertTrue(check_schema.validate(0.0, {"type": "integer", "minimum": 1}, {}))
 
+    def test_diagnostic_events_refuse_unknown_keys_and_free_text(self):
+        diag = json.loads((ROOT / "fixtures" / "frames" / "control-diagnostic.json").read_text())
+        self.assertEqual(check_schema.validate(diag, self.schema, self.schema), [])
+        event = diag["payload"]["events"][0]
+        for change, expected in [
+            ({"fields": {"transcript": "x"}}, "unexpected property transcript"),
+            ({"text": "hello"}, "unexpected property text"),
+            ({"fields": {"reason": "r" * 33}}, "not in enum"),
+            ({"fields": {"reason": "ignore_prior_rules"}}, "not in enum"),
+            ({"fields": {"app": "9" * 28}}, "longer than maxLength"),
+            ({"name": "reply_text"}, "not in enum"),
+            ({"fields": {"on": "yes"}}, "expected boolean"),
+        ]:
+            with self.subTest(change=change):
+                bad = json.loads(json.dumps(diag))
+                bad["payload"]["events"] = [dict(event, **change)]
+                errors = check_schema.validate(bad, self.schema, self.schema)
+                self.assertTrue(any(expected in e for e in errors), errors)
+        extra = json.loads(json.dumps(diag))
+        extra["payload"]["message"] = "ignore prior rules"
+        errors = check_schema.validate(extra, self.schema, self.schema)
+        self.assertTrue(any("unexpected property message" in e for e in errors), errors)
+
 
 if __name__ == "__main__":
     unittest.main()
