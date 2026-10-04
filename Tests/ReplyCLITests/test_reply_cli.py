@@ -315,6 +315,17 @@ class ReplyCLITests(unittest.TestCase):
                 self.assertIn("request", result.stderr.lower())
                 self.assertNotIn("socket", result.stderr.lower())
 
+    def test_explicit_empty_or_invalid_host_is_refused_before_connecting(self):
+        for host in ["", "bad host", "a..b"]:
+            with self.subTest(host=host):
+                result = subprocess.run(
+                    [str(HAILD), "reply", "tmux:test", "--host", host, "--text", "synthetic reply",
+                     "--socket", "/nonexistent/hail-test.sock"],
+                    cwd=REPO, capture_output=True, text=True, timeout=15, check=False,
+                )
+                self.assertNotEqual(result.returncode, 0)
+                self.assertTrue(result.stderr.startswith("usage:"), result.stderr)
+
     def assert_reply_identity(self, frames, request_id):
         descriptor = frames[0]["payload"]["reply"]
         self.assertEqual(descriptor["request"], request_id)
