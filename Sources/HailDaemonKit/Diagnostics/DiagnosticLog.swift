@@ -1,3 +1,4 @@
+import CryptoKit
 public import Foundation
 public import HailProtocol
 
@@ -5,7 +6,8 @@ public import HailProtocol
 // swiftlint:disable file_length
 
 /// One stored diagnostic (#234): the device's validated event, tagged with the host's receive time, the
-/// connection it arrived on and that connection's negotiated device name.
+/// connection it arrived on and a token for that connection's device. The token is a short hash of the
+/// peer's hello name, never the name itself, so nothing the peer chose freely is stored.
 public struct DiagnosticRecord: Codable, Sendable, Equatable {
     public var received: Int64
     public var session: UUID
@@ -29,8 +31,6 @@ public actor DiagnosticLog {
     public static let fileName = "diagnostics.jsonl"
     public static let rotatedName = "diagnostics.1.jsonl"
     public static let defaultMaxFileBytes = 5 * 1024 * 1024 / 2
-    /// Device names come from the peer's hello; stored ones are bounded and stripped of control characters.
-    public static let maxDeviceNameLength = 64
 
     /// Token buckets in events: a burst of `capacity`, refilled at `perSecond`.
     public struct Rate: Sendable, Equatable {
@@ -61,6 +61,9 @@ public actor DiagnosticLog {
     var sessions: [UUID: Bucket] = [:]
     var hostBucket: Bucket?
     public private(set) var writeFailures = 0
+    typealias Write = @Sendable (Int32, UnsafeRawPointer?, Int) -> Int
+    /// The system `write`; tests substitute one that is interrupted, short or failing.
+    var write: Write = { Darwin.write($0, $1, $2) }
     static let maxSessions = 64
 
     public init(
@@ -109,7 +112,7 @@ public actor DiagnosticLog {
         remember(session, bucket)
         hostBucket = host
         guard !stored.isEmpty else { return 0 }
-        let name = Self.deviceName(device)
+        let name = Self.deviceToken(device)
         do {
             let encoder = FrameCoding.encoder()
             var bytes = Data()
@@ -125,19 +128,26 @@ public actor DiagnosticLog {
         }
     }
 
-    /// Removes both log files. Safe while the daemon runs: each append reopens the file.
+    /// Removes both log files through the same validated directory the writer and readers use: a link, or a
+    /// directory open to group or others, is refused. A missing directory has nothing to clear. Safe while the
+    /// daemon runs: each append reopens the file.
     public nonisolated static func clear(directory: URL) throws {
+        guard FileManager.default.fileExists(atPath: directory.path) else { return }
+        let dir = try openDirectory(directory, create: false)
+        defer { close(dir) }
         for name in [fileName, rotatedName] {
-            let path = directory.appendingPathComponent(name).path
-            guard unlink(path) == 0 || errno == ENOENT else { throw DiagnosticLogError.unwritable(path) }
+            guard unlinkat(dir, name, 0) == 0 || errno == ENOENT else {
+                throw DiagnosticLogError.unwritable(directory.appendingPathComponent(name).path)
+            }
         }
     }
 
-    static func deviceName(_ raw: String) -> String {
-        let cleaned = String(raw.unicodeScalars.filter { !CharacterSet.controlCharacters.contains($0) })
-        let bounded = String(cleaned.prefix(maxDeviceNameLength))
-        return bounded.isEmpty ? "unnamed" : bounded
+    /// `dev-` and the first 8 hex digits of the SHA-256 of the hello name: stable per device, never the name.
+    public nonisolated static func deviceToken(_ name: String) -> String {
+        "dev-" + SHA256.hash(data: Data(name.utf8)).prefix(4).map { String(format: "%02x", $0) }.joined()
     }
+
+    func useWrite(_ write: @escaping Write) { self.write = write }
 
     private func refill(_ bucket: inout Bucket, rate: Rate, at instant: ContinuousClock.Instant) {
         let elapsed = bucket.updated.duration(to: instant)
@@ -171,16 +181,52 @@ extension DiagnosticLog {
             close(fd)
             throw DiagnosticLogError.unwritable(directory.path)
         }
-        if Int(info.st_size) + bytes.count > maxFileBytes {
+        var length = off_t(info.st_size)
+        if Int(length) + bytes.count > maxFileBytes {
             close(fd)
+            try Self.requireRegularOrMissing(Self.rotatedName, in: dir, at: directory)
             guard renameat(dir, Self.fileName, dir, Self.rotatedName) == 0 else {
                 throw DiagnosticLogError.unwritable(directory.path)
             }
             fd = try Self.openFile(Self.fileName, in: dir, at: directory)
+            length = 0
         }
         defer { close(fd) }
-        let written = bytes.withUnsafeBytes { Darwin.write(fd, $0.baseAddress, $0.count) }
-        guard written == bytes.count else { throw DiagnosticLogError.unwritable(directory.path) }
+        guard Self.writeAll(bytes, to: fd, write: write) else {
+            // Never leave half a batch: roll the file back to where this append began.
+            _ = ftruncate(fd, length)
+            throw DiagnosticLogError.unwritable(directory.path)
+        }
+    }
+
+    /// Writes every byte, retrying interrupted and short writes; false on any other failure.
+    static func writeAll(_ bytes: Data, to fd: Int32, write: Write) -> Bool {
+        bytes.withUnsafeBytes { buffer in
+            var offset = 0
+            while offset < buffer.count {
+                let count = write(fd, buffer.baseAddress?.advanced(by: offset), buffer.count - offset)
+                if count > 0 {
+                    offset += count
+                } else if count < 0, errno == EINTR {
+                    continue
+                } else {
+                    return false
+                }
+            }
+            return true
+        }
+    }
+
+    /// The rotation target, when present, must be a regular file: rotation never replaces a link or other node.
+    private static func requireRegularOrMissing(_ name: String, in dir: Int32, at url: URL) throws {
+        var info = stat()
+        if fstatat(dir, name, &info, AT_SYMLINK_NOFOLLOW) == 0 {
+            guard info.st_mode & S_IFMT == S_IFREG else {
+                throw DiagnosticLogError.unsafe(url.appendingPathComponent(name).path)
+            }
+        } else if errno != ENOENT {
+            throw DiagnosticLogError.unwritable(url.appendingPathComponent(name).path)
+        }
     }
 
     /// The directory, created 0700 when missing, must be a real directory owned by this user and closed to

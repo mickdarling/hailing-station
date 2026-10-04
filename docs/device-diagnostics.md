@@ -38,8 +38,9 @@ haild run --bind <address> --port <port> --personal-terminal --device-diagnostic
 ```
 
 - Without the flag, haild doesn't advertise `device_diagnostics`, refuses a `diagnostic` frame as unauthorized (the connection stays open), and writes nothing to disk.
-- With it, events go to `diagnostics/diagnostics.jsonl` beside the policy file (`~/.config/hail/`, or `$HAIL_CONFIG_DIR`). Each line holds the host receive time, the connection's session id, its negotiated device name (control characters stripped, 64 characters at most) and the validated event.
-- The directory is created 0700 and must be owned by you and closed to group and others. The file is opened without following links, must be a regular file you own, and is reset to 0600.
+- With it, events go to `diagnostics/diagnostics.jsonl` beside the policy file (`~/.config/hail/`, or `$HAIL_CONFIG_DIR`). Each line holds the host receive time, the connection's session id, a device token and the validated event. The token is `dev-` plus the first 8 hex digits of the SHA-256 of the hello's device name. It's stable per device, but the name itself is never stored.
+- The directory is created 0700 and must be owned by you and closed to group and others. The file is opened without following links, must be a regular file you own, and is reset to 0600. Rotation refuses a rotated file that isn't a regular file.
+- Writes retry interrupted and short writes. If a whole batch can't be written, the file is truncated back to where that append began, so no half-written line is left.
 - Size: when a write would take the file past 2.5 MiB, it's renamed to `diagnostics.1.jsonl`, replacing the previous one. Two files at most, 5 MiB in all.
 - Rate limits: each session gets a burst of 120 events, refilled at 2 per second. The host as a whole gets a burst of 300, refilled at 5 per second. Excess events are dropped without any reply. The next stored batch from that session starts with an `events_dropped` record (`count`, `code: host_rate_limit`).
 - A storage failure drops the events and is counted; it never reaches the phone.

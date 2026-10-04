@@ -30,7 +30,7 @@ import Testing
         #expect(result == HostSessionResult(frames: []))
         let text = try String(contentsOf: scratch.appendingPathComponent(DiagnosticLog.fileName), encoding: .utf8)
         #expect(text.split(separator: "\n").count == 2)
-        #expect(text.contains("\"device\":\"test\""))
+        #expect(text.contains("\"device\":\"\(DiagnosticLog.deviceToken("test"))\""))
         #expect(await adapter.deliveries.isEmpty)
     }
 

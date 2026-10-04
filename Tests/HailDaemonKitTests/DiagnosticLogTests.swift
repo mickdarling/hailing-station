@@ -47,9 +47,9 @@ func diagnosticEvents(_ count: Int, name: DiagnosticEventName = .routeChange) th
         let events = try diagnosticEvents(2)
         #expect(await log.record(events, session: session, device: "Mick's\u{0007} iPhone") == 2)
         let stored = try lines(file)
-        #expect(stored == events.map {
-            DiagnosticRecord(received: 42, session: session, device: "Mick's iPhone", event: $0)
-        })
+        let token = DiagnosticLog.deviceToken("Mick's\u{0007} iPhone")
+        #expect(stored == events.map { DiagnosticRecord(received: 42, session: session, device: token, event: $0) })
+        #expect(try !String(contentsOf: file, encoding: .utf8).contains("iPhone"))
         #expect(try mode(file) == 0o600)
         #expect(try mode(dir) == 0o700)
     }
@@ -131,10 +131,5 @@ func diagnosticEvents(_ count: Int, name: DiagnosticEventName = .routeChange) th
         try DiagnosticLog.clear(directory: dir)
         #expect(await log.record(try diagnosticEvents(1), session: session, device: "d") == 1)
         #expect(try lines(file).count == 1)
-    }
-
-    @Test func deviceNamesAreBounded() {
-        #expect(DiagnosticLog.deviceName(String(repeating: "x", count: 100)).count == 64)
-        #expect(DiagnosticLog.deviceName("\n\t") == "unnamed")
     }
 }
