@@ -275,7 +275,17 @@ chmod 755 "$HAIL_CONFIG_DIR"
 : > "$scratch/launchctl.calls"
 expect_failure "config directory that is not private" "$host" restart
 ! grep -q '^bootout' "$scratch/launchctl.calls" || fail "a non-private config directory still stopped a job"
+# So does one the owner cannot write to, where the old socket could not be removed.
+chmod 500 "$HAIL_CONFIG_DIR"
+expect_failure "config directory the owner cannot write" "$host" restart
+! grep -q '^bootout' "$scratch/launchctl.calls" || fail "an unwritable config directory still stopped a job"
 chmod 700 "$HAIL_CONFIG_DIR"
+
+# A loaded managed job whose LaunchAgent is gone could not be restored, so it is not stopped.
+mv "$HAIL_LAUNCH_AGENTS/com.hailingstation.haild.plist" "$scratch/plist.aside"
+expect_failure "loaded managed job without its plist" "$host" restart
+! grep -q '^bootout' "$scratch/launchctl.calls" || fail "a managed job without a restorable plist was stopped"
+mv "$scratch/plist.aside" "$HAIL_LAUNCH_AGENTS/com.hailingstation.haild.plist"
 
 # A managed job that will not unload keeps running with its socket; nothing new is started.
 mode stuck-managed

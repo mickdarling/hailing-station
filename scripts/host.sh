@@ -175,14 +175,15 @@ nap() { sleep "$1" 9>&-; }
 lctl() { "$LAUNCHCTL" "$@" 9>&-; }
 
 # The daemon refuses a config directory (policy, audit, reply socket) that is not a real directory owned by this user
-# with no group or other permissions (PolicyFile.check), so it is checked before anything is stopped.
+# with no group or other permissions (PolicyFile.check), and restart must be able to remove the socket in it, so it
+# must be exactly 0700. It is checked before anything is stopped.
 preflight_config_dir() {
   local mode owner
   [[ -d "$CONFIG_DIR" && ! -L "$CONFIG_DIR" ]] || fail "$CONFIG_DIR must be a directory, not a link"
   mode="$(stat -f %Lp "$CONFIG_DIR")"
   owner="$(stat -f %u "$CONFIG_DIR")"
   [[ "$owner" == "$(id -u)" ]] || fail "$CONFIG_DIR must be owned by you"
-  (( (8#$mode & 8#077) == 0 )) || fail "$CONFIG_DIR must be private: chmod 700 \"$CONFIG_DIR\""
+  [[ "$mode" == 700 ]] || fail "$CONFIG_DIR must be private and usable: chmod 700 \"$CONFIG_DIR\""
 }
 
 # The commit relinks run after rollback is disarmed, so everything they need is checked before anything is stopped.
@@ -364,6 +365,9 @@ restart() {
   chmod 0700 "$LOGS"
   preflight_config_dir
   preflight_links
+  # A loaded managed job is stopped only if its LaunchAgent can be restored should the new one fail.
+  [[ -z "$(job_field "$LABEL" state)" || -f "$PLIST" ]] \
+    || fail "$LABEL is loaded but $PLIST is missing; restore it or unload the job first"
   # Everything that can be checked is checked before the running daemon is touched.
   write_plist "$PLIST.next" "$program"
   plutil -lint -s "$PLIST.next" >/dev/null
