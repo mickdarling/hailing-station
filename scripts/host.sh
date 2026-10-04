@@ -411,9 +411,9 @@ restart() {
   mv -f "$PLIST.next" "$PLIST"
   if ! start_job || ! wait_ready; then roll_back "the new haild did not become ready"; fi
   # Commit point: the new daemon is ready, so finish the switch without interruption. Rolling back now would leave
-  # the links on a release launchd no longer runs.
-  IN_FLIGHT=false
+  # the links on a release launchd no longer runs. Signals are ignored first, so none can reach the rollback trap.
   trap '' INT TERM HUP
+  IN_FLIGHT=false
   trap release_lock EXIT
   relink "$(dirname "$program")" "$ROOT/running"
   relink "$ROOT/running/haild" "$BIN/haild"
