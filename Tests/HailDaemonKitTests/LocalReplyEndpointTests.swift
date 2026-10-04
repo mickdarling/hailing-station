@@ -697,13 +697,18 @@ private func sendWithoutResponse(_ frame: Frame, socket: String) throws -> NWCon
     return connection
 }
 
-/// True once the server closed `connection` cleanly (end of stream, no error). A connection that never came up
-/// fails with an error instead, so it cannot pass for an expiry.
+/// True once the server closed `connection` cleanly (end of stream, no error). Any other ending returns false. If the
+/// test is cancelled (its time limit), the connection is cancelled, which completes the pending receive with an
+/// error, so the wait always ends and resumes exactly once.
 private func closedByServer(_ connection: NWConnection) async -> Bool {
-    await withCheckedContinuation { (finished: CheckedContinuation<Bool, Never>) in
-        connection.receive(minimumIncompleteLength: 1, maximumLength: 1) { data, _, isComplete, error in
-            finished.resume(returning: isComplete && error == nil && (data ?? Data()).isEmpty)
+    await withTaskCancellationHandler {
+        await withCheckedContinuation { (finished: CheckedContinuation<Bool, Never>) in
+            connection.receive(minimumIncompleteLength: 1, maximumLength: 1) { data, _, isComplete, error in
+                finished.resume(returning: isComplete && error == nil && (data ?? Data()).isEmpty)
+            }
         }
+    } onCancel: {
+        connection.cancel()
     }
 }
 
