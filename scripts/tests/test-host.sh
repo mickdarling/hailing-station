@@ -161,6 +161,26 @@ expect_failure "restart that never becomes ready" "$host" restart
 [[ "$(cat "$jobs/com.hailingstation.haild")" == "$(release_dir one)/haild" ]] || fail "previous agent not restored"
 [[ "$(readlink -f "$HAIL_BIN_DIR/haild")" == "$(release_dir one)/haild" ]] || fail "PATH moved to a failed release"
 
+# An interrupted restart (TERM while waiting for readiness) rolls back to the previous agent.
+mode never-ready
+HAIL_READY_SECONDS=30 "$host" restart >/dev/null 2>&1 &
+restarting=$!
+for (( waited = 0; waited < 50; waited++ )); do
+  grep -q '^bootstrap' "$scratch/launchctl.calls" 2>/dev/null && break
+  sleep 0.1
+done
+: > "$scratch/launchctl.calls"
+sleep 0.5
+# The new daemon is already started and never ready; the restored one comes up normally.
+mode ok
+kill -TERM "$restarting"
+set +e; wait "$restarting"; interrupted=$?; set -e
+[[ "$interrupted" != 0 ]] || fail "an interrupted restart reported success"
+[[ "$(cat "$jobs/com.hailingstation.haild")" == "$(release_dir one)/haild" ]] || fail "interruption did not restore"
+[[ "$(readlink -f "$HAIL_BIN_DIR/haild")" == "$(release_dir one)/haild" ]] || fail "interruption moved the PATH haild"
+grep -q '^bootstrap' "$scratch/launchctl.calls" || fail "interruption did not start the restored agent"
+mode never-ready
+
 # A bootstrap that keeps failing fails the restart without moving PATH.
 mode bootstrap-fails
 expect_failure "bootstrap that fails" "$host" restart

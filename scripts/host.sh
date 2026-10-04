@@ -253,6 +253,32 @@ wait_ready() {
   [[ -n "$pid" && "$(job_field "$LABEL" pid)" == "$pid" ]]
 }
 
+# Undo a restart that did not complete: unload the new agent, restore and start the previous one, and say honestly
+# whether it is ready. Used on failure and on interruption, so the host is not left without a daemon.
+roll_back() {
+  trap - INT TERM
+  echo "error: $1; see $LOGS/haild.err.log" >&2
+  stop_job "$LABEL" || echo "error: the new haild did not unload" >&2
+  rm -f "$PLIST.next"
+  # A crashed daemon can leave its socket behind, which would stop the restored one from starting; its log could
+  # also still hold a readiness line, so it is set aside before the restore is judged.
+  rm -f "$SOCKET"
+  if [[ -f "$LOGS/haild.err.log" ]]; then mv -f "$LOGS/haild.err.log" "$LOGS/haild.err.log.failed"; fi
+  if [[ -f "$PLIST.prev" ]]; then
+    mv -f "$PLIST.prev" "$PLIST"
+    if start_job && wait_ready; then
+      echo "restored the previous LaunchAgent; it is ready" >&2
+    else
+      echo "error: the previous LaunchAgent was restored but is not ready; see $LOGS/haild.err.log" >&2
+    fi
+  else
+    # Nothing to restore (first migration): keep the failed agent from loading at the next login.
+    if [[ -f "$PLIST" ]]; then mv -f "$PLIST" "$PLIST.failed"; fi
+    echo "error: no previous LaunchAgent to restore; the failed one is kept as $PLIST.failed" >&2
+  fi
+  exit 1
+}
+
 restart() {
   local program
   program="$(staged_release)"
@@ -265,37 +291,21 @@ restart() {
   # Only this run's previous agent may be restored, never a leftover from an earlier one.
   rm -f "$PLIST.prev"
   if [[ -f "$PLIST" ]]; then cp -p "$PLIST" "$PLIST.prev"; fi
+  # From here until the switch is committed, an interruption rolls back instead of leaving the host half-changed.
+  trap 'roll_back "restart was interrupted"' INT TERM
   if ! stop_job "$LEGACY_LABEL" || ! stop_job "$LABEL"; then
-    fail "an existing haild job did not unload within ${READY_SECONDS}s; the new release was not started"
+    roll_back "an existing haild job did not unload within ${READY_SECONDS}s"
   fi
   # Keep the previous run's log for diagnosis; readiness is judged on a fresh one.
   if [[ -f "$LOGS/haild.err.log" ]]; then mv -f "$LOGS/haild.err.log" "$LOGS/haild.err.log.1"; fi
   rm -f "$SOCKET"
   mv -f "$PLIST.next" "$PLIST"
-  if start_job && wait_ready; then
-    relink "$(dirname "$program")" "$ROOT/running"
-    relink "$ROOT/running/haild" "$BIN/haild"
-    rm -f "$PLIST.prev"
-    echo "haild ready: $program"
-    return 0
-  fi
-  echo "error: the new haild did not become ready; see $LOGS/haild.err.log" >&2
-  stop_job "$LABEL" || echo "error: the failed haild did not unload" >&2
-  # A crashed daemon can leave its socket behind, which would stop the restored one from starting.
-  rm -f "$SOCKET"
-  if [[ -f "$PLIST.prev" ]]; then
-    mv -f "$PLIST.prev" "$PLIST"
-    if start_job && wait_ready; then
-      echo "restored the previous LaunchAgent; it is ready" >&2
-    else
-      echo "error: the previous LaunchAgent was restored but is not ready; see $LOGS/haild.err.log" >&2
-    fi
-  else
-    # Nothing to restore (first migration): keep the failed agent from loading at the next login.
-    mv -f "$PLIST" "$PLIST.failed"
-    echo "error: no previous LaunchAgent to restore; the failed one is kept as $PLIST.failed" >&2
-  fi
-  exit 1
+  if ! start_job || ! wait_ready; then roll_back "the new haild did not become ready"; fi
+  relink "$(dirname "$program")" "$ROOT/running"
+  relink "$ROOT/running/haild" "$BIN/haild"
+  trap - INT TERM
+  rm -f "$PLIST.prev"
+  echo "haild ready: $program"
 }
 
 status() {
