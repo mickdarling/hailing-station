@@ -229,8 +229,10 @@ extension HostConnectionStore {
             if diagnostics.hasPending { scheduleDiagnosticsFlush(after: .seconds(5)) }
             return
         }
+        // The toggle's promise: once logging is off, nothing taken before is sent or requeued.
+        guard diagnostics.isCurrent(batch) else { return }
         do {
-            try await connection.sendDiagnostics(batch)
+            try await connection.sendDiagnostics(batch.events)
         } catch {
             diagnostics.requeue(batch)
             return
@@ -455,7 +457,7 @@ extension AmbientListeningController {
     static func diagnosticCause(_ error: any Error) -> (cause: String, code: String?) {
         guard case HostConnectionFailure.remote(let message) = error else { return ("send_failed", nil) }
         let code = message.split(separator: ":", maxSplits: 1).first.map(String.init) ?? ""
-        return ("host_refused", DiagnosticLimits.isToken(code) ? code : "other")
+        return ("host_refused", DiagnosticField.code.tokens.contains(code) ? code : "other")
     }
 
     static func describe(_ error: any Error) -> String {

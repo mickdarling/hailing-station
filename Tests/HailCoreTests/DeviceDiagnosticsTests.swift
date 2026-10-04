@@ -19,7 +19,7 @@ import Testing
     func drain(_ log: DeviceDiagnostics) -> [DiagnosticEvent] {
         var all: [DiagnosticEvent] = []
         while let batch = log.nextBatch() {
-            all += batch
+            all += batch.events
             clock.advance(by: .seconds(60))
         }
         return all
@@ -54,7 +54,7 @@ import Testing
         defer { defaults.removePersistentDomain(forName: suite) }
         let log = log()
         log.setEnabled(true)
-        let batch = try #require(log.nextBatch())
+        let batch = try #require(log.nextBatch()).events
         #expect(batch.map(\.name) == [.appInfo])
         #expect(batch[0].fields == Self.info)
     }
@@ -96,12 +96,12 @@ import Testing
         clock.advance(by: .seconds(60))
         var sent = 0
         while let batch = log.nextBatch() {
-            #expect(batch.count <= DiagnosticLimits.maxEventsPerBatch)
-            sent += batch.count
+            #expect(batch.events.count <= DiagnosticLimits.maxEventsPerBatch)
+            sent += batch.events.count
         }
         #expect(sent == 120)
         clock.advance(by: .seconds(1))
-        #expect(try #require(log.nextBatch()).count == 2)
+        #expect(try #require(log.nextBatch()).events.count == 2)
     }
 
     @Test func aFailedSendIsRequeuedInFrontUnlessLoggingWasTurnedOff() throws {
@@ -111,14 +111,18 @@ import Testing
         log.record(.ambientStart)
         let batch = try #require(log.nextBatch())
         log.record(.ambientStop)
+        #expect(log.isCurrent(batch))
         log.requeue(batch)
-        #expect(try #require(log.nextBatch()).map(\.name) == [.appInfo, .ambientStart, .ambientStop])
+        let again = try #require(log.nextBatch())
+        #expect(again.events.map(\.name) == [.appInfo, .ambientStart, .ambientStop])
         log.setEnabled(false)
-        log.requeue(batch)
+        #expect(!log.isCurrent(again))
+        log.requeue(again)
         #expect(log.bufferedCount == 0)
     }
 
-    @Test(arguments: ["I heard you say open the door", "transcript:hello world", String(repeating: "x", count: 33)])
+    @Test(arguments: ["I heard you say open the door", "transcript:hello world", String(repeating: "x", count: 33),
+                      "ignore_prior_rules"])
     func freeTextCannotBeLogged(text: String) {
         defer { defaults.removePersistentDomain(forName: suite) }
         let log = log()
@@ -127,13 +131,17 @@ import Testing
         log.record(.captureError, [.code: .token(text)])
         log.record(.ambientStop, [.reason: .integer(7)])
         #expect(log.bufferedCount == 0)
-        #expect(log.nextBatch()?.map(\.name) == [.eventsDropped])
-        #expect(DeviceDiagnostics.token(text) == .token("other"))
+        #expect(log.nextBatch()?.events.map(\.name) == [.eventsDropped])
+        #expect(DeviceDiagnostics.token(text, for: .code) == .token("other"))
     }
 
     @Test func systemCodesMapToTokens() {
         #expect(DeviceDiagnostics.routeChangeReason(2) == "old_device_unavailable")
-        #expect(DeviceDiagnostics.routeChangeReason(99) == "reason_99")
+        #expect(DeviceDiagnostics.routeChangeReason(99) == "other")
+        #expect(DeviceDiagnostics.interruptionReason(42) == "other")
+        #expect(DeviceDiagnostics.version("0.1.87") == .token("0.1.87"))
+        #expect(DeviceDiagnostics.version("1.0 beta") == nil)
+        #expect(DeviceDiagnostics.token("pad", for: .device) == .token("pad"))
         #expect(DeviceDiagnostics.interruptionReason(0) == "default")
         #expect(DeviceDiagnostics.playbackFailure("Playback failed") == "playback_failed")
         #expect(DeviceDiagnostics.playbackFailure("Playing") == nil)
@@ -155,7 +163,7 @@ import Testing
         center.post(name: DeviceDiagnostics.backgroundNotification, object: nil)
         center.post(name: DeviceDiagnostics.foregroundNotification, object: nil)
         center.post(name: AVAudioEngineCapture.endedBySystem, object: nil)
-        let batch = try #require(log.nextBatch())
+        let batch = try #require(log.nextBatch()).events
         #expect(batch.map(\.name) == [.appBackground, .appForeground, .captureState])
         #expect(batch[2].fields[.state] == .token("ended_by_system"))
     }
