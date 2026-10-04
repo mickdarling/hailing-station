@@ -96,6 +96,10 @@ class CheckSchemaTests(unittest.TestCase):
         errors = check_schema.validate(phrase, self.schema, self.schema)
         self.assertEqual(errors, ["$.payload.events[0].fields.app: does not match pattern"])
         self.assertEqual(check_schema.validate("abc", {"type": "string", "pattern": "^[a-c]+$"}, {}), [])
+        for smuggled in ["1.2\n", "1\U000e0041", "\uff11.0", "1\u0301", "1\u200d2"]:
+            with self.subTest(value=smuggled):
+                phrase["payload"]["events"] = [dict(event, fields={"app": smuggled})]
+                self.assertTrue(check_schema.validate(phrase, self.schema, self.schema))
 
 
 if __name__ == "__main__":

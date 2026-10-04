@@ -164,7 +164,8 @@ extension HostConnection {
 
 /// What the phone itself reports (#234): its build and OS, audio route changes and interruptions, app
 /// lifecycle, capture ended by the system, and reply playback. Each source is mapped to enumerated tokens here;
-/// no system string is passed through unless it is already a short token (a route's port type).
+/// no system string is passed through: port types are compared against the `AVAudioSession` constants and every
+/// value is checked byte for byte against its field's vocabulary, with `other` for anything else.
 extension DeviceDiagnostics {
     /// App version and build, OS version and device class. Never the device's name.
     public static func appInfo(bundle: Bundle = .main) -> [DiagnosticField: DiagnosticValue] {
@@ -179,7 +180,8 @@ extension DeviceDiagnostics {
 
     /// `value` when it is in `field`'s vocabulary, else `other`.
     public nonisolated static func token(_ value: String?, for field: DiagnosticField) -> DiagnosticValue {
-        .token(value.flatMap { field.tokens.contains($0) ? $0 : nil } ?? "other")
+        .token(value.flatMap { value in field.tokens.contains { DiagnosticLimits.sameBytes($0, value) } ? value : nil }
+            ?? "other")
     }
 
     /// `value` when it is a plain version number; nil (the field is left out) otherwise.
