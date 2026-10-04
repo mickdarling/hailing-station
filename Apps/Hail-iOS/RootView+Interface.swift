@@ -43,6 +43,7 @@ extension RootView {
             VStack(spacing: 18) {
                 AudioRouteSummaryView(model: audioRoutes)
                 stationTools
+                DiagnosticsLoggingCard(diagnostics: diagnostics, collectingHost: connections.diagnosticsCollectingHost)
             }
             .frame(maxWidth: horizontalSizeClass == .regular ? 360 : .infinity, alignment: .top)
         }
@@ -65,8 +66,11 @@ extension RootView {
                 globalReplyAudioSpeaking: playback.isReplyAudioOutputBusy,
                 controlledReplyPlaybackStatus: playback.statusForControls,
                 replyFailureStatuses: playback.terminalReplyFailureStatuses,
-                onCaptureWillBegin: { CapturePlaybackSuppression.begin($0, using: playback) },
-                onCaptureDidEnd: { CapturePlaybackSuppression.end($0, using: playback, resuming: $1) },
+                onCaptureWillBegin: { tapToTalk(started: true); CapturePlaybackSuppression.begin($0, using: playback) },
+                onCaptureDidEnd: {
+                    tapToTalk(started: false)
+                    CapturePlaybackSuppression.end($0, using: playback, resuming: $1)
+                },
                 onCaptureTeardownCompleted: {
                     CapturePlaybackSuppression.markCleanupComplete($0, using: playback)
                 },
@@ -190,5 +194,6 @@ extension RootView {
         StationUITestReset.didRun = true
         UserDefaults.standard.removeObject(forKey: "hailing-station.host-endpoints.v1")
         UserDefaults.standard.removeObject(forKey: "hailing-station.destination-selection.v1")
+        diagnostics.setEnabled(false)
     }
 }
