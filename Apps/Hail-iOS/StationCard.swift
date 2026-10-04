@@ -137,6 +137,11 @@ extension RootView {
     }
 
     /// Ambient listening (#203) appears only for a confirmed destination whose host advertises `stream_audio`.
+    /// Tap-to-talk capture state for the diagnostics log (#234); nothing is recorded while logging is off.
+    func tapToTalk(_ edge: String) {
+        diagnostics.record(.captureState, [.state: .token("tap_to_talk_\(edge)")])
+    }
+
     @ViewBuilder
     var ambientListeningSurface: some View {
         if let destination,
@@ -144,7 +149,7 @@ extension RootView {
             AmbientListeningCard(
                 binding: binding, hostName: destination.endpoint.name,
                 connections: connections, audioSession: audioRoutes, playback: playback,
-                echoGuard: echoGuard
+                echoGuard: echoGuard, diagnostics: diagnostics
             )
         }
     }
@@ -163,12 +168,12 @@ struct AmbientListeningCard: View {
     init(
         binding: AmbientAudioBinding, hostName: String,
         connections: HostConnectionStore, audioSession: AudioRouteModel, playback: ReplyPlaybackController,
-        echoGuard: AmbientReplyEchoGuard
+        echoGuard: AmbientReplyEchoGuard, diagnostics: DeviceDiagnostics
     ) {
         self.binding = binding
         self.hostName = hostName
         self.playback = playback
-        _controller = State(initialValue: AmbientListeningController(
+        let controller = AmbientListeningController(
             requestPermission: requestMicrophonePermission,
             makeStreamer: { send in
                 try await audioSession.activate()
@@ -177,7 +182,9 @@ struct AmbientListeningCard: View {
             },
             releaseSession: { await audioSession.deactivate() },
             send: { [connections] payload, binding in try await connections.sendAudio(payload, to: binding) }
-        ))
+        )
+        controller.diagnostics = diagnostics
+        _controller = State(initialValue: controller)
     }
 
     var body: some View {
@@ -236,6 +243,43 @@ struct AmbientListeningCard: View {
         case .background: .background
         default: .inactive
         }
+    }
+}
+
+/// The "Diagnostics logging" switch (#234). Off by default and remembered. Off records and sends nothing and
+/// clears what was kept; on keeps a short event log (never audio or words) and sends it only to a Mac whose
+/// haild runs with `--device-diagnostics`.
+struct DiagnosticsLoggingCard: View {
+    let diagnostics: DeviceDiagnostics
+    let collectingHost: HostConnectionSnapshot?
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 8) {
+            Toggle(isOn: Binding(get: { diagnostics.isEnabled }, set: { diagnostics.setEnabled($0) })) {
+                Label("Diagnostics logging", systemImage: "list.bullet.rectangle")
+                    .font(.headline)
+            }
+            .accessibilityIdentifier("station.diagnostics-toggle")
+            Text(explanation)
+                .font(.footnote)
+                .foregroundStyle(.secondary)
+                .accessibilityIdentifier("station.diagnostics-status")
+        }
+        .padding(16)
+        .frame(maxWidth: .infinity, alignment: .leading)
+        .background(.regularMaterial, in: RoundedRectangle(cornerRadius: 20, style: .continuous))
+    }
+
+    private var explanation: String {
+        guard diagnostics.isEnabled else {
+            return "Off. Nothing is recorded or sent. When on, connection and audio events (never audio or words) "
+                + "go to a Mac that collects them, to help find why listening stopped."
+        }
+        guard let collectingHost else {
+            return "On, but no connected Mac is collecting. Start haild with --device-diagnostics. "
+                + "Keeping the last \(diagnostics.bufferedCount) events here until one does."
+        }
+        return "On. Sending connection and audio events (never audio or words) to \(collectingHost.endpoint.name)."
     }
 }
 

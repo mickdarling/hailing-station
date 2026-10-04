@@ -64,7 +64,7 @@ haild diagnostics clear
 - Reading never creates a file and never follows a link. It refuses a directory open to group or others, and a file that isn't yours or is over 8 MiB. A line that no longer decodes under the strict rules is skipped.
 - `--since` compares against host receive time.
 
-## App log (shipped in the fourth slice; the toggle comes in the fifth)
+## App log (shipped in the fourth slice)
 
 `HailCore.DeviceDiagnostics` is the phone's log. It is **off by default**; the choice is saved in `UserDefaults` (`hailing-station.device-diagnostics.v1`).
 
@@ -76,6 +76,19 @@ haild diagnostics clear
 - Batches hold at most 32 events. Sending is paced to the host's per-session budget (120, then 2 per second), so haild doesn't drop. Batches go only to the first ready host that advertises `device_diagnostics`. A failed send puts the batch back, and the buffer is flushed when a collecting host is next ready.
 - Recorded: connection state changes (with reconnect attempt), `app_info` on every ready connection (app version and build, OS version, device class; never the device name), ambient start, ambient stop with cause (`user`, `permission_denied`, `binding_changed`, `background`, `start_failed`, `capture_ended`, `system_interruption`, `host_refused` with the host's code, `send_failed`), host refusals, route changes (AVAudioSession reason and input port type), interruptions (reason, should-resume), media-services resets, app background and foreground, capture ended by the system, reply playback start, end and failure, and the echo guard's on and off edges.
 
-## Controls (planned in the next #234 slice; not shipped yet)
+## App toggle (shipped in the fifth slice)
 
-- **App:** a "Diagnostics logging" toggle, off by default. While it is off the app records and sends nothing, and turning it off clears the app's buffer. While it is on the app keeps a bounded ring buffer, sends batches only to a host that advertises `device_diagnostics`, and says when the host isn't collecting.
+The station's right column (below Station tools on iPhone) has a **Diagnostics logging** switch, off by default and remembered across launches.
+
+- Off: "Nothing is recorded or sent." Turning it off clears the phone's buffer.
+- On, with a connected Mac collecting: says which Mac gets the events.
+- On, with no collecting Mac: says so, suggests `haild ... --device-diagnostics`, and shows how many events it's holding (500 at most, in memory only).
+
+The app wires the log to the connection store, the system observers, reply playback, every ambient card, and tap-to-talk capture (`capture_state`: `tap_to_talk_start`, `tap_to_talk_end`).
+
+## Typical use
+
+1. On the Mac: `haild run --bind <address> --port <port> --personal-terminal --device-diagnostics ...`
+2. On the phone: turn on **Diagnostics logging**.
+3. When ambient listening stops: `haild diagnostics tail --since 10m` (or `show <session>`) shows why.
+4. When done: turn the switch off on the phone, and `haild diagnostics clear` on the Mac.
