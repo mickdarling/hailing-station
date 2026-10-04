@@ -255,15 +255,29 @@ wait_ready() {
 
 # Undo a restart that did not complete: unload the new agent, restore and start the previous one, and say honestly
 # whether it is ready. Used on failure and on interruption, so the host is not left without a daemon.
+IN_FLIGHT=false
+# How far restart got, so roll_back undoes only what was done: "stopping" (old jobs being unloaded),
+# "managed-stopped" (the previous managed agent is down), "started" (the new agent was handed to launchd).
+STAGE=""
 roll_back() {
-  trap - INT TERM
+  # Runs to completion: a second signal must not leave the restore half done.
+  IN_FLIGHT=false
+  trap '' INT TERM HUP
+  trap - EXIT
   echo "error: $1; see $LOGS/haild.err.log" >&2
-  stop_job "$LABEL" || echo "error: the new haild did not unload" >&2
   rm -f "$PLIST.next"
-  # A crashed daemon can leave its socket behind, which would stop the restored one from starting; its log could
-  # also still hold a readiness line, so it is set aside before the restore is judged.
-  rm -f "$SOCKET"
-  if [[ -f "$LOGS/haild.err.log" ]]; then mv -f "$LOGS/haild.err.log" "$LOGS/haild.err.log.failed"; fi
+  if [[ "$STAGE" == stopping ]]; then
+    # Nothing new started and the managed agent untouched; a daemon still serving keeps its socket and log.
+    echo "nothing new was started; any daemon still running was left as it was" >&2
+    exit 1
+  fi
+  if [[ "$STAGE" == started ]]; then
+    stop_job "$LABEL" || echo "error: the new haild did not unload" >&2
+    # A crashed daemon can leave its socket behind, which would stop the restored one from starting; its log could
+    # also still hold a readiness line, so it is set aside before the restore is judged.
+    rm -f "$SOCKET"
+    if [[ -f "$LOGS/haild.err.log" ]]; then mv -f "$LOGS/haild.err.log" "$LOGS/haild.err.log.failed"; fi
+  fi
   if [[ -f "$PLIST.prev" ]]; then
     mv -f "$PLIST.prev" "$PLIST"
     if start_job && wait_ready; then
@@ -271,10 +285,12 @@ roll_back() {
     else
       echo "error: the previous LaunchAgent was restored but is not ready; see $LOGS/haild.err.log" >&2
     fi
-  else
+  elif [[ "$STAGE" == started && -f "$PLIST" ]]; then
     # Nothing to restore (first migration): keep the failed agent from loading at the next login.
-    if [[ -f "$PLIST" ]]; then mv -f "$PLIST" "$PLIST.failed"; fi
+    mv -f "$PLIST" "$PLIST.failed"
     echo "error: no previous LaunchAgent to restore; the failed one is kept as $PLIST.failed" >&2
+  else
+    echo "error: the legacy daemon was stopped and nothing new was started; run scripts/host.sh restart again" >&2
   fi
   exit 1
 }
@@ -291,19 +307,29 @@ restart() {
   # Only this run's previous agent may be restored, never a leftover from an earlier one.
   rm -f "$PLIST.prev"
   if [[ -f "$PLIST" ]]; then cp -p "$PLIST" "$PLIST.prev"; fi
-  # From here until the switch is committed, an interruption rolls back instead of leaving the host half-changed.
-  trap 'roll_back "restart was interrupted"' INT TERM
-  if ! stop_job "$LEGACY_LABEL" || ! stop_job "$LABEL"; then
-    roll_back "an existing haild job did not unload within ${READY_SECONDS}s"
-  fi
+  # From here until the switch is committed, an interruption (including a closed terminal) or any unexpected exit
+  # rolls back instead of leaving the host half-changed.
+  IN_FLIGHT=true
+  STAGE=stopping
+  trap 'roll_back "restart was interrupted"' INT TERM HUP
+  trap 'if [[ "$IN_FLIGHT" == true ]]; then roll_back "restart stopped unexpectedly"; fi' EXIT
+  stop_job "$LEGACY_LABEL" || roll_back "the legacy haild job did not unload within ${READY_SECONDS}s"
+  STAGE=managed-stopped
+  stop_job "$LABEL" || roll_back "the managed haild job did not unload within ${READY_SECONDS}s"
   # Keep the previous run's log for diagnosis; readiness is judged on a fresh one.
   if [[ -f "$LOGS/haild.err.log" ]]; then mv -f "$LOGS/haild.err.log" "$LOGS/haild.err.log.1"; fi
   rm -f "$SOCKET"
+  STAGE=started
   mv -f "$PLIST.next" "$PLIST"
   if ! start_job || ! wait_ready; then roll_back "the new haild did not become ready"; fi
+  # Commit point: the new daemon is ready, so finish the switch without interruption. Rolling back now would leave
+  # the links on a release launchd no longer runs.
+  IN_FLIGHT=false
+  trap '' INT TERM HUP
+  trap - EXIT
   relink "$(dirname "$program")" "$ROOT/running"
   relink "$ROOT/running/haild" "$BIN/haild"
-  trap - INT TERM
+  trap - INT TERM HUP
   rm -f "$PLIST.prev"
   echo "haild ready: $program"
 }

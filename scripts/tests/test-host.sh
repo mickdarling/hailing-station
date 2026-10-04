@@ -32,7 +32,9 @@ cat > "$HAIL_LAUNCHCTL" <<FAKE
 echo "\$*" >> "$scratch/launchctl.calls"
 mode="\$(cat "$scratch/mode")"
 case "\$1" in
-  bootout) rm -f "$jobs/\${2##*/}" ;;
+  bootout)
+    # stuck-legacy: the legacy job ignores bootout, like a daemon that will not shut down.
+    [[ "\$mode" == stuck-legacy && "\$2" == *hailing-station-session ]] || rm -f "$jobs/\${2##*/}" ;;
   bootstrap)
     [[ "\$mode" == bootstrap-fails ]] && exit 5
     label="\$(plutil -extract Label raw -o - "\$3")"
@@ -179,6 +181,36 @@ set +e; wait "$restarting"; interrupted=$?; set -e
 [[ "$(cat "$jobs/com.hailingstation.haild")" == "$(release_dir one)/haild" ]] || fail "interruption did not restore"
 [[ "$(readlink -f "$HAIL_BIN_DIR/haild")" == "$(release_dir one)/haild" ]] || fail "interruption moved the PATH haild"
 grep -q '^bootstrap' "$scratch/launchctl.calls" || fail "interruption did not start the restored agent"
+mode never-ready
+
+# A closed terminal (HUP) mid-restart also rolls back.
+HAIL_READY_SECONDS=30 "$host" restart >/dev/null 2>&1 &
+restarting=$!
+: > "$scratch/launchctl.calls"
+for (( waited = 0; waited < 50; waited++ )); do
+  grep -q '^bootstrap' "$scratch/launchctl.calls" 2>/dev/null && break
+  sleep 0.1
+done
+sleep 0.5
+mode ok
+kill -HUP "$restarting"
+set +e; wait "$restarting"; hung_up=$?; set -e
+[[ "$hung_up" != 0 ]] || fail "a hung-up restart reported success"
+[[ "$(cat "$jobs/com.hailingstation.haild")" == "$(release_dir one)/haild" ]] || fail "HUP did not restore"
+[[ "$(readlink -f "$HAIL_BIN_DIR/haild")" == "$(release_dir one)/haild" ]] || fail "HUP moved the PATH haild"
+mode never-ready
+
+# A legacy job that will not unload: nothing new is started, the managed daemon and its socket are left alone.
+mode stuck-legacy
+echo "legacy" > "$jobs/com.mickdarling.hailing-station-session"
+touch "$HAIL_CONFIG_DIR/replies.sock"
+managed_before="$(cat "$jobs/com.hailingstation.haild")"
+"$host" restart > "$scratch/stuck.out" 2>&1 && fail "restart succeeded with a legacy job that would not unload"
+[[ -e "$HAIL_CONFIG_DIR/replies.sock" ]] || fail "rollback removed the socket of a daemon that was never stopped"
+[[ "$(cat "$jobs/com.hailingstation.haild")" == "$managed_before" ]] || fail "rollback touched the managed daemon"
+grep -q "nothing new was started" "$scratch/stuck.out" || fail "rollback did not say nothing was started"
+! grep -q "kept as" "$scratch/stuck.out" || fail "rollback claimed a failed agent it never started"
+rm -f "$jobs/com.mickdarling.hailing-station-session"
 mode never-ready
 
 # A bootstrap that keeps failing fails the restart without moving PATH.
