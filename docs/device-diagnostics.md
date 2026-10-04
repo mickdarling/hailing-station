@@ -6,7 +6,7 @@ When the phone stops ambient listening or fails, the Mac usually sees only the s
 
 - No audio, no transcript or reply text, no request contents. Ever.
 - Only enumerated event names and a fixed set of field keys. Each key has one value kind: a token from that field's closed vocabulary, a version number (one to four dot-separated groups of digits), a 32-bit integer, or a boolean. The log's readers include AI agents, so nothing a peer picks freely, not even a short phrase like `ignore_prior_rules`, can be stored.
-- The decoder refuses anything else: an unknown event name, an unknown payload, event or field key, the wrong kind for a key, a token outside its field's vocabulary, a version that isn't digits and dots, an integer out of range, an empty batch, or more than 32 events in one batch. This is stricter than the rest of the protocol, which ignores unknown keys.
+- The decoder refuses anything else: an unknown event name, an unknown payload, event or field key, the wrong kind for a key, a token outside its field's vocabulary, a version that isn't digits and dots, an integer out of range, an empty batch, or more than 32 events in one batch. This is stricter than the rest of the protocol, which ignores unknown keys. Every name, key, token and version is compared byte for byte on its UTF-8 form against ASCII, never as Swift Characters. Tag characters ("ASCII smuggling"), combining marks, zero-width joiners and fullwidth digits can't pass, even when they merge with a valid character into one grapheme.
 - Diagnostics grant no authority and change no behaviour.
 
 ## Protocol (shipped in this slice)

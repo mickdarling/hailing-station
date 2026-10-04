@@ -131,7 +131,7 @@ extension ControlPayload: Codable {
         case .diagnostic:
             // Strict, unlike the other commands (#234): only `command` and `events`, so nothing rides along.
             let keys = try decoder.container(keyedBy: DiagnosticCodingKey.self).allKeys.map(\.stringValue)
-            guard Set(keys).isSubset(of: ["command", "events"]) else {
+            guard keys.allSatisfy({ DiagnosticLimits.isOne(of: ["command", "events"], $0) }) else {
                 throw DecodingError.dataCorrupted(.init(codingPath: decoder.codingPath,
                                                         debugDescription: "unknown diagnostic payload key"))
             }
@@ -205,11 +205,34 @@ public enum DiagnosticLimits {
     /// One to four dot-separated groups of one to six digits, as in `0.1.84` or `26.0.1`.
     public static let versionPattern = "^[0-9]{1,6}([.][0-9]{1,6}){0,3}$"
 
+    /// Checked on UTF-8 bytes against ASCII ranges, never on Characters or scalars: a digit followed by
+    /// invisible tag characters or combining marks is one Character but is not a version.
     public static func isVersion(_ value: String) -> Bool {
-        let groups = value.split(separator: ".", omittingEmptySubsequences: false)
-        return (1...4).contains(groups.count) && groups.allSatisfy { group in
-            (1...6).contains(group.count) && group.allSatisfy { ("0"..."9").contains($0) }
+        let bytes = Array(value.utf8)
+        var groups = 0, run = 0
+        for byte in bytes {
+            if (0x30...0x39).contains(byte) {
+                run += 1
+                guard run <= 6 else { return false }
+            } else if byte == 0x2E, run > 0 {
+                groups += 1
+                run = 0
+            } else {
+                return false
+            }
         }
+        return run > 0 && groups <= 3
+    }
+
+    /// Byte-for-byte equality of the UTF-8 forms. Swift's `==` on strings is canonical equivalence, which
+    /// is not what a closed ASCII vocabulary means.
+    public static func sameBytes(_ lhs: String, _ rhs: String) -> Bool {
+        lhs.utf8.elementsEqual(rhs.utf8)
+    }
+
+    /// Whether `value`'s bytes equal one of `allowed` exactly.
+    static func isOne(of allowed: [String], _ value: String) -> Bool {
+        allowed.contains { sameBytes($0, value) }
     }
 }
 
@@ -305,7 +328,7 @@ public enum DiagnosticValue: Sendable, Equatable {
 
     func isValid(for field: DiagnosticField) -> Bool {
         switch (self, field.kind) {
-        case (.token(let value), .token): field.tokens.contains(value)
+        case (.token(let value), .token): DiagnosticLimits.isOne(of: field.tokens, value)
         case (.token(let value), .version): DiagnosticLimits.isVersion(value)
         case (.integer(let value), .integer): DiagnosticLimits.integers.contains(value)
         case (.boolean, .boolean): true
@@ -345,16 +368,21 @@ extension DiagnosticEvent: Codable {
     /// Unknown keys are refused here, unlike the rest of the protocol: free data must not ride along.
     public init(from decoder: any Decoder) throws {
         let container = try decoder.container(keyedBy: Key.self)
-        guard Set(container.allKeys.map(\.stringValue)).isSubset(of: ["ts", "name", "fields"]) else {
+        guard container.allKeys.allSatisfy({ DiagnosticLimits.isOne(of: ["ts", "name", "fields"], $0.stringValue) })
+        else {
             throw Self.corrupt(decoder, "unknown diagnostic event key")
         }
         let timestamp = try container.decode(Int64.self, forKey: Key(stringValue: "ts"))
-        let name = try container.decode(DiagnosticEventName.self, forKey: Key(stringValue: "name"))
+        let rawName = try container.decode(String.self, forKey: Key(stringValue: "name"))
+        guard let name = DiagnosticEventName.allCases.first(where: { DiagnosticLimits.sameBytes($0.rawValue, rawName) })
+        else { throw Self.corrupt(decoder, "unknown diagnostic event name") }
         var fields: [DiagnosticField: DiagnosticValue] = [:]
         if container.contains(Key(stringValue: "fields")) {
             let values = try container.nestedContainer(keyedBy: Key.self, forKey: Key(stringValue: "fields"))
             for key in values.allKeys {
-                guard let field = DiagnosticField(rawValue: key.stringValue) else {
+                guard let field = DiagnosticField.allCases.first(where: {
+                    DiagnosticLimits.sameBytes($0.rawValue, key.stringValue)
+                }) else {
                     throw Self.corrupt(decoder, "unknown diagnostic field")
                 }
                 switch field.kind {
