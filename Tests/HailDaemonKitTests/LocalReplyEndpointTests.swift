@@ -81,7 +81,7 @@ import Testing
         }
     }
 
-    @Test func incompleteConnectionExpires() async throws {
+    @Test(.timeLimit(.minutes(1))) func incompleteConnectionExpires() async throws {
         let scratch = FileManager.default.temporaryDirectory.appendingPathComponent(
             "hs-timeout-\(UUID().uuidString.prefix(8))", isDirectory: true
         )
@@ -95,10 +95,14 @@ import Testing
             requestTimeout: .milliseconds(50)
         )
         try await endpoint.start()
+        let opened = ContinuousClock.now
         let idle = NWConnection(to: .unix(path: socket.path), using: .tcp)
         idle.start(queue: DispatchQueue(label: "hail.local-reply-idle-test"))
-        try await waitUntil { await endpoint.activeConnectionCount == 1 }
-        try await Task.sleep(for: .milliseconds(100))
+        // The server closing the idle client is the expiry itself (#208). Polling for the brief accepted state
+        // could miss it entirely on a slow runner, because 50 ms can pass between two polls.
+        #expect(await closedByServer(idle))
+        // A lower bound only, so a slow runner cannot fail it: the close came from the deadline, not at once.
+        #expect(opened.duration(to: .now) >= .milliseconds(50))
         #expect(await endpoint.activeConnectionCount == 0)
         idle.cancel()
         await endpoint.stop()
@@ -115,7 +119,8 @@ import Testing
         let endpoint = try LocalReplyEndpoint(
             socketURL: socket, destination: listener,
             audit: AuditLog(directory: scratch.appendingPathComponent("audit")),
-            requestTimeout: .milliseconds(50)
+            // Long enough to observe the connection before it could expire, even on a slow runner (#208).
+            requestTimeout: .seconds(2)
         )
         try await endpoint.start()
         let client = NWConnection(to: .unix(path: socket.path), using: .tcp)
@@ -123,7 +128,7 @@ import Testing
         try await waitUntil { await endpoint.activeConnectionCount == 1 }
         let id = try #require(await endpoint.awaitingFrameIDs.first)
         await endpoint.frameCompleted(id)
-        try await Task.sleep(for: .milliseconds(100))
+        try await Task.sleep(for: .milliseconds(2_500))
         #expect(await endpoint.activeConnectionCount == 1)
         client.cancel()
         await endpoint.stop()
@@ -690,6 +695,21 @@ private func sendWithoutResponse(_ frame: Frame, socket: String) throws -> NWCon
     }
     connection.start(queue: DispatchQueue(label: "hail.local-reply-send-only-test"))
     return connection
+}
+
+/// True once the server closed `connection` cleanly (end of stream, no error). Any other ending returns false. If the
+/// test is cancelled (its time limit), the connection is cancelled, which completes the pending receive with an
+/// error, so the wait always ends and resumes exactly once.
+private func closedByServer(_ connection: NWConnection) async -> Bool {
+    await withTaskCancellationHandler {
+        await withCheckedContinuation { (finished: CheckedContinuation<Bool, Never>) in
+            connection.receive(minimumIncompleteLength: 1, maximumLength: 1) { data, _, isComplete, error in
+                finished.resume(returning: isComplete && error == nil && (data ?? Data()).isEmpty)
+            }
+        }
+    } onCancel: {
+        connection.cancel()
+    }
 }
 
 private func waitUntil(_ predicate: @escaping @Sendable () async -> Bool) async throws {
