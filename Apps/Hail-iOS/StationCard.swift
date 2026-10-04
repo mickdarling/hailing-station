@@ -136,12 +136,12 @@ extension RootView {
         connections.hosts.contains(where: { $0.state == .ready })
     }
 
-    /// Ambient listening (#203) appears only for a confirmed destination whose host advertises `stream_audio`.
     /// Tap-to-talk capture state for the diagnostics log (#234); nothing is recorded while logging is off.
-    func tapToTalk(_ edge: String) {
-        diagnostics.record(.captureState, [.state: .token("tap_to_talk_\(edge)")])
+    func tapToTalk(started: Bool) {
+        diagnostics.record(.captureState, [.state: .token(started ? "tap_to_talk_start" : "tap_to_talk_end")])
     }
 
+    /// Ambient listening (#203) appears only for a confirmed destination whose host advertises `stream_audio`.
     @ViewBuilder
     var ambientListeningSurface: some View {
         if let destination,

@@ -66,9 +66,9 @@ extension RootView {
                 globalReplyAudioSpeaking: playback.isReplyAudioOutputBusy,
                 controlledReplyPlaybackStatus: playback.statusForControls,
                 replyFailureStatuses: playback.terminalReplyFailureStatuses,
-                onCaptureWillBegin: { tapToTalk("start"); CapturePlaybackSuppression.begin($0, using: playback) },
+                onCaptureWillBegin: { tapToTalk(started: true); CapturePlaybackSuppression.begin($0, using: playback) },
                 onCaptureDidEnd: {
-                    tapToTalk("end")
+                    tapToTalk(started: false)
                     CapturePlaybackSuppression.end($0, using: playback, resuming: $1)
                 },
                 onCaptureTeardownCompleted: {
