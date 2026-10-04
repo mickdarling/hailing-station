@@ -2,7 +2,7 @@ public import Foundation
 public import HailProtocol
 
 // Canonical examples stay in one list so coverage and stale-file checks remain exhaustive.
-// swiftlint:disable type_body_length
+// swiftlint:disable type_body_length file_length
 /// The canonical example frames. Both ends' test targets decode and re-encode every one of these and
 /// compare bytes to `fixtures/frames/<name>.json`; a change here without regenerating fails CI (#2, #28).
 /// The JSON copies ship in this module's resource bundle so tests find them from any host or app bundle.
@@ -51,6 +51,21 @@ public enum Fixtures {
     static func id(_ number: Int) -> UUID {
         UUID(uuidString: String(format: "0B0B0B0B-0000-4000-8000-%012ld", number)) ?? UUID()
     }
+
+    /// A stopped ambient stream after a route change (#234). An invalid event here leaves the batch empty,
+    /// which fails the fixture round trip rather than trapping.
+    private static let diagnosticEvents = (try? [
+        DiagnosticEvent(.appInfo, timestamp: 1_758_200_049_000, fields: [
+            .app: .token("0.1.84"), .build: .token("1"), .os: .token("26.0"), .device: .token("phone")
+        ]),
+        DiagnosticEvent(.routeChange, timestamp: 1_758_200_049_500, fields: [
+            .reason: .token("old_device_unavailable"), .route: .token("BuiltInMic")
+        ]),
+        DiagnosticEvent(.ambientStop, timestamp: 1_758_200_049_510, fields: [
+            .reason: .token("route_change"), .error: .integer(-10_868)
+        ]),
+        DiagnosticEvent(.echoGuard, timestamp: 1_758_200_049_520, fields: [.on: .boolean(false)])
+    ]) ?? []
 
     private static let audioBytes = Data([0x4F, 0x67, 0x67, 0x53, 0x00, 0x02, 0x00, 0x00])
 
@@ -191,10 +206,14 @@ public enum Fixtures {
             id: id(10), timestamp: 1_758_200_000_070, source: "host",
             payload: .control(.error(code: .notAllowed, message: "target tmux:codex-hail is not allowed yet"))
         )),
+        Example(name: "control-diagnostic", frame: Frame(
+            id: id(25), timestamp: 1_758_200_050_000, source: "terminal",
+            payload: .control(.diagnostic(events: diagnosticEvents))
+        )),
         Example(name: "unknown-type", frame: Frame(
             id: id(11), timestamp: 1_758_200_020_000, target: "tmux:claude-hail", source: "tmux:claude-hail",
             payload: .unknown(type: "hologram", payload: .object(["shape": .string("cube"), "faces": .integer(6)]))
         ))
     ]
 }
-// swiftlint:enable type_body_length
+// swiftlint:enable type_body_length file_length
