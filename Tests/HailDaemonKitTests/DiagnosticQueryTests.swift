@@ -56,7 +56,7 @@ import Testing
         try FileManager.default.createDirectory(at: scratch, withIntermediateDirectories: true,
                                                 attributes: [.posixPermissions: 0o700])
         let event = #"{"ts":1,"name":"ambient_start","fields":{}}"#
-        let good = #"{"device":"d","event":\#(event),"received":7,"session":"\#(first.uuidString)"}"#
+        let good = #"{"device":"dev-0123abcd","event":\#(event),"received":7,"session":"\#(first.uuidString)"}"#
         let bad = #"{"device":"d","event":{"ts":1,"name":"transcript"},"received":8,"session":"\#(first.uuidString)"}"#
         let file = scratch.appendingPathComponent(DiagnosticLog.fileName)
         try Data((bad + "\nnot json\n" + good + "\n").utf8).write(to: file)
@@ -84,6 +84,26 @@ import Testing
         )
         #expect(record.line == "2025-09-18T12:54:09.500Z 4F2A1C3B dev-0123abcd route_change "
                 + "reason=old_device_unavailable route=built_in_mic device_ts=2025-09-18T12:54:09.000Z")
+    }
+
+    @Test func aStoredDeviceThatIsNotATokenIsSkippedAndJSONIsASCII() throws {
+        defer { cleanUp() }
+        try FileManager.default.createDirectory(at: scratch, withIntermediateDirectories: true,
+                                                attributes: [.posixPermissions: 0o700])
+        func line(_ device: String) -> String {
+            #"{"device":"\#(device)","event":{"ts":1,"name":"ambient_start"},"received":7,"#
+                + #""session":"\#(first.uuidString)"}"#
+        }
+        let lines = [line("dev-0123abcd"), line("dev-0123abc\u{0301}"), line("dev-0123abcd\u{E0041}"), line("phone")]
+        let file = scratch.appendingPathComponent(DiagnosticLog.fileName)
+        try Data((lines.joined(separator: "\n") + "\n").utf8).write(to: file)
+        let records = try DiagnosticLog.records(in: scratch)
+        #expect(records.map(\.device) == ["dev-0123abcd"])
+        let odd = DiagnosticRecord(received: 1, session: first, device: "h\u{E9}llo\u{E0041}\u{2028}",
+                                   event: try DiagnosticEvent(.ambientStart, timestamp: 1))
+        let json = try odd.asciiJSON()
+        #expect(json.utf8.allSatisfy { (0x20...0x7E).contains($0) })
+        #expect(try JSONDecoder().decode(DiagnosticRecord.self, from: Data(json.utf8)) == odd)
     }
 
     @Test(arguments: [

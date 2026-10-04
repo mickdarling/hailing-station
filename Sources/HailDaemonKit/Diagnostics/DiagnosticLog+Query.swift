@@ -44,7 +44,10 @@ extension DiagnosticLog {
         let decoder = FrameCoding.decoder()
         return try [rotatedName, fileName].flatMap { name in
             try read(name, in: dir, at: directory).split(separator: 0x0A).compactMap { line in
-                (try? decoder.decode(DiagnosticRecord.self, from: Data(line))).flatMap { query.matches($0) ? $0 : nil }
+                // A record whose device isn't a `dev-` token was not written by this sink; it is skipped.
+                (try? decoder.decode(DiagnosticRecord.self, from: Data(line))).flatMap {
+                    DiagnosticRecord.isDeviceToken($0.device) && query.matches($0) ? $0 : nil
+                }
             }
         }
     }
@@ -92,14 +95,34 @@ extension DiagnosticRecord {
         return ([time, session, device, event.name.rawValue] + fields + [deviceTime]).joined(separator: " ")
     }
 
+    /// `dev-` and 8 lowercase hex digits, checked on UTF-8 bytes.
     static func isDeviceToken(_ value: String) -> Bool {
-        value.count == 12 && value.hasPrefix("dev-") && value.dropFirst(4).allSatisfy("0123456789abcdef".contains)
+        let bytes = Array(value.utf8)
+        return bytes.count == 12 && bytes.prefix(4).elementsEqual("dev-".utf8)
+            && bytes.dropFirst(4).allSatisfy { (0x30...0x39).contains($0) || (0x61...0x66).contains($0) }
+    }
+
+    /// The record as one line of JSON in printable ASCII: every non-ASCII UTF-16 unit inside a string becomes a
+    /// `\uXXXX` escape (the encoder already escapes quotes and controls), so nothing invisible reaches a reader.
+    public func asciiJSON() throws -> String {
+        let encoder = JSONEncoder()
+        encoder.outputFormatting = [.sortedKeys, .withoutEscapingSlashes]
+        guard let text = String(bytes: try encoder.encode(self), encoding: .utf8) else {
+            throw DiagnosticLogError.unsafe("record")
+        }
+        return text.utf16.map { unit in
+            (0x20...0x7E).contains(unit) ? String(UnicodeScalar(UInt8(unit))) : String(format: "\\u%04x", unit)
+        }.joined()
     }
 
     /// The value bare when it is `[A-Za-z0-9._-]{1,32}`, otherwise as an escaped JSON string.
     static func safe(_ value: String) -> String {
-        let bare = Set("abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789._-")
-        if (1...32).contains(value.count), value.allSatisfy(bare.contains) { return value }
+        let bytes = Array(value.utf8)
+        let isBare = (1...32).contains(bytes.count) && bytes.allSatisfy { byte in
+            (0x30...0x39).contains(byte) || (0x41...0x5A).contains(byte) || (0x61...0x7A).contains(byte)
+                || byte == 0x2E || byte == 0x5F || byte == 0x2D
+        }
+        if isBare { return value }
         // Printable ASCII stays; quotes, backslashes, controls and all non-ASCII become `\uXXXX` escapes; at most 64 units are shown.
         let escaped = value.utf16.prefix(64).map { unit -> String in
             guard (0x20...0x7E).contains(unit), unit != 0x22, unit != 0x5C else {

@@ -53,11 +53,9 @@ private func diagnosticsTailOptions(_ rest: inout ArraySlice<String>, now: Date)
 }
 
 private func printDiagnostics(_ records: ArraySlice<DiagnosticRecord>, json: Bool) throws {
-    let encoder = JSONEncoder()
-    encoder.outputFormatting = [.sortedKeys, .withoutEscapingSlashes]
     for record in records {
         if json {
-            FileHandle.standardOutput.write(try encoder.encode(record) + Data("\n".utf8))
+            print(try record.asciiJSON())
         } else {
             print(record.line)
         }
