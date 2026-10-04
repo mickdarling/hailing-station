@@ -449,7 +449,11 @@ import Testing
         let socket = scratch.appendingPathComponent("config", isDirectory: true)
             .appendingPathComponent(LocalReplyEndpoint.socketName)
         let audit = AuditLog(directory: scratch.appendingPathComponent("audit"))
-        let endpoint = try LocalReplyEndpoint(socketURL: socket, destination: listener, audit: audit)
+        // This test is about size caps, not latency: a slow runner may need more than the 5 s default to move 2 MiB.
+        let endpoint = try LocalReplyEndpoint(
+            socketURL: socket, destination: listener, audit: audit,
+            requestTimeout: .seconds(60), submissionTimeout: .seconds(60)
+        )
         try await endpoint.start()
         let (session, terminal) = try terminalClient(port: port)
         defer { terminal.cancel(with: .normalClosure, reason: nil); session.invalidateAndCancel() }
@@ -485,15 +489,16 @@ import Testing
         let scratch = FileManager.default.temporaryDirectory
             .appendingPathComponent("hs-dl-\(UUID().uuidString.prefix(8))", isDirectory: true)
         defer { try? FileManager.default.removeItem(at: scratch) }
-        let runner = FakeCommandRunner.serving(SessionListing(bridgeListing), delay: .milliseconds(20))
+        // The first chunk is typed, then typing parks until the hasty deadline has fired (#208): the abandoned
+        // attempt has always typed something and never finished, however slow the runner is.
+        let gate = TypingGate(allowing: 1)
+        let runner = FakeCommandRunner.serving(SessionListing(bridgeListing), delay: .milliseconds(20), gate: gate)
         let listener = try await slowTmuxListener(runner)
         let port = try await listener.start()
         let config = scratch.appendingPathComponent("config", isDirectory: true)
         let audit = AuditLog(directory: scratch.appendingPathComponent("audit"))
-        let hasty = try LocalReplyEndpoint(
-            socketURL: config.appendingPathComponent("hasty.sock"), destination: listener, audit: audit,
-            submissionTimeout: .milliseconds(300)
-        )
+        let hasty = try LocalReplyEndpoint(socketURL: config.appendingPathComponent("hasty.sock"),
+                                           destination: listener, audit: audit, submissionTimeout: .seconds(2))
         let patient = try LocalReplyEndpoint(
             socketURL: config.appendingPathComponent("patient.sock"), destination: listener, audit: audit
         )
@@ -503,12 +508,13 @@ import Testing
         defer { terminal.cancel(with: .normalClosure, reason: nil); session.invalidateAndCancel() }
         do {
             let connection = try await selectOrdinary(on: terminal, listener: listener)
-            // 40 chunks at 20 ms each: far past the 300 ms deadline.
+            // 40 chunks; the gate holds the second, so the 2 s deadline fires mid-typing.
             let text = String(repeating: "a", count: 40 * TmuxAdapter.defaultChunkSize)
             let line = try JSONEncoder().encode(LocalDispatchRequest(
                 connection: connection, target: "tmux:ordinary", binding: "$2@1758230001/%2:502", text: text
             ))
             await #expect(throws: (any Error).self) { try await submit(line, socket: hasty.socketURL.path) }
+            gate.open()
             let abandoned = await runner.calls.compactMap { $0.contains("send-keys") ? $0.last : nil }
             let retry = try await submit(line, socket: patient.socketURL.path)
             #expect(retry.delivered == 0 && retry.request == nil)
