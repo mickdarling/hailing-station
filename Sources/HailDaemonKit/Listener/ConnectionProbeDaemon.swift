@@ -60,6 +60,9 @@ public enum ConnectionProbeDaemon {
         /// `--ambient-rightyo`, `--ambient-rightyo-config`, `--ambient-target` (#203): all three or none, only
         /// with `--personal-terminal --single-terminal-reply-fallback` (replies reach the phone only that way).
         var ambient: AmbientOptions?
+        /// `--device-diagnostics` (#234), only with `--personal-terminal`: where accepted diagnostics are
+        /// stored. Without the flag the capability is not advertised and nothing is written.
+        var diagnostics: URL?
     }
 
     // Each accepted flag is an explicit branch; combinations are validated after parsing.
@@ -69,7 +72,8 @@ public enum ConnectionProbeDaemon {
         var port: UInt16?
         var authorizer: (any HostSessionAuthorizing)?
         var personalTerminal = false
-        var singleTerminalReplyFallback = false
+        // Value-free switches: `--single-terminal-reply-fallback`, `--device-diagnostics` (#234).
+        var switches: Set<String> = []
         var replySocket: URL?, ambient: [String: String] = [:]
         var rest = arguments[...]
         while let flag = rest.popFirst() {
@@ -85,25 +89,25 @@ public enum ConnectionProbeDaemon {
                 authorizer = PersonalTerminalAuthorizer()
                 personalTerminal = true
             case "--reply-socket":
-                guard let path = rest.popFirst(), !path.isEmpty else {
-                    throw WebSocketListenerError.invalidArguments
-                }
+                guard let path = rest.popFirst(), !path.isEmpty else { throw WebSocketListenerError.invalidArguments }
                 replySocket = URL(fileURLWithPath: path)
-            case "--single-terminal-reply-fallback": singleTerminalReplyFallback = true
+            case "--single-terminal-reply-fallback", "--device-diagnostics": switches.insert(flag)
             case "--ambient-rightyo", "--ambient-rightyo-config", "--ambient-target":
                 try parseAmbient(flag, from: &rest, into: &ambient)
             default: throw WebSocketListenerError.invalidArguments
             }
         }
         guard let address, let port, let authorizer,
-              personalTerminal || (replySocket == nil && !singleTerminalReplyFallback),
-              ambient.isEmpty || (personalTerminal && singleTerminalReplyFallback) else {
+              personalTerminal || (replySocket == nil && switches.isEmpty),
+              ambient.isEmpty || (personalTerminal && switches.contains("--single-terminal-reply-fallback")) else {
             throw WebSocketListenerError.invalidArguments
         }
         return Options(
             address: address, port: port, authorizer: authorizer,
             personalTerminal: personalTerminal ? (replySocket ?? LocalReplyEndpoint.standardSocket()) : nil,
-            singleTerminalReplyFallback: singleTerminalReplyFallback, ambient: try ambientOptions(ambient)
+            singleTerminalReplyFallback: switches.contains("--single-terminal-reply-fallback"),
+            ambient: try ambientOptions(ambient),
+            diagnostics: switches.contains("--device-diagnostics") ? DiagnosticLog.standardDirectory() : nil
         )
     }
 }
@@ -125,6 +129,11 @@ extension ConnectionProbeDaemon {
             ambient = router
         }
         #endif
+        if let directory = options.diagnostics {
+            authorizer = PersonalTerminalAuthorizer(
+                ambientAudio: authorizer.ambientAudio, diagnostics: DiagnosticLog(directory: directory)
+            )
+        }
         let listener = try WebSocketListener(
             bindAddress: options.address, port: options.port, host: host,
             authorizer: authorizer, hostName: hostName,

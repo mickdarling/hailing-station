@@ -29,7 +29,22 @@ A client sends `diagnostic` frames only to a host whose hello lists the `device_
 
 Canonical fixture: `fixtures/frames/control-diagnostic.json`. Negative fixtures: `fixtures/invalid/control-diagnostic-*.json`.
 
+## Host sink (shipped in the second slice)
+
+haild accepts and stores diagnostics only when started with `--device-diagnostics`, which needs `--personal-terminal`:
+
+```sh
+haild run --bind <address> --port <port> --personal-terminal --device-diagnostics ...
+```
+
+- Without the flag, haild doesn't advertise `device_diagnostics`, refuses a `diagnostic` frame as unauthorized (the connection stays open), and writes nothing to disk.
+- With it, events go to `diagnostics/diagnostics.jsonl` beside the policy file (`~/.config/hail/`, or `$HAIL_CONFIG_DIR`). Each line holds the host receive time, the connection's session id, its negotiated device name (control characters stripped, 64 characters at most) and the validated event.
+- The directory is created 0700 and must be owned by you and closed to group and others. The file is opened without following links, must be a regular file you own, and is reset to 0600.
+- Size: when a write would take the file past 2.5 MiB, it's renamed to `diagnostics.1.jsonl`, replacing the previous one. Two files at most, 5 MiB in all.
+- Rate limits: each session gets a burst of 120 events, refilled at 2 per second. The host as a whole gets a burst of 300, refilled at 5 per second. Excess events are dropped without any reply. The next stored batch from that session starts with an `events_dropped` record (`count`, `code: host_rate_limit`).
+- A storage failure drops the events and is counted; it never reaches the phone.
+
 ## Controls (planned in the next #234 slices; not shipped yet)
 
-- **Host:** haild accepts and stores diagnostics only when started with `--device-diagnostics`. Without the flag it does not advertise the capability and writes nothing to disk. The log is owner-only (0600), capped at about 5 MB (one current file plus one rotated file), and rate-limited per session. `haild diagnostics tail [--device <name>] [--since <time>]`, `haild diagnostics show <session>` and `haild diagnostics clear` read and clear it.
+- **Query and clear:** `haild diagnostics tail [--device <name>] [--since <time>]`, `haild diagnostics show <session>` and `haild diagnostics clear`.
 - **App:** a "Diagnostics logging" toggle, off by default. While it is off the app records and sends nothing, and turning it off clears the app's buffer. While it is on the app keeps a bounded ring buffer, sends batches only to a host that advertises `device_diagnostics`, and says when the host isn't collecting.
