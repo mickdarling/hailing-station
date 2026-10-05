@@ -20,7 +20,7 @@ Create the config directory privately (`mkdir -m 700 ~/.config/hail`; the daemon
 }
 ```
 
-- `bind` (an IP address literal) and `port` are required. Everything else is optional; leave out `ambient` to run without ambient listening.
+- `bind` (an IP address literal) and `port` are required. If you use Tailscale Serve, `port` must differ from the Serve port; see [Remote access through Tailscale Serve](#remote-access-through-tailscale-serve). Everything else is optional; leave out `ambient` to run without ambient listening.
 - Values must have the right JSON type: strings for `bind`, `hostID` and the ambient keys, an integer `port`, and `true` or `false` for flags. Ambient listening requires `"singleTerminalReplyFallback": true`.
 - Values may not contain control characters or start with `-`. Bad config is refused before the running daemon is touched.
 - `hostID` is optional. Without it, the daemon and `haild reply` both use the Mac's LocalHostName as `<name>.local`. If you set it, the target sessions that run `haild reply` must use the same value through `HAIL_HOST_ID`.
@@ -35,7 +35,7 @@ Give `haild` its own loopback port, not the port Tailscale Serve exposes on the 
 tailscale serve --bg --tcp 8765 tcp://localhost:18765
 ```
 
-- **Why:** Network.framework will not listen on a port that any address on the Mac already holds (#262). Serve listens on the tailnet addresses, so if it uses the daemon's port, `haild` fails at every start with `Address already in use`. That includes restarts, crash recovery and logins.
+- **Why:** Network.framework will not listen on a port that any address on the Mac already holds (#262). Serve listens on the tailnet addresses, so if it uses the daemon's port, `haild` fails at every start with `Address already in use`. That includes restarts and crash recovery, and probably logins where Tailscale starts first.
 - **Check:** `tailscale serve status --json` should forward the tailnet port to the `port` in `host.json`.
 
 ## Install and restart
