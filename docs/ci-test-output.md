@@ -14,7 +14,7 @@ Swift Testing reports test events synchronously, in the same process as the test
 
 - Output (stdout and stderr together) goes to a private regular file, created with `mktemp` (owner-only), and is printed in full once the lane finishes.
 - Parallelism, test selection, assertions and deadlines are unchanged. There is no live progress while a lane runs.
-- A lane killed by a CI timeout or cancel prints no test output. That loses nothing: when its output is not a terminal, `swift test` writes test results only as it finishes, so a hanging lane showed only build lines in CI before this change too (checked with a hanging test through a pipe).
+- **Trade-off:** a lane killed by a CI timeout or cancel prints no test output, because its capture is never replayed and the runner is discarded. Streaming to the console used to show everything up to the last block `swift test` had flushed, which helps narrow down a hang. To diagnose a hang, run the lane locally, where the capture is kept and its path printed. Restoring hang output in CI is tracked in #264.
 
 **Failure contract:**
 
