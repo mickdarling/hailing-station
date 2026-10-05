@@ -50,6 +50,8 @@ class VerifyTestOutputTests(SuccessfulFixtureCleanup):
         self.env = dict(os.environ, PATH=f"{self.bin}:{os.environ['PATH']}",
                         TMPDIR=str(self.scratch), FAKE_SWIFT_STATUS="0",
                         FAKE_SWIFT_CALLS=str(self.scratch / "swift-calls"))
+        # CI sets this for the real lanes; the fixtures must capture into their own scratch (#264).
+        self.env.pop("HAIL_TEST_CAPTURE_DIR", None)
         self.script = Path(__file__).resolve().parents[1] / "verify.sh"
 
     def write_tool(self, name, source):
