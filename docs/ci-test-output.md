@@ -13,7 +13,8 @@ Swift Testing reports test events synchronously, in the same process as the test
 `scripts/verify.sh` runs both test lanes (parallel, and the serial timing lane from #208) through `run_captured`:
 
 - Output (stdout and stderr together) goes to a private regular file, created with `mktemp` (owner-only), and is printed in full once the lane finishes.
-- Parallelism, test selection, assertions and deadlines are unchanged. The only difference is that there is no live progress while a lane runs; the CI job timeout still bounds it.
+- Parallelism, test selection, assertions and deadlines are unchanged. There is no live progress while a lane runs.
+- A lane that is cancelled or hits the CI job timeout (INT or TERM) is stopped, and what it captured is printed before the script exits, so a hang still shows the last test that started.
 
 **Failure contract:**
 
@@ -32,7 +33,8 @@ Swift Testing reports test events synchronously, in the same process as the test
 - the exact failure status;
 - a printing failure;
 - a capture-creation failure;
-- an unwritable stderr.
+- an unwritable stderr;
+- an interrupted lane (its output is replayed and the lane is stopped).
 
 These tests fail against the direct-console version. Fixture scratch directories are removed only when a test passes, so a failure keeps them for diagnosis.
 
