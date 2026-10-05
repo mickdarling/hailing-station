@@ -1,6 +1,6 @@
 # Explicit library composition (#166)
 
-Source 0.1.60 joins the managed diagnostic adapter, owned publisher and owner-only local reply
+This change joins the managed diagnostic adapter, owned publisher and owner-only local reply
 endpoint in one explicit library lifetime. The daemon still has no diagnostic profile flag or
 automatic registration. Existing runtime, grants, target selections and installed apps are unchanged.
 This is not a Claude session bridge, deployment or controlled physical proof of #161.
@@ -43,13 +43,13 @@ two-device validation remain deferred; keep #166/#161 open.
 
 ## Independent review correction: endpoint cleanup ownership
 
-The finished unpublished 0.1.59 slice received a genuine independent REQUEST CHANGES. A never-started
+The first unpublished slice received a genuine independent REQUEST CHANGES. A never-started
 composition could stop its inherited endpoint, whose cleanup previously unlinked any same-owner socket
 at the configured path. Two lifetimes constructed before either started let the second remove the
 first's live socket; the first's utility remained registered/alive. Existing verifier passes were not
 proof against this gap.
 
-Version 0.1.60 records socket device/inode only on actual listener readiness, verifies it again after
+The endpoint now records socket device/inode only on actual listener readiness, verifies it again after
 permission hardening, and unlinks on stop only when that recorded identity, owner and socket type still
 match. Never-started or failed-bind lifetimes have no cleanup identity. Late readiness after stop cannot
 secure/claim a socket. A removed/replaced path is preserved, not repaired or automatically adopted.
