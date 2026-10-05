@@ -26,6 +26,18 @@ Create the config directory privately (`mkdir -m 700 ~/.config/hail`; the daemon
 - `hostID` is optional. Without it, the daemon and `haild reply` both use the Mac's LocalHostName as `<name>.local`. If you set it, the target sessions that run `haild reply` must use the same value through `HAIL_HOST_ID`.
 - Ambient paths must be absolute and exist, and `target` must be letters, digits and `._:-`. The daemon applies its own ownership, permission and guarded-word checks when ambient listening starts.
 
+## Remote access through Tailscale Serve
+
+Give `haild` its own loopback port, not the port Tailscale Serve exposes on the tailnet. Devices keep using the tailnet port, and Serve forwards it:
+
+```sh
+# host.json: "bind": "127.0.0.1", "port": 18765
+tailscale serve --bg --tcp 8765 tcp://localhost:18765
+```
+
+- **Why:** Network.framework will not listen on a port that any address on the Mac already holds (#262). Serve listens on the tailnet addresses, so if it uses the daemon's port, `haild` fails at every start with `Address already in use`. That includes restarts, crash recovery and logins.
+- **Check:** `tailscale serve status --json` should forward the tailnet port to the `port` in `host.json`.
+
 ## Install and restart
 
 ```sh
@@ -62,6 +74,7 @@ scripts/host.sh status    # staged release, running daemon, PATH haild, and prob
    Run `scripts/host.sh restart`.
 2. Read the refusal reason printed by `haild reply` (#85). For example, `sourceHostMismatch` means the host IDs differ (see `hostID` above), and `noRecipient` means no terminal is connected for that target.
 3. Check the end of `haild.err.log` for `session_connected` and `session_disconnected` events.
+4. `listener_failed` with `Address already in use` means another listener holds the daemon's port on some address, often Tailscale Serve. See [Remote access through Tailscale Serve](#remote-access-through-tailscale-serve).
 
 ## Rollback
 
