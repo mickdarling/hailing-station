@@ -33,11 +33,26 @@ TIMING_SUITES=(
 )
 TIMING_PATTERN="($(IFS='|'; echo "${TIMING_SUITES[*]}"))"
 
+# A slow console consumer must not stall test reporting while deadlines run (#185): output goes to a private file
+# and is replayed in full afterwards. A failed capture is kept, and neither failure masks the other.
+run_captured() {
+  local log status=0 report=0
+  log="$(mktemp "${TMPDIR:-/tmp}/hailing-swift-tests.XXXXXX")"
+  "$@" > "$log" 2>&1 || status=$?
+  cat "$log" || report=$?
+  if (( status || report )); then
+    printf 'Preserved Swift test output: %s\n' "$log" >&2 || :
+    (( status == 0 )) || return "$status"
+    return "$report"
+  fi
+  rm -f -- "$log"
+}
+
 test_() {
   echo "== test (parallel)"
-  swift test --parallel --skip "$TIMING_PATTERN" ${SWIFT_FLAGS[@]+"${SWIFT_FLAGS[@]}"}
+  run_captured swift test --parallel --skip "$TIMING_PATTERN" ${SWIFT_FLAGS[@]+"${SWIFT_FLAGS[@]}"}
   echo "== test (timing suites, serial, #208)"
-  swift test --no-parallel --filter "$TIMING_PATTERN" ${SWIFT_FLAGS[@]+"${SWIFT_FLAGS[@]}"}
+  run_captured swift test --no-parallel --filter "$TIMING_PATTERN" ${SWIFT_FLAGS[@]+"${SWIFT_FLAGS[@]}"}
 }
 
 lint()  { echo "== lint";  swiftlint lint --strict --quiet; }
@@ -67,6 +82,7 @@ scripts_() {
   scripts/tests/test-host.sh
   trace_tests
   python3 -m unittest discover -s Tests/LocalIntentEvalTests
+  python3 -m unittest scripts/tests/test_verify_test_output.py
   # `scripts` is also a standalone entry point; the CLI integration must not rely on `all` building first.
   swift build --product haild ${SWIFT_FLAGS[@]+"${SWIFT_FLAGS[@]}"}
   python3 -m unittest discover -s Tests/ReplyCLITests
