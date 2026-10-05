@@ -99,6 +99,16 @@ class VerifyTestOutputTests(SuccessfulFixtureCleanup):
         self.assertEqual(self.run_lane().returncode, 8)
         self.assertEqual(list(self.scratch.glob("hailing-swift-tests.*")), [])
 
+    def test_capture_directory_override_keeps_failed_captures_there(self):
+        captures = self.scratch / "ci" / "test-captures"
+        self.env["HAIL_TEST_CAPTURE_DIR"] = str(captures)
+        result = self.run_lane(7)
+        self.assertEqual(result.returncode, 7, result.stderr)
+        kept = list(captures.glob("hailing-swift-tests.*"))
+        self.assertEqual(len(kept), 1)
+        self.assertIn(str(kept[0]), result.stderr)
+        self.assertEqual(list(self.scratch.glob("hailing-swift-tests.*")), [])
+
     def test_unwritable_notification_stderr_cannot_mask_test_failure(self):
         self.env["FAKE_SWIFT_STATUS"] = "7"
         with open(os.devnull, "rb") as unwritable:

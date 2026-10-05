@@ -14,7 +14,7 @@ Swift Testing reports test events synchronously, in the same process as the test
 
 - Output (stdout and stderr together) goes to a private regular file, created with `mktemp` (owner-only), and is printed in full once the lane finishes.
 - Parallelism, test selection, assertions and deadlines are unchanged. There is no live progress while a lane runs.
-- **Trade-off:** a lane killed by a CI timeout or cancel prints no test output, because its capture is never replayed and the runner is discarded. Streaming to the console used to show everything up to the last block `swift test` had flushed, which helps narrow down a hang. To diagnose a hang, run the lane locally, where the capture is kept and its path printed. Restoring hang output in CI is tracked in #264.
+- **Hangs:** a lane killed by a timeout or cancel prints no test output to the log. In CI, `HAIL_TEST_CAPTURE_DIR` puts the captures in a directory that the `test-captures` artifact uploads even when the job fails, times out or is cancelled (#264). The Verify step times out (25 minutes) before the job (30), so the upload still runs. A hung lane's capture holds everything `swift test` had flushed, usually up to the last test that started. Locally, the capture is kept in `$TMPDIR/hailing-swift-tests.*` (its path is printed when the lane exits).
 
 **Failure contract:**
 
