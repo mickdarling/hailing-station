@@ -2,18 +2,13 @@
 import os
 from pathlib import Path
 import shutil
-import signal
 import subprocess
 import sys
 import tempfile
-import time
 import unittest
 
 
-SWIFT = r'''import os, signal, stat, sys
-if signal.getsignal(signal.SIGINT) == signal.SIG_IGN:
-    print("the lane inherited an ignored SIGINT", file=sys.stderr)
-    sys.exit(96)
+SWIFT = r'''import os, stat, sys
 lane = sys.argv[2:4]
 assert sys.argv[1] == "test" and lane[0] in ("--parallel", "--no-parallel"), sys.argv
 assert lane[1] == ("--skip" if lane[0] == "--parallel" else "--filter"), sys.argv
@@ -27,12 +22,6 @@ if not stat.S_ISREG(mode) or mode & 0o077:
 print("fixture stdout")
 print("fixture stderr", file=sys.stderr)
 print("x" * 65536)
-if os.environ.get("FAKE_SWIFT_HANG"):
-    sys.stdout.flush()
-    with open(os.environ["FAKE_SWIFT_HANG"], "w") as hung:
-        hung.write(str(os.getpid()))
-    import time
-    time.sleep(60)
 sys.exit(int(os.environ["FAKE_SWIFT_STATUS"]))
 '''
 
@@ -109,26 +98,6 @@ class VerifyTestOutputTests(SuccessfulFixtureCleanup):
         self.write_tool("mktemp", "import sys; sys.exit(8)")
         self.assertEqual(self.run_lane().returncode, 8)
         self.assertEqual(list(self.scratch.glob("hailing-swift-tests.*")), [])
-
-    def test_interrupted_lane_replays_its_capture_and_stops_the_lane(self):
-        hung = self.scratch / "hung-pid"
-        self.env["FAKE_SWIFT_HANG"] = str(hung)
-        lane = subprocess.Popen(["bash", str(self.script), "test"], env=self.env,
-                                stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True)
-        deadline = time.monotonic() + 20
-        while not (hung.exists() and hung.read_text()) and time.monotonic() < deadline:
-            time.sleep(0.05)
-        self.assertTrue(hung.exists(), "the lane never started")
-        lane.send_signal(signal.SIGTERM)
-        stdout, stderr = lane.communicate(timeout=20)
-        self.assertEqual(lane.returncode, 143, stderr)
-        self.assertIn("fixture stdout\n", stdout)
-        self.assertIn("Preserved interrupted Swift test output", stderr)
-        self.assertEqual(len(list(self.scratch.glob("hailing-swift-tests.*"))), 1)
-        with self.assertRaises(ProcessLookupError):
-            for _ in range(100):
-                os.kill(int(hung.read_text()), 0)
-                time.sleep(0.05)
 
     def test_unwritable_notification_stderr_cannot_mask_test_failure(self):
         self.env["FAKE_SWIFT_STATUS"] = "7"

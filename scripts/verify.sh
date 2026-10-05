@@ -35,27 +35,10 @@ TIMING_PATTERN="($(IFS='|'; echo "${TIMING_SUITES[*]}"))"
 
 # A slow console consumer must not stall test reporting while deadlines run (#185): output goes to a private file
 # and is replayed in full afterwards. A failed capture is kept, and neither failure masks the other.
-replay_interrupted() {
-  kill "$1" 2>/dev/null || :
-  cat "$2" || :
-  printf 'Preserved interrupted Swift test output: %s\n' "$2" >&2 || :
-  exit "$3"
-}
-
 run_captured() {
-  local log pid status=0 report=0
+  local log status=0 report=0
   log="$(mktemp "${TMPDIR:-/tmp}/hailing-swift-tests.XXXXXX")"
-  # A cancelled or timed-out lane still shows what it printed. The lane runs in the background because a signal
-  # interrupts `wait` but not a foreground command, so the trap can stop the lane and replay its capture. Background
-  # jobs of a non-interactive shell ignore SIGINT, and children inherit that, so tests that stop a child with SIGINT
-  # would hang: perl restores the default handling before running the lane.
-  perl -e '$SIG{INT} = $SIG{QUIT} = "DEFAULT"; exec { $ARGV[0] } @ARGV or die "exec $ARGV[0]: $!\n"' "$@" \
-    > "$log" 2>&1 &
-  pid=$!
-  trap 'replay_interrupted "$pid" "$log" 130' INT
-  trap 'replay_interrupted "$pid" "$log" 143' TERM
-  wait "$pid" || status=$?
-  trap - INT TERM
+  "$@" > "$log" 2>&1 || status=$?
   cat "$log" || report=$?
   if (( status || report )); then
     printf 'Preserved Swift test output: %s\n' "$log" >&2 || :
