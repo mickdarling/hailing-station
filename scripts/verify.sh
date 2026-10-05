@@ -36,8 +36,10 @@ TIMING_PATTERN="($(IFS='|'; echo "${TIMING_SUITES[*]}"))"
 # A slow console consumer must not stall test reporting while deadlines run (#185): output goes to a private file
 # and is replayed in full afterwards. A failed capture is kept, and neither failure masks the other.
 run_captured() {
-  local log status=0 report=0
-  log="$(mktemp "${TMPDIR:-/tmp}/hailing-swift-tests.XXXXXX")"
+  local log status=0 report=0 dir="${HAIL_TEST_CAPTURE_DIR:-${TMPDIR:-/tmp}}"
+  # CI points HAIL_TEST_CAPTURE_DIR at a directory it uploads even when the job fails or times out (#264).
+  mkdir -p "$dir"
+  log="$(mktemp "$dir/hailing-swift-tests.XXXXXX")"
   "$@" > "$log" 2>&1 || status=$?
   cat "$log" || report=$?
   if (( status || report )); then

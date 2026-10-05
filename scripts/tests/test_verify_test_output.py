@@ -50,6 +50,8 @@ class VerifyTestOutputTests(SuccessfulFixtureCleanup):
         self.env = dict(os.environ, PATH=f"{self.bin}:{os.environ['PATH']}",
                         TMPDIR=str(self.scratch), FAKE_SWIFT_STATUS="0",
                         FAKE_SWIFT_CALLS=str(self.scratch / "swift-calls"))
+        # CI sets this for the real lanes; the fixtures must capture into their own scratch (#264).
+        self.env.pop("HAIL_TEST_CAPTURE_DIR", None)
         self.script = Path(__file__).resolve().parents[1] / "verify.sh"
 
     def write_tool(self, name, source):
@@ -97,6 +99,16 @@ class VerifyTestOutputTests(SuccessfulFixtureCleanup):
     def test_capture_creation_failure_does_not_run_tests(self):
         self.write_tool("mktemp", "import sys; sys.exit(8)")
         self.assertEqual(self.run_lane().returncode, 8)
+        self.assertEqual(list(self.scratch.glob("hailing-swift-tests.*")), [])
+
+    def test_capture_directory_override_keeps_failed_captures_there(self):
+        captures = self.scratch / "ci" / "test-captures"
+        self.env["HAIL_TEST_CAPTURE_DIR"] = str(captures)
+        result = self.run_lane(7)
+        self.assertEqual(result.returncode, 7, result.stderr)
+        kept = list(captures.glob("hailing-swift-tests.*"))
+        self.assertEqual(len(kept), 1)
+        self.assertIn(str(kept[0]), result.stderr)
         self.assertEqual(list(self.scratch.glob("hailing-swift-tests.*")), [])
 
     def test_unwritable_notification_stderr_cannot_mask_test_failure(self):

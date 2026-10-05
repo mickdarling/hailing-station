@@ -34,7 +34,20 @@ jobs:
           key: spm-${{ runner.os }}-${{ hashFiles('Package.swift', 'Package.resolved') }}
           restore-keys: spm-${{ runner.os }}-
       - name: Verify
+        # Test output is captured until each lane ends (#185). The step times out before the job, so the upload
+        # below still runs and a hung lane's capture shows the last test that started (#264).
+        timeout-minutes: 25
+        env:
+          HAIL_TEST_CAPTURE_DIR: ${{ runner.temp }}/test-captures
         run: scripts/verify.sh all
+      - name: Upload test captures
+        if: always()
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: test-captures
+          path: ${{ runner.temp }}/test-captures
+          if-no-files-found: ignore
+          retention-days: 7
 
   simulator:
     name: simulator
