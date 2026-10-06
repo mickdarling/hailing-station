@@ -58,5 +58,8 @@ import Testing
         #expect(calm.healthy && calm.checks.last?.detail == "none in 15 min, 1 in the last hour")
         #expect(HealthReport.evaluate(cli: cli, daemon: daemon, isRunning: { _ in true })
             .checks.allSatisfy { $0.name != "recent_refusals" })
+        let broken = HealthReport.evaluate(cli: cli, daemon: daemon, auditUnreadable: true, isRunning: { _ in true })
+        #expect(!broken.healthy && broken.checks.last?.name == "audit_history")
+        #expect(broken.checks.last?.fix?.contains("haild audit verify") == true)
     }
 }

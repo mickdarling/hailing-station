@@ -3,10 +3,19 @@ import HailDaemonKit
 
 /// `haild status --json` and `haild doctor` (#247): the running daemon's snapshot compared with this CLI.
 func healthReport() -> HealthReport {
-    HealthReport.evaluate(
+    var refusals: RefusalSummary?
+    var auditUnreadable = false
+    do {
+        refusals = try RefusalSummary.read(from: AuditHistory.standard())
+    } catch AuditHistoryError.noHistory {
+        refusals = nil
+    } catch {
+        auditUnreadable = true
+    }
+    return HealthReport.evaluate(
         cli: .init(version: DaemonInfo.version, build: BuildIdentity.current(), hostID: try? HostIdentity.resolve()),
         daemon: DaemonStatus.read(from: DaemonStatus.standardFile()),
-        refusals: try? RefusalSummary.read(from: AuditHistory.standard())
+        refusals: refusals, auditUnreadable: auditUnreadable
     )
 }
 

@@ -66,7 +66,7 @@ public struct HealthReport: Codable, Sendable, Equatable {
 
     /// `isRunning` answers whether a pid is a live process; tests inject it.
     public static func evaluate(
-        cli: CLI, daemon: DaemonStatus?, refusals: RefusalSummary? = nil,
+        cli: CLI, daemon: DaemonStatus?, refusals: RefusalSummary? = nil, auditUnreadable: Bool = false,
         isRunning: (Int32) -> Bool = processIsRunning
     ) -> HealthReport {
         let restart = "run scripts/host.sh restart, then haild doctor again"
@@ -105,6 +105,11 @@ public struct HealthReport: Codable, Sendable, Equatable {
             : .fail("device_connected", "no device connected",
                     fix: "open Hailing Station on the iPhone or iPad and connect to this host"))
         if let refusals { checks.append(refusalCheck(refusals)) }
+        // A history that exists but does not verify must not silently drop the refusal counts.
+        if auditUnreadable {
+            checks.append(.fail("audit_history", "the audit history could not be read or verified",
+                                fix: "run haild audit verify for the cause; refusal counts are unavailable until then"))
+        }
         return .init(cli: cli, daemon: daemon, refusals: refusals, checks: checks)
     }
 
