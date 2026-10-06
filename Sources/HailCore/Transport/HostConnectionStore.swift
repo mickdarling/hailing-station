@@ -259,10 +259,12 @@ public struct AmbientAudioBinding: Hashable, Sendable {
 /// Scene state as the ambient toggle needs it; the app maps SwiftUI's `ScenePhase` onto it.
 public enum AmbientScene: Sendable { case active, inactive, background }
 
-/// The "Ambient listening" toggle (#203). Off on every launch and never restarts by itself: a binding change
-/// (target, reconnect), a send failure or the microphone ending turns it off, and the user must turn it on again.
-/// Once streaming, it keeps running when the app leaves the foreground (#282); it only starts in the foreground.
-/// Audio is never logged; `stopReason` carries only the cause.
+/// The "Ambient listening" toggle (#203). Off on every launch: a binding change (target, reconnect), a send
+/// failure or the microphone ending turns it off, and the user must turn it on again. The one exception (#287):
+/// when the host ends the stream for a transient reason (idle, its listener exiting), the microphone keeps running
+/// and a fresh stream starts after a backoff, a few times at most. Once streaming, it keeps running when the app
+/// leaves the foreground (#282); it only starts in the foreground. Audio is never logged; `stopReason` carries
+/// only the cause.
 @MainActor
 @Observable
 public final class AmbientListeningController {
@@ -280,6 +282,8 @@ public final class AmbientListeningController {
     /// Told whenever `isListening` changes, without a view update, so state that must hold in the background
     /// (the kept destination authorization, #282) follows it there too.
     @ObservationIgnored public var onListeningChange: (@MainActor (Bool) -> Void)?
+    /// Told the reason whenever listening stops without the user turning it off, so the app can notify (#287).
+    @ObservationIgnored public var onUnexpectedStop: (@MainActor (String) -> Void)?
     public private(set) var stopReason: String?
     public private(set) var binding: AmbientAudioBinding?
 
@@ -305,6 +309,13 @@ public final class AmbientListeningController {
     @ObservationIgnored private let notificationCenter: NotificationCenter
     /// Watches for capture ended by the system, so the toggle drops before queued audio finishes draining.
     @ObservationIgnored private var systemEndObserver: (any NSObjectProtocol)?
+    @ObservationIgnored private let sleep: @Sendable (Duration) async throws -> Void
+    @ObservationIgnored private let now: @Sendable () -> ContinuousClock.Instant
+    /// Fresh streams started this session since the last quiet spell, and when the latest began (#287).
+    @ObservationIgnored private var recoveries = 0
+    @ObservationIgnored private var lastRecovery: ContinuousClock.Instant?
+    /// The backoff in progress; ending the session cancels it so turning off never waits on it.
+    @ObservationIgnored private var recoveryWait: Task<Void, any Error>?
 
     /// `notificationCenter` is where capture posts `AVAudioEngineCapture.endedBySystem`.
     public init(
@@ -312,9 +323,13 @@ public final class AmbientListeningController {
         requestPermission: @escaping @MainActor () async -> Bool,
         makeStreamer: @escaping MakeStreamer,
         releaseSession: @escaping @MainActor () async -> Void,
+        sleep: @escaping @Sendable (Duration) async throws -> Void = { try await Task.sleep(for: $0) },
+        now: @escaping @Sendable () -> ContinuousClock.Instant = { ContinuousClock().now },
         send: @escaping Send
     ) {
         self.notificationCenter = notificationCenter
+        self.sleep = sleep
+        self.now = now
         self.requestPermission = requestPermission
         self.makeStreamer = makeStreamer
         self.releaseSession = releaseSession
@@ -329,6 +344,8 @@ public final class AmbientListeningController {
         stopReason = nil
         sendFailure = nil
         sendFailureCause = nil
+        recoveries = 0
+        lastRecovery = nil
         self.binding = binding
         // The permission alert makes the scene inactive, so only leaving for the background cancels here.
         awaitingPermission = true
@@ -391,6 +408,7 @@ public final class AmbientListeningController {
                 await release(current)
                 return await end(current, reason: "Stopped: Hailing Station left the foreground.", cause: "background")
             }
+            streamer.recovery = { [weak self] error in await self?.recover(from: error, session: current) ?? false }
             try streamer.start()
             self.streamer = streamer
             isListening = true
@@ -403,6 +421,33 @@ public final class AmbientListeningController {
         }
     }
 
+    private func end(_ current: UUID, reason: String?, cause: String, code: String? = nil) async {
+        guard session == current, isOn else { return }
+        var fields: [DiagnosticField: DiagnosticValue] = [.reason: .token(cause)]
+        if let code { fields[.code] = .token(code) }
+        diagnostics?.record(.ambientStop, fields)
+        session = UUID()
+        isOn = false
+        isListening = false
+        pendingStart = false
+        awaitingPermission = false
+        stopReason = reason
+        binding = nil
+        recoveryWait?.cancel()
+        recoveryWait = nil
+        if cause != "user", let reason { onUnexpectedStop?(reason) }
+        if let systemEndObserver {
+            notificationCenter.removeObserver(systemEndObserver)
+            self.systemEndObserver = nil
+        }
+        guard let streamer else { return }
+        self.streamer = nil
+        await streamer.stop()
+        await release(current)
+    }
+}
+
+extension AmbientListeningController {
     private func watch(_ streamer: AmbientAudioStreamer, session current: UUID) {
         let streaming = withObservationTracking { streamer.isStreaming } onChange: { [weak self] in
             Task { @MainActor in self?.watch(streamer, session: current) }
@@ -421,30 +466,6 @@ public final class AmbientListeningController {
         if let code = sendFailureCause?.code { diagnostics?.record(.hostRefusal, [.code: .token(code)]) }
     }
 
-    private func end(_ current: UUID, reason: String?, cause: String, code: String? = nil) async {
-        guard session == current, isOn else { return }
-        var fields: [DiagnosticField: DiagnosticValue] = [.reason: .token(cause)]
-        if let code { fields[.code] = .token(code) }
-        diagnostics?.record(.ambientStop, fields)
-        session = UUID()
-        isOn = false
-        isListening = false
-        pendingStart = false
-        awaitingPermission = false
-        stopReason = reason
-        binding = nil
-        if let systemEndObserver {
-            notificationCenter.removeObserver(systemEndObserver)
-            self.systemEndObserver = nil
-        }
-        guard let streamer else { return }
-        self.streamer = nil
-        await streamer.stop()
-        await release(current)
-    }
-}
-
-extension AmbientListeningController {
     /// Releases the audio session for `owner` unless a newer session has begun activating it since.
     private func release(_ owner: UUID) async {
         guard activation == owner else { return }
@@ -484,5 +505,46 @@ extension AmbientListeningController {
         case HostConnectionFailure.malformed(let message): "\(message)."
         default: error.localizedDescription
         }
+    }
+}
+
+/// Recovering from a host-ended stream (#287).
+extension AmbientListeningController {
+    /// Waits before each fresh stream; their count is the cap.
+    static let recoveryBackoff: [Duration] = [.seconds(1), .seconds(3), .seconds(10)]
+    /// Streaming this long since the last recovery earns a full set of retries again.
+    static let recoveryQuietPeriod: Duration = .seconds(120)
+
+    /// True after the backoff when the failure is transient and retries remain: the streamer then opens a new
+    /// stream at sequence 0 on the same capture. False lets the failure end listening as before.
+    func recover(from error: any Error, session current: UUID) async -> Bool {
+        guard session == current, isOn, Self.isTransient(error) else { return false }
+        if let lastRecovery, now() - lastRecovery >= Self.recoveryQuietPeriod { recoveries = 0 }
+        guard recoveries < Self.recoveryBackoff.count else {
+            sendFailure = sendFailure.map { "\($0) Gave up after \(recoveries) restarts." }
+            return false
+        }
+        let sleep = sleep
+        let delay = Self.recoveryBackoff[recoveries]
+        recoveries += 1
+        let wait = Task { try await sleep(delay) }
+        recoveryWait = wait
+        guard (try? await wait.value) != nil, session == current, isOn else { return false }
+        recoveryWait = nil
+        lastRecovery = now()
+        sendFailure = nil
+        sendFailureCause = nil
+        diagnostics?.record(.ambientStart)
+        return true
+    }
+
+    /// The host ended our stream but will take a new one: it idled out, its listener exited, or it refused audio
+    /// on a stream it had already ended. A busy host, an unselected target or a host without ambient is final.
+    static func isTransient(_ error: any Error) -> Bool {
+        guard case HostConnectionFailure.remote(let message) = error else { return false }
+        return [
+            "malformed: ambient stream must be new", "malformed: ambient sequence must increase",
+            "not_allowed: ambient stopped:", "rate_limited: ambient rate exceeded"
+        ].contains { message.hasPrefix($0) }
     }
 }
