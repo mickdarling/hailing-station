@@ -75,7 +75,7 @@ scripts/host.sh status    # staged release, running daemon, PATH haild, and prob
 - `listener_ready`: the listener is up, and on which address. A port held elsewhere points to the Tailscale Serve section above.
 - `device_connected`: at least one phone or tablet is connected.
 
-The daemon keeps the snapshot in `~/.config/hail/status.json` (owner-only). It holds no transcript, peer address or device identifier, so the output is safe to paste.
+The daemon keeps the snapshot in `~/.config/hail/status.json` (owner-only). It holds no transcript, peer address or device identifier. With the default loopback `bind`, the output is safe to paste; with any other `bind`, the listener line shows that address.
 
 ## When replies stop arriving
 

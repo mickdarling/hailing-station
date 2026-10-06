@@ -40,8 +40,11 @@ public struct DaemonStatus: Codable, Sendable, Equatable {
     }
 }
 
-/// Keeps `DaemonStatus` current from the daemon's own events and rewrites the file on every change. A write
-/// failure never reaches the caller: the daemon keeps serving, and `doctor` reports a stale snapshot.
+/// Keeps `DaemonStatus` current from the daemon's own events and rewrites the file on every change, under the
+/// lock so concurrent events never leave an older snapshot behind. A write failure never reaches the caller:
+/// the daemon keeps serving, and `doctor` reports a stale snapshot. A snapshot that belongs to another live
+/// daemon is left alone, so a second `haild run` (a duplicate launch, a crash-looping job) that fails to bind
+/// cannot make `doctor` report the serving daemon as dead.
 public final class DaemonStatusRecorder: Sendable {
     private struct State {
         var status: DaemonStatus
@@ -50,26 +53,29 @@ public final class DaemonStatusRecorder: Sendable {
 
     private let file: URL
     private let now: @Sendable () -> Date
+    private let isRunning: @Sendable (Int32) -> Bool
     private let state: Mutex<State>
 
     public init(
         file: URL, hostID: String, build: String?,
         pid: Int32 = ProcessInfo.processInfo.processIdentifier,
-        now: @escaping @Sendable () -> Date = Date.init
+        now: @escaping @Sendable () -> Date = Date.init,
+        isRunning: @escaping @Sendable (Int32) -> Bool = HealthReport.processIsRunning
     ) {
         self.file = file
         self.now = now
+        self.isRunning = isRunning
         let started = now()
         state = Mutex(State(status: DaemonStatus(
             schema: DaemonStatus.currentSchema, version: DaemonInfo.version, build: build, pid: pid,
             startedAt: started, updatedAt: started, hostID: hostID,
             listener: .init(state: "starting"), connectedSessions: 0
         )))
-        write(state.withLock { $0.status })
+        state.withLock { write($0.status) }
     }
 
     public func observe(_ event: WebSocketListenerEvent) {
-        let changed: DaemonStatus? = state.withLock { state in
+        state.withLock { state in
             switch event.event {
             case "listener_ready": state.status.listener = .init(state: "ready", endpoint: event.endpoint)
             case "listener_waiting": state.status.listener = .init(state: "waiting", detail: event.detail)
@@ -78,22 +84,23 @@ public final class DaemonStatusRecorder: Sendable {
                 state.status.listener = .init(state: "stopped", detail: event.detail)
                 state.sessions.removeAll()
             case "session_connected":
-                guard let id = event.sessionID else { return nil }
+                guard let id = event.sessionID else { return }
                 state.sessions.insert(id)
             case "session_disconnected":
-                guard let id = event.sessionID else { return nil }
+                guard let id = event.sessionID else { return }
                 state.sessions.remove(id)
-            default: return nil
+            default: return
             }
             state.status.connectedSessions = state.sessions.count
             state.status.updatedAt = now()
-            return state.status
+            write(state.status)
         }
-        if let changed { write(changed) }
     }
 
     /// Owner-only, and atomic: a reader sees the old snapshot or the new one, never a partial file.
     private func write(_ status: DaemonStatus) {
+        if let current = DaemonStatus.read(from: file), current.pid != status.pid,
+           current.listener.state != "stopped", isRunning(current.pid) { return }
         guard let data = try? JSONEncoder.hailStatus.encode(status) else { return }
         let temporary = file.deletingLastPathComponent()
             .appendingPathComponent(".\(file.lastPathComponent).\(UUID().uuidString)")

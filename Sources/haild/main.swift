@@ -335,11 +335,13 @@ do {
     case "diagnostics": try diagnostics(arguments.dropFirst())
     case "run":
         let hostName = try HostIdentity.resolve()
+        // After the policy load, which refuses a config directory that is not private.
+        let host = try await makeHost()
         let recorder = DaemonStatusRecorder(
             file: DaemonStatus.standardFile(), hostID: hostName, build: BuildIdentity.current()
         )
         try await ConnectionProbeDaemon.run(
-            host: try await makeHost(), arguments: Array(arguments.dropFirst()), hostName: hostName,
+            host: host, arguments: Array(arguments.dropFirst()), hostName: hostName,
             log: { event in
                 logNetworkEvent(event)
                 recorder.observe(event)

@@ -3,7 +3,7 @@ import Testing
 @testable import HailDaemonKit
 
 /// The daemon's status snapshot (#247): kept current from its own events, owner-only and replaced atomically.
-@Suite struct DaemonStatusRecorderTests {
+@Suite final class DaemonStatusRecorderTests {
     private let directory: URL
 
     init() throws {
@@ -12,11 +12,52 @@ import Testing
         try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
     }
 
+    deinit { try? FileManager.default.removeItem(at: directory) }
+
     private var file: URL { directory.appendingPathComponent("status.json") }
 
-    private func recorder() -> DaemonStatusRecorder {
-        DaemonStatusRecorder(file: file, hostID: "themachine.local", build: "aaaaaaaaaaaaaaaa", pid: 4242,
-                             now: { Date(timeIntervalSince1970: 1_000) })
+    private func recorder(
+        pid: Int32 = 4242, running: @escaping @Sendable (Int32) -> Bool = { _ in true }
+    ) -> DaemonStatusRecorder {
+        DaemonStatusRecorder(file: file, hostID: "themachine.local", build: "aaaaaaaaaaaaaaaa", pid: pid,
+                             now: { Date(timeIntervalSince1970: 1_000) }, isRunning: running)
+    }
+
+    @Test func aSecondInstanceLeavesALiveDaemonsSnapshotAlone() throws {
+        recorder().observe(.init(event: "listener_ready", endpoint: "127.0.0.1:18765"))
+        let second = recorder(pid: 5555, running: { $0 == 4242 })
+        second.observe(.init(event: "listener_failed", detail: "Address already in use"))
+        second.observe(.init(event: "listener_stopped", detail: "listener failed"))
+        let status = try #require(DaemonStatus.read(from: file))
+        #expect(status.pid == 4242 && status.listener.state == "ready")
+    }
+
+    @Test func aDeadOrStoppedDaemonsSnapshotIsReplaced() throws {
+        recorder().observe(.init(event: "listener_ready", endpoint: "127.0.0.1:18765"))
+        // The previous daemon's process is gone.
+        let next = recorder(pid: 5555, running: { $0 == 5555 })
+        #expect(try #require(DaemonStatus.read(from: file)).pid == 5555)
+        // The previous daemon stopped cleanly, even if its pid is reused.
+        next.observe(.init(event: "listener_stopped", detail: "SIGTERM"))
+        _ = recorder(pid: 6666)
+        #expect(try #require(DaemonStatus.read(from: file)).pid == 6666)
+    }
+
+    @Test func concurrentEventsLeaveTheLatestSnapshot() async throws {
+        let recorder = recorder()
+        await withTaskGroup(of: Void.self) { group in
+            for _ in 0..<64 {
+                group.addTask { recorder.observe(.init(event: "session_connected", sessionID: UUID())) }
+            }
+        }
+        #expect(try #require(DaemonStatus.read(from: file)).connectedSessions == 64)
+    }
+
+    @Test func aMissingDirectoryIsNotAnError() {
+        let missing = directory.appendingPathComponent("absent/status.json")
+        let recorder = DaemonStatusRecorder(file: missing, hostID: "themachine.local", build: nil, pid: 1)
+        recorder.observe(.init(event: "listener_ready", endpoint: "127.0.0.1:18765"))
+        #expect(DaemonStatus.read(from: missing) == nil)
     }
 
     @Test func construction_writesAnOwnerOnlyStartingSnapshot() throws {
