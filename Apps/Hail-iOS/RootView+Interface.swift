@@ -2,53 +2,6 @@ import HailCore
 import SwiftUI
 
 extension RootView {
-    var content: some View {
-        resetStationStateForUITestingIfRequested()
-        return ScrollView {
-            VStack(spacing: 18) {
-                StationHeader(connection: connectionPresentation) {
-                    destinationMenu
-                }
-                adaptiveContent
-            }
-            .frame(maxWidth: 1_120)
-            .padding(.horizontal, horizontalSizeClass == .regular ? 28 : 16)
-            .padding(.vertical, 16)
-        }
-        .scrollDismissesKeyboard(.interactively)
-        .background(Color(uiColor: .systemGroupedBackground))
-        .safeAreaInset(edge: .bottom, spacing: 0) {
-            StationBuildFooter()
-        }
-        .onAppear { CapturePlaybackSuppression.releaseCompleted(using: playback) }
-        .onChange(of: scenePhase) { _, phase in
-            if phase == .active { CapturePlaybackSuppression.releaseCompleted(using: playback) }
-        }
-    }
-
-    var adaptiveContent: some View {
-        let layout = horizontalSizeClass == .regular
-            ? AnyLayout(HStackLayout(alignment: .top, spacing: 18))
-            : AnyLayout(VStackLayout(spacing: 18))
-        return layout {
-            VStack(spacing: 18) {
-                conversationSurface
-                ambientListeningSurface
-                if let reply = playback.latest {
-                    ReplyPlaybackView(reply: reply, playback: playback)
-                }
-            }
-            .frame(maxWidth: .infinity, alignment: .top)
-
-            VStack(spacing: 18) {
-                AudioRouteSummaryView(model: audioRoutes)
-                stationTools
-                DiagnosticsLoggingCard(diagnostics: diagnostics, collectingHost: connections.diagnosticsCollectingHost)
-            }
-            .frame(maxWidth: horizontalSizeClass == .regular ? 360 : .infinity, alignment: .top)
-        }
-    }
-
     @ViewBuilder
     var conversationSurface: some View {
         if let destination {
@@ -188,7 +141,7 @@ extension RootView {
     }
 
     @MainActor
-    private func resetStationStateForUITestingIfRequested() {
+    func resetStationStateForUITestingIfRequested() {
         guard ProcessInfo.processInfo.arguments.contains("-reset-station-state"),
               !StationUITestReset.didRun else { return }
         StationUITestReset.didRun = true
