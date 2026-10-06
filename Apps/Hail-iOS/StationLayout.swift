@@ -33,7 +33,7 @@ extension RootView {
             .scrollBounceBehavior(.basedOnSize)
             .scrollDismissesKeyboard(.interactively)
         }
-        .toolbar(horizontalSizeClass == .regular ? .hidden : .automatic, for: .navigationBar)
+        .toolbar(UIDevice.current.userInterfaceIdiom == .pad ? .hidden : .automatic, for: .navigationBar)
         .background(Color(uiColor: .systemGroupedBackground))
         .safeAreaInset(edge: .bottom, spacing: 0) {
             StationBuildFooter()
@@ -44,8 +44,11 @@ extension RootView {
         }
     }
 
+    /// Only an iPad with room for the conversation and side columns fits one screen. A large iPhone in landscape
+    /// is regular width too, and a short Stage Manager window may be too low; both keep scrolling.
     func stationFit(in size: CGSize) -> StationFit {
-        let fits = horizontalSizeClass == .regular && !dynamicTypeSize.isAccessibilitySize
+        let fits = UIDevice.current.userInterfaceIdiom == .pad && horizontalSizeClass == .regular
+            && !dynamicTypeSize.isAccessibilitySize && size.height >= 600
         return StationFit(fitsOneScreen: fits, isWide: fits && size.width >= 1_100, height: fits ? size.height : nil)
     }
 
@@ -71,16 +74,27 @@ extension RootView {
                 }
                 .fixedSize(horizontal: false, vertical: true)
                 .frame(maxWidth: regular ? (fit.isWide ? 340 : 360) : .infinity, alignment: .top)
-                VStack(spacing: 18) {
-                    AudioRouteSummaryView(model: audioRoutes)
-                    stationTools
-                    DiagnosticsLoggingCard(
-                        diagnostics: diagnostics, collectingHost: connections.diagnosticsCollectingHost
-                    )
+                Group {
+                    // Secondary on the one-screen iPad (#288): when a smaller iPad runs out of height, only this
+                    // column scrolls; the conversation, listening and reply never move.
+                    if fit.fitsOneScreen {
+                        ScrollView { secondaryColumn }
+                            .scrollBounceBehavior(.basedOnSize)
+                    } else {
+                        secondaryColumn
+                    }
                 }
-                .fixedSize(horizontal: false, vertical: true)
                 .frame(maxWidth: regular ? (fit.isWide ? 300 : 360) : .infinity, alignment: .top)
             }
+        }
+    }
+
+    /// Audio route, station tools and diagnostics.
+    var secondaryColumn: some View {
+        VStack(spacing: 18) {
+            AudioRouteSummaryView(model: audioRoutes)
+            stationTools
+            DiagnosticsLoggingCard(diagnostics: diagnostics, collectingHost: connections.diagnosticsCollectingHost)
         }
     }
 }
