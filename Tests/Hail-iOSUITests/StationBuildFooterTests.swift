@@ -39,7 +39,7 @@ final class StationBuildFooterTests: XCTestCase {
         app.launchArguments.append("-reset-station-state")
         app.launch()
         let label = try assertFooter(in: app)
-        XCTAssertTrue(app.staticTexts["Connect Haley to a Mac"].exists)
+        XCTAssertTrue(app.staticTexts["Connect Haili to a Mac"].exists)
         app.scrollViews.firstMatch.swipeUp()
         let setup = app.buttons["station.mac-setup-tool"]
         XCTAssertTrue(setup.waitForExistence(timeout: 5))

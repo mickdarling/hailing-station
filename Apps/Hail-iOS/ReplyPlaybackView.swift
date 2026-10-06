@@ -10,10 +10,11 @@ struct ReplyPlaybackView: View {
     var body: some View {
         GroupBox {
             VStack(alignment: .leading, spacing: 12) {
-                Text(displayedReply.transcript ?? "Receiving spoken reply…")
-                    .frame(maxWidth: .infinity, alignment: .leading)
-                    .foregroundStyle(displayedReply.transcript == nil ? .secondary : .primary)
-                    .textSelection(.enabled)
+                // A long reply scrolls inside the card, so the one-screen iPad station never overflows (#288).
+                ViewThatFits(in: .vertical) {
+                    transcript
+                    ScrollView { transcript }
+                }
 
                 HStack {
                     Label(playback.statusForControls, systemImage: playbackStatusImage)
@@ -33,10 +34,17 @@ struct ReplyPlaybackView: View {
                 .buttonStyle(.bordered)
             }
         } label: {
-            Label("Haley replied", systemImage: "bubble.left.and.waveform.fill")
+            Label("Haili replied", systemImage: "bubble.left.and.waveform.fill")
                 .font(.headline)
         }
         .accessibilityElement(children: .contain)
+    }
+
+    private var transcript: some View {
+        Text(displayedReply.transcript ?? "Receiving spoken reply…")
+            .frame(maxWidth: .infinity, alignment: .leading)
+            .foregroundStyle(displayedReply.transcript == nil ? .secondary : .primary)
+            .textSelection(.enabled)
     }
 
     @ViewBuilder

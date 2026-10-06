@@ -57,7 +57,7 @@ The proposed provider-neutral capture, session-event, and speech pipeline is des
 
 ## Naming
 
-**Hailing Station** is the project and application. **Haley** is the default persona presented by the interface; persona names and behavior are intended to be configurable and are not part of the transport protocol.
+**Hailing Station** is the project and application. **Haili** is the default persona presented by the interface; persona names and behavior are intended to be configurable and are not part of the transport protocol.
 
 The Swift package and module names currently retain the shorter `Hail` prefix. They are implementation identifiers, not a separate product.
 
