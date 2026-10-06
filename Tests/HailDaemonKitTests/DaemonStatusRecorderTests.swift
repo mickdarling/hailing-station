@@ -53,6 +53,44 @@ import Testing
         #expect(try #require(DaemonStatus.read(from: file)).connectedSessions == 64)
     }
 
+    @Test func ambientEventsAreTrackedWithoutText() throws {
+        let recorder = DaemonStatusRecorder(file: file, hostID: "themachine.local", build: nil, ambientEnabled: true,
+                                            pid: 4242, now: { Date(timeIntervalSince1970: 2_000) })
+        #expect(try #require(DaemonStatus.read(from: file)).ambient == .init(enabled: true))
+        recorder.observe(.init(event: "ambient_started"))
+        recorder.observe(.init(event: "ambient_started"))
+        recorder.observe(.init(event: "ambient_ended", detail: "child transportLost"))
+        recorder.observe(.init(event: "ambient_refused", detail: "stopping"))
+        let status = try #require(DaemonStatus.read(from: file))
+        let ambient = try #require(status.ambient)
+        #expect(ambient.running == 1 && ambient.refusals == 1)
+        #expect(ambient.lastEvent == "ambient_refused" && ambient.lastDetail == "stopping")
+        #expect(ambient.lastEventAt == Date(timeIntervalSince1970: 2_000))
+        recorder.observe(.init(event: "ambient_ended", detail: "delivered=1 written=2 dropped=0 echo=0 exit=exited(0)"))
+        recorder.observe(.init(event: "ambient_ended", detail: "delivered=0 written=0 dropped=0 echo=0 exit=exited(0)"))
+        #expect(try #require(DaemonStatus.read(from: file)).ambient?.running == 0)
+    }
+
+    @Test func anEndBeforeItsStartKeepsTheFailureVisible() throws {
+        let recorder = DaemonStatusRecorder(file: file, hostID: "themachine.local", build: nil, ambientEnabled: true,
+                                            pid: 4242)
+        recorder.observe(.init(event: "ambient_ended", detail: "child transportLost"))
+        recorder.observe(.init(event: "ambient_started"))
+        let ambient = try #require(DaemonStatus.read(from: file)?.ambient)
+        #expect(ambient.running == 0)
+        #expect(ambient.lastEvent == "ambient_ended" && ambient.lastDetail == "child transportLost")
+        recorder.observe(.init(event: "ambient_started"))
+        #expect(try #require(DaemonStatus.read(from: file)?.ambient).running == 1)
+    }
+
+    @Test func aSnapshotWithoutAmbientStillReads() throws {
+        _ = recorder()
+        var json = try #require(JSONSerialization.jsonObject(with: Data(contentsOf: file)) as? [String: Any])
+        json["ambient"] = nil
+        try JSONSerialization.data(withJSONObject: json).write(to: file)
+        #expect(try #require(DaemonStatus.read(from: file)).ambient == nil)
+    }
+
     @Test func aMissingDirectoryIsNotAnError() {
         let missing = directory.appendingPathComponent("absent/status.json")
         let recorder = DaemonStatusRecorder(file: missing, hostID: "themachine.local", build: nil, pid: 1)

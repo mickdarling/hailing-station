@@ -73,6 +73,7 @@ scripts/host.sh status    # staged release, running daemon, PATH haild, and prob
 - `build_match`: the daemon and this `haild` are the same build (the release digest), so replies are not refused for build skew (#115).
 - `host_id_match`: both resolve the same host ID, so replies are not refused as `sourceHostMismatch`.
 - `listener_ready`: the listener is up, and on which address. A port held elsewhere points to the Tailscale Serve section above.
+- `ambient_listening`: the last ambient run did not fail; it shows `not enabled` when ambient listening is not configured. A RightyO child that died (`child transportLost`, for example), a refused start or a shutdown timeout fails, with the cause in the fix. A run that ended cleanly, or a request held for confirmation by the target's tier, is healthy and idle. The check reflects the most recent ambient event, so a failure stays visible until the next run.
 - `device_connected`: at least one phone or tablet is connected.
 
 The daemon keeps the snapshot in `~/.config/hail/status.json` (owner-only). It holds no transcript, peer address or device identifier. With the default loopback `bind`, the output is safe to paste; with any other `bind`, the listener line shows that address.

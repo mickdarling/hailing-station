@@ -1,4 +1,3 @@
-import CryptoKit
 public import Foundation
 import Synchronization
 
@@ -17,6 +16,18 @@ public struct DaemonStatus: Codable, Sendable, Equatable {
         public var detail: String?
     }
 
+    /// Ambient listening, from the daemon's `ambient_*` events. Details are counts, enum names or fixed tokens,
+    /// never transcript text.
+    public struct Ambient: Codable, Sendable, Equatable {
+        public var enabled: Bool
+        /// Pipelines started and not yet ended.
+        public var running = 0
+        public var refusals = 0
+        public var lastEvent: String?
+        public var lastEventAt: Date?
+        public var lastDetail: String?
+    }
+
     public var schema: Int
     public var version: String
     public var build: String?
@@ -26,6 +37,8 @@ public struct DaemonStatus: Codable, Sendable, Equatable {
     public var hostID: String
     public var listener: Listener
     public var connectedSessions: Int
+    /// Absent in snapshots from daemons that predate ambient reporting.
+    public var ambient: Ambient?
 
     /// `status.json` beside the standard policy file, including `HAIL_CONFIG_DIR` overrides.
     public static func standardFile(environment: [String: String] = ProcessInfo.processInfo.environment) -> URL {
@@ -41,29 +54,6 @@ public struct DaemonStatus: Codable, Sendable, Equatable {
     }
 }
 
-/// The running executable's identity: the first 16 hex characters of its SHA-256, the same prefix
-/// `scripts/host.sh` names each installed release after (#246). The daemon and the CLI each hash their own
-/// binary, so a mismatch is build skew (#115, #247) without any build-time stamping.
-public enum BuildIdentity {
-    /// `nil` when the file cannot be read in full.
-    public static func digest(of executable: URL) -> String? {
-        guard let handle = try? FileHandle(forReadingFrom: executable) else { return nil }
-        defer { try? handle.close() }
-        var hasher = SHA256()
-        do {
-            while let chunk = try handle.read(upToCount: 1 << 20), !chunk.isEmpty { hasher.update(data: chunk) }
-        } catch {
-            return nil
-        }
-        return String(hasher.finalize().map { String(format: "%02x", $0) }.joined().prefix(16))
-    }
-
-    /// This process's executable, through any link (the `haild` on PATH links into a release).
-    public static func current() -> String? {
-        Bundle.main.executableURL.flatMap { digest(of: $0.resolvingSymlinksInPath()) }
-    }
-}
-
 /// Keeps `DaemonStatus` current from the daemon's own events and rewrites the file on every change, under the
 /// lock so concurrent events never leave an older snapshot behind. A write failure never reaches the caller:
 /// the daemon keeps serving, and `doctor` reports a stale snapshot. A snapshot that belongs to another live
@@ -73,6 +63,9 @@ public final class DaemonStatusRecorder: Sendable {
     private struct State {
         var status: DaemonStatus
         var sessions: Set<UUID> = []
+        /// Runs whose `ambient_ended` arrived before their `ambient_started`: a child that exits at once can end
+        /// before the start is logged, and its late start must neither count as running nor hide the failure.
+        var endsBeforeStart = 0
     }
 
     private let file: URL
@@ -81,7 +74,7 @@ public final class DaemonStatusRecorder: Sendable {
     private let state: Mutex<State>
 
     public init(
-        file: URL, hostID: String, build: String?,
+        file: URL, hostID: String, build: String?, ambientEnabled: Bool = false,
         pid: Int32 = ProcessInfo.processInfo.processIdentifier,
         now: @escaping @Sendable () -> Date = Date.init,
         isRunning: @escaping @Sendable (Int32) -> Bool = HealthReport.processIsRunning
@@ -93,32 +86,69 @@ public final class DaemonStatusRecorder: Sendable {
         state = Mutex(State(status: DaemonStatus(
             schema: DaemonStatus.currentSchema, version: DaemonInfo.version, build: build, pid: pid,
             startedAt: started, updatedAt: started, hostID: hostID,
-            listener: .init(state: "starting"), connectedSessions: 0
+            listener: .init(state: "starting"), connectedSessions: 0, ambient: .init(enabled: ambientEnabled)
         )))
         state.withLock { write($0.status) }
     }
 
     public func observe(_ event: WebSocketListenerEvent) {
         state.withLock { state in
-            switch event.event {
-            case "listener_ready": state.status.listener = .init(state: "ready", endpoint: event.endpoint)
-            case "listener_waiting": state.status.listener = .init(state: "waiting", detail: event.detail)
-            case "listener_failed": state.status.listener = .init(state: "failed", detail: event.detail)
-            case "listener_stopped":
-                state.status.listener = .init(state: "stopped", detail: event.detail)
-                state.sessions.removeAll()
-            case "session_connected":
-                guard let id = event.sessionID else { return }
-                state.sessions.insert(id)
-            case "session_disconnected":
-                guard let id = event.sessionID else { return }
-                state.sessions.remove(id)
-            default: return
+            let at = now()
+            let changed = switch event.event.prefix(while: { $0 != "_" }) {
+            case "listener": Self.applyListener(event, to: &state)
+            case "session": Self.applySession(event, to: &state)
+            case "ambient": Self.applyAmbient(event, to: &state, at: at)
+            default: false
             }
+            guard changed else { return }
             state.status.connectedSessions = state.sessions.count
-            state.status.updatedAt = now()
+            state.status.updatedAt = at
             write(state.status)
         }
+    }
+
+    private static func applyListener(_ event: WebSocketListenerEvent, to state: inout State) -> Bool {
+        switch event.event {
+        case "listener_ready": state.status.listener = .init(state: "ready", endpoint: event.endpoint)
+        case "listener_waiting": state.status.listener = .init(state: "waiting", detail: event.detail)
+        case "listener_failed": state.status.listener = .init(state: "failed", detail: event.detail)
+        case "listener_stopped":
+            state.status.listener = .init(state: "stopped", detail: event.detail)
+            state.sessions.removeAll()
+        default: return false
+        }
+        return true
+    }
+
+    private static func applySession(_ event: WebSocketListenerEvent, to state: inout State) -> Bool {
+        guard let id = event.sessionID else { return false }
+        switch event.event {
+        case "session_connected": state.sessions.insert(id)
+        case "session_disconnected": state.sessions.remove(id)
+        default: return false
+        }
+        return true
+    }
+
+    private static func applyAmbient(_ event: WebSocketListenerEvent, to state: inout State, at: Date) -> Bool {
+        var ambient = state.status.ambient ?? .init(enabled: true)
+        switch event.event {
+        case "ambient_started":
+            guard state.endsBeforeStart == 0 else {
+                state.endsBeforeStart -= 1
+                return false
+            }
+            ambient.running += 1
+        case "ambient_ended":
+            if ambient.running > 0 { ambient.running -= 1 } else { state.endsBeforeStart += 1 }
+        case "ambient_refused": ambient.refusals += 1
+        default: break
+        }
+        ambient.lastEvent = event.event
+        ambient.lastEventAt = at
+        ambient.lastDetail = event.detail
+        state.status.ambient = ambient
+        return true
     }
 
     /// Owner-only, and atomic: a reader sees the old snapshot or the new one, never a partial file.
