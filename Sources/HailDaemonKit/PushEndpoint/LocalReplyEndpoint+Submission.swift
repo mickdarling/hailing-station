@@ -226,7 +226,8 @@ extension LocalReplyEndpoint {
                 "Local reply refused (\(reason.rawValue)): \(String(reflecting: error), privacy: .private)"
             )
             // `haild doctor` counts refusals by reason (#247); the record holds the code, never reply text.
-            if reason != .auditFailure {
+            // `requestPending` is a retryable not-yet-ready answer that a streamed reply may get on many frames.
+            if reason != .auditFailure, reason != .requestPending {
                 _ = try? await audit.record(.deliveryRefused(
                     target: refusedTarget ?? "unknown", device: "local-reply", reason: reason.rawValue
                 ))

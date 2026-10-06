@@ -631,6 +631,11 @@ private func expectRefusal(
     let response = try await submit(data, socket: socket.path)
     #expect(response == LocalReplyResponse(delivered: 0, error: expected.message, code: expected))
     await endpoint.stop()
+    // Each refusal is audited once for `haild doctor` (#247); a retryable pending answer and a failed audit are not.
+    let lines = (try? AuditHistory(directory: scratch.appendingPathComponent("audit")).today(at: auditClock())) ?? []
+    let refused = lines.filter { $0.contains("\"kind\":\"delivery_refused\"") }
+    #expect(refused.count == ([.requestPending, .auditFailure].contains(expected) ? 0 : 1))
+    #expect(refused.allSatisfy { $0.contains("\"reason\":\"\(expected.rawValue)\"") })
 }
 
 private func selectOrdinary(on terminal: URLSessionWebSocketTask, listener: WebSocketListener) async throws -> UUID {
