@@ -416,6 +416,8 @@ public final class AmbientAudioStreamer {
                     break
                 }
                 (encoder, queue) = renewed
+                // Taken before the backoff, so it may be seconds old: the new stream starts with fresh audio.
+                continue
             }
             guard let segments = try? encoder.encode(buffer.pcmBuffer) else {
                 converted = false
