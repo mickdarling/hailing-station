@@ -65,9 +65,21 @@ scripts/host.sh status    # staged release, running daemon, PATH haild, and prob
 
 `~/Library/Logs/HailingStation/haild.err.log` holds the daemon's structured events. `restart` keeps the previous run's log as `haild.err.log.1`. `haild.out.log` holds standard output.
 
+## Health checks
+
+`haild doctor` compares the running daemon with the `haild` you run it from and prints one line per check, with a plain-language fix under each failure. It exits 1 if any check fails. `haild status --json` prints the same report as JSON, with a `healthy` field, and always exits 0. The checks (#247) are:
+
+- `daemon_running`: the daemon's status snapshot exists and its process is alive.
+- `build_match`: the daemon and this `haild` are the same build (the release digest), so replies are not refused for build skew (#115).
+- `host_id_match`: both resolve the same host ID, so replies are not refused as `sourceHostMismatch`.
+- `listener_ready`: the listener is up, and on which address. A port held elsewhere points to the Tailscale Serve section above.
+- `device_connected`: at least one phone or tablet is connected.
+
+The daemon keeps the snapshot in `~/.config/hail/status.json` (owner-only). It holds no transcript, peer address or device identifier. With the default loopback `bind`, the output is safe to paste; with any other `bind`, the listener line shows that address.
+
 ## When replies stop arriving
 
-1. Run `scripts/host.sh status`. Exit code 3 means one of these:
+1. Run `haild doctor`, then `scripts/host.sh status`. Exit code 3 means one of these:
    - the managed daemon is not running;
    - it runs a different release from the `PATH` haild;
    - the legacy job is still loaded.
