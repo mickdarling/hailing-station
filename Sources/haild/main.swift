@@ -45,7 +45,8 @@ func usage() -> Never {
            haild rightyo <target-id> --session <producer-session-id> [--allow-synthetic]
       [--reply-to <connection-UUID>] [--socket <path>]
            haild rightyo --session <producer-session-id> --dry-run  (JSONL on stdin)
-           haild status
+           haild status [--json]
+           haild doctor      (checks the running daemon against this haild; exits 1 with a fix per failure)
            haild audit verify|tail|today
            haild diagnostics tail [--device <name>] [--since <90s|15m|2h|1d|ISO-8601>] [--limit <n>] [--json]
            haild diagnostics show <session-id-or-prefix> [--json]
@@ -321,15 +322,28 @@ do {
     case "send":
         guard arguments.count == 3 else { usage() }
         try await send(try await makeHost(), id: arguments[1], text: arguments[2])
-    case "status": try await status(try await makeHost())
+    case "status":
+        switch arguments.dropFirst().first {
+        case nil: try await status(try await makeHost())
+        case "--json" where arguments.count == 2: try statusJSON()
+        default: usage()
+        }
+    case "doctor" where arguments.count == 1: doctor()
     case "reply": try await reply(arguments.dropFirst())
     case "rightyo": try await rightyo(arguments.dropFirst())
     case "audit": try audit(arguments.dropFirst())
     case "diagnostics": try diagnostics(arguments.dropFirst())
     case "run":
+        let hostName = try HostIdentity.resolve()
+        let recorder = DaemonStatusRecorder(
+            file: DaemonStatus.standardFile(), hostID: hostName, build: BuildIdentity.current()
+        )
         try await ConnectionProbeDaemon.run(
-            host: try await makeHost(), arguments: Array(arguments.dropFirst()),
-            hostName: try HostIdentity.resolve(), log: logNetworkEvent
+            host: try await makeHost(), arguments: Array(arguments.dropFirst()), hostName: hostName,
+            log: { event in
+                logNetworkEvent(event)
+                recorder.observe(event)
+            }
         )
     default: usage()
     }
