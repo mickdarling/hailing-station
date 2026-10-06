@@ -114,6 +114,21 @@ import Testing
         #expect(harness.streams.count == 1)
     }
 
+    @Test func losingTheDestinationIsReportedButTurningOffIsNot() async throws {
+        let harness = Harness()
+        await harness.controller.turnOn(for: try binding())
+        await harness.controller.destinationLost()
+        #expect(!harness.controller.isOn)
+        #expect(harness.unexpectedStops.count == 1)
+        #expect(harness.unexpectedStops.first?.contains("went away") == true)
+        #expect(harness.released == 1)
+
+        await harness.controller.turnOn(for: try binding())
+        await harness.controller.turnOff()
+        await harness.controller.destinationLost()
+        #expect(harness.unexpectedStops.count == 1)
+    }
+
     @Test func onlyHostEndedStreamsAreTransient() {
         let transient = [
             "malformed: ambient stream must be new and start at sequence 0",

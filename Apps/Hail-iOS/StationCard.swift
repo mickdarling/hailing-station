@@ -254,7 +254,7 @@ struct AmbientListeningCard: View {
         }
         .onDisappear {
             connections.ambientStreaming = false
-            Task { await controller.turnOff() }
+            Task { await controller.destinationLost() }
         }
         .onAppear { echoGuard.masksDuringReplies = masksDuringReplies }
         .onChange(of: masksDuringReplies) { _, masks in echoGuard.masksDuringReplies = masks }

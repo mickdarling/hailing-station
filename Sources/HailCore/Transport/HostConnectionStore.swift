@@ -510,6 +510,12 @@ extension AmbientListeningController {
 
 /// Recovering from a host-ended stream (#287).
 extension AmbientListeningController {
+    /// The card went away because the connection or destination did, not because the user turned listening off:
+    /// it is reported like any other unexpected stop (#287).
+    public func destinationLost() async {
+        await end(session, reason: "Stopped: the connection or destination went away.", cause: "binding_changed")
+    }
+
     /// Waits before each fresh stream; their count is the cap.
     static let recoveryBackoff: [Duration] = [.seconds(1), .seconds(3), .seconds(10)]
     /// Streaming this long since the last recovery earns a full set of retries again.
