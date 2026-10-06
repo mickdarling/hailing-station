@@ -340,6 +340,8 @@ public final class AmbientRightyoRouter: AmbientAudioSink, AmbientListenerWiring
         let connection: UUID
         let pipeline: RightyoAmbientPipeline
         var reaped = false
+        /// Why the gate ended the stream (idle, final, malformed, …), reported in `ambient_ended` (#282).
+        var gateEnd: AmbientStreamEndReason?
         var task: Task<Void, Never>?
     }
     fileprivate struct State {
@@ -377,8 +379,9 @@ public final class AmbientRightyoRouter: AmbientAudioSink, AmbientListenerWiring
             // Overload drops the oldest audio; it never blocks the gate. Refused input means the child is gone
             // (its run may still be finishing a dispatch), so the stream ends instead of absorbing audio.
             if let pipeline, !pipeline.send(audio: bytes) { inputClosed(stream) }
-        case .ended(let stream, _):
+        case .ended(let stream, let reason):
             let pipeline = state.withLock { state -> RightyoAmbientPipeline? in
+                state.runs[stream]?.gateEnd = reason
                 guard let active = state.active, active.stream == stream else { return nil }
                 state.active = nil
                 return active.pipeline
@@ -510,8 +513,10 @@ extension AmbientRightyoRouter {
         var failure: String?
         do {
             let summary = try await pipeline.run()
+            let gateEnd = state.withLock { $0.runs[stream]?.gateEnd.map { "\($0)" } } ?? "none"
             emit("ambient_ended", detail: "delivered=\(summary.delivered) written=\(summary.child.writtenBytes)"
-                 + " dropped=\(summary.child.droppedBytes) echo=\(await pipeline.echoDropped) exit=\(summary.exit)")
+                 + " dropped=\(summary.child.droppedBytes) echo=\(await pipeline.echoDropped) ended=\(gateEnd)"
+                 + " exit=\(summary.exit)")
         } catch {
             failure = Self.describe(error)
             emit("ambient_ended", detail: failure)

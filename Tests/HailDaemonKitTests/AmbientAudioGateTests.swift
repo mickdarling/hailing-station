@@ -89,10 +89,12 @@ import Testing
         #expect(await gate.admit(ambientSegment(stream: UUID(), sequence: 0), connection: other) == nil)
     }
 
-    @Test func idleStreamEndsAfterFiveSecondsAndFreesTheDaemon() async {
+    @Test func idleStreamEndsAfterTheIdleTimeoutAndFreesTheDaemon() async {
+        // 30 s since #282: a backgrounded phone paused sends for over 5 s and lost its stream.
+        #expect(AmbientAudioGate.idleTimeout == .seconds(30))
         let gate = ambientGate(sink: sink, clock: clock)
         #expect(await gate.admit(ambientSegment(stream: stream, sequence: 0), connection: phone) == nil)
-        clock.advance(.milliseconds(4_900))
+        clock.advance(AmbientAudioGate.idleTimeout - .milliseconds(100))
         await gate.expireIdle()
         #expect(await gate.activeStream == stream)
         clock.advance(.milliseconds(100))
