@@ -66,9 +66,21 @@ import Testing
         #expect(ambient.running == 1 && ambient.refusals == 1)
         #expect(ambient.lastEvent == "ambient_refused" && ambient.lastDetail == "stopping")
         #expect(ambient.lastEventAt == Date(timeIntervalSince1970: 2_000))
-        recorder.observe(.init(event: "ambient_ended", detail: "delivered=1 written=2 dropped=0 echo=0 exit=0"))
-        recorder.observe(.init(event: "ambient_ended", detail: "delivered=0 written=0 dropped=0 echo=0 exit=0"))
+        recorder.observe(.init(event: "ambient_ended", detail: "delivered=1 written=2 dropped=0 echo=0 exit=exited(0)"))
+        recorder.observe(.init(event: "ambient_ended", detail: "delivered=0 written=0 dropped=0 echo=0 exit=exited(0)"))
         #expect(try #require(DaemonStatus.read(from: file)).ambient?.running == 0)
+    }
+
+    @Test func anEndBeforeItsStartKeepsTheFailureVisible() throws {
+        let recorder = DaemonStatusRecorder(file: file, hostID: "themachine.local", build: nil, ambientEnabled: true,
+                                            pid: 4242)
+        recorder.observe(.init(event: "ambient_ended", detail: "child transportLost"))
+        recorder.observe(.init(event: "ambient_started"))
+        let ambient = try #require(DaemonStatus.read(from: file)?.ambient)
+        #expect(ambient.running == 0)
+        #expect(ambient.lastEvent == "ambient_ended" && ambient.lastDetail == "child transportLost")
+        recorder.observe(.init(event: "ambient_started"))
+        #expect(try #require(DaemonStatus.read(from: file)?.ambient).running == 1)
     }
 
     @Test func aSnapshotWithoutAmbientStillReads() throws {

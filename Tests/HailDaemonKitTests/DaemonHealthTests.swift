@@ -80,7 +80,7 @@ import Testing
     @Test func ambientIdleRunningOrCleanlyEndedIsHealthy() {
         #expect(ambient(nil)?.outcome == .ok)
         #expect(ambient("ambient_started", running: 1)?.detail == "1 running")
-        #expect(ambient("ambient_ended", "delivered=2 written=10 dropped=0 echo=1 exit=0")?.outcome == .ok)
+        #expect(ambient("ambient_ended", "delivered=2 written=10 dropped=0 echo=1 exit=exited(0)")?.outcome == .ok)
         #expect(ambient("ambient_input_closed")?.outcome == .ok)
         #expect(ambient("ambient_ended", "input confirmationRequired")?.outcome == .ok)
         var disabled = daemon()
@@ -93,6 +93,23 @@ import Testing
         #expect(check.outcome == .fail && check.detail == "last run ended: child transportLost")
         #expect(check.fix?.contains("RightyO child failed (transportLost)") == true)
         #expect(ambient("ambient_ended", "input invalidLifecycle")?.fix?.contains("reconnect the phone") == true)
+    }
+
+    @Test func aCleanSummaryWithAnUnsuccessfulExitFails() throws {
+        let failed = try #require(ambient("ambient_ended", "delivered=1 written=9 dropped=0 echo=0 exit=exited(1)"))
+        #expect(failed.outcome == .fail && failed.detail == "last run's RightyO child exited exited(1)")
+        #expect(ambient("ambient_ended", "delivered=1 written=9 dropped=0 echo=0 exit=signaled(9)")?.outcome == .fail)
+        #expect(ambient("ambient_ended", "delivered=0 written=0")?.outcome == .fail)
+    }
+
+    @Test func aStoppedDaemonKeepsItsAmbientFailureInTheReport() {
+        var stopped = daemon(listener: .init(state: "stopped", detail: "SIGTERM"))
+        stopped.ambient = .init(enabled: true, lastEvent: "ambient_shutdown_timeout", lastDetail: "runs=1")
+        let report = HealthReport.evaluate(cli: cli, daemon: stopped, isRunning: { _ in true })
+        #expect(failures(report) == ["daemon_running", "ambient_listening"])
+        stopped.ambient = .init(enabled: true, lastEvent: "ambient_input_closed")
+        #expect(failures(HealthReport.evaluate(cli: cli, daemon: stopped, isRunning: { _ in true }))
+            == ["daemon_running"])
     }
 
     @Test func ambientRefusalsAndShutdownTimeoutsFail() {

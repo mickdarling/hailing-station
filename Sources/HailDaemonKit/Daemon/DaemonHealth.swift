@@ -71,10 +71,15 @@ public struct HealthReport: Codable, Sendable, Equatable {
             ])
         }
         guard isRunning(daemon.pid), daemon.listener.state != "stopped" else {
-            return .init(cli: cli, daemon: daemon, checks: [
+            var checks: [HealthCheck] = [
                 .fail("daemon_running", "pid \(daemon.pid) is not running (listener \(daemon.listener.state))",
                       fix: restart)
-            ])
+            ]
+            // A shutdown timeout or a dead child just before the stop explains it, so it stays in the report.
+            if let ambient = daemon.ambient, case let check = ambientCheck(ambient), check.outcome == .fail {
+                checks.append(check)
+            }
+            return .init(cli: cli, daemon: daemon, checks: checks)
         }
         var checks: [HealthCheck] = [.ok("daemon_running", "pid \(daemon.pid)")]
         checks.append(buildCheck(cli: cli.build, daemon: daemon.build))
@@ -129,7 +134,15 @@ public struct HealthReport: Codable, Sendable, Equatable {
         switch ambient.lastEvent {
         case "ambient_ended" where detail == "input confirmationRequired":
             return .ok("ambient_listening", "idle; the last request needed confirmation (target tier confirm)")
-        case "ambient_ended" where !detail.hasPrefix("delivered="):
+        case "ambient_ended" where detail.hasPrefix("delivered="):
+            let exit = detail.split(separator: " ").first { $0.hasPrefix("exit=") }?.dropFirst(5) ?? "unknown"
+            guard exit == "exited(0)" else {
+                return .fail("ambient_listening", "last run's RightyO child exited \(exit)",
+                             fix: "the RightyO child did not exit cleanly; reconnect the phone to restart it, and "
+                                 + "if it repeats, \(logs)")
+            }
+            return .ok("ambient_listening", ambient.running > 0 ? "\(ambient.running) running" : "idle")
+        case "ambient_ended":
             return .fail("ambient_listening", "last run ended: \(detail)", fix: detail.hasPrefix("child ")
                 ? "the RightyO child failed (\(detail.dropFirst(6))); reconnect the phone to restart it, and if it "
                     + "repeats, run the RightyO path in host.json by hand and \(logs)"
