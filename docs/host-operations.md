@@ -75,6 +75,7 @@ scripts/host.sh status    # staged release, running daemon, PATH haild, and prob
 - `listener_ready`: the listener is up, and on which address. A port held elsewhere points to the Tailscale Serve section above.
 - `ambient_listening`: the last ambient run did not fail; it shows `not enabled` when ambient listening is not configured. A RightyO child that died (`child transportLost`, for example), a refused start or a shutdown timeout fails, with the cause in the fix. A run that ended cleanly, or a request held for confirmation by the target's tier, is healthy and idle. The check reflects the most recent ambient event, so a failure stays visible until the next run.
 - `device_connected`: at least one phone or tablet is connected.
+- `recent_refusals`: no reply was refused in the last 15 minutes. Each refused `haild reply` is audited as `delivery_refused` with its code (`noRecipient`, `notUniqueRecipient`, `sourceHostMismatch`, …), never its text. A retryable `requestPending` answer is not a refusal and is not recorded. Doctor counts the records (refused reply frames) by reason over 15 minutes and an hour, and gives the fix for the most frequent one. `status --json` includes the counts.
 
 The daemon keeps the snapshot in `~/.config/hail/status.json` (owner-only). It holds no transcript, peer address or device identifier. With the default loopback `bind`, the output is safe to paste; with any other `bind`, the listener line shows that address.
 

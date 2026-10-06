@@ -197,11 +197,13 @@ extension LocalReplyEndpoint {
     }
 
     private func submitReply(_ data: Data, from client: LocalReplyConnection) async {
+        var refusedTarget: String?
         do {
             try Task.checkCancellation()
             guard !stopped, connections[client.id] != nil else { throw CancellationError() }
             let frame = try Self.decodeLocalReply(data)
             guard let target = frame.target else { throw LocalReplyRefusal.replyTargetMissing }
+            refusedTarget = target
             do {
                 _ = try await audit.record(.pushed(tool: "local-reply", target: target, bytes: data.count))
             } catch {
@@ -223,6 +225,13 @@ extension LocalReplyEndpoint {
             replyLogger.error(
                 "Local reply refused (\(reason.rawValue)): \(String(reflecting: error), privacy: .private)"
             )
+            // `haild doctor` counts refusals by reason (#247); the record holds the code, never reply text.
+            // `requestPending` is a retryable not-yet-ready answer that a streamed reply may get on many frames.
+            if reason != .auditFailure, reason != .requestPending {
+                _ = try? await audit.record(.deliveryRefused(
+                    target: refusedTarget ?? "unknown", device: "local-reply", reason: reason.rawValue
+                ))
+            }
             if !stopped, connections[client.id] != nil {
                 await respond(.init(delivered: 0, error: reason.message, code: reason), to: client)
             } else {
