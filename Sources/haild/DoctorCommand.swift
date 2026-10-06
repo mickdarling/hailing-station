@@ -5,7 +5,8 @@ import HailDaemonKit
 func healthReport() -> HealthReport {
     HealthReport.evaluate(
         cli: .init(version: DaemonInfo.version, build: BuildIdentity.current(), hostID: try? HostIdentity.resolve()),
-        daemon: DaemonStatus.read(from: DaemonStatus.standardFile())
+        daemon: DaemonStatus.read(from: DaemonStatus.standardFile()),
+        refusals: try? RefusalSummary.read(from: AuditHistory.standard())
     )
 }
 

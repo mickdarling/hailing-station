@@ -232,6 +232,12 @@ import Testing
             #expect(info.st_mode & 0o777 == 0o600)
             let history = try AuditHistory(directory: auditDirectory).today()
             #expect(history.filter { $0.contains("\"kind\":\"pushed\"") }.count == 3)
+            // Each refusal is audited with its code for `haild doctor` (#247), never with the reply text.
+            let refusals = history.filter { $0.contains("\"kind\":\"delivery_refused\"") }
+            #expect(refusals.count == 2 && refusals.allSatisfy { $0.contains("\"reason\":\"noRecipient\"") })
+            #expect(!refusals.contains { $0.contains("synthetic") })
+            let summary = try RefusalSummary.read(from: AuditHistory(directory: auditDirectory))
+            #expect(summary.counts == [.init(reason: "noRecipient", last15Minutes: 2, lastHour: 2)])
         } catch {
             await endpoint.stop()
             await listener.stop(reason: "test failed")

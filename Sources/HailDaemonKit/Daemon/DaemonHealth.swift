@@ -33,22 +33,26 @@ public struct HealthReport: Codable, Sendable, Equatable {
 
     public var cli: CLI
     public var daemon: DaemonStatus?
+    /// Absent when the audit history cannot be read.
+    public var refusals: RefusalSummary?
     public var checks: [HealthCheck]
     public var healthy: Bool { checks.allSatisfy { $0.outcome == .ok } }
 
-    private enum CodingKeys: String, CodingKey { case cli, daemon, checks, healthy }
+    private enum CodingKeys: String, CodingKey { case cli, daemon, refusals, checks, healthy }
 
     public func encode(to encoder: any Encoder) throws {
         var container = encoder.container(keyedBy: CodingKeys.self)
         try container.encode(cli, forKey: .cli)
         try container.encodeIfPresent(daemon, forKey: .daemon)
+        try container.encodeIfPresent(refusals, forKey: .refusals)
         try container.encode(checks, forKey: .checks)
         try container.encode(healthy, forKey: .healthy)
     }
 
-    public init(cli: CLI, daemon: DaemonStatus?, checks: [HealthCheck]) {
+    public init(cli: CLI, daemon: DaemonStatus?, refusals: RefusalSummary? = nil, checks: [HealthCheck]) {
         self.cli = cli
         self.daemon = daemon
+        self.refusals = refusals
         self.checks = checks
     }
 
@@ -56,16 +60,18 @@ public struct HealthReport: Codable, Sendable, Equatable {
         let container = try decoder.container(keyedBy: CodingKeys.self)
         cli = try container.decode(CLI.self, forKey: .cli)
         daemon = try container.decodeIfPresent(DaemonStatus.self, forKey: .daemon)
+        refusals = try container.decodeIfPresent(RefusalSummary.self, forKey: .refusals)
         checks = try container.decode([HealthCheck].self, forKey: .checks)
     }
 
     /// `isRunning` answers whether a pid is a live process; tests inject it.
     public static func evaluate(
-        cli: CLI, daemon: DaemonStatus?, isRunning: (Int32) -> Bool = processIsRunning
+        cli: CLI, daemon: DaemonStatus?, refusals: RefusalSummary? = nil,
+        isRunning: (Int32) -> Bool = processIsRunning
     ) -> HealthReport {
         let restart = "run scripts/host.sh restart, then haild doctor again"
         guard let daemon else {
-            return .init(cli: cli, daemon: nil, checks: [
+            return .init(cli: cli, daemon: nil, refusals: refusals, checks: [
                 .fail("daemon_running", "no daemon status file", fix: "the daemon is not running or predates "
                       + "status reporting; \(restart)")
             ])
@@ -79,7 +85,7 @@ public struct HealthReport: Codable, Sendable, Equatable {
             if let ambient = daemon.ambient, case let check = ambientCheck(ambient), check.outcome == .fail {
                 checks.append(check)
             }
-            return .init(cli: cli, daemon: daemon, checks: checks)
+            return .init(cli: cli, daemon: daemon, refusals: refusals, checks: checks)
         }
         var checks: [HealthCheck] = [.ok("daemon_running", "pid \(daemon.pid)")]
         checks.append(buildCheck(cli: cli.build, daemon: daemon.build))
@@ -98,7 +104,8 @@ public struct HealthReport: Codable, Sendable, Equatable {
             ? .ok("device_connected", "\(daemon.connectedSessions) connected")
             : .fail("device_connected", "no device connected",
                     fix: "open Hailing Station on the iPhone or iPad and connect to this host"))
-        return .init(cli: cli, daemon: daemon, checks: checks)
+        if let refusals { checks.append(refusalCheck(refusals)) }
+        return .init(cli: cli, daemon: daemon, refusals: refusals, checks: checks)
     }
 
     private static func buildCheck(cli: String?, daemon: String?) -> HealthCheck {
@@ -158,6 +165,15 @@ public struct HealthReport: Codable, Sendable, Equatable {
         default:
             return .ok("ambient_listening", ambient.running > 0 ? "\(ambient.running) running" : "idle")
         }
+    }
+
+    private static func refusalCheck(_ summary: RefusalSummary) -> HealthCheck {
+        let hour = summary.counts.reduce(0) { $0 + $1.lastHour }
+        guard let top = summary.recent.max(by: { $0.last15Minutes < $1.last15Minutes }) else {
+            return .ok("recent_refusals", "none in 15 min, \(hour) in the last hour")
+        }
+        let detail = summary.recent.map { "\($0.reason) \($0.last15Minutes)" }.joined(separator: ", ")
+        return .fail("recent_refusals", "\(detail) in the last 15 min", fix: RefusalSummary.fix(for: top.reason))
     }
 
     public static func processIsRunning(_ pid: Int32) -> Bool {
