@@ -70,6 +70,15 @@ struct RendererFixture: Sendable {
     }
     write_file($record, "same-group-private-output");
     exit(23) if $mode eq 'nonzero';
+    if ($mode eq 'stdout') {
+        die "fixture stdout configuration" unless ($ENV{VBSAY_STDOUT} // '') eq '1';
+        binmode(STDOUT);
+        $| = 1;
+        print STDOUT pack('C*', 0, 0, 2, 0);
+        select(undef, undef, undef, 0.05);
+        print STDOUT pack('C*', 3, 0);
+        exit(0);
+    }
     write_file("$output/synthetic.raw", pack('C*', 0, 0, 1, 0));
     if ($mode eq 'retirement-race') {
         select(undef, undef, undef, 0.01) until -e "$record.exit";

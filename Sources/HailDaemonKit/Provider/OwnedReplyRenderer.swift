@@ -110,6 +110,9 @@ package final class OwnedReplyRenderer: Sendable {
     }
 
     deinit { lifetime.retire(cancel: true) }
+    /// The renderer's stdout: PCM s16le 24 kHz mono as vbsay produces it (VBSAY_STDOUT, #268). Ends at EOF,
+    /// once the child and anything sharing its stdout have exited. Empty from a vbsay without stdout support.
+    package var audio: AsyncThrowingStream<Data, any Error> { lifetime.audio }
     package var isRunning: Bool { lifetime.isRunning }
     package var cleanupComplete: Bool { lifetime.cleanupComplete }
     package var cleanupDisposition: OwnedReplyRendererCleanupDisposition { lifetime.cleanupDisposition }
@@ -123,6 +126,7 @@ package final class OwnedReplyRenderer: Sendable {
 /// Separate from the facade: the exit source retains resource ownership, not the consumer itself.
 private final class ReplyRendererLifetime: Sendable {
     let folder: ReplyRendererFolder
+    let audio: AsyncThrowingStream<Data, any Error>
     private let state: Mutex<ReplyRendererState>
     private let processExit: any DispatchSourceProcess
     private let cleanupQueue = DispatchQueue(label: "hailing.reply-renderer.cleanup")
@@ -133,12 +137,13 @@ private final class ReplyRendererLifetime: Sendable {
 
     init(text: String, outputRoot: URL, environment: [String: String], hooks: ReplyRendererLifecycleHooks) throws {
         let owned = try ReplyRendererFolder(root: outputRoot)
-        let pid: pid_t
-        do { pid = try Self.spawn(text: text, folder: owned.url, environment: environment) } catch {
+        let pid: pid_t, output: Int32
+        do { (pid, output) = try Self.spawn(text: text, folder: owned.url, environment: environment) } catch {
             guard owned.remove() else { throw OwnedReplyRendererError.cleanupFailed }
             throw error
         }
         folder = owned
+        audio = Self.read(output)
         self.hooks = hooks
         state = Mutex(ReplyRendererState(child: ReplyRendererChildIdentity(pid: pid)))
         processExit = DispatchSource.makeProcessSource(identifier: pid, eventMask: .exit, queue: .global())
@@ -286,13 +291,54 @@ private final class ReplyRendererLifetime: Sendable {
 }
 
 extension ReplyRendererLifetime {
-    private static func spawn(text: String, folder: URL, environment input: [String: String]) throws -> pid_t {
+    /// Drains the read end on its own thread, so PCM reaches the consumer as soon as the child writes it.
+    /// Unbuffered by size: the child is bounded by the reply's own length and the job deadline.
+    private static func read(_ descriptor: Int32) -> AsyncThrowingStream<Data, any Error> {
+        let (stream, continuation) = AsyncThrowingStream<Data, any Error>.makeStream()
+        let reader = Thread {
+            defer { close(descriptor) }
+            var buffer = [UInt8](repeating: 0, count: 16_384)
+            while true {
+                let count = buffer.withUnsafeMutableBytes { Darwin.read(descriptor, $0.baseAddress, $0.count) }
+                if count > 0 { continuation.yield(Data(buffer[0..<count])); continue }
+                if count < 0, errno == EINTR { continue }
+                if count < 0 { continuation.finish(throwing: OwnedReplyRendererError.invalidAudio) } else {
+                    continuation.finish()
+                }
+                return
+            }
+        }
+        reader.name = "hailing.reply-renderer.stdout"
+        reader.start()
+        return stream
+    }
+
+    /// Both ends close-on-exec; the child receives the write end only through its stdout dup2.
+    private static func outputPipe() throws -> [Int32] {
+        var ends: [Int32] = [-1, -1]
+        guard pipe(&ends) == 0 else { throw OwnedReplyRendererError.startupFailed }
+        guard fcntl(ends[0], F_SETFD, FD_CLOEXEC) == 0, fcntl(ends[1], F_SETFD, FD_CLOEXEC) == 0 else {
+            close(ends[0]); close(ends[1])
+            throw OwnedReplyRendererError.startupFailed
+        }
+        return ends
+    }
+
+    private static func spawn(text: String, folder: URL, environment input: [String: String]) throws
+        -> (pid: pid_t, output: Int32) {
         var environment = input
         environment["VBSAY_NOPLAY"] = "1"; environment["VBSAY_OUT"] = folder.path
+        environment["VBSAY_STDOUT"] = "1"
         environment["VBSAY_CHUNK"] = environment["VBSAY_CHUNK"] ?? "160"
         let values = ["/usr/bin/env", "vbsay", text] + environment.map { "\($0.key)=\($0.value)" }
         guard !values.contains(where: { $0.contains("\0") }) else {
             throw OwnedReplyRendererError.startupFailed
+        }
+        let pipeEnds = try outputPipe()
+        var keepReadEnd = false
+        defer {
+            close(pipeEnds[1]) // The parent never writes; the child's copy alone holds the pipe open.
+            if !keepReadEnd { close(pipeEnds[0]) }
         }
         var actions: posix_spawn_file_actions_t?, attributes: posix_spawnattr_t?
         guard posix_spawn_file_actions_init(&actions) == 0 else { throw OwnedReplyRendererError.startupFailed }
@@ -301,7 +347,7 @@ extension ReplyRendererLifetime {
         defer { posix_spawnattr_destroy(&attributes) }
         // Deliberately no SETPGROUP or SETSID: the outer trusted job alone owns group creation/signals.
         let setup = [posix_spawn_file_actions_addopen(&actions, STDIN_FILENO, "/dev/null", O_RDONLY, 0),
-                     posix_spawn_file_actions_addopen(&actions, STDOUT_FILENO, "/dev/null", O_WRONLY, 0),
+                     posix_spawn_file_actions_adddup2(&actions, pipeEnds[1], STDOUT_FILENO),
                      posix_spawn_file_actions_addopen(&actions, STDERR_FILENO, "/dev/null", O_WRONLY, 0),
                      posix_spawnattr_setflags(&attributes, Int16(POSIX_SPAWN_CLOEXEC_DEFAULT))]
         guard setup.allSatisfy({ $0 == 0 }) else { throw OwnedReplyRendererError.startupFailed }
@@ -316,7 +362,8 @@ extension ReplyRendererLifetime {
         guard posix_spawn(&pid, "/usr/bin/env", &actions, &attributes, &arguments, &entries) == 0 else {
             throw OwnedReplyRendererError.startupFailed
         }
-        return pid
+        keepReadEnd = true
+        return (pid, pipeEnds[0])
     }
 }
 

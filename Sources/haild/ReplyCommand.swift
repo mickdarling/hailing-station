@@ -242,26 +242,35 @@ private func publishRenderer(
     var sent: Set<URL> = []
     var sequence = 0, deliveries = 0
     do {
-        while renderer.isRunning {
-            let result = try await sendStableVBSayFiles(
-                in: directory, observed: &observed, sent: &sent, sequence: sequence,
-                context: context
-            )
-            sequence += result.frames
-            deliveries += result.deliveries
-            try await Task.sleep(for: .milliseconds(100))
+        // Relay stdout PCM as it arrives (#268): no files, no polling.
+        var pending = Data()
+        for try await bytes in renderer.audio {
+            pending.append(bytes)
+            while pending.count >= StreamedReplyFrames.bytes(sequence: sequence) {
+                let size = StreamedReplyFrames.bytes(sequence: sequence)
+                deliveries += try await sendStreamedPCM(pending.prefix(size), sequence: sequence, context: context)
+                pending.removeFirst(size)
+                sequence += 1
+            }
         }
         try await renderer.requireSuccessfulExit()
-        // A file can complete between the final poll and process exit; two passes establish stability.
-        for _ in 0..<2 {
-            let result = try await sendStableVBSayFiles(
-                in: directory, observed: &observed, sent: &sent, sequence: sequence,
-                context: context
-            )
-            sequence += result.frames
-            deliveries += result.deliveries
+        guard pending.count.isMultiple(of: 2) else { throw ReplyCommandError.invalid("vbsay wrote a partial sample") }
+        if !pending.isEmpty {
+            deliveries += try await sendStreamedPCM(pending, sequence: sequence, context: context)
+            sequence += 1
         }
-        guard !sent.isEmpty else { throw ReplyCommandError.invalid("vbsay produced no PCM audio") }
+        if sequence == 0 {
+            // A vbsay without VBSAY_STDOUT writes only files; two passes establish their stability.
+            for _ in 0..<2 {
+                let result = try await sendStableVBSayFiles(
+                    in: directory, observed: &observed, sent: &sent, sequence: sequence,
+                    context: context
+                )
+                sequence += result.frames
+                deliveries += result.deliveries
+            }
+        }
+        guard sequence > 0 else { throw ReplyCommandError.invalid("vbsay produced no PCM audio") }
     } catch {
         if sequence > 0, sequence < context.frameLimit {
             _ = try? await sendFinalPCM(sequence: sequence, context: context)
@@ -270,6 +279,34 @@ private func publishRenderer(
     }
     deliveries += try await sendFinalPCM(sequence: sequence, context: context)
     return (sequence + 1, deliveries)
+}
+
+/// Streamed frame sizes: a short first frame so the phone starts quickly, then larger frames so a long reply
+/// stays inside the per-minute frame budget. Each frame is generated at ~2.5x realtime, well before the one
+/// ahead of it finishes playing.
+enum StreamedReplyFrames {
+    static func bytes(sequence: Int) -> Int {
+        switch sequence {
+        case 0: 24_000 // 0.5 s at 24 kHz s16 mono
+        case 1: 36_000 // 0.75 s
+        default: 60_000 // 1.25 s, under PayloadLimits.maxAudioBytes
+        }
+    }
+}
+
+private func sendStreamedPCM(_ bytes: Data, sequence: Int, context: PCMReplyContext) async throws -> Int {
+    // One frame stays reserved for the terminal marker.
+    guard sequence + 1 < context.frameLimit else {
+        throw ReplyCommandError.invalid("PCM16 reply exceeds the endpoint frame budget")
+    }
+    let payload = AudioPayload(
+        codec: .pcm16, sampleRate: context.sampleRate, channels: 1, sequence: sequence,
+        streamID: context.streamID, isFinal: false, bytes: Data(bytes), reply: context.descriptor
+    )
+    return try await submitSpeechAudio(Frame(
+        timestamp: replyTimestamp(), target: context.descriptor.targetID, source: context.descriptor.hostID,
+        payload: .audio(payload)
+    ), socketURL: context.socket)
 }
 
 private func sendFinalPCM(sequence: Int, context: PCMReplyContext) async throws -> Int {

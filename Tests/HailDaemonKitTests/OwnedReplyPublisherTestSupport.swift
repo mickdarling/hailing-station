@@ -98,8 +98,9 @@ struct PublisherFixture: Sendable {
         if ($child == 0) { select(undef, undef, undef, 10); exit(0); }
     }
     open(my $f, '>', $ENV{RP_RECORD}) or die 'record'; print {$f} 'owned-cli-group-private-root'; close($f);
-    open(my $out, '>', "$output/synthetic.raw") or die 'output'; binmode($out);
-    print {$out} pack('C*', 0, 0, 1, 0); close($out);
+    die 'stdout contract' unless ($ENV{VBSAY_STDOUT} // '') eq '1';
+    # One whole first streamed frame (#268), so the CLI relays audio while this renderer stays alive.
+    binmode(STDOUT); $| = 1; print STDOUT "\0" x 24000;
     select(undef, undef, undef, 10) if $ENV{RP_MODE} eq 'ignore';
     """
 }

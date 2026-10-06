@@ -1,5 +1,6 @@
 """Exercise the real haild CLI against a private local reply socket."""
 
+import base64
 import json
 import os
 import socket
@@ -56,6 +57,21 @@ class ReplyCLITests(unittest.TestCase):
         self.assertEqual([frame["type"] for frame in frames], ["text", "audio", "audio"])
         self.assert_audio_identity(frames[1:])
         self.assertEqual([frame["payload"]["final"] for frame in frames[1:]], [False, True])
+
+    def test_vbsay_stdout_is_relayed_in_ramped_frames(self):
+        # 0.5 s, 0.75 s, then 1.25 s frames, the remainder, and the terminal marker (#268).
+        request_id = str(uuid.uuid4()).upper()
+        environment = os.environ.copy()
+        environment["PATH"] = str(Path(__file__).parent / "fixtures") + os.pathsep + environment["PATH"]
+        environment["REPLY_RENDERER_TEST_STDOUT_BYTES"] = "130000"
+        frames = self.submit_frames(["--say", "synthetic reply", "--request", request_id], 6, environment)
+        self.assert_reply_identity(frames, request_id)
+        self.assertEqual([frame["type"] for frame in frames], ["text"] + ["audio"] * 5)
+        self.assert_audio_identity(frames[1:])
+        sizes = [len(base64.b64decode(frame["payload"]["bytes"])) for frame in frames[1:]]
+        self.assertEqual(sizes, [24_000, 36_000, 60_000, 10_000, 2])
+        self.assertEqual([frame["payload"]["sequence"] for frame in frames[1:]], [0, 1, 2, 3, 4])
+        self.assertEqual([frame["payload"]["final"] for frame in frames[1:]], [False] * 4 + [True])
 
     def test_owned_renderer_inherits_job_group_and_uses_explicit_private_root(self):
         request_id = str(uuid.uuid4()).upper()
