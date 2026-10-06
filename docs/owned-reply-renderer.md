@@ -9,7 +9,7 @@ This host-local prerequisite is not diagnostic publisher composition (#166), who
 `haild reply ... --say <text>` launches the fixed `/usr/bin/env vbsay` command with trusted local CLI
 environment configuration. The text remains a payload argument, not a shell command. The launcher
 does not accept a PID, executable, process group, or arbitrary launch operation from a client. stdout
-and stderr go to `/dev/null`; public failures use fixed categories without private argv/configuration
+is a pipe carrying PCM (below) and stderr goes to `/dev/null`; public failures use fixed categories without private argv/configuration
 or raw renderer errors. The current local renderer is not executed by these tests.
 
 The optional `--renderer-output-root <private-existing-directory>` is local trusted configuration,
@@ -18,7 +18,10 @@ valid only with `--say`. Before **any text publication**, the root must be an ex
 Foundation's temporary directory, checked under the same rules; setting TMPDIR is **not** a promise
 that Foundation will choose it. Composed jobs must pass an explicit private root.
 
-The renderer gets a newly created 0700 child leaf beneath that root via VBSAY_OUT, plus VBSAY_NOPLAY=1.
+The renderer gets a newly created 0700 child leaf beneath that root via VBSAY_OUT, plus VBSAY_NOPLAY=1
+and VBSAY_STDOUT=1 (#268). With VBSAY_STDOUT, vbsay writes PCM s16le 24 kHz mono to stdout as it is
+produced, and the CLI relays it in 0.5 s, 0.75 s, then 1.25 s frames: no files and no polling. A vbsay
+without stdout support writes only `.raw` files; the CLI then sends those after the renderer exits.
 No supplied root is recursively removed. Creation uses the checked root descriptor. Normal cleanup
 opens the recorded leaf with O_NOFOLLOW, checks device/inode/owner/mode, and recursively unlinks only
 descriptor-relative entries. Replaced root/leaf paths cannot redirect recursive deletion. Symlinks

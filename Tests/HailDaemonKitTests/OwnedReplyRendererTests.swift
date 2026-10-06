@@ -50,6 +50,18 @@ struct OwnedReplyRendererTests {
 }
 
 extension OwnedReplyRendererTests {
+    @Test func stdoutPCMStreamsInOrderUntilChildExit() async throws {
+        let fixture = try RendererFixture(mode: "stdout")
+        defer { fixture.remove() }
+        let renderer = try fixture.start()
+        var received = Data()
+        for try await bytes in renderer.audio { received.append(bytes) }
+        try await renderer.requireSuccessfulExit()
+        #expect(received == Data([0, 0, 2, 0, 3, 0]))
+        renderer.retire(cancel: false)
+        try await renderer.waitForCleanup()
+    }
+
     @Test func normalExitRetainsFilesUntilConsumerRetirement() async throws {
         let fixture = try RendererFixture(mode: "normal")
         defer { fixture.remove() }

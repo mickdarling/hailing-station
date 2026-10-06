@@ -17,4 +17,10 @@ if "REPLY_RENDERER_TEST_RECORD" in os.environ:
     }))
 if os.environ.get("REPLY_RENDERER_TEST_NONZERO"):
     raise SystemExit(23)
+if "REPLY_RENDERER_TEST_STDOUT_BYTES" in os.environ:
+    assert os.environ["VBSAY_STDOUT"] == "1"
+    count = int(os.environ["REPLY_RENDERER_TEST_STDOUT_BYTES"])
+    for start in range(0, count, 7_000):
+        os.write(1, bytes(min(7_000, count - start)))
+    raise SystemExit(0)
 (output / "synthetic.raw").write_bytes(bytes([0, 0, 1, 0]))
