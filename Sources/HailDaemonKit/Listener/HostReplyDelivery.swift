@@ -208,12 +208,17 @@ extension WebSocketListener {
         }
         try Task.checkCancellation()
         guard !stopped else { throw WebSocketListenerError.stoppedBeforeReady }
-        guard let (peer, status) = candidate else { return try await publishUncorrelated(validated) }
+        guard let (peer, status) = candidate else {
+            let delivered = try await publishUncorrelated(validated)
+            ambient?.observeReply(validated)
+            return delivered
+        }
         // This refusal has made zero enqueue attempts. Only this code permits bounded same-frame retry.
         guard status == .ready else { throw LocalReplyRefusal.requestPending }
         // The snapshot may already be stale. Final synchronous gates decide; later send completion
         // failure is ambiguous and must never be treated as a safe pre-publication retry.
         guard await peer.deliverHostReply(validated) else { throw LocalReplyRefusal.publicationFailed }
+        ambient?.observeReply(validated) // Own-voice rejection for ambient requests (#269).
         return 1
     }
 

@@ -1,6 +1,6 @@
 public import Foundation
 import Network
-import HailProtocol
+public import HailProtocol
 
 // The listener and its opt-in ambient RightyO wiring (#203) share one peer lifecycle boundary.
 // swiftlint:disable file_length
@@ -210,6 +210,12 @@ public protocol AmbientListenerWiring: AnyObject, Sendable {
     /// True while `stream` is the most recent stream `connection` started, active or ended, and the connection
     /// has not ended since; false once it is superseded.
     func isLatest(stream: UUID, connection: UUID) -> Bool
+    /// Told of every reply frame this host delivered, so ambient requests repeating one can be dropped (#269).
+    func observeReply(_ frame: Frame)
+}
+
+extension AmbientListenerWiring {
+    public func observeReply(_ frame: Frame) {}
 }
 
 extension WebSocketListener {
@@ -322,6 +328,10 @@ public final class AmbientRightyoRouter: AmbientAudioSink, AmbientListenerWiring
     public static let defaultShutdownGrace: TimeInterval = 20
     /// Unreaped children at once: the active stream plus one still finishing.
     public static let maxLiveChildren = 2
+    /// Replies this host delivered recently; an ambient request repeating one is the assistant's echo (#269).
+    let spokenReplies = RecentSpokenReplies()
+
+    public func observeReply(_ frame: Frame) { spokenReplies.observe(frame) }
     /// Runs at once, including those whose child is reaped but whose dispatch is still typing. A run stuck in a
     /// dispatch therefore blocks new starts only once this many are stuck.
     public static let maxRuns = 4
@@ -472,7 +482,8 @@ extension AmbientRightyoRouter {
                 executable: configuration.executable, config: configuration.config, target: configuration.target,
                 binding: configuration.binding, connection: connection,
                 allowSynthetic: configuration.allowSynthetic, timing: configuration.timing
-            ), dispatcher: AmbientListenerDispatcher(listener: listener, audit: configuration.audit))
+            ), dispatcher: AmbientListenerDispatcher(listener: listener, audit: configuration.audit,
+                                                     spokenReplies: spokenReplies))
         } catch {
             return refuse(stream, connection: connection, reason: Self.describe(error))
         }
@@ -544,7 +555,11 @@ extension AmbientRightyoRouter {
 struct AmbientListenerDispatcher: RightyoAmbientDispatching {
     let listener: WebSocketListener
     let audit: AuditLog?
+    var spokenReplies: RecentSpokenReplies?
     func dispatch(_ request: LocalDispatchRequest) async throws -> UUID? {
+        // The assistant's own reply heard back through the mic (#269): dropped, never dispatched or audited.
+        // No reply is owned, so the stream continues as for an adapter that cannot reply.
+        if spokenReplies?.isEcho(request.text) == true { return nil }
         if let audit {
             do {
                 _ = try await audit.record(.pushed(tool: "ambient-dispatch", target: request.target,
