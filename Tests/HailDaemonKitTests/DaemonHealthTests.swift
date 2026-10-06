@@ -70,6 +70,36 @@ import Testing
         #expect(waiting.checks[3].fix?.contains("haild.err.log") == true)
     }
 
+    private func ambient(_ event: String?, _ detail: String? = nil, running: Int = 0) -> HealthCheck? {
+        var status = daemon()
+        status.ambient = .init(enabled: true, running: running, lastEvent: event, lastDetail: detail)
+        return HealthReport.evaluate(cli: cli, daemon: status, isRunning: { _ in true })
+            .checks.first { $0.name == "ambient_listening" }
+    }
+
+    @Test func ambientIdleRunningOrCleanlyEndedIsHealthy() {
+        #expect(ambient(nil)?.outcome == .ok)
+        #expect(ambient("ambient_started", running: 1)?.detail == "1 running")
+        #expect(ambient("ambient_ended", "delivered=2 written=10 dropped=0 echo=1 exit=0")?.outcome == .ok)
+        #expect(ambient("ambient_input_closed")?.outcome == .ok)
+        var disabled = daemon()
+        disabled.ambient = .init(enabled: false)
+        #expect(HealthReport.evaluate(cli: cli, daemon: disabled, isRunning: { _ in true }).healthy)
+    }
+
+    @Test func aDeadAmbientChildFailsWithTheChildFix() throws {
+        let check = try #require(ambient("ambient_ended", "child transportLost"))
+        #expect(check.outcome == .fail && check.detail == "last run ended: child transportLost")
+        #expect(check.fix?.contains("RightyO child failed (transportLost)") == true)
+        #expect(ambient("ambient_ended", "input invalidLifecycle")?.fix?.contains("reconnect the phone") == true)
+    }
+
+    @Test func ambientRefusalsAndShutdownTimeoutsFail() {
+        #expect(ambient("ambient_refused", "child unsafeExecutable")?.fix?.contains("host.json") == true)
+        #expect(ambient("ambient_refused", "stopping")?.outcome == .fail)
+        #expect(ambient("ambient_shutdown_timeout", "runs=1")?.outcome == .fail)
+    }
+
     @Test func noConnectedDeviceFails() {
         let report = HealthReport.evaluate(cli: cli, daemon: daemon(sessions: 0), isRunning: { _ in true })
         #expect(failures(report) == ["device_connected"])

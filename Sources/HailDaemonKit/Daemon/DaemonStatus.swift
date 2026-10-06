@@ -17,6 +17,18 @@ public struct DaemonStatus: Codable, Sendable, Equatable {
         public var detail: String?
     }
 
+    /// Ambient listening, from the daemon's `ambient_*` events. Details are counts, enum names or fixed tokens,
+    /// never transcript text.
+    public struct Ambient: Codable, Sendable, Equatable {
+        public var enabled: Bool
+        /// Pipelines started and not yet ended.
+        public var running = 0
+        public var refusals = 0
+        public var lastEvent: String?
+        public var lastEventAt: Date?
+        public var lastDetail: String?
+    }
+
     public var schema: Int
     public var version: String
     public var build: String?
@@ -26,6 +38,8 @@ public struct DaemonStatus: Codable, Sendable, Equatable {
     public var hostID: String
     public var listener: Listener
     public var connectedSessions: Int
+    /// Absent in snapshots from daemons that predate ambient reporting.
+    public var ambient: Ambient?
 
     /// `status.json` beside the standard policy file, including `HAIL_CONFIG_DIR` overrides.
     public static func standardFile(environment: [String: String] = ProcessInfo.processInfo.environment) -> URL {
@@ -81,7 +95,7 @@ public final class DaemonStatusRecorder: Sendable {
     private let state: Mutex<State>
 
     public init(
-        file: URL, hostID: String, build: String?,
+        file: URL, hostID: String, build: String?, ambientEnabled: Bool = false,
         pid: Int32 = ProcessInfo.processInfo.processIdentifier,
         now: @escaping @Sendable () -> Date = Date.init,
         isRunning: @escaping @Sendable (Int32) -> Bool = HealthReport.processIsRunning
@@ -93,32 +107,63 @@ public final class DaemonStatusRecorder: Sendable {
         state = Mutex(State(status: DaemonStatus(
             schema: DaemonStatus.currentSchema, version: DaemonInfo.version, build: build, pid: pid,
             startedAt: started, updatedAt: started, hostID: hostID,
-            listener: .init(state: "starting"), connectedSessions: 0
+            listener: .init(state: "starting"), connectedSessions: 0, ambient: .init(enabled: ambientEnabled)
         )))
         state.withLock { write($0.status) }
     }
 
     public func observe(_ event: WebSocketListenerEvent) {
         state.withLock { state in
-            switch event.event {
-            case "listener_ready": state.status.listener = .init(state: "ready", endpoint: event.endpoint)
-            case "listener_waiting": state.status.listener = .init(state: "waiting", detail: event.detail)
-            case "listener_failed": state.status.listener = .init(state: "failed", detail: event.detail)
-            case "listener_stopped":
-                state.status.listener = .init(state: "stopped", detail: event.detail)
-                state.sessions.removeAll()
-            case "session_connected":
-                guard let id = event.sessionID else { return }
-                state.sessions.insert(id)
-            case "session_disconnected":
-                guard let id = event.sessionID else { return }
-                state.sessions.remove(id)
-            default: return
+            let at = now()
+            let changed = switch event.event.prefix(while: { $0 != "_" }) {
+            case "listener": Self.applyListener(event, to: &state)
+            case "session": Self.applySession(event, to: &state)
+            case "ambient": Self.applyAmbient(event, to: &state.status, at: at)
+            default: false
             }
+            guard changed else { return }
             state.status.connectedSessions = state.sessions.count
-            state.status.updatedAt = now()
+            state.status.updatedAt = at
             write(state.status)
         }
+    }
+
+    private static func applyListener(_ event: WebSocketListenerEvent, to state: inout State) -> Bool {
+        switch event.event {
+        case "listener_ready": state.status.listener = .init(state: "ready", endpoint: event.endpoint)
+        case "listener_waiting": state.status.listener = .init(state: "waiting", detail: event.detail)
+        case "listener_failed": state.status.listener = .init(state: "failed", detail: event.detail)
+        case "listener_stopped":
+            state.status.listener = .init(state: "stopped", detail: event.detail)
+            state.sessions.removeAll()
+        default: return false
+        }
+        return true
+    }
+
+    private static func applySession(_ event: WebSocketListenerEvent, to state: inout State) -> Bool {
+        guard let id = event.sessionID else { return false }
+        switch event.event {
+        case "session_connected": state.sessions.insert(id)
+        case "session_disconnected": state.sessions.remove(id)
+        default: return false
+        }
+        return true
+    }
+
+    private static func applyAmbient(_ event: WebSocketListenerEvent, to status: inout DaemonStatus, at: Date) -> Bool {
+        var ambient = status.ambient ?? .init(enabled: true)
+        switch event.event {
+        case "ambient_started": ambient.running += 1
+        case "ambient_ended": ambient.running = max(0, ambient.running - 1)
+        case "ambient_refused": ambient.refusals += 1
+        default: break
+        }
+        ambient.lastEvent = event.event
+        ambient.lastEventAt = at
+        ambient.lastDetail = event.detail
+        status.ambient = ambient
+        return true
     }
 
     /// Owner-only, and atomic: a reader sees the old snapshot or the new one, never a partial file.

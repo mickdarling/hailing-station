@@ -338,7 +338,8 @@ do {
         // After the policy load, which refuses a config directory that is not private.
         let host = try await makeHost()
         let recorder = DaemonStatusRecorder(
-            file: DaemonStatus.standardFile(), hostID: hostName, build: BuildIdentity.current()
+            file: DaemonStatus.standardFile(), hostID: hostName, build: BuildIdentity.current(),
+            ambientEnabled: arguments.contains("--ambient-rightyo")
         )
         try await ConnectionProbeDaemon.run(
             host: host, arguments: Array(arguments.dropFirst()), hostName: hostName,
