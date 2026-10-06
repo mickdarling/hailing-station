@@ -36,6 +36,8 @@ private struct ReplyStreamState {
 @MainActor
 @Observable
 public final class ReplyPlaybackController {
+    /// The error behind the most recent "Playback failed", for diagnostics (domain and code only, #282).
+    @ObservationIgnored private(set) var lastPlaybackError: NSError?
     public static let presentationLimit = 100
     public static let seenFrameLimit = 1_024
 
@@ -168,6 +170,7 @@ public final class ReplyPlaybackController {
             do {
                 try player.schedule(segment, onPlayed: onPlayed)
             } catch {
+                lastPlaybackError = error as NSError
                 failPlayback(for: key)
                 setPresentationStatus("Playback failed", for: key)
                 drain()
