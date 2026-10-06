@@ -82,6 +82,7 @@ import Testing
         #expect(ambient("ambient_started", running: 1)?.detail == "1 running")
         #expect(ambient("ambient_ended", "delivered=2 written=10 dropped=0 echo=1 exit=0")?.outcome == .ok)
         #expect(ambient("ambient_input_closed")?.outcome == .ok)
+        #expect(ambient("ambient_ended", "input confirmationRequired")?.outcome == .ok)
         var disabled = daemon()
         disabled.ambient = .init(enabled: false)
         #expect(HealthReport.evaluate(cli: cli, daemon: disabled, isRunning: { _ in true }).healthy)

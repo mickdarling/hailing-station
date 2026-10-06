@@ -119,13 +119,16 @@ public struct HealthReport: Codable, Sendable, Equatable {
             : "check ~/Library/Logs/HailingStation/haild.err.log, then run scripts/host.sh restart")
     }
 
-    /// A clean end (`delivered=…`) or the phone closing its input is healthy idle; a failed run, a refusal or a
-    /// shutdown timeout is not (#226).
+    /// A clean end (`delivered=…`), input closed after its child went away (the run's own end follows), or a
+    /// request held for confirmation by the target's tier is healthy idle; a failed run, a refusal or a shutdown
+    /// timeout is not (#226).
     private static func ambientCheck(_ ambient: DaemonStatus.Ambient) -> HealthCheck {
         guard ambient.enabled else { return .ok("ambient_listening", "not enabled") }
         let detail = ambient.lastDetail ?? ""
         let logs = "check ~/Library/Logs/HailingStation/haild.err.log for ambient_* events"
         switch ambient.lastEvent {
+        case "ambient_ended" where detail == "input confirmationRequired":
+            return .ok("ambient_listening", "idle; the last request needed confirmation (target tier confirm)")
         case "ambient_ended" where !detail.hasPrefix("delivered="):
             return .fail("ambient_listening", "last run ended: \(detail)", fix: detail.hasPrefix("child ")
                 ? "the RightyO child failed (\(detail.dropFirst(6))); reconnect the phone to restart it, and if it "
