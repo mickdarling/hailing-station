@@ -1,6 +1,6 @@
 public import Foundation
 import Network
-import HailProtocol
+public import HailProtocol
 
 // The listener and its opt-in ambient RightyO wiring (#203) share one peer lifecycle boundary.
 // swiftlint:disable file_length
@@ -210,6 +210,12 @@ public protocol AmbientListenerWiring: AnyObject, Sendable {
     /// True while `stream` is the most recent stream `connection` started, active or ended, and the connection
     /// has not ended since; false once it is superseded.
     func isLatest(stream: UUID, connection: UUID) -> Bool
+    /// Told of every reply frame this host delivered, so ambient requests repeating one can be dropped (#269).
+    func observeReply(_ frame: Frame)
+}
+
+extension AmbientListenerWiring {
+    public func observeReply(_ frame: Frame) {}
 }
 
 extension WebSocketListener {
@@ -322,6 +328,10 @@ public final class AmbientRightyoRouter: AmbientAudioSink, AmbientListenerWiring
     public static let defaultShutdownGrace: TimeInterval = 20
     /// Unreaped children at once: the active stream plus one still finishing.
     public static let maxLiveChildren = 2
+    /// Replies this host delivered recently; an ambient request repeating one is the assistant's echo (#269).
+    let spokenReplies = RecentSpokenReplies()
+
+    public func observeReply(_ frame: Frame) { spokenReplies.observe(frame) }
     /// Runs at once, including those whose child is reaped but whose dispatch is still typing. A run stuck in a
     /// dispatch therefore blocks new starts only once this many are stuck.
     public static let maxRuns = 4
@@ -471,7 +481,8 @@ extension AmbientRightyoRouter {
             pipeline = try RightyoAmbientPipeline(configuration: .init(
                 executable: configuration.executable, config: configuration.config, target: configuration.target,
                 binding: configuration.binding, connection: connection,
-                allowSynthetic: configuration.allowSynthetic, timing: configuration.timing
+                allowSynthetic: configuration.allowSynthetic, timing: configuration.timing,
+                isEcho: { [spokenReplies] heard in spokenReplies.isEcho(heard) }
             ), dispatcher: AmbientListenerDispatcher(listener: listener, audit: configuration.audit))
         } catch {
             return refuse(stream, connection: connection, reason: Self.describe(error))
@@ -496,7 +507,7 @@ extension AmbientRightyoRouter {
         do {
             let summary = try await pipeline.run()
             emit("ambient_ended", detail: "delivered=\(summary.delivered) written=\(summary.child.writtenBytes)"
-                 + " dropped=\(summary.child.droppedBytes) exit=\(summary.exit)")
+                 + " dropped=\(summary.child.droppedBytes) echo=\(await pipeline.echoDropped) exit=\(summary.exit)")
         } catch {
             failure = Self.describe(error)
             emit("ambient_ended", detail: failure)

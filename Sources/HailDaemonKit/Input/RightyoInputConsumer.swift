@@ -56,6 +56,10 @@ public enum RightyoTargetError: Error, Sendable, Equatable, CustomStringConverti
 public actor RightyoInputConsumer {
     /// nil validates only (dry run): no delivery step exists.
     private let dispatcher: (any RightyoDispatching)?
+    /// True for heard text that is the host's own reply coming back through the mic (#269); never dispatched.
+    private let echoFilter: (@Sendable (String) -> Bool)?
+    /// Requests dropped as own-voice echo. A count only, never their text.
+    public private(set) var echoDropped = 0
     private let allowSynthetic: Bool
     private let target: String
     private let binding: String
@@ -87,12 +91,13 @@ public actor RightyoInputConsumer {
     /// guarded id at startup rather than delivering it.
     public init(host: HailHost?, target: String, binding: String, session: String,
                 allowSynthetic: Bool = false, streamBudgetMs: Int? = nil,
-                dispatcher: (any RightyoDispatching)? = nil) throws {
+                dispatcher: (any RightyoDispatching)? = nil, echoFilter: (@Sendable (String) -> Bool)? = nil) throws {
         guard !binding.isEmpty, RightyoInputEvent.identifier(session), streamBudgetMs.map({ $0 >= 0 }) ?? true else {
             throw RightyoInputError.unavailableBinding
         }
         try Self.validateTarget(target)
         self.dispatcher = dispatcher ?? host.map { RightyoHostDispatcher(host: $0) }
+        self.echoFilter = echoFilter
         self.allowSynthetic = allowSynthetic
         self.target = target
         self.binding = binding
@@ -132,6 +137,11 @@ public actor RightyoInputConsumer {
                 throw RightyoInputError.invalidEvent
             }
             guard let dispatcher else { return true }
+            // Matched on the heard turn, not the built prompt, whose envelope would bury the echo (#269).
+            if let echoFilter, let heard = event.turn?.text, echoFilter(heard) {
+                echoDropped += 1
+                return false
+            }
             busy = true
             defer { busy = false }
             do {
