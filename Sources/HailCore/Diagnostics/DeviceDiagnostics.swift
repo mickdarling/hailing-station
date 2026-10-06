@@ -205,6 +205,16 @@ extension DeviceDiagnostics {
         return names[raw] ?? "other"
     }
 
+    /// An NSError domain as a diagnostics token.
+    nonisolated static func errorDomain(_ domain: String) -> String {
+        switch domain {
+        case NSOSStatusErrorDomain: "coreaudio"
+        case "AVFoundationErrorDomain", "com.apple.coreaudio.avfaudio": "avfoundation"
+        case NSPOSIXErrorDomain: "posix"
+        default: "other"
+        }
+    }
+
     /// Reply-status strings the playback controller sets on failure, as tokens. Other statuses are not failures.
     nonisolated static func playbackFailure(_ status: String) -> String? {
         [
@@ -245,7 +255,14 @@ extension DeviceDiagnostics {
             record(.echoGuard, busy ? [.on: .boolean(true)] : [.on: .boolean(false), .ms: .integer(tail)])
         }
         for failure in failures.subtracting(lastPlayback.failures).sorted() {
-            record(.replyPlaybackError, [.code: .token(String(failure.split(separator: "|").last ?? "other"))])
+            let code = String(failure.split(separator: "|").last ?? "other")
+            var fields: [DiagnosticField: DiagnosticValue] = [.code: .token(code)]
+            // Which call failed, by domain and numeric code only, so a device failure can be diagnosed (#282).
+            if code == "playback_failed", let error = playback.lastPlaybackError {
+                fields[.domain] = .token(Self.errorDomain(error.domain))
+                fields[.error] = .integer(Int64(error.code))
+            }
+            record(.replyPlaybackError, fields)
         }
         lastPlayback = (busy, failures)
     }

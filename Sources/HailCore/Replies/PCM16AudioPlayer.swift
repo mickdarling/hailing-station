@@ -108,6 +108,10 @@ public final class PCM16AudioPlayer: ReplyAudioPlaying {
     private func prepare() throws {
         // A capture engine the system stopped underneath us is never restarted here: that would reopen the mic.
         if engine !== ownEngine, !engine.isRunning { route(through: nil) }
+        // On a running capture engine the session is already play-and-record and active (capture set it up).
+        // Re-applying the category or activation from the background made the first background reply fail
+        // with `playback_failed` on device (#282), so leave the session to its owner.
+        if engine !== ownEngine { return }
         #if os(iOS)
         let session = AVAudioSession.sharedInstance()
         if !didConfigureAudioSession {
