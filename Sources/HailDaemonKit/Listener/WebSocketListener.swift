@@ -491,15 +491,19 @@ extension AmbientRightyoRouter {
             guard !state.shuttingDown else { return false }
             state.active = (stream, pipeline)
             state.runs[stream] = Run(connection: connection, pipeline: pipeline)
-            // Created under the lock, so the run's own removal cannot precede its registration.
-            state.runs[stream]?.task = Task { [weak self] in await self?.run(pipeline, stream, connection) }
+            // Created under the lock, so the run's own removal cannot precede its registration. The run's own task
+            // emits `ambient_started` first, so it always precedes that run's `ambient_ended`, even when a child
+            // exits at once beside another live run (#273).
+            state.runs[stream]?.task = Task { [weak self] in
+                self?.emit("ambient_started", detail: nil)
+                await self?.run(pipeline, stream, connection)
+            }
             return true
         }
         guard admitted else {
             Task { await pipeline.stop() }
             return
         }
-        emit("ambient_started", detail: nil)
     }
 
     private func run(_ pipeline: RightyoAmbientPipeline, _ stream: UUID, _ connection: UUID) async {
