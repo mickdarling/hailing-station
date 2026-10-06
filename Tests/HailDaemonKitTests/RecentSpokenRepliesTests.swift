@@ -47,9 +47,9 @@ import Testing
         spoken.observe(text())
         spoken.observe(audio(seconds: 6, sequence: 0))
         clock.advance(by: .seconds(6) + RecentSpokenReplies.hold - .milliseconds(100))
-        #expect(spoken.isEcho("reaches your phone quickly"))
+        #expect(spoken.isEcho("the first sentence reaches your phone quickly"))
         clock.advance(by: .milliseconds(200))
-        #expect(!spoken.isEcho("reaches your phone quickly"))
+        #expect(!spoken.isEcho("the first sentence reaches your phone quickly"))
     }
 
     @Test func mickTalkingOverTheReplyIsNotEcho() {
@@ -60,6 +60,9 @@ import Testing
         #expect(!spoken.isEcho("hold on, what is the status of the build"))
         // Barely overlapping: one shared pair out of five is far under the threshold.
         #expect(!spoken.isEcho("no the relay is broken again today"))
+        // Follow-ups that reuse the reply's phrases (PR #275 review) stay below the threshold.
+        #expect(!spoken.isEcho("wait, the streaming relay is up?"))
+        #expect(!spoken.isEcho("so the first sentence reaches my phone how quickly"))
     }
 
     @Test func shortCommandsAreNeverEchoEvenWhenTheReplyContainsThem() {
@@ -68,11 +71,52 @@ import Testing
         spoken.observe(text())
         #expect(!spoken.isEcho("sir"))
         #expect(!spoken.isEcho("status update"))
+        #expect(!spoken.isEcho("the relay is up?"))
     }
 
     @Test func withoutARecentReplyNothingIsEcho() {
         let spoken = RecentSpokenReplies()
         #expect(!spoken.isEcho("the streaming relay is up and the first sentence"))
+    }
+}
+#endif
+
+#if os(macOS)
+/// Through the consumer (PR #275 review): the filter sees the heard turn, not the built prompt, whose JSON
+/// envelope and reply block would bury the echo's word pairs.
+extension RightyoInputConsumerTests {
+    func echoTurn(_ text: String) -> [String: Any] {
+        var heard = turn()
+        heard["text"] = text
+        return heard
+    }
+
+    @Test func heardEchoOfTheSpokenReplyIsDroppedBeforeDispatch() async throws {
+        let spoken = RecentSpokenReplies()
+        let reply = ReplyDescriptor(id: UUID(), hostID: "mac-test", targetID: "tmux:demo", audioStreamID: nil,
+                                    requestID: UUID())
+        spoken.observe(Frame(timestamp: 0, target: "tmux:demo", source: "mac-test", payload: .text(TextPayload(
+            text: "The streaming relay is up, and the first sentence reaches your phone quickly.", reply: reply))))
+        let dispatcher = RecordingDispatcher()
+        let consumer = try RightyoInputConsumer(host: nil, target: "tmux:demo", binding: "pinned", session: session,
+                                                allowSynthetic: true, dispatcher: dispatcher,
+                                                echoFilter: { spoken.isEcho($0) })
+        _ = try await consumer.consume(start())
+        let echo = try await preparedRequest(consumer, customTurn: echoTurn("the first sentence reaches your phone"))
+        #expect(try await !consumer.consume(echo))
+        #expect(await dispatcher.calls.isEmpty)
+        #expect(await consumer.echoDropped == 1)
+    }
+
+    @Test func micksOwnRequestPassesTheEchoFilter() async throws {
+        let dispatcher = RecordingDispatcher()
+        let consumer = try RightyoInputConsumer(host: nil, target: "tmux:demo", binding: "pinned", session: session,
+                                                allowSynthetic: true, dispatcher: dispatcher,
+                                                echoFilter: { _ in false })
+        _ = try await consumer.consume(start())
+        #expect(try await consumer.consume(preparedRequest(consumer)))
+        #expect(await dispatcher.calls.count == 1)
+        #expect(await consumer.echoDropped == 0)
     }
 }
 #endif

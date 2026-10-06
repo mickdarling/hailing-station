@@ -481,9 +481,9 @@ extension AmbientRightyoRouter {
             pipeline = try RightyoAmbientPipeline(configuration: .init(
                 executable: configuration.executable, config: configuration.config, target: configuration.target,
                 binding: configuration.binding, connection: connection,
-                allowSynthetic: configuration.allowSynthetic, timing: configuration.timing
-            ), dispatcher: AmbientListenerDispatcher(listener: listener, audit: configuration.audit,
-                                                     spokenReplies: spokenReplies))
+                allowSynthetic: configuration.allowSynthetic, timing: configuration.timing,
+                isEcho: { [spokenReplies] heard in spokenReplies.isEcho(heard) }
+            ), dispatcher: AmbientListenerDispatcher(listener: listener, audit: configuration.audit))
         } catch {
             return refuse(stream, connection: connection, reason: Self.describe(error))
         }
@@ -507,7 +507,7 @@ extension AmbientRightyoRouter {
         do {
             let summary = try await pipeline.run()
             emit("ambient_ended", detail: "delivered=\(summary.delivered) written=\(summary.child.writtenBytes)"
-                 + " dropped=\(summary.child.droppedBytes) exit=\(summary.exit)")
+                 + " dropped=\(summary.child.droppedBytes) echo=\(await pipeline.echoDropped) exit=\(summary.exit)")
         } catch {
             failure = Self.describe(error)
             emit("ambient_ended", detail: failure)
@@ -555,11 +555,7 @@ extension AmbientRightyoRouter {
 struct AmbientListenerDispatcher: RightyoAmbientDispatching {
     let listener: WebSocketListener
     let audit: AuditLog?
-    var spokenReplies: RecentSpokenReplies?
     func dispatch(_ request: LocalDispatchRequest) async throws -> UUID? {
-        // The assistant's own reply heard back through the mic (#269): dropped, never dispatched or audited.
-        // No reply is owned, so the stream continues as for an adapter that cannot reply.
-        if spokenReplies?.isEcho(request.text) == true { return nil }
         if let audit {
             do {
                 _ = try await audit.record(.pushed(tool: "ambient-dispatch", target: request.target,

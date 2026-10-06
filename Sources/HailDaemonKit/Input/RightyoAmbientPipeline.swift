@@ -1,6 +1,9 @@
 #if os(macOS)
+// Ambient pipeline and its own-voice filter (#269) form one review boundary within the four-file budget.
+// swiftlint:disable file_length
 import Darwin
 public import Foundation
+import HailProtocol
 import Synchronization
 
 /// The final delivery step for ambient RightyO requests (#203): the daemon's own local dispatch for one named
@@ -44,11 +47,15 @@ public final class RightyoAmbientPipeline: Sendable {
         /// Admit requests whose turns are not `live-microphone`. Tests only; the daemon leaves it false.
         public var allowSynthetic: Bool
         public var timing: RightyoChildProcess.Timing
+        /// Own-voice rejection (#269): heard text this returns true for is never dispatched.
+        public var isEcho: (@Sendable (String) -> Bool)?
 
         public init(executable: URL, config: URL, target: String, binding: String, connection: UUID,
-                    allowSynthetic: Bool = false, timing: RightyoChildProcess.Timing = .init()) {
+                    allowSynthetic: Bool = false, timing: RightyoChildProcess.Timing = .init(),
+                    isEcho: (@Sendable (String) -> Bool)? = nil) {
             (self.executable, self.config, self.target, self.binding) = (executable, config, target, binding)
             (self.connection, self.allowSynthetic, self.timing) = (connection, allowSynthetic, timing)
+            self.isEcho = isEcho
         }
     }
 
@@ -70,7 +77,7 @@ public final class RightyoAmbientPipeline: Sendable {
         let step = RightyoAmbientDispatchStep(connection: configuration.connection, dispatcher: dispatcher)
         consumer = try RightyoInputConsumer(host: nil, target: configuration.target, binding: configuration.binding,
                                             session: session, allowSynthetic: configuration.allowSynthetic,
-                                            dispatcher: step)
+                                            dispatcher: step, echoFilter: configuration.isEcho)
         child = try RightyoChildProcess(executable: configuration.executable, config: configuration.config,
                                         session: session, timing: configuration.timing)
         self.session = session
@@ -87,6 +94,8 @@ public final class RightyoAmbientPipeline: Sendable {
     public func stop() async { await child.stop() }
 
     public var counters: RightyoChildProcess.Counters { child.counters }
+    /// Requests dropped as the host's own reply heard back (#269). A count only.
+    public var echoDropped: Int { get async { await consumer.echoDropped } }
 
     /// Consumes the child's events until it ends. Returns after a clean terminal session event and EOF; throws
     /// the first decode, consumer, dispatch or transport error. Either way the child is stopped and reaped.
@@ -192,5 +201,92 @@ final class RightyoByteCount: Sendable {
 public enum RightyoAudioProvenance: String, Sendable {
     case liveMicrophone = "live-microphone", recordedFile = "recorded-file", causalReplay = "causal-replay"
     case synthetic
+}
+/// Own-voice rejection for ambient listening (#269 stage 1). Once the phone's mic stays open while a reply plays,
+/// echo cancellation can leak some of the reply back into RightyO, which could then dispatch the assistant's own
+/// words as a request. The host knows exactly what it is speaking, so an ambient request whose words largely
+/// repeat a reply that is playing, or just finished, is dropped. Kept in memory only, never logged.
+final class RecentSpokenReplies: Sendable {
+    /// How long after a reply's estimated end of playback its words still count as "just said": phone buffering,
+    /// network delay and RightyO's own endpointing all land after the last sample is sent.
+    static let hold: Duration = .seconds(4)
+    /// Fraction of a heard request's word pairs found in a reply that marks it as the reply's echo. High on purpose:
+    /// Mick's follow-ups reuse the reply's phrases ("wait, the streaming relay is up?" scores 0.8), and an echo
+    /// that slips through still faces RightyO's own decision, while a wrongly dropped request is just lost.
+    static let echoThreshold = 0.85
+    static let maxReplies = 8
+    /// Shorter requests are never treated as echo: "stop", "wait" or a short quoted question must reach the
+    /// assistant even when the reply itself contains the words.
+    static let minimumWords = 5
+
+    private struct Reply {
+        var words: [String]
+        var audioSeconds: Double = 0
+        var firstAudio: ContinuousClock.Instant?
+        var lastSeen: ContinuousClock.Instant
+        var expires: ContinuousClock.Instant {
+            let playEnd = firstAudio.map { $0.advanced(by: .seconds(audioSeconds)) } ?? lastSeen
+            return max(playEnd, lastSeen).advanced(by: RecentSpokenReplies.hold)
+        }
+    }
+
+    private let replies = Mutex<[UUID: Reply]>([:])
+    private let now: @Sendable () -> ContinuousClock.Instant
+
+    init(now: @escaping @Sendable () -> ContinuousClock.Instant = { ContinuousClock.now }) {
+        self.now = now
+    }
+
+    /// Records a reply frame the host delivered: its text, or how much audio it has sent so far.
+    func observe(_ frame: Frame) {
+        let instant = now()
+        replies.withLock { replies in
+            switch frame.payload {
+            case .text(let text):
+                guard let reply = text.reply else { return }
+                replies[reply.id, default: Reply(words: [], lastSeen: instant)].words = Self.words(text.text)
+                replies[reply.id]?.lastSeen = instant
+            case .audio(let audio):
+                guard let reply = audio.reply, audio.codec == .pcm16, audio.sampleRate > 0, audio.channels > 0 else {
+                    return
+                }
+                var entry = replies[reply.id] ?? Reply(words: [], lastSeen: instant)
+                entry.firstAudio = entry.firstAudio ?? instant
+                entry.audioSeconds += Double(audio.bytes.count) / Double(2 * audio.channels * audio.sampleRate)
+                entry.lastSeen = instant
+                replies[reply.id] = entry
+            default: return
+            }
+            replies = replies.filter { $0.value.expires > instant }
+            while replies.count > Self.maxReplies,
+                  let oldest = replies.min(by: { $0.value.lastSeen < $1.value.lastSeen }) {
+                replies.removeValue(forKey: oldest.key)
+            }
+        }
+    }
+
+    /// True when `heard` reads as the echo of a reply still playing or within `hold` of its end.
+    func isEcho(_ heard: String) -> Bool {
+        let instant = now()
+        let heardWords = Self.words(heard)
+        guard heardWords.count >= Self.minimumWords else { return false }
+        return replies.withLock { replies in
+            replies.values.contains { $0.expires > instant && Self.overlap(heardWords, $0.words) >= Self.echoThreshold }
+        }
+    }
+
+    /// Lower-cased letter/digit runs, so punctuation and transcription casing don't matter.
+    static func words(_ text: String) -> [String] {
+        text.lowercased().split { !$0.isLetter && !$0.isNumber }.map(String.init)
+    }
+
+    /// Fraction of `heard`'s adjacent word pairs that also occur in `reply`.
+    static func overlap(_ heard: [String], _ reply: [String]) -> Double {
+        guard heard.count > 1, reply.count > 1 else { return 0 }
+        let replyPairs = Set(zip(reply, reply.dropFirst()).map { "\($0) \($1)" })
+        let heardPairs = zip(heard, heard.dropFirst()).map { "\($0) \($1)" }
+        let found = heardPairs.filter { replyPairs.contains($0) }.count
+        return Double(found) / Double(heardPairs.count)
+    }
 }
 #endif
