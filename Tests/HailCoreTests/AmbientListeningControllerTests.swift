@@ -62,6 +62,17 @@ import Testing
         #expect(harness.capture.startCount == 1)
     }
 
+    @Test func listeningChangesAreReportedWithoutAViewUpdate() async throws {
+        // #282: the kept background authorization follows this callback, not SwiftUI onChange.
+        let harness = Harness()
+        var reported: [Bool] = []
+        harness.controller.onListeningChange = { reported.append($0) }
+        await harness.controller.turnOn(for: try binding())
+        await harness.controller.update(binding: try binding(), scene: .background)
+        await harness.controller.turnOff()
+        #expect(reported == [true, false])
+    }
+
     @Test func inTheBackgroundABindingChangeStillEndsTheStream() async throws {
         let harness = Harness()
         let current = try binding()

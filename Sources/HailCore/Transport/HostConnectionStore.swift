@@ -274,7 +274,12 @@ public final class AmbientListeningController {
     /// The toggle: true from the user's request until any stop.
     public private(set) var isOn = false
     /// True only while microphone audio is actually streaming.
-    public private(set) var isListening = false
+    public private(set) var isListening = false {
+        didSet { if isListening != oldValue { onListeningChange?(isListening) } }
+    }
+    /// Told whenever `isListening` changes, without a view update, so state that must hold in the background
+    /// (the kept destination authorization, #282) follows it there too.
+    @ObservationIgnored public var onListeningChange: (@MainActor (Bool) -> Void)?
     public private(set) var stopReason: String?
     public private(set) var binding: AmbientAudioBinding?
 

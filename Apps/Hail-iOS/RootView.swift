@@ -62,7 +62,9 @@ struct RootView: View {
                     guard scenePhaseRevision == revision,
                           scenePhase == .active else { return }
                     await reconcileRememberedSelection()
-                } else {
+                } else if !connections.ambientStreaming {
+                    // Ambient listening keeps the audio session active in the background (#282): deactivating it
+                    // would stop capture and let iOS suspend the app. The controller releases it when it stops.
                     await audioRoutes.sceneBecameInactive()
                 }
             }

@@ -190,6 +190,8 @@ struct AmbientListeningCard: View {
             send: { [connections] payload, binding in try await connections.sendAudio(payload, to: binding) }
         )
         controller.diagnostics = diagnostics
+        // From the controller, not a view update, so the flag stays right in the background (#282).
+        controller.onListeningChange = { [connections] listening in connections.ambientStreaming = listening }
         _controller = State(initialValue: controller)
     }
 
@@ -249,9 +251,6 @@ struct AmbientListeningCard: View {
         .onDisappear {
             connections.ambientStreaming = false
             Task { await controller.turnOff() }
-        }
-        .onChange(of: controller.isListening, initial: true) { _, listening in
-            connections.ambientStreaming = listening
         }
         .onAppear { echoGuard.masksDuringReplies = masksDuringReplies }
         .onChange(of: masksDuringReplies) { _, masks in echoGuard.masksDuringReplies = masks }
