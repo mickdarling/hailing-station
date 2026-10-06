@@ -1,3 +1,5 @@
+// Reply routing through the capture engine (#269) stays beside the guard/player it changes, within the four-file budget.
+// swiftlint:disable file_length
 import AVFoundation
 public import HailProtocol
 
@@ -9,7 +11,10 @@ public enum ReplyAudioPlayerError: Error, Equatable, Sendable {
 /// AVAudioEngine renderer for the raw signed 16-bit, mono stream produced by the current vbsay bridge.
 @MainActor
 public final class PCM16AudioPlayer: ReplyAudioPlaying {
-    private let engine = AVAudioEngine()
+    private let ownEngine = AVAudioEngine()
+    /// The engine replies play through: our own, or a voice-processing capture engine while ambient listening runs,
+    /// so its echo canceller hears the reply as the far end (#269).
+    private var engine: AVAudioEngine
     private let node = AVAudioPlayerNode()
     private let sourceFormat: AVAudioFormat
     #if os(iOS)
@@ -21,6 +26,7 @@ public final class PCM16AudioPlayer: ReplyAudioPlaying {
             preconditionFailure("Hailing Station PCM playback format is unavailable")
         }
         self.sourceFormat = sourceFormat
+        engine = ownEngine
         engine.attach(node)
         // Player buffers must match this output format. The mixer owns conversion to the current
         // hardware route (normally 48 kHz and possibly stereo on iPhone/iPad).
@@ -79,7 +85,29 @@ public final class PCM16AudioPlayer: ReplyAudioPlaying {
         }
     }
 
+    /// Moves playback onto `capture` (a running voice-processing engine), or back to our own engine with nil.
+    /// Moving stops whatever is queued; callers do it when listening starts or stops, not mid-reply.
+    func route(through capture: AVAudioEngine?) {
+        let target = capture ?? ownEngine
+        guard target !== engine else { return }
+        node.stop()
+        engine.detach(node)
+        if engine === ownEngine { ownEngine.stop() }
+        target.attach(node)
+        target.connect(node, to: target.mainMixerNode, format: sourceFormat)
+        engine = target
+    }
+
+    /// True while replies play through a capture engine's echo canceller.
+    var isRoutedThroughCapture: Bool { engine !== ownEngine && engine.isRunning }
+
+    /// Whether playback sits on a capture engine other than `capture` (a newer run's), which an older run's
+    /// late detach must leave alone.
+    func isOnAnotherCapture(than capture: AVAudioEngine) -> Bool { engine !== ownEngine && engine !== capture }
+
     private func prepare() throws {
+        // A capture engine the system stopped underneath us is never restarted here: that would reopen the mic.
+        if engine !== ownEngine, !engine.isRunning { route(through: nil) }
         #if os(iOS)
         let session = AVAudioSession.sharedInstance()
         if !didConfigureAudioSession {
