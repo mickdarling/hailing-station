@@ -43,31 +43,34 @@ import Testing
         #expect(harness.released == 1)
     }
 
-    @Test func leavingTheForegroundStopsStreamingAndReturningDoesNotRestart() async throws {
+    @Test func aRunningStreamKeepsListeningInTheBackgroundAndOnReturn() async throws {
+        // #282: Hailing Station lives in the background while ambient listening is on.
         let harness = Harness()
         let current = try binding()
         await harness.controller.turnOn(for: current)
         #expect(harness.controller.isListening)
 
         await harness.controller.update(binding: current, scene: .inactive)
-        #expect(!harness.controller.isOn)
-        #expect(!harness.controller.isListening)
-        #expect(harness.capture.stopCount >= 1)
-        #expect(harness.released == 1)
-        #expect(harness.controller.stopReason?.contains("foreground") == true)
+        await harness.controller.update(binding: current, scene: .background)
+        #expect(harness.controller.isOn)
+        #expect(harness.controller.isListening)
+        #expect(harness.capture.stopCount == 0)
+        #expect(harness.released == 0)
 
         await harness.controller.update(binding: current, scene: .active)
-        #expect(!harness.controller.isOn)
+        #expect(harness.controller.isListening)
         #expect(harness.capture.startCount == 1)
     }
 
-    @Test func backgroundAlsoStopsStreaming() async throws {
+    @Test func inTheBackgroundABindingChangeStillEndsTheStream() async throws {
         let harness = Harness()
         let current = try binding()
         await harness.controller.turnOn(for: current)
         await harness.controller.update(binding: current, scene: .background)
+        await harness.controller.update(binding: try binding(target: "tmux:other"), scene: .background)
         #expect(!harness.controller.isOn)
         #expect(!harness.controller.isListening)
+        #expect(harness.controller.stopReason?.contains("destination") == true)
     }
 
     @Test func targetChangeEndsTheStreamAndTheToggleReturnsToOff() async throws {

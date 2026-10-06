@@ -30,9 +30,9 @@ import Testing
 
         await controller.update(binding: current, scene: .active)
         #expect(controller.isListening)
+        // Once streaming, the background no longer stops it (#282).
         await controller.update(binding: current, scene: .background)
-        #expect(!controller.isOn)
-        #expect(!controller.isListening)
+        #expect(controller.isListening)
     }
 
     @Test func backgroundingDuringThePermissionRequestCancelsIt() async throws {

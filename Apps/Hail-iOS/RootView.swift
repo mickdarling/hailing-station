@@ -50,7 +50,9 @@ struct RootView: View {
             scenePhaseRevision &+= 1
             selectionRevision &+= 1
             let revision = scenePhaseRevision
-            if phase != .active {
+            // While ambient listening streams, the destination stays authorized in the background so the stream
+            // and its replies continue (#282); returning to the foreground re-checks it as before.
+            if phase != .active, !connections.ambientStreaming {
                 selectionAuthorizedForReadyConnection = false
                 authorizedConnectionGeneration = nil
             }
@@ -65,12 +67,14 @@ struct RootView: View {
                 }
             }
         }
-        .onChange(of: connections.replyFrames) { _, frames in
-            for frame in frames { playback.ingest(frame) }
-        }
         .onChange(of: connections.hosts) { _, _ in
             guard scenePhase == .active else { return }
             Task { await reconcileRememberedSelection() }
+        }
+        .task {
+            // Directly from the store, not a view update, so replies also play in the background (#282).
+            let playback = playback
+            connections.onReplyFrame = { playback.ingest($0) }
         }
         .task {
             await audioRoutes.observe()

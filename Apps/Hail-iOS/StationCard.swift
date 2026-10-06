@@ -164,6 +164,7 @@ struct AmbientListeningCard: View {
     let hostName: String
     let playback: ReplyPlaybackController
     let echoGuard: AmbientReplyEchoGuard
+    let connections: HostConnectionStore
     @State private var controller: AmbientListeningController
     @AppStorage("ambient.masksDuringReplies") private var masksDuringReplies = false
     @Environment(\.scenePhase) private var scenePhase
@@ -177,6 +178,7 @@ struct AmbientListeningCard: View {
         self.hostName = hostName
         self.playback = playback
         self.echoGuard = echoGuard
+        self.connections = connections
         let controller = AmbientListeningController(
             requestPermission: requestMicrophonePermission,
             makeStreamer: { send in
@@ -244,7 +246,13 @@ struct AmbientListeningCard: View {
         .onChange(of: scenePhase) { _, _ in
             Task { await controller.update(binding: binding, scene: scene) }
         }
-        .onDisappear { Task { await controller.turnOff() } }
+        .onDisappear {
+            connections.ambientStreaming = false
+            Task { await controller.turnOff() }
+        }
+        .onChange(of: controller.isListening, initial: true) { _, listening in
+            connections.ambientStreaming = listening
+        }
         .onAppear { echoGuard.masksDuringReplies = masksDuringReplies }
         .onChange(of: masksDuringReplies) { _, masks in echoGuard.masksDuringReplies = masks }
     }

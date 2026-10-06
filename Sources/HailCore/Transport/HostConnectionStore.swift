@@ -12,6 +12,11 @@ public final class HostConnectionStore {
     /// A bounded ingress history for the playback coordinator. Audio is not associated by arrival order;
     /// consumers group these frames by the reply and stream identities carried in every frame.
     public private(set) var replyFrames: [HostReplyEvent] = []
+    /// Called for every reply frame as it arrives, so replies reach the player while the app is in the background,
+    /// when SwiftUI view updates such as `onChange` may not run (#282).
+    @ObservationIgnored public var onReplyFrame: (@MainActor (HostReplyEvent) -> Void)?
+    /// True while ambient listening is streaming; leaving the foreground then keeps the destination authorized (#282).
+    public var ambientStreaming = false
 
     /// Bumped on every target selection, per host, so an ambient stream ends on any target change (#203).
     private var selectionSerials: [HostEndpoint.Identifier: UInt64] = [:]
@@ -172,6 +177,7 @@ public final class HostConnectionStore {
     private func receive(_ event: HostReplyEvent, token: UUID) {
         guard tokens[event.endpointID] == token else { return }
         replyFrames.append(event)
+        onReplyFrame?(event)
         if replyFrames.count > Self.replyFrameLimit {
             replyFrames.removeFirst(replyFrames.count - Self.replyFrameLimit)
         }
@@ -253,9 +259,10 @@ public struct AmbientAudioBinding: Hashable, Sendable {
 /// Scene state as the ambient toggle needs it; the app maps SwiftUI's `ScenePhase` onto it.
 public enum AmbientScene: Sendable { case active, inactive, background }
 
-/// The "Ambient listening" toggle (#203). Off on every launch and never restarts by itself: leaving the
-/// foreground, a binding change (target, reconnect), a send failure or the microphone ending turns it off, and
-/// the user must turn it on again. Audio is never logged; `stopReason` carries only the cause.
+/// The "Ambient listening" toggle (#203). Off on every launch and never restarts by itself: a binding change
+/// (target, reconnect), a send failure or the microphone ending turns it off, and the user must turn it on again.
+/// Once streaming, it keeps running when the app leaves the foreground (#282); it only starts in the foreground.
+/// Audio is never logged; `stopReason` carries only the cause.
 @MainActor
 @Observable
 public final class AmbientListeningController {
@@ -332,8 +339,9 @@ public final class AmbientListeningController {
 
     public func turnOff() async { await end(session, reason: nil, cause: "user") }
 
-    /// Called on every scene or binding change. Streaming runs only in the foreground for the binding it began
-    /// with; anything else ends it.
+    /// Called on every scene or binding change. Streaming starts only in the foreground, for the binding it began
+    /// with. A running stream survives the background (#282); one not yet started ends there, and any binding
+    /// change ends it.
     public func update(binding current: AmbientAudioBinding?, scene: AmbientScene) async {
         let previous = self.scene
         self.scene = scene
@@ -349,6 +357,8 @@ public final class AmbientListeningController {
         case .active:
             break
         case .inactive where awaitingPermission || (pendingStart && previous == .inactive):
+            break
+        case .inactive where isListening, .background where isListening:
             break
         case .inactive, .background:
             await end(session, reason: "Stopped: Hailing Station left the foreground.", cause: "background")
