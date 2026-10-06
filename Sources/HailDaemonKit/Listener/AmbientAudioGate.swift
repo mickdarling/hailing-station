@@ -32,7 +32,9 @@ public actor AmbientAudioGate {
     public static let maxSegmentBytes = 8 * 1024
     public static let bytesPerSecond = 40 * 1024
     public static let burstBytes = 2 * bytesPerSecond
-    public static let idleTimeout = Duration.seconds(5)
+    /// Long enough for a phone listening in the background, where iOS can pause sends for several seconds without
+    /// an interruption (5 s ended a live stream on device, #282). A real disconnect still ends it at once.
+    public static let idleTimeout = Duration.seconds(30)
     /// Default bound on remembered ended ids (16 B each, about 64 KB); the oldest is evicted at the bound.
     public static let defaultEndedStreamCapacity = 4_096
 
