@@ -3,6 +3,8 @@ import AVFAudio
 import HailCore
 import Speech
 import SwiftUI
+import UIKit
+import UserNotifications
 
 extension View {
     func stationCard(minHeight: CGFloat = 320) -> some View {
@@ -192,12 +194,14 @@ struct AmbientListeningCard: View {
         controller.diagnostics = diagnostics
         // From the controller, not a view update, so the flag stays right in the background (#282).
         controller.onListeningChange = { [connections] listening in connections.ambientStreaming = listening }
+        controller.onUnexpectedStop = { AmbientStopNotifier.post($0) }
         _controller = State(initialValue: controller)
     }
 
     var body: some View {
         VStack(alignment: .leading, spacing: 10) {
             Toggle(isOn: Binding(get: { controller.isOn }, set: { on in
+                if on { AmbientStopNotifier.requestAuthorization() }
                 Task { on ? await controller.turnOn(for: binding) : await controller.turnOff() }
             })) {
                 Label("Ambient listening", systemImage: "ear")
@@ -250,7 +254,7 @@ struct AmbientListeningCard: View {
         }
         .onDisappear {
             connections.ambientStreaming = false
-            Task { await controller.turnOff() }
+            Task { await controller.destinationLost() }
         }
         .onAppear { echoGuard.masksDuringReplies = masksDuringReplies }
         .onChange(of: masksDuringReplies) { _, masks in echoGuard.masksDuringReplies = masks }
@@ -262,6 +266,25 @@ struct AmbientListeningCard: View {
         case .background: .background
         default: .inactive
         }
+    }
+}
+
+/// Tells Mick when ambient listening stops while another app is in front (#287): a banner with the reason and
+/// the default sound. In the foreground the card already shows the reason, so nothing is posted.
+@MainActor
+enum AmbientStopNotifier {
+    static func requestAuthorization() {
+        Task { _ = try? await UNUserNotificationCenter.current().requestAuthorization(options: [.alert, .sound]) }
+    }
+
+    static func post(_ reason: String) {
+        guard UIApplication.shared.applicationState != .active else { return }
+        let content = UNMutableNotificationContent()
+        content.title = "Hailing Station stopped listening"
+        content.body = reason
+        content.sound = .default
+        let request = UNNotificationRequest(identifier: "ambient-stop", content: content, trigger: nil)
+        UNUserNotificationCenter.current().add(request)
     }
 }
 

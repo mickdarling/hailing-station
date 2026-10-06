@@ -137,7 +137,7 @@ struct AmbientAudioEncoder {
 /// oldest is dropped so latency stays bounded; sequence numbers keep the gap visible to the host.
 actor AmbientAudioSendQueue {
     typealias Send = @Sendable (AudioPayload) async throws -> Void
-    typealias FailureHandler = @Sendable () async -> Void
+    typealias FailureHandler = @Sendable (AmbientAudioSendQueue, any Error) async -> Void
 
     private let send: Send
     private let onFailure: FailureHandler
@@ -185,7 +185,7 @@ actor AmbientAudioSendQueue {
             } catch {
                 failure = error
                 pending.removeAll()
-                await onFailure()
+                await onFailure(self, error)
             }
         }
         draining = false
@@ -253,6 +253,8 @@ actor AmbientCaptureBacklog {
 public final class AmbientAudioStreamer {
     public typealias Send = @Sendable (AudioPayload) async throws -> Void
     public typealias StreamIdentity = @Sendable () -> UUID
+    /// Asked after a send failure whether to continue on a fresh stream (#287); may wait out a backoff first.
+    public typealias Recovery = @MainActor (any Error) async -> Bool
 
     @ObservationIgnored private let capture: any AudioCapturing
     @ObservationIgnored private let send: Send
@@ -260,6 +262,14 @@ public final class AmbientAudioStreamer {
     @ObservationIgnored private let maxBacklogChunks: Int
     @ObservationIgnored private var pump: Task<Void, Never>?
     @ObservationIgnored private var queue: AmbientAudioSendQueue?
+    /// One per `start()`, so a recovered stream's new identity does not orphan the capture run.
+    @ObservationIgnored private var run: UUID?
+    /// Nil stops capture on the first send failure. Otherwise capture keeps running (the app stays alive in the
+    /// background) and, if this returns true, the next audio opens a new stream identity at sequence 0 (#287).
+    @ObservationIgnored public var recovery: Recovery?
+    /// The recovery decision for the current queue's failure, begun by whichever of the failed send or the pump
+    /// sees it first, and asked once.
+    @ObservationIgnored private var decision: (queue: AmbientAudioSendQueue, task: Task<Bool, Never>)?
 
     /// True from `start()` until the stream has sent its final segment or its sender failed.
     public private(set) var isStreaming = false
@@ -318,19 +328,48 @@ public final class AmbientAudioStreamer {
         let identity = makeStreamID()
         let encoder = try AmbientAudioEncoder(streamID: identity)
         let buffers = try capture.start()
-        // Ending capture on a send failure finishes the buffer stream, so the pump exits without new audio.
-        let queue = AmbientAudioSendQueue(maxPending: maxBacklogChunks, send: send) { [weak self] in
-            await self?.stopCapture(ifCurrent: identity)
-        }
+        let current = UUID()
+        let queue = makeQueue(run: current)
         self.queue = queue
+        run = current
         streamID = identity
         isStreaming = true
         let bounded = Self.bound(buffers, queue: queue)
         let beforeEncode = beforeEncode
         pump = Task.detached { [weak self] in
-            await Self.pump(bounded, encoder: encoder, queue: queue, beforeEncode: beforeEncode)
-            await self?.stopCapture(ifCurrent: identity, finished: true)
+            await Self.pump(bounded, encoder: encoder, queue: queue, beforeEncode: beforeEncode) { [weak self] in
+                await self?.renew($0, failure: $1, run: current)
+            }
+            await self?.stopCapture(ifRun: current, finished: true)
         }
+    }
+
+    /// Without a recovery, ending capture on a send failure finishes the buffer stream, so the pump exits
+    /// without new audio. With one, the pump asks it on the next buffer.
+    private func makeQueue(run current: UUID) -> AmbientAudioSendQueue {
+        AmbientAudioSendQueue(maxPending: maxBacklogChunks, send: send) { [weak self] failed, error in
+            await self?.sendFailed(failed, failure: error, run: current)
+        }
+    }
+
+    /// A fresh encoder and queue under a new stream identity, or nil (capture stopped) when recovery declines.
+    private func renew(
+        _ failed: AmbientAudioSendQueue, failure: any Error, run current: UUID
+    ) async -> (AmbientAudioEncoder, AmbientAudioSendQueue)? {
+        guard run == current, let task = decide(failed, failure: failure), await task.value,
+              run == current, pump != nil, failed === queue else {
+            stopCapture(ifRun: current)
+            return nil
+        }
+        let identity = makeStreamID()
+        guard let encoder = try? AmbientAudioEncoder(streamID: identity) else {
+            stopCapture(ifRun: current)
+            return nil
+        }
+        let queue = makeQueue(run: current)
+        self.queue = queue
+        streamID = identity
+        return (encoder, queue)
     }
 
     /// Stops capture, flushes the converter, sends the final segment, and waits for the backlog to drain.
@@ -340,10 +379,10 @@ public final class AmbientAudioStreamer {
         await pump.value
     }
 
-    private func stopCapture(ifCurrent identity: UUID, finished: Bool = false) {
-        guard streamID == identity, pump != nil else { return }
+    private func stopCapture(ifRun current: UUID, finished: Bool = false) {
+        guard run == current, pump != nil else { return }
         capture.stop()
-        if finished { pump = nil; isStreaming = false }
+        if finished { pump = nil; run = nil; isStreaming = false }
     }
 
     /// The capture seam's stream is unbounded and fed from the audio tap without blocking. A forwarder drains it
@@ -363,13 +402,24 @@ public final class AmbientAudioStreamer {
 
     private nonisolated static func pump(
         _ buffers: AmbientCaptureBacklog, encoder initial: AmbientAudioEncoder,
-        queue: AmbientAudioSendQueue, beforeEncode: (@Sendable () async -> Void)?
+        queue initialQueue: AmbientAudioSendQueue, beforeEncode: (@Sendable () async -> Void)?,
+        renew: @Sendable (AmbientAudioSendQueue, any Error) async -> (AmbientAudioEncoder, AmbientAudioSendQueue)?
     ) async {
         var encoder = initial
+        var queue = initialQueue
         var converted = true
         while let buffer = await buffers.next() {
             await beforeEncode?()
-            guard !(await queue.hasFailed), let segments = try? encoder.encode(buffer.pcmBuffer) else {
+            if let failure = await queue.failure {
+                guard let renewed = await renew(queue, failure) else {
+                    converted = false
+                    break
+                }
+                (encoder, queue) = renewed
+                // Taken before the backoff, so it may be seconds old: the new stream starts with fresh audio.
+                continue
+            }
+            guard let segments = try? encoder.encode(buffer.pcmBuffer) else {
                 converted = false
                 break
             }
@@ -378,5 +428,26 @@ public final class AmbientAudioStreamer {
         let tail = converted ? ((try? encoder.finish()) ?? encoder.abandon()) : encoder.abandon()
         for segment in tail { await queue.enqueue(segment) }
         await queue.waitUntilIdle()
+    }
+}
+
+/// Recovering from a send failure on a fresh stream (#287).
+extension AmbientAudioStreamer {
+    /// Decides at once, so a final refusal stops capture without waiting for more audio.
+    private func sendFailed(_ failed: AmbientAudioSendQueue, failure: any Error, run current: UUID) {
+        guard run == current, failed === queue else { return }
+        guard let task = decide(failed, failure: failure) else { return stopCapture(ifRun: current) }
+        Task { @MainActor [weak self] in
+            if !(await task.value) { self?.stopCapture(ifRun: current) }
+        }
+    }
+
+    /// The one recovery decision for `failed`, nil without a recovery or once a newer queue has replaced it.
+    private func decide(_ failed: AmbientAudioSendQueue, failure: any Error) -> Task<Bool, Never>? {
+        guard failed === queue, let recovery else { return nil }
+        if let decision, decision.queue === failed { return decision.task }
+        let task = Task { @MainActor in await recovery(failure) }
+        decision = (failed, task)
+        return task
     }
 }
