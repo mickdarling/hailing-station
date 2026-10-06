@@ -101,6 +101,10 @@ public final class PCM16AudioPlayer: ReplyAudioPlaying {
     /// True while replies play through a capture engine's echo canceller.
     var isRoutedThroughCapture: Bool { engine !== ownEngine && engine.isRunning }
 
+    /// Whether playback sits on a capture engine other than `capture` (a newer run's), which an older run's
+    /// late detach must leave alone.
+    func isOnAnotherCapture(than capture: AVAudioEngine) -> Bool { engine !== ownEngine && engine !== capture }
+
     private func prepare() throws {
         // A capture engine the system stopped underneath us is never restarted here: that would reopen the mic.
         if engine !== ownEngine, !engine.isRunning { route(through: nil) }

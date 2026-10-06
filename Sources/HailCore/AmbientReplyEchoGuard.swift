@@ -222,7 +222,9 @@ final class CaptureReplyRouting {
         echoGuard.setRoutedThroughCapture(player.isRoutedThroughCapture)
     }
 
+    /// A no-op once a newer run has attached: a quick off-on must not pull replies off the new engine.
     func detach() {
+        if let player = route.player, player.isOnAnotherCapture(than: engine) { return }
         echoGuard.setRoutedThroughCapture(false)
         route.player?.route(through: nil)
     }
