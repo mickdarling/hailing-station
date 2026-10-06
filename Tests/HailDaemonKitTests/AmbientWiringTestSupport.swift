@@ -1,6 +1,7 @@
 #if os(macOS)
 import Foundation
 import HailProtocol
+import Synchronization
 import Testing
 @testable import HailDaemonKit
 
@@ -17,14 +18,15 @@ struct AmbientWiringRig {
 
 func ambientRig(
     _ fake: FakeRightyo, timing: RightyoChildProcess.Timing, executable: URL? = nil,
-    shutdownGrace: TimeInterval = AmbientRightyoRouter.defaultShutdownGrace, audit: AuditLog? = nil
+    shutdownGrace: TimeInterval = AmbientRightyoRouter.defaultShutdownGrace, audit: AuditLog? = nil,
+    events: AmbientEventNames? = nil
 ) async throws -> AmbientWiringRig {
     let rig = try await RecipientTestRig.make()
     let connected = ConnectedPeerIDs()
     let router = AmbientRightyoRouter(configuration: .init(
         executable: executable ?? fake.executable, config: fake.config, target: RecipientTestRig.target,
         binding: "reply-binding", allowSynthetic: true, timing: timing, shutdownGrace: shutdownGrace, audit: audit
-    ))
+    ), log: { events?.record($0) })
     let gate = AmbientAudioGate(target: RecipientTestRig.target, sink: router, sweepInterval: nil)
     let listener = try WebSocketListener(
         bindAddress: "127.0.0.1", port: 0, host: rig.host,
@@ -33,6 +35,13 @@ func ambientRig(
     )
     return AmbientWiringRig(rig: rig, listener: listener, router: router, gate: gate, connected: connected,
                             port: try await listener.start())
+}
+
+/// Every listener event name, in emission order.
+final class AmbientEventNames: Sendable {
+    private let names = Mutex<[String]>([])
+    var all: [String] { names.withLock { $0 } }
+    func record(_ event: WebSocketListenerEvent) { names.withLock { $0.append(event.event) } }
 }
 
 func audio(_ stream: UUID, _ sequence: Int, final: Bool = false) -> Frame {
