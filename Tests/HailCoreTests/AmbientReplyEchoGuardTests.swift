@@ -32,6 +32,21 @@ final class EchoGuardClock: Sendable {
         #expect(!echoGuard.isMasking)
     }
 
+    @Test func echoCancelledRepliesLeaveTheMicrophoneOpenUnlessTheABSwitchMasks() {
+        // #269: replies routed through the capture's echo canceller are not masked; the A/B switch restores #227.
+        let clock = EchoGuardClock()
+        let echoGuard = AmbientReplyEchoGuard(tail: .milliseconds(400), now: { clock.now })
+        echoGuard.setRoutedThroughCapture(true)
+        echoGuard.setReplyAudible(true)
+        #expect(echoGuard.isEchoCancelling)
+        #expect(!echoGuard.isMasking)
+        echoGuard.masksDuringReplies = true
+        #expect(echoGuard.isMasking)
+        echoGuard.masksDuringReplies = false
+        echoGuard.setRoutedThroughCapture(false)
+        #expect(echoGuard.isMasking) // Not routed: masking remains the fallback.
+    }
+
     @Test func aRepeatedQuietReportDoesNotRestartTheTail() {
         let clock = EchoGuardClock()
         let echoGuard = AmbientReplyEchoGuard(tail: .milliseconds(400), now: { clock.now })

@@ -156,13 +156,16 @@ extension RootView {
 }
 
 /// The toggle starts off whenever the card appears, stops when the scene leaves `.active`, when the binding
-/// changes and when the card goes away, and never restarts by itself. Replies play while it is on (#227); the
-/// echo guard sends silence to the host while one is audible, and the card says "Speaking" meanwhile.
+/// changes and when the card goes away, and never restarts by itself. Replies play while it is on (#227) through
+/// the capture's echo canceller, so the mic stays open and Mick can talk over them (#269). "Mask mic while
+/// speaking" restores the #227 behaviour (silence to the host while a reply is audible) for A/B comparison.
 struct AmbientListeningCard: View {
     let binding: AmbientAudioBinding
     let hostName: String
     let playback: ReplyPlaybackController
+    let echoGuard: AmbientReplyEchoGuard
     @State private var controller: AmbientListeningController
+    @AppStorage("ambient.masksDuringReplies") private var masksDuringReplies = false
     @Environment(\.scenePhase) private var scenePhase
 
     init(
@@ -173,11 +176,12 @@ struct AmbientListeningCard: View {
         self.binding = binding
         self.hostName = hostName
         self.playback = playback
+        self.echoGuard = echoGuard
         let controller = AmbientListeningController(
             requestPermission: requestMicrophonePermission,
             makeStreamer: { send in
                 try await audioSession.activate()
-                let capture = echoGuard.masking(try AmbientReplyEchoGuard.voiceProcessingCapture())
+                let capture = try echoGuard.echoCancelledCapture()
                 return AmbientAudioStreamer(capture: capture, send: send)
             },
             releaseSession: { await audioSession.deactivate() },
@@ -196,6 +200,10 @@ struct AmbientListeningCard: View {
                     .font(.headline)
             }
             .accessibilityIdentifier("station.ambient-toggle")
+            Toggle("Mask mic while speaking", isOn: $masksDuringReplies)
+                .font(.subheadline)
+                .accessibilityHint("Sends silence while a reply plays, instead of relying on echo cancellation")
+                .accessibilityIdentifier("station.ambient-mask-toggle")
             if controller.isListening, playback.isReplyAudioOutputBusy {
                 Label("Speaking", systemImage: "speaker.wave.2.fill")
                     .font(.subheadline.bold())
@@ -203,7 +211,9 @@ struct AmbientListeningCard: View {
                     .padding(.horizontal, 12)
                     .padding(.vertical, 5)
                     .background(.blue, in: Capsule())
-                    .accessibilityLabel("Speaking a reply: sending silence to \(hostName) until it finishes")
+                    .accessibilityLabel(echoGuard.isMasking
+                        ? "Speaking a reply: sending silence to \(hostName) until it finishes"
+                        : "Speaking a reply: still listening, with echo cancellation")
                     .accessibilityIdentifier("station.ambient-speaking")
             } else if controller.isListening {
                 Label("Listening", systemImage: "mic.fill")
@@ -235,6 +245,8 @@ struct AmbientListeningCard: View {
             Task { await controller.update(binding: binding, scene: scene) }
         }
         .onDisappear { Task { await controller.turnOff() } }
+        .onAppear { echoGuard.masksDuringReplies = masksDuringReplies }
+        .onChange(of: masksDuringReplies) { _, masks in echoGuard.masksDuringReplies = masks }
     }
 
     private var scene: AmbientScene {
