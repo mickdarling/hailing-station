@@ -222,10 +222,13 @@ final class RecentSpokenReplies: Sendable {
     private struct Reply {
         var words: [String]
         var audioSeconds: Double = 0
+        /// When this reply's audio is estimated to start playing: its first frame, or later if it queued behind a
+        /// reply still playing (the phone plays replies one after another).
         var firstAudio: ContinuousClock.Instant?
         var lastSeen: ContinuousClock.Instant
+        var playEnd: ContinuousClock.Instant? { firstAudio.map { $0.advanced(by: .seconds(audioSeconds)) } }
         var expires: ContinuousClock.Instant {
-            let playEnd = firstAudio.map { $0.advanced(by: .seconds(audioSeconds)) } ?? lastSeen
+            let playEnd = playEnd ?? lastSeen
             return max(playEnd, lastSeen).advanced(by: RecentSpokenReplies.hold)
         }
     }
@@ -251,7 +254,10 @@ final class RecentSpokenReplies: Sendable {
                     return
                 }
                 var entry = replies[reply.id] ?? Reply(words: [], lastSeen: instant)
-                entry.firstAudio = entry.firstAudio ?? instant
+                if entry.firstAudio == nil {
+                    let queuedBehind = replies.values.compactMap(\.playEnd).max()
+                    entry.firstAudio = max(instant, queuedBehind ?? instant)
+                }
                 entry.audioSeconds += Double(audio.bytes.count) / Double(2 * audio.channels * audio.sampleRate)
                 entry.lastSeen = instant
                 replies[reply.id] = entry
@@ -271,7 +277,10 @@ final class RecentSpokenReplies: Sendable {
         let heardWords = Self.words(heard)
         guard heardWords.count >= Self.minimumWords else { return false }
         return replies.withLock { replies in
-            replies.values.contains { $0.expires > instant && Self.overlap(heardWords, $0.words) >= Self.echoThreshold }
+            // A text-only reply is never spoken, so its words cannot echo.
+            replies.values.contains {
+                $0.firstAudio != nil && $0.expires > instant && Self.overlap(heardWords, $0.words) >= Self.echoThreshold
+            }
         }
     }
 

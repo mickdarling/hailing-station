@@ -69,9 +69,32 @@ import Testing
         let clock = Clock()
         let spoken = RecentSpokenReplies(now: { clock.now })
         spoken.observe(text())
+        spoken.observe(audio(seconds: 6, sequence: 0))
         #expect(!spoken.isEcho("sir"))
         #expect(!spoken.isEcho("status update"))
         #expect(!spoken.isEcho("the relay is up?"))
+    }
+
+    @Test func aReplyQueuedBehindAnotherIsEchoUntilItsOwnLaterPlaybackEnds() {
+        // Codex P1 on #275: the phone plays replies in turn, so the second starts when the first ends.
+        let clock = Clock()
+        let spoken = RecentSpokenReplies(now: { clock.now })
+        let first = ReplyDescriptor(id: UUID(), hostID: "mac-test", targetID: "tmux:test", audioStreamID: UUID(),
+                                    requestID: UUID())
+        spoken.observe(Frame(timestamp: 0, target: "tmux:test", source: "mac-test", payload: .audio(AudioPayload(
+            codec: .pcm16, sampleRate: 24_000, channels: 1, sequence: 0, streamID: first.audioStreamID,
+            isFinal: false, bytes: Data(count: 20 * 48_000), reply: first))))
+        spoken.observe(text())
+        spoken.observe(audio(seconds: 6, sequence: 0)) // Plays from 20 s to 26 s, not from 0 s.
+        clock.advance(by: .seconds(26) + RecentSpokenReplies.hold - .milliseconds(100))
+        #expect(spoken.isEcho("the first sentence reaches your phone quickly"))
+    }
+
+    @Test func aTextOnlyReplyIsNeverEcho() {
+        // Codex P2 on #275: `haild reply --text` is shown, not spoken.
+        let spoken = RecentSpokenReplies()
+        spoken.observe(text())
+        #expect(!spoken.isEcho("the first sentence reaches your phone quickly"))
     }
 
     @Test func withoutARecentReplyNothingIsEcho() {
@@ -97,6 +120,9 @@ extension RightyoInputConsumerTests {
                                     requestID: UUID())
         spoken.observe(Frame(timestamp: 0, target: "tmux:demo", source: "mac-test", payload: .text(TextPayload(
             text: "The streaming relay is up, and the first sentence reaches your phone quickly.", reply: reply))))
+        spoken.observe(Frame(timestamp: 0, target: "tmux:demo", source: "mac-test", payload: .audio(AudioPayload(
+            codec: .pcm16, sampleRate: 24_000, channels: 1, sequence: 0, streamID: UUID(), isFinal: false,
+            bytes: Data(count: 48_000), reply: reply))))
         let dispatcher = RecordingDispatcher()
         let consumer = try RightyoInputConsumer(host: nil, target: "tmux:demo", binding: "pinned", session: session,
                                                 allowSynthetic: true, dispatcher: dispatcher,
