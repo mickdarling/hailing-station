@@ -26,10 +26,11 @@ extension TranscriptionLabView {
                     .accessibilityLabel("Last transcript")
             }
         }
+        // On iPad the transcript takes whatever height the one-screen station leaves (#288).
         .frame(
-            minHeight: horizontalSizeClass == .regular ? 240 : 150,
+            minHeight: horizontalSizeClass == .regular ? 120 : 150,
             idealHeight: horizontalSizeClass == .regular ? 320 : 190,
-            maxHeight: horizontalSizeClass == .regular ? 420 : 240
+            maxHeight: horizontalSizeClass == .regular ? .infinity : 240
         )
         .padding(12)
         .background(.quaternary, in: RoundedRectangle(cornerRadius: 18, style: .continuous))

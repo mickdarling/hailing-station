@@ -9,9 +9,32 @@ struct StationConnectionPresentation {
 
 struct StationHeader<DestinationPicker: View>: View {
     let connection: StationConnectionPresentation
+    /// One row (title, destination, status) so the iPad station fits one screen (#288).
+    var compact = false
     @ViewBuilder let destinationPicker: DestinationPicker
 
     var body: some View {
+        if compact {
+            HStack(spacing: 18) {
+                Text("Hailing Station")
+                    .font(.title2.bold())
+                    .lineLimit(1)
+                    .fixedSize()
+                destinationPicker
+                    .frame(maxWidth: 560)
+                Spacer(minLength: 0)
+                connectionBadge
+            }
+            .padding(.horizontal, 18)
+            .padding(.vertical, 10)
+            .background(.regularMaterial, in: RoundedRectangle(cornerRadius: 24, style: .continuous))
+            .accessibilityElement(children: .contain)
+        } else {
+            stacked
+        }
+    }
+
+    private var stacked: some View {
         VStack(alignment: .leading, spacing: 14) {
             ViewThatFits(in: .horizontal) {
                 HStack(alignment: .firstTextBaseline) {
@@ -35,7 +58,7 @@ struct StationHeader<DestinationPicker: View>: View {
         VStack(alignment: .leading, spacing: 2) {
             Text("Hailing Station")
                 .font(.largeTitle.bold())
-            Text("Haley · voice terminal")
+            Text("Haili · voice terminal")
                 .font(.subheadline)
                 .foregroundStyle(.secondary)
         }
@@ -154,8 +177,11 @@ struct AudioOutputRouteControl<Label: View>: View {
     var body: some View {
         ZStack {
             label.allowsHitTesting(false)
+            // The tile is the visible control; the system AirPlay glyph would draw over its text (#288). Nearly
+            // transparent rather than hidden, since UIKit stops delivering taps to views below 0.01 alpha.
             AudioOutputRoutePicker()
-                .frame(maxWidth: .infinity, minHeight: 56)
+                .frame(maxWidth: .infinity, minHeight: 56, maxHeight: 56)
+                .opacity(0.02)
         }
         .contentShape(Rectangle())
         .accessibilityElement(children: .contain)
