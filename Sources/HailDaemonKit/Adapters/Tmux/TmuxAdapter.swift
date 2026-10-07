@@ -1,5 +1,4 @@
 import Foundation
-import Synchronization
 
 /// Every tmux session on one server is a target (#11). Delivery goes through `send-keys -l --`, so text is
 /// never interpreted as key names. The binding is session id, creation time, and the active pane's pid,
@@ -20,6 +19,7 @@ public actor TmuxAdapter: Adapter {
     private let socket: String?
     private let chunkSize: Int
     private let pollInterval: Duration?
+    private let submitTiming: TmuxSubmitTiming
     /// Deliveries run one at a time: actor reentrancy at each await would otherwise let two deliveries
     /// interleave their chunks and Enters into one concatenated command.
     private var lastDelivery: Task<Void, Never>?
@@ -33,15 +33,18 @@ public actor TmuxAdapter: Adapter {
     ///   - socket: `tmux -L <socket>` when set; the default server otherwise.
     ///   - chunkSize: characters per `send-keys`; paste handling truncated ~1,400-character sends in practice.
     ///   - pollInterval: how often `events` re-lists sessions; `nil` disables polling (an empty stream).
+    ///   - submitTiming: the bounded waits around the Enter (#83).
     public init(
         runner: any CommandRunner, tmux: String = "tmux", socket: String? = nil,
-        chunkSize: Int = defaultChunkSize, pollInterval: Duration? = .seconds(3)
+        chunkSize: Int = defaultChunkSize, pollInterval: Duration? = .seconds(3),
+        submitTiming: TmuxSubmitTiming = .standard
     ) {
         self.runner = runner
         self.tmuxPath = tmux
         self.socket = socket
         self.chunkSize = max(1, chunkSize)
         self.pollInterval = pollInterval
+        self.submitTiming = submitTiming
     }
 
     /// A fresh polling stream per access; nothing runs until a caller asks, and the poll task ends when the
@@ -101,19 +104,44 @@ public actor TmuxAdapter: Adapter {
                 typed = true
                 try await tmux(send, failure: AdapterError.deliveryFailed)
             }
+            // A TUI may still be handling the typed text as a paste; an Enter sent now can be swallowed (#83).
+            let settled = await TmuxSubmitProbe.settle(submitTiming) { await self.visiblePane(session.paneID) }
             // The Enter is what runs the text; the identity is checked once more right before it.
             _ = try await verified(target, binding: session.binding)
             // The commit point: abandonment and commitment are one atomic decision, so either nothing is
             // submitted (typed text, if any, stays unsubmitted in the input line; there is no rollback) or the
             // Enter is sent whatever the caller does afterwards.
             guard abandoned.commit() else { throw CancellationError() }
-            try await tmux(["send-keys", "-t", session.paneID, "Enter"], failure: AdapterError.deliveryFailed)
+            try await submit(session, target: target, settled: settled)
         } catch {
             // Abandonment before the first chunk leaves the pane clean; anything typed and not known to be
             // submitted (a failed Enter included) taints it.
             if typed { tainted.insert(session.paneID) }
             throw error
         }
+    }
+
+    /// Sends the Enter, then, when the settled pane showed anything, waits for the pane to react. A pane left
+    /// exactly as it was means the Enter was swallowed and the text is still pending, so it gets one more Enter
+    /// (identity re-checked first); any change, or a pane that cannot be read, sends nothing further. A pane
+    /// still unchanged after that retry fails the delivery, which taints the pane like any unsubmitted text.
+    private func submit(_ session: Session, target: String, settled: String?) async throws {
+        let enter = ["send-keys", "-t", session.paneID, "Enter"]
+        try await tmux(enter, failure: AdapterError.deliveryFailed)
+        guard let settled, settled.contains(where: { !$0.isWhitespace }) else { return }
+        let probe: @Sendable () async -> String? = { await self.visiblePane(session.paneID) }
+        guard await TmuxSubmitProbe.reaction(from: settled, submitTiming, capture: probe) == .unchanged else { return }
+        _ = try await verified(target, binding: session.binding)
+        try await tmux(enter, failure: AdapterError.deliveryFailed)
+        guard await TmuxSubmitProbe.reaction(from: settled, submitTiming, capture: probe) == .unchanged else { return }
+        throw AdapterError.deliveryFailed("the Enter was not observed to submit the text in pane \(target)")
+    }
+
+    /// The pane's visible screen, or nil when tmux cannot capture it.
+    private nonisolated func visiblePane(_ paneID: String) async -> String? {
+        let arguments = Self.baseArguments(socket: socket) + ["capture-pane", "-p", "-t", paneID]
+        guard let result = try? await runner.run(tmuxPath, arguments), result.exitCode == 0 else { return nil }
+        return result.stdout
     }
 
     /// The session behind `name` now, refused unless its binding is the one the caller holds.
@@ -146,22 +174,5 @@ public actor TmuxAdapter: Adapter {
         let result = try await runner.run(tmuxPath, Self.baseArguments(socket: socket) + arguments)
         guard result.exitCode == 0 else { throw failure(result.errorText) }
         return result
-    }
-}
-
-/// One delivery's submit decision: the caller's cancellation and the Enter race for it under one lock.
-final class DeliveryAbandonment: Sendable {
-    private enum State { case pending, abandoned, committed }
-    private let state = Mutex(State.pending)
-    /// Abandons a delivery that has not committed; a committed one is unaffected.
-    func abandon() { state.withLock { if $0 == .pending { $0 = .abandoned } } }
-    func check() throws { if state.withLock({ $0 == .abandoned }) { throw CancellationError() } }
-    /// True exactly once, for a delivery not yet abandoned; from then on abandonment cannot stop the Enter.
-    func commit() -> Bool {
-        state.withLock {
-            guard $0 == .pending else { return false }
-            $0 = .committed
-            return true
-        }
     }
 }

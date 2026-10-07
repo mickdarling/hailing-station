@@ -13,6 +13,9 @@ import Testing
         #expect(await runner.calls == [
             ["tmux", "list-sessions", "-F", TmuxAdapter.listFormat],
             ["tmux", "send-keys", "-t", "%1", "-l", "--", text],
+            // The pane settles before the Enter (#83); a blank pane gives nothing to confirm afterwards.
+            ["tmux", "capture-pane", "-p", "-t", "%1"],
+            ["tmux", "capture-pane", "-p", "-t", "%1"],
             ["tmux", "list-sessions", "-F", TmuxAdapter.listFormat],
             ["tmux", "send-keys", "-t", "%1", "Enter"]
         ])
