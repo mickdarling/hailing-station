@@ -28,12 +28,13 @@ extension RootView {
                 .padding(.vertical, fit.fitsOneScreen ? 12 : 16)
                 .frame(maxWidth: .infinity)
                 .frame(height: fit.height, alignment: .top)
+                .environment(\.dynamicTypeSize, stationTypeSize(fit))
             }
-            .scrollDisabled(fit.fitsOneScreen)
             .scrollBounceBehavior(.basedOnSize)
             .scrollDismissesKeyboard(.interactively)
         }
-        .toolbar(UIDevice.current.userInterfaceIdiom == .pad ? .hidden : .automatic, for: .navigationBar)
+        // The station header names the app; a "Conversation" bar above it only costs height (#288).
+        .toolbar(.hidden, for: .navigationBar)
         .background(Color(uiColor: .systemGroupedBackground))
         .safeAreaInset(edge: .bottom, spacing: 0) {
             StationBuildFooter()
@@ -49,7 +50,16 @@ extension RootView {
     func stationFit(in size: CGSize) -> StationFit {
         let fits = UIDevice.current.userInterfaceIdiom == .pad && horizontalSizeClass == .regular
             && !dynamicTypeSize.isAccessibilitySize && size.height >= 600
-        return StationFit(fitsOneScreen: fits, isWide: fits && size.width >= 1_100, height: fits ? size.height : nil)
+        return StationFit(fitsOneScreen: fits, isWide: fits && size.width >= 1_150, height: fits ? size.height : nil)
+    }
+
+    /// The station reads denser than the system default (#288, Mick: "the fonts are just too big"): two steps
+    /// smaller on the one-screen iPad, one on iPhone, relative to the user's setting. Accessibility sizes are kept.
+    func stationTypeSize(_ fit: StationFit) -> DynamicTypeSize {
+        guard !dynamicTypeSize.isAccessibilitySize else { return dynamicTypeSize }
+        let sizes = DynamicTypeSize.allCases
+        guard let index = sizes.firstIndex(of: dynamicTypeSize) else { return dynamicTypeSize }
+        return sizes[max(sizes.startIndex, index - (fit.fitsOneScreen ? 2 : 1))]
     }
 
     /// Conversation first; then listening and the current reply; then audio route, tools and diagnostics. Stacked
@@ -63,20 +73,26 @@ extension RootView {
             ? AnyLayout(HStackLayout(alignment: .top, spacing: 18))
             : AnyLayout(VStackLayout(spacing: 18))
         return layout {
-            conversationSurface
-                .frame(maxWidth: .infinity, maxHeight: fit.fitsOneScreen ? .infinity : nil, alignment: .top)
+            // The chat sits above Tap to talk in portrait and on iPhone, and beside it in landscape (#288). Each
+            // position is a fixed slot, so moving the chat never remounts the conversation or the ambient card.
+            VStack(spacing: 18) {
+                if !fit.isWide {
+                    chatSurface
+                        .frame(height: fit.fitsOneScreen ? nil : 340)
+                        .layoutPriority(1)
+                }
+                conversationSurface
+            }
+            .frame(maxWidth: .infinity, maxHeight: fit.fitsOneScreen ? .infinity : nil, alignment: .top)
             side {
                 VStack(spacing: 18) {
                     ambientListeningSurface
-                    if let reply = playback.latest {
-                        ReplyPlaybackView(reply: reply, playback: playback)
-                    }
+                    if fit.isWide { chatSurface }
                 }
-                // Takes the height left over; a long reply scrolls inside its card.
-                .frame(maxWidth: regular ? (fit.isWide ? 340 : 360) : .infinity, alignment: .top)
+                .frame(maxWidth: regular ? (fit.isWide ? 420 : 360) : .infinity, alignment: .top)
                 Group {
                     // Secondary on the one-screen iPad (#288): when a smaller iPad runs out of height, only this
-                    // column scrolls; the conversation, listening and reply never move.
+                    // column scrolls; the conversation, listening and chat never move.
                     if fit.fitsOneScreen {
                         ScrollView { secondaryColumn }
                             .scrollBounceBehavior(.basedOnSize)
@@ -84,8 +100,24 @@ extension RootView {
                         secondaryColumn
                     }
                 }
-                .frame(maxWidth: regular ? (fit.isWide ? 300 : 360) : .infinity, alignment: .top)
+                .frame(maxWidth: regular ? (fit.isWide ? 280 : 360) : .infinity, alignment: .top)
             }
+        }
+    }
+
+    /// The chat for the confirmed destination. Without one, the latest reply keeps its own card so its playback
+    /// controls are never out of reach.
+    @ViewBuilder
+    var chatSurface: some View {
+        if let destination {
+            ConversationChatView(
+                entries: connections.conversation.entries(
+                    endpointID: destination.hostID, targetID: destination.target.id
+                ),
+                playback: playback
+            )
+        } else if let reply = playback.latest {
+            ReplyPlaybackView(reply: reply, playback: playback)
         }
     }
 
