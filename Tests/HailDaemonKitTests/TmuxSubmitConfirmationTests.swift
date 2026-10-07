@@ -1,134 +1,174 @@
-import Synchronization
 import Testing
 @testable import HailDaemonKit
 
-/// A scripted pane for #83: shows the typed text until an Enter is accepted, then the submitted screen. The
-/// first `swallowed` Enters leave the screen exactly as it was, the way a TUI still handling a paste does.
-/// `settling` captures before the first Enter return a screen still being redrawn.
-final class ScriptedPane: Sendable {
-    static let typedScreen = "> synthetic input"
-    static let submittedScreen = "> synthetic input\n\n> "
-    private struct State {
-        var enters = 0
-        var settling: Int
-        var swallowed: Int
-    }
-    private let state: Mutex<State>
-    private let readable: Bool
-
-    init(swallowed: Int = 0, settling: Int = 0, readable: Bool = true) {
-        state = Mutex(State(settling: settling, swallowed: swallowed))
-        self.readable = readable
-    }
-
-    var enters: Int { state.withLock { $0.enters } }
-
-    func respond(_ arguments: [String]) -> CommandResult {
-        if arguments.contains("list-sessions") { return CommandResult(exitCode: 0, stdout: twoSessions) }
-        if arguments.contains("capture-pane") {
-            guard readable else { return CommandResult(exitCode: 1, stdout: "", stderr: "can't find pane") }
-            return CommandResult(exitCode: 0, stdout: screen())
-        }
-        if arguments.last == "Enter" { state.withLock { $0.enters += 1 } }
-        return CommandResult(exitCode: 0, stdout: "")
-    }
-
-    private func screen() -> String {
-        state.withLock { state in
-            if state.enters == 0, state.settling > 0 {
-                state.settling -= 1
-                return "> synthetic inp" + String(repeating: ".", count: state.settling)
-            }
-            return state.enters > state.swallowed ? Self.submittedScreen : Self.typedScreen
-        }
-    }
-}
-
 @Suite struct TmuxSubmitConfirmationTests {
+    private static let binding = "$2@1758230001/%2:502"
     private static let fast = TmuxSubmitTiming(
         settleFloor: .milliseconds(1), pollInterval: .milliseconds(2),
         settleLimit: .seconds(5), confirmLimit: .milliseconds(60)
     )
 
-    private func adapter(_ pane: ScriptedPane) -> (TmuxAdapter, FakeCommandRunner) {
-        let runner = FakeCommandRunner { pane.respond($0) }
-        return (TmuxAdapter(runner: runner, pollInterval: nil, submitTiming: Self.fast), runner)
+    private func adapter(_ pane: ScriptedPane, timing: TmuxSubmitTiming = fast) -> SubmitHarness {
+        SubmitHarness(pane, timing: timing)
     }
 
-    private func keys(_ runner: FakeCommandRunner) async -> [String] {
-        await runner.calls.compactMap { $0.contains("send-keys") ? $0.last : nil }
-    }
-
-    @Test func anAcceptedEnterIsSentOnceAfterThePaneIsCaptured() async throws {
+    @Test func anAcceptedEnterIsSentOnceAfterABaselineAndASettledCapture() async throws {
         let pane = ScriptedPane()
-        let (adapter, runner) = adapter(pane)
+        let harness = adapter(pane)
 
-        try await adapter.deliver("synthetic input", to: "codex", binding: nil)
+        try await harness.adapter.deliver("synthetic input", to: "codex", binding: nil)
 
-        #expect(await keys(runner) == ["synthetic input", "Enter"])
-        let calls = await runner.calls
-        let enter = try #require(calls.firstIndex { $0.last == "Enter" })
-        #expect(calls[..<enter].contains(["tmux", "capture-pane", "-p", "-t", "%2"]))
+        #expect(await harness.keys == ["synthetic input", "Enter"])
+        let calls = await harness.runner.calls
+        let capture = ["tmux", "capture-pane", "-p", "-t", "%2"]
+        let typing = try #require(calls.firstIndex { $0.contains("-l") })
+        #expect(calls[..<typing].contains(capture), "baseline taken before any text")
+        #expect(try await harness.capturesBeforeFirstEnter() == 3)
+        #expect(harness.log.all == [.confirmed])
     }
 
     @Test func theEnterWaitsUntilThePaneStopsChanging() async throws {
         let pane = ScriptedPane(settling: 4)
-        let (adapter, runner) = adapter(pane)
+        let harness = adapter(pane)
 
-        try await adapter.deliver("synthetic input", to: "codex", binding: nil)
+        try await harness.adapter.deliver("synthetic input", to: "codex", binding: nil)
 
-        let calls = await runner.calls
-        let enter = try #require(calls.firstIndex { $0.last == "Enter" })
-        // Four captures of a screen still being redrawn, then two identical ones before the Enter.
-        #expect(calls[..<enter].filter { $0.contains("capture-pane") }.count == 6)
-        #expect(await keys(runner) == ["synthetic input", "Enter"])
+        // Baseline, four frames still being drawn, then two identical captures of the typed text.
+        #expect(try await harness.capturesBeforeFirstEnter() == 7)
+        #expect(await harness.keys == ["synthetic input", "Enter"])
+        #expect(harness.log.all == [.confirmed])
+    }
+
+    @Test func aStalePrePasteScreenIsNotTakenAsSettled() async throws {
+        // The busy TUI keeps showing the screen from before the text for three captures, then draws it; the
+        // first Enter is swallowed. Settling on the stale screen would see the later redraw as a reaction.
+        let pane = ScriptedPane(stale: 3, swallowed: 1)
+        let harness = adapter(pane)
+
+        try await harness.adapter.deliver("synthetic input", to: "codex", binding: nil)
+
+        #expect(try await harness.capturesBeforeFirstEnter() == 6)
+        #expect(await harness.keys == ["synthetic input", "Enter", "Enter"])
+        #expect(harness.log.all == [.retried])
+    }
+
+    @Test func aScreenThatNeverLeavesTheBaselineIsUnverifiable() async throws {
+        let pane = ScriptedPane(stale: .max, swallowed: 1)
+        let harness = adapter(pane, timing: TmuxSubmitTiming(
+            settleFloor: .milliseconds(1), pollInterval: .milliseconds(2),
+            settleLimit: .milliseconds(40), confirmLimit: .milliseconds(60)
+        ))
+
+        try await harness.adapter.deliver("synthetic input", to: "codex", binding: nil)
+
+        #expect(await harness.keys == ["synthetic input", "Enter"])
+        let calls = await harness.runner.calls
+        #expect(calls.last?.last == "Enter", "no confirmation captures after the Enter")
+        #expect(harness.log.all == [.unverifiable])
+    }
+
+    @Test func aScreenThatNeverStopsChangingGetsOneEnterAndNoRetry() async throws {
+        let pane = ScriptedPane(settling: .max, swallowed: 1)
+        let harness = adapter(pane, timing: TmuxSubmitTiming(
+            settleFloor: .milliseconds(1), pollInterval: .milliseconds(2),
+            settleLimit: .milliseconds(40), confirmLimit: .milliseconds(60)
+        ))
+
+        try await harness.adapter.deliver("synthetic input", to: "codex", binding: nil)
+
+        #expect(await harness.keys == ["synthetic input", "Enter"])
+        #expect(harness.log.all == [.unsettled])
     }
 
     @Test func aSwallowedEnterIsRetriedOnceAfterReverifyingTheTarget() async throws {
         let pane = ScriptedPane(swallowed: 1)
-        let (adapter, runner) = adapter(pane)
+        let harness = adapter(pane)
 
-        try await adapter.deliver("synthetic input", to: "codex", binding: "$2@1758230001/%2:502")
+        try await harness.adapter.deliver("synthetic input", to: "codex", binding: Self.binding)
 
-        #expect(await keys(runner) == ["synthetic input", "Enter", "Enter"])
-        let calls = await runner.calls
+        #expect(await harness.keys == ["synthetic input", "Enter", "Enter"])
+        let calls = await harness.runner.calls
         let enters = calls.indices.filter { calls[$0].last == "Enter" }
         let between = calls[enters[0]..<enters[1]]
         #expect(between.contains { $0.contains("list-sessions") }, "identity re-checked before the retry")
         #expect(between.contains { $0.contains("capture-pane") }, "the retry follows an observed unchanged pane")
+        #expect(harness.log.all == [.retried])
     }
 
     @Test func noRetryWhenTheFirstEnterWasAccepted() async throws {
         let pane = ScriptedPane()
-        let (adapter, runner) = adapter(pane)
+        let harness = adapter(pane)
 
-        try await adapter.deliver("synthetic input", to: "codex", binding: nil)
+        try await harness.adapter.deliver("synthetic input", to: "codex", binding: nil)
         // Well past the confirm window: nothing else is sent once the pane has reacted.
         try await Task.sleep(for: .milliseconds(150))
 
         #expect(pane.enters == 1)
-        #expect(await keys(runner) == ["synthetic input", "Enter"])
+        #expect(await harness.keys == ["synthetic input", "Enter"])
     }
 
     @Test func anEnterNeverObservedFailsAfterOneRetryAndTaintsThePane() async throws {
         let pane = ScriptedPane(swallowed: .max)
-        let (adapter, runner) = adapter(pane)
+        let harness = adapter(pane)
 
         await #expect(throws: AdapterError.self) {
-            try await adapter.deliver("synthetic input", to: "codex", binding: nil)
+            try await harness.adapter.deliver("synthetic input", to: "codex", binding: nil)
         }
         await #expect(throws: AdapterError.self) {
-            try await adapter.deliver("later input", to: "codex", binding: nil)
+            try await harness.adapter.deliver("later input", to: "codex", binding: nil)
         }
-        #expect(await keys(runner) == ["synthetic input", "Enter", "Enter"])
+        #expect(await harness.keys == ["synthetic input", "Enter", "Enter"])
+        #expect(harness.log.all == [.failed])
     }
 
-    @Test func anUnreadablePaneKeepsTheSingleEnter() async throws {
-        let pane = ScriptedPane(swallowed: 1, readable: false)
-        let (adapter, runner) = adapter(pane)
+    @Test func aRebindBetweenTheEntersSendsNoSecondEnterAndTaintsThePane() async throws {
+        let pane = ScriptedPane(swallowed: 1, rebindAfterEnter: true)
+        let harness = adapter(pane)
 
-        try await adapter.deliver("synthetic input", to: "codex", binding: nil)
+        await #expect(throws: AdapterError.rebound("codex")) {
+            try await harness.adapter.deliver("synthetic input", to: "codex", binding: Self.binding)
+        }
+        #expect(await harness.keys == ["synthetic input", "Enter"])
+        #expect(harness.log.all == [.failed])
+        // The original pane comes back under the same binding: it still holds unsubmitted text.
+        pane.restoreListing()
+        await #expect(throws: AdapterError.self) {
+            try await harness.adapter.deliver("later input", to: "codex", binding: Self.binding)
+        }
+        #expect(await harness.keys == ["synthetic input", "Enter"])
+    }
 
-        #expect(await keys(runner) == ["synthetic input", "Enter"])
+    @Test func abandonmentDuringSettleSendsNoEnterAndTaintsThePane() async throws {
+        let pane = ScriptedPane()
+        let harness = adapter(pane, timing: TmuxSubmitTiming(
+            settleFloor: .milliseconds(300), pollInterval: .milliseconds(2),
+            settleLimit: .seconds(5), confirmLimit: .milliseconds(60)
+        ))
+        let delivery = Task { try await harness.adapter.deliver("synthetic input", to: "codex", binding: Self.binding) }
+        let deadline = ContinuousClock.now.advanced(by: .seconds(5))
+        while await harness.keys.isEmpty {
+            try #require(ContinuousClock.now < deadline)
+            try await Task.sleep(for: .milliseconds(2))
+        }
+        delivery.cancel()
+        await #expect(throws: CancellationError.self) { try await delivery.value }
+        // Let the abandoned delivery finish its settle and reach the refused commit.
+        try await Task.sleep(for: .milliseconds(500))
+
+        await #expect(throws: AdapterError.self) {
+            try await harness.adapter.deliver("later input", to: "codex", binding: Self.binding)
+        }
+        #expect(await harness.keys == ["synthetic input"])
+        #expect(harness.log.all.isEmpty)
+    }
+
+    @Test func aPaneUnreadableOnlyDuringConfirmationKeepsTheSingleEnter() async throws {
+        let pane = ScriptedPane(swallowed: 1, readableAfterEnter: false)
+        let harness = adapter(pane)
+
+        try await harness.adapter.deliver("synthetic input", to: "codex", binding: nil)
+
+        #expect(await harness.keys == ["synthetic input", "Enter"])
+        #expect(harness.log.all == [.unverifiable])
     }
 }
