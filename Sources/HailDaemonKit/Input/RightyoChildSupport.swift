@@ -72,8 +72,9 @@ extension RightyoChildProcess {
     }
 
     /// `posix_spawn` of the exact path, never a shell: only the three stdio pipes cross (CLOEXEC_DEFAULT), every
-    /// catchable signal is reset to default and none is blocked (the daemon itself ignores SIGTERM), and the
-    /// working directory is set by the spawn. The returned stdin end is non-blocking with SIGPIPE suppressed.
+    /// catchable signal is reset to default and none is blocked (the daemon itself ignores SIGTERM), the child
+    /// leads a new process group (#297) and the working directory is set by the spawn. The returned stdin end is
+    /// non-blocking with SIGPIPE suppressed.
     static func spawn(_ executable: String, arguments: [String], environment: [String], directory: String)
         throws -> SpawnedChild {
         var input = [Int32](repeating: -1, count: 2), output = input, errors = input
@@ -99,8 +100,9 @@ extension RightyoChildProcess {
                      posix_spawn_file_actions_addchdir_np(&actions, directory),
                      posix_spawnattr_setsigdefault(&attributes, &defaults),
                      posix_spawnattr_setsigmask(&attributes, &unblocked),
+                     posix_spawnattr_setpgroup(&attributes, 0),
                      posix_spawnattr_setflags(&attributes, Int16(POSIX_SPAWN_CLOEXEC_DEFAULT | POSIX_SPAWN_SETSIGDEF
-                                                                  | POSIX_SPAWN_SETSIGMASK))]
+                                                                  | POSIX_SPAWN_SETSIGMASK | POSIX_SPAWN_SETPGROUP))]
         guard setup.allSatisfy({ $0 == 0 }) else { throw RightyoChildError.transportLost }
         var argv = ([executable] + arguments).map { strdup($0) } + [nil]
         var envp = environment.map { strdup($0) } + [nil]
@@ -113,17 +115,6 @@ extension RightyoChildProcess {
         [input[0], output[1], errors[1]].forEach { close($0) }
         launched = true
         return SpawnedChild(pid: pid, input: input[1], output: output[0], errors: errors[0])
-    }
-
-    /// Runs on the reaper queue only. Blocking after the exit event (the child is a zombie by then).
-    static func reap(_ pid: pid_t, into exit: RightyoExitLatch, blocking: Bool) -> Bool {
-        guard exit.value == nil else { return true }
-        var status: Int32 = 0
-        var result = waitpid(pid, &status, blocking ? 0 : WNOHANG)
-        while result == -1, errno == EINTR { result = waitpid(pid, &status, blocking ? 0 : WNOHANG) }
-        guard result == pid else { return false }
-        exit.signal(status & 0x7f == 0 ? .exited((status >> 8) & 0xff) : .signaled(status & 0x7f))
-        return true
     }
 
     struct SpawnedChild { let pid: pid_t, input: Int32, output: Int32, errors: Int32 }
