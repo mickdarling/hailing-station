@@ -9,8 +9,15 @@ struct ConversationChatView: View {
 
     var body: some View {
         VStack(alignment: .leading, spacing: 10) {
-            Label("Conversation", systemImage: "bubble.left.and.bubble.right")
-                .font(.headline)
+            HStack(alignment: .firstTextBaseline) {
+                Label("Conversation", systemImage: "bubble.left.and.bubble.right")
+                    .font(.headline)
+                Spacer(minLength: 8)
+                // The player may be speaking a reply from another destination: its controls stay reachable here.
+                if playback.presentationForControls != nil, !entries.contains(where: { $0.id == controlledReplyID }) {
+                    replyControls
+                }
+            }
             ScrollViewReader { reader in
                 ScrollView {
                     LazyVStack(spacing: 10) {

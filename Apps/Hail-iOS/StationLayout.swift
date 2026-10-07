@@ -105,7 +105,8 @@ extension RootView {
         }
     }
 
-    /// The chat for the confirmed destination; nothing before one is chosen.
+    /// The chat for the confirmed destination. Without one, the latest reply keeps its own card so its playback
+    /// controls are never out of reach.
     @ViewBuilder
     var chatSurface: some View {
         if let destination {
@@ -115,6 +116,8 @@ extension RootView {
                 ),
                 playback: playback
             )
+        } else if let reply = playback.latest {
+            ReplyPlaybackView(reply: reply, playback: playback)
         }
     }
 
