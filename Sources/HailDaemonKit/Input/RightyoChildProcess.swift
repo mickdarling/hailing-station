@@ -26,6 +26,7 @@ public final class RightyoChildProcess: Sendable {
     public init(executable: URL, config: URL, session: String, provenance: RightyoAudioProvenance = .liveMicrophone,
                 timing: Timing = .init()) throws {
         let resolved = try Self.validate(executable: executable, config: config)
+        try RightyoChildGroup.requireOwnedRuntime()
         let argv = Self.arguments(session: session, config: config, provenance: provenance)
         let child = try Self.spawn(resolved, arguments: argv,
                                    environment: Self.environment().map { "\($0.key)=\($0.value)" },
@@ -35,9 +36,12 @@ public final class RightyoChildProcess: Sendable {
         let queued = RightyoByteCount()
         lines = RightyoChildLines(stream: pair.stream, queued: queued)
         // The leader's exit ends the stream even if a descendant that left the group still holds stdout (#297).
-        let continuation = pair.continuation
+        let continuation = pair.continuation, ended = RightyoByteCount()
+        continuation.onTermination = { _ in ended.withLock { $0 = 1 } }
         group = RightyoChildGroup(leader: child.pid, termGrace: timing.termGrace) {
+            guard ended.withLock({ $0 }) == 0 else { return false }
             continuation.finish(throwing: RightyoChildError.transportLost)
+            return true
         }
         input = RightyoStdinWriter(input: child.input, exit: group.exit, timing: timing)
         (processIdentifier, self.timing) = (child.pid, timing)
@@ -70,14 +74,17 @@ public final class RightyoChildProcess: Sendable {
     public func closeInput() { input.close(abandon: false) }
 
     /// Close stdin, wait `eofGrace`, SIGTERM the group, wait `termGrace`, SIGKILL the group; returns once the rest
-    /// of the group has been ended too (see `RightyoChildGroup`) and the child is reaped.
+    /// of the group has been ended too (see `RightyoChildGroup`) and the child is reaped. Bounded: at most
+    /// `eofGrace + 3 * termGrace + 1` seconds (10 s with the defaults); past that it returns the exit seen so far,
+    /// or SIGKILL, and the group finishes its cleanup on its own.
     @discardableResult public func stop() async -> RightyoChildExit {
         closeInput()
         if await group.exit.wait(timeout: timing.eofGrace) == nil {
             group.signal(SIGTERM)
             if await group.exit.wait(timeout: timing.termGrace) == nil { group.signal(SIGKILL) }
         }
-        return await group.settled.wait(timeout: nil) ?? .signaled(SIGKILL)
+        let settled = await group.settled.wait(timeout: 2 * timing.termGrace + 1)
+        return settled ?? group.exit.value ?? .signaled(SIGKILL)
     }
 }
 
