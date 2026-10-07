@@ -72,7 +72,7 @@ extension RootView {
                         ReplyPlaybackView(reply: reply, playback: playback)
                     }
                 }
-                .fixedSize(horizontal: false, vertical: true)
+                // Takes the height left over; a long reply scrolls inside its card.
                 .frame(maxWidth: regular ? (fit.isWide ? 340 : 360) : .infinity, alignment: .top)
                 Group {
                     // Secondary on the one-screen iPad (#288): when a smaller iPad runs out of height, only this

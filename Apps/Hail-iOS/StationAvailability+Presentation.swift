@@ -15,7 +15,7 @@ extension StationAvailability {
 
     var emptyTitle: String {
         switch self {
-        case .unconfigured: "Connect Haley to a Mac"
+        case .unconfigured: "Connect Haili to a Mac"
         case .connecting: "Connecting to Mac"
         case .reconnecting: "Reconnecting to Mac"
         case .waitingForTargets: "Checking destinations"
@@ -32,17 +32,17 @@ extension StationAvailability {
     var emptyDetail: String {
         switch self {
         case .unconfigured:
-            "Add a Mac, connect it, then choose the destination Haley should use."
+            "Add a Mac, connect it, then choose the destination Haili should use."
         case .connecting:
             "Opening the Mac connection. You can check its details in Mac Setup."
         case .reconnecting:
-            "The connection was interrupted. Haley is trying again; check Mac Setup if it does not recover."
+            "The connection was interrupted. Haili is trying again; check Mac Setup if it does not recover."
         case .waitingForTargets:
             "The Mac connection is open, but its allowed destinations have not arrived yet."
         case .restoringSelection:
             "Confirming your remembered destination on this connection before talk is available."
         case .chooseTarget:
-            "Your Mac is connected. Choose the allowed destination Haley should use."
+            "Your Mac is connected. Choose the allowed destination Haili should use."
         case .noAllowedTargets:
             "The Mac is connected but has no live destination you are allowed to use. Check the host and its policy."
         case .selectionFailed:
