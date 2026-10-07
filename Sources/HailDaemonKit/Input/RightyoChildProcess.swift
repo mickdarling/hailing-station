@@ -15,11 +15,11 @@ public final class RightyoChildProcess: Sendable {
     public let lines: RightyoChildLines
     public let processIdentifier: Int32
     private let input: RightyoStdinWriter
-    private let exit = RightyoExitLatch()
+    /// The child leads its own process group (#297): it observes the exit, signals the group and reaps the leader
+    /// on one queue, so a signal can never reach a reused pid.
+    private let group: RightyoChildGroup
     private let stderrBytes = RightyoByteCount()
     private let timing: Timing
-    /// Reaps the child and sends every signal, so a signal can never reach a reused pid.
-    private let reaper = DispatchQueue(label: "hailing.rightyo-child.reap")
 
     /// Launches `<executable> listen --mode stdin --provenance <provenance> --session-id <session> --config <config>`,
     /// spawning exactly the symlink-resolved path that `validate` checked.
@@ -34,13 +34,14 @@ public final class RightyoChildProcess: Sendable {
         let pair = AsyncThrowingStream<Data, any Error>.makeStream(bufferingPolicy: .unbounded)
         let queued = RightyoByteCount()
         lines = RightyoChildLines(stream: pair.stream, queued: queued)
-        input = RightyoStdinWriter(input: child.input, exit: exit, timing: timing)
+        // The leader's exit ends the stream even if a descendant that left the group still holds stdout (#297).
+        let continuation = pair.continuation
+        group = RightyoChildGroup(leader: child.pid, termGrace: timing.termGrace) {
+            continuation.finish(throwing: RightyoChildError.transportLost)
+        }
+        input = RightyoStdinWriter(input: child.input, exit: group.exit, timing: timing)
         (processIdentifier, self.timing) = (child.pid, timing)
-        let source = DispatchSource.makeProcessSource(identifier: child.pid, eventMask: .exit, queue: reaper)
-        source.setEventHandler { [exit] in if Self.reap(child.pid, into: exit, blocking: true) { source.cancel() } }
-        source.activate()
-        reaper.async { [exit] in if Self.reap(child.pid, into: exit, blocking: false) { source.cancel() } }
-        // No background thread or queue retains `self` (stdin writer, stdout reader, stderr drain, reaper, exit
+        // No background thread or queue retains `self` (stdin writer, stdout reader, stderr drain, group, exit
         // waiters each hold only their own box), so dropping the last reference runs `deinit` and kills the child.
         Thread.detachNewThread { RightyoChildLines.read(child.output, into: pair.continuation, queued: queued) }
         Thread.detachNewThread { [stderrBytes] in
@@ -48,10 +49,10 @@ public final class RightyoChildProcess: Sendable {
         }
     }
 
-    /// Dropped without `stop()`: stdin abandoned and SIGKILL at once; the exit source still reaps the child.
+    /// Dropped without `stop()`: stdin abandoned and SIGKILL to the whole group at once; the group still reaps.
     deinit {
         input.close(abandon: true)
-        signal(SIGKILL)
+        group.signal(SIGKILL)
     }
 
     public var counters: Counters {
@@ -59,7 +60,7 @@ public final class RightyoChildProcess: Sendable {
         counters.stderrBytes = stderrBytes.withLock { $0 }
         return counters
     }
-    public var exitStatus: RightyoChildExit? { exit.value }
+    public var exitStatus: RightyoChildExit? { group.exit.value }
 
     /// Queues one audio chunk and returns at once; never blocks on the child. False when input is closed or the
     /// chunk is empty, odd-length (not whole samples) or larger than the backlog.
@@ -68,18 +69,15 @@ public final class RightyoChildProcess: Sendable {
     /// EOF for the child once already-queued audio is written. Idempotent.
     public func closeInput() { input.close(abandon: false) }
 
-    /// Close stdin, wait `eofGrace`, SIGTERM, wait `termGrace`, SIGKILL; returns once the child is reaped.
+    /// Close stdin, wait `eofGrace`, SIGTERM the group, wait `termGrace`, SIGKILL the group; returns once the rest
+    /// of the group has been ended too (see `RightyoChildGroup`) and the child is reaped.
     @discardableResult public func stop() async -> RightyoChildExit {
         closeInput()
-        if let done = await exit.wait(timeout: timing.eofGrace) { return done }
-        signal(SIGTERM)
-        if let done = await exit.wait(timeout: timing.termGrace) { return done }
-        signal(SIGKILL)
-        return await exit.wait(timeout: nil) ?? .signaled(SIGKILL)
-    }
-
-    private func signal(_ value: Int32) {
-        reaper.sync { if exit.value == nil { _ = kill(processIdentifier, value) } }
+        if await group.exit.wait(timeout: timing.eofGrace) == nil {
+            group.signal(SIGTERM)
+            if await group.exit.wait(timeout: timing.termGrace) == nil { group.signal(SIGKILL) }
+        }
+        return await group.settled.wait(timeout: nil) ?? .signaled(SIGKILL)
     }
 }
 
