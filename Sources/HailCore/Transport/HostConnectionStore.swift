@@ -15,6 +15,8 @@ public final class HostConnectionStore {
     /// Called for every reply frame as it arrives, so replies reach the player while the app is in the background,
     /// when SwiftUI view updates such as `onChange` may not run (#282).
     @ObservationIgnored public var onReplyFrame: (@MainActor (HostReplyEvent) -> Void)?
+    /// The station chat (#288): requests as they are sent and replies as they arrive, in the background too.
+    public let conversation = ConversationLog()
     /// True while ambient listening is streaming; leaving the foreground then keeps the destination authorized (#282).
     public var ambientStreaming = false
 
@@ -116,14 +118,6 @@ public final class HostConnectionStore {
         // A later selection, endpoint change or removal owns the outcome.
         if selectionSerials[id] == serial, connections[id] === connection { selectedTargets[id] = targetID }
     }
-    public func sendFinalText(_ text: String, host id: HostEndpoint.Identifier, targetID: String) async throws {
-        guard let connection = connections[id] else { throw HostConnectionFailure.notReady }
-        try await connection.sendFinalText(text, to: targetID)
-    }
-    public func sendEscape(host id: HostEndpoint.Identifier, targetID: String) async throws {
-        guard let connection = connections[id] else { throw HostConnectionFailure.notReady }
-        try await connection.sendEscape(to: targetID)
-    }
     /// The ambient binding for a destination, or nil unless the host is ready, advertises `stream_audio`, and
     /// `targetID` is the target its connection has confirmed: the connection addresses every segment to that
     /// selection, so a binding for any other target would misstate where audio goes (#218).
@@ -177,10 +171,24 @@ public final class HostConnectionStore {
     private func receive(_ event: HostReplyEvent, token: UUID) {
         guard tokens[event.endpointID] == token else { return }
         replyFrames.append(event)
+        conversation.noteReply(event)
         onReplyFrame?(event)
         if replyFrames.count > Self.replyFrameLimit {
             replyFrames.removeFirst(replyFrames.count - Self.replyFrameLimit)
         }
+    }
+}
+
+/// Text and Escape to a target; sent text joins the station chat (#288).
+extension HostConnectionStore {
+    public func sendFinalText(_ text: String, host id: HostEndpoint.Identifier, targetID: String) async throws {
+        guard let connection = connections[id] else { throw HostConnectionFailure.notReady }
+        try await connection.sendFinalText(text, to: targetID)
+        conversation.noteSent(text, endpointID: id, targetID: targetID)
+    }
+    public func sendEscape(host id: HostEndpoint.Identifier, targetID: String) async throws {
+        guard let connection = connections[id] else { throw HostConnectionFailure.notReady }
+        try await connection.sendEscape(to: targetID)
     }
 }
 
