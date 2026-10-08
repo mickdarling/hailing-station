@@ -337,11 +337,14 @@ public final class AmbientRightyoRouter: AmbientAudioSink, AmbientListenerWiring
         /// Each ambient dispatch is recorded as `pushed(tool: "ambient-dispatch")` (target and byte count, never
         /// text), as the `--reply-to` socket records `local-dispatch`; a failed record refuses the dispatch.
         public var audit: AuditLog?
+        /// Acknowledgement clips (rightyo#105): each admitted request plays one on its phone first. Nil is off.
+        public var acknowledgements: AmbientAckLibrary?
 
         public init(executable: URL, config: URL, target: String, binding: String, allowSynthetic: Bool = false,
                     timing: RightyoChildProcess.Timing = .init(),
-                    shutdownGrace: TimeInterval = AmbientRightyoRouter.defaultShutdownGrace, audit: AuditLog? = nil) {
-            self.audit = audit
+                    shutdownGrace: TimeInterval = AmbientRightyoRouter.defaultShutdownGrace, audit: AuditLog? = nil,
+                    acknowledgements: AmbientAckLibrary? = nil) {
+            (self.audit, self.acknowledgements) = (audit, acknowledgements)
             (self.executable, self.config, self.target, self.binding) = (executable, config, target, binding)
             (self.allowSynthetic, self.timing, self.shutdownGrace) = (allowSynthetic, timing, shutdownGrace)
         }
@@ -508,7 +511,8 @@ extension AmbientRightyoRouter {
                 binding: configuration.binding, connection: connection,
                 allowSynthetic: configuration.allowSynthetic, timing: configuration.timing,
                 isEcho: { [spokenReplies] heard in spokenReplies.isEcho(heard) },
-                onDismiss: dismissed(on: connection, listener: listener)
+                onDismiss: dismissed(on: connection, listener: listener),
+                onAcknowledge: acknowledged(on: connection, listener: listener)
             ), dispatcher: AmbientListenerDispatcher(listener: listener, audit: configuration.audit))
         } catch {
             return refuse(stream, connection: connection, reason: Self.describe(error))
@@ -529,6 +533,30 @@ extension AmbientRightyoRouter {
         guard admitted else {
             Task { await pipeline.stop() }
             return
+        }
+    }
+
+    /// Plays an acknowledgement clip on the phone that heard an admitted request (rightyo#105), in the addressed
+    /// persona's voice or the `default` folder's, then logs tokens and counts only: the persona key comes from the
+    /// clip folders, never from transcript text. `rightyo_ms` and `host_ms` are separate clocks, never summed.
+    private func acknowledged(
+        on connection: UUID, listener: WebSocketListener
+    ) -> (@Sendable (AmbientAckRequest) -> Void)? {
+        guard let library = configuration.acknowledgements else { return nil }
+        return { [weak self, weak listener] request in
+            Task { [weak self] in
+                let named = request.persona.flatMap { library.clips[$0] == nil ? nil : $0 }
+                guard let persona = named ?? (library.clips["default"] == nil ? nil : "default"),
+                      let (index, clip) = library.next(for: persona) else {
+                    self?.emit("ambient_acknowledged", detail: "outcome=skipped reason=no_clips")
+                    return
+                }
+                let outcome = await listener?.acknowledgeAmbient(connection: connection, clip: clip) ?? "no_connection"
+                let host = request.readAt.duration(to: .now).components
+                let hostMs = host.seconds * 1_000 + host.attoseconds / 1_000_000_000_000_000
+                self?.emit("ambient_acknowledged", detail: "persona=\(persona) clip=\(index) "
+                           + "rightyo_ms=\(request.rightyoMs) host_ms=\(hostMs) outcome=\(outcome)")
+            }
         }
     }
 
