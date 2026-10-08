@@ -63,11 +63,12 @@ extension RightyoInputEvent {
     /// only under the single-terminal fallback; the answer is single-quoted there, since `$()`, backticks, `$VAR`,
     /// backslashes and double quotes would expand inside double quotes. ASCII, one line, no double quote, never
     /// the marker, deterministic: `target` (the listed id the binding was pinned from, allowlisted by the
-    /// consumer) is its only variable part.
+    /// consumer) is its only variable part. The acknowledgement sentence (rightyo#122) stays mid-block so the
+    /// block's ending, which the tmux pane observer matches, stays byte-stable.
     static let replyBlockPrefix = " Reply: answer briefly; "
     static func replyBlock(target: String) -> String {
-        replyBlockPrefix + "it is spoken aloud. The host plays any acknowledgement itself, so send none of your own"
-            + " (rightyo#122). If no reply bridge publishes this session's output, run haild reply "
+        replyBlockPrefix + "it is spoken aloud. The host plays any acknowledgement itself, so send no acknowledgement"
+            + " of your own. If no reply bridge publishes this session's output, run haild reply "
             + target + " --say '<spoken answer>' (single-quote the answer and keep it free of single quotes;"
             + " single-terminal fallback only)."
     }
