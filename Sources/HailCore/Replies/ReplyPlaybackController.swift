@@ -25,7 +25,7 @@ struct ReplyStreamKey: Hashable {
     var replyID: UUID
 }
 
-private struct ReplyStreamState {
+struct ReplyStreamState {
     var segments: [Int: AudioPayload] = [:]
     var nextSequence = 0
 }
@@ -48,9 +48,9 @@ public final class ReplyPlaybackController {
     public internal(set) var status = "No replies yet"
 
     let player: any ReplyAudioPlaying
-    private var streams: [ReplyStreamKey: ReplyStreamState] = [:]
-    private var queue: [ReplyStreamKey] = []
-    private var completed: Set<ReplyStreamKey> = []
+    var streams: [ReplyStreamKey: ReplyStreamState] = [:]
+    var queue: [ReplyStreamKey] = []
+    var completed: Set<ReplyStreamKey> = []
     var lastAudio: [AudioPayload] = []
     var lastKey: ReplyStreamKey?
     var playbackOrder: [ReplyStreamKey] = []
@@ -85,6 +85,10 @@ public final class ReplyPlaybackController {
     }
 
     public func ingest(_ event: HostReplyEvent) {
+        if case .control(.stopPlayback) = event.frame.payload {
+            if remember(event.frame.id) { stopPlayback(from: event.endpointID) }
+            return
+        }
         guard remember(event.frame.id), let descriptor = descriptor(in: event.frame) else { return }
         guard case .audio(let audio) = event.frame.payload else {
             let presentationID = upsertPresentation(event, descriptor: descriptor)

@@ -8,7 +8,7 @@ extension HostConnection {
         try await send(
             .hello(HelloInfo(
                 versions: VersionNegotiation.supported,
-                capabilities: ["connectivity_lab"],
+                capabilities: ["connectivity_lab", PlaybackStop.capability],
                 deviceName: deviceName
             )),
             generation: token
@@ -36,6 +36,9 @@ extension HostConnection {
             throw HostConnectionFailure.incompatibleVersion
         }
         switch frame.payload {
+        case .control(.stopPlayback):
+            // To the reply player (#309), like reply frames; it needs no reply capability, since it only stops.
+            await replyObserver(HostReplyEvent(endpointID: snapshot.id, frame: frame))
         case .control(let control):
             try await process(control)
         case .text(let text) where text.isFinal && text.reply != nil:
