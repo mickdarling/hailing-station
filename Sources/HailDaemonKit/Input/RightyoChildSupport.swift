@@ -33,10 +33,13 @@ extension RightyoChildProcess {
     }
     /// RightyO requires `--provenance` with `--mode stdin`; the phone microphone is `live-microphone`.
     public static func arguments(session: String, config: URL,
-                                 provenance: RightyoAudioProvenance = .liveMicrophone) -> [String] {
+                                 provenance: RightyoAudioProvenance = .liveMicrophone,
+                                 replyControl: Bool = false) -> [String] {
         ["listen", "--mode", "stdin", "--provenance", provenance.rawValue, "--session-id", session,
-         "--config", config.path]
+         "--config", config.path] + (replyControl ? ["--control-fd", String(controlDescriptor)] : [])
     }
+    /// The child's descriptor for host control lines (rightyo#124), present only with `replyControl`.
+    static let controlDescriptor: Int32 = 3
 
     /// PATH is fixed; only HOME and TMPDIR are carried over from the daemon's environment.
     static func environment(_ ambient: [String: String] = ProcessInfo.processInfo.environment) -> [String: String] {
@@ -75,12 +78,12 @@ extension RightyoChildProcess {
     /// catchable signal is reset to default and none is blocked (the daemon itself ignores SIGTERM), the child
     /// leads a new process group (#297) and the working directory is set by the spawn. The returned stdin end is
     /// non-blocking with SIGPIPE suppressed.
-    static func spawn(_ executable: String, arguments: [String], environment: [String], directory: String)
-        throws -> SpawnedChild {
-        var input = [Int32](repeating: -1, count: 2), output = input, errors = input
+    static func spawn(_ executable: String, arguments: [String], environment: [String], directory: String,
+                      replyControl: Bool = false) throws -> SpawnedChild {
+        var input = [Int32](repeating: -1, count: 2), output = input, errors = input, control = input
         var launched = false
-        defer { if !launched { (input + output + errors).filter { $0 >= 0 }.forEach { close($0) } } }
-        guard pipe(&input) == 0, pipe(&output) == 0, pipe(&errors) == 0,
+        defer { if !launched { (input + output + errors + control).filter { $0 >= 0 }.forEach { close($0) } } }
+        guard pipe(&input) == 0, pipe(&output) == 0, pipe(&errors) == 0, Self.controlPipe(&control, replyControl),
               (input + output + errors).allSatisfy({ fcntl($0, F_SETFD, FD_CLOEXEC) == 0 }),
               fcntl(input[1], F_SETNOSIGPIPE, 1) == 0, fcntl(input[1], F_SETFL, O_NONBLOCK) == 0,
               !([executable, directory] + arguments + environment).contains(where: { $0.contains("\0") }) else {
@@ -89,7 +92,8 @@ extension RightyoChildProcess {
         var actions: posix_spawn_file_actions_t?, attributes: posix_spawnattr_t?
         guard posix_spawn_file_actions_init(&actions) == 0 else { throw RightyoChildError.transportLost }
         defer { posix_spawn_file_actions_destroy(&actions) }
-        guard posix_spawnattr_init(&attributes) == 0 else { throw RightyoChildError.transportLost }
+        guard !replyControl || posix_spawn_file_actions_adddup2(&actions, control[0], controlDescriptor) == 0,
+              posix_spawnattr_init(&attributes) == 0 else { throw RightyoChildError.transportLost }
         defer { posix_spawnattr_destroy(&attributes) }
         var defaults = sigset_t(), unblocked = sigset_t()
         sigemptyset(&defaults); sigemptyset(&unblocked)
@@ -112,12 +116,13 @@ extension RightyoChildProcess {
         guard posix_spawn(&pid, executable, &actions, &attributes, &argv, &envp) == 0 else {
             throw RightyoChildError.transportLost
         }
-        [input[0], output[1], errors[1]].forEach { close($0) }
+        [input[0], output[1], errors[1], control[0]].filter { $0 >= 0 }.forEach { close($0) }
         launched = true
-        return SpawnedChild(pid: pid, input: input[1], output: output[0], errors: errors[0])
+        return SpawnedChild(pid: pid, input: input[1], output: output[0], errors: errors[0],
+                            control: replyControl ? control[1] : nil)
     }
 
-    struct SpawnedChild { let pid: pid_t, input: Int32, output: Int32, errors: Int32 }
+    struct SpawnedChild { let pid: pid_t, input: Int32, output: Int32, errors: Int32, control: Int32? }
 
     /// Counts stderr bytes and discards them; diagnostics may quote audio-derived text.
     static func drainErrors(_ errors: Int32, counting: (Int) -> Void) {

@@ -57,6 +57,9 @@ public final class RightyoAmbientPipeline: Sendable {
         /// Called once per admitted request just before it is typed (rightyo#105): the cue to acknowledge it.
         /// Echo-dropped, withdrawn and duplicate requests never reach it. It must return at once.
         public var onAcknowledge: (@Sendable (AmbientAckRequest) -> Void)?
+        /// Give the child a control descriptor for spoken-reply reports (rightyo#124). Needs a RightyO that accepts
+        /// `--control-fd`; off by default.
+        public var replyControl = false
 
         public init(executable: URL, config: URL, target: String, binding: String, connection: UUID,
                     allowSynthetic: Bool = false, timing: RightyoChildProcess.Timing = .init(),
@@ -93,7 +96,8 @@ public final class RightyoAmbientPipeline: Sendable {
                                             session: session, allowSynthetic: configuration.allowSynthetic,
                                             dispatcher: step, echoFilter: configuration.isEcho)
         child = try RightyoChildProcess(executable: configuration.executable, config: configuration.config,
-                                        session: session, timing: configuration.timing)
+                                        session: session, timing: configuration.timing,
+                                        replyControl: configuration.replyControl)
         self.session = session
         onDismiss = configuration.onDismiss
         acknowledgement = relay
@@ -102,6 +106,10 @@ public final class RightyoAmbientPipeline: Sendable {
     /// Hands one raw mono 16 kHz s16le chunk to the child without blocking; false once input has closed or for
     /// a chunk that is empty, odd-length or larger than the backlog. Overload drops the oldest pending audio.
     @discardableResult public func send(audio pcm: Data) -> Bool { child.write(pcm) }
+
+    /// Reports the assistant's spoken reply on this stream's device (rightyo#124); false when reply control is off
+    /// or the report was dropped. Never blocks.
+    @discardableResult public func reportReply(_ phase: RightyoReplyPhase) -> Bool { child.reportReply(phase) }
 
     /// Ends the audio (EOF after queued audio is written); the child then emits `stopped` and `run` returns.
     public func finishInput() { child.closeInput() }
