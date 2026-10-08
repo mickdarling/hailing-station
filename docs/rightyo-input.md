@@ -126,7 +126,7 @@ rightyo listen … --session-id "$rightyo_session_id" |
   Either way the client gets no answer, and it reports that the outcome is unknown: the prompt may have run,
   or it may sit unsubmitted in the input line. Check the pane before retrying (exit 1). Covered by
   `LocalReplyEndpointTests.timedOutDispatchNeverPressesEnterAndARetryRefusesOnTheTaintedPane`, `TmuxDeliveryCommitTests`
-  and `TmuxTaintedPaneTests`. The [reply block](#the-reply-block) (228 characters plus
+  and `TmuxTaintedPaneTests`. The [reply block](#the-reply-block) (311 characters plus
   the target id) counts toward every cap.
 
 Each admitted request sends one `{"kind":"dispatch","connection","target","binding","text"}` line and reads
@@ -162,7 +162,7 @@ Part of [#188](https://github.com/mickdarling/hailing-station/issues/188) item 1
 the phone hears it. For the target `tmux:demo` it is, byte for byte (it begins with a space):
 
 ```
- Reply: answer briefly; it is spoken aloud. If no reply bridge publishes this session's output, run haild reply tmux:demo --say '<spoken answer>' (single-quote the answer and keep it free of single quotes; single-terminal fallback only).
+ Reply: answer briefly; it is spoken aloud. The host plays any acknowledgement itself, so send no acknowledgement of your own. If no reply bridge publishes this session's output, run haild reply tmux:demo --say '<spoken answer>' (single-quote the answer and keep it free of single quotes; single-terminal fallback only).
 ```
 
 - What it asks: a short spoken answer. On a conforming programmatic bridge (a `tmux-reply:` target,
@@ -197,7 +197,7 @@ the phone hears it. For the target `tmux:demo` it is, byte for byte (it begins w
   an authorized name carrying a guarded word (`tmux:sudo`) is refused as `RightyoTargetError.guarded` (`target
   name would trigger the content guard (sudo)`) instead of turning every otherwise benign request into
   `confirmationRequired`; a daemon policy with additional custom guard patterns can still require confirmation,
-  which is refused per request as before. The block is ASCII, one unbroken line, 228 characters plus the target
+  which is refused per request as before. The block is ASCII, one unbroken line, 311 characters plus the target
   id, never contains the raw-turns marker, and passes the host sanitizer and the default guard unchanged
   (`RightyoInputReplyBlockTests`).
 - The block counts toward every prompt bound: the local command's 1,200,000 whole-prompt cap (arithmetic under
@@ -272,7 +272,7 @@ layout is one line because the host sanitizer refuses line breaks; the whole pro
 command's 1,200,000 whole-prompt cap: 16,000 formed characters, the 36-character marker, the JSON (the context's
 1 MiB cap is measured with camel-case keys, so the snake-case prompt keys add at most 7 bytes per turn, 7,000 for
 1,000 turns, plus a request turn of at most 16,000 bytes, a decision and two bounded identifiers, about 1,075,000
-bytes at the extreme) and the reply block (228 characters plus the target id), which together stay under
+bytes at the extreme) and the reply block (311 characters plus the target id), which together stay under
 the cap by about 100,000 characters and, with a 64,000-byte formed text, by about 60,000 bytes;
 `RightyoInputReplyBlockTests` builds a 16,000-character, 64,000-byte text over a context one turn short of its cap
 and asserts the sum in both units. Without `formed_request` the body is the compact JSON
