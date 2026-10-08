@@ -19,14 +19,16 @@ struct AmbientWiringRig {
 func ambientRig(
     _ fake: FakeRightyo, timing: RightyoChildProcess.Timing, executable: URL? = nil,
     shutdownGrace: TimeInterval = AmbientRightyoRouter.defaultShutdownGrace, audit: AuditLog? = nil,
-    events: AmbientEventNames? = nil
+    events: AmbientEventNames? = nil, acknowledgements: AmbientAckLibrary? = nil,
+    onEvent: (@Sendable (WebSocketListenerEvent) -> Void)? = nil
 ) async throws -> AmbientWiringRig {
     let rig = try await RecipientTestRig.make()
     let connected = ConnectedPeerIDs()
     let router = AmbientRightyoRouter(configuration: .init(
         executable: executable ?? fake.executable, config: fake.config, target: RecipientTestRig.target,
-        binding: "reply-binding", allowSynthetic: true, timing: timing, shutdownGrace: shutdownGrace, audit: audit
-    ), log: { events?.record($0) })
+        binding: "reply-binding", allowSynthetic: true, timing: timing, shutdownGrace: shutdownGrace, audit: audit,
+        acknowledgements: acknowledgements
+    ), log: { events?.record($0); onEvent?($0) })
     let gate = AmbientAudioGate(target: RecipientTestRig.target, sink: router, sweepInterval: nil)
     let listener = try WebSocketListener(
         bindAddress: "127.0.0.1", port: 0, host: rig.host,
