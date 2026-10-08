@@ -66,6 +66,24 @@ import Testing
         }
     }
 
+    @Test func aStopOutlivesTheDeviceThatAskedForIt() async throws {
+        try await withStopRig(capabilities: ["probe"]) { listener, socket, connection, port in
+            let reply = uncorrelatedDescriptor(audio: true)
+            let first = recipientAudio(reply, sequence: 0)
+            try #require(await listener.publish(first) == 1)
+            #expect(try await recipientSocketReceive(on: socket) == first)
+            #expect(await listener.stopReplyPlayback(connection: connection) == "cut")
+            socket.cancel(with: .normalClosure, reason: nil)
+            #expect(await eventually { await listener.peerCount() == 0 })
+            let (session, other) = try await device(port: port, capabilities: ["probe"])
+            defer { session.invalidateAndCancel() }
+            await #expect(throws: LocalReplyRefusal.replyStopped) {
+                try await listener.publish(recipientAudio(reply, sequence: 1, final: true))
+            }
+            try await recipientSocketBarrier(on: other)
+        }
+    }
+
     @Test func abandonedStreamsNeverCrowdOutALiveReply() async throws {
         try await withStopRig(capabilities: ["probe"]) { listener, socket, connection, _ in
             for _ in 0..<(HostSession.playbackStopLimit + 1) {
@@ -121,6 +139,8 @@ import Testing
 }
 
 extension WebSocketListener {
+    fileprivate func peerCount() -> Int { peers.count }
+
     fileprivate func onlyConnectionID() async -> UUID? {
         guard peers.count == 1, let peer = peers.values.first else { return nil }
         return await peer.session.connectionID
