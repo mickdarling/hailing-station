@@ -543,6 +543,7 @@ extension AmbientRightyoRouter {
         on connection: UUID, listener: WebSocketListener
     ) -> (@Sendable (AmbientAckRequest) -> Void)? {
         guard let library = configuration.acknowledgements else { return nil }
+        let target = configuration.target
         return { [weak self, weak listener] request in
             Task { [weak self] in
                 let named = request.persona.flatMap { library.clips[$0] == nil ? nil : $0 }
@@ -551,7 +552,8 @@ extension AmbientRightyoRouter {
                     self?.emit("ambient_acknowledged", detail: "outcome=skipped reason=no_clips")
                     return
                 }
-                let outcome = await listener?.acknowledgeAmbient(connection: connection, clip: clip) ?? "no_connection"
+                let outcome = await listener?.acknowledgeAmbient(connection: connection, target: target, clip: clip)
+                    ?? "no_connection"
                 let host = request.readAt.duration(to: .now).components
                 let hostMs = host.seconds * 1_000 + host.attoseconds / 1_000_000_000_000_000
                 self?.emit("ambient_acknowledged", detail: "persona=\(persona) clip=\(index) "

@@ -45,6 +45,34 @@ import Testing
         #expect(details.contains("outcome=skipped reason=no_clips"))
     }
 
+    /// The send itself (#326 review): only to the named connection, only while it selects the ambient target, and
+    /// never past the host permit.
+    @Test(arguments: ["sent", "not_ready", "refused", "no_connection"])
+    func theAckIsGuardedLikeAnyReply(expected: String) async throws {
+        let rig = try await RecipientTestRig.make()
+        let listener = try fallbackListener(rig: rig, enabled: false)
+        let port = try await listener.start()
+        let pair = try await FallbackSocketPair.connect(port: port, selecting: [RecipientTestRig.target])
+        defer { pair.close() }
+        let connection = try #require(await listener.ackTestConnectionID())
+        var target = RecipientTestRig.target
+        switch expected {
+        case "not_ready": target = "tmux:elsewhere"
+        case "refused": _ = await rig.host.engageLockdown(reason: "synthetic panic")
+        default: break
+        }
+        let named = expected == "no_connection" ? UUID() : connection
+        #expect(await listener.acknowledgeAmbient(connection: named, target: target, clip: Self.clip) == expected)
+        if expected == "sent" {
+            _ = try await recipientSocketReceive(on: pair.sockets[0])
+            let audio = try await recipientSocketReceive(on: pair.sockets[0])
+            #expect(audio.source == "mac-test" && audio.target == RecipientTestRig.target)
+        } else {
+            try await pair.barrier() // Nothing reached the phone.
+        }
+        await listener.stop(reason: "synthetic test complete")
+    }
+
     /// Starts one ambient stream from the phone, lets the fixture's request through, checks the phone's socket,
     /// then ends the stream and returns every `ambient_acknowledged` detail.
     private func run(
@@ -70,6 +98,12 @@ import Testing
         await env.router.settle()
         await env.listener.stop(reason: "synthetic test complete")
         return details.withLock { $0 }
+    }
+}
+extension WebSocketListener {
+    fileprivate func ackTestConnectionID() async -> UUID? {
+        guard peers.count == 1, let peer = peers.values.first else { return nil }
+        return await peer.session.connectionID
     }
 }
 #endif
