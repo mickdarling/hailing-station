@@ -1,5 +1,6 @@
 import CryptoKit
 public import Foundation
+import HailProtocol
 // The event shape and its dismissal rules (rightyo#98) form one review boundary within the four-file budget.
 // swiftlint:disable file_length
 public enum RightyoInputError: Error, Sendable, Equatable {
@@ -65,6 +66,9 @@ public struct RightyoInputEvent: Codable, Sendable {
     let byUtteranceId: String?
     /// `override` and `dismiss` only: the speaker's role, by the same rules as a turn's.
     let role: String?
+    /// The names `started` advertises (rightyo#105), kept as raw JSON so a malformed list never refuses the stream;
+    /// only the acknowledgement voice reads it, through `RightyoAddressing`'s bounded, lenient parse.
+    let addressing: JSONValue?
     /// Natural dismissal (rightyo#98): advertised once at `started`; only then may `dismiss` events arrive.
     @RefusingNull var dismissal: Dismissal?
     /// `dismiss` fields. `speech_end_ms` also rides on `attention`, and `reason` on terminal session events.

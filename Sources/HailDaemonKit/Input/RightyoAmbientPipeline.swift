@@ -19,8 +19,11 @@ public protocol RightyoAmbientDispatching: Sendable {
 struct RightyoAmbientDispatchStep: RightyoDispatching {
     let connection: UUID
     let dispatcher: any RightyoAmbientDispatching
+    /// Acknowledges the admitted request (rightyo#105) before it is typed; never awaited, never throws.
+    var acknowledge: (@Sendable () -> Void)?
 
     func dispatch(text: String, target: String, binding: String) async throws -> RightyoDispatchReceipt {
+        acknowledge?()
         // The daemon's own local-dispatch cap, as for `--reply-to`; in process there is no socket answer deadline.
         guard text.utf8.count <= LocalDispatchRequest.maxTextBytes else { throw RightyoInputError.capacity }
         let request = LocalDispatchRequest(connection: connection, target: target, binding: binding, text: text)
@@ -51,14 +54,18 @@ public final class RightyoAmbientPipeline: Sendable {
         public var isEcho: (@Sendable (String) -> Bool)?
         /// Called once per admitted `dismiss` (rightyo#98), in event order, with counts and tokens only.
         public var onDismiss: (@Sendable (RightyoDismissReceipt) -> Void)?
+        /// Called once per admitted request just before it is typed (rightyo#105): the cue to acknowledge it.
+        /// Echo-dropped, withdrawn and duplicate requests never reach it. It must return at once.
+        public var onAcknowledge: (@Sendable (AmbientAckRequest) -> Void)?
 
         public init(executable: URL, config: URL, target: String, binding: String, connection: UUID,
                     allowSynthetic: Bool = false, timing: RightyoChildProcess.Timing = .init(),
                     isEcho: (@Sendable (String) -> Bool)? = nil,
-                    onDismiss: (@Sendable (RightyoDismissReceipt) -> Void)? = nil) {
+                    onDismiss: (@Sendable (RightyoDismissReceipt) -> Void)? = nil,
+                    onAcknowledge: (@Sendable (AmbientAckRequest) -> Void)? = nil) {
             (self.executable, self.config, self.target, self.binding) = (executable, config, target, binding)
             (self.connection, self.allowSynthetic, self.timing) = (connection, allowSynthetic, timing)
-            (self.isEcho, self.onDismiss) = (isEcho, onDismiss)
+            (self.isEcho, self.onDismiss, self.onAcknowledge) = (isEcho, onDismiss, onAcknowledge)
         }
     }
 
@@ -74,11 +81,14 @@ public final class RightyoAmbientPipeline: Sendable {
     private let child: RightyoChildProcess
     private let consumer: RightyoInputConsumer
     private let onDismiss: (@Sendable (RightyoDismissReceipt) -> Void)?
+    private let acknowledgement: AmbientAckRelay
 
     /// Validates the target and the executable before launching the child; a refusal launches nothing.
     public init(configuration: Configuration, dispatcher: any RightyoAmbientDispatching) throws {
         let session = "hail-\(UUID().uuidString.lowercased())"
-        let step = RightyoAmbientDispatchStep(connection: configuration.connection, dispatcher: dispatcher)
+        let relay = AmbientAckRelay(onAcknowledge: configuration.onAcknowledge)
+        let step = RightyoAmbientDispatchStep(connection: configuration.connection, dispatcher: dispatcher,
+                                              acknowledge: { relay.fire() })
         consumer = try RightyoInputConsumer(host: nil, target: configuration.target, binding: configuration.binding,
                                             session: session, allowSynthetic: configuration.allowSynthetic,
                                             dispatcher: step, echoFilter: configuration.isEcho)
@@ -86,6 +96,7 @@ public final class RightyoAmbientPipeline: Sendable {
                                         session: session, timing: configuration.timing)
         self.session = session
         onDismiss = configuration.onDismiss
+        acknowledgement = relay
     }
 
     /// Hands one raw mono 16 kHz s16le chunk to the child without blocking; false once input has closed or for
@@ -111,6 +122,7 @@ public final class RightyoAmbientPipeline: Sendable {
         do {
             for try await line in child.lines {
                 let event = try RightyoInputEvent.decode(line)
+                acknowledgement.observe(event, readAt: .now)
                 if try await consumer.consume(event), event.type == "request" { delivered += 1 }
                 // A newly admitted `dismiss` delivers nothing and leaves its receipt; a replayed one leaves none.
                 if event.type == "dismiss", let receipt = await consumer.lastDismissal { onDismiss?(receipt) }
