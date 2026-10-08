@@ -24,3 +24,12 @@ version defines their semantics.
 
 Frame `id` remains the identity of one transmitted frame; it is deliberately not reused as reply or stream
 identity. Multiple segments from one reply therefore keep unique frame IDs while sharing reply and stream IDs.
+
+## Stopping reply playback (#309)
+
+`{"command": "stop_playback"}` is a host-to-device control command that tells the device to stop reply audio
+at once and drop any queued reply audio. It carries nothing else: the decoder and the schema refuse any other
+payload key, and it grants no authority. A device advertises `stop_playback` (`PlaybackStop.capability`) in its
+`hello` when it can act on the command. A host never sends it to a device that did not advertise it, because an
+older device refuses an unknown command as malformed. The host sends it when a RightyO `dismiss` has `playback`
+in its scope ([rightyo-input.md](rightyo-input.md)).

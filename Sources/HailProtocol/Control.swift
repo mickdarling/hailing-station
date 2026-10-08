@@ -93,6 +93,9 @@ public enum ControlPayload: Sendable, Equatable {
     /// Device diagnostics (#234): enumerated events with bounded scalar fields, sent only to a host that
     /// advertises `DiagnosticLimits.capability`. They carry no audio or text and grant no authority.
     case diagnostic(events: [DiagnosticEvent])
+    /// Host to device (#309): stop reply playback now and drop queued reply audio, sent only to a device that
+    /// advertises `PlaybackStop.capability`. It carries nothing else and grants no authority.
+    case stopPlayback
 }
 
 extension ControlPayload: Codable {
@@ -102,7 +105,7 @@ extension ControlPayload: Codable {
 
     private enum Command: String, Codable {
         case hello, listTargets = "list_targets", targets, select, subscribe, unsubscribe, escape, ping, pong, error
-        case diagnostic
+        case diagnostic, stopPlayback = "stop_playback"
     }
 
     // A closed wire enum is clearest as one exhaustive switch.
@@ -138,6 +141,14 @@ extension ControlPayload: Codable {
             let events = try container.decode([DiagnosticEvent].self, forKey: .events)
             try requireRange(events.count, in: 1...DiagnosticLimits.maxEventsPerBatch, "events", decoder)
             self = .diagnostic(events: events)
+        case .stopPlayback:
+            // Strict, like `diagnostic`: only `command`, so nothing rides along on a stop.
+            let keys = try decoder.container(keyedBy: DiagnosticCodingKey.self).allKeys.map(\.stringValue)
+            guard keys == ["command"] else {
+                throw DecodingError.dataCorrupted(.init(codingPath: decoder.codingPath,
+                                                        debugDescription: "unknown stop_playback payload key"))
+            }
+            self = .stopPlayback
         }
     }
 
@@ -178,8 +189,16 @@ extension ControlPayload: Codable {
         case .diagnostic(let events):
             try container.encode(Command.diagnostic, forKey: .command)
             try container.encode(events, forKey: .events)
+        case .stopPlayback:
+            try container.encode(Command.stopPlayback, forKey: .command)
         }
     }
+}
+
+/// Reply playback stop (#309). The device advertises the capability in its `hello`; a host never sends
+/// `stop_playback` to a device without it, because an older device refuses an unknown command as malformed.
+public enum PlaybackStop {
+    public static let capability = "stop_playback"
 }
 
 /// Picks the protocol version a session runs at: the highest version both ends list (#2 item 5).
@@ -447,6 +466,12 @@ extension Schema {
             "additionalProperties": .bool(false),
             "properties": .object(["command": .object([:]), "events": .object([:])])
         ])
+    ])
+
+    /// `stop_playback` carries only `command` (#309).
+    static let stopPlaybackPayloadRule: JSONValue = .object([
+        "if": .object(["properties": .object(["command": .object(["const": .string("stop_playback")])])]),
+        "then": .object(["additionalProperties": .bool(false), "properties": .object(["command": .object([:])])])
     ])
 
     private static func diagnosticValue(_ field: DiagnosticField) -> JSONValue {
