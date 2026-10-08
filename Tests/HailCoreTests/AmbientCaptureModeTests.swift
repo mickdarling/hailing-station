@@ -67,6 +67,20 @@ struct AmbientCaptureModeTests {
         #expect(engine.inputConnectionPoint(for: engine.outputNode, inputBus: 0)?.node === engine.mainMixerNode)
     }
 
+    /// The plain engine's routing is marked as not cancelling echo, so attaching replies never lowers masking.
+    @Test func plainCaptureRoutingNeverClaimsEchoCancellation() throws {
+        let echoGuard = AmbientReplyEchoGuard()
+        echoGuard.setRoutedThroughCapture(true) // A leftover from an earlier voice-processing run.
+        let capture = try echoGuard.ambientCapture(mode: .plain, plainCapture: { _ in FakeAudioCapture() })
+        let routing = try #require((capture as? EchoMaskedCapture)?.routing)
+        #expect(!routing.cancelsEcho)
+        _ = try capture.start()
+        #expect(!echoGuard.isEchoCancelling)
+        echoGuard.setReplyAudible(true)
+        #expect(echoGuard.isMasking)
+        capture.stop()
+    }
+
     /// A plain engine plays replies but cancels no echo, so routing through it never lowers masking.
     @Test func onlyAVoiceProcessingEngineCountsAsEchoCancelled() {
         #expect(CaptureReplyRouting.echoCancelled(cancelsEcho: true, routed: true))

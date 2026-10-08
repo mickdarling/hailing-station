@@ -101,8 +101,8 @@ public final class AmbientReplyEchoGuard: Sendable {
         let engine = AVAudioEngine()
         _ = engine.mainMixerNode // Wire the output path before the engine first starts.
         let capture = try Self.voiceProcessingCapture(engine: engine)
-        return EchoMaskedCapture(capture: capture, echoGuard: self,
-                                 routing: CaptureReplyRouting(engine: engine, route: route, echoGuard: self))
+        let routing = CaptureReplyRouting(engine: engine, route: route, echoGuard: self, cancelsEcho: true)
+        return EchoMaskedCapture(capture: capture, echoGuard: self, routing: routing)
     }
 
     /// Ambient capture for `mode` (#343). Voice processing echo-cancels replies through the capture engine. Plain
@@ -230,9 +230,9 @@ final class CaptureReplyRouting {
     private let engine: AVAudioEngine
     private let route: ReplyRoute
     private let echoGuard: AmbientReplyEchoGuard
-    private let cancelsEcho: Bool
+    let cancelsEcho: Bool
 
-    init(engine: AVAudioEngine, route: ReplyRoute, echoGuard: AmbientReplyEchoGuard, cancelsEcho: Bool = true) {
+    init(engine: AVAudioEngine, route: ReplyRoute, echoGuard: AmbientReplyEchoGuard, cancelsEcho: Bool) {
         self.engine = engine
         self.route = route
         self.echoGuard = echoGuard
@@ -240,7 +240,7 @@ final class CaptureReplyRouting {
     }
 
     func attach() {
-        guard let player = route.player else { return }
+        guard let player = route.player else { return echoGuard.setRoutedThroughCapture(false) }
         player.route(through: engine)
         let routed = player.isRoutedThroughCapture
         echoGuard.setRoutedThroughCapture(Self.echoCancelled(cancelsEcho: cancelsEcho, routed: routed))
@@ -262,7 +262,7 @@ final class CaptureReplyRouting {
 final class EchoMaskedCapture: AudioCapturing {
     private let capture: any AudioCapturing
     private let echoGuard: AmbientReplyEchoGuard
-    private let routing: CaptureReplyRouting?
+    let routing: CaptureReplyRouting?
 
     init(capture: any AudioCapturing, echoGuard: AmbientReplyEchoGuard, routing: CaptureReplyRouting? = nil) {
         self.capture = capture
