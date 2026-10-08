@@ -37,8 +37,10 @@ usage: scripts/host.sh <install|plist|restart|deploy|status> [options]
 
 host.json: {"bind": "127.0.0.1", "port": 8765, "hostID": "optional", "singleTerminalReplyFallback": true,
             "deviceDiagnostics": false,
-            "ambient": {"rightyo": "/abs/path", "config": "/abs/path", "target": "tmux:name"}}
-Ambient listening requires "singleTerminalReplyFallback": true.
+            "ambient": {"rightyo": "/abs/path", "config": "/abs/path", "target": "tmux:name",
+                        "ackClips": "/abs/optional-clip-folder"}}
+Ambient listening requires "singleTerminalReplyFallback": true. "ackClips" (optional) holds <persona>/*.wav
+acknowledgement clips played on each admitted request; missing clips leave acknowledgements off.
 USAGE
 }
 
@@ -120,6 +122,10 @@ load_daemon_arguments() {
   read_string ambient.rightyo; rightyo="$VALUE"
   read_string ambient.config; rightyo_config="$VALUE"
   read_string ambient.target; target="$VALUE"
+  read_string ambient.ackClips; ack_clips="$VALUE"
+  if [[ -n "$ack_clips" && -z "$rightyo$rightyo_config$target" ]]; then
+    fail "ambient \"ackClips\" needs the other ambient settings"
+  fi
   if [[ -n "$rightyo$rightyo_config$target" ]]; then
     [[ "$rightyo" == /* && "$rightyo_config" == /* && -n "$target" ]] \
       || fail "ambient needs absolute \"rightyo\" and \"config\" paths and a \"target\""
@@ -131,6 +137,11 @@ load_daemon_arguments() {
     [[ -f "$rightyo" && -x "$rightyo" && -f "$rightyo_config" ]] \
       || fail "ambient \"rightyo\" must be an executable and \"config\" an existing file"
     DAEMON_ARGS+=(--ambient-rightyo "$rightyo" --ambient-rightyo-config "$rightyo_config" --ambient-target "$target")
+    if [[ -n "$ack_clips" ]]; then
+      # Missing clips only turn acknowledgements off in the daemon; a relative path is refused here.
+      [[ "$ack_clips" == /* ]] || fail "ambient \"ackClips\" must be an absolute path"
+      DAEMON_ARGS+=(--ambient-ack-clips "$ack_clips")
+    fi
   fi
 }
 
