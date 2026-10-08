@@ -49,13 +49,16 @@ public final class RightyoAmbientPipeline: Sendable {
         public var timing: RightyoChildProcess.Timing
         /// Own-voice rejection (#269): heard text this returns true for is never dispatched.
         public var isEcho: (@Sendable (String) -> Bool)?
+        /// Called once per admitted `dismiss` (rightyo#98), in event order, with counts and tokens only.
+        public var onDismiss: (@Sendable (RightyoDismissReceipt) -> Void)?
 
         public init(executable: URL, config: URL, target: String, binding: String, connection: UUID,
                     allowSynthetic: Bool = false, timing: RightyoChildProcess.Timing = .init(),
-                    isEcho: (@Sendable (String) -> Bool)? = nil) {
+                    isEcho: (@Sendable (String) -> Bool)? = nil,
+                    onDismiss: (@Sendable (RightyoDismissReceipt) -> Void)? = nil) {
             (self.executable, self.config, self.target, self.binding) = (executable, config, target, binding)
             (self.connection, self.allowSynthetic, self.timing) = (connection, allowSynthetic, timing)
-            self.isEcho = isEcho
+            (self.isEcho, self.onDismiss) = (isEcho, onDismiss)
         }
     }
 
@@ -70,6 +73,7 @@ public final class RightyoAmbientPipeline: Sendable {
     public let session: String
     private let child: RightyoChildProcess
     private let consumer: RightyoInputConsumer
+    private let onDismiss: (@Sendable (RightyoDismissReceipt) -> Void)?
 
     /// Validates the target and the executable before launching the child; a refusal launches nothing.
     public init(configuration: Configuration, dispatcher: any RightyoAmbientDispatching) throws {
@@ -81,6 +85,7 @@ public final class RightyoAmbientPipeline: Sendable {
         child = try RightyoChildProcess(executable: configuration.executable, config: configuration.config,
                                         session: session, timing: configuration.timing)
         self.session = session
+        onDismiss = configuration.onDismiss
     }
 
     /// Hands one raw mono 16 kHz s16le chunk to the child without blocking; false once input has closed or for
@@ -96,6 +101,8 @@ public final class RightyoAmbientPipeline: Sendable {
     public var counters: RightyoChildProcess.Counters { child.counters }
     /// Requests dropped as the host's own reply heard back (#269). A count only.
     public var echoDropped: Int { get async { await consumer.echoDropped } }
+    /// Requests dropped because the speaker's dismissal had withdrawn them (rightyo#98). A count only.
+    public var withdrawnDropped: Int { get async { await consumer.withdrawnDropped } }
 
     /// Consumes the child's events until it ends. Returns after a clean terminal session event and EOF; throws
     /// the first decode, consumer, dispatch or transport error. Either way the child is stopped and reaped.
@@ -105,6 +112,8 @@ public final class RightyoAmbientPipeline: Sendable {
             for try await line in child.lines {
                 let event = try RightyoInputEvent.decode(line)
                 if try await consumer.consume(event), event.type == "request" { delivered += 1 }
+                // A newly admitted `dismiss` delivers nothing and leaves its receipt; a replayed one leaves none.
+                if event.type == "dismiss", let receipt = await consumer.lastDismissal { onDismiss?(receipt) }
             }
             try await consumer.finish()
         } catch {

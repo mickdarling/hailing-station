@@ -485,7 +485,8 @@ extension AmbientRightyoRouter {
                 executable: configuration.executable, config: configuration.config, target: configuration.target,
                 binding: configuration.binding, connection: connection,
                 allowSynthetic: configuration.allowSynthetic, timing: configuration.timing,
-                isEcho: { [spokenReplies] heard in spokenReplies.isEcho(heard) }
+                isEcho: { [spokenReplies] heard in spokenReplies.isEcho(heard) },
+                onDismiss: { [weak self] receipt in self?.emit("ambient_dismissed", detail: Self.describe(receipt)) }
             ), dispatcher: AmbientListenerDispatcher(listener: listener, audit: configuration.audit))
         } catch {
             return refuse(stream, connection: connection, reason: Self.describe(error))
@@ -542,6 +543,13 @@ extension AmbientRightyoRouter {
         let listener = state.withLock { $0.listener?.value }
         Task { await listener?.ambientFailed(stream: stream, connection: connection,
                                              message: "ambient unavailable: \(reason)") }
+    }
+
+    /// Tokens and counts only (rightyo#98). No host path stops device playback yet, so `playback` in scope is
+    /// recorded as asked, not done; the stream itself keeps listening.
+    fileprivate static func describe(_ receipt: RightyoDismissReceipt) -> String {
+        "reason=\(receipt.reason) scope=\(receipt.scope.joined(separator: "+")) withdrawn=\(receipt.withdrawn)"
+            + " delivered=\(receipt.alreadyDelivered) playback=\(receipt.stopsPlayback ? "not_stopped" : "none")"
     }
 
     /// Rule names only: every error reaching here is a content-free case.

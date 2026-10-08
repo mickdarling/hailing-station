@@ -342,6 +342,42 @@ routing and agent actions. This adds no mobile audio transport, authenticated li
 continuous background capture, automatic reconnect or provider-output loop. There is no physical
 microphone-to-real-target proof in this slice. External contribution policy is unchanged.
 
+## Natural dismissal (rightyo#98)
+
+RightyO's natural dismissal ([mickdarling/rightyo#98](https://github.com/mickdarling/rightyo/issues/98), contract in
+RightyO's `docs/tool-api.md` "Natural dismissal and barge-in") is off unless RightyO's configuration has
+`"dismissal": {}`. When on, `started` carries a top-level `{"dismissal": {"version": 1, "window_ms", "cooldown_ms",
+"cooldown_min_confidence"}}` beside the unchanged capability set, and the producer may then emit `dismiss`:
+the speaker told the assistant to stop, go away, or that it was not addressed. The consumer parses the object
+only on `started`, with exactly those four keys, `version` 1 and RightyO's documented ranges; anything else,
+including `null`, refuses the session as `invalidEvent`. Without it, `dismiss` is refused as before.
+
+An admitted `dismiss` must cite an admitted transcript (a stop phrase's `dismiss` follows its own `transcript`,
+before its `attention`) and carries `utterance_id`, `speech_end_ms` (not after `emitted_at_ms`), an
+identifier-safe or null `speaker_id`, `role` under the same rules as a turn's, a non-empty set drawn from
+`playback`, `pending_request` and `engagement` as `scope`, at most 32 unique `withdrawn_request_ids` in this
+session's `session:utterance` shape, `reason` `stop-phrase` with a null `confidence` or `decision` with a
+probability, and an optional `cooldown_until_ms` only with `engagement` and not before the speech end. It may
+not carry a turn, decision, context or request id, and `scope`, `withdrawn_request_ids` and `cooldown_until_ms`
+are refused on every other kind.
+
+What it does: nothing is delivered and `consume` returns false; `lastDismissal` holds a receipt with the
+reason, scope and two counts. A listed id this consumer already delivered stays delivered (withdrawal is
+advisory; there is no rollback, as for an override). Any other listed id, including one never seen, which is how
+RightyO names a request it withheld while its decision was pending, is recorded (bounded at 1,000) and a later
+request with it is dropped without delivery and counted (`withdrawnDropped`), so the session keeps going. There
+is nothing host-side in flight to cancel: `consume` awaits each delivery to completion. Ambient listening
+logs `ambient_dismissed` with tokens and counts only, for example `reason=stop-phrase
+scope=playback+pending_request withdrawn=0 delivered=1 playback=not_stopped`, and keeps listening; a dismissal
+never ends the stream.
+
+What it does not do yet: no host path stops a reply already streaming or playing on the device, so `playback`
+is recorded as asked, not done (`playback=not_stopped`). That needs a host-to-device stop and renderer cancel
+([#309](https://github.com/mickdarling/hailing-station/issues/309), under #268). `engagement` changes nothing because the host has no engaged state beyond ambient
+listening; RightyO applies the cool-down itself. The CLI prints no receipt for a `dismiss`.
+`fixtures/rightyo/dismissal-events.jsonl` is byte-identical to RightyO's `examples/dismissal-events.jsonl` at
+rightyo PR #99 head `73e4db86388724f572c805f5ccef41d01dee0cd6` (`--session dismissal-demo`).
+
 ## Verification
 
 `RightyoInputConsumerTests` uses invented turns and the real guarded HailHost path with synthetic
