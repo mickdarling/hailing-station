@@ -18,9 +18,16 @@ import Testing
             .select(targetID: "tmux:a"), .subscribe(targetID: "tmux:a"), .unsubscribe(targetID: "tmux:a"),
             .escape(targetID: "tmux:a"),
             .ping(nonce: "n1"), .pong(nonce: "n1"),
-            .error(code: .unauthorized, message: "no such device"), .error(code: .unknown("future"), message: "")
+            .error(code: .unauthorized, message: "no such device"), .error(code: .unknown("future"), message: ""),
+            .stopPlayback
         ]
         for command in commands { _ = try roundTrip(command) }
+    }
+
+    @Test func stopPlaybackIsTheBareCommandAndRefusesAnythingRidingAlong() throws {
+        #expect(try roundTrip(.stopPlayback).contains(#""payload":{"command":"stop_playback"}"#))
+        let extra = Data(#"{"command":"stop_playback","target":"tmux:a"}"#.utf8)
+        #expect(throws: DecodingError.self) { try JSONDecoder().decode(ControlPayload.self, from: extra) }
     }
 
     @Test func commandNamesUseSnakeCaseOnTheWire() throws {

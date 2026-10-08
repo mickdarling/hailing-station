@@ -148,7 +148,7 @@ public enum Schema {
             "command": .object(["enum": .array(
                 [
                     "hello", "list_targets", "targets", "select", "subscribe", "unsubscribe", "escape", "ping", "pong",
-                    "error", "diagnostic"
+                    "error", "diagnostic", "stop_playback"
                 ]
                     .map(JSONValue.string)
             )]),
@@ -188,7 +188,8 @@ public enum Schema {
             commandRule("pong", requires: ["nonce"]),
             commandRule("error", requires: ["code", "message"]),
             commandRule("diagnostic", requires: ["events"]),
-            diagnosticPayloadRule
+            diagnosticPayloadRule,
+            stopPlaybackPayloadRule
         ])
     ])
 }

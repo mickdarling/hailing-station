@@ -206,6 +206,9 @@ public enum Fixtures {
             id: id(10), timestamp: 1_758_200_000_070, source: "host",
             payload: .control(.error(code: .notAllowed, message: "target tmux:codex-hail is not allowed yet"))
         )),
+        Example(name: "control-stop-playback", frame: Frame(
+            id: id(204), timestamp: 1_758_200_050_100, source: "host", payload: .control(.stopPlayback)
+        )),
         Example(name: "control-diagnostic", frame: Frame(
             id: id(25), timestamp: 1_758_200_050_000, source: "terminal",
             payload: .control(.diagnostic(events: diagnosticEvents))
