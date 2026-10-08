@@ -89,7 +89,11 @@ public actor RightyoInputConsumer {
     /// names is uncheckable: only the JSON record behind it carries verified roles, and anonymous sessions have none.
     private var forming = false
     /// Whether `started` advertised `dismissal` version 1 (rightyo#98): only then is `dismiss` admitted.
-    private var dismissible = false
+    /// Likewise `conversation` (rightyo#82): only then are `conversation` events and follow-up requests (recipient
+    /// `unknown`) admitted.
+    private var dismissible = false, conversational = false
+    /// The latest admitted conversation state, `engaged` or `ambient`, and how many changes were admitted.
+    public private(set) var conversationStatus = (state: "ambient", changes: 0)
     /// Request ids a `dismiss` withdrew before this consumer delivered them; a later request with one is dropped.
     private var withdrawn = Set<String>()
     /// Withdrawn ids a request has already been dropped for, so a repeat is refused as a duplicate (a subset of `withdrawn`).
@@ -222,7 +226,7 @@ public actor RightyoInputConsumer {
                 activationEnabled = caps.activation == "finalized-turn"
                 speakers = caps.speakers
                 forming = event.requestForming != nil
-                dismissible = event.dismissal != nil
+                (dismissible, conversational) = (event.dismissal != nil, event.conversation != nil)
             }
         } else if !started { throw RightyoInputError.invalidLifecycle }
         try correlate(event)
@@ -268,12 +272,14 @@ extension RightyoInputConsumer {
         case "attention": try attention(event)
         case "override": try supersede(event)
         case "dismiss": try dismiss(event)
+        case "conversation": try conversation(event)
         case "request": try request(event)
         default: break
         }
     }
     private func request(_ event: RightyoInputEvent) throws {
         guard activationEnabled, let turn = event.turn, let decision = event.decision,
+              decision.followUp != true || conversational,
               (event.formedRequest != nil) == forming, !superseded.contains(event.requestId ?? ""),
               finals[turn.utteranceId] == (try RightyoInputEvent.fingerprint(turn)),
               attentions[event.requestId ?? ""] == (try RightyoInputEvent.fingerprint(decision)) else {
@@ -297,7 +303,8 @@ extension RightyoInputConsumer {
         // superseded or held as a stop phrase (rightyo#98). Nothing is recorded, so `request` refuses any request
         // citing it; only an `attend` that names a request id is checked and recorded.
         if decision.label == "attend", let requestID = event.requestId {
-            guard activationEnabled, decision.recipientKind == "system",
+            guard activationEnabled, RightyoInputEvent.addressedToSystem(decision),
+                  decision.followUp != true || conversational,
                   requestID == "\(session):\(utterance)", attentions.count < 1000,
                   attentions[requestID] == nil else {
                 throw RightyoInputError.invalidEvent
@@ -317,6 +324,17 @@ extension RightyoInputConsumer {
             throw RightyoInputError.invalidEvent
         }
         superseded.insert(requestID)
+    }
+    /// A `conversation` event (rightyo#82) is admitted only on a session that advertised `conversation`, and must cite
+    /// admitted records: the speaker's own transcript, and for `engaged` the attention that named its request.
+    /// It delivers nothing; the state is kept for status and counted.
+    private func conversation(_ event: RightyoInputEvent) throws {
+        guard conversational, let state = event.state, conversationStatus.changes < Int.max,
+              event.utteranceId.map({ finals[$0] != nil }) ?? true,
+              event.requestId.map({ attentions[$0] != nil }) ?? true else {
+            throw RightyoInputError.invalidEvent
+        }
+        conversationStatus = (state, conversationStatus.changes + 1)
     }
     /// A `dismiss` (rightyo#98) is admitted only on a session that advertised `dismissal`, and must cite an admitted
     /// transcript: a stop phrase's comes right after it, before its attention. Each listed id this consumer already
