@@ -21,6 +21,8 @@ public enum LocalReplyRefusal: String, Codable, Error, Sendable {
     case requestPending
     case notUniqueRecipient
     case publicationFailed
+    /// The reply was stopped by a dismissal (#309): the user asked for silence, so this is not a fault.
+    case replyStopped
     case internalFailure = "internal"
 
     public var message: String {
@@ -35,6 +37,7 @@ public enum LocalReplyRefusal: String, Codable, Error, Sendable {
         case .requestPending: "request handoff pending; nothing published"
         case .notUniqueRecipient: "request recipient is not unique; nothing published"
         case .publicationFailed: "publication failed; outcome is not retryable"
+        case .replyStopped: "reply stopped by a dismissal; nothing published"
         case .internalFailure: "internal failure"
         }
         return "reply refused [\(rawValue)]: \(reason)"

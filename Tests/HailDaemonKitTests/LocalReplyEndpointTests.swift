@@ -314,7 +314,8 @@ import Testing
         )
     }
 
-    @Test(arguments: [LocalReplyRefusal.requestPending, .noRecipient, .notUniqueRecipient, .publicationFailed])
+    @Test(arguments: [LocalReplyRefusal.requestPending, .noRecipient, .notUniqueRecipient, .publicationFailed,
+                      .replyStopped])
     func correlatedRefusalPreservesItsTypedWireCode(reason: LocalReplyRefusal) async throws {
         try await expectRefusal(
             FrameCoding.encode(replyFrame()), destination: RefusingReplyPublisher(reason: reason), expected: reason
@@ -629,10 +630,11 @@ private func expectRefusal(
     let response = try await submit(data, socket: socket.path)
     #expect(response == LocalReplyResponse(delivered: 0, error: expected.message, code: expected))
     await endpoint.stop()
-    // Each refusal is audited once for `haild doctor` (#247); a retryable pending answer and a failed audit are not.
+    // Each refusal is audited once for `haild doctor` (#247); a retryable pending answer, a failed audit and the
+    // user's own stop (#309) are not.
     let lines = (try? AuditHistory(directory: scratch.appendingPathComponent("audit")).today(at: auditClock())) ?? []
     let refused = lines.filter { $0.contains("\"kind\":\"delivery_refused\"") }
-    #expect(refused.count == ([.requestPending, .auditFailure].contains(expected) ? 0 : 1))
+    #expect(refused.count == ([.requestPending, .auditFailure, .replyStopped].contains(expected) ? 0 : 1))
     #expect(refused.allSatisfy { $0.contains("\"reason\":\"\(expected.rawValue)\"") })
 }
 

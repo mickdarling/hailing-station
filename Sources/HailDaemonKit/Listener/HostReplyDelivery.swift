@@ -234,7 +234,7 @@ extension WebSocketListener {
         // A reply stopped on any connection is refused everywhere (#309), so a stop can never hand the rest of
         // it to another connection that also selects its target.
         for peer in Array(peers.values) where await peer.session.hasStopped(validated) {
-            throw LocalReplyRefusal.noRecipient
+            throw LocalReplyRefusal.replyStopped
         }
         // Fresh host-minted UUIDs establish origin ownership. This scan is an admission snapshot,
         // not a transactional global directory or a UUID-collision proof. Never enqueue during it.

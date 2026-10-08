@@ -15,7 +15,7 @@ import Testing
 
             #expect(await listener.stopReplyPlayback(connection: connection) == "stopped")
             #expect(try await recipientSocketReceive(on: socket).payload == .control(.stopPlayback))
-            await #expect(throws: LocalReplyRefusal.noRecipient) {
+            await #expect(throws: LocalReplyRefusal.replyStopped) {
                 try await listener.publish(recipientAudio(reply, sequence: 1, final: true))
             }
             // A later reply is not stopped.
@@ -34,7 +34,7 @@ import Testing
 
             #expect(await listener.stopReplyPlayback(connection: connection) == "cut")
             try await recipientSocketBarrier(on: socket) // No stop frame: the next frame is the pong.
-            await #expect(throws: LocalReplyRefusal.noRecipient) {
+            await #expect(throws: LocalReplyRefusal.replyStopped) {
                 try await listener.publish(recipientAudio(reply, sequence: 1, final: true))
             }
         }
@@ -59,7 +59,7 @@ import Testing
             let (session, other) = try await device(port: port, capabilities: ["probe"])
             defer { session.invalidateAndCancel() }
             #expect(await listener.stopReplyPlayback(connection: connection) == "cut")
-            await #expect(throws: LocalReplyRefusal.noRecipient) {
+            await #expect(throws: LocalReplyRefusal.replyStopped) {
                 try await listener.publish(recipientAudio(reply, sequence: 1, final: true))
             }
             try await recipientSocketBarrier(on: other) // The other device heard nothing.
@@ -77,7 +77,7 @@ import Testing
             try #require(await listener.publish(recipientAudio(live, sequence: 0)) == 1)
             _ = try await recipientSocketReceive(on: socket)
             #expect(await listener.stopReplyPlayback(connection: connection) == "cut")
-            await #expect(throws: LocalReplyRefusal.noRecipient) {
+            await #expect(throws: LocalReplyRefusal.replyStopped) {
                 try await listener.publish(recipientAudio(live, sequence: 1, final: true))
             }
         }
