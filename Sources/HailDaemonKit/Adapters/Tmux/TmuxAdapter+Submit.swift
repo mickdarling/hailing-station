@@ -88,27 +88,25 @@ enum TmuxSubmitProbe {
 
     /// Waits up to the confirm limit for the text to leave the cursor, seen on two looks in a row. A cursor that
     /// moved to column 0 right after the text counts only when the cursor was past column 0 before the Enter (a
-    /// terminal ended the line); otherwise it is `ambiguous`, as is text whose columns cannot be counted.
+    /// terminal ended the line); otherwise it is `ambiguous`.
     static func reaction(
         _ timing: TmuxSubmitTiming, tail: PayloadTail?, before: PaneObservation?, wasHolding: Bool, observe: Observe
     ) async -> Reaction {
         let deadline = ContinuousClock.now.advanced(by: timing.confirmLimit)
-        var previous = before, alive = false, released = 0, uncertain = false
+        var previous = before, alive = false, released = 0
         repeat {
             try? await Task.sleep(for: timing.pollInterval)
             guard let current = await observe() else { return .unreadable }
             alive = alive || (previous.map { $0 != current } ?? false)
             previous = current
-            let input = current.input(tail)
-            uncertain = input == .uncertain
-            switch input {
+            switch current.input(tail) {
             case .clear: released += 1
             case .lineEnded: if wasHolding { released += 1 } else { return .ambiguous }
-            case .holding, .uncertain: released = 0
+            case .holding: released = 0
             }
             if released >= 2 { return .submitted }
         } while ContinuousClock.now < deadline
-        return uncertain ? .ambiguous : .pending(alive: alive)
+        return .pending(alive: alive)
     }
 
     enum Steadiness: Equatable { case holding(PaneObservation), released, restless }
@@ -133,8 +131,6 @@ enum TmuxSubmitProbe {
             case .clear, .lineEnded:
                 released += 1
                 if released >= 2 { return .released }
-            case .uncertain:
-                return .restless
             }
             try? await Task.sleep(for: timing.pollInterval)
         }

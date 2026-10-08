@@ -37,59 +37,56 @@ struct PaneObservation: Equatable, Sendable {
         case holding
         /// The tail ends right before a cursor in column 0: a terminal ended the line, or the text filled its row.
         case lineEnded
-        /// Neither the tail nor a placeholder ends at the cursor.
+        /// Neither the tail nor a placeholder ends at the cursor, under any reading of the cursor row.
         case clear
-        /// Neither ends at the cursor as far as can be told, but the cursor row holds characters of unknown column
-        /// width before the cursor, so where the cursor sits in the text is not certain: never taken as `clear`.
-        case uncertain
 
         var isDrawn: Bool { self == .holding || self == .lineEnded }
-        var mayHoldInput: Bool { self == .holding || self == .uncertain }
     }
 
-    /// `tail` nil checks only for a paste placeholder.
+    /// `tail` nil checks only for a paste placeholder. A character of unknown column width on the cursor row (an
+    /// arrow or emoji in a shell prompt, say) is read both as one column and as two: the text counts as drawn when
+    /// it ends at the cursor under either reading, so a miscount can never hide pending text, and as clear only
+    /// when it ends there under neither.
     func input(_ tail: PayloadTail?) -> Input {
-        let (before, certain) = scalarsBeforeCursor(atLeast: max(tail?.scalars.count ?? 0, Self.placeholderReach))
-        let drawn = (tail.map { before.ends(with: $0.scalars) } ?? false) || Self.endsInPastePlaceholder(before)
-        guard drawn else { return certain ? .clear : .uncertain }
+        let count = max(tail?.scalars.count ?? 0, Self.placeholderReach)
+        let drawn = [1, 2].contains { unknownWidth in
+            let before = scalarsBeforeCursor(atLeast: count, unknownWidth: unknownWidth)
+            return (tail.map { before.ends(with: $0.scalars) } ?? false) || Self.endsInPastePlaceholder(before)
+        }
+        guard drawn else { return .clear }
         return cursorX > 0 ? .holding : .lineEnded
     }
 
     /// The non-whitespace scalars that end at the cursor: the cursor row up to the cursor column, preceded by as
     /// many earlier rows as it takes to hold `count` scalars (wrapping and indentation never interrupt a match).
-    /// `certain` is false when the cursor row's prefix holds a character of unknown column width.
-    func scalarsBeforeCursor(atLeast count: Int) -> (scalars: [Unicode.Scalar], certain: Bool) {
-        guard cursorY < rows.count else { return ([], true) }
-        let prefix = Self.prefix(of: rows[cursorY], columns: cursorX)
-        var collected = Self.visible(prefix.text)
+    /// A character of unknown width on the cursor row counts as `unknownWidth` columns.
+    func scalarsBeforeCursor(atLeast count: Int, unknownWidth: Int) -> [Unicode.Scalar] {
+        guard cursorY < rows.count else { return [] }
+        var collected = Self.visible(Self.prefix(of: rows[cursorY], columns: cursorX, unknownWidth: unknownWidth))
         var row = cursorY
         while collected.count < count, row > 0 {
             row -= 1
             collected = Self.visible(rows[row][...]) + collected
         }
-        return (collected, prefix.certain)
+        return collected
     }
 
     private static func visible(_ text: Substring) -> [Unicode.Scalar] {
         text.unicodeScalars.filter { !$0.properties.isWhitespace }
     }
 
-    /// The part of `row` drawn left of `columns`, counting wide scalars as two columns and combining ones as none.
-    /// A character whose width is not known for certain counts as one column and makes the result uncertain:
-    /// with a miscount the cursor could fall anywhere, so an uncertain prefix never confirms that text left.
-    static func prefix(of row: String, columns: Int) -> (text: Substring, certain: Bool) {
+    /// The part of `row` drawn left of `columns`, counting wide scalars as two columns, combining ones as none, and
+    /// a character whose width is not known for certain as `unknownWidth`.
+    static func prefix(of row: String, columns: Int, unknownWidth: Int = 1) -> Substring {
         var used = 0
-        var certain = true
         var end = row.startIndex
         for character in row {
-            let known = character.unicodeScalars.first.flatMap(columnWidth)
-            certain = certain && known != nil
-            let width = known ?? 1
+            let width = character.unicodeScalars.first.flatMap(columnWidth) ?? unknownWidth
             guard used + width <= columns else { break }
             used += width
             end = row.index(after: end)
         }
-        return (row[..<end], certain)
+        return row[..<end]
     }
 
     /// Column width where it is known for certain (East Asian Width narrow or wide in every terminal), else nil.

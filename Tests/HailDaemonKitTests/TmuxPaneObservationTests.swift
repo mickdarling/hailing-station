@@ -40,18 +40,25 @@ import Testing
         #expect(try observe("$ say ok▌            [main]").input(tail) == .holding)
         // `界` takes two columns, so the cursor at column 5 sits right after `ok`.
         let wide = try #require(PaneObservation(captured: "界 ok more\n5,0\n"))
-        #expect(PaneObservation.prefix(of: "界 ok more", columns: 5) == ("界 ok", true))
+        #expect(PaneObservation.prefix(of: "界 ok more", columns: 5) == "界 ok")
         #expect(wide.input(tail) == .holding)
     }
 
-    @Test func aCharacterOfUnknownWidthBeforeTheCursorIsNeverTakenAsClear() throws {
-        let tail = PayloadTail("ok")
-        // U+2705 is wide in some terminals and narrow in others: the cursor column cannot be mapped to text.
-        #expect(PaneObservation.prefix(of: "\u{2705} done", columns: 4).certain == false)
-        #expect(try observe("\u{2705} done▌").input(tail) == .uncertain)
-        // A match is still a match, and Claude Code's prompt character is a known one-column scalar.
-        #expect(try observe("\u{2705} ok▌").input(tail) == .holding)
-        #expect(try observe("\u{276F} ▌").input(tail) == .clear)
+    @Test func aCharacterOfUnknownWidthIsReadAsOneAndAsTwoColumns() throws {
+        // U+2705 is wide in some terminals and narrow in others. Here the terminal drew it two columns wide, so the
+        // cursor at column 18 sits right after `input`; read as one column, the prefix would run on to the `X`
+        // and hide the pending text. Under either reading it counts as held.
+        let hidden = try #require(PaneObservation(captured: "\u{2705} synthetic inputX\n18,0\n"))
+        let twoWide = PaneObservation.prefix(of: "\u{2705} synthetic inputX", columns: 18, unknownWidth: 2)
+        #expect(twoWide.hasSuffix("input"))
+        #expect(hidden.input(PayloadTail("synthetic input")) == .holding)
+        // Under neither reading: clear, so a prompt glyph alone never blocks a delivery (#306 review).
+        #expect(try observe("\u{2705} done▌").input(PayloadTail("ok")) == .clear)
+        for prompt in ["\u{279C} ~ ▌", "\u{26A1} ~ ▌", "\u{E0B0} ~ ▌", "\u{276F} ▌"] {
+            #expect(try observe(prompt).input(nil) == .clear, "\(prompt)")
+            #expect(try observe(prompt).input(PayloadTail("echo one")) == .clear, "\(prompt)")
+        }
+        #expect(try observe("\u{279C} ~ echo one▌").input(PayloadTail("echo one")) == .holding)
     }
 
     @Test func claudeCodePastePlaceholdersCountAsHeldText() throws {

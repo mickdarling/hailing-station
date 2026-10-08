@@ -122,14 +122,14 @@ public actor TmuxAdapter: Adapter {
     }
 
     /// The screen before any text, which the Enter waits for a change from (#304). Text pending at the cursor (this
-    /// tail, the last one's, or a placeholder; nil checks placeholders only), or a cursor row that cannot be read for
-    /// certain (`uncertain`), is never appended to: it gets up to `clearLimit` to leave (two clear looks in a row).
+    /// tail, the last one's, or a placeholder; nil checks placeholders only) is never appended to: a frozen target
+    /// may still submit it, so it gets up to `clearLimit` to leave (two clear looks in a row).
     /// Still there, the delivery is refused untainted; an abandoned delivery stops looking and leaves as cancelled.
     private func clearedBaseline(
         _ session: Session, target: String, pending: [PayloadTail?], abandoned: DeliveryAbandonment
     ) async throws -> PaneObservation? {
         let baseline = await observePane(session.paneID)
-        guard let seen = baseline, let stale = pending.first(where: { seen.input($0).mayHoldInput }) else {
+        guard let seen = baseline, let stale = pending.first(where: { seen.input($0) == .holding }) else {
             return baseline
         }
         var wait = submitTiming

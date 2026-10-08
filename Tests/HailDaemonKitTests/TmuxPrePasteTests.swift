@@ -42,12 +42,12 @@ import Testing
         settleFloor: .milliseconds(1), pollInterval: .milliseconds(2), quiet: .milliseconds(6),
         settleLimit: .seconds(5), confirmLimit: .milliseconds(60), clearLimit: .seconds(10)
     )
-    /// U+2705 is wide in some terminals and narrow in others: with it before the cursor, whether text is pending
-    /// there cannot be told.
-    private static let unreadableRow = "\u{2705} synthetic inp▌"
+    /// U+2705 drawn two columns wide: the cursor sits right after `input`, and only reading the glyph as one column
+    /// (the miscount) would put it after the `X` and hide the pending text.
+    private static let hiddenRow = "\u{2705} synthetic inputX▌"
 
-    @Test func aCursorRowThatCannotBeReadIsPendingAndRefusedAtTheBoundWithNothingPasted() async throws {
-        let pane = ScriptedPane(baseline: Self.unreadableRow, stale: .max)
+    @Test func textHiddenByAWidthMiscountIsStillPendingAndRefusedAtTheBoundWithNothingPasted() async throws {
+        let pane = ScriptedPane(baseline: Self.hiddenRow, stale: .max)
         let harness = SubmitHarness(pane, timing: Self.short)
         let start = ContinuousClock.now
 
@@ -58,9 +58,9 @@ import Testing
         #expect(await harness.runner.calls.allSatisfy { !$0.contains("set-buffer") && !$0.contains("send-keys") })
     }
 
-    @Test func aCursorRowThatCannotBeReadIsWaitedForUntilItIsClear() async throws {
+    @Test func textHiddenByAWidthMiscountIsWaitedForUntilItIsClear() async throws {
         // The row clears by look count (two clear looks in a row), so only the script ends the wait.
-        let unreadable = Array(repeating: Self.unreadableRow, count: 4)
+        let unreadable = Array(repeating: Self.hiddenRow, count: 4)
         let clear = Array(repeating: ScriptedPane.oldScreen, count: 3)
         let pane = ScriptedPane()
         pane.reset(baseline: ScriptedPane.oldScreen, lead: unreadable + clear)
@@ -70,5 +70,20 @@ import Testing
 
         #expect(await harness.keys == ["synthetic input", "Enter"])
         #expect(harness.log.all == [.confirmed])
+    }
+
+    @Test func aShellPromptWithAGlyphOfUnknownWidthTakesEveryDeliveryAndConfirms() async throws {
+        // #306 review: `➜ ~ ` (oh-my-zsh's default) must not read as pending text, first delivery or later.
+        let prompt = "\u{279C} ~ "
+        let submitted = prompt + "synthetic input\n" + prompt + "▌"
+        let pane = ScriptedPane(baseline: prompt + "▌", typed: prompt + "synthetic input▌", afterEnter: [submitted])
+        let harness = SubmitHarness(pane, timing: Self.short)
+
+        try await harness.adapter.deliver("synthetic input", to: "codex", binding: nil)
+        pane.reset(baseline: submitted)
+        try await harness.adapter.deliver("synthetic input", to: "codex", binding: nil)
+
+        #expect(await harness.keys == ["synthetic input", "Enter", "synthetic input", "Enter"])
+        #expect(harness.log.all == [.confirmed, .confirmed])
     }
 }
