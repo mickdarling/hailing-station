@@ -39,8 +39,32 @@ actor FakeCommandRunner: CommandRunner {
     }
 }
 
-/// Lets the first `allowed` `send-keys` calls through, then parks the rest until `open()` (#208). A test can hold
-/// a delivery mid-typing by structure instead of racing a wall-clock deadline against runner speed.
+/// What reached the panes, in call order (#304): each `paste-buffer` as the whole text its buffer held, and each
+/// `send-keys` key by name. Texts are assembled by `set-buffer` (and `set-buffer -a`) and only count once pasted.
+func deliveredKeys(_ calls: [[String]], includingKeys: Bool = true) -> [String] {
+    var buffers: [String: String] = [:]
+    var out: [String] = []
+    for call in calls {
+        let flags = call.firstIndex(of: "--").map { Array(call[..<$0]) } ?? call
+        let name = flags.firstIndex(of: "-b").flatMap { flags.indices.contains($0 + 1) ? flags[$0 + 1] : nil }
+        if flags.contains("set-buffer"), let name, let data = call.last {
+            buffers[name] = (flags.contains("-a") ? buffers[name] ?? "" : "") + data
+        } else if flags.contains("paste-buffer"), let name {
+            out.append(buffers[name] ?? "")
+        } else if includingKeys, flags.contains("send-keys"), let key = call.last {
+            out.append(key)
+        }
+    }
+    return out
+}
+
+extension FakeCommandRunner {
+    var delivered: [String] { deliveredKeys(calls) }
+}
+
+/// Lets the first `allowed` typing calls (`set-buffer`, `paste-buffer`, `send-keys`) through, then parks the rest
+/// until `open()` (#208). A test can hold a delivery mid-typing by structure instead of racing a wall-clock
+/// deadline against runner speed.
 final class TypingGate: Sendable {
     private struct State {
         var seen = 0
@@ -55,7 +79,7 @@ final class TypingGate: Sendable {
     }
 
     func pass(_ arguments: [String]) async {
-        guard arguments.contains("send-keys") else { return }
+        guard ["set-buffer", "paste-buffer", "send-keys"].contains(where: arguments.contains) else { return }
         await withCheckedContinuation { continuation in
             let proceed = state.withLock { state -> Bool in
                 state.seen += 1

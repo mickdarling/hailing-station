@@ -1,12 +1,14 @@
 import Foundation
+import Synchronization
 
-/// Every tmux session on one server is a target (#11). Delivery goes through `send-keys -l --`, so text is
-/// never interpreted as key names. The binding is session id, creation time, and the active pane's pid,
-/// re-verified by exact name immediately before the first send and again before the Enter, and every
-/// send addresses the pane id itself, so neither a reused name nor an active-pane switch can redirect
-/// text (threat model B3).
-/// Sanitization (single line, no control characters) is #44's layer above this; the adapter only refuses
-/// line breaks, which `send-keys` would turn into extra Enter presses.
+/// Every tmux session on one server is a target (#11). Text reaches the pane as one tmux paste (#304): it is
+/// assembled in a uniquely named buffer by argv (never interpreted as key names) and pasted with `paste-buffer
+/// -p`, bracketed when the target asked for it, so a target reads it as one piece however late its event loop
+/// runs. The binding is session id, creation time, and the active pane's pid, re-verified by exact name before
+/// the paste and again before the Enter, and every command addresses the pane id itself, so neither a reused
+/// name nor an active-pane switch can redirect text (threat model B3).
+/// Sanitization (single line, no control characters, so no paste-end marker) is #44's layer above this; the
+/// adapter only refuses line breaks, which a paste would turn into extra Enter presses.
 public actor TmuxAdapter: Adapter {
     public static let defaultChunkSize = 400
     /// Use a printable separator: tmux can replace tabs with underscores under launchd. The first four
@@ -14,12 +16,12 @@ public actor TmuxAdapter: Adapter {
     static let listFormat = "#{session_id}|#{session_created}|#{pane_id}|#{pane_pid}|#{session_name}"
 
     public nonisolated let kind = "tmux"
-    private let runner: any CommandRunner
-    private let tmuxPath: String
-    private let socket: String?
-    private let chunkSize: Int
+    let runner: any CommandRunner
+    let tmuxPath: String
+    let socket: String?
+    let chunkSize: Int
     private let pollInterval: Duration?
-    private let submitTiming: TmuxSubmitTiming
+    let submitTiming: TmuxSubmitTiming
     private let submitObserver: (@Sendable (TmuxSubmitOutcome) -> Void)?
     /// Deliveries run one at a time: actor reentrancy at each await would otherwise let two deliveries
     /// interleave their chunks and Enters into one concatenated command.
@@ -28,13 +30,15 @@ public actor TmuxAdapter: Adapter {
     /// least one chunk). No later delivery types into them: it would append to that text and submit the
     /// concatenation, which no guard evaluated. Cleared only by a new adapter (a `haild` restart).
     private var tainted: Set<String> = []
+    /// The tail of the last text pasted into each pane, so a later delivery can see it still pending (#304).
+    private var lastTails: [String: PayloadTail] = [:]
 
     /// - Parameters:
     ///   - tmux: executable path. A LaunchAgent's PATH lacks Homebrew, so #10's config passes the full path.
     ///   - socket: `tmux -L <socket>` when set; the default server otherwise.
-    ///   - chunkSize: characters per `send-keys`; paste handling truncated ~1,400-character sends in practice.
+    ///   - chunkSize: characters per `set-buffer` call while the paste buffer is filled.
     ///   - pollInterval: how often `events` re-lists sessions; `nil` disables polling (an empty stream).
-    ///   - submitTiming, submitObserver: the bounded waits around the Enter, and who hears each outcome (#83).
+    ///   - submitTiming, submitObserver: the bounded waits around the Enter, and who hears each outcome (#83, #304).
     public init(
         runner: any CommandRunner, tmux: String = "tmux", socket: String? = nil,
         chunkSize: Int = defaultChunkSize, pollInterval: Duration? = .seconds(3),
@@ -90,7 +94,7 @@ public actor TmuxAdapter: Adapter {
     private func performDelivery(
         _ text: String, to target: String, binding: String?, abandoned: DeliveryAbandonment
     ) async throws {
-        // A delivery abandoned while queued behind another types nothing.
+        // A delivery abandoned while queued pastes nothing.
         try abandoned.check()
         let session = try await verified(target, binding: binding)
         guard !tainted.contains(session.paneID) else {
@@ -98,38 +102,45 @@ public actor TmuxAdapter: Adapter {
                 "unsubmitted text left in pane \(target); clear it and restart haild before delivering again"
             )
         }
-        // The screen before any text, so settling can tell a redraw of the typed text from a stale screen.
-        let probe: @Sendable () async -> String? = { await self.visiblePane(session.paneID) }
-        let baseline = await probe()
+        let tail = PayloadTail(text)
+        // The screen before any text: the Enter waits for a change from it, and text already pending at the
+        // cursor (this delivery's tail, the last one's, or a paste placeholder) is never appended to. Nothing was
+        // pasted, so the pane is not tainted: every later delivery looks again, and a cleared input is used.
+        let baseline = await observePane(session.paneID)
+        if let baseline, [tail, lastTails[session.paneID]].contains(where: { baseline.input($0) == .holding }) {
+            throw AdapterError.deliveryFailed("unsubmitted text is already in the input of pane \(target)")
+        }
         var typed = false
         do {
-            for chunk in Self.chunks(text, size: chunkSize) {
-                try abandoned.check()
-                let send = ["send-keys", "-t", session.paneID, "-l", "--", chunk]
+            try await paste(text, into: session.paneID, abandoned: abandoned) {
                 typed = true
-                try await tmux(send, failure: AdapterError.deliveryFailed)
+                lastTails[session.paneID] = tail
             }
-            // A TUI may still be handling the typed text as a paste; an Enter sent now can be swallowed (#83).
-            let settled = await TmuxSubmitProbe.settle(submitTiming, baseline: baseline, capture: probe)
+            let observe: TmuxSubmitProbe.Observe = { await self.observePane(session.paneID) }
+            let acceptance = await TmuxSubmitProbe.acceptance(
+                submitTiming, baseline: baseline, tail: tail, observe: observe
+            )
             // The Enter is what runs the text; the identity is checked once more right before it.
             _ = try await verified(target, binding: session.binding)
             // The commit point: abandonment and commitment are one atomic decision, so either nothing is
-            // submitted (typed text, if any, stays unsubmitted in the input line; there is no rollback) or the
+            // submitted (pasted text, if any, stays unsubmitted in the input; there is no rollback) or the
             // Enter is sent whatever the caller does afterwards.
             guard abandoned.commit() else { throw CancellationError() }
-            try await submit(session, target: target, settled: settled)
+            try await submit(session, target: target, tail: tail, acceptance: acceptance)
         } catch {
-            // Abandonment before the first chunk leaves the pane clean; anything typed and not known to be
-            // submitted (a failed Enter included) taints it.
+            // Abandonment before the paste leaves the pane clean; anything pasted and not known to be submitted
+            // (a failed Enter included) taints it.
             if typed { tainted.insert(session.paneID) }
             throw error
         }
     }
 
     /// Submits and records what was observed, a failure included.
-    private func submit(_ session: Session, target: String, settled: TmuxSubmitProbe.Settled) async throws {
+    private func submit(
+        _ session: Session, target: String, tail: PayloadTail, acceptance: TmuxSubmitProbe.Acceptance
+    ) async throws {
         do {
-            try await attemptSubmit(session, target: target, settled: settled)
+            try await attemptSubmit(session, target: target, tail: tail, acceptance: acceptance)
                 .record(target: target, observer: submitObserver)
         } catch {
             TmuxSubmitOutcome.failed.record(target: target, observer: submitObserver)
@@ -137,37 +148,8 @@ public actor TmuxAdapter: Adapter {
         }
     }
 
-    /// Sends the Enter, then, when a settled screen showed the typed text, waits for the pane to react. Only a
-    /// pane left exactly as it was gets one more Enter (identity re-checked first; see `reaction` for the edge
-    /// this accepts). Still unchanged after that retry fails the delivery, which taints the pane.
-    private func attemptSubmit(
-        _ session: Session, target: String, settled: TmuxSubmitProbe.Settled
-    ) async throws -> TmuxSubmitOutcome {
-        let enter = ["send-keys", "-t", session.paneID, "Enter"]
-        try await tmux(enter, failure: AdapterError.deliveryFailed)
-        guard case .screen(let before) = settled else { return settled == .unsettled ? .unsettled : .unverifiable }
-        guard before.contains(where: { !$0.isWhitespace }) else { return .unverifiable }
-        let probe: @Sendable () async -> String? = { await self.visiblePane(session.paneID) }
-        switch await TmuxSubmitProbe.reaction(from: before, submitTiming, capture: probe) {
-        case .changed: return .confirmed
-        case .unreadable: return .unverifiable
-        case .unchanged: break
-        }
-        _ = try await verified(target, binding: session.binding)
-        try await tmux(enter, failure: AdapterError.deliveryFailed)
-        switch await TmuxSubmitProbe.reaction(from: before, submitTiming, capture: probe) {
-        case .changed: return .retried
-        case .unreadable: return .unverifiable
-        case .unchanged: throw AdapterError.deliveryFailed("the Enter was not observed to submit the text in \(target)")
-        }
-    }
-
-    private nonisolated func visiblePane(_ paneID: String) async -> String? {
-        await TmuxSubmitProbe.visible(paneID, runner: runner, tmux: tmuxPath, base: Self.baseArguments(socket: socket))
-    }
-
     /// The session behind `name` now, refused unless its binding is the one the caller holds.
-    private func verified(_ name: String, binding: String?) async throws -> Session {
+    func verified(_ name: String, binding: String?) async throws -> Session {
         let session = try await session(named: name)
         if let binding, binding != session.binding { throw AdapterError.rebound(name) }
         return session
@@ -192,9 +174,26 @@ public actor TmuxAdapter: Adapter {
     }
 
     @discardableResult
-    private func tmux(_ arguments: [String], failure: (String) -> AdapterError) async throws -> CommandResult {
+    func tmux(_ arguments: [String], failure: (String) -> AdapterError) async throws -> CommandResult {
         let result = try await runner.run(tmuxPath, Self.baseArguments(socket: socket) + arguments)
         guard result.exitCode == 0 else { throw failure(result.errorText) }
         return result
+    }
+}
+
+/// One delivery's submit decision: the caller's cancellation and the Enter race for it under one lock.
+final class DeliveryAbandonment: Sendable {
+    private enum State { case pending, abandoned, committed }
+    private let state = Mutex(State.pending)
+    /// Abandons a delivery that has not committed; a committed one is unaffected.
+    func abandon() { state.withLock { if $0 == .pending { $0 = .abandoned } } }
+    func check() throws { if state.withLock({ $0 == .abandoned }) { throw CancellationError() } }
+    /// True exactly once, for a delivery not yet abandoned; from then on abandonment cannot stop the Enter.
+    func commit() -> Bool {
+        state.withLock {
+            guard $0 == .pending else { return false }
+            $0 = .committed
+            return true
+        }
     }
 }

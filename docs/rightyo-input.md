@@ -98,12 +98,12 @@ rightyo listen … --session-id "$rightyo_session_id" |
   escaping cannot push a capped prompt over it; reply frames keep their existing frame cap. The client
   applies a tighter, deadline-derived prompt cap before connecting (see the time bound below) and says why
   when a prompt is larger. **Which targets this reaches:** a generic `tmux:` target receives the whole
-  prompt in 400-character `send-keys` chunks, with `request: null` (no reply ownership), exactly as the direct
-  path delivers it. A `tmux-reply:` bridge target cannot grant a reply-binding lease, so a dispatch to it is
+  prompt as one tmux paste (assembled in a buffer by 400-character `set-buffer` calls, then `paste-buffer -p`,
+  #304), with `request: null` (no reply ownership), exactly as the direct path delivers it. A `tmux-reply:` bridge target cannot grant a reply-binding lease, so a dispatch to it is
   refused `deliveryRefused` before any text is sent, at any size; the Codex app-server adapter is not
   registered by `haild run`. **Time bound and the commit point:** the daemon
-  answers a dispatch within its 10-second socket submission deadline, and real `send-keys` costs about 5.5 ms
-  per 400-character chunk, so a 1 MiB prompt (about 2,600 chunks) cannot be typed in time. The client therefore
+  answers a dispatch within its 10-second socket submission deadline, and each tmux call (measured for `send-keys`,
+  the same single invocation as a `set-buffer` fill) costs about 5.5 ms per 400-character chunk, so a 1 MiB prompt (about 2,600 chunks) cannot be typed in time. The client therefore
   caps a `--reply-to` prompt at `RightyoSocketDispatcher.maxPromptBytes` = 333,200 bytes, what fits in half the
   deadline at 6 ms per chunk (833 chunks), and refuses a longer prompt before connecting, with the reason
   (exit 1). The direct path keeps 1,200,000. The cap budgets one delivery: the tmux adapter types one delivery

@@ -15,7 +15,7 @@ extension TmuxAdapter {
         var binding: String { "\(id)@\(created)/\(paneID):\(panePID)" }
     }
 
-    /// `-l` chunks by character so a chunk boundary never splits a grapheme cluster.
+    /// Paste-buffer fills (#304) chunk by character so a chunk boundary never splits a grapheme cluster.
     static func chunks(_ text: String, size: Int) -> [String] {
         var out: [String] = []
         var index = text.startIndex

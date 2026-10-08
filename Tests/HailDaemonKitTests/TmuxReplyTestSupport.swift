@@ -25,8 +25,9 @@ func bridgeContext(
     return ProviderTurnContext(utteranceID: UUID(), connectionID: UUID(), binding: source)
 }
 
-func literalChunks(on runner: FakeCommandRunner) async -> [String] {
-    await runner.calls.filter { $0.contains("-l") }.compactMap(\.last)
+/// Every text pasted into a pane, whole (#304); keys sent by name are left out.
+func pastedTexts(on runner: FakeCommandRunner) async -> [String] {
+    deliveredKeys(await runner.calls, includingKeys: false)
 }
 
 struct CapturedBridgeEnvelope: Decodable {
@@ -36,6 +37,6 @@ struct CapturedBridgeEnvelope: Decodable {
 }
 
 func submittedEnvelope(on runner: FakeCommandRunner) async throws -> CapturedBridgeEnvelope {
-    let line = await literalChunks(on: runner).joined()
+    let line = await pastedTexts(on: runner).joined()
     return try JSONDecoder().decode(CapturedBridgeEnvelope.self, from: Data(line.utf8))
 }

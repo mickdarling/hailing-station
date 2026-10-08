@@ -10,17 +10,42 @@ import Testing
 
         try await adapter.deliver(text, to: "claude-hail", binding: nil)
 
-        #expect(await runner.calls == [
+        let calls = await runner.calls
+        let buffer = try #require(calls.first { $0.contains("set-buffer") }?[3])
+        #expect(buffer.hasPrefix("hail-") && buffer.count > 20, "a unique buffer per delivery")
+        let observe = ["tmux", "capture-pane", "-p", "-t", "%1", ";",
+                       "display-message", "-p", "-t", "%1", PaneObservation.cursorFormat]
+        #expect(calls == [
             ["tmux", "list-sessions", "-F", TmuxAdapter.listFormat],
-            // A baseline before typing, then the pane settles before the Enter (#83); a blank pane gives nothing
-            // to confirm afterwards.
-            ["tmux", "capture-pane", "-p", "-t", "%1"],
-            ["tmux", "send-keys", "-t", "%1", "-l", "--", text],
-            ["tmux", "capture-pane", "-p", "-t", "%1"],
-            ["tmux", "capture-pane", "-p", "-t", "%1"],
+            // A baseline before the text (#83, #304), the text into a buffer by argv and pasted in one piece,
+            // then a look at the pane (unreadable here, so nothing to wait for) and the identity before the Enter.
+            observe,
+            ["tmux", "set-buffer", "-b", buffer, "--", text],
+            ["tmux", "paste-buffer", "-p", "-d", "-b", buffer, "-t", "%1"],
+            observe,
             ["tmux", "list-sessions", "-F", TmuxAdapter.listFormat],
             ["tmux", "send-keys", "-t", "%1", "Enter"]
         ])
+    }
+
+    @Test func aFailedPasteDeletesItsBufferAndSendsNoEnter() async throws {
+        let runner = FakeCommandRunner { arguments in
+            if arguments.contains("list-sessions") { return CommandResult(exitCode: 0, stdout: twoSessions) }
+            if arguments.contains("paste-buffer") { return CommandResult(exitCode: 1, stdout: "", stderr: "no pane") }
+            return CommandResult(exitCode: 0, stdout: "")
+        }
+        let adapter = TmuxAdapter(runner: runner, chunkSize: 2, pollInterval: nil)
+
+        await #expect(throws: AdapterError.deliveryFailed("no pane")) {
+            try await adapter.deliver("abcd", to: "codex", binding: nil)
+        }
+        let calls = await runner.calls
+        let buffer = try #require(calls.first { $0.contains("set-buffer") }?[3])
+        #expect(calls.filter { $0.contains("set-buffer") }.map { Array($0.dropFirst()) } == [
+            ["set-buffer", "-b", buffer, "--", "ab"], ["set-buffer", "-a", "-b", buffer, "--", "cd"]
+        ])
+        #expect(calls.last == ["tmux", "delete-buffer", "-b", buffer])
+        #expect(!calls.contains { $0.contains("send-keys") })
     }
 
     @Test func socketPrefixesEveryCall() async throws {
@@ -62,7 +87,7 @@ import Testing
                 try await adapter.deliver(empty, to: "codex", binding: nil)
             }
         }
-        #expect(await runner.calls.filter { $0.contains("send-keys") }.isEmpty)
+        #expect(await runner.calls.filter { $0.contains("send-keys") || $0.contains("set-buffer") }.isEmpty)
     }
 
     @Test func bindingFromListingIsHonouredAndAReboundNameIsRefused() async throws {
@@ -86,13 +111,12 @@ import Testing
             }
         }
 
-        let sends = await runner.calls.filter { $0.contains("-l") }
-        #expect(sends.map { $0.last } == ["ok"])
+        #expect(await runner.delivered == ["ok", "Enter"])
     }
 
-    @Test func paneSwitchBetweenChunksAndEnterIsRefused() async throws {
+    @Test func paneSwitchBetweenPasteAndEnterIsRefused() async throws {
         // The first listing verifies the target; the second, taken right before Enter, sees the active pane
-        // of codex replaced by another program (new pane id and pid). The chunks went out, the Enter must not.
+        // of codex replaced by another program (new pane id and pid). The paste went out, the Enter must not.
         let listings = SessionListing("")
         let calls = SessionListing("0")
         let runner = FakeCommandRunner { arguments in
@@ -108,12 +132,12 @@ import Testing
             try await adapter.deliver("abcd", to: "codex", binding: "$2@1758230001/%2:502")
         }
 
-        let sends = await runner.calls.filter { $0.contains("send-keys") }
-        #expect(sends.map { $0.last ?? "" } == ["ab", "cd"])
-        #expect(sends.allSatisfy { $0.contains("%2") })
+        #expect(await runner.delivered == ["abcd"], "the paste went out, the Enter must not")
+        let toPane = await runner.calls.filter { $0.contains("paste-buffer") || $0.contains("capture-pane") }
+        #expect(toPane.allSatisfy { $0.contains("%2") })
     }
 
-    @Test func concurrentDeliveriesNeverInterleaveChunksAndEnters() async throws {
+    @Test func concurrentDeliveriesNeverInterleaveFillsPastesAndEnters() async throws {
         let runner = FakeCommandRunner.serving(SessionListing(twoSessions), delay: .milliseconds(5))
         let adapter = TmuxAdapter(runner: runner, chunkSize: 2, pollInterval: nil)
 
@@ -121,10 +145,13 @@ import Testing
         async let second: Void = adapter.deliver("bbbb", to: "codex", binding: nil)
         _ = try await (first, second)
 
-        let keys = await runner.calls.filter { $0.contains("send-keys") }.map { $0.last ?? "" }
-        let aFirst = ["aa", "aa", "Enter", "bb", "bb", "Enter"]
-        let bFirst = ["bb", "bb", "Enter", "aa", "aa", "Enter"]
-        #expect(keys == aFirst || keys == bFirst)
+        let keys = await runner.delivered
+        #expect(keys == ["aaaa", "Enter", "bbbb", "Enter"] || keys == ["bbbb", "Enter", "aaaa", "Enter"])
+        // Each delivery fills its own buffer; one buffer's fills never interleave with the other's paste.
+        let typing = await runner.calls.filter { $0.contains("set-buffer") || $0.contains("paste-buffer") }
+        let order = typing.compactMap { call in call.firstIndex(of: "-b").map { call[$0 + 1] } }
+        let runs = order.reduce(into: [String]()) { runs, name in if runs.last != name { runs.append(name) } }
+        #expect(runs.count == 2)
     }
 
     @Test func configuredTmuxPathIsArgvZero() async throws {

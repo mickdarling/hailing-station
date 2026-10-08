@@ -29,15 +29,15 @@ import Testing
         )
         // Generic tmux input owns no reply: delivered, `request: null`, exactly as on the direct path.
         #expect(try await session.dispatch(request) == nil)
-        #expect(await literalChunks(on: runner).joined() == text)
+        #expect(await pastedTexts(on: runner).joined() == text)
         #expect(await runner.calls.last?.suffix(1) == ["Enter"])
         // A phone frame over the default cap still never reaches the pane.
-        let before = await literalChunks(on: runner).count
+        let before = await pastedTexts(on: runner).count
         let phone = sessionFrame(
             target: "tmux:ordinary", payload: .text(TextPayload(text: String(repeating: "b", count: 2_001)))
         )
         #expect(!(await session.receive(phone)).frames.isEmpty)
-        #expect(await literalChunks(on: runner).count == before)
+        #expect(await pastedTexts(on: runner).count == before)
     }
 
     @Test func replyBridgeTargetsRefuseADispatchBeforeAnyTextAtAnySize() async throws {
@@ -56,6 +56,6 @@ import Testing
             )
             await #expect(throws: LocalDispatchRefusal.deliveryRefused) { try await session.dispatch(request) }
         }
-        #expect(await literalChunks(on: runner).isEmpty)
+        #expect(await pastedTexts(on: runner).isEmpty)
     }
 }

@@ -53,7 +53,7 @@ import Testing
         #expect(envelope.version == 1)
         #expect(envelope.request == rig.context.id)
         #expect(envelope.text == text)
-        let line = await literalChunks(on: rig.runner).joined()
+        let line = await pastedTexts(on: rig.runner).joined()
         let fields = try #require(JSONSerialization.jsonObject(with: Data(line.utf8)) as? [String: Any])
         #expect(Set(fields.keys) == ["version", "request", "text"])
         #expect(!line.contains(bridgeBinding))
@@ -104,7 +104,7 @@ import Testing
             try await rig.adapter.deliver("synthetic input", to: "bridge", binding: bridgeBinding,
                                           context: rig.context)
         }
-        #expect(await literalChunks(on: rig.runner).isEmpty)
+        #expect(await pastedTexts(on: rig.runner).isEmpty)
     }
 
     @Test func paneSwitchBeforeEnterNeverExecutesEnvelope() async throws {
@@ -130,7 +130,7 @@ import Testing
         let terminal = TmuxAdapter(runner: runner, pollInterval: nil)
         let input = #"synthetic "input" $(x)"#
         try await terminal.deliver(input, to: "ordinary", binding: "$2@1758230001/%2:502")
-        #expect(await literalChunks(on: runner) == [input])
+        #expect(await pastedTexts(on: runner) == [input])
         let registry = Registry()
         try await registry.register(terminal)
         let context = try bridgeContext(provider: "tmux", target: "tmux:ordinary", binding: "$2@1758230001/%2:502")
@@ -163,7 +163,7 @@ extension TmuxReplyAdapterTests {
         await #expect(throws: HostError.denied(.notAllowed("tmux-reply:bridge"))) {
             try await host.send("synthetic input", context: rig.context)
         }
-        #expect(await literalChunks(on: rig.runner).isEmpty)
+        #expect(await pastedTexts(on: rig.runner).isEmpty)
         _ = try await host.allow("tmux-reply:bridge", tier: .open)
         #expect(try await host.send("\u{1B}[31msynthetic input\u{1B}[0m", context: rig.context) ==
             .delivered(["synthetic input"]))
@@ -181,7 +181,7 @@ extension TmuxReplyAdapterTests {
             Issue.record("expected confirmation")
             return
         }
-        #expect(await literalChunks(on: rig.runner).isEmpty)
+        #expect(await pastedTexts(on: rig.runner).isEmpty)
         _ = try await host.setTier(.locked, for: "tmux-reply:bridge")
         await #expect(throws: HostError.denied(.locked("tmux-reply:bridge"))) {
             try await host.send("synthetic input", context: rig.context)
@@ -190,6 +190,6 @@ extension TmuxReplyAdapterTests {
         await #expect(throws: HostError.denied(.lockdown)) {
             try await host.send("synthetic input", context: rig.context)
         }
-        #expect(await literalChunks(on: rig.runner).isEmpty)
+        #expect(await pastedTexts(on: rig.runner).isEmpty)
     }
 }

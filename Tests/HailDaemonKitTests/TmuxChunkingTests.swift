@@ -2,17 +2,18 @@ import Testing
 @testable import HailDaemonKit
 
 @Suite struct TmuxChunkingTests {
-    @Test func thousandCharactersArriveInThreeLiteralSendsAndOneEnter() async throws {
+    @Test func thousandCharactersFillOneBufferInThreeCallsAndArriveAsOnePaste() async throws {
         let text = String(repeating: "abcdefghij", count: 100)
         let runner = FakeCommandRunner.serving(SessionListing(twoSessions))
         let adapter = TmuxAdapter(runner: runner, pollInterval: nil)
 
         try await adapter.deliver(text, to: "codex", binding: nil)
 
-        let calls = await runner.calls
-        let sends = calls.compactMap { call in call.firstIndex(of: "--").map { call[call.index(after: $0)] } }
-        #expect(sends.map(\.count) == [400, 400, 200])
-        #expect(sends.joined() == text)
+        let fills = await runner.calls.filter { $0.contains("set-buffer") }
+        #expect(fills.map { $0.contains("-a") } == [false, true, true])
+        #expect(fills.compactMap(\.last).map(\.count) == [400, 400, 200])
+        #expect(await runner.calls.filter { $0.contains("paste-buffer") }.count == 1)
+        #expect(await runner.delivered == [text, "Enter"])
         #expect(await runner.calls.last == ["tmux", "send-keys", "-t", "%2", "Enter"])
     }
 

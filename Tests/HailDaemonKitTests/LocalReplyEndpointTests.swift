@@ -493,15 +493,16 @@ import Testing
         await listener.stop(reason: "test complete")
     }
 
-    /// #204: a dispatch whose typing outlives the endpoint's submission deadline is abandoned before its commit
-    /// point (no further chunk, no Enter; the typed prefix stays unsubmitted, there is no rollback), and the pane
-    /// is tainted: a retry, even through a patient endpoint, is refused before typing anything.
-    @Test func timedOutDispatchNeverPressesEnterAndARetryRefusesOnTheTaintedPane() async throws {
+    /// #204, #304: a dispatch whose typing outlives the endpoint's submission deadline is abandoned before its
+    /// commit point. Text is assembled in a tmux buffer and reaches the pane only as one paste, so an attempt
+    /// abandoned while filling pastes nothing and presses no Enter, and its buffer is deleted; the pane stays clean,
+    /// and a retry through a patient endpoint delivers the whole text once.
+    @Test func timedOutDispatchNeverPastesOrPressesEnterAndARetryDeliversWhole() async throws {
         let scratch = FileManager.default.temporaryDirectory
             .appendingPathComponent("hs-dl-\(UUID().uuidString.prefix(8))", isDirectory: true)
         defer { try? FileManager.default.removeItem(at: scratch) }
-        // The first chunk is typed, then typing parks until the hasty deadline has fired (#208): the abandoned
-        // attempt has always typed something and never finished, however slow the runner is.
+        // The first chunk goes into the buffer, then filling parks until the hasty deadline has fired (#208): the
+        // abandoned attempt has always started and never finished, however slow the runner is.
         let gate = TypingGate(allowing: 1)
         defer { gate.open() }
         let runner = FakeCommandRunner.serving(SessionListing(bridgeListing), gate: gate)
@@ -518,23 +519,20 @@ import Testing
         defer { terminal.cancel(with: .normalClosure, reason: nil); session.invalidateAndCancel() }
         do {
             let connection = try await selectOrdinary(on: terminal, listener: listener)
-            // 40 chunks; the gate holds the second, so the 2 s deadline fires mid-typing.
+            // 40 chunks; the gate holds the second, so the 2 s deadline fires mid-fill.
             let text = String(repeating: "a", count: 40 * TmuxAdapter.defaultChunkSize)
             let line = try JSONEncoder().encode(LocalDispatchRequest(
                 connection: connection, target: "tmux:ordinary", binding: "$2@1758230001/%2:502", text: text
             ))
             await #expect(throws: (any Error).self) { try await submit(line, socket: hasty.socketURL.path) }
             gate.open()
-            let abandoned = await runner.calls.compactMap { $0.contains("send-keys") ? $0.last : nil }
-            try #require(!abandoned.isEmpty, "the hasty deadline fired before typing began")
+            let started = await runner.calls.filter { $0.contains("set-buffer") }
+            try #require(!started.isEmpty, "the hasty deadline fired before filling began")
+            try await waitUntil { await runner.calls.contains { $0.contains("delete-buffer") } }
+            #expect(await runner.delivered.isEmpty, "nothing pasted and no Enter from the abandoned attempt")
             let retry = try await submit(line, socket: patient.socketURL.path)
-            #expect(retry.delivered == 0 && retry.request == nil)
-            #expect(retry.error == LocalDispatchRefusal.deliveryRefused.message)
-            let keys = await runner.calls.compactMap { $0.contains("send-keys") ? $0.last : nil }
-            // The abandoned attempt typed some of its 40 chunks; the refused retry typed nothing, no Enter anywhere.
-            #expect(keys == abandoned)
-            #expect(!keys.contains("Enter") && !keys.contains("C-u"))
-            #expect(!keys.isEmpty && keys.count < 40)
+            #expect(retry.error == nil)
+            #expect(await runner.delivered == [text, "Enter"])
         } catch {
             await stopAll(hasty, patient, listener)
             throw error
