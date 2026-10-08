@@ -158,13 +158,19 @@ bad_config "target outside the daemon's form" \
 bad_config "missing RightyO executable" \
   '{"bind": "127.0.0.1", "port": 8765, "singleTerminalReplyFallback": true,
     "ambient": {"rightyo": "/nonexistent/rightyo", "config": "/etc/hosts", "target": "tmux:t"}}'
+bad_config "ack clips without ambient" \
+  '{"bind": "127.0.0.1", "port": 8765, "singleTerminalReplyFallback": true, "ambient": {"ackClips": "/clips"}}'
+bad_config "relative ack clips path" \
+  '{"bind": "127.0.0.1", "port": 8765, "singleTerminalReplyFallback": true,
+    "ambient": {"rightyo": "/bin/sh", "config": "/etc/hosts", "target": "tmux:t", "ackClips": "clips"}}'
 bad_config "target that is a flag" \
   '{"bind": "127.0.0.1", "port": 8765, "singleTerminalReplyFallback": true,
     "ambient": {"rightyo": "/r", "config": "/c", "target": "--reply-socket"}}'
 
 # A full config becomes exactly these daemon arguments, with the host ID in the environment.
 printf '%s\n' "{\"bind\": \"127.0.0.1\", \"port\": 8765, \"hostID\": \"studio.local\",
-  \"singleTerminalReplyFallback\": true, \"deviceDiagnostics\": true, $ambient}" > "$HAIL_CONFIG_DIR/host.json"
+  \"singleTerminalReplyFallback\": true, \"deviceDiagnostics\": true, ${ambient%\}}, \"ackClips\": \"/clips\"}}" \
+  > "$HAIL_CONFIG_DIR/host.json"
 "$host" plist > "$scratch/agent.plist"
 plutil -lint -s "$scratch/agent.plist" >/dev/null
 arguments=()
@@ -172,7 +178,7 @@ count="$(plutil -extract ProgramArguments raw -o - "$scratch/agent.plist")"
 for (( i = 0; i < count; i++ )); do arguments+=("$(plutil -extract "ProgramArguments.$i" raw -o - "$scratch/agent.plist")"); done
 expected=("$(release_dir one)/haild" run --bind 127.0.0.1 --port 8765 --personal-terminal
   --single-terminal-reply-fallback --device-diagnostics
-  --ambient-rightyo /bin/sh --ambient-rightyo-config /etc/hosts --ambient-target tmux:t)
+  --ambient-rightyo /bin/sh --ambient-rightyo-config /etc/hosts --ambient-target tmux:t --ambient-ack-clips /clips)
 [[ "${arguments[*]}" == "${expected[*]}" ]] || fail "unexpected arguments: ${arguments[*]}"
 [[ "$(plutil -extract EnvironmentVariables.HAIL_HOST_ID raw -o - "$scratch/agent.plist")" == studio.local ]] \
   || fail "host ID not in the environment"

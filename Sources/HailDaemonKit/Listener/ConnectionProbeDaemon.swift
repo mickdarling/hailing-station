@@ -92,7 +92,7 @@ public enum ConnectionProbeDaemon {
                 guard let path = rest.popFirst(), !path.isEmpty else { throw WebSocketListenerError.invalidArguments }
                 replySocket = URL(fileURLWithPath: path)
             case "--single-terminal-reply-fallback", "--device-diagnostics": switches.insert(flag)
-            case "--ambient-rightyo", "--ambient-rightyo-config", "--ambient-target":
+            case "--ambient-rightyo", "--ambient-rightyo-config", "--ambient-target", "--ambient-ack-clips":
                 try parseAmbient(flag, from: &rest, into: &ambient)
             default: throw WebSocketListenerError.invalidArguments
             }
@@ -149,6 +149,7 @@ extension ConnectionProbeDaemon {
         var executable: URL
         var config: URL
         var target: String
+        var ackClips: URL? // `--ambient-ack-clips` (rightyo#105); nil or no clips leaves acknowledgements off.
     }
 
     /// Each ambient flag once, with a value: paths absolute, the target never another option.
@@ -167,7 +168,7 @@ extension ConnectionProbeDaemon {
         guard let executable = ambient["--ambient-rightyo"], let config = ambient["--ambient-rightyo-config"],
               let target = ambient["--ambient-target"] else { throw WebSocketListenerError.invalidArguments }
         return AmbientOptions(executable: URL(fileURLWithPath: executable), config: URL(fileURLWithPath: config),
-                              target: target)
+                              target: target, ackClips: ambient["--ambient-ack-clips"].map(URL.init(fileURLWithPath:)))
     }
 
     #if os(macOS)
@@ -187,9 +188,12 @@ extension ConnectionProbeDaemon {
         guard listed.info.alive, let binding = listed.binding, !binding.isEmpty else {
             throw RightyoInputError.unavailableBinding
         }
+        let clips = options.ackClips.map(AmbientAckLibrary.init(directory:)).flatMap { $0.clips.isEmpty ? nil : $0 }
+        let counts = clips.map { "personas=\($0.clips.count) clips=\($0.clips.values.map(\.count).reduce(0, +))" }
+        if options.ackClips != nil { log(.init(event: "ambient_ack_clips", detail: counts ?? "personas=0 clips=0")) }
         return AmbientRightyoRouter(configuration: .init(
             executable: options.executable, config: options.config, target: options.target, binding: binding,
-            timing: timing, audit: audit
+            timing: timing, audit: audit, acknowledgements: clips
         ), log: log)
     }
     #endif
