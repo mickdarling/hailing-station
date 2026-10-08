@@ -44,6 +44,7 @@ struct PaneObservation: Equatable, Sendable {
         case uncertain
 
         var isDrawn: Bool { self == .holding || self == .lineEnded }
+        var mayHoldInput: Bool { self == .holding || self == .uncertain }
     }
 
     /// `tail` nil checks only for a paste placeholder.
@@ -150,10 +151,11 @@ extension TmuxAdapter {
                 let fill = ["set-buffer"] + append + ["-b", buffer, "--", Self.bufferArgument(chunk)]
                 try await tmux(fill, failure: AdapterError.deliveryFailed)
             }
-            try abandoned.check()
             // The identity once more right before the paste: the pre-check may have waited for pending text, and a
-            // pane respawned or moved meanwhile must not receive it (threat model B3).
+            // pane respawned or moved meanwhile must not receive it (threat model B3). Abandonment is checked after
+            // that lookup, so a cancellation that lands during it still stops the paste.
             _ = try await verified(target, binding: session.binding)
+            try abandoned.check()
             pasting()
             let paste = ["paste-buffer", "-p", "-d", "-b", buffer, "-t", session.paneID]
             try await tmux(paste, failure: AdapterError.deliveryFailed)
