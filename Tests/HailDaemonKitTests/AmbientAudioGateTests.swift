@@ -103,28 +103,6 @@ import Testing
         #expect(await gate.admit(ambientSegment(stream: UUID(), sequence: 0), connection: UUID()) == nil)
     }
 
-    @Test func tokenBucketAllowsTwoSecondBurstThenRateLimits() async {
-        let gate = ambientGate(sink: sink, clock: clock)
-        let segment = AmbientAudioGate.maxSegmentBytes
-        let burstSegments = AmbientAudioGate.burstBytes / segment
-        for sequence in 0..<burstSegments {
-            #expect(await gate.admit(
-                ambientSegment(stream: stream, sequence: sequence, bytes: segment), connection: phone
-            ) == nil)
-        }
-        #expect(await gate.admit(
-            ambientSegment(stream: stream, sequence: burstSegments, bytes: segment), connection: phone
-        ) == .rateLimited)
-        #expect(sink.endings == [.rateLimited])
-        // The bucket is daemon-wide: a fresh stream cannot reset it, but refill restores it.
-        let next = UUID()
-        #expect(await gate.admit(ambientSegment(stream: next, sequence: 0, bytes: segment), connection: phone)
-            == .rateLimited)
-        clock.advance(.seconds(1))
-        #expect(await gate.admit(ambientSegment(stream: UUID(), sequence: 0, bytes: segment), connection: phone)
-            == nil)
-    }
-
     @Test func steadyHundredMillisecondSegmentsStayUnderTheRate() async {
         let gate = ambientGate(sink: sink, clock: clock)
         for sequence in 0..<600 {

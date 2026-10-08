@@ -1,6 +1,9 @@
 public import Foundation
 import HailProtocol
 
+// Admission, rate and stream identity form one review boundary on the security-critical listener path.
+// swiftlint:disable file_length
+
 /// Why an ambient stream stopped. The sink treats every case alike (close the consumer's input); the reason
 /// is for counts and tests, never for content.
 public enum AmbientStreamEndReason: Sendable, Equatable {
@@ -22,8 +25,9 @@ public protocol AmbientAudioSink: Sendable {
 
 /// One opt-in ambient microphone stream per daemon (#203). Shape: pcm16, 16 kHz, mono, a stream id, no
 /// reply descriptor, 1 B to 8 KB raw per segment in whole 16-bit samples, strictly increasing sequence (gaps
-/// tolerated). Rate: a 40 KB/s token bucket with a 2 s burst. A violation ends the stream; the connection
-/// stays open. A recently ended stream id is never reopened: the last `endedStreamCapacity` ended ids are
+/// tolerated). Rate: a 40 KB/s token bucket with a 10 s burst, so a network stall that delivers queued audio at once
+/// passes (#330). Within a stream an over-rate segment is dropped silently and counted, and the stream ends only when
+/// it stays over the rate for `overRateGrace`; any other violation ends it at once. The connection stays open. A recently ended stream id is never reopened: the last `endedStreamCapacity` ended ids are
 /// kept and the oldest is evicted first (FIFO), so reuse is possible only for an id that ended thousands of
 /// streams ago. A start is charged against the bucket before anything is announced or recorded, so a refused
 /// start leaves no trace and cannot burn identities.
@@ -31,7 +35,12 @@ public actor AmbientAudioGate {
     public static let sampleRate = 16_000
     public static let maxSegmentBytes = 8 * 1024
     public static let bytesPerSecond = 40 * 1024
-    public static let burstBytes = 2 * bytesPerSecond
+    public static let burstBytes = 10 * bytesPerSecond
+    /// How long a stream may keep dropping over-rate segments before it ends (#330). Real audio averages 32 KB/s,
+    /// under the rate, so a stall's catch-up drops in one instant and stops; only a sender that keeps exceeding
+    /// the rate keeps dropping. An episode ends after `overRateQuiet` without a drop.
+    public static let overRateGrace = Duration.seconds(5)
+    public static let overRateQuiet = Duration.seconds(1)
     /// Long enough for a phone listening in the background, where iOS can pause sends for several seconds without
     /// an interruption (5 s ended a live stream on device, #282). A real disconnect still ends it at once.
     public static let idleTimeout = Duration.seconds(30)
@@ -59,6 +68,10 @@ public actor AmbientAudioGate {
     private var tokens: Double
     private var refilledAt: ContinuousClock.Instant
     private var sweeper: Task<Void, Never>?
+    /// The active stream's current over-rate episode: its first and latest dropped segment.
+    private var overRateSince: ContinuousClock.Instant?, lastOverRate: ContinuousClock.Instant?
+    /// Segments dropped as over the rate (#330), across streams. A count only.
+    public private(set) var overRateDropped = 0
 
     /// `sweepInterval` drives the 5 s idle end without further traffic; nil leaves expiry to `expireIdle()`.
     public init(
@@ -94,9 +107,7 @@ public actor AmbientAudioGate {
             guard let current = active, audio.sequence > current.lastSequence else {
                 return refuse(.malformed, "ambient sequence must increase", connection: connection)
             }
-            guard spend(audio.bytes.count) else {
-                return refuse(.rateLimited, "ambient rate exceeded", connection: connection)
-            }
+            guard spend(audio.bytes.count) else { return overRate(sequence: audio.sequence, connection: connection) }
         }
         active?.lastSequence = audio.sequence
         active?.lastActivity = clock()
@@ -133,6 +144,21 @@ public actor AmbientAudioGate {
 
     var activeStream: UUID? { active?.id }
 
+    /// Drops an over-rate segment of the active stream without a reply: the phone ends ambient on an `ambient`
+    /// error. Only a stream whose drops go on for `overRateGrace`, with no `overRateQuiet` gap, is refused and ended.
+    private func overRate(sequence: Int, connection: UUID) -> (ErrorCode, String)? {
+        let now = clock()
+        if let last = lastOverRate, now - last < Self.overRateQuiet {} else { overRateSince = now }
+        lastOverRate = now
+        guard let since = overRateSince, now - since < Self.overRateGrace else {
+            return refuse(.rateLimited, "ambient rate exceeded", connection: connection)
+        }
+        overRateDropped += 1
+        active?.lastSequence = sequence
+        active?.lastActivity = now
+        return nil
+    }
+
     private func refuse(_ code: ErrorCode, _ message: String, connection: UUID) -> (ErrorCode, String) {
         if active?.connection == connection {
             switch code {
@@ -147,6 +173,7 @@ public actor AmbientAudioGate {
     private func end(_ reason: AmbientStreamEndReason) {
         guard let current = active else { return }
         active = nil
+        (overRateSince, lastOverRate) = (nil, nil)
         remember(current.id)
         sweeper?.cancel()
         sweeper = nil
