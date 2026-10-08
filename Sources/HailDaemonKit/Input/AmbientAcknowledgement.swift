@@ -38,6 +38,11 @@ public struct RightyoAddressing: Sendable, Equatable {
         String(text.lowercased().unicodeScalars.filter { $0.isASCII && CharacterSet.alphanumerics.contains($0) })
     }
 
+    /// Words as the matcher sees them, for text and spellings alike: runs of letters and digits, keyed.
+    static func words(_ text: String) -> [String] {
+        text.split { !($0.isLetter || $0.isNumber) }.map { key(String($0)) }
+    }
+
     /// The persona key (the canonical name's key) of the earliest name or variant in `text`, or nil.
     public func persona(in text: String) -> String? {
         // Speech recognition may split a name ("Righty O"), so windows span up to three words at least.
@@ -45,10 +50,10 @@ public struct RightyoAddressing: Sendable, Equatable {
         for (name, all) in spellings {
             for spelling in all where !Self.key(spelling).isEmpty {
                 table[Self.key(spelling)] = Self.key(name)
-                longest = max(longest, spelling.split(whereSeparator: \.isWhitespace).count)
+                longest = max(longest, Self.words(spelling).count)
             }
         }
-        let words = text.split { !($0.isLetter || $0.isNumber) }.map { Self.key(String($0)) }
+        let words = Self.words(text)
         for start in words.indices {
             for width in 1...longest where start + width <= words.count {
                 if let persona = table[words[start..<start + width].joined()] { return persona }
@@ -122,16 +127,25 @@ public final class AmbientAckLibrary: Sendable {
             else { continue }
             let loaded = entries.filter { $0.pathExtension.lowercased() == "wav" }
                 .sorted { $0.lastPathComponent < $1.lastPathComponent }
-                .compactMap { url -> AmbientAckClip? in
-                    guard let data = try? Data(contentsOf: url), data.count <= 1_048_576 else { return nil }
-                    let text = (try? String(contentsOf: url.deletingPathExtension().appendingPathExtension("txt"),
-                                            encoding: .utf8))?.trimmingCharacters(in: .whitespacesAndNewlines)
-                    return AmbientAckClip.wav(data, text: text.flatMap { $0.isEmpty || $0.count > 200 ? nil : $0 })
+                .lazy.compactMap { url -> AmbientAckClip? in
+                    guard let data = Self.read(url, limit: 1_048_576) else { return nil }
+                    let words = Self.read(url.deletingPathExtension().appendingPathExtension("txt"), limit: 800)
+                        .flatMap { String(data: $0, encoding: .utf8) }?.trimmingCharacters(in: .whitespacesAndNewlines)
+                    return AmbientAckClip.wav(data, text: words.flatMap { $0.isEmpty || $0.count > 200 ? nil : $0 })
                 }
                 .prefix(Self.maxClipsPerPersona)
             if !loaded.isEmpty { clips[persona] = Array(loaded) }
         }
         self.init(clips: clips)
+    }
+
+    /// A regular file's contents when it is no larger than `limit`, checked before reading: a FIFO, device or
+    /// oversized file is never read.
+    static func read(_ url: URL, limit: Int) -> Data? {
+        let keys: Set<URLResourceKey> = [.isRegularFileKey, .fileSizeKey]
+        guard let values = try? url.resolvingSymlinksInPath().resourceValues(forKeys: keys),
+              values.isRegularFile == true, let size = values.fileSize, size <= limit else { return nil }
+        return try? Data(contentsOf: url)
     }
 
     /// The next clip for `persona` and its index, rotating and never repeating the last one; nil without clips.
@@ -146,46 +160,4 @@ public final class AmbientAckLibrary: Sendable {
     }
 }
 
-/// Carries the acknowledgement from the pipeline's read loop to its dispatch step (rightyo#105): armed with the
-/// request line just read, fired by the step only once the consumer has admitted it (after the echo, withdrawal
-/// and duplicate checks) and before it is typed. The persona sticks across turns that say no name.
-final class AmbientAckRelay: Sendable {
-    private struct Armed {
-        let text: String, rightyoMs: Int, readAt: ContinuousClock.Instant
-    }
-    private struct State {
-        var addressing = RightyoAddressing(spellings: [:])
-        var persona: String?
-        var armed: Armed?
-    }
-    private let state = Mutex(State())
-    private let onAcknowledge: (@Sendable (AmbientAckRequest) -> Void)?
-
-    init(onAcknowledge: (@Sendable (AmbientAckRequest) -> Void)?) { self.onAcknowledge = onAcknowledge }
-
-    func observe(_ event: RightyoInputEvent, readAt: ContinuousClock.Instant) {
-        guard onAcknowledge != nil else { return }
-        state.withLock { state in
-            if event.type == "session", event.phase == "started" {
-                state.addressing = RightyoAddressing(event.addressing)
-            }
-            if event.type == "request", let turn = event.turn {
-                state.armed = Armed(text: turn.text, rightyoMs: max(0, event.emittedAtMs - turn.endMs), readAt: readAt)
-            } else {
-                state.armed = nil
-            }
-        }
-    }
-
-    func fire() {
-        guard let onAcknowledge else { return }
-        let request = state.withLock { state -> AmbientAckRequest? in
-            guard let armed = state.armed else { return nil }
-            state.armed = nil
-            state.persona = state.addressing.persona(in: armed.text) ?? state.persona
-            return AmbientAckRequest(persona: state.persona, rightyoMs: armed.rightyoMs, readAt: armed.readAt)
-        }
-        if let request { onAcknowledge(request) }
-    }
-}
 #endif

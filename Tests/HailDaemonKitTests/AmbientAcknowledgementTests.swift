@@ -24,6 +24,41 @@ import Testing
         #expect(names.persona(in: "Fridays are busy") == nil)
     }
 
+    @Test func aDottedNameMatchesAcrossItsWords() {
+        let names = RightyoAddressing(spellings: ["Jarvis": ["Jarvis", "J.A.R.V.I.S"]])
+        #expect(names.persona(in: "J.A.R.V.I.S, open it") == "jarvis")
+    }
+
+    /// A request line with extreme times reaches the relay before validation; it must never trap (#325 review).
+    @Test func extremeProducerTimesNeverTrapAndThePersonaSticks() throws {
+        let fired = Mutex<[AmbientAckRequest]>([])
+        let relay = AmbientAckRelay(onAcknowledge: { request in fired.withLock { $0.append(request) } })
+        relay.observe(try Self.event(#""type": "session", "phase": "started", "addressing": {"names": ["Jarvis"]}"#),
+                      readAt: .now)
+        relay.observe(try Self.request(text: "Jarvis, start", end: 1, emitted: Int.min), readAt: .now)
+        relay.fire()
+        relay.observe(try Self.request(text: "and the next one", end: 10, emitted: 250), readAt: .now)
+        relay.fire()
+        relay.fire() // Nothing armed: no second acknowledgement for one request.
+        let seen = fired.withLock { $0 }
+        #expect(seen.map(\.persona) == ["jarvis", "jarvis"])
+        #expect(seen.map(\.rightyoMs) == [0, 240])
+    }
+
+    static func event(_ fields: String) throws -> RightyoInputEvent {
+        let prefix = #"{"schema_version": 1, "session_id": "s", "sequence": 1, "emitted_at_ms": 0, "#
+        return try RightyoInputEvent.decode(Data((prefix + fields + "}").utf8))
+    }
+
+    static func request(text: String, end: Int, emitted: Int) throws -> RightyoInputEvent {
+        try RightyoInputEvent.decode(Data("""
+            {"schema_version": 1, "session_id": "s", "sequence": 2, "emitted_at_ms": \(emitted), "type": "request",
+             "turn": {"session_id": "s", "utterance_id": "u", "revision": 1, "start_ms": 0, "end_ms": \(end),
+              "text": "\(text)", "finalized": true, "overlap": false, "recognizer_id": "r",
+              "provenance": "live-microphone", "speaker_provenance": "none"}}
+            """.utf8))
+    }
+
     @Test func malformedOrOversizedAddressingYieldsFewerNamesNeverAFailure() {
         #expect(RightyoAddressing(nil).spellings.isEmpty)
         #expect(RightyoAddressing(.string("Jarvis")).spellings.isEmpty)

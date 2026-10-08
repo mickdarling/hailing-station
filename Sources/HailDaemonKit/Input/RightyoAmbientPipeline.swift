@@ -23,9 +23,9 @@ struct RightyoAmbientDispatchStep: RightyoDispatching {
     var acknowledge: (@Sendable () -> Void)?
 
     func dispatch(text: String, target: String, binding: String) async throws -> RightyoDispatchReceipt {
-        acknowledge?()
         // The daemon's own local-dispatch cap, as for `--reply-to`; in process there is no socket answer deadline.
         guard text.utf8.count <= LocalDispatchRequest.maxTextBytes else { throw RightyoInputError.capacity }
+        acknowledge?()
         let request = LocalDispatchRequest(connection: connection, target: target, binding: binding, text: text)
         do {
             return RightyoDispatchReceipt(request: try await dispatcher.dispatch(request))
@@ -317,6 +317,52 @@ final class RecentSpokenReplies: Sendable {
         let heardPairs = zip(heard, heard.dropFirst()).map { "\($0) \($1)" }
         let found = heardPairs.filter { replyPairs.contains($0) }.count
         return Double(found) / Double(heardPairs.count)
+    }
+}
+/// Carries the acknowledgement from the pipeline's read loop to its dispatch step (rightyo#105): armed with the
+/// request line just read, fired by the step only once the consumer has admitted it (after the echo, withdrawal
+/// and duplicate checks) and before it is typed. The persona sticks across turns that say no name.
+final class AmbientAckRelay: Sendable {
+    private struct Armed {
+        let text: String, endMs: Int, emittedAtMs: Int, readAt: ContinuousClock.Instant
+    }
+    private struct State {
+        var addressing = RightyoAddressing(spellings: [:])
+        var persona: String?
+        var armed: Armed?
+    }
+    private let state = Mutex(State())
+    private let onAcknowledge: (@Sendable (AmbientAckRequest) -> Void)?
+
+    init(onAcknowledge: (@Sendable (AmbientAckRequest) -> Void)?) { self.onAcknowledge = onAcknowledge }
+
+    func observe(_ event: RightyoInputEvent, readAt: ContinuousClock.Instant) {
+        guard onAcknowledge != nil else { return }
+        state.withLock { state in
+            if event.type == "session", event.phase == "started" {
+                state.addressing = RightyoAddressing(event.addressing)
+            }
+            if event.type == "request", let turn = event.turn {
+                // Raw times only: this line is not validated yet, so nothing is computed from them here.
+                state.armed = Armed(text: turn.text, endMs: turn.endMs, emittedAtMs: event.emittedAtMs, readAt: readAt)
+            } else {
+                state.armed = nil
+            }
+        }
+    }
+
+    func fire() {
+        guard let onAcknowledge else { return }
+        let request = state.withLock { state -> AmbientAckRequest? in
+            guard let armed = state.armed else { return nil }
+            state.armed = nil
+            state.persona = state.addressing.persona(in: armed.text) ?? state.persona
+            // Fired only for an admitted request, whose validation bounds both times; still never trap.
+            let (delta, overflow) = armed.emittedAtMs.subtractingReportingOverflow(armed.endMs)
+            return AmbientAckRequest(persona: state.persona, rightyoMs: overflow ? 0 : max(0, delta),
+                                     readAt: armed.readAt)
+        }
+        if let request { onAcknowledge(request) }
     }
 }
 #endif
