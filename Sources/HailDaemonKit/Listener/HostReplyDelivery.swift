@@ -76,7 +76,7 @@ extension HostSession {
         } ?? .absent
     }
 
-    private func replyDescriptor(_ frame: Frame) -> ReplyDescriptor? {
+    func replyDescriptor(_ frame: Frame) -> ReplyDescriptor? {
         switch frame.payload {
         case .text(let text): text.reply
         case .audio(let audio): audio.reply
@@ -157,14 +157,19 @@ extension HostSession {
     /// Tracks which replies' audio is mid-stream on this connection, so a stop knows what to cut (#309).
     private func noteReplyDelivered(_ frame: Frame) {
         guard case .audio(let audio) = frame.payload, let reply = audio.reply else { return }
-        if audio.isFinal {
-            repliesInFlight.remove(reply.id)
-        } else if repliesInFlight.count < Self.playbackStopLimit {
-            repliesInFlight.insert(reply.id)
-        }
+        repliesInFlight.removeAll { $0 == reply.id }
+        guard !audio.isFinal else { return }
+        // An abandoned stream never sends its final frame, so the oldest entry gives way: a live reply is always
+        // tracked, and a stale one can at worst be stopped again.
+        repliesInFlight.append(reply.id)
+        repliesInFlight.removeFirst(max(0, repliesInFlight.count - Self.playbackStopLimit))
     }
 
     static let playbackStopLimit = 64
+
+    func hasStopped(_ frame: Frame) -> Bool {
+        replyDescriptor(frame).map { stoppedReplies.contains($0.id) } ?? false
+    }
 
     /// A `dismiss` asked to stop playback (#309). Every reply mid-stream on this connection is stopped: its
     /// remaining frames are refused, so the reply CLI retires its renderer. The `stop_playback` frame is
@@ -226,6 +231,11 @@ extension WebSocketListener {
     public func publish(_ frame: Frame) async throws -> Int {
         guard !stopped, readyResult != nil else { throw WebSocketListenerError.stoppedBeforeReady }
         let validated = try validatedReply(frame)
+        // A reply stopped on any connection is refused everywhere (#309), so a stop can never hand the rest of
+        // it to another connection that also selects its target.
+        for peer in Array(peers.values) where await peer.session.hasStopped(validated) {
+            throw LocalReplyRefusal.noRecipient
+        }
         // Fresh host-minted UUIDs establish origin ownership. This scan is an admission snapshot,
         // not a transactional global directory or a UUID-collision proof. Never enqueue during it.
         var candidate: (WebSocketPeer, ReplyPublicationStatus)?

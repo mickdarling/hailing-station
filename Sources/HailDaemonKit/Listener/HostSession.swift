@@ -144,9 +144,9 @@ public actor HostSession {
     var peerName = "terminal"
     /// What the device said it can do in its hello (#309), bounded; it gates host-sent `stop_playback`.
     var peerCapabilities: Set<String> = []
-    /// Replies whose audio is reaching this connection and has not finished, and replies stopped mid-stream
-    /// whose remaining frames this connection refuses (#309). Both bounded, ids only.
-    var repliesInFlight: Set<UUID> = []
+    /// Replies whose audio is reaching this connection and has not finished, oldest first, and replies stopped
+    /// mid-stream whose remaining frames are refused (#309). Both bounded, ids only.
+    var repliesInFlight: [UUID] = []
     var stoppedReplies: [UUID] = []
     var selectedTarget: String?
     let connectionID = UUID()
