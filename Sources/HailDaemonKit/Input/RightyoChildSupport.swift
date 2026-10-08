@@ -74,17 +74,17 @@ extension RightyoChildProcess {
         return path
     }
 
-    /// `posix_spawn` of the exact path, never a shell: only the three stdio pipes cross (CLOEXEC_DEFAULT), every
-    /// catchable signal is reset to default and none is blocked (the daemon itself ignores SIGTERM), the child
-    /// leads a new process group (#297) and the working directory is set by the spawn. The returned stdin end is
-    /// non-blocking with SIGPIPE suppressed.
+    /// `posix_spawn` of the exact path, never a shell: only the stdio pipes cross (CLOEXEC_DEFAULT), plus the
+    /// control pipe on fd 3 with `replyControl`, each child end first lifted by `secure`. Every catchable signal is
+    /// reset to default and none is blocked (the daemon itself ignores SIGTERM), the child leads a new process group
+    /// (#297) and the working directory is set by the spawn. The returned stdin end is non-blocking, no SIGPIPE.
     static func spawn(_ executable: String, arguments: [String], environment: [String], directory: String,
                       replyControl: Bool = false) throws -> SpawnedChild {
         var input = [Int32](repeating: -1, count: 2), output = input, errors = input, control = input
         var launched = false
         defer { if !launched { (input + output + errors + control).filter { $0 >= 0 }.forEach { close($0) } } }
         guard pipe(&input) == 0, pipe(&output) == 0, pipe(&errors) == 0, Self.controlPipe(&control, replyControl),
-              (input + output + errors).allSatisfy({ fcntl($0, F_SETFD, FD_CLOEXEC) == 0 }),
+              Self.secure(&input, child: 0), Self.secure(&output, child: 1), Self.secure(&errors, child: 1),
               fcntl(input[1], F_SETNOSIGPIPE, 1) == 0, fcntl(input[1], F_SETFL, O_NONBLOCK) == 0,
               !([executable, directory] + arguments + environment).contains(where: { $0.contains("\0") }) else {
             throw RightyoChildError.transportLost

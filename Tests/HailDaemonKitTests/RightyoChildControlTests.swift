@@ -14,6 +14,19 @@ import Testing
         #expect(on == off + ["--control-fd", "3"])
     }
 
+    /// Every child-side pipe end is lifted above the `dup2` targets (0-3) before spawning, so no `dup2` source can be
+    /// clobbered by an earlier action or be same-fd (review of #341: with fd 3 free, a pipe end could land on 3).
+    @Test(arguments: [0, 1]) func secureLiftsTheChildEndAboveEveryTargetAndMarksBothCloseOnExec(child: Int) throws {
+        var ends = [Int32](repeating: -1, count: 2)
+        #expect(pipe(&ends) == 0)
+        let original = ends[child]
+        #expect(RightyoChildProcess.secure(&ends, child: child))
+        defer { ends.forEach { close($0) } }
+        #expect(ends[child] > RightyoChildProcess.controlDescriptor)
+        #expect(ends.allSatisfy { fcntl($0, F_GETFD) & FD_CLOEXEC != 0 })
+        if original != ends[child] { #expect(fcntl(original, F_GETFD) == -1 || original <= 3) }
+    }
+
     @Test func reportsReachTheChildOnDescriptorThreeAsJSONLines() async throws {
         let fake = try FakeRightyo("""
             printf '%s\\n' "$@" > argv.txt
