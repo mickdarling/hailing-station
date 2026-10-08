@@ -9,7 +9,8 @@ import Synchronization
 /// after, ambient capture yields zeroed samples (timing and sequence numbers unchanged) so RightyO never hears it.
 /// With `echoCancelledCapture()` (#269) replies play through the capture's voice-processing engine instead, so the
 /// mic stays open while a reply plays and Mick can talk over it; masking then applies only if `masksDuringReplies`
-/// is set (an A/B switch) or the reply could not be routed through the capture engine.
+/// is set (an A/B switch), the reply could not be routed through the capture engine, or that engine is plain
+/// capture without voice processing (#343, #356).
 /// Masking rises synchronously in the guarded player before any call that can make audio audible, and falls,
 /// after the tail, by following `ReplyPlaybackController.isReplyAudioOutputBusy`.
 public final class AmbientReplyEchoGuard: Sendable {
@@ -105,15 +106,21 @@ public final class AmbientReplyEchoGuard: Sendable {
     }
 
     /// Ambient capture for `mode` (#343). Voice processing echo-cancels replies through the capture engine. Plain
-    /// capture, for headphone routes, leaves replies on the player's own engine, so the guard silences the mic
-    /// while one is audible. `plainCapture` is the engine capture used for plain mode.
+    /// capture, for headphone routes, also plays replies through its own engine (#356): replies on a second engine
+    /// beside the plain capture engine stuttered on A2DP. Nothing cancels echo there, so the guard keeps silencing
+    /// the mic while a reply is audible. `plainCapture` makes the engine capture for plain mode.
     @MainActor
     public func ambientCapture(
-        mode: AmbientCaptureMode, plainCapture: @MainActor () -> any AudioCapturing = { AVAudioEngineCapture() }
+        mode: AmbientCaptureMode,
+        plainCapture: @MainActor (AVAudioEngine) -> any AudioCapturing = { AVAudioEngineCapture(engine: $0) }
     ) throws -> any AudioCapturing {
         switch mode {
-        case .voiceProcessing: try echoCancelledCapture()
-        case .plain: masking(plainCapture())
+        case .voiceProcessing: return try echoCancelledCapture()
+        case .plain:
+            let engine = AVAudioEngine()
+            _ = engine.mainMixerNode // Wire the output path before the engine first starts.
+            let routing = CaptureReplyRouting(engine: engine, route: route, echoGuard: self, cancelsEcho: false)
+            return EchoMaskedCapture(capture: plainCapture(engine), echoGuard: self, routing: routing)
         }
     }
 
@@ -216,24 +223,31 @@ final class ReplyRoute: @unchecked Sendable {
     @MainActor weak var player: PCM16AudioPlayer?
 }
 
-/// Moves replies onto a running capture engine and back again, keeping the guard's routing flag truthful.
+/// Moves replies onto a running capture engine and back again, keeping the guard's routing flag truthful. The
+/// flag means "echo-cancelled", so a plain engine (`cancelsEcho: false`) never lowers masking.
 @MainActor
 final class CaptureReplyRouting {
     private let engine: AVAudioEngine
     private let route: ReplyRoute
     private let echoGuard: AmbientReplyEchoGuard
+    private let cancelsEcho: Bool
 
-    init(engine: AVAudioEngine, route: ReplyRoute, echoGuard: AmbientReplyEchoGuard) {
+    init(engine: AVAudioEngine, route: ReplyRoute, echoGuard: AmbientReplyEchoGuard, cancelsEcho: Bool = true) {
         self.engine = engine
         self.route = route
         self.echoGuard = echoGuard
+        self.cancelsEcho = cancelsEcho
     }
 
     func attach() {
         guard let player = route.player else { return }
         player.route(through: engine)
-        echoGuard.setRoutedThroughCapture(player.isRoutedThroughCapture)
+        let routed = player.isRoutedThroughCapture
+        echoGuard.setRoutedThroughCapture(Self.echoCancelled(cancelsEcho: cancelsEcho, routed: routed))
     }
+
+    /// Replies count as echo-cancelled only on a voice-processing engine that is actually playing them.
+    nonisolated static func echoCancelled(cancelsEcho: Bool, routed: Bool) -> Bool { cancelsEcho && routed }
 
     /// A no-op once a newer run has attached: a quick off-on must not pull replies off the new engine.
     func detach() {

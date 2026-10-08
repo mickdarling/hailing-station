@@ -1,3 +1,4 @@
+import AVFAudio
 import Foundation
 import HailProtocol
 import Testing
@@ -47,11 +48,30 @@ struct AmbientCaptureModeTests {
     @Test func plainCaptureUsesTheEngineCaptureItIsGiven() throws {
         let echoGuard = AmbientReplyEchoGuard()
         let engineCapture = FakeAudioCapture()
-        let capture = try echoGuard.ambientCapture(mode: .plain, plainCapture: { engineCapture })
+        let capture = try echoGuard.ambientCapture(mode: .plain, plainCapture: { _ in engineCapture })
         _ = try capture.start()
         #expect(engineCapture.startCount == 1)
         capture.stop()
         #expect(engineCapture.stopCount >= 1)
+    }
+
+    /// #356: replies play through the plain capture engine, so its output must be wired before it first starts.
+    @Test func plainCaptureGetsAnEngineWiredForReplyOutput() throws {
+        let echoGuard = AmbientReplyEchoGuard()
+        var handed: AVAudioEngine?
+        _ = try echoGuard.ambientCapture(mode: .plain, plainCapture: { engine in
+            handed = engine
+            return FakeAudioCapture()
+        })
+        let engine = try #require(handed)
+        #expect(engine.inputConnectionPoint(for: engine.outputNode, inputBus: 0)?.node === engine.mainMixerNode)
+    }
+
+    /// A plain engine plays replies but cancels no echo, so routing through it never lowers masking.
+    @Test func onlyAVoiceProcessingEngineCountsAsEchoCancelled() {
+        #expect(CaptureReplyRouting.echoCancelled(cancelsEcho: true, routed: true))
+        #expect(!CaptureReplyRouting.echoCancelled(cancelsEcho: false, routed: true))
+        #expect(!CaptureReplyRouting.echoCancelled(cancelsEcho: true, routed: false))
     }
 
     @Test func plainCaptureSendsSilenceWhileAReplyIsAudible() async throws {
@@ -60,7 +80,7 @@ struct AmbientCaptureModeTests {
         echoGuard.masksDuringReplies = false
         let engineCapture = FakeAudioCapture()
         let sent = SentAudio()
-        let capture = try echoGuard.ambientCapture(mode: .plain, plainCapture: { engineCapture })
+        let capture = try echoGuard.ambientCapture(mode: .plain, plainCapture: { _ in engineCapture })
         let streamer = AmbientAudioStreamer(capture: capture, send: { await sent.send($0) })
         echoGuard.setReplyAudible(true)
 
@@ -92,7 +112,7 @@ struct AmbientCaptureModeTests {
         log.setEnabled(true)
         let harness = AmbientDuplexPlaybackTests.Harness()
         let engineCapture = FakeAudioCapture()
-        let capture = try harness.echoGuard.ambientCapture(mode: .plain, plainCapture: { engineCapture })
+        let capture = try harness.echoGuard.ambientCapture(mode: .plain, plainCapture: { _ in engineCapture })
         let streamer = AmbientAudioStreamer(capture: capture, send: { _ in })
         try streamer.start()
         log.watch(harness.playback)

@@ -6,8 +6,8 @@ public import AVFAudio
 /// - `voiceProcessing`: Apple's voice-processing I/O, with replies played through the capture engine so its echo
 ///   canceller removes them (#269). It needs a duplex route, so with Bluetooth HFP off it holds the session on the
 ///   built-in mic and speaker: AirPods connected over A2DP got no audio at all while it ran.
-/// - `plain`: engine capture without voice processing. Output stays on the headphones' A2DP route, replies play on
-///   the player's own engine, and the echo guard silences the mic while a reply is audible (#227).
+/// - `plain`: engine capture without voice processing. Output stays on the headphones' A2DP route, replies play
+///   through the same engine (#356), and the echo guard silences the mic while a reply is audible (#227).
 public enum AmbientCaptureMode: String, Sendable, Equatable, CaseIterable {
     case voiceProcessing = "vpio"
     case plain
