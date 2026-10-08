@@ -38,7 +38,8 @@ public protocol AudioCapturing: Sendable {
 /// AVAudioEngine-backed capture for the native terminal. The audio session remains owned by AudioSessionController.
 /// The system can stop the engine underneath it (a call, Siri, a route or hardware change); capture then ends its
 /// stream so every consumer sees the microphone stop, and posts `endedBySystem` so a consumer still draining
-/// earlier audio can drop its "listening" state at once. It never restarts by itself (#218).
+/// earlier audio can drop its "listening" state at once. It never restarts by itself (#218). Headphones attaching or
+/// detaching as an output only, with the microphone unchanged, does not end a run whose engine still records (#343).
 @MainActor
 public final class AVAudioEngineCapture: AudioCapturing {
     /// Posted on the capture's notification center, with the capture as object, after the system ended a run.
@@ -47,6 +48,7 @@ public final class AVAudioEngineCapture: AudioCapturing {
     private let engine: AVAudioEngine
     private let notificationCenter: NotificationCenter
     private let operations: AudioEngineOperations
+    private let routeInputChanged: AudioCaptureEndingSignal.RouteInputChange
     private var continuation: AsyncStream<AudioCaptureBuffer>.Continuation?
     private var hasTap = false
     private var observer: AudioCaptureEndingObserver?
@@ -57,10 +59,14 @@ public final class AVAudioEngineCapture: AudioCapturing {
         self.init(engine: engine, notificationCenter: notificationCenter, operations: .live)
     }
 
-    init(engine: AVAudioEngine, notificationCenter: NotificationCenter, operations: AudioEngineOperations) {
+    init(
+        engine: AVAudioEngine, notificationCenter: NotificationCenter, operations: AudioEngineOperations,
+        routeInputChanged: @escaping AudioCaptureEndingSignal.RouteInputChange = AudioCaptureEndingSignal.inputChanged
+    ) {
         self.engine = engine
         self.notificationCenter = notificationCenter
         self.operations = operations
+        self.routeInputChanged = routeInputChanged
     }
 
     public func start() throws -> AsyncStream<AudioCaptureBuffer> {
@@ -80,7 +86,9 @@ public final class AVAudioEngineCapture: AudioCapturing {
         hasTap = true
         // Observe before starting, so a call or route change that lands while the engine starts is not lost. Its
         // signal is handled on the main actor after `start` returns, against the engine's state at that point.
-        observer = AudioCaptureEndingObserver(center: notificationCenter, engine: engine) { [weak self] signal, id in
+        observer = AudioCaptureEndingObserver(
+            center: notificationCenter, engine: engine, inputChanged: routeInputChanged
+        ) { [weak self] signal, id in
             Task { @MainActor in self?.systemSignal(signal, observer: id) }
         }
         do {
@@ -139,7 +147,8 @@ struct AudioEngineOperations {
 enum AudioCaptureEndingSignal: Equatable, Sendable {
     case interruptionBegan
     case interruptionEnded
-    case routeChanged(reason: UInt)
+    /// `inputChanged` is false only when the route change left the input ports as they were (#343).
+    case routeChanged(reason: UInt, inputChanged: Bool = true)
     case mediaServicesReset
     case engineConfigurationChanged
 
@@ -147,18 +156,41 @@ enum AudioCaptureEndingSignal: Equatable, Sendable {
     /// `oldDeviceUnavailable`, `override`, `wakeFromSleep`, `noSuitableRouteForCategory`.
     static let hardwareRouteReasons: Set<UInt> = [1, 2, 4, 6, 7]
 
-    /// An interruption or a hardware route change always ends capture; there is no auto-resume. Other route
-    /// changes (such as the category change capture's own session activation causes) and engine
-    /// reconfiguration end it only when the engine has actually stopped, so the stream never claims to be live
-    /// while nothing records.
+    /// An interruption ends capture; there is no auto-resume. A hardware route change ends it when it changed the
+    /// input, or when no route suits the category. An output-only change, such as AirPods attaching over A2DP while
+    /// the built-in mic keeps recording, does not (#343). Other route changes (such as the category change capture's
+    /// own session activation causes) and engine reconfiguration end it only when the engine has actually stopped,
+    /// so the stream never claims to be live while nothing records.
     func endsCapture(engineRunning: Bool) -> Bool {
         switch self {
         case .interruptionBegan, .mediaServicesReset: true
         case .interruptionEnded: false
-        case .routeChanged(let reason): Self.hardwareRouteReasons.contains(reason) || !engineRunning
+        case .routeChanged(let reason, let inputChanged):
+            (Self.hardwareRouteReasons.contains(reason) && (inputChanged || reason == Self.noSuitableRoute))
+                || !engineRunning
         case .engineConfigurationChanged: !engineRunning
         }
     }
+
+    static let noSuitableRoute: UInt = 7
+
+    /// Whether a route-change notification changed the input ports.
+    typealias RouteInputChange = @Sendable (Notification) -> Bool
+
+    /// Compares the previous route's inputs with the current ones. Without a previous route (and off iOS) it
+    /// answers true, so capture ends as it did before #343.
+    static let inputChanged: RouteInputChange = { notification in
+        #if os(iOS)
+        guard let previous = notification.userInfo?[AVAudioSessionRouteChangePreviousRouteKey]
+            as? AVAudioSessionRouteDescription else { return true }
+        let current = AVAudioSession.sharedInstance().currentRoute.inputs
+        return inputsDiffer(previous: previous.inputs.map(\.uid), current: current.map(\.uid))
+        #else
+        return true
+        #endif
+    }
+
+    static func inputsDiffer(previous: [String], current: [String]) -> Bool { Set(previous) != Set(current) }
 
     /// Notification names and keys. They are the `AVAudioSession` constants on iOS; macOS has no session, so the
     /// same names are spelled out for the host-side tests.
@@ -179,13 +211,16 @@ enum AudioCaptureEndingSignal: Equatable, Sendable {
     }
 
     /// `AVAudioSession.InterruptionType.began` is 1 and `.ended` is 0; a missing type is treated as began.
-    init?(_ notification: Notification) {
+    init?(_ notification: Notification, inputChanged: RouteInputChange = Self.inputChanged) {
         switch notification.name {
         case Names.interruption:
             let type = notification.userInfo?[Names.interruptionTypeKey] as? UInt
             self = type == 0 ? .interruptionEnded : .interruptionBegan
         case Names.routeChange:
-            self = .routeChanged(reason: notification.userInfo?[Names.routeChangeReasonKey] as? UInt ?? 0)
+            self = .routeChanged(
+                reason: notification.userInfo?[Names.routeChangeReasonKey] as? UInt ?? 0,
+                inputChanged: inputChanged(notification)
+            )
         case Names.mediaServicesReset: self = .mediaServicesReset
         case .AVAudioEngineConfigurationChange: self = .engineConfigurationChanged
         default: return nil
@@ -201,14 +236,18 @@ final class AudioCaptureEndingObserver {
     private let center: NotificationCenter
     private var tokens: [any NSObjectProtocol] = []
 
-    init(center: NotificationCenter, engine: AnyObject?, handler: @escaping Handler) {
+    init(
+        center: NotificationCenter, engine: AnyObject?,
+        inputChanged: @escaping AudioCaptureEndingSignal.RouteInputChange = AudioCaptureEndingSignal.inputChanged,
+        handler: @escaping Handler
+    ) {
         self.center = center
         let id = id
         let names = [Names.interruption, Names.routeChange, Names.mediaServicesReset]
         let sessionNames = names.map { ($0, nil as AnyObject?) }
         for (name, object) in sessionNames + [(.AVAudioEngineConfigurationChange, engine)] {
             tokens.append(center.addObserver(forName: name, object: object, queue: nil) { notification in
-                guard let signal = AudioCaptureEndingSignal(notification) else { return }
+                guard let signal = AudioCaptureEndingSignal(notification, inputChanged: inputChanged) else { return }
                 handler(signal, id)
             })
         }
