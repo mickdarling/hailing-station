@@ -1,5 +1,7 @@
 import CryptoKit
 public import Foundation
+// The event shape and its dismissal rules (rightyo#98) form one review boundary within the four-file budget.
+// swiftlint:disable file_length
 public enum RightyoInputError: Error, Sendable, Equatable {
     case invalidEvent, invalidLifecycle, sequenceGap, capacity, unavailableBinding, confirmationRequired, producerFailed
 }
@@ -61,7 +63,18 @@ public struct RightyoInputEvent: Codable, Sendable {
     /// can print the receipt; never transcript content.
     public let supersededRequestId: String?
     let byUtteranceId: String?
+    /// `override` and `dismiss` only: the speaker's role, by the same rules as a turn's.
     let role: String?
+    /// Natural dismissal (rightyo#98): advertised once at `started`; only then may `dismiss` events arrive.
+    @RefusingNull var dismissal: Dismissal?
+    /// `dismiss` fields. `speech_end_ms` also rides on `attention`, and `reason` on terminal session events.
+    let speechEndMs: Int?
+    let speakerId: String?
+    let scope: [String]?
+    let withdrawnRequestIds: [String]?
+    let reason: String?
+    let confidence: Double?
+    let cooldownUntilMs: Int?
     public static func decode(_ data: Data) throws -> Self {
         guard !data.isEmpty, data.count <= 1_200_000 else { throw RightyoInputError.capacity }
         let decoder = JSONDecoder()
@@ -73,10 +86,11 @@ public struct RightyoInputEvent: Codable, Sendable {
     func validate(session: String, enrolled: Bool, budgetMs: Int? = nil) throws {
         guard schemaVersion == 1, sessionId == session, sequence > 0, emittedAtMs >= 0,
               emittedAtMs <= budgetMs ?? Int.max,
-              ["session", "transcript", "attention", "request", "override"].contains(type) else {
+              ["session", "transcript", "attention", "request", "override", "dismiss"].contains(type) else {
             throw RightyoInputError.invalidEvent
         }
         try validateOverride(session: session, enrolled: enrolled)
+        try validateDismiss(session: session, enrolled: enrolled)
         try validateFormed()
         if let turn { try validate(turn, session: session, enrolled: enrolled) }
         if let decision {
@@ -107,19 +121,23 @@ public struct RightyoInputEvent: Codable, Sendable {
         guard try JSONEncoder().encode(context).count <= 1_048_576 else { throw RightyoInputError.capacity }
     }
     /// Only an enrolled session's owner may supersede a request, and the superseded id must carry this
-    /// session's `session:utterance` shape. Other event kinds may not carry override fields (fail closed).
+    /// session's `session:utterance` shape. Other event kinds may not carry override fields (fail closed); `role`
+    /// also rides on `dismiss`, which checks it itself.
     private func validateOverride(session: String, enrolled: Bool) throws {
         guard type == "override" else {
-            guard supersededRequestId == nil, byUtteranceId == nil, role == nil else {
+            guard supersededRequestId == nil, byUtteranceId == nil, role == nil || type == "dismiss" else {
                 throw RightyoInputError.invalidEvent
             }
             return
         }
         guard enrolled, role == "owner", let supersededRequestId, let byUtteranceId,
-              Self.identifier(byUtteranceId), supersededRequestId.hasPrefix("\(session):"),
-              Self.identifier(String(supersededRequestId.dropFirst(session.count + 1))) else {
+              Self.identifier(byUtteranceId), Self.requestID(supersededRequestId, session: session) else {
             throw RightyoInputError.invalidEvent
         }
+    }
+    /// This session's `session:utterance` request id shape.
+    static func requestID(_ value: String, session: String) -> Bool {
+        value.hasPrefix("\(session):") && identifier(String(value.dropFirst(session.count + 1)))
     }
     private func validate(_ turn: Turn, session: String, enrolled: Bool) throws {
         guard turn.sessionId == session, Self.identifier(turn.sessionId), Self.identifier(turn.utteranceId),
@@ -149,4 +167,80 @@ public struct RightyoInputEvent: Codable, Sendable {
         encoder.outputFormatting = [.sortedKeys]
         return Data(SHA256.hash(data: try encoder.encode(value)))
     }
+}
+/// Natural dismissal (rightyo#98, RightyO `docs/tool-api.md` "Natural dismissal and barge-in"). A producer that
+/// advertises `dismissal` version 1 at `started` may emit `dismiss`: the speaker told the assistant to stop, go
+/// away, or that it was not addressed. Without the advertisement `dismiss` is refused as before. A dismissal only
+/// ever withholds or stops host action; it never delivers anything or grants authority.
+extension RightyoInputEvent {
+    /// `{"version": 1, "window_ms", "cooldown_ms", "cooldown_min_confidence"}` with the producer's documented
+    /// ranges and nothing else; any other key, or another version, fails to decode (fail closed).
+    struct Dismissal: Codable, Sendable, Equatable {
+        static let keys: Set<String> = ["version", "windowMs", "cooldownMs", "cooldownMinConfidence"]
+        let version: Int
+        let windowMs: Int
+        let cooldownMs: Int
+        let cooldownMinConfidence: Double
+        init(from decoder: any Decoder) throws {
+            let container = try decoder.container(keyedBy: DismissalKey.self)
+            guard Set(container.allKeys.map(\.stringValue)) == Self.keys else { throw Self.refusal(decoder) }
+            version = try container.decode(Int.self, forKey: DismissalKey(stringValue: "version"))
+            windowMs = try container.decode(Int.self, forKey: DismissalKey(stringValue: "windowMs"))
+            cooldownMs = try container.decode(Int.self, forKey: DismissalKey(stringValue: "cooldownMs"))
+            cooldownMinConfidence = try container.decode(Double.self,
+                                                         forKey: DismissalKey(stringValue: "cooldownMinConfidence"))
+            guard version == 1, (1...60_000).contains(windowMs), (0...600_000).contains(cooldownMs),
+                  cooldownMinConfidence.isFinite, (0...1).contains(cooldownMinConfidence) else {
+                throw Self.refusal(decoder)
+            }
+        }
+        private static func refusal(_ decoder: any Decoder) -> DecodingError {
+            .dataCorrupted(.init(codingPath: decoder.codingPath, debugDescription: "dismissal: unsupported object"))
+        }
+    }
+    static let dismissScopes: Set<String> = ["playback", "pending_request", "engagement"]
+    /// RightyO keeps at most 32 delivered requests withdrawable; a pending withdrawal names one id.
+    static let maxWithdrawnIDs = 32
+
+    /// `dismissal` rides only on `started`; the `dismiss`-only fields ride only on `dismiss`. Whether a `dismiss`
+    /// may arrive at all is the consumer's rule, decided by what the session advertised.
+    func validateDismiss(session: String, enrolled: Bool) throws {
+        if dismissal != nil, type != "session" || phase != "started" { throw RightyoInputError.invalidEvent }
+        guard type == "dismiss" else {
+            guard scope == nil, withdrawnRequestIds == nil, cooldownUntilMs == nil else {
+                throw RightyoInputError.invalidEvent
+            }
+            return
+        }
+        guard let utteranceId, Self.identifier(utteranceId), let speechEndMs, speechEndMs >= 0,
+              speechEndMs <= emittedAtMs, speakerId.map(Self.identifier) ?? true, Self.role(role, enrolled: enrolled),
+              turn == nil, decision == nil, context == nil, requestId == nil, decisionAtMs == nil, phase == nil,
+              capabilities == nil, validDismissScope, validDismissReason,
+              let ids = withdrawnRequestIds, ids.count <= Self.maxWithdrawnIDs, Set(ids).count == ids.count,
+              ids.allSatisfy({ Self.requestID($0, session: session) }) else {
+            throw RightyoInputError.invalidEvent
+        }
+    }
+    /// A non-empty set of known scopes; a cool-down only comes with `engagement` and ends after the speech.
+    private var validDismissScope: Bool {
+        guard let scope, !scope.isEmpty, Set(scope).count == scope.count,
+              scope.allSatisfy(Self.dismissScopes.contains) else { return false }
+        guard let cooldownUntilMs else { return true }
+        return scope.contains("engagement") && cooldownUntilMs >= (speechEndMs ?? Int.max)
+    }
+    /// `stop-phrase` carries no confidence; `decision` carries a probability.
+    private var validDismissReason: Bool {
+        switch (reason, confidence) {
+        case ("stop-phrase", nil): true
+        case ("decision", let value?): value.isFinite && (0...1).contains(value)
+        default: false
+        }
+    }
+}
+/// Every key of the `dismissal` object (already converted from snake case), for strict no-extra-keys decoding.
+private struct DismissalKey: CodingKey {
+    let stringValue: String
+    var intValue: Int? { nil }
+    init(stringValue: String) { self.stringValue = stringValue }
+    init?(intValue: Int) { nil }
 }

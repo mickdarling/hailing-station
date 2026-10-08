@@ -16,6 +16,22 @@ public struct RightyoDispatchReceipt: Sendable, Equatable {
         self.caveat = caveat
     }
 }
+/// What one admitted `dismiss` did (rightyo#98). Fixed tokens and counts only: never ids or transcript text.
+public struct RightyoDismissReceipt: Sendable, Equatable {
+    /// `stop-phrase` or `decision`.
+    public var reason: String
+    /// What RightyO asks the host to stop: `playback`, `pending_request`, `engagement`.
+    public var scope: [String]
+    /// Listed ids this consumer never delivered: dropped should they ever arrive. RightyO already withholds
+    /// them, so this is the host's own record, not a delivery change.
+    public var withdrawn: Int
+    /// Listed ids already delivered: withdrawal is advisory and nothing delivered is undone.
+    public var alreadyDelivered: Int
+    public var stopsPlayback: Bool { scope.contains("playback") }
+    public init(reason: String, scope: [String], withdrawn: Int, alreadyDelivered: Int) {
+        (self.reason, self.scope, self.withdrawn, self.alreadyDelivered) = (reason, scope, withdrawn, alreadyDelivered)
+    }
+}
 /// The final delivery step of an admitted request. The consumer keeps every validation and correlation rule
 /// in front of this call and treats any thrown error as terminal; implementations must not retry on their own.
 /// `RightyoHostDispatcher` is the direct path; `haild rightyo --reply-to` supplies a reply-socket dispatcher.
@@ -72,6 +88,14 @@ public actor RightyoInputConsumer {
     /// otherwise none may. Forming is allowed on anonymous sessions too (hosts pick), where any role the formed text
     /// names is uncheckable: only the JSON record behind it carries verified roles, and anonymous sessions have none.
     private var forming = false
+    /// Whether `started` advertised `dismissal` version 1 (rightyo#98): only then is `dismiss` admitted.
+    private var dismissible = false
+    /// Request ids a `dismiss` withdrew before this consumer delivered them; a later request with one is dropped.
+    private var withdrawn = Set<String>()
+    /// Withdrawn ids a request has already been dropped for, so a repeat is refused as a duplicate (a subset of `withdrawn`).
+    private var dropped = Set<String>()
+    /// Requests dropped because a dismissal had withdrawn them. A count only.
+    public private(set) var withdrawnDropped = 0
     private var requests = Set<String>()
     private var superseded = Set<String>()
     private var decided = Set<String>()
@@ -84,6 +108,8 @@ public actor RightyoInputConsumer {
     /// The receipt of the most recent delivered request; nil until one is delivered and cleared as each event
     /// is consumed, so a caller reads only the receipt of the event it just passed in.
     public private(set) var lastReceipt: RightyoDispatchReceipt?
+    /// What the most recent admitted `dismiss` did; cleared as each event is consumed, like `lastReceipt`.
+    public private(set) var lastDismissal: RightyoDismissReceipt?
     /// `streamBudgetMs` is an optional ceiling on producer stream time; the default is no ceiling (#188).
     /// `dispatcher` replaces the direct `HailHost.send` step (#188 item 1); without it, `host` delivers directly
     /// and nil `host` validates only. A dispatcher with no host still delivers (it owns its own host access).
@@ -122,20 +148,16 @@ public actor RightyoInputConsumer {
                                                  patterns: DangerousPatternGuard.defaults)
         guard hits.isEmpty else { throw RightyoTargetError.guarded(hits) }
     }
-    /// True means handled: guarded delivery, or validation only when initialized with no host.
+    /// True means handled: guarded delivery, or validation only when initialized with no host. An admitted `dismiss`
+    /// delivers nothing and returns false; `lastDismissal` then says what it did.
     public func consume(_ event: RightyoInputEvent) async throws -> Bool {
         lastReceipt = nil
+        lastDismissal = nil
         do {
             guard try admit(event) else { return false }
             if event.type == "override" { return true }
             guard event.type == "request", let requestID = event.requestId else { return false }
-            guard requests.count < 1000, requests.insert(requestID).inserted else {
-                throw RightyoInputError.invalidEvent
-            }
-            guard dispatcher == nil || allowSynthetic || event.turn?.provenance == "live-microphone" else {
-                terminal = true
-                throw RightyoInputError.invalidEvent
-            }
+            guard try claim(requestID, provenance: event.turn?.provenance) else { return false }
             guard let dispatcher else { return true }
             // Matched on the heard turn, not the built prompt, whose envelope would bury the echo (#269).
             if let echoFilter, let heard = event.turn?.text, echoFilter(heard) {
@@ -160,6 +182,23 @@ public actor RightyoInputConsumer {
             throw error
         }
     }
+    /// Refuses a duplicate id or, on a live-only consumer, a non-live request; then claims the id. False means
+    /// withdrawn by the speaker's dismissal before it arrived: never delivered, and the session goes on. That drop
+    /// comes after both refusals, and a repeat of a dropped id is still a duplicate.
+    private func claim(_ requestID: String, provenance: String?) throws -> Bool {
+        guard requests.count < 1000, !requests.contains(requestID) else { throw RightyoInputError.invalidEvent }
+        guard dispatcher == nil || allowSynthetic || provenance == "live-microphone" else {
+            terminal = true
+            throw RightyoInputError.invalidEvent
+        }
+        if withdrawn.contains(requestID) {
+            guard dropped.insert(requestID).inserted else { throw RightyoInputError.invalidEvent }
+            withdrawnDropped += 1
+            return false
+        }
+        requests.insert(requestID)
+        return true
+    }
     private func admit(_ event: RightyoInputEvent) throws -> Bool {
         try event.validate(session: session, enrolled: speakers == "enrolled", budgetMs: streamBudgetMs)
         guard !busy else { throw RightyoInputError.invalidLifecycle }
@@ -183,6 +222,7 @@ public actor RightyoInputConsumer {
                 activationEnabled = caps.activation == "finalized-turn"
                 speakers = caps.speakers
                 forming = event.requestForming != nil
+                dismissible = event.dismissal != nil
             }
         } else if !started { throw RightyoInputError.invalidLifecycle }
         try correlate(event)
@@ -227,19 +267,22 @@ extension RightyoInputConsumer {
             if turn.role == "owner" { owners.insert(turn.utteranceId) }
         case "attention": try attention(event)
         case "override": try supersede(event)
-        case "request":
-            guard activationEnabled, let turn = event.turn, let decision = event.decision,
-                  (event.formedRequest != nil) == forming, !superseded.contains(event.requestId ?? ""),
-                  finals[turn.utteranceId] == (try RightyoInputEvent.fingerprint(turn)),
-                  attentions[event.requestId ?? ""] == (try RightyoInputEvent.fingerprint(decision)) else {
+        case "dismiss": try dismiss(event)
+        case "request": try request(event)
+        default: break
+        }
+    }
+    private func request(_ event: RightyoInputEvent) throws {
+        guard activationEnabled, let turn = event.turn, let decision = event.decision,
+              (event.formedRequest != nil) == forming, !superseded.contains(event.requestId ?? ""),
+              finals[turn.utteranceId] == (try RightyoInputEvent.fingerprint(turn)),
+              attentions[event.requestId ?? ""] == (try RightyoInputEvent.fingerprint(decision)) else {
+            throw RightyoInputError.invalidEvent
+        }
+        for prior in event.context?.turns ?? [] {
+            guard finals[prior.utteranceId] == (try RightyoInputEvent.fingerprint(prior)) else {
                 throw RightyoInputError.invalidEvent
             }
-            for prior in event.context?.turns ?? [] {
-                guard finals[prior.utteranceId] == (try RightyoInputEvent.fingerprint(prior)) else {
-                    throw RightyoInputError.invalidEvent
-                }
-            }
-        default: break
         }
     }
     private func attention(_ event: RightyoInputEvent) throws {
@@ -250,13 +293,16 @@ extension RightyoInputConsumer {
         }
         // An attention record that does not repeat `owner` demotes the utterance; it can never promote one.
         if decision.role != "owner" { owners.remove(utterance) }
-        if decision.label == "attend" {
+        // An `attend` with no `request_id` forms no request: RightyO sends one for a turn it dismissed, withdrew,
+        // superseded or held as a stop phrase (rightyo#98). Nothing is recorded, so `request` refuses any request
+        // citing it; only an `attend` that names a request id is checked and recorded.
+        if decision.label == "attend", let requestID = event.requestId {
             guard activationEnabled, decision.recipientKind == "system",
-                  event.requestId == "\(session):\(utterance)", attentions.count < 1000,
-                  attentions[event.requestId ?? ""] == nil else {
+                  requestID == "\(session):\(utterance)", attentions.count < 1000,
+                  attentions[requestID] == nil else {
                 throw RightyoInputError.invalidEvent
             }
-            attentions[event.requestId ?? ""] = try RightyoInputEvent.fingerprint(decision)
+            attentions[requestID] = try RightyoInputEvent.fingerprint(decision)
         }
     }
     /// An owner `override` (#188 item 3) must cite the owner's own admitted transcript and attention records:
@@ -271,5 +317,22 @@ extension RightyoInputConsumer {
             throw RightyoInputError.invalidEvent
         }
         superseded.insert(requestID)
+    }
+    /// A `dismiss` (rightyo#98) is admitted only on a session that advertised `dismissal`, and must cite an admitted
+    /// transcript: a stop phrase's comes right after it, before its attention. Each listed id this consumer already
+    /// delivered stays delivered (withdrawal is advisory); any other id, including one never seen, which is how
+    /// RightyO names a request it withheld, is recorded so a later request with it is dropped, idempotently, under
+    /// the same cap as `requests`. Scope and role only withhold or stop host action; they never grant any.
+    private func dismiss(_ event: RightyoInputEvent) throws {
+        guard dismissible, let utterance = event.utteranceId, finals[utterance] != nil,
+              let ids = event.withdrawnRequestIds, let scope = event.scope, let reason = event.reason else {
+            throw RightyoInputError.invalidEvent
+        }
+        let delivered = ids.filter(requests.contains)
+        let fresh = Set(ids).subtracting(requests).subtracting(withdrawn)
+        guard withdrawn.count + fresh.count <= 1000 else { throw RightyoInputError.capacity }
+        withdrawn.formUnion(fresh)
+        lastDismissal = RightyoDismissReceipt(reason: reason, scope: scope, withdrawn: ids.count - delivered.count,
+                                              alreadyDelivered: delivered.count)
     }
 }

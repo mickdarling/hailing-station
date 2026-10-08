@@ -49,11 +49,11 @@ import Testing
             "decision": decision, "context": ["turns": turns], "decision_at_ms": 1900])
     }
 
-    func rig(tier: Tier = .open) async throws -> (RightyoInputConsumer, FakeAdapter) {
+    func rig(tier: Tier = .open, allowSynthetic: Bool = true) async throws -> (RightyoInputConsumer, FakeAdapter) {
         let adapter = FakeAdapter(kind: "tmux", targets: [AdapterTarget(name: "demo", binding: "original")])
         let host = try await HostSendTests().host(adapter, tier: tier)
         let consumer = try RightyoInputConsumer(host: host, target: "tmux:demo", binding: "original", session: session,
-                                                allowSynthetic: true)
+                                                allowSynthetic: allowSynthetic)
         return (consumer, adapter)
     }
 
