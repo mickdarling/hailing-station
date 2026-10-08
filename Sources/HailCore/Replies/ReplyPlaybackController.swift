@@ -112,7 +112,7 @@ public final class ReplyPlaybackController {
             return
         }
         stream.segments[audio.sequence] = audio
-        if streams[key] == nil { queue.append(key) }
+        if streams[key] == nil { supersedePausedReplies(); queue.append(key) }
         streams[key] = stream
         let presentationID = upsertPresentation(event, descriptor: descriptor)
         presentationStatuses[presentationID] = nil
