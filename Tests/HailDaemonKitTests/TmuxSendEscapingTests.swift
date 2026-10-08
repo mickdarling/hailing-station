@@ -17,11 +17,12 @@ import Testing
                        "display-message", "-p", "-t", "%1", PaneObservation.cursorFormat]
         #expect(calls == [
             ["tmux", "list-sessions", "-F", TmuxAdapter.listFormat],
-            // A baseline before the text (#83, #304), the text into a buffer by argv, the identity, the paste in
-            // one piece, then a look at the pane (unreadable here, so nothing to wait for) and the identity again.
+            // A baseline before the text (#83, #304), the text into a buffer by argv, the identity and the input
+            // again, the paste in one piece, a look at the pane (unreadable here) and the identity before the Enter.
             observe,
             ["tmux", "set-buffer", "-b", buffer, "--", text],
             ["tmux", "list-sessions", "-F", TmuxAdapter.listFormat],
+            observe,
             ["tmux", "paste-buffer", "-p", "-d", "-b", buffer, "-t", "%1"],
             observe,
             ["tmux", "list-sessions", "-F", TmuxAdapter.listFormat],

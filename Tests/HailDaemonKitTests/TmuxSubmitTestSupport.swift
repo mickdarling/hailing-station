@@ -2,9 +2,9 @@ import Synchronization
 import Testing
 @testable import HailDaemonKit
 
-/// A scripted pane for #83 and #304. Screens are written with `▌` where the cursor is. Before the first Enter,
-/// observation 1 is the baseline (taken before any text); the next `stale` observations still show it (a busy
-/// TUI that has not drawn the paste); the next `settling` observations each show a different frame; after that,
+/// A scripted pane for #83 and #304. Screens are written with `▌` where the cursor is. After any `lead` screens,
+/// every look before the `paste-buffer` shows the baseline; after the paste, the next `stale` looks still show it
+/// (a busy TUI that has not drawn the paste), the next `settling` looks each show a different frame, then
 /// `typed`. After the k-th Enter the pane shows `afterEnter[k - 1]` (the last entry for any later Enter): for
 /// example `absorbedScreen` (the Enter became a newline in the input), `typed` again (an Enter that changed
 /// nothing, as a frozen TUI shows), `submittedScreen`, or `lineEndedScreen` (a terminal ending the line).
@@ -21,6 +21,8 @@ final class ScriptedPane: Sendable {
     private struct State {
         var captures = 0
         var enters = 0
+        /// The look count when `paste-buffer` ran.
+        var pastedAt: Int?
         var listing = twoSessions
         var baseline: String
         /// Screens for the first looks, before the pane follows its script (stale text that later clears).
@@ -51,7 +53,7 @@ final class ScriptedPane: Sendable {
     func restoreListing() { state.withLock { $0.listing = twoSessions } }
     /// What the next delivery's baseline shows; the capture count restarts.
     func reset(baseline: String, lead: [String] = []) {
-        state.withLock { $0.baseline = baseline; $0.lead = lead; $0.captures = 0; $0.enters = 0 }
+        state.withLock { $0.baseline = baseline; $0.lead = lead; $0.captures = 0; $0.enters = 0; $0.pastedAt = nil }
     }
 
     func respond(_ arguments: [String]) -> CommandResult {
@@ -64,6 +66,7 @@ final class ScriptedPane: Sendable {
                 state.captures += 1
                 return CommandResult(exitCode: 0, stdout: Self.render(screen(state)))
             }
+            if arguments.contains("paste-buffer") { state.pastedAt = state.captures }
             if arguments.last == "Enter" {
                 state.enters += 1
                 if rebindAfterEnter { state.listing = Self.rebound }
@@ -75,9 +78,10 @@ final class ScriptedPane: Sendable {
     private func screen(_ state: State) -> String {
         if state.enters > 0 { return afterEnter[min(state.enters, afterEnter.count) - 1] }
         if state.captures <= state.lead.count { return state.lead[state.captures - 1] }
-        let afterBaseline = state.captures - state.lead.count - 1
-        if afterBaseline <= stale { return state.baseline }
-        if afterBaseline - stale <= settling { return "> synthetic inp (frame \(state.captures))▌" }
+        guard let pastedAt = state.pastedAt else { return state.baseline }
+        let afterPaste = state.captures - pastedAt
+        if afterPaste <= stale { return state.baseline }
+        if afterPaste - stale <= settling { return "> synthetic inp (frame \(state.captures))▌" }
         return typed
     }
 

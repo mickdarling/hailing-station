@@ -28,7 +28,7 @@ public actor TmuxAdapter: Adapter {
     /// the paste). No later delivery types into them. Cleared only by a new adapter (a `haild` restart).
     private var tainted: Set<String> = []
     /// The tail of the last text pasted into each pane, so a later delivery can see it still pending (#304).
-    private var lastTails: [String: PayloadTail] = [:]
+    var lastTails: [String: PayloadTail] = [:]
 
     /// - Parameters:
     ///   - tmux: executable path. A LaunchAgent's PATH lacks Homebrew, so #10's config passes the full path.
@@ -101,13 +101,13 @@ public actor TmuxAdapter: Adapter {
         let baseline = try await clearedBaseline(session, target: target, pending: pending, abandoned: abandoned)
         var typed = false
         do {
-            try await paste(text, into: session, target: target, abandoned: abandoned) {
+            let fresh = try await paste(text, into: session, target: target, abandoned: abandoned) {
                 typed = true
                 lastTails[session.paneID] = tail
             }
             let observe: TmuxSubmitProbe.Observe = { await self.observePane(session.paneID) }
             let acceptance = await TmuxSubmitProbe.acceptance(
-                submitTiming, baseline: baseline, tail: tail, observe: observe
+                submitTiming, baseline: fresh ?? baseline, tail: tail, observe: observe
             )
             // The Enter is what runs the text; the identity is checked once more right before it.
             _ = try await verified(target, binding: session.binding)
@@ -121,23 +121,23 @@ public actor TmuxAdapter: Adapter {
         }
     }
 
-    /// The screen before any text, which the Enter waits for a change from (#304). Text pending at the cursor (this
-    /// tail, the last one's, or a placeholder; nil checks placeholders only) is never appended to: a frozen target
-    /// may still submit it, so it gets up to `clearLimit` to leave (two clear looks in a row).
-    /// Still there, the delivery is refused untainted; an abandoned delivery stops looking and leaves as cancelled.
+    /// The screen before any text (#304). Text pending at the cursor (this tail, the last one's, or a placeholder) is
+    /// never appended to: held text gets up to `clearLimit` to leave (two clear looks in a row), a tail wrapped to a
+    /// column-0 cursor is refused at once; refusals are untainted, and an abandoned delivery leaves as cancelled.
     private func clearedBaseline(
         _ session: Session, target: String, pending: [PayloadTail?], abandoned: DeliveryAbandonment
     ) async throws -> PaneObservation? {
         let baseline = await observePane(session.paneID)
-        guard let seen = baseline, let stale = pending.first(where: { seen.input($0) == .holding }) else {
+        guard let seen = baseline, let index = await pendingIndex(seen, pending, in: session.paneID) else {
             return baseline
         }
-        var wait = submitTiming
+        var (stale, wait) = (pending[index], submitTiming)
         wait.confirmLimit = submitTiming.clearLimit
         let observe: TmuxSubmitProbe.Observe = {
             (try? abandoned.check()) == nil ? nil : await self.observePane(session.paneID)
         }
-        let left = await TmuxSubmitProbe.reaction(wait, tail: stale, before: seen, wasHolding: true, observe: observe)
+        let left: TmuxSubmitProbe.Reaction = seen.input(stale) != .holding ? .ambiguous
+            : await TmuxSubmitProbe.reaction(wait, tail: stale, before: seen, wasHolding: true, observe: observe)
         try abandoned.check()
         guard left == .submitted else {
             throw AdapterError.deliveryFailed("unsubmitted text is already in the input of pane \(target)")

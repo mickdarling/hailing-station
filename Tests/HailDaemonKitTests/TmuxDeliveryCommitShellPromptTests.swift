@@ -30,6 +30,13 @@ struct TmuxDeliveryCommitShellPromptTests {
             #expect(outcomes.all == [.confirmed, .confirmed])
             let screen = try capture(socket, runner)
             #expect(screen.contains("\none\n") && screen.contains("\ntwo\n"))
+            // A pending line that exactly fills the 80 columns after the 4-column prompt: readline leaves the cursor
+            // in column 0 of the next row. The same text is not appended to it (#306 review, Codex P2).
+            let filling = "echo " + String(repeating: "x", count: 71)
+            _ = try await runner.run("tmux", ["-L", socket, "send-keys", "-t", "sh", "-l", "--", filling])
+            try await waitFor { (try? self.capture(socket, runner))?.contains(filling) == true }
+            await #expect(throws: AdapterError.self) { try await adapter.deliver(filling, to: "sh", binding: nil) }
+            #expect(try capture(socket, runner).filter { $0 == "x" }.count == 71, "one copy, unsubmitted")
         } catch {
             failure = error
         }

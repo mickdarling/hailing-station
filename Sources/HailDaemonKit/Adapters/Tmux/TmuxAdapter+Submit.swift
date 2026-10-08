@@ -3,22 +3,14 @@ import OSLog
 
 private let submitLogger = Logger(subsystem: "com.mickdarling.hailing-station", category: "tmux-submit")
 
-/// How long the adapter waits around the Enter (#83, #304). A stalled TUI reads queued input late, and an Enter read
-/// together with typed text becomes a newline; so the text goes in as one bracketed paste, and the Enter waits until
-/// the pane shows it at the cursor. Every wait is bounded.
+/// How long the adapter waits around the Enter (#83, #304); every wait is bounded. `settleFloor`: paste to first
+/// look. `pollInterval`: between looks. `quiet`: how long the text must show at the cursor, unchanged, before the
+/// Enter (above Claude Code's 100 ms paste window). `settleLimit`: the longest wait for it to appear (then the Enter
+/// goes anyway, `unsettled`). `confirmLimit`: the longest wait after an Enter for it to leave, or for a pending pane
+/// to hold still. `clearLimit`: the longest wait before a paste for text already pending at the cursor to leave.
 public struct TmuxSubmitTiming: Sendable, Equatable {
-    /// The least time between the paste and the first look at the pane.
-    public var settleFloor: Duration
-    /// How often the pane is observed while waiting.
-    public var pollInterval: Duration
-    /// How long the text must show at the cursor, unchanged, before the Enter (above Claude Code's 100 ms paste window).
-    public var quiet: Duration
-    /// The longest wait for the text to appear at the cursor before the Enter is sent anyway (`unsettled`).
-    public var settleLimit: Duration
-    /// The longest wait after an Enter for the text to leave the cursor, and for a pending pane to hold still.
-    public var confirmLimit: Duration
-    /// The longest wait before a paste for text already pending at the cursor to leave it.
-    public var clearLimit: Duration
+    public var settleFloor: Duration, pollInterval: Duration, quiet: Duration
+    public var settleLimit: Duration, confirmLimit: Duration, clearLimit: Duration
 
     public init(
         settleFloor: Duration, pollInterval: Duration, quiet: Duration, settleLimit: Duration, confirmLimit: Duration,
@@ -34,18 +26,12 @@ public struct TmuxSubmitTiming: Sendable, Equatable {
     )
 }
 
-/// What one submit observed (#83, #304), logged without pane contents.
+/// What one submit observed (#83, #304), logged without pane contents. `confirmed`: seen at the cursor, gone after
+/// the first Enter. `retried`: gone only after the one retry. `unverifiable`: blank or unreadable, unchanged after
+/// the Enter (a frozen target gets no second Enter), or not decidable. `unsettled`: never seen at the cursor within
+/// the settle limit; one Enter anyway. `failed`: still there after the retry, or the retry refused (taints the pane).
 public enum TmuxSubmitOutcome: String, Sendable, Equatable {
-    /// The text was seen at the cursor, and after the first Enter it no longer was.
-    case confirmed
-    /// The text stayed at the cursor after the first Enter; it left after the one retry.
-    case retried
-    /// Blank or unreadable, unchanged after the Enter (a frozen target: no second Enter), or not decidable.
-    case unverifiable
-    /// The text never appeared at the cursor within the settle limit; one Enter, sent anyway.
-    case unsettled
-    /// Still at the cursor after the retry, or the retry was refused; the delivery fails and taints the pane.
-    case failed
+    case confirmed, retried, unverifiable, unsettled, failed
     func record(target: String, observer: (@Sendable (TmuxSubmitOutcome) -> Void)?) {
         submitLogger.notice("tmux submit \(self.rawValue, privacy: .public) for \(target, privacy: .private)")
         observer?(self)
@@ -192,5 +178,19 @@ extension TmuxAdapter {
         case .pending(alive: true):
             throw AdapterError.deliveryFailed("the Enter was not observed to submit the text in \(target)")
         }
+    }
+
+    /// The first of `tails` pending at the cursor in `seen` (#304). A tail before a column-0 cursor after a full row
+    /// counts only if tmux joins that row into the cursor row (`-J`): a soft wrap, as readline leaves for input that
+    /// exactly fills the width, and never a completed line (`cat`, a shell after Enter). Unreadable: pending.
+    func pendingIndex(_ seen: PaneObservation, _ tails: [PayloadTail?], in paneID: String) async -> Int? {
+        for (index, tail) in tails.enumerated() where seen.pending(tail) {
+            if seen.input(tail) == .holding { return index }
+            let rows = ["capture-pane", "-p", "-J", "-t", paneID, "-S", "\(seen.cursorY - 1)", "-E", "\(seen.cursorY)"]
+            let joined = try? await runner.run(tmuxPath, Self.baseArguments(socket: socket) + rows)
+            guard let joined, joined.exitCode == 0 else { return index }
+            if joined.stdout.split(separator: "\n", omittingEmptySubsequences: false).count <= 2 { return index }
+        }
+        return nil
     }
 }
