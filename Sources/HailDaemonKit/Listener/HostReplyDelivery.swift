@@ -76,7 +76,7 @@ extension HostSession {
         } ?? .absent
     }
 
-    private func replyDescriptor(_ frame: Frame) -> ReplyDescriptor? {
+    func replyDescriptor(_ frame: Frame) -> ReplyDescriptor? {
         switch frame.payload {
         case .text(let text): text.reply
         case .audio(let audio): audio.reply
@@ -85,7 +85,8 @@ extension HostSession {
     }
 
     private func replyCandidate(_ frame: Frame) -> (UUID, HostReplyRequest)? {
-        guard !Task.isCancelled, let reply = replyDescriptor(frame), let requestID = reply.requestID else { return nil }
+        guard !Task.isCancelled, let reply = replyDescriptor(frame), let requestID = reply.requestID,
+              !stoppedReplies.contains(reply.id) else { return nil }
         guard case .ready(let version) = state, frame.version == version,
               var request = replyRequests[requestID], request.isCurrent(at: requestClock()),
               request.generation == selectionGeneration, selectedTarget == frame.target,
@@ -105,6 +106,7 @@ extension HostSession {
         guard request.withAuthority({
             guard !Task.isCancelled, request.isCurrent(at: requestClock()), enqueue() else { return false }
             replyRequests[requestID] = request
+            noteReplyDelivered(frame)
             return true
         }) == true else {
             replyRequests[requestID] = nil
@@ -125,7 +127,7 @@ extension HostSession {
     /// `haild reply --say` shape may fall back, so a stale reference can never reach another connection.
     private func selectsRequestlessReplyTarget(_ frame: Frame) -> Bool {
         guard !Task.isCancelled, case .ready(let version) = state, frame.version == version,
-              let reply = replyDescriptor(frame), reply.requestID == nil,
+              let reply = replyDescriptor(frame), reply.requestID == nil, !stoppedReplies.contains(reply.id),
               let target = frame.target, target == selectedTarget else { return false }
         return true
     }
@@ -147,7 +149,39 @@ extension HostSession {
               let permit = await requestlessReplyPermit(frame) else { return false }
         // Selection or state may have moved during the awaits; the gate itself rejects a revoked permit.
         guard selectsRequestlessReplyTarget(frame) else { return false }
-        return permit.performIfCurrent { !Task.isCancelled && enqueue() } == true
+        guard permit.performIfCurrent({ !Task.isCancelled && enqueue() }) == true else { return false }
+        noteReplyDelivered(frame)
+        return true
+    }
+
+    /// Tracks which replies' audio is mid-stream on this connection, so a stop knows what to cut (#309).
+    private func noteReplyDelivered(_ frame: Frame) {
+        guard case .audio(let audio) = frame.payload, let reply = audio.reply else { return }
+        repliesInFlight.removeAll { $0 == reply.id }
+        guard !audio.isFinal else { return }
+        // An abandoned stream never sends its final frame, so the oldest entry gives way: a live reply is always
+        // tracked, and a stale one can at worst be stopped again.
+        repliesInFlight.append(reply.id)
+        repliesInFlight.removeFirst(max(0, repliesInFlight.count - Self.playbackStopLimit))
+    }
+
+    static let playbackStopLimit = 64
+
+    func hasStopped(_ frame: Frame) -> Bool {
+        replyDescriptor(frame).map { stoppedReplies.contains($0.id) } ?? false
+    }
+
+    /// A `dismiss` asked to stop playback (#309). Every reply mid-stream on this connection is stopped: its
+    /// remaining frames are refused, so the reply CLI retires its renderer. The `stop_playback` frame is
+    /// returned only for a ready device that advertised it; an older device would refuse it as malformed.
+    func stopReplyPlayback() -> (frame: Frame?, stopped: Int) {
+        guard case .ready(let version) = state else { return (nil, 0) }
+        let stopped = repliesInFlight.count
+        stoppedReplies.append(contentsOf: repliesInFlight)
+        stoppedReplies.removeFirst(max(0, stoppedReplies.count - Self.playbackStopLimit))
+        repliesInFlight.removeAll()
+        guard peerCapabilities.contains(PlaybackStop.capability) else { return (nil, stopped) }
+        return (response(.stopPlayback, version: version), stopped)
     }
 }
 
@@ -197,6 +231,11 @@ extension WebSocketListener {
     public func publish(_ frame: Frame) async throws -> Int {
         guard !stopped, readyResult != nil else { throw WebSocketListenerError.stoppedBeforeReady }
         let validated = try validatedReply(frame)
+        // A reply stopped on any connection is refused everywhere (#309), so a stop can never hand the rest of
+        // it to another connection that also selects its target.
+        for peer in Array(peers.values) where await peer.session.hasStopped(validated) {
+            throw LocalReplyRefusal.noRecipient
+        }
         // Fresh host-minted UUIDs establish origin ownership. This scan is an admission snapshot,
         // not a transactional global directory or a UUID-collision proof. Never enqueue during it.
         var candidate: (WebSocketPeer, ReplyPublicationStatus)?

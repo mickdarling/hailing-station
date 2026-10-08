@@ -268,6 +268,20 @@ extension WebSocketListener {
     }
 }
 
+extension WebSocketListener {
+    /// Stops reply playback for the dismissing connection (#309) and returns a fixed outcome token:
+    /// `stopped` (sent to the device), `cut` (frames refused only: an older device, or the send failed),
+    /// `idle` (nothing mid-stream and no device stop), or `no_connection`.
+    func stopReplyPlayback(connection: UUID) async -> String {
+        guard !stopped, let peer = peers.values.first(where: { $0.session.connectionID == connection }) else {
+            return "no_connection"
+        }
+        let (frame, cut) = await peer.session.stopReplyPlayback()
+        if let frame, await peer.send(frame) { return "stopped" }
+        return cut > 0 ? "cut" : "idle"
+    }
+}
+
 extension AmbientAudioGate {
     /// Ends `stream` only if it is still the active one and `connection` owns it, and says whether its failure
     /// is reportable: it was active, or `latest` says no newer stream has started on `connection`. One actor
@@ -486,7 +500,7 @@ extension AmbientRightyoRouter {
                 binding: configuration.binding, connection: connection,
                 allowSynthetic: configuration.allowSynthetic, timing: configuration.timing,
                 isEcho: { [spokenReplies] heard in spokenReplies.isEcho(heard) },
-                onDismiss: { [weak self] receipt in self?.emit("ambient_dismissed", detail: Self.describe(receipt)) }
+                onDismiss: dismissed(on: connection, listener: listener)
             ), dispatcher: AmbientListenerDispatcher(listener: listener, audit: configuration.audit))
         } catch {
             return refuse(stream, connection: connection, reason: Self.describe(error))
@@ -507,6 +521,23 @@ extension AmbientRightyoRouter {
         guard admitted else {
             Task { await pipeline.stop() }
             return
+        }
+    }
+
+    /// A `dismiss` with `playback` in scope stops reply playback on its connection (#309) before it is logged, so
+    /// the diagnostic says what happened; any other dismissal is logged at once. Neither ends the stream.
+    private func dismissed(
+        on connection: UUID, listener: WebSocketListener
+    ) -> @Sendable (RightyoDismissReceipt) -> Void {
+        { [weak self, weak listener] receipt in
+            guard receipt.stopsPlayback else {
+                self?.emit("ambient_dismissed", detail: Self.describe(receipt, playback: "none"))
+                return
+            }
+            Task { [weak self] in
+                let playback = await listener?.stopReplyPlayback(connection: connection) ?? "no_connection"
+                self?.emit("ambient_dismissed", detail: Self.describe(receipt, playback: playback))
+            }
         }
     }
 
@@ -545,11 +576,11 @@ extension AmbientRightyoRouter {
                                              message: "ambient unavailable: \(reason)") }
     }
 
-    /// Tokens and counts only (rightyo#98). No host path stops device playback yet, so `playback` in scope is
-    /// recorded as asked, not done; the stream itself keeps listening.
-    fileprivate static func describe(_ receipt: RightyoDismissReceipt) -> String {
+    /// Tokens and counts only (rightyo#98). `playback` is the outcome token from `stopReplyPlayback` (#309), or
+    /// `none` when the scope did not ask; the stream itself keeps listening.
+    fileprivate static func describe(_ receipt: RightyoDismissReceipt, playback: String) -> String {
         "reason=\(receipt.reason) scope=\(receipt.scope.joined(separator: "+")) withdrawn=\(receipt.withdrawn)"
-            + " delivered=\(receipt.alreadyDelivered) playback=\(receipt.stopsPlayback ? "not_stopped" : "none")"
+            + " delivered=\(receipt.alreadyDelivered) playback=\(playback)"
     }
 
     /// Rule names only: every error reaching here is a content-free case.
