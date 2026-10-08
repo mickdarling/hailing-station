@@ -32,6 +32,18 @@ import Testing
         #expect(options.ambient?.ackClips == URL(fileURLWithPath: "/Users/me/.config/hail/ack-clips"))
     }
 
+    @Test func replyControlNeedsAmbientAndDeviceDiagnostics() throws {
+        let control = ["--ambient-reply-control"], diagnostics = ["--device-diagnostics"]
+        let on = try ConnectionProbeDaemon.options(Self.base + Self.personal + diagnostics + Self.ambient + control)
+        #expect(on.ambient?.replyControl == true)
+        #expect(try ConnectionProbeDaemon.options(Self.base + Self.personal + Self.ambient).ambient?.replyControl
+                == false)
+        for refused in [Self.base + Self.personal + Self.ambient + control,
+                        Self.base + Self.personal + diagnostics + control] {
+            #expect(throws: WebSocketListenerError.invalidArguments) { try ConnectionProbeDaemon.options(refused) }
+        }
+    }
+
     static let refused: [[String]] = {
         let head = base + personal
         let (exe, config, target) = (Array(ambient.prefix(2)), Array(ambient[2..<4]), Array(ambient.suffix(2)))

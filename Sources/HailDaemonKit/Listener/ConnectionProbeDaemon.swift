@@ -68,13 +68,10 @@ public enum ConnectionProbeDaemon {
     // Each accepted flag is an explicit branch; combinations are validated after parsing.
     // swiftlint:disable:next cyclomatic_complexity
     static func options(_ arguments: [String]) throws -> Options {
-        var address: String?
-        var port: UInt16?
-        var authorizer: (any HostSessionAuthorizing)?
-        var personalTerminal = false
-        // Value-free switches: `--single-terminal-reply-fallback`, `--device-diagnostics` (#234).
-        var switches: Set<String> = []
-        var replySocket: URL?, ambient: [String: String] = [:]
+        var address: String?, port: UInt16?
+        var authorizer: (any HostSessionAuthorizing)?, personalTerminal = false
+        // Value-free switches: `--single-terminal-reply-fallback`, `--device-diagnostics` (#234), and the rest below.
+        var switches: Set<String> = [], replySocket: URL?, ambient: [String: String] = [:]
         var rest = arguments[...]
         while let flag = rest.popFirst() {
             switch flag {
@@ -91,7 +88,8 @@ public enum ConnectionProbeDaemon {
             case "--reply-socket":
                 guard let path = rest.popFirst(), !path.isEmpty else { throw WebSocketListenerError.invalidArguments }
                 replySocket = URL(fileURLWithPath: path)
-            case "--single-terminal-reply-fallback", "--device-diagnostics": switches.insert(flag)
+            case "--single-terminal-reply-fallback", "--device-diagnostics",
+                 "--ambient-reply-control": switches.insert(flag)
             case "--ambient-rightyo", "--ambient-rightyo-config", "--ambient-target", "--ambient-ack-clips":
                 try parseAmbient(flag, from: &rest, into: &ambient)
             default: throw WebSocketListenerError.invalidArguments
@@ -106,7 +104,7 @@ public enum ConnectionProbeDaemon {
             address: address, port: port, authorizer: authorizer,
             personalTerminal: personalTerminal ? (replySocket ?? LocalReplyEndpoint.standardSocket()) : nil,
             singleTerminalReplyFallback: switches.contains("--single-terminal-reply-fallback"),
-            ambient: try ambientOptions(ambient),
+            ambient: try ambientOptions(ambient, switches),
             diagnostics: switches.contains("--device-diagnostics") ? DiagnosticLog.standardDirectory() : nil
         )
     }
@@ -130,9 +128,9 @@ extension ConnectionProbeDaemon {
         }
         #endif
         if let directory = options.diagnostics {
-            authorizer = PersonalTerminalAuthorizer(
-                ambientAudio: authorizer.ambientAudio, diagnostics: DiagnosticLog(directory: directory)
-            )
+            let diagnostics = DiagnosticLog(directory: directory)
+            await ambient?.observe(diagnostics) // The phone's playback reports, for reply control (rightyo#124).
+            authorizer = PersonalTerminalAuthorizer(ambientAudio: authorizer.ambientAudio, diagnostics: diagnostics)
         }
         let listener = try WebSocketListener(
             bindAddress: options.address, port: options.port, host: host,
@@ -146,10 +144,9 @@ extension ConnectionProbeDaemon {
     }
 
     struct AmbientOptions: Equatable {
-        var executable: URL
-        var config: URL
-        var target: String
+        var executable: URL, config: URL, target: String
         var ackClips: URL? // `--ambient-ack-clips` (rightyo#105); nil or no clips leaves acknowledgements off.
+        var replyControl = false // `--ambient-reply-control` (rightyo#124), only with `--device-diagnostics`.
     }
 
     /// Each ambient flag once, with a value: paths absolute, the target never another option.
@@ -163,12 +160,15 @@ extension ConnectionProbeDaemon {
         ambient[flag] = value
     }
 
-    fileprivate static func ambientOptions(_ ambient: [String: String]) throws -> AmbientOptions? {
+    fileprivate static func ambientOptions(_ ambient: [String: String], _ on: Set<String>) throws -> AmbientOptions? {
+        let control = on.contains("--ambient-reply-control"), diagnostics = on.contains("--device-diagnostics")
+        guard !control || (!ambient.isEmpty && diagnostics) else { throw WebSocketListenerError.invalidArguments }
         guard !ambient.isEmpty else { return nil }
         guard let executable = ambient["--ambient-rightyo"], let config = ambient["--ambient-rightyo-config"],
               let target = ambient["--ambient-target"] else { throw WebSocketListenerError.invalidArguments }
         return AmbientOptions(executable: URL(fileURLWithPath: executable), config: URL(fileURLWithPath: config),
-                              target: target, ackClips: ambient["--ambient-ack-clips"].map(URL.init(fileURLWithPath:)))
+                              target: target, ackClips: ambient["--ambient-ack-clips"].map(URL.init(fileURLWithPath:)),
+                              replyControl: control)
     }
 
     #if os(macOS)
@@ -193,7 +193,7 @@ extension ConnectionProbeDaemon {
         if options.ackClips != nil { log(.init(event: "ambient_ack_clips", detail: counts ?? "personas=0 clips=0")) }
         return AmbientRightyoRouter(configuration: .init(
             executable: options.executable, config: options.config, target: options.target, binding: binding,
-            timing: timing, audit: audit, acknowledgements: clips
+            timing: timing, audit: audit, acknowledgements: clips, replyControl: options.replyControl
         ), log: log)
     }
     #endif

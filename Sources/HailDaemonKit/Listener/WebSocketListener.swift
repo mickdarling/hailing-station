@@ -213,8 +213,14 @@ public protocol AmbientListenerWiring: AnyObject, Sendable {
     /// True while `stream` is the most recent stream `connection` started, active or ended, and the connection
     /// has not ended since; false once it is superseded.
     func isLatest(stream: UUID, connection: UUID) -> Bool
+    /// Subscribes to admitted device diagnostics, when the wiring uses them (rightyo#124); the default ignores them.
+    func observe(_ diagnostics: DiagnosticLog) async
     /// Told of every reply frame this host delivered, so ambient requests repeating one can be dropped (#269).
     func observeReply(_ frame: Frame)
+}
+
+extension AmbientListenerWiring {
+    public func observe(_ diagnostics: DiagnosticLog) async {}
 }
 
 extension AmbientListenerWiring {
@@ -339,12 +345,14 @@ public final class AmbientRightyoRouter: AmbientAudioSink, AmbientListenerWiring
         public var audit: AuditLog?
         /// Acknowledgement clips (rightyo#105): each admitted request plays one on its phone first. Nil is off.
         public var acknowledgements: AmbientAckLibrary?
+        /// Reply control (rightyo#124): each child gets `--control-fd`, and `replyPlayback` feeds it. Off by default.
+        public var replyControl = false
 
         public init(executable: URL, config: URL, target: String, binding: String, allowSynthetic: Bool = false,
                     timing: RightyoChildProcess.Timing = .init(),
                     shutdownGrace: TimeInterval = AmbientRightyoRouter.defaultShutdownGrace, audit: AuditLog? = nil,
-                    acknowledgements: AmbientAckLibrary? = nil) {
-            (self.audit, self.acknowledgements) = (audit, acknowledgements)
+                    acknowledgements: AmbientAckLibrary? = nil, replyControl: Bool = false) {
+            (self.audit, self.acknowledgements, self.replyControl) = (audit, acknowledgements, replyControl)
             (self.executable, self.config, self.target, self.binding) = (executable, config, target, binding)
             (self.allowSynthetic, self.timing, self.shutdownGrace) = (allowSynthetic, timing, shutdownGrace)
         }
@@ -413,6 +421,36 @@ public final class AmbientRightyoRouter: AmbientAudioSink, AmbientListenerWiring
             }
             if pipeline != nil { retire(stream) }
         }
+    }
+
+    /// With reply control on, every admitted diagnostic batch passes through `replyPlayback` (rightyo#124).
+    public func observe(_ diagnostics: DiagnosticLog) async {
+        guard configuration.replyControl else { return }
+        await diagnostics.observe { [weak self] events, connection in
+            self?.replyPlayback(events, connection: connection)
+        }
+    }
+
+    /// The phone's own playback reports for `connection` (rightyo#124), from its admitted diagnostics: the last
+    /// `reply_playback_start` or `_end` among them goes to that connection's active stream, if reply control is on.
+    /// Never awaits; a full or closed control pipe drops the report.
+    public func replyPlayback(_ events: [DiagnosticEvent], connection: UUID) {
+        guard configuration.replyControl,
+              let phase = events.reversed().lazy.compactMap({ event -> RightyoReplyPhase? in
+                  switch event.name {
+                  case .replyPlaybackStart: .started
+                  case .replyPlaybackEnd, .replyPlaybackError: .ended
+                  default: nil
+                  }
+              }).first else { return }
+        let pipeline = state.withLock { state -> RightyoAmbientPipeline? in
+            guard let stream = state.latest[connection], let active = state.active, active.stream == stream else {
+                return nil
+            }
+            return active.pipeline
+        }
+        guard let pipeline else { return }
+        emit("ambient_reply", detail: "phase=\(phase.rawValue) reported=\(pipeline.reportReply(phase))")
     }
 
     public func stop(connection: UUID) {
@@ -506,14 +544,18 @@ extension AmbientRightyoRouter {
         }
         let pipeline: RightyoAmbientPipeline
         do {
-            pipeline = try RightyoAmbientPipeline(configuration: .init(
+            var settings = RightyoAmbientPipeline.Configuration(
                 executable: configuration.executable, config: configuration.config, target: configuration.target,
                 binding: configuration.binding, connection: connection,
                 allowSynthetic: configuration.allowSynthetic, timing: configuration.timing,
                 isEcho: { [spokenReplies] heard in spokenReplies.isEcho(heard) },
                 onDismiss: dismissed(on: connection, listener: listener),
                 onAcknowledge: acknowledged(on: connection, listener: listener)
-            ), dispatcher: AmbientListenerDispatcher(listener: listener, audit: configuration.audit))
+            )
+            settings.replyControl = configuration.replyControl
+            pipeline = try RightyoAmbientPipeline(configuration: settings,
+                                                  dispatcher: AmbientListenerDispatcher(listener: listener,
+                                                                                        audit: configuration.audit))
         } catch {
             return refuse(stream, connection: connection, reason: Self.describe(error))
         }

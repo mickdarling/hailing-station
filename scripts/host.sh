@@ -38,9 +38,11 @@ usage: scripts/host.sh <install|plist|restart|deploy|status> [options]
 host.json: {"bind": "127.0.0.1", "port": 8765, "hostID": "optional", "singleTerminalReplyFallback": true,
             "deviceDiagnostics": false,
             "ambient": {"rightyo": "/abs/path", "config": "/abs/path", "target": "tmux:name",
-                        "ackClips": "/abs/optional-clip-folder"}}
+                        "ackClips": "/abs/optional-clip-folder", "replyControl": false}}
 Ambient listening requires "singleTerminalReplyFallback": true. "ackClips" (optional) holds <persona>/*.wav
 acknowledgement clips played on each admitted request; missing clips leave acknowledgements off.
+"replyControl" (optional, needs "deviceDiagnostics": true and a RightyO with --control-fd) sends the phone's
+reply playback start and end to RightyO, which times conversation follow-ups from the end of the spoken reply.
 USAGE
 }
 
@@ -118,7 +120,8 @@ load_daemon_arguments() {
     fallback=true
     DAEMON_ARGS+=(--single-terminal-reply-fallback)
   fi
-  if read_flag deviceDiagnostics; then DAEMON_ARGS+=(--device-diagnostics); fi
+  local diagnostics=false
+  if read_flag deviceDiagnostics; then diagnostics=true; DAEMON_ARGS+=(--device-diagnostics); fi
   read_string ambient.rightyo; rightyo="$VALUE"
   read_string ambient.config; rightyo_config="$VALUE"
   read_string ambient.target; target="$VALUE"
@@ -142,6 +145,12 @@ load_daemon_arguments() {
       [[ "$ack_clips" == /* ]] || fail "ambient \"ackClips\" must be an absolute path"
       DAEMON_ARGS+=(--ambient-ack-clips "$ack_clips")
     fi
+    if read_flag ambient.replyControl; then
+      [[ "$diagnostics" == true ]] || fail "ambient \"replyControl\" needs \"deviceDiagnostics\": true"
+      DAEMON_ARGS+=(--ambient-reply-control)
+    fi
+  elif read_flag ambient.replyControl; then
+    fail "ambient \"replyControl\" needs the other ambient settings"
   fi
 }
 
