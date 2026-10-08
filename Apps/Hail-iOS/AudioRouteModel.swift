@@ -13,6 +13,8 @@ protocol AudioSceneCleanupCoordinating: AnyObject {
 final class AudioRouteModel: AudioInputSelectionProviding, AudioSceneCleanupCoordinating {
     let controller: any AudioInputSelectionProviding
     private var sceneCleanup: (@MainActor () async -> Void)?
+    /// Told after every deactivation, so the background keepalive can recover a session released under it (#352).
+    @ObservationIgnored var onDeactivate: (@MainActor () -> Void)?
 
     private(set) var diagnostics = AudioSessionDiagnostics.inactive
     private(set) var inputs: [AudioPort] = []
@@ -56,6 +58,7 @@ final class AudioRouteModel: AudioInputSelectionProviding, AudioSceneCleanupCoor
         await controller.deactivate()
         await refresh()
         status = "Audio inactive"
+        onDeactivate?()
     }
 
     func installSceneCleanup(_ cleanup: @escaping @MainActor () async -> Void) { sceneCleanup = cleanup }

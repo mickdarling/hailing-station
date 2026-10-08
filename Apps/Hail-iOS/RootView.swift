@@ -12,6 +12,8 @@ struct RootView: View {
     @State var playback: ReplyPlaybackController
     /// Shared by reply playback and ambient capture (#227): the player raises it before audio can be heard.
     @State var echoGuard: AmbientReplyEchoGuard
+    /// Keeps the station running in the background while connected without ambient listening (#352).
+    @State var keepalive = BackgroundKeepalive(renderer: SilentAudioKeepalive())
     /// The "Diagnostics logging" log (#234): off by default; records and sends nothing until turned on.
     @State var diagnostics = DeviceDiagnostics()
     @State var selectedHostID: HostEndpoint.Identifier?
@@ -56,17 +58,23 @@ struct RootView: View {
                 selectionAuthorizedForReadyConnection = false
                 authorizedConnectionGeneration = nil
             }
+            // The keepalive stops before anything in the foreground configures the session (#352).
+            if phase == .active { keepalive.sceneActive = true }
             Task {
                 if phase == .active {
                     await connections.sceneBecameActive()
                     guard scenePhaseRevision == revision,
                           scenePhase == .active else { return }
                     await reconcileRememberedSelection()
-                } else if !connections.ambientStreaming {
+                    return
+                }
+                if !connections.ambientStreaming {
                     // Ambient listening keeps the audio session active in the background (#282): deactivating it
                     // would stop capture and let iOS suspend the app. The controller releases it when it stops.
                     await audioRoutes.sceneBecameInactive()
                 }
+                // Only after that release, which would otherwise stop the keepalive it started.
+                if scenePhaseRevision == revision { keepalive.sceneActive = false }
             }
         }
         .onChange(of: connections.hosts) { _, _ in
@@ -77,6 +85,10 @@ struct RootView: View {
             // Directly from the store, not a view update, so replies also play in the background (#282).
             let playback = playback
             connections.onReplyFrame = { playback.ingest($0) }
+            let keepalive = keepalive
+            keepalive.isReplyAudible = { playback.isReplyAudioOutputBusy }
+            audioRoutes.onDeactivate = { keepalive.sessionWasReleased() }
+            keepalive.follow(connections)
         }
         .task {
             await audioRoutes.observe()
