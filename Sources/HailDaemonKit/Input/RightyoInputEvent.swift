@@ -29,6 +29,11 @@ public struct RightyoInputEvent: Codable, Sendable {
         let provider: String
         let model: String
         let role: String?
+        // swiftlint:disable discouraged_optional_boolean
+        /// Conversation mode (rightyo#82): an engaged speaker's follow-up, whose recipient may be `unknown`. Absent
+        /// and `false` mean the same, so the optional is never three-valued.
+        let followUp: Bool?
+        // swiftlint:enable discouraged_optional_boolean
     }
     struct Retention: Codable, Sendable {
         let retentionMs: Int?, maxTurns: Int?, maxBytes: Int?, expiredTurns: Int?, capacityEvictedTurns: Int?
@@ -78,6 +83,9 @@ public struct RightyoInputEvent: Codable, Sendable {
     let withdrawnRequestIds: [String]?
     let reason: String?
     let confidence: Double?
+    /// Conversation mode (rightyo#82): advertised once at `started` (presence only; kept raw so its settings never
+    /// refuse the stream), and only then may `conversation` events arrive with these fields.
+    let conversation: JSONValue?, state: String?, atMs: Int?, untilMs: Int?
     let cooldownUntilMs: Int?
     public static func decode(_ data: Data) throws -> Self {
         guard !data.isEmpty, data.count <= 1_200_000 else { throw RightyoInputError.capacity }
@@ -90,11 +98,12 @@ public struct RightyoInputEvent: Codable, Sendable {
     func validate(session: String, enrolled: Bool, budgetMs: Int? = nil) throws {
         guard schemaVersion == 1, sessionId == session, sequence > 0, emittedAtMs >= 0,
               emittedAtMs <= budgetMs ?? Int.max,
-              ["session", "transcript", "attention", "request", "override", "dismiss"].contains(type) else {
+              Self.eventTypes.contains(type) else {
             throw RightyoInputError.invalidEvent
         }
         try validateOverride(session: session, enrolled: enrolled)
         try validateDismiss(session: session, enrolled: enrolled)
+        try validateConversation(session: session)
         try validateFormed()
         if let turn { try validate(turn, session: session, enrolled: enrolled) }
         if let decision {
@@ -102,14 +111,15 @@ public struct RightyoInputEvent: Codable, Sendable {
                   Self.identifier(decision.provider), Self.identifier(decision.model),
                   ["attend", "ignore", "uncertain"].contains(decision.label),
                   ["system", "other_human", "unknown", "known_speaker"].contains(decision.recipientKind),
-                  Self.role(decision.role, enrolled: enrolled) else {
+                  Self.role(decision.role, enrolled: enrolled),
+                  decision.followUp != true || decision.label == "attend" else {
                 throw RightyoInputError.invalidEvent
             }
         }
         if type == "transcript", turn == nil { throw RightyoInputError.invalidEvent }
         guard type == "request" else { return }
         guard let turn, let context, let decision, let decisionAtMs,
-              decision.label == "attend", decision.recipientKind == "system",
+              decision.label == "attend", Self.addressedToSystem(decision),
               requestId == "\(session):\(turn.utteranceId)",
               decisionAtMs >= turn.endMs, decisionAtMs <= emittedAtMs,
               context.turns.count <= 1000 else { throw RightyoInputError.invalidEvent }
@@ -247,4 +257,46 @@ private struct DismissalKey: CodingKey {
     var intValue: Int? { nil }
     init(stringValue: String) { self.stringValue = stringValue }
     init?(intValue: Int) { nil }
+}
+/// Conversation mode (rightyo#82, RightyO `docs/tool-api.md` "Conversation mode"). A producer that advertises
+/// `conversation` at `started` may emit `conversation` events: the conversation became `engaged` with a speaker
+/// after a request, or returned to `ambient`. They deliver nothing and grant nothing; ids and labels only, never text.
+extension RightyoInputEvent {
+    static let eventTypes: Set<String> = ["session", "transcript", "attention", "request", "override", "dismiss",
+                                          "conversation"]
+    static let conversationReasons: Set<String> = ["request", "timeout", "other_human", "closed", "dismissed"]
+
+    /// A request's recipient: `system`, or `unknown` on a conversation-mode follow-up (rightyo#82). Whether the
+    /// session advertised conversation mode is the consumer's rule.
+    static func addressedToSystem(_ decision: Decision) -> Bool {
+        decision.recipientKind == "system" || (decision.followUp == true && decision.recipientKind == "unknown")
+    }
+
+    /// `conversation` rides only on `started`; `state`, `at_ms` and `until_ms` ride only on `conversation`.
+    func validateConversation(session: String) throws {
+        if conversation != nil, type != "session" || phase != "started" { throw RightyoInputError.invalidEvent }
+        guard type == "conversation" else {
+            guard state == nil, atMs == nil, untilMs == nil else { throw RightyoInputError.invalidEvent }
+            return
+        }
+        guard let state, let reason, Self.conversationReasons.contains(reason),
+              let speakerId, Self.identifier(speakerId), let atMs, atMs >= 0, atMs <= emittedAtMs,
+              utteranceId.map(Self.identifier) ?? true,
+              turn == nil, decision == nil, context == nil, decisionAtMs == nil, phase == nil, capabilities == nil,
+              scope == nil, withdrawnRequestIds == nil, cooldownUntilMs == nil, speechEndMs == nil,
+              confidence == nil, role == nil else {
+            throw RightyoInputError.invalidEvent
+        }
+        switch state {
+        case "engaged":
+            // Engagement starts only with a request, which it names, and lasts until a later stream time.
+            guard reason == "request", let utteranceId, let requestId, let untilMs, untilMs > atMs,
+                  requestId == "\(session):\(utteranceId)" else { throw RightyoInputError.invalidEvent }
+        case "ambient":
+            // A timeout names no turn; every other return to ambient names the speaker's own turn.
+            guard reason != "request", requestId == nil, untilMs == nil,
+                  (reason == "timeout") == (utteranceId == nil) else { throw RightyoInputError.invalidEvent }
+        default: throw RightyoInputError.invalidEvent
+        }
+    }
 }
