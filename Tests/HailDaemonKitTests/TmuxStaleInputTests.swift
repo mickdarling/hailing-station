@@ -56,7 +56,7 @@ import Testing
     }
 
     @Test func aTerminalThatEndsTheLineConfirmsWithOneEnter() async throws {
-        let pane = ScriptedPane(submitted: ScriptedPane.lineEndedScreen)
+        let pane = ScriptedPane(afterEnter: [ScriptedPane.lineEndedScreen])
         let harness = adapter(pane)
 
         try await harness.adapter.deliver("synthetic input", to: "codex", binding: nil)
@@ -66,7 +66,9 @@ import Testing
     }
 
     @Test func aPastePlaceholderAtTheCursorCountsAsTheText() async throws {
-        let pane = ScriptedPane(typed: "> [Pasted text #2 +0 lines]▌", submitted: "> [Pasted text #2 +0 lines]\n\n> ▌")
+        let pane = ScriptedPane(
+            typed: "> [Pasted text #2 +0 lines]▌", afterEnter: ["> [Pasted text #2 +0 lines]\n\n> ▌"]
+        )
         let harness = adapter(pane)
 
         try await harness.adapter.deliver("synthetic input", to: "codex", binding: nil)

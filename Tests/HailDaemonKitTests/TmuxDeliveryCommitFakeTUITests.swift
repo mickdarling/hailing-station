@@ -73,15 +73,40 @@ struct TmuxDeliveryCommitFakeTUITests {
                 Step(Self.payload("C", size: 5_000), .afterPaste, .milliseconds(600)),
                 Step(Self.payload("D", size: 618), .afterPaste, .milliseconds(1_200)),
                 Step(Self.payload("E", size: 2_455), .afterEnter, .milliseconds(800)),
-                Step(Self.payload("F", size: 1_000), .beforePaste, .milliseconds(300))
+                Step(Self.payload("F", size: 1_000), .beforePaste, .milliseconds(300)),
+                // #304 review: frozen just before the Enter, longer than the 2 s confirm window. The queued Enter
+                // must stay alone: no second Enter joins it, and the fake submits once it resumes.
+                Step(Self.payload("G", size: 1_839), .beforeEnter, .milliseconds(3_000))
             ]
             for step in plan {
                 if let point = step.stall { runner.arm(point, for: step.duration, pid: try pane.pid) }
                 try await adapter.deliver(step.text, to: "tui", binding: nil)
             }
             try await waitFor { try pane.submits().count >= plan.count }
-            #expect(try pane.submits() == plan.map(\.text), "each text whole, once, in order: no merge and no loss")
-            #expect(outcomes.all.allSatisfy { $0 == .confirmed }, "outcomes: \(outcomes.all)")
+            // After the frozen one, the pane is clear again and takes the next delivery.
+            let after = Self.payload("H", size: 300)
+            try await adapter.deliver(after, to: "tui", binding: nil)
+            try await waitFor { try pane.submits().count >= plan.count + 1 }
+            #expect(try pane.submits() == plan.map(\.text) + [after], "each text whole, once, in order")
+            #expect(outcomes.all == Array(repeating: .confirmed, count: 6) + [.unverifiable, .confirmed])
+        }
+    }
+
+    @Test func aTrailingSemicolonInAnyBufferFillArrivesIntact() async throws {
+        // #307 item 1: tmux takes a trailing `;` in an argument as a command separator.
+        try await withPane { pane in
+            let adapter = TmuxAdapter(runner: ProcessCommandRunner(), tmux: "tmux", socket: pane.socket,
+                                      pollInterval: nil, submitTiming: Self.timing)
+            let filler = { (count: Int) in String(repeating: "x", count: count) }
+            let texts = [
+                filler(399) + "; then more",
+                "a text that ends in a semicolon;",
+                filler(400) + ";",
+                filler(398) + "\\; after an escaped one"
+            ]
+            for text in texts { try await adapter.deliver(text, to: "tui", binding: nil) }
+            try await waitFor { try pane.submits().count >= texts.count }
+            #expect(try pane.submits() == texts)
         }
     }
 

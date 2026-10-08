@@ -40,8 +40,18 @@ import Testing
         #expect(try observe("$ say ok▌            [main]").input(tail) == .holding)
         // `界` takes two columns, so the cursor at column 5 sits right after `ok`.
         let wide = try #require(PaneObservation(captured: "界 ok more\n5,0\n"))
-        #expect(PaneObservation.prefix(of: "界 ok more", columns: 5) == "界 ok")
+        #expect(PaneObservation.prefix(of: "界 ok more", columns: 5) == ("界 ok", true))
         #expect(wide.input(tail) == .holding)
+    }
+
+    @Test func aCharacterOfUnknownWidthBeforeTheCursorIsNeverTakenAsClear() throws {
+        let tail = PayloadTail("ok")
+        // U+2705 is wide in some terminals and narrow in others: the cursor column cannot be mapped to text.
+        #expect(PaneObservation.prefix(of: "\u{2705} done", columns: 4).certain == false)
+        #expect(try observe("\u{2705} done▌").input(tail) == .uncertain)
+        // A match is still a match, and Claude Code's prompt character is a known one-column scalar.
+        #expect(try observe("\u{2705} ok▌").input(tail) == .holding)
+        #expect(try observe("\u{276F} ▌").input(tail) == .clear)
     }
 
     @Test func claudeCodePastePlaceholdersCountAsHeldText() throws {

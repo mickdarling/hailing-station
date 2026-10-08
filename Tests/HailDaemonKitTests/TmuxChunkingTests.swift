@@ -24,4 +24,12 @@ import Testing
         #expect(TmuxAdapter.chunks("", size: 400).isEmpty)
         #expect(TmuxAdapter.chunks("abc", size: 1) == ["a", "b", "c"])
     }
+
+    @Test func aTrailingSemicolonIsEscapedForTmuxOnce() {
+        #expect(TmuxAdapter.bufferArgument("abc") == "abc")
+        #expect(TmuxAdapter.bufferArgument("abc;") == #"abc\;"#)
+        #expect(TmuxAdapter.bufferArgument(";") == #"\;"#)
+        #expect(TmuxAdapter.bufferArgument(#"abc\;"#) == #"abc\\;"#)
+        #expect(TmuxAdapter.bufferArgument("a;b") == "a;b")
+    }
 }

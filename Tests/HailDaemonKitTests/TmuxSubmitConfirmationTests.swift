@@ -10,7 +10,7 @@ import Testing
     private static func timing(settleLimit: Duration, settleFloor: Duration = .milliseconds(1)) -> TmuxSubmitTiming {
         TmuxSubmitTiming(
             settleFloor: settleFloor, pollInterval: .milliseconds(2), quiet: .milliseconds(6),
-            settleLimit: settleLimit, confirmLimit: .milliseconds(60)
+            settleLimit: settleLimit, confirmLimit: .milliseconds(500)
         )
     }
 
@@ -46,16 +46,16 @@ import Testing
     }
 
     @Test func aStalePrePasteScreenIsNotTakenAsAccepted() async throws {
-        // A busy TUI keeps showing the screen from before the text for three looks, then draws it; the first
-        // Enter is swallowed. Only the text at the cursor counts, so the stale screen never releases the Enter.
-        let pane = ScriptedPane(stale: 3, swallowed: 1)
+        // A busy TUI keeps showing the screen from before the text for three looks, then draws it. Only the text
+        // at the cursor counts, so the stale screen never releases the Enter.
+        let pane = ScriptedPane(stale: 3)
         let harness = adapter(pane)
 
         try await harness.adapter.deliver("synthetic input", to: "codex", binding: nil)
 
         #expect(try await harness.capturesBeforeFirstEnter() >= 6)
-        #expect(await harness.keys == ["synthetic input", "Enter", "Enter"])
-        #expect(harness.log.all == [.retried])
+        #expect(await harness.keys == ["synthetic input", "Enter"])
+        #expect(harness.log.all == [.confirmed])
     }
 
     @Test func textThatNeverAppearsGetsOneEnterAnywayAndIsUnsettled() async throws {
@@ -80,8 +80,10 @@ import Testing
         #expect(harness.log.all == [.unsettled])
     }
 
-    @Test func aSwallowedEnterIsRetriedOnceAfterReverifyingTheTarget() async throws {
-        let pane = ScriptedPane(swallowed: 1)
+    @Test func anEnterTakenAsANewlineIsRetriedOnceAfterReverifyingTheTarget() async throws {
+        // #304: a TUI that read the Enter together with text inserts a newline; the tail is still in the input,
+        // with only whitespace before the cursor, and the pane changed, so the target is alive: one retry.
+        let pane = ScriptedPane(afterEnter: [ScriptedPane.absorbedScreen, ScriptedPane.submittedScreen])
         let harness = adapter(pane)
 
         try await harness.adapter.deliver("synthetic input", to: "codex", binding: Self.binding)
@@ -95,16 +97,21 @@ import Testing
         #expect(harness.log.all == [.retried])
     }
 
-    @Test func anEnterTakenAsANewlineInTheInputIsRetried() async throws {
-        // #304: a TUI that read the Enter together with text inserts a newline; the tail is still in the input,
-        // with only whitespace before the cursor. That is pending, not submitted.
-        let pane = ScriptedPane(absorbed: 1)
+    @Test func aPaneThatNeverChangesAfterTheEnterGetsNoSecondEnter() async throws {
+        // #304 review: a frozen TUI shows the text at the cursor, unchanged, with the Enter still queued. A second
+        // Enter would join it in one read and both would become newlines, so nothing more is sent.
+        let pane = ScriptedPane(afterEnter: [ScriptedPane.typedScreen])
         let harness = adapter(pane)
 
         try await harness.adapter.deliver("synthetic input", to: "codex", binding: nil)
 
-        #expect(await harness.keys == ["synthetic input", "Enter", "Enter"])
-        #expect(harness.log.all == [.retried])
+        #expect(await harness.keys == ["synthetic input", "Enter"])
+        #expect(harness.log.all == [.unverifiable])
+        // Not tainted, but the text still at the cursor refuses the next delivery until it is gone.
+        await #expect(throws: AdapterError.self) {
+            try await harness.adapter.deliver("later input", to: "codex", binding: nil)
+        }
+        #expect(await harness.keys == ["synthetic input", "Enter"])
     }
 
     @Test func noRetryWhenTheFirstEnterWasAccepted() async throws {
@@ -120,7 +127,7 @@ import Testing
     }
 
     @Test func anEnterNeverObservedFailsAfterOneRetryAndTaintsThePane() async throws {
-        let pane = ScriptedPane(swallowed: .max)
+        let pane = ScriptedPane(afterEnter: [ScriptedPane.absorbedScreen, ScriptedPane.absorbedTwiceScreen])
         let harness = adapter(pane)
 
         await #expect(throws: AdapterError.self) {
@@ -134,7 +141,9 @@ import Testing
     }
 
     @Test func aRebindBetweenTheEntersSendsNoSecondEnterAndTaintsThePane() async throws {
-        let pane = ScriptedPane(swallowed: 1, rebindAfterEnter: true)
+        let pane = ScriptedPane(
+            afterEnter: [ScriptedPane.absorbedScreen, ScriptedPane.submittedScreen], rebindAfterEnter: true
+        )
         let harness = adapter(pane)
 
         await #expect(throws: AdapterError.rebound("codex")) {
@@ -172,7 +181,7 @@ import Testing
     }
 
     @Test func aPaneUnreadableOnlyDuringConfirmationKeepsTheSingleEnter() async throws {
-        let pane = ScriptedPane(swallowed: 1, readableAfterEnter: false)
+        let pane = ScriptedPane(afterEnter: [ScriptedPane.typedScreen], readableAfterEnter: false)
         let harness = adapter(pane)
 
         try await harness.adapter.deliver("synthetic input", to: "codex", binding: nil)

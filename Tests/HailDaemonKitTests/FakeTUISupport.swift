@@ -98,6 +98,8 @@ final class FakeTUIPane: Sendable {
     func stop() async {
         _ = try? await tmux(["kill-server"])
         try? FileManager.default.removeItem(at: directory)
+        let base = ProcessInfo.processInfo.environment["TMUX_TMPDIR"] ?? "/tmp"
+        try? FileManager.default.removeItem(atPath: "\(base)/tmux-\(getuid())/\(socket)")
     }
 
     var pid: pid_t {
@@ -119,7 +121,7 @@ final class FakeTUIPane: Sendable {
 }
 
 /// Where a stall of the fake TUI's event loop starts, relative to the adapter's commands.
-enum StallPoint: Sendable { case beforePaste, afterPaste, afterEnter }
+enum StallPoint: Sendable { case beforePaste, afterPaste, beforeEnter, afterEnter }
 
 /// Runs tmux for real and freezes the fake TUI (SIGSTOP, then SIGCONT after `duration`) at the armed point once.
 final class StallingRunner: CommandRunner {
@@ -139,6 +141,7 @@ final class StallingRunner: CommandRunner {
         let point: StallPoint? = arguments.contains("paste-buffer") ? .beforePaste
             : (arguments.last == "Enter" ? .afterEnter : nil)
         if point == .beforePaste { freeze(at: .beforePaste) }
+        if point == .afterEnter { freeze(at: .beforeEnter) }
         let result = try await base.run(executable, arguments)
         if point == .beforePaste { freeze(at: .afterPaste) }
         if point == .afterEnter { freeze(at: .afterEnter) }

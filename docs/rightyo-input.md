@@ -104,8 +104,8 @@ rightyo listen … --session-id "$rightyo_session_id" |
   registered by `haild run`. **Time bound and the commit point:** the daemon
   answers a dispatch within its 10-second socket submission deadline, and each tmux call (measured for `send-keys`,
   the same single invocation as a `set-buffer` fill) costs about 5.5 ms per 400-character chunk, so a 1 MiB prompt (about 2,600 chunks) cannot be typed in time. The client therefore
-  caps a `--reply-to` prompt at `RightyoSocketDispatcher.maxPromptBytes` = 333,200 bytes, what fits in half the
-  deadline at 6 ms per chunk (833 chunks), and refuses a longer prompt before connecting, with the reason
+  caps a `--reply-to` prompt at `RightyoSocketDispatcher.maxPromptBytes` = 266,400 bytes, what fits in the 4 s
+  left of the deadline after the 5 s paste-acceptance wait and 1 s of margin, at 6 ms per chunk (666 chunks, #304), and refuses a longer prompt before connecting, with the reason
   (exit 1). The direct path keeps 1,200,000. The cap budgets one delivery: the tmux adapter types one delivery
   at a time, so concurrent dispatches queue, and a queued one can still reach the deadline.
   If the deadline (or any caller cancellation) fires, the tmux adapter's submit decision is one atomic step,

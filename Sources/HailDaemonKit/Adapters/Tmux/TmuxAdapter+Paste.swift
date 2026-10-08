@@ -43,27 +43,34 @@ struct PaneObservation: Equatable, Sendable {
         case lineEnded
         /// Neither the tail nor a placeholder ends at the cursor.
         case clear
+        /// Neither ends at the cursor as far as can be told, but the cursor row holds characters of unknown column
+        /// width before the cursor, so where the cursor sits in the text is not certain: never taken as `clear`.
+        case uncertain
+
+        var isDrawn: Bool { self == .holding || self == .lineEnded }
     }
 
     /// `tail` nil checks only for a paste placeholder.
     func input(_ tail: PayloadTail?) -> Input {
-        let before = scalarsBeforeCursor(atLeast: max(tail?.scalars.count ?? 0, Self.placeholderReach))
+        let (before, certain) = scalarsBeforeCursor(atLeast: max(tail?.scalars.count ?? 0, Self.placeholderReach))
         let drawn = (tail.map { before.ends(with: $0.scalars) } ?? false) || Self.endsInPastePlaceholder(before)
-        guard drawn else { return .clear }
+        guard drawn else { return certain ? .clear : .uncertain }
         return cursorX > 0 ? .holding : .lineEnded
     }
 
     /// The non-whitespace scalars that end at the cursor: the cursor row up to the cursor column, preceded by as
     /// many earlier rows as it takes to hold `count` scalars (wrapping and indentation never interrupt a match).
-    func scalarsBeforeCursor(atLeast count: Int) -> [Unicode.Scalar] {
-        guard cursorY < rows.count else { return [] }
-        var collected = Self.visible(Self.prefix(of: rows[cursorY], columns: cursorX))
+    /// `certain` is false when the cursor row's prefix holds a character of unknown column width.
+    func scalarsBeforeCursor(atLeast count: Int) -> (scalars: [Unicode.Scalar], certain: Bool) {
+        guard cursorY < rows.count else { return ([], true) }
+        let prefix = Self.prefix(of: rows[cursorY], columns: cursorX)
+        var collected = Self.visible(prefix.text)
         var row = cursorY
         while collected.count < count, row > 0 {
             row -= 1
             collected = Self.visible(rows[row][...]) + collected
         }
-        return collected
+        return (collected, prefix.certain)
     }
 
     private static func visible(_ text: Substring) -> [Unicode.Scalar] {
@@ -71,25 +78,32 @@ struct PaneObservation: Equatable, Sendable {
     }
 
     /// The part of `row` drawn left of `columns`, counting wide scalars as two columns and combining ones as none.
-    /// The count is approximate for exotic text; a miscount only makes a match fail, never succeed wrongly.
-    static func prefix(of row: String, columns: Int) -> Substring {
+    /// A character whose width is not known for certain counts as one column and makes the result uncertain:
+    /// with a miscount the cursor could fall anywhere, so an uncertain prefix never confirms that text left.
+    static func prefix(of row: String, columns: Int) -> (text: Substring, certain: Bool) {
         var used = 0
+        var certain = true
         var end = row.startIndex
         for character in row {
-            let width = character.unicodeScalars.first.map(columnWidth) ?? 1
+            let known = character.unicodeScalars.first.flatMap(columnWidth)
+            certain = certain && known != nil
+            let width = known ?? 1
             guard used + width <= columns else { break }
             used += width
             end = row.index(after: end)
         }
-        return row[..<end]
+        return (row[..<end], certain)
     }
 
-    private static func columnWidth(_ scalar: Unicode.Scalar) -> Int {
+    /// Column width where it is known for certain (East Asian Width narrow or wide in every terminal), else nil.
+    private static func columnWidth(_ scalar: Unicode.Scalar) -> Int? {
         switch scalar.value {
+        case 0x20...0x7E, 0xA0...0x2FF, 0x370...0x52F, 0x2010...0x205E, 0x2190...0x21FF, 0x2500...0x259F,
+             0x2768...0x2775: return 1
         case 0x0300...0x036F, 0x200B...0x200F, 0xFE00...0xFE0F: return 0
         case 0x1100...0x115F, 0x2E80...0xA4CF, 0xAC00...0xD7A3, 0xF900...0xFAFF, 0xFE30...0xFE4F, 0xFF00...0xFF60,
              0xFFE0...0xFFE6, 0x1F300...0x1F64F, 0x1F900...0x1F9FF, 0x20000...0x3FFFD: return 2
-        default: return 1
+        default: return nil
         }
     }
 
@@ -135,7 +149,7 @@ extension TmuxAdapter {
             for (index, chunk) in Self.chunks(text, size: chunkSize).enumerated() {
                 try abandoned.check()
                 let append = index == 0 ? [] : ["-a"]
-                let fill = ["set-buffer"] + append + ["-b", buffer, "--", chunk]
+                let fill = ["set-buffer"] + append + ["-b", buffer, "--", Self.bufferArgument(chunk)]
                 try await tmux(fill, failure: AdapterError.deliveryFailed)
             }
             try abandoned.check()
@@ -148,7 +162,27 @@ extension TmuxAdapter {
         }
     }
 
+    /// tmux reads an argument that ends in `;` as a command separator and drops that `;` (a lone `;` is then "no
+    /// data specified"); a `\` right before it escapes it, and is dropped instead. So one `\` goes before a trailing
+    /// `;`, which tmux removes again: `x;` is sent as `x\;`, and `x\;` as `x\\;` (#307 item 1).
+    static func bufferArgument(_ chunk: String) -> String {
+        guard chunk.hasSuffix(";") else { return chunk }
+        return chunk.dropLast() + "\\;"
+    }
+
     nonisolated func observePane(_ paneID: String) async -> PaneObservation? {
         await TmuxSubmitProbe.observe(paneID, runner: runner, tmux: tmuxPath, base: Self.baseArguments(socket: socket))
+    }
+}
+
+extension TmuxSubmitProbe {
+    /// One look at the pane: rows and cursor from a single tmux invocation; nil when it cannot be read.
+    static func observe(
+        _ paneID: String, runner: any CommandRunner, tmux: String, base: [String]
+    ) async -> PaneObservation? {
+        let arguments = base + ["capture-pane", "-p", "-t", paneID, ";",
+                                "display-message", "-p", "-t", paneID, PaneObservation.cursorFormat]
+        guard let result = try? await runner.run(tmux, arguments), result.exitCode == 0 else { return nil }
+        return PaneObservation(captured: result.stdout)
     }
 }

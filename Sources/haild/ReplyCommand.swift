@@ -439,13 +439,19 @@ enum ReplyClient {
 /// (`confirmationRequired` → 8, `bindingMismatch` → 7 as a rebound denial); every other dispatch or socket
 /// refusal is reported with the daemon's reason and exits 1, as `haild reply` does.
 struct RightyoSocketDispatcher: RightyoDispatching {
-    /// Measured real `tmux send-keys` cost per chunk (~5.5 ms, #204 review), rounded up.
+    /// Measured real tmux cost per chunk (~5.5 ms for `send-keys`, #204 review; a `set-buffer` fill is the same
+    /// single invocation, #304), rounded up.
     static let sendKeysCost: Duration = .milliseconds(6)
-    /// Half the daemon's 10-second socket submission deadline (`LocalReplyEndpoint`): the rest is margin for
-    /// listing, binding checks and a slower host. Past the deadline the daemon abandons the typing unsent.
-    static let typingBudget: Duration = .seconds(5)
+    /// The daemon's socket submission deadline (`LocalReplyEndpoint`'s default). Before the commit point the
+    /// daemon abandons a delivery that outlives it, and a text already pasted then taints the pane.
+    static let submissionDeadline: Duration = .seconds(10)
+    /// What may go to filling the paste buffer: the deadline less the longest wait for the pasted text to appear
+    /// (`TmuxSubmitTiming.standard.settleLimit`, 5 s) and one second for listing, binding checks and a slower host.
+    /// After the commit point the Enter, its confirmation and at most one retry can take up to about three confirm
+    /// limits (about 6 s); that runs to completion whether or not the client is still waiting.
+    static let typingBudget: Duration = submissionDeadline - TmuxSubmitTiming.standard.settleLimit - .seconds(1)
     /// The largest prompt this client dispatches: what the daemon can type within `typingBudget` in
-    /// `TmuxAdapter.defaultChunkSize`-character chunks (833 chunks, 333,200 bytes; a UTF-8 byte cap also bounds
+    /// `TmuxAdapter.defaultChunkSize`-character chunks (666 chunks, 266,400 bytes; a UTF-8 byte cap also bounds
     /// characters), never above the daemon's own dispatch cap. Realistic RightyO prompts are tens of KB.
     static let maxPromptBytes = min(
         LocalDispatchRequest.maxTextBytes, Int(typingBudget / sendKeysCost) * TmuxAdapter.defaultChunkSize

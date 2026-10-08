@@ -3,17 +3,15 @@ import OSLog
 
 private let submitLogger = Logger(subsystem: "com.mickdarling.hailing-station", category: "tmux-submit")
 
-/// How long the adapter waits around the Enter (#83, #304). A TUI whose event loop stalls (a large session paging
-/// back in after idle) reads queued input late; an Enter that reaches it in the same read as typed text is taken
-/// as a newline, not a submit. The text therefore goes in as one bracketed paste, and the Enter waits until the
-/// pane shows the text at the cursor. Every wait is bounded.
+/// How long the adapter waits around the Enter (#83, #304). A stalled TUI reads queued input late, and an Enter read
+/// together with typed text becomes a newline; so the text goes in as one bracketed paste, and the Enter waits until
+/// the pane shows it at the cursor. Every wait is bounded.
 public struct TmuxSubmitTiming: Sendable, Equatable {
     /// The least time between the paste and the first look at the pane.
     public var settleFloor: Duration
     /// How often the pane is observed while waiting.
     public var pollInterval: Duration
-    /// How long the pane must show the text at the cursor, unchanged, before the Enter. Above Claude Code's
-    /// 100 ms paste-completion window.
+    /// How long the text must show at the cursor, unchanged, before the Enter (above Claude Code's 100 ms paste window).
     public var quiet: Duration
     /// The longest wait for the text to appear at the cursor before the Enter is sent anyway (`unsettled`).
     public var settleLimit: Duration
@@ -23,11 +21,8 @@ public struct TmuxSubmitTiming: Sendable, Equatable {
     public init(
         settleFloor: Duration, pollInterval: Duration, quiet: Duration, settleLimit: Duration, confirmLimit: Duration
     ) {
-        self.settleFloor = settleFloor
-        self.pollInterval = pollInterval
-        self.quiet = quiet
-        self.settleLimit = settleLimit
-        self.confirmLimit = confirmLimit
+        (self.settleFloor, self.pollInterval, self.quiet) = (settleFloor, pollInterval, quiet)
+        (self.settleLimit, self.confirmLimit) = (settleLimit, confirmLimit)
     }
 
     public static let standard = TmuxSubmitTiming(
@@ -42,7 +37,7 @@ public enum TmuxSubmitOutcome: String, Sendable, Equatable {
     case confirmed
     /// The text stayed at the cursor after the first Enter; it left after the one retry.
     case retried
-    /// The pane was blank or unreadable, or what followed the Enter cannot tell a submit from a wrapped row.
+    /// Blank or unreadable, unchanged after the Enter (a frozen target: no second Enter), or not decidable.
     case unverifiable
     /// The text never appeared at the cursor within the settle limit; one Enter, sent anyway.
     case unsettled
@@ -55,19 +50,9 @@ public enum TmuxSubmitOutcome: String, Sendable, Equatable {
     }
 }
 
-/// The waits of the submit, apart from the actor so each stays readable. `observe` returns nil when the pane
-/// cannot be read, which makes the submit unverifiable rather than failed.
+/// The waits of the submit, apart from the actor. An unreadable pane makes a submit unverifiable, never failed.
 enum TmuxSubmitProbe {
     typealias Observe = @Sendable () async -> PaneObservation?
-
-    static func observe(
-        _ paneID: String, runner: any CommandRunner, tmux: String, base: [String]
-    ) async -> PaneObservation? {
-        let arguments = base + ["capture-pane", "-p", "-t", paneID, ";",
-                                "display-message", "-p", "-t", paneID, PaneObservation.cursorFormat]
-        guard let result = try? await runner.run(tmux, arguments), result.exitCode == 0 else { return nil }
-        return PaneObservation(captured: result.stdout)
-    }
 
     enum Acceptance: Equatable { case accepted(PaneObservation), blank, unreadable, timedOut }
 
@@ -82,7 +67,7 @@ enum TmuxSubmitProbe {
         while true {
             guard let current = await observe() else { return .unreadable }
             if current.isBlank { return .blank }
-            if current != baseline, current.input(tail) != .clear {
+            if current != baseline, current.input(tail).isDrawn {
                 if let (seen, since) = steady, seen == current {
                     if ContinuousClock.now - since >= timing.quiet { return .accepted(current) }
                 } else {
@@ -96,91 +81,120 @@ enum TmuxSubmitProbe {
         }
     }
 
-    /// What the pane showed after an Enter.
-    enum Reaction: Equatable { case submitted, pending, ambiguous, unreadable }
+    /// What the pane showed after an Enter. `pending(alive:)`: whether the pane changed at all while the text stayed
+    /// at the cursor; an unchanged pane may be a frozen target with the Enter still queued (a second Enter would
+    /// join it in one read, and both would become newlines).
+    enum Reaction: Equatable { case submitted, pending(alive: Bool), ambiguous, unreadable }
 
-    /// Waits up to the confirm limit for the text to leave the cursor. Only text still held at the cursor for the
-    /// whole window is `pending`. A cursor that moved to column 0 right after the text is a submit only when the
-    /// cursor was past column 0 before the Enter (a terminal ended the line); otherwise it is `ambiguous`.
+    /// Waits up to the confirm limit for the text to leave the cursor, seen on two looks in a row. A cursor that
+    /// moved to column 0 right after the text counts only when the cursor was past column 0 before the Enter (a
+    /// terminal ended the line); otherwise it is `ambiguous`, as is text whose columns cannot be counted.
     static func reaction(
-        _ timing: TmuxSubmitTiming, tail: PayloadTail, wasHolding: Bool, observe: Observe
+        _ timing: TmuxSubmitTiming, tail: PayloadTail, before: PaneObservation?, wasHolding: Bool, observe: Observe
     ) async -> Reaction {
         let deadline = ContinuousClock.now.advanced(by: timing.confirmLimit)
+        var previous = before, alive = false, released = 0, uncertain = false
         repeat {
             try? await Task.sleep(for: timing.pollInterval)
             guard let current = await observe() else { return .unreadable }
-            switch current.input(tail) {
-            case .clear: return .submitted
-            case .lineEnded: return wasHolding ? .submitted : .ambiguous
-            case .holding: continue
+            alive = alive || (previous.map { $0 != current } ?? false)
+            previous = current
+            let input = current.input(tail)
+            uncertain = input == .uncertain
+            switch input {
+            case .clear: released += 1
+            case .lineEnded: if wasHolding { released += 1 } else { return .ambiguous }
+            case .holding, .uncertain: released = 0
             }
+            if released >= 2 { return .submitted }
         } while ContinuousClock.now < deadline
-        return .pending
+        return uncertain ? .ambiguous : .pending(alive: alive)
     }
 
-    enum Steadiness: Equatable { case holding, released, restless }
+    enum Steadiness: Equatable { case holding(PaneObservation), released, restless }
 
-    /// Before the retry: the text must still be held at the cursor, unchanged for `quiet`, so the target is
-    /// drawing again and not frozen mid-read (`holding`). `released`: it took the first Enter late (the text left
-    /// the cursor). `restless`: the pane never held still within the confirm limit, or could not be read.
+    /// Before the retry: the text must still be held at the cursor, unchanged for `quiet` (`holding`). `released`:
+    /// the target took the first Enter late (the text left the cursor on two looks in a row). `restless`: the pane
+    /// never held still within the confirm limit, or could not be read.
     static func steadiness(_ timing: TmuxSubmitTiming, tail: PayloadTail, observe: Observe) async -> Steadiness {
         let deadline = ContinuousClock.now.advanced(by: timing.confirmLimit)
         var steady: (PaneObservation, ContinuousClock.Instant)?
+        var released = 0
         while ContinuousClock.now < deadline {
             guard let current = await observe() else { return .restless }
-            guard current.input(tail) == .holding else { return .released }
-            if let (seen, since) = steady, seen == current {
-                if ContinuousClock.now - since >= timing.quiet { return .holding }
-            } else {
-                steady = (current, .now)
+            switch current.input(tail) {
+            case .holding:
+                released = 0
+                if let (seen, since) = steady, seen == current {
+                    if ContinuousClock.now - since >= timing.quiet { return .holding(current) }
+                } else {
+                    steady = (current, .now)
+                }
+            case .clear, .lineEnded:
+                released += 1
+                if released >= 2 { return .released }
+            case .uncertain:
+                return .restless
             }
             try? await Task.sleep(for: timing.pollInterval)
         }
         return .restless
     }
-
-    /// The outcome a first reaction settles, or nil when the text is still pending and a retry may follow.
-    static func outcome(of reaction: Reaction, wasHolding: Bool, acceptance: Acceptance) -> TmuxSubmitOutcome? {
-        let undecided: TmuxSubmitOutcome = acceptance == .timedOut ? .unsettled : .unverifiable
-        switch reaction {
-        case .submitted: return wasHolding ? .confirmed : undecided
-        case .ambiguous, .unreadable: return undecided
-        case .pending: return nil
-        }
-    }
 }
 
 extension TmuxAdapter {
-    /// Sends the Enter and decides the outcome from what the pane shows at the cursor. Text still held there for
-    /// the whole confirm window gets one more Enter, only once the pane holds steady again (identity re-checked
-    /// first); still held after that fails the delivery, which taints the pane.
+    /// Sends the Enter and decides the outcome from what the pane shows at the cursor. Text held there for the whole
+    /// confirm window gets one more Enter only if the pane changed meanwhile (identity re-checked first); an
+    /// unchanged pane gets none. Still held in a live pane after the retry fails the delivery (taint).
     func attemptSubmit(
         _ session: Session, target: String, tail: PayloadTail, acceptance: TmuxSubmitProbe.Acceptance
     ) async throws -> TmuxSubmitOutcome {
         let enter = ["send-keys", "-t", session.paneID, "Enter"]
         try await tmux(enter, failure: AdapterError.deliveryFailed)
         let observe: TmuxSubmitProbe.Observe = { await self.observePane(session.paneID) }
-        let wasHolding: Bool
+        let before: PaneObservation?
         switch acceptance {
         case .blank, .unreadable: return .unverifiable
-        case .timedOut: wasHolding = false
-        case .accepted(let seen): wasHolding = seen.input(tail) == .holding
+        case .timedOut: before = nil
+        case .accepted(let seen): before = seen
         }
-        let first = await TmuxSubmitProbe.reaction(submitTiming, tail: tail, wasHolding: wasHolding, observe: observe)
-        if let settled = TmuxSubmitProbe.outcome(of: first, wasHolding: wasHolding, acceptance: acceptance) {
-            return settled
+        let wasHolding = before?.input(tail) == .holding
+        // Neither seen at the cursor before nor provably gone after: the Enter went out, nothing more is known.
+        let undecided: TmuxSubmitOutcome = acceptance == .timedOut ? .unsettled : .unverifiable
+        let first = await TmuxSubmitProbe.reaction(
+            submitTiming, tail: tail, before: before, wasHolding: wasHolding, observe: observe
+        )
+        switch first {
+        case .submitted: return wasHolding ? .confirmed : undecided
+        case .ambiguous, .unreadable, .pending(alive: false): return undecided
+        case .pending(alive: true):
+            let late: TmuxSubmitOutcome = wasHolding ? .confirmed : undecided
+            return try await retry(session, target: target, tail: tail, if: (late, undecided), observe: observe)
         }
+    }
+
+    /// The one retry, once the live pane holds the text steady again; otherwise the outcome for a target that took
+    /// the first Enter late (`late`) or a pane that never held still (`restless`).
+    private func retry(
+        _ session: Session, target: String, tail: PayloadTail,
+        if outcomes: (late: TmuxSubmitOutcome, restless: TmuxSubmitOutcome), observe: TmuxSubmitProbe.Observe
+    ) async throws -> TmuxSubmitOutcome {
+        let steady: PaneObservation
         switch await TmuxSubmitProbe.steadiness(submitTiming, tail: tail, observe: observe) {
-        case .released: return .confirmed
-        case .restless: return .unverifiable
-        case .holding: break
+        case .released: return outcomes.late
+        case .restless: return outcomes.restless
+        case .holding(let seen): steady = seen
         }
         _ = try await verified(target, binding: session.binding)
-        try await tmux(enter, failure: AdapterError.deliveryFailed)
-        switch await TmuxSubmitProbe.reaction(submitTiming, tail: tail, wasHolding: true, observe: observe) {
+        try await tmux(["send-keys", "-t", session.paneID, "Enter"], failure: AdapterError.deliveryFailed)
+        let reaction = await TmuxSubmitProbe.reaction(
+            submitTiming, tail: tail, before: steady, wasHolding: true, observe: observe
+        )
+        switch reaction {
         case .submitted: return .retried
-        case .ambiguous, .unreadable: return .unverifiable
-        case .pending: throw AdapterError.deliveryFailed("the Enter was not observed to submit the text in \(target)")
+        case .ambiguous, .unreadable, .pending(alive: false): return .unverifiable
+        case .pending(alive: true):
+            throw AdapterError.deliveryFailed("the Enter was not observed to submit the text in \(target)")
         }
     }
 }
