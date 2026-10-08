@@ -92,6 +92,8 @@ public actor RightyoInputConsumer {
     private var dismissible = false
     /// Request ids a `dismiss` withdrew before this consumer delivered them; a later request with one is dropped.
     private var withdrawn = Set<String>()
+    /// Withdrawn ids a request has already been dropped for, so a repeat is refused as a duplicate (a subset of `withdrawn`).
+    private var dropped = Set<String>()
     /// Requests dropped because a dismissal had withdrawn them. A count only.
     public private(set) var withdrawnDropped = 0
     private var requests = Set<String>()
@@ -155,18 +157,7 @@ public actor RightyoInputConsumer {
             guard try admit(event) else { return false }
             if event.type == "override" { return true }
             guard event.type == "request", let requestID = event.requestId else { return false }
-            // Withdrawn by the speaker's dismissal before it arrived: never delivered, and the session goes on.
-            if withdrawn.contains(requestID) {
-                withdrawnDropped += 1
-                return false
-            }
-            guard requests.count < 1000, requests.insert(requestID).inserted else {
-                throw RightyoInputError.invalidEvent
-            }
-            guard dispatcher == nil || allowSynthetic || event.turn?.provenance == "live-microphone" else {
-                terminal = true
-                throw RightyoInputError.invalidEvent
-            }
+            guard try claim(requestID, provenance: event.turn?.provenance) else { return false }
             guard let dispatcher else { return true }
             // Matched on the heard turn, not the built prompt, whose envelope would bury the echo (#269).
             if let echoFilter, let heard = event.turn?.text, echoFilter(heard) {
@@ -190,6 +181,23 @@ public actor RightyoInputConsumer {
             failed = true
             throw error
         }
+    }
+    /// Refuses a duplicate id or, on a live-only consumer, a non-live request; then claims the id. False means
+    /// withdrawn by the speaker's dismissal before it arrived: never delivered, and the session goes on. That drop
+    /// comes after both refusals, and a repeat of a dropped id is still a duplicate.
+    private func claim(_ requestID: String, provenance: String?) throws -> Bool {
+        guard requests.count < 1000, !requests.contains(requestID) else { throw RightyoInputError.invalidEvent }
+        guard dispatcher == nil || allowSynthetic || provenance == "live-microphone" else {
+            terminal = true
+            throw RightyoInputError.invalidEvent
+        }
+        if withdrawn.contains(requestID) {
+            guard dropped.insert(requestID).inserted else { throw RightyoInputError.invalidEvent }
+            withdrawnDropped += 1
+            return false
+        }
+        requests.insert(requestID)
+        return true
     }
     private func admit(_ event: RightyoInputEvent) throws -> Bool {
         try event.validate(session: session, enrolled: speakers == "enrolled", budgetMs: streamBudgetMs)
@@ -285,13 +293,16 @@ extension RightyoInputConsumer {
         }
         // An attention record that does not repeat `owner` demotes the utterance; it can never promote one.
         if decision.role != "owner" { owners.remove(utterance) }
-        if decision.label == "attend" {
+        // An `attend` with no `request_id` forms no request: RightyO sends one for a turn it dismissed, withdrew,
+        // superseded or held as a stop phrase (rightyo#98). Nothing is recorded, so `request` refuses any request
+        // citing it; only an `attend` that names a request id is checked and recorded.
+        if decision.label == "attend", let requestID = event.requestId {
             guard activationEnabled, decision.recipientKind == "system",
-                  event.requestId == "\(session):\(utterance)", attentions.count < 1000,
-                  attentions[event.requestId ?? ""] == nil else {
+                  requestID == "\(session):\(utterance)", attentions.count < 1000,
+                  attentions[requestID] == nil else {
                 throw RightyoInputError.invalidEvent
             }
-            attentions[event.requestId ?? ""] = try RightyoInputEvent.fingerprint(decision)
+            attentions[requestID] = try RightyoInputEvent.fingerprint(decision)
         }
     }
     /// An owner `override` (#188 item 3) must cite the owner's own admitted transcript and attention records:

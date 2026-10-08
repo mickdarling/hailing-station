@@ -365,7 +365,8 @@ What it does: nothing is delivered and `consume` returns false; `lastDismissal` 
 reason, scope and two counts. A listed id this consumer already delivered stays delivered (withdrawal is
 advisory; there is no rollback, as for an override). Any other listed id, including one never seen, which is how
 RightyO names a request it withheld while its decision was pending, is recorded (bounded at 1,000) and a later
-request with it is dropped without delivery and counted (`withdrawnDropped`), so the session keeps going. There
+request with it is dropped without delivery and counted (`withdrawnDropped`), so the session keeps going. That
+drop comes after the duplicate and live-provenance refusals, and a repeat of a dropped id is still a duplicate. There
 is nothing host-side in flight to cancel: `consume` awaits each delivery to completion. Ambient listening
 logs `ambient_dismissed` with tokens and counts only, for example `reason=stop-phrase
 scope=playback+pending_request withdrawn=0 delivered=1 playback=not_stopped`, and keeps listening; a dismissal
@@ -375,8 +376,15 @@ What it does not do yet: no host path stops a reply already streaming or playing
 is recorded as asked, not done (`playback=not_stopped`). That needs a host-to-device stop and renderer cancel
 ([#309](https://github.com/mickdarling/hailing-station/issues/309), under #268). `engagement` changes nothing because the host has no engaged state beyond ambient
 listening; RightyO applies the cool-down itself. The CLI prints no receipt for a `dismiss`.
+An `attention` with `label: attend` and no `request_id` is admitted on any session and records nothing, so no
+request can cite it. RightyO keeps the `attend` label on a turn it dismissed, withdrew, superseded or held as a stop
+phrase, but forms no request for it; refusing that attention ended ambient on most model-judged dismissals.
 `fixtures/rightyo/dismissal-events.jsonl` is byte-identical to RightyO's `examples/dismissal-events.jsonl` at
-rightyo PR #99 head `73e4db86388724f572c805f5ccef41d01dee0cd6` (`--session dismissal-demo`).
+rightyo PR #99 head `0abd969e4c1e7bbc3fdcd793211ec90af162231c` (`--session dismissal-demo`; unchanged since
+`73e4db86`). The three `dismissal-producer-*.jsonl` fixtures are streams RightyO emits at that head in its own
+`tests/test_dismissal.py`, captured verbatim (`--session dismissal-test`): a model-judged "Go away." with
+engagement and a cool-down, a late stop phrase withdrawing a pending request, and an enrolled session with two
+decision dismissals.
 
 ## Verification
 

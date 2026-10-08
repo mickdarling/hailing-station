@@ -130,8 +130,9 @@ extension RightyoInputConsumerTests {
         await #expect(throws: RightyoInputError.invalidEvent) { try await refused.consume(boss) }
     }
 
-    @Test func aWithdrawnRequestThatArrivesLaterIsDroppedAndTheSessionGoesOn() async throws {
-        let (consumer, adapter) = try await rig()
+    /// Admits a dismissal withdrawing the never-seen `later`, then `later`'s transcript and attention; returns
+    /// a builder for `later`'s request at a given sequence, unconsumed.
+    func withdrawnLater(_ consumer: RightyoInputConsumer) async throws -> (Int) throws -> RightyoInputEvent {
         _ = try await consumer.consume(dismissalStart())
         let dismissal = try await dismiss(consumer, sequence: 2,
                                           changes: ["withdrawn_request_ids": ["\(session):later"]])
@@ -144,11 +145,18 @@ extension RightyoInputConsumerTests {
         _ = try await consumer.consume(event("attention", sequence: 5, extra: [
             "utterance_id": "later", "request_id": "\(session):later", "decision": decision, "emitted_at_ms": 4000
         ]))
-        let late = try event("request", sequence: 6, extra: [
-            "request_id": "\(session):later", "turn": final, "decision": decision, "context": ["turns": []],
-            "decision_at_ms": 4000, "emitted_at_ms": 4000
-        ])
-        #expect(try await !consumer.consume(late))
+        return { sequence in
+            try self.event("request", sequence: sequence, extra: [
+                "request_id": "\(self.session):later", "turn": final, "decision": decision, "context": ["turns": []],
+                "decision_at_ms": 4000, "emitted_at_ms": 4000
+            ])
+        }
+    }
+
+    @Test func aWithdrawnRequestThatArrivesLaterIsDroppedAndTheSessionGoesOn() async throws {
+        let (consumer, adapter) = try await rig()
+        let late = try await withdrawnLater(consumer)
+        #expect(try await !consumer.consume(late(6)))
         #expect(await consumer.withdrawnDropped == 1)
         _ = try await consumer.consume(stopped(7))
         try await consumer.finish()
