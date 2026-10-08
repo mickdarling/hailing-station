@@ -65,6 +65,7 @@ import Testing
             sessionFrame(payload: .control(.escape(targetID: "tmux:a"))),
             sessionFrame(payload: .control(.targets([]))),
             sessionFrame(payload: .control(.pong(nonce: "x"))),
+            sessionFrame(payload: .control(.stopPlayback)),
             sessionFrame(payload: .unknown(type: "future_action", payload: .object(["go": .bool(true)])))
         ]
 

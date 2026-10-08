@@ -142,6 +142,12 @@ public actor HostSession {
     let requestClock: @Sendable () -> ContinuousClock.Instant
     var state = State.awaitingHello
     var peerName = "terminal"
+    /// What the device said it can do in its hello (#309), bounded; it gates host-sent `stop_playback`.
+    var peerCapabilities: Set<String> = []
+    /// Replies whose audio is reaching this connection and has not finished, and replies stopped mid-stream
+    /// whose remaining frames this connection refuses (#309). Both bounded, ids only.
+    var repliesInFlight: Set<UUID> = []
+    var stoppedReplies: [UUID] = []
     var selectedTarget: String?
     let connectionID = UUID()
     var selectionGeneration = UUID()
@@ -238,6 +244,7 @@ public actor HostSession {
         }
         state = .ready(version: version)
         peerName = hello.deviceName
+        peerCapabilities = Set(hello.capabilities.prefix(64))
         let info = HelloInfo(
             versions: VersionNegotiation.supported,
             capabilities: authorizer.capabilities,

@@ -369,13 +369,18 @@ request with it is dropped without delivery and counted (`withdrawnDropped`), so
 drop comes after the duplicate and live-provenance refusals, and a repeat of a dropped id is still a duplicate. There
 is nothing host-side in flight to cancel: `consume` awaits each delivery to completion. Ambient listening
 logs `ambient_dismissed` with tokens and counts only, for example `reason=stop-phrase
-scope=playback+pending_request withdrawn=0 delivered=1 playback=not_stopped`, and keeps listening; a dismissal
+scope=playback+pending_request withdrawn=0 delivered=1 playback=stopped`, and keeps listening; a dismissal
 never ends the stream.
 
-What it does not do yet: no host path stops a reply already streaming or playing on the device, so `playback`
-is recorded as asked, not done (`playback=not_stopped`). That needs a host-to-device stop and renderer cancel
-([#309](https://github.com/mickdarling/hailing-station/issues/309), under #268). `engagement` changes nothing because the host has no engaged state beyond ambient
-listening; RightyO applies the cool-down itself. The CLI prints no receipt for a `dismiss`.
+Stopping playback ([#309](https://github.com/mickdarling/hailing-station/issues/309)): with `playback` in scope,
+the dismissing connection stops every reply whose audio is mid-stream on it. Their remaining frames are refused
+(`noRecipient`), so `haild reply --say` stops and retires its renderer, and a device that advertised
+`stop_playback` is sent that command to cancel its player at once and drop queued reply audio
+([reply-protocol.md](reply-protocol.md)). The `playback` token says what happened: `stopped` (the device was told),
+`cut` (frames refused only: an older device, or the send failed), `idle` (nothing mid-stream and no device stop),
+`no_connection`, or `none` when the scope did not ask. A reply whose audio had not started yet is not stopped.
+`engagement` changes nothing because the host has no engaged state beyond ambient listening; RightyO applies the
+cool-down itself. The CLI prints no receipt for a `dismiss`.
 An `attention` with `label: attend` and no `request_id` is admitted on any session and records nothing, so no
 request can cite it. RightyO keeps the `attend` label on a turn it dismissed, withdrew, superseded or held as a stop
 phrase, but forms no request for it; refusing that attention ended ambient on most model-judged dismissals.
