@@ -15,7 +15,7 @@ import Testing
 
             #expect(await listener.stopReplyPlayback(connection: connection) == "stopped")
             #expect(try await recipientSocketReceive(on: socket).payload == .control(.stopPlayback))
-            await #expect(throws: LocalReplyRefusal.noRecipient) {
+            await #expect(throws: LocalReplyRefusal.replyStopped) {
                 try await listener.publish(recipientAudio(reply, sequence: 1, final: true))
             }
             // A later reply is not stopped.
@@ -34,7 +34,7 @@ import Testing
 
             #expect(await listener.stopReplyPlayback(connection: connection) == "cut")
             try await recipientSocketBarrier(on: socket) // No stop frame: the next frame is the pong.
-            await #expect(throws: LocalReplyRefusal.noRecipient) {
+            await #expect(throws: LocalReplyRefusal.replyStopped) {
                 try await listener.publish(recipientAudio(reply, sequence: 1, final: true))
             }
         }
@@ -59,10 +59,45 @@ import Testing
             let (session, other) = try await device(port: port, capabilities: ["probe"])
             defer { session.invalidateAndCancel() }
             #expect(await listener.stopReplyPlayback(connection: connection) == "cut")
-            await #expect(throws: LocalReplyRefusal.noRecipient) {
+            await #expect(throws: LocalReplyRefusal.replyStopped) {
                 try await listener.publish(recipientAudio(reply, sequence: 1, final: true))
             }
             try await recipientSocketBarrier(on: other) // The other device heard nothing.
+        }
+    }
+
+    @Test func aStopOutlivesTheDeviceThatAskedForIt() async throws {
+        try await withStopRig(capabilities: ["probe"]) { listener, socket, connection, port in
+            let reply = uncorrelatedDescriptor(audio: true)
+            let first = recipientAudio(reply, sequence: 0)
+            try #require(await listener.publish(first) == 1)
+            #expect(try await recipientSocketReceive(on: socket) == first)
+            #expect(await listener.stopReplyPlayback(connection: connection) == "cut")
+            socket.cancel(with: .normalClosure, reason: nil)
+            #expect(await eventually { await listener.peerCount() == 0 })
+            let (session, other) = try await device(port: port, capabilities: ["probe"])
+            defer { session.invalidateAndCancel() }
+            await #expect(throws: LocalReplyRefusal.replyStopped) {
+                try await listener.publish(recipientAudio(reply, sequence: 1, final: true))
+            }
+            try await recipientSocketBarrier(on: other)
+        }
+    }
+
+    /// The peer ends while its stop is between the session and the listener: the stopping session is still seen.
+    @Test func aStopInFlightIsSeenEvenIfItsPeerEndsMeanwhile() async throws {
+        try await withStopRig(capabilities: ["probe"]) { listener, socket, connection, port in
+            let reply = uncorrelatedDescriptor(audio: true)
+            let first = recipientAudio(reply, sequence: 0)
+            try #require(await listener.publish(first) == 1)
+            #expect(try await recipientSocketReceive(on: socket) == first)
+            let (session, other) = try await device(port: port, capabilities: ["probe"])
+            defer { session.invalidateAndCancel() }
+            await listener.simulateStopInFlightThenPeerEnd(connection: connection)
+            await #expect(throws: LocalReplyRefusal.replyStopped) {
+                try await listener.publish(recipientAudio(reply, sequence: 1, final: true))
+            }
+            try await recipientSocketBarrier(on: other)
         }
     }
 
@@ -77,7 +112,7 @@ import Testing
             try #require(await listener.publish(recipientAudio(live, sequence: 0)) == 1)
             _ = try await recipientSocketReceive(on: socket)
             #expect(await listener.stopReplyPlayback(connection: connection) == "cut")
-            await #expect(throws: LocalReplyRefusal.noRecipient) {
+            await #expect(throws: LocalReplyRefusal.replyStopped) {
                 try await listener.publish(recipientAudio(live, sequence: 1, final: true))
             }
         }
@@ -121,6 +156,21 @@ import Testing
 }
 
 extension WebSocketListener {
+    fileprivate func peerCount() -> Int { peers.count }
+
+    /// The interleaving `stopReplyPlayback` allows at its await: the session has stopped, the peer has ended,
+    /// and the listener has not yet recorded the ids.
+    fileprivate func simulateStopInFlightThenPeerEnd(connection: UUID) async {
+        for (id, peer) in peers {
+            let session = await peer.session
+            guard await session.connectionID == connection else { continue }
+            stopsInFlight[UUID()] = session
+            _ = await session.stopReplyPlayback()
+            peers[id] = nil
+            return
+        }
+    }
+
     fileprivate func onlyConnectionID() async -> UUID? {
         guard peers.count == 1, let peer = peers.values.first else { return nil }
         return await peer.session.connectionID
