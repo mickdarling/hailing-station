@@ -13,11 +13,11 @@ extension TmuxReplyAdapterTests {
         async let two: Void = adapter.deliver("synthetic two", to: "bridge", binding: bridgeBinding, context: second)
         _ = try await (one, two)
         var line = "", envelopes: [CapturedBridgeEnvelope] = []
-        for call in await runner.calls where call.contains("send-keys") {
-            if call.last == "Enter" {
+        for key in await runner.delivered {
+            if key == "Enter" {
                 envelopes.append(try JSONDecoder().decode(CapturedBridgeEnvelope.self, from: Data(line.utf8)))
                 line = ""
-            } else if let chunk = call.last { line += chunk }
+            } else { line += key }
         }
         #expect(line.isEmpty)
         #expect(envelopes.count == 2)

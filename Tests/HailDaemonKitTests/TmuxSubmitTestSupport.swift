@@ -2,40 +2,59 @@ import Synchronization
 import Testing
 @testable import HailDaemonKit
 
-/// A scripted pane for #83. Before the first Enter, capture 1 is the baseline (taken before any text) and
-/// shows `oldScreen`; the next `stale` captures still show it (a busy TUI that has not redrawn); the next
-/// `settling` captures each show a different frame (the paste still being drawn); after that, `typedScreen`.
-/// The first `swallowed` Enters leave the screen exactly as it was; a later one shows `submittedScreen`.
+/// A scripted pane for #83 and #304. Screens are written with `▌` where the cursor is. After any `lead` screens,
+/// every look before the `paste-buffer` shows the baseline; after the paste, the next `stale` looks still show it
+/// (a busy TUI that has not drawn the paste), the next `settling` looks each show a different frame, then
+/// `typed`. After the k-th Enter the pane shows `afterEnter[k - 1]` (the last entry for any later Enter): for
+/// example `absorbedScreen` (the Enter became a newline in the input), `typed` again (an Enter that changed
+/// nothing, as a frozen TUI shows), `submittedScreen`, or `lineEndedScreen` (a terminal ending the line).
 final class ScriptedPane: Sendable {
-    static let oldScreen = "> "
-    static let typedScreen = "> synthetic input"
-    static let submittedScreen = "> synthetic input\n\n> "
+    static let oldScreen = "> ▌"
+    static let typedScreen = "> synthetic input▌"
+    static let absorbedScreen = "> synthetic input\n  ▌"
+    /// The prompt echoed above an empty input, as a TUI transcript shows it.
+    static let submittedScreen = "> synthetic input\n\n> ▌"
+    static let lineEndedScreen = "> synthetic input\n▌"
+    /// A second newline in the input: the pane changed, the text is still there.
+    static let absorbedTwiceScreen = "> synthetic input\n  \n  ▌"
     static let rebound = "$1|1758230000|%1|501|claude-hail\n$2|1758230001|%8|808|codex\n"
     private struct State {
         var captures = 0
         var enters = 0
+        /// The look count when `paste-buffer` ran.
+        var pastedAt: Int?
         var listing = twoSessions
+        var baseline: String
+        /// Screens for the first looks, before the pane follows its script (stale text that later clears).
+        var lead: [String] = []
     }
-    private let state = Mutex(State())
+    private let state: Mutex<State>
     private let stale: Int
     private let settling: Int
-    private let swallowed: Int
+    private let typed: String
+    private let afterEnter: [String]
     private let readableAfterEnter: Bool
     private let rebindAfterEnter: Bool
 
     init(
-        stale: Int = 0, settling: Int = 0, swallowed: Int = 0,
-        readableAfterEnter: Bool = true, rebindAfterEnter: Bool = false
+        baseline: String = oldScreen, stale: Int = 0, settling: Int = 0, typed: String = typedScreen,
+        afterEnter: [String] = [submittedScreen], readableAfterEnter: Bool = true, rebindAfterEnter: Bool = false
     ) {
+        state = Mutex(State(baseline: baseline))
         self.stale = stale
         self.settling = settling
-        self.swallowed = swallowed
+        self.typed = typed
+        self.afterEnter = afterEnter
         self.readableAfterEnter = readableAfterEnter
         self.rebindAfterEnter = rebindAfterEnter
     }
 
     var enters: Int { state.withLock { $0.enters } }
     func restoreListing() { state.withLock { $0.listing = twoSessions } }
+    /// What the next delivery's baseline shows; the capture count restarts.
+    func reset(baseline: String, lead: [String] = []) {
+        state.withLock { $0.baseline = baseline; $0.lead = lead; $0.captures = 0; $0.enters = 0; $0.pastedAt = nil }
+    }
 
     func respond(_ arguments: [String]) -> CommandResult {
         state.withLock { state in
@@ -45,8 +64,9 @@ final class ScriptedPane: Sendable {
                     return CommandResult(exitCode: 1, stdout: "", stderr: "can't find pane")
                 }
                 state.captures += 1
-                return CommandResult(exitCode: 0, stdout: screen(state))
+                return CommandResult(exitCode: 0, stdout: Self.render(screen(state)))
             }
+            if arguments.contains("paste-buffer") { state.pastedAt = state.captures }
             if arguments.last == "Enter" {
                 state.enters += 1
                 if rebindAfterEnter { state.listing = Self.rebound }
@@ -56,11 +76,22 @@ final class ScriptedPane: Sendable {
     }
 
     private func screen(_ state: State) -> String {
-        guard state.enters == 0 else { return state.enters > swallowed ? Self.submittedScreen : Self.typedScreen }
-        let afterBaseline = state.captures - 1
-        if afterBaseline <= stale { return Self.oldScreen }
-        if afterBaseline - stale <= settling { return "> synthetic inp (frame \(state.captures))" }
-        return Self.typedScreen
+        if state.enters > 0 { return afterEnter[min(state.enters, afterEnter.count) - 1] }
+        if state.captures <= state.lead.count { return state.lead[state.captures - 1] }
+        guard let pastedAt = state.pastedAt else { return state.baseline }
+        let afterPaste = state.captures - pastedAt
+        if afterPaste <= stale { return state.baseline }
+        if afterPaste - stale <= settling { return "> synthetic inp (frame \(state.captures))▌" }
+        return typed
+    }
+
+    /// `capture-pane -p` rows followed by the `display-message` cursor line, as the adapter's observation reads.
+    static func render(_ marked: String) -> String {
+        let rows = marked.components(separatedBy: "\n")
+        let y = rows.firstIndex { $0.contains("▌") } ?? 0
+        let x = rows[y].prefix { $0 != "▌" }.count
+        let plain = rows.map { $0.replacingOccurrences(of: "▌", with: "") }
+        return plain.joined(separator: "\n") + "\n\(x),\(y)\n"
     }
 }
 
@@ -87,9 +118,8 @@ struct SubmitHarness {
         )
     }
 
-    var keys: [String] {
-        get async { await runner.calls.compactMap { $0.contains("send-keys") ? $0.last : nil } }
-    }
+    /// Pasted texts and keys, in order.
+    var keys: [String] { get async { await runner.delivered } }
 
     func capturesBeforeFirstEnter() async throws -> Int {
         let calls = await runner.calls

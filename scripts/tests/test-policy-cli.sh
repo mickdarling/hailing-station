@@ -14,7 +14,7 @@ printf '%s\n' \
   'set -euo pipefail' \
   'if [[ "${1:-}" == "list-sessions" ]]; then' \
   '  printf '\''$1|1700000000|%%1|4242|cli\n'\''' \
-  'elif [[ "${1:-}" == "send-keys" ]]; then' \
+  'elif [[ "${1:-}" =~ ^(set-buffer|paste-buffer|delete-buffer|send-keys)$ ]]; then' \
   '  printf '\''%s\n'\'' "$*" >> "$HAIL_FAKE_TMUX_LOG"' \
   'else' \
   '  exit 1' \
@@ -76,7 +76,9 @@ grep -q "cancelled" "$scratch/cancel.out"
 
 run_haild_tty send "echo approved" > "$scratch/send.out" 2>&1
 grep -q "sent 1 line to tmux:cli" "$scratch/send.out"
-grep -q -- "send-keys -t %1 -l -- echo approved" "$fake_log"
+# #304: the text goes into a uniquely named buffer and is pasted in one piece, then the Enter.
+grep -Eq -- "^set-buffer -b hail-[0-9A-F-]+ -- echo approved$" "$fake_log"
+grep -Eq -- "^paste-buffer -p -d -b hail-[0-9A-F-]+ -t %1$" "$fake_log"
 grep -q -- "send-keys -t %1 Enter" "$fake_log"
 
 printf 'not json' > "$scratch/config/policy.json"
