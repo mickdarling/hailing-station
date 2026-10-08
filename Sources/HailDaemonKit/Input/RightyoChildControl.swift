@@ -1,6 +1,6 @@
 #if os(macOS)
 import Darwin
-public import Foundation
+import Foundation
 import Synchronization
 
 /// What the host reports about the assistant's spoken reply (rightyo#124).
