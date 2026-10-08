@@ -162,7 +162,7 @@ Part of [#188](https://github.com/mickdarling/hailing-station/issues/188) item 1
 the phone hears it. For the target `tmux:demo` it is, byte for byte (it begins with a space):
 
 ```
- Reply: answer briefly; it is spoken aloud. If no reply bridge publishes this session's output, run haild reply tmux:demo --say '<spoken answer>' (single-quote the answer and keep it free of single quotes; single-terminal fallback only).
+ Reply: answer briefly; it is spoken aloud. The host plays any acknowledgement itself, so send none of your own (rightyo#122). If no reply bridge publishes this session's output, run haild reply tmux:demo --say '<spoken answer>' (single-quote the answer and keep it free of single quotes; single-terminal fallback only).
 ```
 
 - What it asks: a short spoken answer. On a conforming programmatic bridge (a `tmux-reply:` target,

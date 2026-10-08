@@ -7,11 +7,12 @@ import Testing
 extension RightyoInputConsumerTests {
     static let replyPrefix = RightyoInputEvent.replyBlockPrefix
     /// The host's reply block for the `tmux:demo` target, the tail of every prompt the rigs deliver.
-    static let replyBlock = " Reply: answer briefly; it is spoken aloud. If no reply bridge publishes this session's "
+    static let replyBlock = " Reply: answer briefly; it is spoken aloud. The host plays any acknowledgement itself, "
+        + "so send none of your own (rightyo#122). If no reply bridge publishes this session's "
         + "output, run haild reply tmux:demo --say '<spoken answer>' (single-quote the answer and keep it free of "
         + "single quotes; single-terminal fallback only)."
-    /// The block's fixed text is 228 ASCII characters; the target appears once.
-    static let replyBlockFixedCount = 228
+    /// The block's fixed text is 311 ASCII characters; the target appears once.
+    static let replyBlockFixedCount = 311
 
     /// A delivered prompt without the host's reply block: the tail from the LAST occurrence of the prefix, which
     /// every rig in these suites delivers to `tmux:demo`.
