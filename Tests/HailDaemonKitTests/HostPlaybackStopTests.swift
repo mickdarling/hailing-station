@@ -84,6 +84,23 @@ import Testing
         }
     }
 
+    /// The peer ends while its stop is between the session and the listener: the stopping session is still seen.
+    @Test func aStopInFlightIsSeenEvenIfItsPeerEndsMeanwhile() async throws {
+        try await withStopRig(capabilities: ["probe"]) { listener, socket, connection, port in
+            let reply = uncorrelatedDescriptor(audio: true)
+            let first = recipientAudio(reply, sequence: 0)
+            try #require(await listener.publish(first) == 1)
+            #expect(try await recipientSocketReceive(on: socket) == first)
+            let (session, other) = try await device(port: port, capabilities: ["probe"])
+            defer { session.invalidateAndCancel() }
+            await listener.simulateStopInFlightThenPeerEnd(connection: connection)
+            await #expect(throws: LocalReplyRefusal.replyStopped) {
+                try await listener.publish(recipientAudio(reply, sequence: 1, final: true))
+            }
+            try await recipientSocketBarrier(on: other)
+        }
+    }
+
     @Test func abandonedStreamsNeverCrowdOutALiveReply() async throws {
         try await withStopRig(capabilities: ["probe"]) { listener, socket, connection, _ in
             for _ in 0..<(HostSession.playbackStopLimit + 1) {
@@ -140,6 +157,19 @@ import Testing
 
 extension WebSocketListener {
     fileprivate func peerCount() -> Int { peers.count }
+
+    /// The interleaving `stopReplyPlayback` allows at its await: the session has stopped, the peer has ended,
+    /// and the listener has not yet recorded the ids.
+    fileprivate func simulateStopInFlightThenPeerEnd(connection: UUID) async {
+        for (id, peer) in peers {
+            let session = await peer.session
+            guard await session.connectionID == connection else { continue }
+            stopsInFlight[UUID()] = session
+            _ = await session.stopReplyPlayback()
+            peers[id] = nil
+            return
+        }
+    }
 
     fileprivate func onlyConnectionID() async -> UUID? {
         guard peers.count == 1, let peer = peers.values.first else { return nil }

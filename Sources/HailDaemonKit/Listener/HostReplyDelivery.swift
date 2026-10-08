@@ -239,15 +239,7 @@ extension WebSocketListener {
     public func publish(_ frame: Frame) async throws -> Int {
         guard !stopped, readyResult != nil else { throw WebSocketListenerError.stoppedBeforeReady }
         let validated = try validatedReply(frame)
-        // A reply stopped on any connection is refused everywhere (#309), so a stop can never hand the rest of it
-        // to another connection that also selects its target. The listener's record outlives the connection; the
-        // per-session scan covers a stop still between its session and the listener.
-        if let id = HostSession.replyID(validated), stoppedReplyIDs.contains(id) {
-            throw LocalReplyRefusal.replyStopped
-        }
-        for peer in Array(peers.values) where await peer.session.hasStopped(validated) {
-            throw LocalReplyRefusal.replyStopped
-        }
+        if await isStopped(validated) { throw LocalReplyRefusal.replyStopped }
         // Fresh host-minted UUIDs establish origin ownership. This scan is an admission snapshot,
         // not a transactional global directory or a UUID-collision proof. Never enqueue during it.
         var candidate: (WebSocketPeer, ReplyPublicationStatus)?
@@ -287,9 +279,23 @@ extension WebSocketListener {
         guard !stopped else { throw WebSocketListenerError.stoppedBeforeReady }
         // The whole scan completes first so the refusal code never depends on peer iteration order.
         guard candidates.count <= 1 else { throw LocalReplyRefusal.notUniqueRecipient }
+        // A stop that landed during the scan made its own connection refuse, which could leave another connection
+        // as the only candidate; check again before handing the reply to it.
+        if await isStopped(frame) { throw LocalReplyRefusal.replyStopped }
         guard let candidate = candidates.first else { throw LocalReplyRefusal.noRecipient }
         guard await candidate.deliverRequestlessReply(frame) else { throw LocalReplyRefusal.publicationFailed }
         return 1
+    }
+
+    /// A reply stopped on any connection is refused everywhere (#309), so a stop never hands the rest of it to
+    /// another connection selecting its target. The listener's record outlives the connection; the per-session scan
+    /// covers a stop still between its session and the listener, including one whose peer has since ended.
+    private func isStopped(_ frame: Frame) async -> Bool {
+        if let id = HostSession.replyID(frame), stoppedReplyIDs.contains(id) { return true }
+        for session in peers.values.map(\.session) + stopsInFlight.values where await session.hasStopped(frame) {
+            return true
+        }
+        return false
     }
 
     private func validatedReply(_ frame: Frame) throws -> Frame {

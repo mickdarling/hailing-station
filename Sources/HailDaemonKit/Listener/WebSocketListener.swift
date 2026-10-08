@@ -52,8 +52,9 @@ public actor WebSocketListener {
     var readyResult: Result<UInt16, WebSocketListenerError>?
     private var started = false
     /// `stoppedReplyIDs`: replies stopped on any connection (#309), newest last and bounded. Recorded when the
-    /// stop is made, so a stop outlives the device that asked for it.
-    var stopped = false, stoppedReplyIDs: [UUID] = []
+    /// stop is made, so a stop outlives the device that asked for it. `stopsInFlight` holds each stopping session
+    /// until then, so its stop is seen even if its peer ends during the await.
+    var stopped = false, stoppedReplyIDs: [UUID] = [], stopsInFlight: [UUID: HostSession] = [:]
     /// Opt-in ambient listening (#203): the sink of the authorizer's `AmbientAudioGate`. Nil by default.
     let ambient: (any AmbientListenerWiring)?
 
@@ -278,8 +279,11 @@ extension WebSocketListener {
         guard !stopped, let peer = peers.values.first(where: { $0.session.connectionID == connection }) else {
             return "no_connection"
         }
+        let stop = UUID()
+        stopsInFlight[stop] = peer.session
         let (frame, cut) = await peer.session.stopReplyPlayback()
         stoppedReplyIDs.append(contentsOf: cut)
+        stopsInFlight[stop] = nil
         stoppedReplyIDs.removeFirst(max(0, stoppedReplyIDs.count - HostSession.playbackStopLimit))
         if let frame, await peer.send(frame) { return "stopped" }
         return cut.isEmpty ? "idle" : "cut"
