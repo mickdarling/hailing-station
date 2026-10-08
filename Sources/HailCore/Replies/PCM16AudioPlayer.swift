@@ -114,7 +114,9 @@ public final class PCM16AudioPlayer: ReplyAudioPlaying {
         if engine !== ownEngine { return }
         #if os(iOS)
         let session = AVAudioSession.sharedInstance()
-        if !didConfigureAudioSession {
+        // A mixable session is the background keepalive's (#352): play within it. A play-and-record category would
+        // interrupt other apps' audio, and iOS refuses that activation in the background.
+        if !didConfigureAudioSession, !session.categoryOptions.contains(.mixWithOthers) {
             // Replies may arrive without a preceding capture session. Configure a complete route
             // here as well as in AVAudioSessionBackend so playAndRecord does not default to the
             // receiver, while still allowing a user-selected A2DP output such as AirPods.
