@@ -53,6 +53,11 @@ public actor DiagnosticLog {
     }
 
     public nonisolated let directory: URL
+    /// Sees each session's admitted events (after rate limiting), in order: how ambient listening learns when the
+    /// phone's spoken reply starts and ends (rightyo#124). Never sees refused events; never changes storage.
+    private var observer: (@Sendable ([DiagnosticEvent], UUID) -> Void)?
+
+    public func observe(_ handler: @escaping @Sendable ([DiagnosticEvent], UUID) -> Void) { observer = handler }
     let maxFileBytes: Int
     let sessionRate: Rate
     let hostRate: Rate
@@ -102,6 +107,7 @@ public actor DiagnosticLog {
         bucket.dropped += events.count - admitted
         let received = now()
         var stored = Array(events.prefix(admitted))
+        if admitted > 0 { observer?(stored, session) }
         if admitted > 0, bucket.dropped > 0,
            let dropped = try? DiagnosticEvent(.eventsDropped, timestamp: max(0, received), fields: [
                .count: .integer(Int64(min(bucket.dropped, Int(Int32.max)))), .code: .token("host_rate_limit")
