@@ -182,9 +182,9 @@ extension HostSession {
     /// A `dismiss` asked to stop playback (#309). Every reply mid-stream on this connection is stopped: its
     /// remaining frames are refused, so the reply CLI retires its renderer. The `stop_playback` frame is
     /// returned only for a ready device that advertised it; an older device would refuse it as malformed.
-    func stopReplyPlayback() -> (frame: Frame?, stopped: Int) {
-        guard case .ready(let version) = state else { return (nil, 0) }
-        let stopped = repliesInFlight.count
+    func stopReplyPlayback() -> (frame: Frame?, stopped: [UUID]) {
+        guard case .ready(let version) = state else { return (nil, []) }
+        let stopped = repliesInFlight
         stoppedReplies.append(contentsOf: repliesInFlight)
         stoppedReplies.removeFirst(max(0, stoppedReplies.count - Self.playbackStopLimit))
         repliesInFlight.removeAll()
@@ -239,9 +239,10 @@ extension WebSocketListener {
     public func publish(_ frame: Frame) async throws -> Int {
         guard !stopped, readyResult != nil else { throw WebSocketListenerError.stoppedBeforeReady }
         let validated = try validatedReply(frame)
-        // A reply stopped on any connection, live or ended, is refused everywhere (#309), so a stop can never
-        // hand the rest of it to another connection that also selects its target.
-        if let id = HostSession.replyID(validated), endedStoppedReplies.contains(id) {
+        // A reply stopped on any connection is refused everywhere (#309), so a stop can never hand the rest of it
+        // to another connection that also selects its target. The listener's record outlives the connection; the
+        // per-session scan covers a stop still between its session and the listener.
+        if let id = HostSession.replyID(validated), stoppedReplyIDs.contains(id) {
             throw LocalReplyRefusal.replyStopped
         }
         for peer in Array(peers.values) where await peer.session.hasStopped(validated) {

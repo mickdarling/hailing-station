@@ -374,9 +374,9 @@ never ends the stream.
 
 Stopping playback ([#309](https://github.com/mickdarling/hailing-station/issues/309)): with `playback` in scope,
 the dismissing connection stops every reply whose audio is mid-stream on it. Their remaining frames are refused
-(`replyStopped`, which `haild doctor` does not count as a delivery fault) on every connection, so the rest of a
-stopped reply never moves to another device selecting its
-target, and `haild reply --say` stops and retires its renderer, and a device that advertised
+(`replyStopped`, which `haild doctor` does not count as a delivery fault) on every connection, even after the
+stopping device disconnects, so the rest of a stopped reply never moves to another device selecting its target.
+`haild reply --say` then stops and retires its renderer, and a device that advertised
 `stop_playback` is sent that command to cancel its player at once and drop queued reply audio
 ([reply-protocol.md](reply-protocol.md)). The `playback` token says what happened: `stopped` (the device was told),
 `cut` (frames refused only: an older device, or the send failed), `idle` (nothing mid-stream and no device stop),
