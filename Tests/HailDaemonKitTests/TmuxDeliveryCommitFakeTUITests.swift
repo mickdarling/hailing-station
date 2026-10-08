@@ -92,6 +92,32 @@ struct TmuxDeliveryCommitFakeTUITests {
         }
     }
 
+    @Test func deliveriesQueuedBehindAFrozenEnterWaitAndAllArriveOnceInOrder() async throws {
+        // #304: the live pattern, back-to-back dispatches about 0.4 s apart right after a stall. The first Enter is
+        // queued in a target frozen for 3 s; the queued deliveries wait for its text to leave the cursor.
+        try await withPane { pane in
+            let runner = StallingRunner()
+            let outcomes = OutcomeLog()
+            let adapter = TmuxAdapter(runner: runner, tmux: "tmux", socket: pane.socket, pollInterval: nil,
+                                      submitTiming: Self.timing, submitObserver: { outcomes.append($0) })
+            let texts = [1_839, 618, 3_872].enumerated().map { Self.payload("Q\($0.offset)", size: $0.element) }
+            runner.arm(.beforeEnter, for: .seconds(3), pid: try pane.pid)
+            try await withThrowingTaskGroup(of: Void.self) { group in
+                for (index, text) in texts.enumerated() {
+                    group.addTask {
+                        try await Task.sleep(for: .milliseconds(400 * index))
+                        try await adapter.deliver(text, to: "tui", binding: nil)
+                    }
+                    try await Task.sleep(for: .milliseconds(10))
+                }
+                try await group.waitForAll()
+            }
+            try await waitFor { try pane.submits().count >= texts.count }
+            #expect(try pane.submits() == texts, "all three, whole, once, in order")
+            #expect(outcomes.all == [.unverifiable, .confirmed, .confirmed])
+        }
+    }
+
     @Test func aTrailingSemicolonInAnyBufferFillArrivesIntact() async throws {
         // #307 item 1: tmux takes a trailing `;` in an argument as a command separator.
         try await withPane { pane in

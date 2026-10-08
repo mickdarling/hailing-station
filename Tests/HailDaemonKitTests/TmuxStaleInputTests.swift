@@ -5,7 +5,7 @@ import Testing
 @Suite struct TmuxStaleInputTests {
     private static let fast = TmuxSubmitTiming(
         settleFloor: .milliseconds(1), pollInterval: .milliseconds(2), quiet: .milliseconds(6),
-        settleLimit: .seconds(5), confirmLimit: .milliseconds(60)
+        settleLimit: .seconds(5), confirmLimit: .milliseconds(60), clearLimit: .milliseconds(120)
     )
 
     @Test func theSameTextAlreadyAtTheCursorIsRefusedBeforeAnyPasteAndNotTainted() async throws {
@@ -33,6 +33,35 @@ import Testing
             try await harness.adapter.deliver("a different request", to: "codex", binding: nil)
         }
         #expect(await harness.keys == ["synthetic input", "Enter"])
+    }
+
+    @Test func pendingTextThatLeavesWithinTheBoundIsWaitedForThenTheDeliveryGoesAhead() async throws {
+        // #304: a frozen target still holds the last text at its cursor and submits it a moment later; the next
+        // delivery (queued behind it, as back-to-back ambient dispatches are) waits instead of being dropped.
+        let pane = ScriptedPane()
+        let harness = SubmitHarness(pane, timing: Self.fast)
+        try await harness.adapter.deliver("synthetic input", to: "codex", binding: nil)
+        let stale = Array(repeating: ScriptedPane.absorbedScreen, count: 4)
+        // Held for four looks, then gone on two in a row; the next look is the new baseline.
+        let gone = [ScriptedPane.submittedScreen, ScriptedPane.submittedScreen, ScriptedPane.submittedScreen]
+        pane.reset(baseline: ScriptedPane.submittedScreen, lead: stale + gone)
+
+        try await harness.adapter.deliver("synthetic input", to: "codex", binding: nil)
+
+        #expect(await harness.keys == ["synthetic input", "Enter", "synthetic input", "Enter"])
+        #expect(harness.log.all == [.confirmed, .confirmed])
+    }
+
+    @Test func pendingTextStillThereAtTheBoundIsRefusedWithoutAPaste() async throws {
+        let pane = ScriptedPane(baseline: ScriptedPane.typedScreen, stale: .max)
+        let harness = SubmitHarness(pane, timing: Self.fast)
+        let start = ContinuousClock.now
+
+        await #expect(throws: AdapterError.self) {
+            try await harness.adapter.deliver("synthetic input", to: "codex", binding: nil)
+        }
+        #expect(ContinuousClock.now - start >= .milliseconds(120), "waited out the clear limit first")
+        #expect(await harness.runner.calls.allSatisfy { !$0.contains("set-buffer") && !$0.contains("send-keys") })
     }
 
     @Test func aPastePlaceholderLeftInTheInputIsRefused() async throws {

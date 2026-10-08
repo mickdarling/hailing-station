@@ -23,6 +23,8 @@ final class ScriptedPane: Sendable {
         var enters = 0
         var listing = twoSessions
         var baseline: String
+        /// Screens for the first looks, before the pane follows its script (stale text that later clears).
+        var lead: [String] = []
     }
     private let state: Mutex<State>
     private let stale: Int
@@ -48,7 +50,9 @@ final class ScriptedPane: Sendable {
     var enters: Int { state.withLock { $0.enters } }
     func restoreListing() { state.withLock { $0.listing = twoSessions } }
     /// What the next delivery's baseline shows; the capture count restarts.
-    func reset(baseline: String) { state.withLock { $0.baseline = baseline; $0.captures = 0; $0.enters = 0 } }
+    func reset(baseline: String, lead: [String] = []) {
+        state.withLock { $0.baseline = baseline; $0.lead = lead; $0.captures = 0; $0.enters = 0 }
+    }
 
     func respond(_ arguments: [String]) -> CommandResult {
         state.withLock { state in
@@ -70,7 +74,8 @@ final class ScriptedPane: Sendable {
 
     private func screen(_ state: State) -> String {
         if state.enters > 0 { return afterEnter[min(state.enters, afterEnter.count) - 1] }
-        let afterBaseline = state.captures - 1
+        if state.captures <= state.lead.count { return state.lead[state.captures - 1] }
+        let afterBaseline = state.captures - state.lead.count - 1
         if afterBaseline <= stale { return state.baseline }
         if afterBaseline - stale <= settling { return "> synthetic inp (frame \(state.captures))▌" }
         return typed

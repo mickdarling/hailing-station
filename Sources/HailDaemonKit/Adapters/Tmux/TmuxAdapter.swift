@@ -1,5 +1,4 @@
 import Foundation
-import Synchronization
 
 /// Every tmux session on one server is a target (#11). Text reaches the pane as one tmux paste (#304): it is
 /// assembled in a uniquely named buffer by argv (never interpreted as key names) and pasted with `paste-buffer
@@ -23,12 +22,10 @@ public actor TmuxAdapter: Adapter {
     private let pollInterval: Duration?
     let submitTiming: TmuxSubmitTiming
     private let submitObserver: (@Sendable (TmuxSubmitOutcome) -> Void)?
-    /// Deliveries run one at a time: actor reentrancy at each await would otherwise let two deliveries
-    /// interleave their chunks and Enters into one concatenated command.
+    /// Deliveries run one at a time, or reentrancy at each await would interleave two of them into one command.
     private var lastDelivery: Task<Void, Never>?
-    /// Panes holding typed text from a delivery that never reached its Enter (abandoned or failed after at
-    /// least one chunk). No later delivery types into them: it would append to that text and submit the
-    /// concatenation, which no guard evaluated. Cleared only by a new adapter (a `haild` restart).
+    /// Panes holding pasted text from a delivery that never reached a known submit (abandoned or failed after
+    /// the paste). No later delivery types into them. Cleared only by a new adapter (a `haild` restart).
     private var tainted: Set<String> = []
     /// The tail of the last text pasted into each pane, so a later delivery can see it still pending (#304).
     private var lastTails: [String: PayloadTail] = [:]
@@ -103,12 +100,23 @@ public actor TmuxAdapter: Adapter {
             )
         }
         let tail = PayloadTail(text)
-        // The screen before any text: the Enter waits for a change from it, and text already pending at the
-        // cursor (this delivery's tail, the last one's, or a paste placeholder) is never appended to. Nothing was
-        // pasted, so the pane is not tainted: every later delivery looks again, and a cleared input is used.
-        let baseline = await observePane(session.paneID)
-        if let baseline, [tail, lastTails[session.paneID]].contains(where: { baseline.input($0) == .holding }) {
-            throw AdapterError.deliveryFailed("unsubmitted text is already in the input of pane \(target)")
+        // The screen before any text, which the Enter waits for a change from. Text pending at the cursor (this
+        // tail, the last one's, or a placeholder; nil checks only placeholders) is never appended to: a frozen
+        // target may still submit it, so it gets up to `clearLimit` to leave (two clear looks in a row, #304).
+        // Still there, the delivery is refused untainted, since nothing was pasted.
+        var baseline = await observePane(session.paneID)
+        let pending = [tail, lastTails[session.paneID]]
+        if let seen = baseline, let stale = pending.first(where: { seen.input($0) == .holding }) {
+            var wait = submitTiming
+            wait.confirmLimit = submitTiming.clearLimit
+            let observe: TmuxSubmitProbe.Observe = { await self.observePane(session.paneID) }
+            let left = await TmuxSubmitProbe.reaction(
+                wait, tail: stale, before: seen, wasHolding: true, observe: observe
+            )
+            guard left == .submitted else {
+                throw AdapterError.deliveryFailed("unsubmitted text is already in the input of pane \(target)")
+            }
+            baseline = await observePane(session.paneID)
         }
         var typed = false
         do {
@@ -122,9 +130,8 @@ public actor TmuxAdapter: Adapter {
             )
             // The Enter is what runs the text; the identity is checked once more right before it.
             _ = try await verified(target, binding: session.binding)
-            // The commit point: abandonment and commitment are one atomic decision, so either nothing is
-            // submitted (pasted text, if any, stays unsubmitted in the input; there is no rollback) or the
-            // Enter is sent whatever the caller does afterwards.
+            // The commit point, one atomic decision: either nothing is submitted (pasted text stays unsubmitted
+            // in the input; no rollback) or the Enter is sent whatever the caller does afterwards.
             guard abandoned.commit() else { throw CancellationError() }
             try await submit(session, target: target, tail: tail, acceptance: acceptance)
         } catch {
@@ -146,6 +153,14 @@ public actor TmuxAdapter: Adapter {
             TmuxSubmitOutcome.failed.record(target: target, observer: submitObserver)
             throw error
         }
+    }
+
+    /// tmux reads an argument that ends in `;` as a command separator and drops that `;` (a lone `;` is then "no
+    /// data specified"); a `\` right before it escapes it, and is dropped instead. So one `\` goes before a trailing
+    /// `;`, which tmux removes again: `x;` is sent as `x\;`, and `x\;` as `x\\;` (#307 item 1).
+    static func bufferArgument(_ chunk: String) -> String {
+        guard chunk.hasSuffix(";") else { return chunk }
+        return chunk.dropLast() + "\\;"
     }
 
     /// The session behind `name` now, refused unless its binding is the one the caller holds.
@@ -178,22 +193,5 @@ public actor TmuxAdapter: Adapter {
         let result = try await runner.run(tmuxPath, Self.baseArguments(socket: socket) + arguments)
         guard result.exitCode == 0 else { throw failure(result.errorText) }
         return result
-    }
-}
-
-/// One delivery's submit decision: the caller's cancellation and the Enter race for it under one lock.
-final class DeliveryAbandonment: Sendable {
-    private enum State { case pending, abandoned, committed }
-    private let state = Mutex(State.pending)
-    /// Abandons a delivery that has not committed; a committed one is unaffected.
-    func abandon() { state.withLock { if $0 == .pending { $0 = .abandoned } } }
-    func check() throws { if state.withLock({ $0 == .abandoned }) { throw CancellationError() } }
-    /// True exactly once, for a delivery not yet abandoned; from then on abandonment cannot stop the Enter.
-    func commit() -> Bool {
-        state.withLock {
-            guard $0 == .pending else { return false }
-            $0 = .committed
-            return true
-        }
     }
 }

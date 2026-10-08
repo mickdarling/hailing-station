@@ -156,9 +156,9 @@ maps the answer as documented in [rightyo-input.md](rightyo-input.md#reply-owner
 `delivered: 1` with a `request` is an owned reply, with `null` is "no reply ownership" (the daemon's reason,
 if any, is noted on stderr), and a refusal keeps the direct path's exit code where the outcome is the same
 (`confirmationRequired` 8, `bindingMismatch` 7) and otherwise exits 1 with the daemon's reason. The client
-refuses a prompt over `RightyoSocketDispatcher.maxPromptBytes` (266,400 bytes: what the daemon can fill into its paste
-buffer within 4 s of its 10-second submission deadline, the rest kept for the 5 s paste-acceptance wait and 1 s of
-margin, #304; never above the daemon's 1,200,000-byte dispatch cap,
+refuses a prompt over `RightyoSocketDispatcher.maxPromptBytes` (133,200 bytes: what the daemon can fill into its paste
+buffer within 2 s of its 10-second submission deadline, the rest kept for up to 3 s waiting for stale input to clear,
+the 4 s paste-acceptance wait and 1 s of margin, #304; never above the daemon's 1,200,000-byte dispatch cap,
 [#200](https://github.com/mickdarling/hailing-station/issues/200)) before connecting and says why. When a dispatch's
 submission deadline fires during delivery, the tmux adapter either abandons it before its commit point
 (no further chunk, no Enter, typed text left unsubmitted with no rollback) or, once committed, sends the Enter

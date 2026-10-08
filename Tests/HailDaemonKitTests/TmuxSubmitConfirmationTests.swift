@@ -10,7 +10,7 @@ import Testing
     private static func timing(settleLimit: Duration, settleFloor: Duration = .milliseconds(1)) -> TmuxSubmitTiming {
         TmuxSubmitTiming(
             settleFloor: settleFloor, pollInterval: .milliseconds(2), quiet: .milliseconds(6),
-            settleLimit: settleLimit, confirmLimit: .milliseconds(500)
+            settleLimit: settleLimit, confirmLimit: .milliseconds(500), clearLimit: .milliseconds(120)
         )
     }
 

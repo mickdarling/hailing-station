@@ -1,11 +1,9 @@
 import Foundation
+import Synchronization
 
-/// One look at a pane for the submit decision (#304): the visible rows and the cursor, read by one tmux
-/// invocation (`capture-pane -p ; display-message -p <cursorFormat>`) so the two belong to the same moment.
-///
-/// Delivery decisions read only the text that ends at the cursor, because that is where a line editor keeps
-/// what has been typed and not yet submitted. Text elsewhere on the screen, such as a TUI's transcript echoing
-/// an earlier prompt with the same ending, is not evidence either way.
+/// One look at a pane (#304): visible rows and cursor from one tmux invocation, so both belong to the same moment.
+/// Decisions read only the text ending at the cursor, where a line editor keeps unsubmitted input; text elsewhere
+/// (a transcript echoing an earlier prompt with the same ending) is not evidence either way.
 struct PaneObservation: Equatable, Sendable {
     static let cursorFormat = "#{cursor_x},#{cursor_y}"
 
@@ -34,12 +32,10 @@ struct PaneObservation: Equatable, Sendable {
 
     /// What the input at the cursor shows relative to a delivered text.
     enum Input: Equatable {
-        /// The text's tail (or a paste placeholder) ends at the cursor, and the cursor is past column 0: the
-        /// text is drawn and still pending. A TUI that took an Enter as a newline inside its input also lands
-        /// here, since only whitespace follows the tail.
+        /// The tail (or a paste placeholder) ends at a cursor past column 0: drawn and pending. An Enter taken as a
+        /// newline inside a TUI's input lands here too, since only whitespace follows the tail.
         case holding
-        /// The tail ends right before a cursor in column 0: a terminal ended the line (a shell or `cat` that
-        /// took the Enter), or the text filled its last row exactly and the cursor wrapped.
+        /// The tail ends right before a cursor in column 0: a terminal ended the line, or the text filled its row.
         case lineEnded
         /// Neither the tail nor a placeholder ends at the cursor.
         case clear
@@ -162,14 +158,6 @@ extension TmuxAdapter {
         }
     }
 
-    /// tmux reads an argument that ends in `;` as a command separator and drops that `;` (a lone `;` is then "no
-    /// data specified"); a `\` right before it escapes it, and is dropped instead. So one `\` goes before a trailing
-    /// `;`, which tmux removes again: `x;` is sent as `x\;`, and `x\;` as `x\\;` (#307 item 1).
-    static func bufferArgument(_ chunk: String) -> String {
-        guard chunk.hasSuffix(";") else { return chunk }
-        return chunk.dropLast() + "\\;"
-    }
-
     nonisolated func observePane(_ paneID: String) async -> PaneObservation? {
         await TmuxSubmitProbe.observe(paneID, runner: runner, tmux: tmuxPath, base: Self.baseArguments(socket: socket))
     }
@@ -184,5 +172,22 @@ extension TmuxSubmitProbe {
                                 "display-message", "-p", "-t", paneID, PaneObservation.cursorFormat]
         guard let result = try? await runner.run(tmux, arguments), result.exitCode == 0 else { return nil }
         return PaneObservation(captured: result.stdout)
+    }
+}
+
+/// One delivery's submit decision: the caller's cancellation and the Enter race for it under one lock.
+final class DeliveryAbandonment: Sendable {
+    private enum State { case pending, abandoned, committed }
+    private let state = Mutex(State.pending)
+    /// Abandons a delivery that has not committed; a committed one is unaffected.
+    func abandon() { state.withLock { if $0 == .pending { $0 = .abandoned } } }
+    func check() throws { if state.withLock({ $0 == .abandoned }) { throw CancellationError() } }
+    /// True exactly once, for a delivery not yet abandoned; from then on abandonment cannot stop the Enter.
+    func commit() -> Bool {
+        state.withLock {
+            guard $0 == .pending else { return false }
+            $0 = .committed
+            return true
+        }
     }
 }

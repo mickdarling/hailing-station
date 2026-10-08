@@ -17,21 +17,24 @@ public struct TmuxSubmitTiming: Sendable, Equatable {
     public var settleLimit: Duration
     /// The longest wait after an Enter for the text to leave the cursor, and for a pending pane to hold still.
     public var confirmLimit: Duration
+    /// The longest wait before a paste for text already pending at the cursor to leave it.
+    public var clearLimit: Duration
 
     public init(
-        settleFloor: Duration, pollInterval: Duration, quiet: Duration, settleLimit: Duration, confirmLimit: Duration
+        settleFloor: Duration, pollInterval: Duration, quiet: Duration, settleLimit: Duration, confirmLimit: Duration,
+        clearLimit: Duration = .seconds(3)
     ) {
         (self.settleFloor, self.pollInterval, self.quiet) = (settleFloor, pollInterval, quiet)
-        (self.settleLimit, self.confirmLimit) = (settleLimit, confirmLimit)
+        (self.settleLimit, self.confirmLimit, self.clearLimit) = (settleLimit, confirmLimit, clearLimit)
     }
 
     public static let standard = TmuxSubmitTiming(
         settleFloor: .milliseconds(50), pollInterval: .milliseconds(50), quiet: .milliseconds(150),
-        settleLimit: .seconds(5), confirmLimit: .seconds(2)
+        settleLimit: .seconds(4), confirmLimit: .seconds(2), clearLimit: .seconds(3)
     )
 }
 
-/// What one submit observed (#83, #304). Logged without pane contents.
+/// What one submit observed (#83, #304), logged without pane contents.
 public enum TmuxSubmitOutcome: String, Sendable, Equatable {
     /// The text was seen at the cursor, and after the first Enter it no longer was.
     case confirmed
@@ -43,7 +46,6 @@ public enum TmuxSubmitOutcome: String, Sendable, Equatable {
     case unsettled
     /// Still at the cursor after the retry, or the retry was refused; the delivery fails and taints the pane.
     case failed
-
     func record(target: String, observer: (@Sendable (TmuxSubmitOutcome) -> Void)?) {
         submitLogger.notice("tmux submit \(self.rawValue, privacy: .public) for \(target, privacy: .private)")
         observer?(self)
@@ -53,7 +55,6 @@ public enum TmuxSubmitOutcome: String, Sendable, Equatable {
 /// The waits of the submit, apart from the actor. An unreadable pane makes a submit unverifiable, never failed.
 enum TmuxSubmitProbe {
     typealias Observe = @Sendable () async -> PaneObservation?
-
     enum Acceptance: Equatable { case accepted(PaneObservation), blank, unreadable, timedOut }
 
     /// After the floor, waits until the pane differs from `baseline` and shows the text (or a placeholder) at the
@@ -81,16 +82,15 @@ enum TmuxSubmitProbe {
         }
     }
 
-    /// What the pane showed after an Enter. `pending(alive:)`: whether the pane changed at all while the text stayed
-    /// at the cursor; an unchanged pane may be a frozen target with the Enter still queued (a second Enter would
-    /// join it in one read, and both would become newlines).
+    /// What the pane showed after an Enter. `pending(alive:)`: whether the pane changed while the text stayed at the
+    /// cursor; an unchanged pane may be frozen with the Enter queued (a second Enter would join it as a newline).
     enum Reaction: Equatable { case submitted, pending(alive: Bool), ambiguous, unreadable }
 
     /// Waits up to the confirm limit for the text to leave the cursor, seen on two looks in a row. A cursor that
     /// moved to column 0 right after the text counts only when the cursor was past column 0 before the Enter (a
     /// terminal ended the line); otherwise it is `ambiguous`, as is text whose columns cannot be counted.
     static func reaction(
-        _ timing: TmuxSubmitTiming, tail: PayloadTail, before: PaneObservation?, wasHolding: Bool, observe: Observe
+        _ timing: TmuxSubmitTiming, tail: PayloadTail?, before: PaneObservation?, wasHolding: Bool, observe: Observe
     ) async -> Reaction {
         let deadline = ContinuousClock.now.advanced(by: timing.confirmLimit)
         var previous = before, alive = false, released = 0, uncertain = false
