@@ -8,6 +8,11 @@ import Testing
         settleFloor: .milliseconds(1), pollInterval: .milliseconds(2), quiet: .milliseconds(6),
         settleLimit: .seconds(5), confirmLimit: .milliseconds(60), clearLimit: .milliseconds(120)
     )
+    /// For tests where the pending text clears by look count: only the script, never a loaded runner, ends the wait.
+    private static let patient = TmuxSubmitTiming(
+        settleFloor: .milliseconds(1), pollInterval: .milliseconds(2), quiet: .milliseconds(6),
+        settleLimit: .seconds(5), confirmLimit: .milliseconds(60), clearLimit: .seconds(10)
+    )
 
     @Test func theSameTextAlreadyAtTheCursorIsRefusedBeforeAnyPasteAndNotTainted() async throws {
         let pane = ScriptedPane(baseline: ScriptedPane.typedScreen)
@@ -40,7 +45,7 @@ import Testing
         // #304: a frozen target still holds the last text at its cursor and submits it a moment later; the next
         // delivery (queued behind it, as back-to-back ambient dispatches are) waits instead of being dropped.
         let pane = ScriptedPane()
-        let harness = SubmitHarness(pane, timing: Self.fast)
+        let harness = SubmitHarness(pane, timing: Self.patient)
         try await harness.adapter.deliver("synthetic input", to: "codex", binding: nil)
         let stale = Array(repeating: ScriptedPane.absorbedScreen, count: 4)
         // Held for four looks, then gone on two in a row; the next look is the new baseline.
@@ -80,7 +85,12 @@ import Testing
             }
             return CommandResult(exitCode: 0, stdout: "")
         }
-        let adapter = TmuxAdapter(runner: runner, pollInterval: nil, submitTiming: Self.fast)
+        // The wait ends only when the scripted text clears (by look count); the generous clear limit keeps a
+        // loaded runner from reaching it first. The short settle limit only bounds the follow-up delivery below.
+        let adapter = TmuxAdapter(runner: runner, pollInterval: nil, submitTiming: TmuxSubmitTiming(
+            settleFloor: .milliseconds(1), pollInterval: .milliseconds(2), quiet: .milliseconds(6),
+            settleLimit: .milliseconds(50), confirmLimit: .milliseconds(60), clearLimit: .seconds(10)
+        ))
 
         await #expect(throws: AdapterError.rebound("codex")) {
             try await adapter.deliver("synthetic input", to: "codex", binding: "$2@1758230001/%2:502")
@@ -88,10 +98,10 @@ import Testing
         let calls = await runner.calls
         #expect(!calls.contains { $0.contains("paste-buffer") || $0.contains("send-keys") })
         #expect(calls.last?.contains("delete-buffer") == true, "the filled buffer is deleted")
-        // Nothing was pasted, so the original pane is not tainted.
-        await #expect(throws: AdapterError.rebound("codex")) {
-            try await adapter.deliver("later input", to: "codex", binding: "$2@1758230001/%2:502")
-        }
+        // Nothing was pasted, so the pane (same id, now bound to the respawned process) is not tainted: a delivery
+        // under the respawned binding goes through to the paste and the Enter.
+        try await adapter.deliver("later input", to: "codex", binding: "$2@1758230001/%2:999")
+        #expect(await runner.delivered == ["later input", "Enter"])
     }
 
     @Test func aDeliveryCancelledWhileWaitingForPendingTextLeavesPromptlyAsAbandoned() async throws {
@@ -99,7 +109,8 @@ import Testing
         let pane = ScriptedPane(baseline: ScriptedPane.typedScreen, stale: .max)
         let harness = SubmitHarness(pane, timing: TmuxSubmitTiming(
             settleFloor: .milliseconds(1), pollInterval: .milliseconds(2), quiet: .milliseconds(6),
-            settleLimit: .seconds(5), confirmLimit: .milliseconds(60), clearLimit: .seconds(10)
+            // The script never draws the follow-up's text, so its settle wait is kept short.
+            settleLimit: .milliseconds(200), confirmLimit: .milliseconds(60), clearLimit: .seconds(10)
         ))
         let delivery = Task { try await harness.adapter.deliver("synthetic input", to: "codex", binding: nil) }
         let deadline = ContinuousClock.now.advanced(by: .seconds(5))
