@@ -104,6 +104,19 @@ public final class AmbientReplyEchoGuard: Sendable {
                                  routing: CaptureReplyRouting(engine: engine, route: route, echoGuard: self))
     }
 
+    /// Ambient capture for `mode` (#343). Voice processing echo-cancels replies through the capture engine. Plain
+    /// capture, for headphone routes, leaves replies on the player's own engine, so the guard silences the mic
+    /// while one is audible. `plainCapture` is the engine capture used for plain mode.
+    @MainActor
+    public func ambientCapture(
+        mode: AmbientCaptureMode, plainCapture: @MainActor () -> any AudioCapturing = { AVAudioEngineCapture() }
+    ) throws -> any AudioCapturing {
+        switch mode {
+        case .voiceProcessing: try echoCancelledCapture()
+        case .plain: masking(plainCapture())
+        }
+    }
+
     /// Voice-processing capture that does not duck reply output, which otherwise left replies inaudible (#227).
     @MainActor
     public static func voiceProcessingCapture(engine: AVAudioEngine = AVAudioEngine()) throws -> AVAudioEngineCapture {

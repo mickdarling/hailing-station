@@ -161,6 +161,8 @@ extension RootView {
 /// changes and when the card goes away, and never restarts by itself. Replies play while it is on (#227) through
 /// the capture's echo canceller, so the mic stays open and Mick can talk over them (#269). "Mask mic while
 /// speaking" restores the #227 behaviour (silence to the host while a reply is audible) for A/B comparison.
+/// With headphones as the output when listening starts, capture runs without voice processing so they keep their
+/// route, and the mic is silenced while replies play (#343).
 struct AmbientListeningCard: View {
     let binding: AmbientAudioBinding
     let hostName: String
@@ -185,7 +187,8 @@ struct AmbientListeningCard: View {
             requestPermission: requestMicrophonePermission,
             makeStreamer: { send in
                 try await audioSession.activate()
-                let capture = try echoGuard.echoCancelledCapture()
+                // Headphones keep their A2DP route only without voice processing (#343).
+                let capture = try echoGuard.ambientCapture(mode: AmbientCaptureModeResolver.currentMode())
                 return AmbientAudioStreamer(capture: capture, send: send)
             },
             releaseSession: { await audioSession.deactivate() },
