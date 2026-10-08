@@ -50,10 +50,8 @@ public actor TmuxAdapter: Adapter {
         self.submitObserver = submitObserver
     }
 
-    /// A fresh polling stream per access; nothing runs until a caller asks, and the poll task ends when the
-    /// consumer stops iterating. Buffering is lossless: a consumer that lags sees every event in order, and
-    /// the only way the buffer grows without bound is a holder that never iterates, which is a daemon bug
-    /// rather than a condition to mask by dropping events.
+    /// A fresh polling stream per access, idle until iterated and ended when the consumer stops. Buffering is
+    /// lossless; only a holder that never iterates grows it without bound, a daemon bug not masked by dropping.
     public nonisolated var events: AsyncStream<TargetEvent> {
         Self.pollingStream(
             runner: runner, tmux: tmuxPath, baseArguments: Self.baseArguments(socket: socket), interval: pollInterval
@@ -77,9 +75,8 @@ public actor TmuxAdapter: Adapter {
             try await self.performDelivery(text, to: target, binding: binding, abandoned: abandoned)
         }
         lastDelivery = Task { _ = await delivery.result }
-        // The caller's cancellation (a timed-out socket submission, #200) abandons a delivery that has not yet
-        // committed to its Enter: no further chunk and no Enter. One that already committed completes, and its
-        // outcome is returned to a caller that may no longer be listening.
+        // The caller's cancellation (a timed-out socket submission, #200) abandons a delivery not yet committed to
+        // its Enter (no paste or Enter follows); a committed one completes for a caller that may have left.
         try await withTaskCancellationHandler { try await delivery.value } onCancel: { abandoned.abandon() }
     }
 
@@ -100,27 +97,11 @@ public actor TmuxAdapter: Adapter {
             )
         }
         let tail = PayloadTail(text)
-        // The screen before any text, which the Enter waits for a change from. Text pending at the cursor (this
-        // tail, the last one's, or a placeholder; nil checks only placeholders) is never appended to: a frozen
-        // target may still submit it, so it gets up to `clearLimit` to leave (two clear looks in a row, #304).
-        // Still there, the delivery is refused untainted, since nothing was pasted.
-        var baseline = await observePane(session.paneID)
         let pending = [tail, lastTails[session.paneID]]
-        if let seen = baseline, let stale = pending.first(where: { seen.input($0) == .holding }) {
-            var wait = submitTiming
-            wait.confirmLimit = submitTiming.clearLimit
-            let observe: TmuxSubmitProbe.Observe = { await self.observePane(session.paneID) }
-            let left = await TmuxSubmitProbe.reaction(
-                wait, tail: stale, before: seen, wasHolding: true, observe: observe
-            )
-            guard left == .submitted else {
-                throw AdapterError.deliveryFailed("unsubmitted text is already in the input of pane \(target)")
-            }
-            baseline = await observePane(session.paneID)
-        }
+        let baseline = try await clearedBaseline(session, target: target, pending: pending, abandoned: abandoned)
         var typed = false
         do {
-            try await paste(text, into: session.paneID, abandoned: abandoned) {
+            try await paste(text, into: session, target: target, abandoned: abandoned) {
                 typed = true
                 lastTails[session.paneID] = tail
             }
@@ -130,16 +111,38 @@ public actor TmuxAdapter: Adapter {
             )
             // The Enter is what runs the text; the identity is checked once more right before it.
             _ = try await verified(target, binding: session.binding)
-            // The commit point, one atomic decision: either nothing is submitted (pasted text stays unsubmitted
-            // in the input; no rollback) or the Enter is sent whatever the caller does afterwards.
+            // The commit point: nothing is submitted (pasted text stays, no rollback), or the Enter is sent regardless.
             guard abandoned.commit() else { throw CancellationError() }
             try await submit(session, target: target, tail: tail, acceptance: acceptance)
         } catch {
-            // Abandonment before the paste leaves the pane clean; anything pasted and not known to be submitted
-            // (a failed Enter included) taints it.
+            // Abandonment before the paste leaves the pane clean; pasted and not known submitted taints it.
             if typed { tainted.insert(session.paneID) }
             throw error
         }
+    }
+
+    /// The screen before any text, which the Enter waits for a change from (#304). Text pending at the cursor (this
+    /// tail, the last one's, or a placeholder; nil checks placeholders only) is never appended to: a frozen target may
+    /// still submit it, so it gets up to `clearLimit` to leave (two clear looks in a row). Still there, the delivery
+    /// is refused untainted (nothing was pasted); an abandoned delivery stops looking and leaves as cancelled.
+    private func clearedBaseline(
+        _ session: Session, target: String, pending: [PayloadTail?], abandoned: DeliveryAbandonment
+    ) async throws -> PaneObservation? {
+        let baseline = await observePane(session.paneID)
+        guard let seen = baseline, let stale = pending.first(where: { seen.input($0) == .holding }) else {
+            return baseline
+        }
+        var wait = submitTiming
+        wait.confirmLimit = submitTiming.clearLimit
+        let observe: TmuxSubmitProbe.Observe = {
+            (try? abandoned.check()) == nil ? nil : await self.observePane(session.paneID)
+        }
+        let left = await TmuxSubmitProbe.reaction(wait, tail: stale, before: seen, wasHolding: true, observe: observe)
+        try abandoned.check()
+        guard left == .submitted else {
+            throw AdapterError.deliveryFailed("unsubmitted text is already in the input of pane \(target)")
+        }
+        return await observePane(session.paneID)
     }
 
     /// Submits and records what was observed, a failure included.

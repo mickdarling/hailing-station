@@ -17,10 +17,11 @@ import Testing
                        "display-message", "-p", "-t", "%1", PaneObservation.cursorFormat]
         #expect(calls == [
             ["tmux", "list-sessions", "-F", TmuxAdapter.listFormat],
-            // A baseline before the text (#83, #304), the text into a buffer by argv and pasted in one piece,
-            // then a look at the pane (unreadable here, so nothing to wait for) and the identity before the Enter.
+            // A baseline before the text (#83, #304), the text into a buffer by argv, the identity, the paste in
+            // one piece, then a look at the pane (unreadable here, so nothing to wait for) and the identity again.
             observe,
             ["tmux", "set-buffer", "-b", buffer, "--", text],
+            ["tmux", "list-sessions", "-F", TmuxAdapter.listFormat],
             ["tmux", "paste-buffer", "-p", "-d", "-b", buffer, "-t", "%1"],
             observe,
             ["tmux", "list-sessions", "-F", TmuxAdapter.listFormat],
@@ -115,15 +116,16 @@ import Testing
     }
 
     @Test func paneSwitchBetweenPasteAndEnterIsRefused() async throws {
-        // The first listing verifies the target; the second, taken right before Enter, sees the active pane
-        // of codex replaced by another program (new pane id and pid). The paste went out, the Enter must not.
+        // The first two listings verify the target (before the fill and before the paste); the third, taken right
+        // before Enter, sees the active pane of codex replaced by another program (new pane id and pid). The paste
+        // went out, the Enter must not.
         let listings = SessionListing("")
         let calls = SessionListing("0")
         let runner = FakeCommandRunner { arguments in
             guard arguments.contains("list-sessions") else { return CommandResult(exitCode: 0, stdout: "") }
             let count = Int(calls.get()) ?? 0
             calls.set(String(count + 1))
-            listings.set(count == 0 ? twoSessions : "$2|1758230001|%8|808|codex\n")
+            listings.set(count < 2 ? twoSessions : "$2|1758230001|%8|808|codex\n")
             return CommandResult(exitCode: 0, stdout: listings.get())
         }
         let adapter = TmuxAdapter(runner: runner, chunkSize: 2, pollInterval: nil)

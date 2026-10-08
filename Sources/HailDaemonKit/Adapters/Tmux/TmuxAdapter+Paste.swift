@@ -139,7 +139,9 @@ extension TmuxAdapter {
     /// argv grows with the text and nothing reaches the pane yet) and pastes it in one piece with `-p`: bracketed
     /// when the target asked for bracketed paste, plain otherwise. `-d` deletes the buffer once pasted. A failure
     /// or abandonment while filling deletes the buffer; `pasting` runs just before the paste is attempted.
-    func paste(_ text: String, into paneID: String, abandoned: DeliveryAbandonment, pasting: () -> Void) async throws {
+    func paste(
+        _ text: String, into session: Session, target: String, abandoned: DeliveryAbandonment, pasting: () -> Void
+    ) async throws {
         let buffer = "hail-\(UUID().uuidString)"
         do {
             for (index, chunk) in Self.chunks(text, size: chunkSize).enumerated() {
@@ -149,8 +151,11 @@ extension TmuxAdapter {
                 try await tmux(fill, failure: AdapterError.deliveryFailed)
             }
             try abandoned.check()
+            // The identity once more right before the paste: the pre-check may have waited for pending text, and a
+            // pane respawned or moved meanwhile must not receive it (threat model B3).
+            _ = try await verified(target, binding: session.binding)
             pasting()
-            let paste = ["paste-buffer", "-p", "-d", "-b", buffer, "-t", paneID]
+            let paste = ["paste-buffer", "-p", "-d", "-b", buffer, "-t", session.paneID]
             try await tmux(paste, failure: AdapterError.deliveryFailed)
         } catch {
             _ = try? await runner.run(tmuxPath, Self.baseArguments(socket: socket) + ["delete-buffer", "-b", buffer])
