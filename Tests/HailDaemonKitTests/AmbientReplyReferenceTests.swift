@@ -82,14 +82,13 @@ import Testing
         #expect(!(await session.acceptsHostReply(recipientText(referenceDescriptor(nil)))))
     }
 
-    @Test func withoutAReferenceLegacyInputStillOwnsNothing() async throws {
+    @Test func withoutAReferenceLocalDispatchStillOwnsNothing() async throws {
         let rig = try await LegacyReferenceRig.make()
         let session = await rig.session()
-        // The local socket's dispatch (no bound reference) and a phone's text frame stay request-less.
+        // The local socket's dispatch (no bound reference) stays request-less and its text is unchanged. A phone's
+        // text frame now mints its own tap-to-talk reference (TapToTalkReplyReferenceTests).
         #expect(try await session.dispatch(LegacyReferenceRig.request(connection: UUID())) == nil)
-        let spoken = sessionFrame(target: LegacyReferenceRig.target, payload: .text(TextPayload(text: "spoken")))
-        #expect(await session.receive(spoken).frames.isEmpty)
-        #expect(await rig.adapter.deliveries.count == 2)
+        #expect(await rig.adapter.deliveries.map(\.text) == [LegacyReferenceRig.prompt])
         #expect(await session.replyRequests.isEmpty)
     }
 

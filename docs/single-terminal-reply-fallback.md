@@ -18,6 +18,8 @@ Since [#230](https://github.com/mickdarling/hailing-station/issues/230), ambient
 target no longer depend on this fallback. Their reply block names a host-minted reply reference (`haild reply
 <target> --request <reference> --say …`), which reaches only the device that streamed the audio, even when
 several devices select the target ([request-origin-routing.md](request-origin-routing.md#ambient-reply-references-on-plain-tmux-targets-230)).
+Tap-to-talk text to a plain `tmux:` target now carries a reference of its own in a reply footer
+([request-origin-routing.md](request-origin-routing.md#tap-to-talk-reply-references-230-365)).
 The fallback below is unchanged and still serves request-less replies only. With two or more selecting
 connections, it still refuses them `notUniqueRecipient`.
 

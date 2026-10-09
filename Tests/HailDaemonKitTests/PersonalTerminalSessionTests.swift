@@ -23,7 +23,10 @@ import Testing
         #expect((await session.receive(sessionFrame(
             target: "tmux:a", payload: .text(TextPayload(text: "echo hello", isFinal: true))
         ))).frames.isEmpty)
-        #expect(await adapter.deliveries.map(\.text) == ["echo hello"])
+        // Tap-to-talk text to a plain tmux target carries the host's reply footer naming its own record (#230).
+        let reference = try #require(await session.replyRequests.keys.first)
+        #expect(await adapter.deliveries.map(\.text)
+            == ["echo hello" + HostSession.tapToTalkReplyFooter(target: "tmux:a", request: reference)])
 
         let partial = await session.receive(sessionFrame(
             target: "tmux:a", payload: .text(TextPayload(text: "echo", isFinal: false))

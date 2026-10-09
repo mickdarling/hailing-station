@@ -7,7 +7,7 @@ import HailProtocol
 /// Both ingress paths share one lease, permit, handoff and commit; they differ only in how they report it.
 enum HostDeliveryOutcome: Sendable, Equatable {
     /// Handed off; `request` is this connection's committed reply owner, or nil for legacy generic input that
-    /// carried no host-minted ambient reference (#230).
+    /// carried no host-minted ambient or tap-to-talk reference (#230).
     case delivered(request: UUID?)
     case confirmationRequired
     /// The connection selected another target while this input was suspended; nothing was handed off.
@@ -17,11 +17,14 @@ enum HostDeliveryOutcome: Sendable, Equatable {
     case refused(ErrorCode, String)
 }
 
-/// One input's reply owner. A contextual adapter receives `context` with the text. A host-minted ambient reference on
-/// a legacy adapter (#230) is recorded host-side only: the text goes the legacy way, pinned to the recorded binding.
+/// One input's reply owner. A contextual adapter receives `context` with the text. A host-minted ambient or tap-to-talk
+/// reference on a legacy adapter (#230) is recorded host-side only: the text goes the legacy way, pinned to the
+/// recorded binding. `text`, when set, replaces the input's text for the handoff: the tap-to-talk text with the
+/// host's reply footer naming the reference (`tapToTalkOwnership`). Only the host sets it.
 struct HostReplyOwnership {
     let context: ProviderTurnContext
     let contextual: Bool
+    var text: String?
 }
 
 extension HostSession {
@@ -60,8 +63,9 @@ extension HostSession {
         return failure(code, message, close: false, version: version)
     }
 
+    /// The phone's own text frame: the tap-to-talk ingress, the only caller that asks for a tap-to-talk reference.
     private func deliver(_ input: consuming AuthorizedInput, version: Int) async -> HostSessionResult {
-        switch await deliver(input) {
+        switch await deliver(input, tapToTalk: true) {
         case .delivered:
             return HostSessionResult(frames: [])
         case .confirmationRequired:
@@ -78,14 +82,15 @@ extension HostSession {
     /// Lease, permit, capacity, lifetime and generation checks, then `HailHost.send` with its sanitizer,
     /// shape and policy gates; only a successful complete handoff commits the request record. The input
     /// type is the authorization proof: nothing reaches the host that the session's authorizer did not
-    /// allow, and the proof is consumed here, so one decision admits exactly one handoff.
-    func deliver(_ input: consuming AuthorizedInput) async -> HostDeliveryOutcome {
+    /// allow, and the proof is consumed here, so one decision admits exactly one handoff. `tapToTalk` is set only by
+    /// the phone text-frame route above; local dispatch (and so ambient and `--reply-to`) never sets it.
+    func deliver(_ input: consuming AuthorizedInput, tapToTalk: Bool = false) async -> HostDeliveryOutcome {
         guard input.target == selectedTarget else {
             return .refused(.notAllowed, "select the destination before speaking")
         }
         do {
             let generation = selectionGeneration
-            let owner = try await replyOwnership(for: input, generation: generation)
+            let owner = try await replyOwnership(for: input, generation: generation, tapToTalk: tapToTalk)
             // Legacy generic input has no retained record, so the captured selection is checked here and
             // again after the handoff; a caller outside the peer's serialized receive loop can race `select`.
             guard selects(input.target, generation: generation) else {
@@ -137,9 +142,10 @@ extension HostSession {
             if let owner, owner.contextual {
                 return try await host.send(input.text, context: owner.context, from: input.device)
             }
-            // Legacy generic input. An unleased ambient record (#230) pins the exact binding it was minted for.
+            // Legacy generic input. An unleased ambient or tap-to-talk record (#230) pins the exact binding it was
+            // minted for; a tap-to-talk record also carries the text with the host's footer naming it.
             return try await host.send(
-                input.text, to: input.target, from: input.device,
+                owner?.text ?? input.text, to: input.target, from: input.device,
                 expectedBinding: owner?.context.binding.sessionID ?? input.expectedBinding
             )
         } catch {
@@ -150,7 +156,7 @@ extension HostSession {
 
     /// Capability preflight does not grant execution. HailHost still checks shape, exact binding and policy.
     private func replyOwnership(
-        for input: borrowing AuthorizedInput, generation: UUID
+        for input: borrowing AuthorizedInput, generation: UUID, tapToTalk: Bool
     ) async throws -> HostReplyOwnership? {
         let target = input.target
         let listing = try await host.registry.listing()
@@ -169,8 +175,12 @@ extension HostSession {
             contextual = true
         } catch RegistryError.contextualDeliveryUnsupported {
             // Legacy generic input cannot establish a private reply recipient on its own. Only a reference the host
-            // minted for this ambient handoff and wrote into its reply block (#230) is recorded, host-side, unleased.
-            guard let reference = Self.ambientReplyReference else { return nil }
+            // minted for this ambient handoff and wrote into its reply block (#230), or one it mints now for the
+            // phone's own tap-to-talk text, is recorded, host-side, unleased.
+            guard let reference = Self.ambientReplyReference else {
+                guard tapToTalk else { return nil }
+                return await tapToTalkOwnership(for: input, context: context, generation: generation)
+            }
             context = ProviderTurnContext(id: reference, utteranceID: context.utteranceID,
                                           connectionID: context.connectionID, binding: context.binding)
             contextual = false
@@ -186,7 +196,7 @@ extension HostSession {
     }
 
     /// The record is minted only while the captured selection still holds, under capacity, never over another.
-    private func recordOwner(
+    func recordOwner(
         _ context: ProviderTurnContext, generation: UUID, permit: ReplyPublicationPermit,
         lease: ProviderReplyBindingLease?
     ) throws {

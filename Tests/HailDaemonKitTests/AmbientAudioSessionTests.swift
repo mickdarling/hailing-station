@@ -72,11 +72,11 @@ import Testing
         #expect(code == .malformed)
         #expect(bad.disposition == .keepOpen)
         #expect(sink.endings == [.malformed])
-        // The connection still delivers text after an audio violation.
+        // The connection still delivers text after an audio violation (with its tap-to-talk reply footer, #230).
         #expect((await session.receive(sessionFrame(
             target: "tmux:a", payload: .text(TextPayload(text: "echo hello", isFinal: true))
         ))).frames.isEmpty)
-        #expect(await adapter.deliveries.map(\.text) == ["echo hello"])
+        #expect(await adapter.deliveries.map(\.text).map { $0.hasPrefix("echo hello Reply: ") } == [true])
     }
 
     @Test func audioForAnotherTargetOrSelectionIsRefused() async throws {

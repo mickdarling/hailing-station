@@ -92,7 +92,7 @@ The reference is a routing handle, not an origin claim:
   size of the prompt actually dispatched. The reference is then bound only for that one dispatch
   (`HostSession.ambientReplyReference`, a task-local). The local socket's
   `dispatch` request kind, `haild rightyo --reply-to`, phone text frames and every other ingress path cannot set
-  it, and they are unchanged.
+  it. Phone text frames get a separate reference that the host mints for them (see the tap-to-talk section below).
 - The connection's own `HostSession` records it in `replyRequests`. The record goes through the same ingress path
   as any request: authorizer, selection generation, exact listed binding, host reply permit, 64-request capacity
   and 120-second lifetime. It is committed only after a successful complete handoff. A reference already held is
@@ -116,20 +116,64 @@ that delivery. A programmatic bridge that keeps the identity out of generated te
 design and is unchanged. Ordinary tmux remains a legacy adapter, and no contextual capability is implied.
 
 **Unchanged.** A reply without a reference behaves exactly as before: owner-only correlation first, then the
-opt-in single-terminal fallback, which still refuses zero or several selecting connections. Tap-to-talk text
-frames to plain tmux still create no record. The sourceHostMismatch host-identity item in #230 is separate work.
+opt-in single-terminal fallback, which still refuses zero or several selecting connections. Tap-to-talk text now
+gets a reference of its own (next section). The sourceHostMismatch host-identity item in #230 is separate work.
+
+### Tap-to-talk reply references (#230, #365)
+
+**Before.** A phone's tap-to-talk text frame reached a plain `tmux:` pane as the bare transcript: no reply block,
+no footer and no reply record. The session only replied because something outside the prompt told it to run the
+request-less `haild reply <target> --say '…'`. That reply then depended on the single-terminal fallback, so with
+the iPhone and the iPad both selecting the pane it was refused `notUniqueRecipient`.
+
+**Now.** For a tap-to-talk text frame from connection C to a plain legacy target (an adapter without contextual
+delivery), the session mints a fresh UUID in the daemon (`HostSession.tapToTalkOwnership`). It records it, unleased,
+through the same `recordOwner` path as an ambient reference: bound to C, C's selection generation, the exact listed
+binding, the host reply permit, the 64-request capacity and the 120-second lifetime. It is committed only after a
+complete handoff. The text is typed with a reply footer appended on the same line:
+
+```
+ Reply: answer briefly; it is spoken aloud. If no reply bridge publishes this session's output, run haild reply tmux:demo --request <lowercase-uuid> --say '<spoken answer>' (single-quote the answer and keep it free of single quotes; the request reference sends it to the device that asked).
+```
+
+That is the ambient referenced block without its acknowledgement sentence, since the host plays no acknowledgement
+for tap-to-talk. It starts with the same ` Reply: answer briefly; ` prefix and is always the last thing typed, so a
+session that cuts at the last occurrence finds the host's footer.
+
+- **Host-minted only.** Only the phone text-frame route asks for a reference (`deliver(_:tapToTalk:)`). The local
+  socket's `dispatch` kind, `haild rightyo --reply-to` and ambient dispatch never do. Nothing in the frame (its id,
+  target or text) chooses the UUID. A user who types `--request <uuid>`, or a whole fake reply block, has only
+  typed text. The host's footer still comes last, and routing trusts only the host-side record, so a typed reference
+  nobody owns reaches nobody (`noRecipient`).
+- **Plain legacy targets only.** A contextual adapter (`tmux-reply:`, the Codex app-server adapter) keeps its own
+  out-of-band context id and gets the text unchanged, with no footer.
+- **The footer never changes the host's decision about the text.** It is added only when the target id passes the
+  reply-block allowlist (`[A-Za-z0-9][A-Za-z0-9._:-]{0,95}`). The text with the footer must also pass the host's own
+  sanitizer, so the phone's 2,000-character and 8,192-byte caps apply to the whole typed line. And the footer must
+  not trigger any guard rule, in the policy in force, that the text alone does not. If any check fails, or no record
+  can be made (no permit, the table is full, or the selection moved), the text is typed exactly as before, with no
+  footer and no record. A long dictation near the cap, for example, goes through unreferenced instead of being
+  refused.
+- **Refusals are the ambient ones.** Expiry, reselection (including A → B → A), disconnect and a rebind all
+  invalidate the record. A rebind is caught by the listing re-check before enqueue (`publicationFailed`, then
+  `noRecipient`). A confirmation-tier target still answers `confirmationRequired`, and the record is dropped.
+- **Capacity.** Each referenced utterance uses one of the connection's 64 record slots for up to 120 seconds. When
+  the table is full, the utterance degrades to the old unreferenced delivery rather than being refused.
+- **Audit.** Tap-to-talk text frames write no audit record, before or after this change, so no byte count changes.
+  The ambient `ambient-dispatch` record is unchanged.
 
 **Optional follow-ups, not in this change:**
 
 - When the origin truly cannot be determined, prefer the device that most recently sent input over refusing
   (#230's last-resort rule). This is not implemented: a legacy request-less reply with two selecting connections
   is still `notUniqueRecipient`.
-- References for tap-to-talk text and for `haild rightyo --reply-to` prompts.
+- References for `haild rightyo --reply-to` prompts. Tap-to-talk now has them (above).
 - The app's "disconnect from this Mac" control, and deselecting the reply target when ambient listening is
   turned off.
 
 Verification is synthetic only (`AmbientReplyReferenceTests`, `AmbientReplyReferenceRoutingTests`,
-`AmbientReplyReferenceScopeTests`, `AmbientWiringReplyReferenceTests`). It is not device hearing, and nothing here changes the running daemon or
+`AmbientReplyReferenceScopeTests`, `AmbientWiringReplyReferenceTests`, `TapToTalkReplyReferenceTests`,
+`TapToTalkReplyReferenceRoutingTests`). It is not device hearing, and nothing here changes the running daemon or
 installed builds until deployed.
 
 ## Explicit programmatic tmux bridge input (prerequisite)

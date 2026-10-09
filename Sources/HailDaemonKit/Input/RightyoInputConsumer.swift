@@ -143,11 +143,7 @@ public actor RightyoInputConsumer {
     /// `confirmationRequired`; a daemon policy with custom guard patterns can still require confirmation, which
     /// the consumer refuses per request as before.
     public static func validateTarget(_ target: String) throws {
-        let alphanumeric = Set("ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789")
-        guard let first = target.first, alphanumeric.contains(first), target.count <= 96,
-              target.allSatisfy({ alphanumeric.contains($0) || "._:-".contains($0) }) else {
-            throw RightyoTargetError.unsafeIdentifier
-        }
+        guard HostSession.isReplySafeTarget(target) else { throw RightyoTargetError.unsafeIdentifier }
         let hits = DangerousPatternGuard.matches(in: [RightyoInputEvent.replyBlock(target: target)],
                                                  patterns: DangerousPatternGuard.defaults)
         guard hits.isEmpty else { throw RightyoTargetError.guarded(hits) }

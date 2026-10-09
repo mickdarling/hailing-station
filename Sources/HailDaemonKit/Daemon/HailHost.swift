@@ -35,7 +35,8 @@ public actor HailHost {
     /// binding and rate limit run exactly as on any other send.
     @TaskLocal static var localDispatchIngress = false
     public let registry: Registry
-    private let sanitizing: SanitizePolicy
+    /// The phone-frame sanitizing policy; read (never changed) by a tap-to-talk reply footer check (#230).
+    let sanitizing: SanitizePolicy
     private let dispatchSanitizing: SanitizePolicy
     private let store: any PolicyStore
     private let clock = ContinuousClock()

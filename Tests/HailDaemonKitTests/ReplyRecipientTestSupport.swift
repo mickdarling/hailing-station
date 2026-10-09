@@ -14,6 +14,8 @@ actor RecipientContextAdapter: ProviderContextDelivering, ProviderReplyBindingLe
     private var authorities: [String: ReplyPublicationAuthority] = [:]
     private(set) var contexts: [ProviderTurnContext] = []
     private(set) var legacy: [String] = []
+    /// The text each contextual delivery carried, in order.
+    private(set) var texts: [String] = []
     private var held = false
     private var failing = false
     private var entered = false
@@ -28,6 +30,7 @@ actor RecipientContextAdapter: ProviderContextDelivering, ProviderReplyBindingLe
             throw AdapterError.rebound(target)
         }
         contexts.append(context)
+        texts.append(text)
         if held {
             entered = true
             arrival?.resume()
