@@ -209,6 +209,10 @@ public enum Fixtures {
         Example(name: "control-stop-playback", frame: Frame(
             id: id(204), timestamp: 1_758_200_050_100, source: "host", payload: .control(.stopPlayback)
         )),
+        Example(name: "control-ambient-moved-here", frame: Frame(
+            id: id(205), timestamp: 1_758_200_050_200, source: "host",
+            payload: .control(.ambientMovedHere(from: "phone"))
+        )),
         Example(name: "control-diagnostic", frame: Frame(
             id: id(25), timestamp: 1_758_200_050_000, source: "terminal",
             payload: .control(.diagnostic(events: diagnosticEvents))

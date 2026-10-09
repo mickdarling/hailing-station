@@ -35,3 +35,21 @@ payload key, and it grants no authority. A device advertises `stop_playback` (`P
 older device refuses an unknown command as malformed. The host sends it when a RightyO `dismiss` has `playback`
 in its scope, and refuses the rest of every reply that was mid-stream on that connection whether or not the device
 advertised the command ([rightyo-input.md](rightyo-input.md)).
+
+## Ambient take-over (#366)
+
+The most recent device to start ambient listening on a host takes it over. There is no "ambient busy" refusal.
+The wire carries two things for this, and each names a device only by its class (`phone`, `pad` or `mac`,
+`AmbientTakeOver.deviceKinds`), never by its name:
+
+- `hello.deviceKind` (optional) is the device's own class. An older device leaves it out. A host keeps a value
+  only when it matches the vocabulary byte for byte; any other value decodes as absent and never fails the hello.
+- The previous device's next segment is refused with `not_allowed` and the message `ambient moved to <class>`,
+  or `ambient moved to another device` when the new device did not give a class. It is an ordinary
+  `ambient`-prefixed refusal, so an older device stops as it did before. A newer device shows it as a move, not as
+  an error (`AmbientTakeOver.moved(_:)`).
+- `{"command": "ambient_moved_here", "from": "<class>"}` tells the new device that its stream took over from a
+  device of that class. `from` is optional. The decoder and the schema refuse any other key and any value outside
+  the vocabulary. The command grants no authority. A device advertises `ambient_takeover`
+  (`AmbientTakeOver.capability`) in its `hello` when it can act on the command, and a host never sends the
+  command to a device that did not.

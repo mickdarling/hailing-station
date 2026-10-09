@@ -28,11 +28,15 @@ public struct HelloInfo: Codable, Sendable, Equatable {
     public var versions: [Int]
     public var capabilities: [String]
     public var deviceName: String
+    /// The device's class only (#366): `phone`, `pad` or `mac` from `AmbientTakeOver.deviceKinds`, never its
+    /// name. Optional, so an older peer's hello is unchanged; a value outside the vocabulary decodes as nil.
+    public var deviceKind: String?
 
-    public init(versions: [Int], capabilities: [String], deviceName: String) {
+    public init(versions: [Int], capabilities: [String], deviceName: String, deviceKind: String? = nil) {
         self.versions = versions
         self.capabilities = capabilities
         self.deviceName = deviceName
+        self.deviceKind = AmbientTakeOver.deviceKind(deviceKind)
     }
 
     public init(from decoder: any Decoder) throws {
@@ -40,13 +44,14 @@ public struct HelloInfo: Codable, Sendable, Equatable {
         versions = try container.decode([Int].self, forKey: .versions)
         capabilities = try container.decode([String].self, forKey: .capabilities)
         deviceName = try container.decode(String.self, forKey: .deviceName)
+        deviceKind = AmbientTakeOver.deviceKind(try? container.decodeIfPresent(String.self, forKey: .deviceKind))
         guard !versions.isEmpty else {
             let context = DecodingError.Context(codingPath: decoder.codingPath, debugDescription: "no versions")
             throw DecodingError.dataCorrupted(context)
         }
     }
 
-    private enum CodingKeys: String, CodingKey { case versions, capabilities, deviceName }
+    private enum CodingKeys: String, CodingKey { case versions, capabilities, deviceName, deviceKind }
 }
 
 /// Closed set of error codes. Unknown strings decode to `.unknown` so a newer peer's code is kept, not lost.
@@ -96,16 +101,20 @@ public enum ControlPayload: Sendable, Equatable {
     /// Host to device (#309): stop reply playback now and drop queued reply audio, sent only to a device that
     /// advertises `PlaybackStop.capability`. It carries nothing else and grants no authority.
     case stopPlayback
+    /// Host to device (#366): this connection's new ambient stream took listening over from another device of
+    /// kind `from` (an `AmbientTakeOver.deviceKinds` token, or nil when that device did not say). Sent only to a
+    /// device that advertises `AmbientTakeOver.capability`. It carries nothing else and grants no authority.
+    case ambientMovedHere(from: String?)
 }
 
 extension ControlPayload: Codable {
     private enum CodingKeys: String, CodingKey {
-        case command, hello, targets, targetID = "target", nonce, code, message, events
+        case command, hello, targets, targetID = "target", nonce, code, message, events, from
     }
 
     private enum Command: String, Codable {
         case hello, listTargets = "list_targets", targets, select, subscribe, unsubscribe, escape, ping, pong, error
-        case diagnostic, stopPlayback = "stop_playback"
+        case diagnostic, stopPlayback = "stop_playback", ambientMovedHere = "ambient_moved_here"
     }
 
     // A closed wire enum is clearest as one exhaustive switch.
@@ -133,22 +142,32 @@ extension ControlPayload: Codable {
             self = .error(code: try container.decode(ErrorCode.self, forKey: .code), message: message)
         case .diagnostic:
             // Strict, unlike the other commands (#234): only `command` and `events`, so nothing rides along.
-            let keys = try decoder.container(keyedBy: DiagnosticCodingKey.self).allKeys.map(\.stringValue)
-            guard keys.allSatisfy({ DiagnosticLimits.isOne(of: ["command", "events"], $0) }) else {
-                throw DecodingError.dataCorrupted(.init(codingPath: decoder.codingPath,
-                                                        debugDescription: "unknown diagnostic payload key"))
-            }
+            try Self.requireOnly(["command", "events"], "diagnostic", decoder)
             let events = try container.decode([DiagnosticEvent].self, forKey: .events)
             try requireRange(events.count, in: 1...DiagnosticLimits.maxEventsPerBatch, "events", decoder)
             self = .diagnostic(events: events)
         case .stopPlayback:
             // Strict, like `diagnostic`: only `command`, so nothing rides along on a stop.
-            let keys = try decoder.container(keyedBy: DiagnosticCodingKey.self).allKeys.map(\.stringValue)
-            guard keys == ["command"] else {
-                throw DecodingError.dataCorrupted(.init(codingPath: decoder.codingPath,
-                                                        debugDescription: "unknown stop_playback payload key"))
-            }
+            try Self.requireOnly(["command"], "stop_playback", decoder)
             self = .stopPlayback
+        case .ambientMovedHere:
+            // Strict, like `stop_playback` (#366): only `command` and an optional class from the closed vocabulary.
+            try Self.requireOnly(["command", "from"], "ambient_moved_here", decoder)
+            let from = try container.decodeIfPresent(String.self, forKey: .from)
+            guard from == nil || AmbientTakeOver.deviceKind(from) != nil else {
+                throw DecodingError.dataCorrupted(.init(codingPath: decoder.codingPath,
+                                                        debugDescription: "unknown ambient_moved_here device"))
+            }
+            self = .ambientMovedHere(from: from)
+        }
+    }
+
+    /// Refuses any payload key outside `allowed`, so nothing rides along on a strict command.
+    private static func requireOnly(_ allowed: [String], _ command: String, _ decoder: any Decoder) throws {
+        let keys = try decoder.container(keyedBy: DiagnosticCodingKey.self).allKeys.map(\.stringValue)
+        guard keys.allSatisfy({ DiagnosticLimits.isOne(of: allowed, $0) }) else {
+            throw DecodingError.dataCorrupted(.init(codingPath: decoder.codingPath,
+                                                    debugDescription: "unknown \(command) payload key"))
         }
     }
 
@@ -189,8 +208,10 @@ extension ControlPayload: Codable {
         case .diagnostic(let events):
             try container.encode(Command.diagnostic, forKey: .command)
             try container.encode(events, forKey: .events)
-        case .stopPlayback:
-            try container.encode(Command.stopPlayback, forKey: .command)
+        case .stopPlayback: try container.encode(Command.stopPlayback, forKey: .command)
+        case .ambientMovedHere(let from):
+            try container.encode(Command.ambientMovedHere, forKey: .command)
+            try container.encodeIfPresent(AmbientTakeOver.deviceKind(from), forKey: .from)
         }
     }
 }
@@ -199,6 +220,34 @@ extension ControlPayload: Codable {
 /// `stop_playback` to a device without it, because an older device refuses an unknown command as malformed.
 public enum PlaybackStop {
     public static let capability = "stop_playback"
+}
+
+/// Ambient take-over (#366): the most recent device to start ambient listening on a host takes it over. The
+/// host ends the previous device's stream and answers that device's next segment with a `not_allowed` error
+/// whose message starts with `movedPrefix`; the new device, if it advertises `capability`, is sent
+/// `ambient_moved_here`. A device is named only by its class, from `deviceKinds`.
+public enum AmbientTakeOver {
+    public static let capability = "ambient_takeover"
+    public static let deviceKinds = ["phone", "pad", "mac"]
+    public static let movedPrefix = "ambient moved"
+
+    /// `value` when it is exactly one of `deviceKinds`, else nil.
+    public static func deviceKind(_ value: String?) -> String? {
+        value.flatMap { value in deviceKinds.first { DiagnosticLimits.sameBytes($0, value) } }
+    }
+
+    /// The previous device's error message: `ambient moved to pad`, or `ambient moved to another device` when the
+    /// new device did not say its class.
+    public static func movedMessage(to kind: String?) -> String {
+        "\(movedPrefix) to \(deviceKind(kind) ?? "another device")"
+    }
+
+    /// Whether an error `message` is a take-over notice and, if it is, the new device's class (nil if unsaid).
+    public static func moved(_ message: String) -> (moved: Bool, to: String?) {
+        let lead = movedPrefix + " to "
+        guard message.hasPrefix(lead) else { return (false, nil) }
+        return (true, deviceKind(String(message.dropFirst(lead.count))))
+    }
 }
 
 /// Picks the protocol version a session runs at: the highest version both ends list (#2 item 5).
@@ -465,6 +514,15 @@ extension Schema {
         "then": .object([
             "additionalProperties": .bool(false),
             "properties": .object(["command": .object([:]), "events": .object([:])])
+        ])
+    ])
+
+    /// `ambient_moved_here` carries `command` and, optionally, a device-class `from` (#366).
+    static let ambientMovedHerePayloadRule: JSONValue = .object([
+        "if": .object(["properties": .object(["command": .object(["const": .string("ambient_moved_here")])])]),
+        "then": .object([
+            "additionalProperties": .bool(false),
+            "properties": .object(["command": .object([:]), "from": .object([:])])
         ])
     ])
 
