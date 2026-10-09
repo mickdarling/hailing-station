@@ -121,6 +121,10 @@ public final class RightyoAmbientPipeline: Sendable {
     /// Tears the child down (EOF, then SIGTERM, then SIGKILL) and waits until it is reaped.
     public func stop() async { await child.stop() }
 
+    /// The same teardown with short graces (#366): EOF, SIGTERM after `grace`, SIGKILL after `grace` more. For a
+    /// retired child that must make room for a new one at once; a dispatch it has not yet made is lost.
+    public func stop(grace: TimeInterval) async { await child.stop(eofGrace: grace, termGrace: grace) }
+
     public var counters: RightyoChildProcess.Counters { child.counters }
     /// Requests dropped as the host's own reply heard back (#269). A count only.
     public var echoDropped: Int { get async { await consumer.echoDropped } }
