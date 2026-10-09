@@ -17,7 +17,10 @@ struct HostReplyRequest {
     let generation: UUID
     let createdAt: ContinuousClock.Instant
     let policyPermit: ReplyPublicationPermit
-    let bindingLease: ProviderReplyBindingLease
+    /// The adapter's cooperative binding gate. Nil only for a host-minted ambient reference on a legacy adapter
+    /// (#230), which no adapter can lease: its binding is re-read from the listing before every enqueue instead
+    /// (`unleasedBindingIsCurrent`), a snapshot rather than a gate.
+    let bindingLease: ProviderReplyBindingLease?
     var committed = false
     var descriptor: ReplyDescriptor?
     var textDelivered = false
@@ -32,9 +35,10 @@ struct HostReplyRequest {
 
     /// Keep these exact admission tickets: revocation followed by restoration cannot revive a request.
     func withAuthority<Result>(_ operation: () -> Result) -> Result? {
-        guard let result = policyPermit.performIfCurrent({ bindingLease.performIfCurrent(operation) }) else {
-            return nil
-        }
+        guard let result = policyPermit.performIfCurrent({ () -> Result? in
+            guard let bindingLease else { return operation() }
+            return bindingLease.performIfCurrent(operation)
+        }) else { return nil }
         return result
     }
 
@@ -110,6 +114,23 @@ extension HostSession {
             return true
         }) == true else {
             replyRequests[requestID] = nil
+            return false
+        }
+        return true
+    }
+
+    /// An unleased ambient record (#230) has no cooperative binding gate, so its target's listing is re-read before
+    /// each enqueue: a rebound, vanished or dead target refuses and drops the record. This is a snapshot one actor
+    /// hop from the enqueue, not a lease. A leased record, or none at all, is left to `enqueueHostReply`.
+    func unleasedBindingIsCurrent(_ frame: Frame) async -> Bool {
+        guard let requestID = replyDescriptor(frame)?.requestID, let request = replyRequests[requestID],
+              request.bindingLease == nil else { return true }
+        let binding = request.context.binding
+        let listing = try? await host.registry.listing()
+        guard listing?.contains(where: {
+            $0.info.id == binding.targetID && $0.info.alive && $0.binding == binding.sessionID
+        }) == true else {
+            if replyRequests[requestID]?.context == request.context { replyRequests[requestID] = nil }
             return false
         }
         return true
@@ -205,7 +226,7 @@ extension WebSocketPeer {
 
     /// Returns true only for this negotiated connection's successfully dispatched, still-current request.
     func deliverHostReply(_ frame: Frame) async -> Bool {
-        guard !ended, let prepared = prepareReplyPublication(frame),
+        guard !ended, await session.unleasedBindingIsCurrent(frame), let prepared = prepareReplyPublication(frame),
               await session.enqueueHostReply(frame, enqueue: prepared.enqueue) else { return false }
         guard await prepared.result() else {
             finish(reason: "host reply send failed")

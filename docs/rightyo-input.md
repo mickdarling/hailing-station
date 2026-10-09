@@ -205,6 +205,22 @@ the phone hears it. For the target `tmux:demo` it is, byte for byte (it begins w
   ([#200](https://github.com/mickdarling/hailing-station/issues/200)).
 - Dry run (`--dry-run`) validates and prints receipts; it forms no prompt, so no block exists and the fixture
   dry-run output is unchanged. No receipt includes the prompt or the block.
+- **Ambient requests name a reply reference** ([#230](https://github.com/mickdarling/hailing-station/issues/230)).
+  An ambient request that the daemon dispatches in process to a plain legacy target (such as `tmux:`; never a
+  contextual bridge) has its trailing block rewritten
+  (`RightyoInputEvent.referencing`) to name a host-minted reference, for `tmux:demo`:
+
+  ```
+   Reply: answer briefly; it is spoken aloud. The host plays any acknowledgement itself, so send no acknowledgement of your own. If no reply bridge publishes this session's output, run haild reply tmux:demo --request 1b4e28ba-2fa1-41d2-883f-0016d3cca427 --say '<spoken answer>' (single-quote the answer and keep it free of single quotes; the request reference sends it to the device that asked).
+  ```
+
+  The UUID is lowercase, freshly minted for each request and the block's only other variable part. The block stays
+  ASCII, one line and free of double quotes, and it passes the sanitizer and default guard
+  (`AmbientReplyReferenceTests`). It ends in fixed text. Only an exact trailing request-less block for the
+  target is rewritten. A prompt that the longer block would push past the 1,200,000-byte dispatch cap keeps its
+  request-less block and gets no reference. `haild rightyo` (direct or `--reply-to`) still delivers the
+  request-less block above. Routing and the doctrine change are in
+  [request-origin-routing.md](request-origin-routing.md#ambient-reply-references-on-plain-tmux-targets-230).
 
 ## Ownership, bounds and refusal
 
@@ -529,7 +545,8 @@ forks is not killed with it. This matches the repo's other stdio children.
 
 `RightyoAmbientPipeline` feeds the child's lines through `RightyoInputEvent.decode` and `RightyoInputConsumer`. It
 hands admitted requests to a `RightyoAmbientDispatching` (`LocalDispatchRequest`). Any error ends the stream, and
-nothing restarts it.
+nothing restarts it. The daemon's dispatcher mints each request's reply reference
+([#230](#the-reply-block)), so the reply reaches the streaming device even when another device selects the target.
 
 The consumer still ends a session after 4,096 events, so a long ambient stream stops there. Raising or windowing that
 cap is separate work. Audio and transcript content are never logged.

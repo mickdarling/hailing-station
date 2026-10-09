@@ -56,21 +56,44 @@ extension RightyoInputEvent {
     /// Tells the receiving session how to answer so the phone hears it (#188 item 1). Appended last to both
     /// layouts, after the JSON, so the session cuts the prompt at the LAST occurrence of `replyBlockPrefix`: a
     /// formed text carrying it is refused (`carriesReplyPrefix`), raw turn text stays inside the JSON's string
-    /// values, and nothing follows the host's block. The block never mentions a request UUID: on a conforming
-    /// programmatic bridge the bridge retains the envelope's `request` outside the model prompt and publishes
-    /// the session's output with it itself (request-origin-routing.md), so asking the session to echo one is
-    /// forbidden; on a plain pane there is no envelope, and the request-less `haild reply --say` reaches a phone
+    /// values, and nothing follows the host's block. The default block never mentions a request UUID: on a
+    /// conforming programmatic bridge the bridge retains the envelope's `request` outside the model prompt and
+    /// publishes the session's output with it itself (request-origin-routing.md); on a plain pane there is no envelope, and the request-less `haild reply --say` reaches a phone
     /// only under the single-terminal fallback; the answer is single-quoted there, since `$()`, backticks, `$VAR`,
     /// backslashes and double quotes would expand inside double quotes. ASCII, one line, no double quote, never
     /// the marker, deterministic: `target` (the listed id the binding was pinned from, allowlisted by the
     /// consumer) is its only variable part. The acknowledgement sentence (rightyo#122) stays mid-block so the
     /// block's ending, which the tmux pane observer matches, stays byte-stable.
+    ///
+    /// With `request` (#230, ambient dispatch only) the command carries `--request <lowercase UUID>`: an opaque
+    /// routing handle the host minted for this one prompt and bound, host-side, to the connection that streamed the
+    /// audio, its selection generation and the exact target binding. It is not origin evidence and grants nothing:
+    /// a reply naming it reaches only that connection, while it still selects the target, within the record's
+    /// lifetime, and an unknown, expired or foreign one reaches nobody. The UUID sits mid-block, so the ending is
+    /// still fixed text; a UUID is hex and hyphens only, so the block stays ASCII, quote-free and guard-clean.
     static let replyBlockPrefix = " Reply: answer briefly; "
-    static func replyBlock(target: String) -> String {
-        replyBlockPrefix + "it is spoken aloud. The host plays any acknowledgement itself, so send no acknowledgement"
-            + " of your own. If no reply bridge publishes this session's output, run haild reply "
-            + target + " --say '<spoken answer>' (single-quote the answer and keep it free of single quotes;"
-            + " single-terminal fallback only)."
+    static func replyBlock(target: String, request: UUID? = nil) -> String {
+        let head = replyBlockPrefix + "it is spoken aloud. The host plays any acknowledgement itself, so send no"
+            + " acknowledgement of your own. If no reply bridge publishes this session's output, run haild reply "
+            + target
+        guard let request else {
+            return head + " --say '<spoken answer>' (single-quote the answer and keep it free of single quotes;"
+                + " single-terminal fallback only)."
+        }
+        return head + " --request " + request.uuidString.lowercased() + " --say '<spoken answer>' (single-quote the"
+            + " answer and keep it free of single quotes; the request reference sends it to the device that asked)."
+    }
+    /// The prompt with its trailing request-less block for `target` replaced by the block naming `request` (#230),
+    /// or nil when the prompt does not end in that exact block or the result would exceed the local dispatch cap.
+    /// Only the host's own final block is rewritten, byte for byte; nothing before it changes. The block is ASCII
+    /// and starts with a space, so the cut is always on a UTF-8 boundary.
+    static func referencing(_ prompt: String, target: String, request: UUID) -> String? {
+        let plain = replyBlock(target: target).utf8
+        guard prompt.utf8.count >= plain.count, prompt.utf8.suffix(plain.count).elementsEqual(plain),
+              let body = String(prompt.utf8.dropLast(plain.count)) else { return nil }
+        let referenced = body + replyBlock(target: target, request: request)
+        guard referenced.utf8.count <= LocalDispatchRequest.maxTextBytes else { return nil }
+        return referenced
     }
     /// `speakers` is the advertised capability (`anonymous` or `enrolled`) so the session can weigh roles. Without a
     /// formed request the body is the compact JSON alone, byte for byte as before; with one it is

@@ -14,6 +14,13 @@ a prompt with no reply owner at all, so the ambient path (RightyO → request in
 `haild reply --say`) produced no voice on the phone. The next slice gives `haild rightyo` request ownership
 (`--reply-to`); until then this fallback lets the single-phone demo hear its answer.
 
+Since [#230](https://github.com/mickdarling/hailing-station/issues/230), ambient requests to a plain `tmux:`
+target no longer depend on this fallback. Their reply block names a host-minted reply reference (`haild reply
+<target> --request <reference> --say …`), which reaches only the device that streamed the audio, even when
+several devices select the target ([request-origin-routing.md](request-origin-routing.md#ambient-reply-references-on-plain-tmux-targets-230)).
+The fallback below is unchanged and still serves request-less replies only. With two or more selecting
+connections, it still refuses them `notUniqueRecipient`.
+
 ## The rule
 
 With `haild run … --personal-terminal --single-terminal-reply-fallback` (off by default, and refused

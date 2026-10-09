@@ -42,12 +42,16 @@ snapshots alone do not establish continuous authority (#167).
    and recipient checks. Unknown/expired and uncorrelated replies are refused;
    selection changes invalidate requests and reconnect cannot inherit ownership.
 2. Integrate a concrete supported programmatic bridge through the explicit
-   contextual adapter. Ordinary tmux remains unchanged; no implicit metadata
-   prefix, policy grant, capture grant or provider enablement is permitted.
+   contextual adapter. Ordinary tmux remains a legacy adapter; no implicit metadata
+   prefix, policy grant, capture grant or provider enablement is permitted. The
+   one exception is the host-minted ambient reply reference
+   ([below](#ambient-reply-references-on-plain-tmux-targets-230)).
 3. Prefer a programmatic bridge retaining correlation outside generated text.
    An LLM choosing which valid token to echo can still misassociate output; a
    voluntary CLI bridge must not be described as proven semantic attribution or
-   a replacement for host-owned capture. Structured provider groundwork remains
+   a replacement for host-owned capture. #230 accepts that risk for ambient
+   replies on plain tmux targets, where the alternative was no reply at all; the
+   echoed reference is a routing handle, never origin evidence. Structured provider groundwork remains
    disabled until its independent live-enablement requirements are met.
 4. Test two real listener clients selecting the same target, interleaved requests
    in both orders, early/late replies, refusal/partial delivery, reconnect,
@@ -58,6 +62,75 @@ snapshots alone do not establish continuous authority (#167).
 
 Unsolicited announcements are a different explicit publication scope. They must
 not quietly inherit a personal-response recipient or broadcast fallback.
+
+## Ambient reply references on plain tmux targets (#230)
+
+[#230](https://github.com/mickdarling/hailing-station/issues/230) (P0) found that with an iPhone and an iPad both
+selecting the same plain `tmux:` target, every ambient reply was refused `notUniqueRecipient`: the pane had no
+request reference to send, so the reply fell to the [single-terminal fallback](single-terminal-reply-fallback.md),
+which refuses when two connections select the target. The requirement is that a reply goes to the device its
+input came from. This section records a deliberate change of doctrine for that one path.
+
+**What changed.** Until now the reply block never named a request UUID, because a session echoing a token is not
+trusted origin attribution. For an ambient request to a legacy (plain `tmux:`) target, the host now mints an
+opaque **reply reference** and writes it into that prompt's own reply block:
+
+```
+haild reply <target> --request <reference> --say '<spoken answer>'
+```
+
+The reference is a routing handle, not an origin claim:
+
+- **Plain legacy targets only** (an adapter without contextual delivery, such as `tmux:`). For each admitted
+  ambient request to such a target, `WebSocketListener.referenceAmbient` mints a fresh UUID in the daemon. It
+  rewrites only the prompt's trailing request-less block for that target (`RightyoInputEvent.referencing`).
+  A contextual adapter (`tmux-reply:`, the Codex app-server adapter, any `ProviderContextDelivering`) gets no
+  reference and its original block. The UUID never enters a bridge's model prompt, and the bridge keeps its own
+  out-of-band context id, as the programmatic-bridge rules above require. The session enforces this too: a
+  contextual adapter never adopts a bound reference as its context id.
+- The rewrite happens before the fail-closed `ambient-dispatch` audit record, so the record's byte count is the
+  size of the prompt actually dispatched. The reference is then bound only for that one dispatch
+  (`HostSession.ambientReplyReference`, a task-local). The local socket's
+  `dispatch` request kind, `haild rightyo --reply-to`, phone text frames and every other ingress path cannot set
+  it, and they are unchanged.
+- The connection's own `HostSession` records it in `replyRequests`. The record goes through the same ingress path
+  as any request: authorizer, selection generation, exact listed binding, host reply permit, 64-request capacity
+  and 120-second lifetime. It is committed only after a successful complete handoff. A reference already held is
+  never overwritten.
+- The reply path trusts only that host-side record. A reply naming the reference reaches exactly the connection
+  that owns the record, while it still selects that target on the same selection generation, with the same media
+  pinning (one final text, ordered audio, duplicate frame refusal) as any correlated reply. A reference that is
+  unknown or expired, names another target, or whose owner selected away or disconnected, reaches nobody
+  (`noRecipient`). An explicit reference never falls back to another connection, whatever the fallback flag says.
+- Plain tmux cannot lease its binding (see [reply-binding-leases.md](reply-binding-leases.md)), so the record is
+  **unleased**: `HostReplyRequest.bindingLease` is nil, and no lease is invented. In its place, the target's
+  listing is re-read before every enqueue (`unleasedBindingIsCurrent`). A rebound, vanished or dead target refuses
+  the reply (`publicationFailed`) and drops the record. This check is a snapshot one actor hop from the enqueue,
+  not a gate. The host policy permit still gates the enqueue, so policy changes, lockdown and a locked tier revoke
+  the record.
+
+**Residual risk.** Correlation is only as good as the session's echo. A session that copies the wrong reference
+can misdirect an answer. The only connections that can receive it are ones that sent ambient input to that same
+pane within the lifetime and still select it; nobody else can be reached. A reference grants no authority beyond
+that delivery. A programmatic bridge that keeps the identity out of generated text (above) remains the stronger
+design and is unchanged. Ordinary tmux remains a legacy adapter, and no contextual capability is implied.
+
+**Unchanged.** A reply without a reference behaves exactly as before: owner-only correlation first, then the
+opt-in single-terminal fallback, which still refuses zero or several selecting connections. Tap-to-talk text
+frames to plain tmux still create no record. The sourceHostMismatch host-identity item in #230 is separate work.
+
+**Optional follow-ups, not in this change:**
+
+- When the origin truly cannot be determined, prefer the device that most recently sent input over refusing
+  (#230's last-resort rule). This is not implemented: a legacy request-less reply with two selecting connections
+  is still `notUniqueRecipient`.
+- References for tap-to-talk text and for `haild rightyo --reply-to` prompts.
+- The app's "disconnect from this Mac" control, and deselecting the reply target when ambient listening is
+  turned off.
+
+Verification is synthetic only (`AmbientReplyReferenceTests`, `AmbientReplyReferenceRoutingTests`,
+`AmbientReplyReferenceScopeTests`, `AmbientWiringReplyReferenceTests`). It is not device hearing, and nothing here changes the running daemon or
+installed builds until deployed.
 
 ## Explicit programmatic tmux bridge input (prerequisite)
 

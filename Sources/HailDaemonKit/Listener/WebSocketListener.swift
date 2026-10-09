@@ -250,13 +250,35 @@ extension WebSocketListener {
 
     /// An ambient request names the `HostSession` connection the gate saw; it is dispatched on behalf of the
     /// listener peer that owns that session, through the same `dispatch(_:)` as `--reply-to`.
-    func dispatchAmbient(_ request: LocalDispatchRequest) async throws -> UUID? {
+    ///
+    /// `reference` (#230) is the one `referenceAmbient` minted and wrote into this request's reply block; the
+    /// session binds it, host-side, to this connection, its selection generation and the exact target binding
+    /// (`HostSession.ambientReplyReference`). Nil dispatches exactly as before.
+    func dispatchAmbient(_ request: LocalDispatchRequest, reference: UUID? = nil) async throws -> UUID? {
         guard let peer = peers.first(where: { $0.value.session.connectionID == request.connection }) else {
             throw LocalDispatchRefusal.unknownConnection
         }
         var named = request
         named.connection = peer.key
-        return try await dispatch(named)
+        guard let reference else { return try await dispatch(named) }
+        return try await HostSession.$ambientReplyReference.withValue(reference) { try await dispatch(named) }
+    }
+
+    /// #230: for a plain legacy target only (an adapter without contextual delivery, such as `tmux:`), mints a fresh
+    /// opaque reply reference and writes it into the prompt's own trailing reply block, so the session can answer
+    /// with `haild reply <target> --request <ref>`. A contextual adapter keeps its out-of-band context id and the
+    /// original block: the UUID must never enter a bridge's model prompt. A prompt that does not end in the
+    /// target's block, or would outgrow the dispatch cap, is left unchanged with no reference.
+    func referenceAmbient(_ request: LocalDispatchRequest) async -> (LocalDispatchRequest, UUID?) {
+        guard let (adapter, _) = try? await host.registry.resolve(request.target),
+              !(adapter is any ProviderContextDelivering) else { return (request, nil) }
+        let reference = UUID()
+        guard let text = RightyoInputEvent.referencing(request.text, target: request.target, request: reference) else {
+            return (request, nil)
+        }
+        var referenced = request
+        referenced.text = text
+        return (referenced, reference)
     }
 
     /// Ambient failed for `stream` (#203): end it at the gate if it is still the active one, so audio stops
@@ -689,14 +711,16 @@ extension AmbientRightyoRouter {
 struct AmbientListenerDispatcher: RightyoAmbientDispatching {
     let listener: WebSocketListener
     let audit: AuditLog?
+    /// The reply reference (#230) is written first, so the fail-closed audit record carries the final prompt size.
     func dispatch(_ request: LocalDispatchRequest) async throws -> UUID? {
+        let (prepared, reference) = await listener.referenceAmbient(request)
         if let audit {
             do {
-                _ = try await audit.record(.pushed(tool: "ambient-dispatch", target: request.target,
-                                                   bytes: request.text.utf8.count))
+                _ = try await audit.record(.pushed(tool: "ambient-dispatch", target: prepared.target,
+                                                   bytes: prepared.text.utf8.count))
             } catch { throw LocalReplyRefusal.auditFailure }
         }
-        return try await listener.dispatchAmbient(request)
+        return try await listener.dispatchAmbient(prepared, reference: reference)
     }
 }
 #endif
