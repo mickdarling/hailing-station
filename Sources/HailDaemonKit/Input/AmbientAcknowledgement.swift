@@ -73,6 +73,20 @@ public struct AmbientAckRequest: Sendable {
     public let readAt: ContinuousClock.Instant
 }
 
+/// One admitted ambient request RightyO marked `acknowledge: false` (rightyo#132): no clip plays. Labels and
+/// numbers only, never transcript text. `confidence` is the decision's own, which on a follow-up belongs to the
+/// `uncertain` label it was promoted from, not to RightyO's attend probability.
+public struct AmbientAckSkip: Sendable, Equatable {
+    public let followUp: Bool
+    public let confidence: Double?
+
+    /// The `ambient_acknowledged` log detail for this skip.
+    public var detail: String {
+        "outcome=skipped reason=gated follow_up=\(followUp) confidence="
+            + (confidence.map { String(format: "%.2f", $0) } ?? "none")
+    }
+}
+
 /// One pre-recorded acknowledgement: mono PCM16 small enough for a single reply audio frame.
 public struct AmbientAckClip: Sendable, Equatable {
     public let pcm: Data

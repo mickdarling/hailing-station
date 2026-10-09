@@ -60,6 +60,9 @@ public final class RightyoAmbientPipeline: Sendable {
         /// Give the child a control descriptor for spoken-reply reports (rightyo#124). Needs a RightyO that accepts
         /// `--control-fd`; off by default.
         public var replyControl = false
+        /// Called instead of `onAcknowledge` for an admitted request RightyO marked `acknowledge: false` on a session
+        /// that advertised `acknowledgement` (rightyo#132). Labels and numbers only. It must return at once.
+        public var onAcknowledgementSkipped: (@Sendable (AmbientAckSkip) -> Void)?
 
         public init(executable: URL, config: URL, target: String, binding: String, connection: UUID,
                     allowSynthetic: Bool = false, timing: RightyoChildProcess.Timing = .init(),
@@ -89,7 +92,8 @@ public final class RightyoAmbientPipeline: Sendable {
     /// Validates the target and the executable before launching the child; a refusal launches nothing.
     public init(configuration: Configuration, dispatcher: any RightyoAmbientDispatching) throws {
         let session = "hail-\(UUID().uuidString.lowercased())"
-        let relay = AmbientAckRelay(onAcknowledge: configuration.onAcknowledge)
+        let relay = AmbientAckRelay(onAcknowledge: configuration.onAcknowledge,
+                                    onSkip: configuration.onAcknowledgementSkipped)
         let step = RightyoAmbientDispatchStep(connection: configuration.connection, dispatcher: dispatcher,
                                               acknowledge: { relay.fire() })
         consumer = try RightyoInputConsumer(host: nil, target: configuration.target, binding: configuration.binding,
@@ -330,29 +334,42 @@ final class RecentSpokenReplies: Sendable {
 /// Carries the acknowledgement from the pipeline's read loop to its dispatch step (rightyo#105): armed with the
 /// request line just read, fired by the step only once the consumer has admitted it (after the echo, withdrawal
 /// and duplicate checks) and before it is typed. The persona sticks across turns that say no name.
+/// Gating (rightyo#132): on a session whose `started` advertised `acknowledgement`, a request marked
+/// `acknowledge: false` arms a skip instead, so `fire` reports it to `onSkip` and plays nothing. A missing field,
+/// or one on a session that did not advertise gating, acknowledges as before.
 final class AmbientAckRelay: Sendable {
     private struct Armed {
         let text: String, endMs: Int, emittedAtMs: Int, readAt: ContinuousClock.Instant
+        let skip: AmbientAckSkip?
     }
     private struct State {
         var addressing = RightyoAddressing(spellings: [:])
+        var gated = false
         var persona: String?
         var armed: Armed?
     }
     private let state = Mutex(State())
     private let onAcknowledge: (@Sendable (AmbientAckRequest) -> Void)?
+    private let onSkip: (@Sendable (AmbientAckSkip) -> Void)?
 
-    init(onAcknowledge: (@Sendable (AmbientAckRequest) -> Void)?) { self.onAcknowledge = onAcknowledge }
+    init(onAcknowledge: (@Sendable (AmbientAckRequest) -> Void)?, onSkip: (@Sendable (AmbientAckSkip) -> Void)? = nil) {
+        (self.onAcknowledge, self.onSkip) = (onAcknowledge, onSkip)
+    }
 
     func observe(_ event: RightyoInputEvent, readAt: ContinuousClock.Instant) {
         guard onAcknowledge != nil else { return }
         state.withLock { state in
             if event.type == "session", event.phase == "started" {
                 state.addressing = RightyoAddressing(event.addressing)
+                state.gated = event.acknowledgement != nil
             }
             if event.type == "request", let turn = event.turn {
+                let skip = state.gated && event.acknowledge == .bool(false)
+                    ? AmbientAckSkip(followUp: event.decision?.followUp == true, confidence: event.decision?.confidence)
+                    : nil
                 // Raw times only: this line is not validated yet, so nothing is computed from them here.
-                state.armed = Armed(text: turn.text, endMs: turn.endMs, emittedAtMs: event.emittedAtMs, readAt: readAt)
+                state.armed = Armed(text: turn.text, endMs: turn.endMs, emittedAtMs: event.emittedAtMs, readAt: readAt,
+                                    skip: skip)
             } else {
                 state.armed = nil
             }
@@ -361,16 +378,23 @@ final class AmbientAckRelay: Sendable {
 
     func fire() {
         guard let onAcknowledge else { return }
-        let request = state.withLock { state -> AmbientAckRequest? in
+        let fired = state.withLock { state -> Outcome? in
             guard let armed = state.armed else { return nil }
             state.armed = nil
             state.persona = state.addressing.persona(in: armed.text) ?? state.persona
+            if let skip = armed.skip { return .skipped(skip) }
             // Fired only for an admitted request, whose validation bounds both times; still never trap.
             let (delta, overflow) = armed.emittedAtMs.subtractingReportingOverflow(armed.endMs)
-            return AmbientAckRequest(persona: state.persona, rightyoMs: overflow ? 0 : max(0, delta),
-                                     readAt: armed.readAt)
+            return .acknowledge(AmbientAckRequest(persona: state.persona, rightyoMs: overflow ? 0 : max(0, delta),
+                                                  readAt: armed.readAt))
         }
-        if let request { onAcknowledge(request) }
+        switch fired {
+        case .acknowledge(let request): onAcknowledge(request)
+        case .skipped(let skip): onSkip?(skip)
+        case nil: break
+        }
     }
+
+    private enum Outcome { case acknowledge(AmbientAckRequest), skipped(AmbientAckSkip) }
 }
 #endif
