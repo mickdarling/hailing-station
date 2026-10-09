@@ -25,17 +25,6 @@ version defines their semantics.
 Frame `id` remains the identity of one transmitted frame; it is deliberately not reused as reply or stream
 identity. Multiple segments from one reply therefore keep unique frame IDs while sharing reply and stream IDs.
 
-## Stopping reply playback (#309)
-
-`{"command": "stop_playback"}` is a host-to-device control command that tells the device to stop reply audio
-at once and drop that host's queued replies. The device's player is shared, so whatever it was playing stops too,
-and another host's queued replies then play. It carries nothing else: the decoder and the schema refuse any other
-payload key, and it grants no authority. A device advertises `stop_playback` (`PlaybackStop.capability`) in its
-`hello` when it can act on the command. A host never sends it to a device that did not advertise it, because an
-older device refuses an unknown command as malformed. The host sends it when a RightyO `dismiss` has `playback`
-in its scope, and refuses the rest of every reply that was mid-stream on that connection whether or not the device
-advertised the command ([rightyo-input.md](rightyo-input.md)).
-
 ## Which device a reply reaches (#370)
 
 Tap-to-talk and ambient listening are two ways into one pipeline. haild keeps, for each target, its **last input
@@ -58,3 +47,14 @@ received its first frame, or is refused; a reply never splits across devices.
 Sessions need no reply instruction for this. Typed text gets no footer and no reference; ambient prompts keep their
 existing [reply block](rightyo-input.md#the-reply-block). The wire format is unchanged. Details and limits:
 [request-origin-routing.md](request-origin-routing.md#unified-reply-routing-the-last-input-device-370).
+
+## Stopping reply playback (#309)
+
+`{"command": "stop_playback"}` is a host-to-device control command that tells the device to stop reply audio
+at once and drop that host's queued replies. The device's player is shared, so whatever it was playing stops too,
+and another host's queued replies then play. It carries nothing else: the decoder and the schema refuse any other
+payload key, and it grants no authority. A device advertises `stop_playback` (`PlaybackStop.capability`) in its
+`hello` when it can act on the command. A host never sends it to a device that did not advertise it, because an
+older device refuses an unknown command as malformed. The host sends it when a RightyO `dismiss` has `playback`
+in its scope, and refuses the rest of every reply that was mid-stream on that connection whether or not the device
+advertised the command ([rightyo-input.md](rightyo-input.md)).
