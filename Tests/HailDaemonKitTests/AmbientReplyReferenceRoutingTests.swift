@@ -5,7 +5,8 @@ import Testing
 @testable import HailDaemonKit
 
 /// #230 over loopback sockets: two devices select the same legacy target, as the iPhone and iPad did. A reply naming
-/// an ambient reference reaches only the device whose dispatch minted it; the request-less shape keeps refusing.
+/// an ambient reference reaches only the device whose dispatch minted it; the request-less shape reaches the last
+/// input device (#370).
 /// Synthetic only; not device hearing.
 @Suite(.serialized) struct AmbientReplyReferenceRoutingTests {
     @Test func aReferencedReplyReachesOnlyTheOriginatingDeviceInBothOrders() async throws {
@@ -33,11 +34,11 @@ import Testing
                     #expect(try await listener.publish(frame) == 1)
                     #expect(try await recipientSocketReceive(on: pair.sockets[origin]) == frame)
                 }
-                // The other device heard nothing; the request-less shape is still ambiguous and refused.
+                // The other device heard nothing; the request-less shape follows the last input device (#370).
                 try await pair.barrier()
-                await #expect(throws: LocalReplyRefusal.notUniqueRecipient) {
-                    try await listener.publish(recipientText(referenceDescriptor(nil)))
-                }
+                let requestless = recipientText(referenceDescriptor(nil))
+                #expect(try await listener.publish(requestless) == 1)
+                #expect(try await recipientSocketReceive(on: pair.sockets[origin]) == requestless)
                 try await pair.barrier()
             }
         } catch {

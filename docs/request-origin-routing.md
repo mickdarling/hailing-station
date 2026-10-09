@@ -115,21 +115,81 @@ pane within the lifetime and still select it; nobody else can be reached. A refe
 that delivery. A programmatic bridge that keeps the identity out of generated text (above) remains the stronger
 design and is unchanged. Ordinary tmux remains a legacy adapter, and no contextual capability is implied.
 
-**Unchanged.** A reply without a reference behaves exactly as before: owner-only correlation first, then the
-opt-in single-terminal fallback, which still refuses zero or several selecting connections. Tap-to-talk text
-frames to plain tmux still create no record. The sourceHostMismatch host-identity item in #230 is separate work.
+**Since #370.** A reply without a reference no longer depends on there being a single selecting connection: it
+goes to the target's last input device ([below](#unified-reply-routing-the-last-input-device-370)). Tap-to-talk
+text frames to plain tmux still create no request record and get no reference. The sourceHostMismatch
+host-identity item in #230 is separate work.
 
 **Optional follow-ups, not in this change:**
 
-- When the origin truly cannot be determined, prefer the device that most recently sent input over refusing
-  (#230's last-resort rule). This is not implemented: a legacy request-less reply with two selecting connections
-  is still `notUniqueRecipient`.
-- References for tap-to-talk text and for `haild rightyo --reply-to` prompts.
+- References for tap-to-talk text and for `haild rightyo --reply-to` prompts. #370 made them unnecessary for
+  routing between devices; they would still make a late or overlapping reply more precise.
 - The app's "disconnect from this Mac" control, and deselecting the reply target when ambient listening is
   turned off.
 
 Verification is synthetic only (`AmbientReplyReferenceTests`, `AmbientReplyReferenceRoutingTests`,
 `AmbientReplyReferenceScopeTests`, `AmbientWiringReplyReferenceTests`). It is not device hearing, and nothing here changes the running daemon or
+installed builds until deployed.
+
+## Unified reply routing: the last input device (#370)
+
+[#370](https://github.com/mickdarling/hailing-station/issues/370) (P0) makes #230's last-resort rule the default.
+Tap-to-talk and ambient listening are two ways into one pipeline, so a reply goes to the device that last sent
+input to that session, whichever way it came in. Sessions need no reply instruction, footer or reference for this.
+The closed PR #367 tried a footer on typed text; that approach is not used.
+
+**The record.** `WebSocketListener.lastInput` (`LastInputLedger`) holds, per target id, one entry: the connection,
+its selection generation and the time. It is host-side only. It is written in exactly two places, both inside
+`HostSession.deliver` and only after the handoff succeeded, in the same actor turn that confirmed the captured
+selection:
+
+- an ambient request the listener dispatched for the streaming device (`WebSocketListener.dispatchAmbient` binds
+  the task-local `HostSession.ambientInputDispatch` for that one dispatch), and
+- the device's own final text frame (tap-to-talk), after the session's authorizer admitted it.
+
+A refused, unconfirmed, rate-limited or ownerless handoff records nothing. The local socket's `dispatch` kind
+(`haild rightyo --reply-to`) is operator input on a connection's behalf, not that device's input, and records
+nothing. No frame field, device name, hello or reply reference can write the record. A newer input to the same
+target, from any connection, replaces it.
+
+**Routing a reply.** In the listener's publication path (`HostReplyDelivery.swift`):
+
+1. A reply naming a `request` takes the correlated path unchanged and never falls back.
+2. A request-less reply goes to the last input device when that connection is still live and negotiated, still
+   selects the target **on the same selection generation** (selecting away and back invalidates it), the entry is
+   younger than the lifetime, and the host issues a reply permit for the target's exact listed binding. Selection,
+   generation and lifetime are checked again in the actor turn of the enqueue, inside the permit's gate, with the
+   same prepared transport as every reply. Several devices selecting the target do not matter on this path.
+3. Otherwise the [single-terminal rule](single-terminal-reply-fallback.md) runs unchanged: one selecting
+   connection, else `noRecipient` or `notUniqueRecipient`.
+
+Steps 2 and 3 need `--single-terminal-reply-fallback` (set by `scripts/host.sh` from `host.json`). Without the
+flag, request-less replies are still refused `noRecipient`, as before.
+
+**Lifetime: 10 minutes.** A reply to a long task can arrive minutes after the input, so the 120-second request
+lifetime is too short. Ten minutes covers a long turn, while a device left selecting a target overnight does not keep
+receiving its replies by default. Expiry is not a refusal: it hands the reply to the single-selector rule. The entry
+ends sooner when its connection disconnects or changes selection.
+
+**One reply, one device.** The first delivered frame of a request-less reply pins that reply to its connection and
+selection (64 most recent replies). Its later frames go only there, even if another device sends input mid-reply,
+and are refused `noRecipient` rather than moved when that device is gone or selected away. This applies to replies
+the single-selector rule started too.
+
+**Audit.** The listener log records `reply_routed` once per reply, with `path=request`, `path=last_input` or
+`path=single_selector`. The event
+carries only the listener connection id that `session_connected` already logs. No text, target binding or device
+name is added.
+
+**Residual risk.** The last input device is a recency rule, not origin evidence. If two devices talk to the same
+session within one reply's latency, the answer to the first goes to the second. A request reference, where the
+session sends one, still routes precisely. Ambient take-over (#366) may dispatch a request the previous device's
+child had already admitted; that dispatch is the previous device's input and makes it the last input device again
+until the new device speaks.
+
+Verification is synthetic only (`LastInputReplyRoutingTests`, `LastInputRecordTests`, and the updated
+`SingleTerminalReplyFallbackTests`, `AmbientReplyReferenceRoutingTests`, `AmbientWiringReplyReferenceTests`):
+loopback devices and a fake tmux-kind adapter, not device hearing. Nothing here changes the running daemon or
 installed builds until deployed.
 
 ## Explicit programmatic tmux bridge input (prerequisite)

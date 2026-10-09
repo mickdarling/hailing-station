@@ -32,6 +32,11 @@ extension HostSession {
     /// handle, not origin evidence, and nothing a client or the local socket sends can set it.
     @TaskLocal static var ambientReplyReference: UUID?
 
+    /// True only inside `WebSocketListener.dispatchAmbient` (#370): this handoff is the streaming device's own
+    /// ambient input, so a delivered handoff makes this connection its target's last input device. The local
+    /// socket's `dispatch` kind and `haild rightyo --reply-to` never set it.
+    @TaskLocal static var ambientInputDispatch = false
+
     func route(_ admitted: consuming AdmittedFrame, version: Int) async -> HostSessionResult {
         switch consume admitted {
         case .input(let input):
@@ -61,7 +66,8 @@ extension HostSession {
     }
 
     private func deliver(_ input: consuming AuthorizedInput, version: Int) async -> HostSessionResult {
-        switch await deliver(input) {
+        // A phone's own final text frame (tap-to-talk) is input from this device (#370).
+        switch await deliver(input, recordsLastInput: true) {
         case .delivered:
             return HostSessionResult(frames: [])
         case .confirmationRequired:
@@ -79,7 +85,12 @@ extension HostSession {
     /// shape and policy gates; only a successful complete handoff commits the request record. The input
     /// type is the authorization proof: nothing reaches the host that the session's authorizer did not
     /// allow, and the proof is consumed here, so one decision admits exactly one handoff.
-    func deliver(_ input: consuming AuthorizedInput) async -> HostDeliveryOutcome {
+    ///
+    /// `recordsLastInput` (the phone's text path) or an ambient dispatch (`ambientInputDispatch`) makes a delivered
+    /// handoff this connection's last input to the target (#370), recorded in the same actor turn that confirmed
+    /// the captured selection. A refused, unconfirmed or ownerless handoff records nothing.
+    func deliver(_ input: consuming AuthorizedInput, recordsLastInput: Bool = false) async -> HostDeliveryOutcome {
+        let recordsInput = recordsLastInput || Self.ambientInputDispatch
         guard input.target == selectedTarget else {
             return .refused(.notAllowed, "select the destination before speaking")
         }
@@ -94,13 +105,7 @@ extension HostSession {
             }
             switch try await send(input, owner: owner) {
             case .delivered:
-                guard let owner else {
-                    guard selects(input.target, generation: generation) else {
-                        return .unowned("request destination changed")
-                    }
-                    return .delivered(request: nil)
-                }
-                return commit(owner.context, generation: generation)
+                return handedOff(input.target, owner: owner, generation: generation, recordsInput: recordsInput)
             case .needsConfirmation:
                 if let owner { replyRequests[owner.context.id] = nil }
                 return .confirmationRequired
@@ -108,6 +113,22 @@ extension HostSession {
         } catch {
             return .refused(deliveryCode(error), "target action was refused")
         }
+    }
+
+    /// After a complete handoff, with no suspension: commit the owner's record, or recheck the captured selection for
+    /// legacy generic input. Only a `.delivered` outcome records the last input device (#370).
+    private func handedOff(
+        _ target: String, owner: HostReplyOwnership?, generation: UUID, recordsInput: Bool
+    ) -> HostDeliveryOutcome {
+        let outcome: HostDeliveryOutcome = if let owner {
+            commit(owner.context, generation: generation)
+        } else if selects(target, generation: generation) {
+            .delivered(request: nil)
+        } else {
+            .unowned("request destination changed")
+        }
+        if recordsInput, case .delivered = outcome { noteLastInput(to: target, generation: generation) }
+        return outcome
     }
 
     /// The captured selection authority: still negotiated, same selection generation, same target.

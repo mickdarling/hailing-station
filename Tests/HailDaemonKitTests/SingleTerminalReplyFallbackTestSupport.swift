@@ -21,8 +21,10 @@ func uncorrelatedDescriptor(audio: Bool = false) -> ReplyDescriptor {
 
 extension WebSocketListener {
     @discardableResult
-    func installFallbackSyntheticPeers(_ sessions: [HostSession]) -> [WebSocketPeer] {
+    func installFallbackSyntheticPeers(_ sessions: [HostSession]) async -> [WebSocketPeer] {
         readyResult = .success(0)
+        // As `accept` does: every session on this listener records into its last-input ledger (#370).
+        for session in sessions { await session.attachLastInput(lastInput) }
         return sessions.map { session in
             let id = UUID()
             let connection = NWConnection(host: "127.0.0.1", port: 9, using: .tcp)
