@@ -203,6 +203,15 @@ public actor WebSocketListener {
     private func emit(_ event: WebSocketListenerEvent) { log(event) }
 }
 
+extension AmbientAudioEvent {
+    /// The stream every event names.
+    var stream: UUID {
+        switch self {
+        case .started(let stream, _), .segment(let stream, _, _), .ended(let stream, _): stream
+        }
+    }
+}
+
 /// The listener's view of ambient listening (#203): bound once to the listener, told when a connection ends,
 /// and drained on shutdown.
 public protocol AmbientListenerWiring: AnyObject, Sendable {
@@ -398,6 +407,8 @@ public final class AmbientRightyoRouter: AmbientAudioSink, AmbientListenerWiring
     /// A retired child forced out to make room for a new device's stream (#366) gets this long after EOF, then this
     /// long after SIGTERM, before SIGKILL: about a second, then it is reaped.
     public static let forcedStopGrace: TimeInterval = 0.5
+    /// Segments of the newest start kept while it makes room: 6.4 s of 100 ms segments; the oldest is dropped.
+    public static let maxQueuedSegments = 64
 
     fileprivate struct Run {
         let connection: UUID
@@ -421,8 +432,13 @@ public final class AmbientRightyoRouter: AmbientAudioSink, AmbientListenerWiring
         var latest: [UUID: UUID] = [:]
         var retirements = 0
         /// Events waiting for the worker (#366). While a start is making room every later event queues behind it,
-        /// so the gate's order is kept; with nothing queued, events are handled at once on the gate's actor.
-        var backlog = 0
+        /// so the gate's order is kept; with nothing queued, events are handled at once on the gate's actor. Kept
+        /// small by `enqueue`: only the newest start and what still matters to a live child stay queued.
+        var queue: [AmbientAudioEvent] = []
+        var working = false
+        /// The newest stream the gate started: the only one a queued start may make room or spawn for.
+        var newestStart: UUID?
+        var peakQueue = 0
         var worker: Task<Void, Never>?
     }
     fileprivate struct WeakListener { weak var value: WebSocketListener? }
@@ -430,16 +446,16 @@ public final class AmbientRightyoRouter: AmbientAudioSink, AmbientListenerWiring
     public let configuration: Configuration
     fileprivate let state = Mutex(State())
     fileprivate let log: @Sendable (WebSocketListenerEvent) -> Void
-    /// The worker's ordered queue. Unbounded, but the gate admits at most its audio rate plus one start's room-making
-    /// (about a second) of it.
-    fileprivate let queue: AsyncStream<AmbientAudioEvent>.Continuation
+    /// Wakes the worker; signals coalesce, the events themselves are in `State.queue`.
+    fileprivate let wake: AsyncStream<Void>.Continuation
 
     public init(configuration: Configuration, log: @escaping @Sendable (WebSocketListenerEvent) -> Void = { _ in }) {
         (self.configuration, self.log) = (configuration, log)
-        let (events, queue) = AsyncStream.makeStream(of: AmbientAudioEvent.self)
-        self.queue = queue
+        let (wakes, wake) = AsyncStream.makeStream(of: Void.self, bufferingPolicy: .bufferingNewest(1))
+        self.wake = wake
         let worker = Task { [weak self] in
-            for await event in events { await self?.work(event) }
+            for await _ in wakes { await self?.drainQueue() }
+            await self?.drainQueue()
         }
         state.withLock { $0.worker = worker }
     }
@@ -459,13 +475,16 @@ public final class AmbientRightyoRouter: AmbientAudioSink, AmbientListenerWiring
             case .ended(let stream, .superseded): state.latest = state.latest.filter { $0.value != stream }
             default: break
             }
-            guard state.backlog == 0, !Self.mustMakeRoom(for: event, state) else {
-                state.backlog += 1
+            if case .started(let stream, _) = event { state.newestStart = stream }
+            // Shutting down: nothing more is queued (starts are refused inline as stopping).
+            if state.shuttingDown { return false }
+            guard state.queue.isEmpty, !state.working, !Self.mustMakeRoom(for: event, state) else {
+                Self.enqueue(event, into: &state)
                 return true
             }
             return false
         }
-        if queued { queue.yield(event) } else { handle(event) }
+        if queued { wake.yield() } else { handle(event) }
     }
 
     /// With reply control on, every admitted diagnostic batch passes through `replyPlayback` (rightyo#124).
@@ -513,7 +532,7 @@ public final class AmbientRightyoRouter: AmbientAudioSink, AmbientListenerWiring
             state.shuttingDown = true
             return state.worker
         }
-        queue.finish()
+        wake.finish()
         await worker?.value
         let pipelines = state.withLock { state in
             state.active = nil
@@ -534,12 +553,15 @@ public final class AmbientRightyoRouter: AmbientAudioSink, AmbientListenerWiring
 
     /// Runs not yet returned (tests).
     var liveRuns: Int { state.withLock { $0.runs.count } }
-    /// The stream whose child is fed audio now (tests).
+    /// The stream whose child is fed audio now, and the most events ever queued at once (tests).
     var activeStream: UUID? { state.withLock { $0.active?.stream } }
+    var peakQueue: Int { state.withLock { $0.peakQueue } }
 
-    /// Waits for queued events to be handled and every current run to return (tests).
+    /// Waits (at most 30 s) for queued events to be handled, then for every current run to return (tests).
     func settle() async {
-        while state.withLock({ $0.backlog }) > 0 { try? await Task.sleep(for: .milliseconds(10)) }
+        for _ in 0..<3_000 where state.withLock({ !$0.queue.isEmpty || $0.working }) {
+            try? await Task.sleep(for: .milliseconds(10))
+        }
         for task in state.withLock({ $0.runs.values.compactMap(\.task) }) { await task.value }
     }
 }
@@ -584,11 +606,63 @@ extension AmbientRightyoRouter {
         }
     }
 
-    /// One queued event (#366). A start first makes room, then every event is handled as it would be inline.
-    fileprivate func work(_ event: AmbientAudioEvent) async {
-        if case .started = event { await makeRoom() }
+    /// Handles queued events in order until none is left (#366).
+    fileprivate func drainQueue() async {
+        while let event = state.withLock({ state -> AmbientAudioEvent? in
+            guard !state.queue.isEmpty else {
+                state.working = false
+                return nil
+            }
+            state.working = true
+            return state.queue.removeFirst()
+        }) {
+            await work(event)
+        }
+    }
+
+    /// One queued event. A start that is no longer the newest, or that the gate already ended other than on its
+    /// final segment, is skipped: it neither forces a child out nor spawns. The newest makes room first, then
+    /// every event is handled as it would be inline.
+    private func work(_ event: AmbientAudioEvent) async {
+        if case .started(let stream, _) = event {
+            guard isLive(stream) else { return }
+            await makeRoom(for: stream)
+            guard isLive(stream) else { return }
+        }
         handle(event)
-        state.withLock { $0.backlog -= 1 }
+    }
+
+    /// The newest start, not shutting down, and not ended by the gate except on its final segment.
+    private func isLive(_ stream: UUID) -> Bool {
+        state.withLock { state in
+            guard !state.shuttingDown, state.newestStart == stream else { return false }
+            return !state.queue.contains {
+                if case .ended(stream, let reason) = $0 { reason != .final } else { false }
+            }
+        }
+    }
+
+    /// Queues `event`, keeping the queue small whatever an admitted client sends (#366): a start drops every queued
+    /// event of an older queued start (never spawned, now superseded); a segment is kept only for the newest
+    /// start, at most `maxQueuedSegments` of them, oldest dropped; an end is kept only for a stream with a child or
+    /// the newest start. What stays is the newest start and its audio plus the ends of streams with children.
+    fileprivate static func enqueue(_ event: AmbientAudioEvent, into state: inout State) {
+        switch event {
+        case .started:
+            let dead = Set(state.queue.compactMap { if case .started(let stream, _) = $0 { stream } else { nil } })
+            state.queue.removeAll { dead.contains($0.stream) }
+        case .segment(let stream, _, _):
+            guard stream == state.newestStart else { return }
+            let queued = state.queue.filter { if case .segment = $0 { true } else { false } }.count
+            if queued >= maxQueuedSegments,
+               let oldest = state.queue.firstIndex(where: { if case .segment = $0 { true } else { false } }) {
+                state.queue.remove(at: oldest)
+            }
+        case .ended(let stream, _):
+            guard stream == state.newestStart || state.runs[stream] != nil else { return }
+        }
+        state.queue.append(event)
+        state.peakQueue = max(state.peakQueue, state.queue.count)
     }
 
     /// True for a start that would find every child slot taken.
@@ -597,20 +671,28 @@ extension AmbientRightyoRouter {
         return full(state)
     }
 
+    private static func forcingOrder(_ run: Run) -> (Int, Int) {
+        (run.gateEnd == .superseded ? 0 : 1, run.retiredAt ?? 0)
+    }
+
     fileprivate static func full(_ state: State) -> Bool {
         state.runs.values.filter { !$0.reaped }.count >= maxLiveChildren || state.runs.count >= maxRuns
     }
 
     /// Forces out the oldest retired child, one at a time, until a slot is free or none is left to force: EOF,
-    /// SIGTERM after `forcedStopGrace`, SIGKILL after as long again, reaped. Its run is never cancelled; it gets
-    /// about a second more to return, and a dispatch it had not made is lost (the device moved, #366).
-    private func makeRoom() async {
+    /// SIGTERM after `forcedStopGrace`, SIGKILL after as long again, then up to 2 s for the group to settle, so up
+    /// to about 3 s each. It is counted as reaped once that returns, even if only SIGKILL had been sent by then (the
+    /// group finishes on its own). Its run is never cancelled; it gets up to 1 s more to return, and a dispatch it
+    /// had not made is lost (the device moved, #366). Only the newest live start forces anything out.
+    /// A superseded child goes first: forcing out one whose stream ended normally (final, idle) could cut off that
+    /// device's last utterance.
+    private func makeRoom(for start: UUID) async {
         while true {
             let victim = state.withLock { state -> (UUID, RightyoAmbientPipeline)? in
-                guard !state.shuttingDown, Self.full(state),
+                guard !state.shuttingDown, state.newestStart == start, Self.full(state),
                       let (stream, run) = state.runs
                         .filter({ $0.value.retiredAt != nil && !$0.value.reaped && !$0.value.forced })
-                        .min(by: { ($0.value.retiredAt ?? 0) < ($1.value.retiredAt ?? 0) }) else { return nil }
+                        .min(by: { Self.forcingOrder($0.value) < Self.forcingOrder($1.value) }) else { return nil }
                 state.runs[stream]?.forced = true
                 return (stream, run.pipeline)
             }

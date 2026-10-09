@@ -101,6 +101,36 @@ import Testing
         #expect(try audioFiles(fake).contains(Data(repeating: 7, count: 3_200)))
     }
 
+    /// Second key, round 4: an admitted client can start thousands of tiny streams in a fraction of a second. Only
+    /// the newest live start may force a child out and spawn; older queued starts are dropped, so the queue stays
+    /// small and the newest stream gets its child within about one forced stop.
+    @Test func thousandsOfTinyStartsReachTheNewestStreamQuicklyWithABoundedQueue() async throws {
+        let fake = try FakeRightyo(Self.stubborn)
+        defer { fake.cleanUp() }
+        let events = AmbientEventNames()
+        let env = try await ambientRig(fake, timing: .init(eofGrace: 1, termGrace: 1), events: events)
+        let connections = [UUID(), UUID()]
+        var previous: UUID?
+        var newest = UUID()
+        let started = ContinuousClock.now
+        for round in 0..<20_000 {
+            newest = UUID()
+            if let previous { env.router.ambientAudio(.ended(stream: previous, reason: .superseded)) }
+            env.router.ambientAudio(.started(stream: newest, connection: connections[round % 2]))
+            env.router.ambientAudio(.segment(stream: newest, sequence: 0, bytes: Data([1, 2])))
+            previous = newest
+        }
+        let last = newest
+        #expect(await eventually { env.router.activeStream == last })
+        #expect(ContinuousClock.now - started < .seconds(8))
+        let bound = AmbientRightyoRouter.maxQueuedSegments + AmbientRightyoRouter.maxRuns + 4
+        #expect(env.router.peakQueue <= bound)
+        #expect(events.all.filter { $0 == "ambient_retired_forced" }.count <= AmbientRightyoRouter.maxLiveChildren)
+        env.router.ambientAudio(.ended(stream: last, reason: .final))
+        #expect(await eventually { env.router.liveRuns == 0 })
+        await env.listener.stop(reason: "synthetic test complete")
+    }
+
     @Test func shutdownDuringAForcedStopDrainsEverything() async throws {
         let fake = try FakeRightyo(Self.stubborn)
         defer { fake.cleanUp() }

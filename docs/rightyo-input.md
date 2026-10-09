@@ -569,10 +569,14 @@ entries when it disconnects. Nothing is taken over across hosts: each daemon has
 
 Fast swaps (phone, pad, phone, pad) can leave retired children still stopping when the next start arrives. When
 every child slot is taken (`maxLiveChildren`, or `maxRuns`), the router forces the oldest retired child out
-before spawning the new one: EOF, SIGTERM after 0.5 s, SIGKILL after 0.5 s more, then reaped. It logs
-`ambient_retired_forced`. A dispatch that child had not yet made is lost, which is acceptable because the
-speaker has moved device. Its run is never cancelled. Until that start has its child, every later gate event
-waits behind it in order, then is handled as usual. With nothing waiting, events are handled at once, as
-before. A start that still finds no slot (runs stuck dispatching) is refused as busy, as before. Shutdown lets a
+before spawning the new one: EOF, SIGTERM after 0.5 s, SIGKILL after 0.5 s more, then up to 2 s to settle (about
+3 s at most), plus up to 1 s for its run to return. It logs `ambient_retired_forced`. A dispatch that child had
+not yet made is lost, which is acceptable because the speaker has moved device. Its run is never cancelled. Until
+that start has its child, later gate events wait behind it in order, then are handled as usual. With nothing
+waiting, events are handled at once, as before. The queue stays small whatever a client sends. Only the newest
+start is kept: a newer start drops an older queued start with its audio and end. That newest start keeps at most
+64 segments (oldest dropped). Only the newest start ever forces a child out or spawns, and a start the gate has
+already ended (other than on its final segment) is skipped. A superseded child is forced out before one whose
+stream ended normally, so a device's last utterance is not cut off. A start that still finds no slot (runs stuck dispatching) is refused as busy, as before. Shutdown lets a
 forced stop in progress finish, then stops and drains every child. A take-over also drops the old stream from
 its device's latest-stream record, so a forced-out child's failure is not reported to that device as a stop.
