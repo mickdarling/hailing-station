@@ -25,6 +25,25 @@ import Testing
         #expect(!keepalive.ownsSession)
     }
 
+    /// Muting a kept reply must not release the session: unmuting never reactivates it (Codex on #362).
+    @Test func mutingAKeptReplyKeepsTheSessionUntilTheReplyEnds() async {
+        let (keepalive, renderer) = Self.connected()
+        let player = DuplexPlayer()
+        let playback = ReplyPlaybackController(player: player)
+        keepalive.follow(playback)
+        keepalive.sceneActive = false
+        playback.ingest(duplexEvent())
+        keepalive.observe(hostReady: false, ambientStreaming: false)
+        #expect(renderer.calls == ["start", "stop(keep)"])
+        playback.toggleMute()
+        await settle()
+        #expect(renderer.calls == ["start", "stop(keep)"])
+        playback.toggleMute()
+        player.finish()
+        await settle()
+        #expect(renderer.calls == ["start", "stop(keep)", "stop(release)"])
+    }
+
     /// An interruption stops rendering but leaves the category installed; a policy change still releases it (#354).
     @Test func aPolicyChangeDuringAnInterruptionReleasesTheSession() {
         let (keepalive, renderer) = Self.connected()

@@ -61,7 +61,13 @@ public final class BackgroundKeepalive {
     public func follow(_ playback: ReplyPlaybackController) {
         guard !followsReplies else { return }
         followsReplies = true
-        isReplyAudible = { [weak playback] in playback?.isReplyAudioOutputBusy ?? false }
+        // An active reply holds the session even while muted: unmuting only changes the node's volume and never
+        // reactivates the session, so releasing on mute would leave the rest of the reply silent. A paused reply
+        // may release; resuming prepares the player again, which reactivates it.
+        isReplyAudible = { [weak playback] in
+            guard let playback else { return false }
+            return playback.activeKey != nil && !playback.isPaused && !playback.isCaptureSuppressed
+        }
         track(playback)
     }
 
