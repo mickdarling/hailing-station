@@ -364,7 +364,7 @@ final class AmbientAckRelay: Sendable {
                 state.gated = event.acknowledgement != nil
             }
             if event.type == "request", let turn = event.turn {
-                let skip = state.gated && event.acknowledge == false
+                let skip = state.gated && event.acknowledge == .bool(false)
                     ? AmbientAckSkip(followUp: event.decision?.followUp == true, confidence: event.decision?.confidence)
                     : nil
                 // Raw times only: this line is not validated yet, so nothing is computed from them here.

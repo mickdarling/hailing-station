@@ -85,6 +85,15 @@ import Testing
         #expect(recorder.skips.all.isEmpty)
     }
 
+    /// A malformed value never refuses the stream (#360): only a literal `false` skips.
+    @Test func aMalformedFieldStillAcknowledges() throws {
+        let recorder = try Recorder(started: Self.gatedStart)
+        recorder.admit(try Self.request(extra: #""acknowledge": "false","#))
+        recorder.admit(try Self.request(extra: #""acknowledge": 0,"#))
+        #expect(recorder.acks.all.count == 2)
+        #expect(recorder.skips.all.isEmpty)
+    }
+
     /// Like `conversation` (rightyo#82), the field means something only on a session that advertised it.
     @Test func anUnadvertisedSessionIgnoresTheField() throws {
         let recorder = try Recorder(started: Self.plainStart)

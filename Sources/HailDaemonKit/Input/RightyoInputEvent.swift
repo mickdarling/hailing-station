@@ -88,8 +88,9 @@ public struct RightyoInputEvent: Codable, Sendable {
     let conversation: JSONValue?, state: String?, atMs: Int?, untilMs: Int?, cooldownUntilMs: Int?
     /// Acknowledgement gating (rightyo#132): advertised once at `started` (presence only, kept raw like
     /// `addressing`), then `acknowledge` rides on each `request`. Only the acknowledgement voice reads either, and
-    /// neither ever refuses the stream: a stray or missing value just means "acknowledge".
-    let acknowledgement: JSONValue?, acknowledge: Bool? // swiftlint:disable:this discouraged_optional_boolean
+    /// neither ever refuses the stream: both stay raw JSON, so only a literal `false` skips and any other value
+    /// acknowledges.
+    let acknowledgement: JSONValue?, acknowledge: JSONValue?
     public static func decode(_ data: Data) throws -> Self {
         guard !data.isEmpty, data.count <= 1_200_000 else { throw RightyoInputError.capacity }
         let decoder = JSONDecoder()
