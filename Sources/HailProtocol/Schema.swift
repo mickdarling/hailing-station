@@ -159,7 +159,7 @@ public enum Schema {
                 ]),
                 "capabilities": .object(["type": .string("array"), "items": .object(["type": .string("string")])]),
                 "deviceName": .object(["type": .string("string")]),
-                "deviceKind": .object(["type": .string("string")])
+                "deviceKind": .object(["enum": .array(AmbientTakeOver.deviceKinds.map(JSONValue.string))])
             ]),
             "targets": .object([
                 "type": .string("array"),
