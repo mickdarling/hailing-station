@@ -1,7 +1,3 @@
-#if os(iOS)
-import AVFAudio
-public import Foundation
-#endif
 import Observation
 
 /// Keeps the station running in the background while a host is connected (#352), so tap-to-talk keeps its connection
@@ -28,15 +24,22 @@ public protocol BackgroundKeepaliveRendering: AnyObject {
 
 /// Starts and stops the renderer as the policy's inputs change. After an interruption or a failed start it waits
 /// for the interruption to end with `shouldResume` or for the policy to stop wanting it: it never fights for audio.
+/// `ownsSession` outlives `isRunning`, so whenever the policy stops wanting it (#354), a session the keepalive
+/// configured is released: after an interruption, or once a reply that kept it active has finished.
 @MainActor
 public final class BackgroundKeepalive {
     public private(set) var isRunning = false
+    /// False only once the scene is in the background, not merely inactive (#354).
     public var sceneActive = true { didSet { update() } }
     private(set) var hostReady = false
     private(set) var ambientStreaming = false
     /// While true, stopping leaves the session active so the reply keeps playing.
     public var isReplyAudible: @MainActor () -> Bool = { false }
+    /// Set by a start, cleared only by a releasing stop: an interruption or an audible reply stops rendering but
+    /// leaves the keepalive's category installed, and a later releasing stop must still restore it.
+    private(set) var ownsSession = false
     private var held = false
+    private var followsReplies = false
     private let renderer: any BackgroundKeepaliveRendering
 
     public init(renderer: any BackgroundKeepaliveRendering) {
@@ -54,6 +57,26 @@ public final class BackgroundKeepalive {
         observe(hostReady: ready, ambientStreaming: streaming)
     }
 
+    /// Follows reply audibility, so a session left active for an audible reply is released once it ends (#354).
+    public func follow(_ playback: ReplyPlaybackController) {
+        guard !followsReplies else { return }
+        followsReplies = true
+        isReplyAudible = { [weak playback] in playback?.isReplyAudioOutputBusy ?? false }
+        track(playback)
+    }
+
+    private func track(_ playback: ReplyPlaybackController) {
+        withObservationTracking {
+            _ = (playback.activeKey, playback.isPaused, playback.isMuted, playback.isCaptureSuppressed)
+        } onChange: { [weak self, weak playback] in
+            Task { @MainActor in
+                guard let self, let playback else { return }
+                self.track(playback)
+                self.update()
+            }
+        }
+    }
+
     func observe(hostReady: Bool, ambientStreaming: Bool) {
         self.hostReady = hostReady
         self.ambientStreaming = ambientStreaming
@@ -61,11 +84,15 @@ public final class BackgroundKeepalive {
     }
 
     /// Someone else deactivated the session under the keepalive: ambient listening releasing it as it ends in the
-    /// background. Rendering starts again in a fresh session.
+    /// background. Rendering starts again in a fresh session, and a start that failed while ambient still held the
+    /// session gets its retry now (#354).
     public func sessionWasReleased() {
-        guard isRunning else { return }
-        renderer.stop(releasingSession: false)
-        isRunning = false
+        guard isRunning || held || ownsSession else { return }
+        if isRunning {
+            renderer.stop(releasingSession: false)
+            isRunning = false
+        }
+        held = false
         update()
     }
 
@@ -73,18 +100,27 @@ public final class BackgroundKeepalive {
         let wanted = BackgroundKeepalivePolicy.shouldRun(
             sceneActive: sceneActive, hostReady: hostReady, ambientStreaming: ambientStreaming
         )
-        if !wanted { held = false }
-        if wanted, !held, !isRunning {
+        if wanted {
+            guard !held, !isRunning else { return }
             do {
                 try renderer.start()
                 isRunning = true
+                ownsSession = true
             } catch {
+                // The renderer released whatever it had configured before throwing.
+                ownsSession = false
                 held = true
             }
-        } else if !wanted, isRunning {
-            renderer.stop(releasingSession: !isReplyAudible())
-            isRunning = false
+            return
         }
+        held = false
+        guard isRunning || ownsSession else { return }
+        let releasing = !isReplyAudible()
+        // Not rendering and a reply still audible: nothing to do until the reply ends.
+        guard isRunning || releasing else { return }
+        renderer.stop(releasingSession: releasing)
+        isRunning = false
+        if releasing { ownsSession = false }
     }
 
     private func handle(_ event: BackgroundKeepaliveEvent) {
@@ -101,100 +137,3 @@ public final class BackgroundKeepalive {
         }
     }
 }
-
-#if os(iOS)
-/// Loops silence through an output-only engine: iOS keeps an audio-background app running only while it renders.
-/// `.playback` with `.mixWithOthers` has no input (no mic, no indicator) and leaves other apps' audio undisturbed;
-/// replies arriving meanwhile play within it (`PCM16AudioPlayer`). A releasing stop deactivates with
-/// `.notifyOthersOnDeactivation` and restores the category it found.
-@MainActor
-public final class SilentAudioKeepalive: NSObject, BackgroundKeepaliveRendering {
-    public var onEvent: (@MainActor (BackgroundKeepaliveEvent) -> Void)?
-    private let session = AVAudioSession.sharedInstance()
-    private var engine: AVAudioEngine?
-    /// What the keepalive found, restored when it releases the session. Station audio always uses the default mode.
-    private var found: (category: AVAudioSession.Category, options: AVAudioSession.CategoryOptions)?
-
-    override public init() {
-        super.init()
-        let center = NotificationCenter.default
-        center.addObserver(self, selector: #selector(interruption), name: AVAudioSession.interruptionNotification,
-                           object: session)
-    }
-
-    public func start() throws {
-        if !holdsCategory { found = (session.category, session.categoryOptions) }
-        do {
-            try session.setCategory(.playback, mode: .default, options: [.mixWithOthers])
-            try session.setActive(true)
-            try startEngine()
-        } catch {
-            stop(releasingSession: true)
-            throw error
-        }
-    }
-
-    public func stop(releasingSession: Bool) {
-        if let engine {
-            NotificationCenter.default.removeObserver(self, name: .AVAudioEngineConfigurationChange, object: engine)
-            engine.stop()
-        }
-        engine = nil
-        guard releasingSession else { return }
-        try? session.setActive(false, options: .notifyOthersOnDeactivation)
-        if holdsCategory, let found { try? session.setCategory(found.category, mode: .default, options: found.options) }
-        found = nil
-    }
-
-    /// Still the category the keepalive set: nothing (tap-to-talk, ambient) has configured the session since.
-    private var holdsCategory: Bool {
-        session.category == .playback && session.categoryOptions.contains(.mixWithOthers)
-    }
-
-    private func startEngine() throws {
-        guard let format = AVAudioFormat(standardFormatWithSampleRate: 44_100, channels: 1),
-              let silence = AVAudioPCMBuffer(pcmFormat: format, frameCapacity: 4_410),
-              let samples = silence.floatChannelData?.pointee else { throw ReplyAudioPlayerError.invalidBuffer }
-        silence.frameLength = silence.frameCapacity
-        samples.update(repeating: 0, count: Int(silence.frameLength))
-        let engine = AVAudioEngine()
-        let node = AVAudioPlayerNode()
-        engine.attach(node)
-        engine.connect(node, to: engine.mainMixerNode, format: format)
-        node.scheduleBuffer(silence, at: nil, options: .loops)
-        try engine.start()
-        node.play()
-        self.engine = engine
-        let center = NotificationCenter.default
-        center.addObserver(self, selector: #selector(configurationChanged), name: .AVAudioEngineConfigurationChange,
-                           object: engine)
-    }
-
-    /// A route change stops the engine; restart it, or report the stop if that fails.
-    private func restart() {
-        guard let engine, !engine.isRunning else { return }
-        stop(releasingSession: false)
-        do { try startEngine() } catch { onEvent?(.interrupted) }
-    }
-
-    private func interrupted(began: Bool, shouldResume: Bool) {
-        if !began {
-            onEvent?(.interruptionEnded(shouldResume: shouldResume))
-        } else if engine != nil {
-            stop(releasingSession: false)
-            onEvent?(.interrupted)
-        }
-    }
-
-    // AVFoundation posts these off the main thread.
-    @objc nonisolated private func configurationChanged() { Task { @MainActor in self.restart() } }
-
-    @objc nonisolated private func interruption(_ notification: Notification) {
-        let type = notification.userInfo?[AVAudioSessionInterruptionTypeKey] as? UInt
-        let options = notification.userInfo?[AVAudioSessionInterruptionOptionKey] as? UInt ?? 0
-        let began = type == AVAudioSession.InterruptionType.began.rawValue
-        let shouldResume = AVAudioSession.InterruptionOptions(rawValue: options).contains(.shouldResume)
-        Task { @MainActor in self.interrupted(began: began, shouldResume: shouldResume) }
-    }
-}
-#endif

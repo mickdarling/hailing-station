@@ -110,7 +110,7 @@ import Testing
         #expect(keepalive.ambientStreaming)
     }
 
-    private static func connected() -> (BackgroundKeepalive, FakeKeepaliveRenderer) {
+    static func connected() -> (BackgroundKeepalive, FakeKeepaliveRenderer) {
         let renderer = FakeKeepaliveRenderer()
         let keepalive = BackgroundKeepalive(renderer: renderer)
         keepalive.observe(hostReady: true, ambientStreaming: false)
