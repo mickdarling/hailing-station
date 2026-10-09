@@ -206,7 +206,8 @@ the phone hears it. For the target `tmux:demo` it is, byte for byte (it begins w
 - Dry run (`--dry-run`) validates and prints receipts; it forms no prompt, so no block exists and the fixture
   dry-run output is unchanged. No receipt includes the prompt or the block.
 - **Ambient requests name a reply reference** ([#230](https://github.com/mickdarling/hailing-station/issues/230)).
-  An ambient request dispatched in process by the daemon has its trailing block rewritten
+  An ambient request that the daemon dispatches in process to a plain legacy target (such as `tmux:`; never a
+  contextual bridge) has its trailing block rewritten
   (`RightyoInputEvent.referencing`) to name a host-minted reference, for `tmux:demo`:
 
   ```

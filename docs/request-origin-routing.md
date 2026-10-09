@@ -81,9 +81,16 @@ haild reply <target> --request <reference> --say '<spoken answer>'
 
 The reference is a routing handle, not an origin claim:
 
-- `WebSocketListener.dispatchAmbient` mints a fresh UUID in the daemon for each admitted ambient request and
-  rewrites only the prompt's trailing request-less block for that target (`RightyoInputEvent.referencing`). It is
-  bound only for that one dispatch (`HostSession.ambientReplyReference`, a task-local). The local socket's
+- **Plain legacy targets only** (an adapter without contextual delivery, such as `tmux:`). For each admitted
+  ambient request to such a target, `WebSocketListener.referenceAmbient` mints a fresh UUID in the daemon. It
+  rewrites only the prompt's trailing request-less block for that target (`RightyoInputEvent.referencing`).
+  A contextual adapter (`tmux-reply:`, the Codex app-server adapter, any `ProviderContextDelivering`) gets no
+  reference and its original block. The UUID never enters a bridge's model prompt, and the bridge keeps its own
+  out-of-band context id, as the programmatic-bridge rules above require. The session enforces this too: a
+  contextual adapter never adopts a bound reference as its context id.
+- The rewrite happens before the fail-closed `ambient-dispatch` audit record, so the record's byte count is the
+  size of the prompt actually dispatched. The reference is then bound only for that one dispatch
+  (`HostSession.ambientReplyReference`, a task-local). The local socket's
   `dispatch` request kind, `haild rightyo --reply-to`, phone text frames and every other ingress path cannot set
   it, and they are unchanged.
 - The connection's own `HostSession` records it in `replyRequests`. The record goes through the same ingress path
@@ -122,7 +129,7 @@ frames to plain tmux still create no record. The sourceHostMismatch host-identit
   turned off.
 
 Verification is synthetic only (`AmbientReplyReferenceTests`, `AmbientReplyReferenceRoutingTests`,
-`AmbientWiringReplyReferenceTests`). It is not device hearing, and nothing here changes the running daemon or
+`AmbientReplyReferenceScopeTests`, `AmbientWiringReplyReferenceTests`). It is not device hearing, and nothing here changes the running daemon or
 installed builds until deployed.
 
 ## Explicit programmatic tmux bridge input (prerequisite)

@@ -1,3 +1,4 @@
+#if os(macOS)
 import Foundation
 import HailProtocol
 import Testing
@@ -19,7 +20,7 @@ import Testing
             for origin in [0, 1, 0] {
                 let connection = try await listener.sessionConnection(of: connected.all[origin])
                 let owner = try #require(
-                    try await listener.dispatchAmbient(LegacyReferenceRig.request(connection: connection))
+                    try await ambientDispatch(listener, LegacyReferenceRig.request(connection: connection))
                 )
                 // The pane received the prompt with the reference in its own trailing block.
                 let typed = try #require(await rig.adapter.deliveries.last?.text)
@@ -68,7 +69,7 @@ import Testing
     ) async throws {
         let first = try await listener.sessionConnection(of: connected.all[0])
         let second = try await listener.sessionConnection(of: connected.all[1])
-        let owner = try #require(try await listener.dispatchAmbient(LegacyReferenceRig.request(connection: first)))
+        let owner = try #require(try await ambientDispatch(listener, LegacyReferenceRig.request(connection: first)))
         // Unknown, and the right reference on the wrong target: refused, never redirected or broadcast.
         await #expect(throws: LocalReplyRefusal.noRecipient) {
             try await listener.publish(recipientText(referenceDescriptor(UUID())))
@@ -82,7 +83,7 @@ import Testing
             try await listener.publish(recipientText(referenceDescriptor(owner)))
         }
         // The other device's reference stops working once it disconnects; nobody else hears it.
-        let gone = try #require(try await listener.dispatchAmbient(LegacyReferenceRig.request(connection: second)))
+        let gone = try #require(try await ambientDispatch(listener, LegacyReferenceRig.request(connection: second)))
         pair.sockets[1].cancel(with: .normalClosure, reason: nil)
         #expect(await eventually { await listener.peers.count == 1 })
         await #expect(throws: LocalReplyRefusal.noRecipient) {
@@ -100,7 +101,7 @@ import Testing
         do {
             let connection = try await listener.sessionConnection(of: connected.all[0])
             let owner = try #require(
-                try await listener.dispatchAmbient(LegacyReferenceRig.request(connection: connection))
+                try await ambientDispatch(listener, LegacyReferenceRig.request(connection: connection))
             )
             await rig.adapter.setTargets([AdapterTarget(name: "reply", binding: "rebound")])
             await #expect(throws: LocalReplyRefusal.publicationFailed) {
@@ -118,3 +119,4 @@ import Testing
         await listener.stop(reason: "synthetic test complete")
     }
 }
+#endif

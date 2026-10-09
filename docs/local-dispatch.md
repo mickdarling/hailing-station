@@ -105,8 +105,8 @@ cooperative gate merely by being listed. A contextual adapter that lacks the lea
 (`deliveryRefused`) before any handoff, as the phone path does.
 
 The in-process ambient dispatch ([#230](https://github.com/mickdarling/hailing-station/issues/230)) is the one
-exception, and it is not reachable over this socket. `WebSocketListener.dispatchAmbient` mints a reply reference,
-writes it into the prompt's reply block, and binds it for that one handoff. The session then records it, unleased,
+exception, and it is not reachable over this socket. For a plain legacy target only, `WebSocketListener.referenceAmbient`
+mints a reply reference and writes it into the prompt's reply block, and `dispatchAmbient` binds it for that one handoff. The session then records it, unleased,
 for the named connection, and the answer carries it as `request`. Still no lease is invented: the record's binding
 is re-read from the listing before each reply enqueue instead
 ([request-origin-routing.md](request-origin-routing.md#ambient-reply-references-on-plain-tmux-targets-230)). A

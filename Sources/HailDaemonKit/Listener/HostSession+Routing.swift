@@ -26,8 +26,9 @@ struct HostReplyOwnership {
 
 extension HostSession {
     /// The opaque reply reference `WebSocketListener.dispatchAmbient` minted for one ambient handoff and wrote into
-    /// that prompt's reply block (#230), bound only for the duration of that dispatch. It names the request record
-    /// this session mints for its own connection, selection generation and exact target binding; it is a routing
+    /// that prompt's reply block (#230), bound only for the duration of that dispatch. On a legacy adapter only, it
+    /// names the request record this session mints for its own connection, selection generation and exact target
+    /// binding; a contextual adapter ignores it and keeps its own out-of-band context id. It is a routing
     /// handle, not origin evidence, and nothing a client or the local socket sends can set it.
     @TaskLocal static var ambientReplyReference: UUID?
 
@@ -156,19 +157,22 @@ extension HostSession {
         guard let listed = listing.first(where: { $0.info.id == target }), let binding = listed.binding,
               listed.info.alive else { throw HostError.unknownTarget(target) }
         if let expected = input.expectedBinding, expected != binding { throw HostError.denied(.rebound(target)) }
-        let reference = Self.ambientReplyReference
-        let context = ProviderTurnContext(
-            id: reference ?? UUID(), utteranceID: input.utteranceID, connectionID: connectionID,
+        var context = ProviderTurnContext(
+            utteranceID: input.utteranceID, connectionID: connectionID,
             binding: try .init(hostID: hostName, providerID: listed.info.kind, targetID: target, sessionID: binding)
         )
         let contextual: Bool
         do {
+            // A contextual adapter always keeps its own fresh, out-of-band context id; a bound ambient reference is
+            // never used for it, so the id cannot be one a model prompt carried.
             try await host.registry.requireInputDelivery(to: target, context: context, lineCount: 1)
             contextual = true
         } catch RegistryError.contextualDeliveryUnsupported {
             // Legacy generic input cannot establish a private reply recipient on its own. Only a reference the host
             // minted for this ambient handoff and wrote into its reply block (#230) is recorded, host-side, unleased.
-            guard reference != nil else { return nil }
+            guard let reference = Self.ambientReplyReference else { return nil }
+            context = ProviderTurnContext(id: reference, utteranceID: context.utteranceID,
+                                          connectionID: context.connectionID, binding: context.binding)
             contextual = false
         }
         // Listings are snapshots, not leases. Contextual adapters without cooperative binding authority

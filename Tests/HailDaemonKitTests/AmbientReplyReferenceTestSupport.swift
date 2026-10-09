@@ -80,3 +80,12 @@ func blockReference(in prompt: String) -> UUID? {
     guard let range = prompt.range(of: " --request ", options: .backwards) else { return nil }
     return UUID(uuidString: String(prompt[range.upperBound...].prefix(36)))
 }
+
+#if os(macOS)
+/// The daemon's own ambient delivery step (reference first, then the audit record, then the dispatch).
+func ambientDispatch(
+    _ listener: WebSocketListener, _ request: LocalDispatchRequest, audit: AuditLog? = nil
+) async throws -> UUID? {
+    try await AmbientListenerDispatcher(listener: listener, audit: audit).dispatch(request)
+}
+#endif
