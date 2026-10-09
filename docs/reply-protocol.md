@@ -43,7 +43,8 @@ The wire carries two things for this, and each names a device only by its class 
 `AmbientTakeOver.deviceKinds`), never by its name:
 
 - `hello.deviceKind` (optional) is the device's own class. An older device leaves it out. A host keeps a value
-  only when it matches the vocabulary byte for byte; any other value decodes as absent and never fails the hello.
+  only when it matches the vocabulary byte for byte; any other value fails the hello. Schema and decoder are both
+  strict (only `phone`, `pad` or `mac`), so a device name can never be sent here. Absent stays valid.
 - The previous device's next segment is refused with `not_allowed` and the message `ambient moved to <class>`,
   or `ambient moved to another device` when the new device did not give a class. It is an ordinary
   `ambient`-prefixed refusal, so an older device stops as it did before. A newer device shows it as a move, not as

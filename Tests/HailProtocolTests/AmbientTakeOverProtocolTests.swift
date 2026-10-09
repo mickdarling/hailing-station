@@ -45,11 +45,12 @@ import Testing
             #"{"command":"hello","hello":{"versions":[1],"capabilities":[],"deviceName":"x","deviceKind":"pad"}}"#
         )
         #expect(pad == .hello(HelloInfo(versions: [1], capabilities: [], deviceName: "x", deviceKind: "pad")))
-        // An unknown class never fails a hello (a newer device stays compatible); it is simply not kept.
-        let named = try decodeControl(
-            #"{"command":"hello","hello":{"versions":[1],"capabilities":[],"deviceName":"x","deviceKind":"Mick"}}"#
-        )
-        #expect(named == .hello(HelloInfo(versions: [1], capabilities: [], deviceName: "x")))
+        // Strict: a value outside the vocabulary (here a device name) fails the hello.
+        #expect(throws: DecodingError.self) {
+            try decodeControl(
+                #"{"command":"hello","hello":{"versions":[1],"capabilities":[],"deviceName":"x","deviceKind":"Mick"}}"#
+            )
+        }
         #expect(HelloInfo(versions: [1], capabilities: [], deviceName: "x", deviceKind: "tv").deviceKind == nil)
         // Without a class the encoded hello is byte-identical to an older build's.
         #expect(!(try roundTrip(.hello(HelloInfo(versions: [1], capabilities: [], deviceName: "x"))))

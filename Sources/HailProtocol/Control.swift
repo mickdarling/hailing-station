@@ -29,7 +29,7 @@ public struct HelloInfo: Codable, Sendable, Equatable {
     public var capabilities: [String]
     public var deviceName: String
     /// The device's class only (#366): `phone`, `pad` or `mac` from `AmbientTakeOver.deviceKinds`, never its
-    /// name. Optional, so an older peer's hello is unchanged; a value outside the vocabulary decodes as nil.
+    /// name. Optional, so an older peer's hello is unchanged; a value outside the vocabulary fails the hello.
     public var deviceKind: String?
 
     public init(versions: [Int], capabilities: [String], deviceName: String, deviceKind: String? = nil) {
@@ -44,7 +44,15 @@ public struct HelloInfo: Codable, Sendable, Equatable {
         versions = try container.decode([Int].self, forKey: .versions)
         capabilities = try container.decode([String].self, forKey: .capabilities)
         deviceName = try container.decode(String.self, forKey: .deviceName)
-        deviceKind = AmbientTakeOver.deviceKind(try? container.decodeIfPresent(String.self, forKey: .deviceKind))
+        let rawKind = try container.decodeIfPresent(String.self, forKey: .deviceKind)
+        deviceKind = AmbientTakeOver.deviceKind(rawKind)
+        // Strict: we control every client, so a kind outside the vocabulary is a bug, not a future value.
+        guard rawKind == nil || deviceKind != nil else {
+            let context = DecodingError.Context(
+                codingPath: decoder.codingPath + [CodingKeys.deviceKind], debugDescription: "unknown device kind"
+            )
+            throw DecodingError.dataCorrupted(context)
+        }
         guard !versions.isEmpty else {
             let context = DecodingError.Context(codingPath: decoder.codingPath, debugDescription: "no versions")
             throw DecodingError.dataCorrupted(context)
