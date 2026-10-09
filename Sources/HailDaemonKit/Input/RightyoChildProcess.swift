@@ -79,14 +79,15 @@ public final class RightyoChildProcess: Sendable {
     /// Close stdin, wait `eofGrace`, SIGTERM the group, wait `termGrace`, SIGKILL the group; returns once the rest
     /// of the group has been ended too (see `RightyoChildGroup`) and the child is reaped. Bounded: at most
     /// `eofGrace + 3 * termGrace + 1` seconds (10 s with the defaults); past that it returns the exit seen so far,
-    /// or SIGKILL, and the group finishes its cleanup on its own.
-    @discardableResult public func stop() async -> RightyoChildExit {
-        closeInput()
-        if await group.exit.wait(timeout: timing.eofGrace) == nil {
+    /// or SIGKILL, and the group cleans up on its own. Explicit graces (#366) replace the child's timing.
+    @discardableResult public func stop(eofGrace: TimeInterval? = nil, termGrace: TimeInterval? = nil) async
+        -> RightyoChildExit {
+        let (eofGrace, termGrace) = (eofGrace ?? timing.eofGrace, termGrace ?? timing.termGrace); closeInput()
+        if await group.exit.wait(timeout: eofGrace) == nil {
             group.signal(SIGTERM)
-            if await group.exit.wait(timeout: timing.termGrace) == nil { group.signal(SIGKILL) }
+            if await group.exit.wait(timeout: termGrace) == nil { group.signal(SIGKILL) }
         }
-        let settled = await group.settled.wait(timeout: 2 * timing.termGrace + 1)
+        let settled = await group.settled.wait(timeout: 2 * termGrace + 1)
         return settled ?? group.exit.value ?? .signaled(SIGKILL)
     }
 }
