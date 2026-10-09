@@ -235,6 +235,11 @@ struct AmbientListeningCard: View {
                     .background(.red, in: Capsule())
                     .accessibilityLabel("Listening: sending microphone audio to \(hostName)")
                     .accessibilityIdentifier("station.ambient-listening")
+            } else if let handoff = controller.handoff, case .movedAway = handoff {
+                // Another device took listening over (#366): where it went, not an error, and one tap back.
+                AmbientMovedAwayView(handoff: handoff) {
+                    Task { await controller.turnOn(for: binding) }
+                }
             } else if let reason = controller.stopReason {
                 Text(reason)
                     .font(.footnote)
@@ -245,7 +250,18 @@ struct AmbientListeningCard: View {
                     .font(.footnote)
                     .foregroundStyle(.secondary)
             }
+            if controller.isListening, let handoff = controller.handoff, case .movedHere = handoff {
+                // This device took listening over (#366): a brief, calm confirmation.
+                Label(handoff.status, systemImage: "checkmark.circle.fill")
+                    .font(.subheadline.weight(.semibold))
+                    .foregroundStyle(.secondary)
+                    .symbolRenderingMode(.multicolor)
+                    .transition(.opacity)
+                    .accessibilityLabel(handoff.accessibilityLabel)
+                    .accessibilityIdentifier("station.ambient-moved-here")
+            }
         }
+        .animation(.easeInOut(duration: 0.25), value: controller.handoff)
         .padding(16)
         .frame(maxWidth: .infinity, alignment: .leading)
         .background(.regularMaterial, in: RoundedRectangle(cornerRadius: 20, style: .continuous))
@@ -255,8 +271,12 @@ struct AmbientListeningCard: View {
         .onChange(of: scenePhase) { _, _ in
             Task { await controller.update(binding: binding, scene: scene) }
         }
+        .onAppear {
+            connections.onAmbientMovedHere = { [controller] host, from in controller.movedHere(from: from, host: host) }
+        }
         .onDisappear {
             connections.ambientStreaming = false
+            connections.onAmbientMovedHere = nil
             Task { await controller.destinationLost() }
         }
         .onAppear { echoGuard.masksDuringReplies = masksDuringReplies }
@@ -268,6 +288,72 @@ struct AmbientListeningCard: View {
         case .active: .active
         case .background: .background
         default: .inactive
+        }
+    }
+}
+
+/// Ambient listening moved to another device (#366). Calm and glanceable from across the room: which device has
+/// it now, and one large "Listen here" that starts listening on this device, the same take-over in reverse. Side by
+/// side when there is room, stacked on a narrow card.
+struct AmbientMovedAwayView: View {
+    let handoff: AmbientHandoff
+    let listenHere: () -> Void
+
+    var body: some View {
+        ViewThatFits(in: .horizontal) {
+            HStack(spacing: 16) {
+                status
+                Spacer(minLength: 8)
+                button
+            }
+            VStack(alignment: .leading, spacing: 12) {
+                status
+                button
+            }
+        }
+        .padding(14)
+        .frame(maxWidth: .infinity, alignment: .leading)
+        .background(Color.accentColor.opacity(0.12), in: RoundedRectangle(cornerRadius: 16, style: .continuous))
+        .accessibilityElement(children: .contain)
+        .accessibilityIdentifier("station.ambient-moved")
+    }
+
+    private var status: some View {
+        Label {
+            Text(handoff.status)
+                .font(.title3.weight(.semibold))
+                .foregroundStyle(.primary)
+                .fixedSize(horizontal: false, vertical: true)
+        } icon: {
+            Image(systemName: symbol)
+                .font(.title2)
+                .foregroundStyle(Color.accentColor)
+        }
+        .accessibilityElement(children: .combine)
+        .accessibilityLabel(handoff.accessibilityLabel)
+        .accessibilityIdentifier("station.ambient-moved-status")
+    }
+
+    private var button: some View {
+        Button(action: listenHere) {
+            Label(AmbientHandoff.listenHereTitle, systemImage: "ear")
+                .font(.headline)
+                .padding(.horizontal, 6)
+        }
+        .buttonStyle(.borderedProminent)
+        .controlSize(.large)
+        .accessibilityHint("Starts ambient listening on this device")
+        .accessibilityIdentifier("station.ambient-listen-here")
+    }
+
+    /// The device that has listening now, by class only.
+    private var symbol: String {
+        guard case .movedAway(let kind) = handoff else { return "arrow.right.circle" }
+        switch kind {
+        case "pad": return "ipad.landscape"
+        case "phone": return "iphone"
+        case "mac": return "laptopcomputer"
+        default: return "arrow.right.circle"
         }
     }
 }

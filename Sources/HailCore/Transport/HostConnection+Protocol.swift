@@ -8,8 +8,9 @@ extension HostConnection {
         try await send(
             .hello(HelloInfo(
                 versions: VersionNegotiation.supported,
-                capabilities: ["connectivity_lab", PlaybackStop.capability],
-                deviceName: deviceName
+                capabilities: ["connectivity_lab", PlaybackStop.capability, AmbientTakeOver.capability],
+                // The device's class only (#366), so a host can say "moved to iPad"; never its name.
+                deviceName: deviceName, deviceKind: AmbientHandoff.localDeviceKind
             )),
             generation: token
         )
@@ -36,8 +37,8 @@ extension HostConnection {
             throw HostConnectionFailure.incompatibleVersion
         }
         switch frame.payload {
-        case .control(.stopPlayback):
-            // To the reply player (#309), like reply frames; it needs no reply capability, since it only stops.
+        case .control(.stopPlayback), .control(.ambientMovedHere):
+            // Like reply frames, needing no reply capability: a stop (#309) and a take-over notice (#366).
             await replyObserver(HostReplyEvent(endpointID: snapshot.id, frame: frame))
         case .control(let control):
             try await process(control)
