@@ -110,10 +110,10 @@ import Testing
         #expect(try await recipientSocketReceive(on: pair.sockets[1]) == correlated)
         // The owner's duplicate is a correlated refusal; it never falls back to the other selector.
         await #expect(throws: LocalReplyRefusal.noRecipient) { try await listener.publish(correlated) }
-        // Two selecting connections: the flag changes nothing, and nobody hears a request-less reply.
-        await #expect(throws: LocalReplyRefusal.notUniqueRecipient) {
-            try await listener.publish(recipientText(uncorrelatedDescriptor()))
-        }
+        // Two selecting connections: a request-less reply goes to the last input device (#370), never the other.
+        let requestless = recipientText(uncorrelatedDescriptor())
+        try #require(await listener.publish(requestless) == 1)
+        #expect(try await recipientSocketReceive(on: pair.sockets[1]) == requestless)
         try await pair.barrier()
     }
 

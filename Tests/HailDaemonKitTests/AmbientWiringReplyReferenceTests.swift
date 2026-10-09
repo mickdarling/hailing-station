@@ -62,10 +62,10 @@ import Testing
             #expect(try await recipientSocketReceive(on: pair.sockets[0]) == frame)
         }
         try await pair.barrier()
-        // Without the reference the reply is as ambiguous as before #230 and reaches neither device.
-        await #expect(throws: LocalReplyRefusal.notUniqueRecipient) {
-            try await listener.publish(recipientText(referenceDescriptor(nil)))
-        }
+        // Without the reference the reply goes to the streaming device, the target's last input device (#370).
+        let requestless = recipientText(referenceDescriptor(nil))
+        #expect(try await listener.publish(requestless) == 1)
+        #expect(try await recipientSocketReceive(on: pair.sockets[0]) == requestless)
         try await pair.barrier()
     }
 }

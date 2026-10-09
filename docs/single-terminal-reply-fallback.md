@@ -18,8 +18,12 @@ Since [#230](https://github.com/mickdarling/hailing-station/issues/230), ambient
 target no longer depend on this fallback. Their reply block names a host-minted reply reference (`haild reply
 <target> --request <reference> --say …`), which reaches only the device that streamed the audio, even when
 several devices select the target ([request-origin-routing.md](request-origin-routing.md#ambient-reply-references-on-plain-tmux-targets-230)).
-The fallback below is unchanged and still serves request-less replies only. With two or more selecting
-connections, it still refuses them `notUniqueRecipient`.
+Since [#370](https://github.com/mickdarling/hailing-station/issues/370), a request-less reply first goes to the
+target's **last input device**: the connection that most recently sent that target input, by ambient or
+tap-to-talk, while it still selects the target on the same selection and within 10 minutes
+([request-origin-routing.md](request-origin-routing.md#unified-reply-routing-the-last-input-device-370)). The
+single-selector rule below is the fallback when there is no such device. Two or more selecting connections are
+refused `notUniqueRecipient` only then.
 
 ## The rule
 
@@ -34,7 +38,10 @@ requester's answer to another phone.
 1. The correlated scan runs first, unchanged. A reply whose request is owned by a connection goes only to
    that owner, pending handoffs still answer `requestPending`, and ambiguous owners still answer
    `notUniqueRecipient`. The flag never changes a correlated reply's recipient.
-2. If no owner exists and the reply is request-less, every live negotiated connection is asked whether it
+2. If no owner exists and the reply is request-less, the target's last input device (#370) receives it when it
+   is still live, still selects the target on the same selection generation, its input is under 10 minutes old,
+   and the host would issue a reply permit for the exact target binding. Several selecting connections do not
+   matter here. Otherwise the steps below run unchanged: every live negotiated connection is asked whether it
    currently selects the reply's target and whether the host would issue a reply permit for that exact
    target binding right now.
 3. **Exactly one** selecting connection receives the reply. Zero selecting connections answers
@@ -48,8 +55,10 @@ requester's answer to another phone.
    may fall back; on a single-terminal host the consequence is the same phone hearing it.
 
 The check lives in the listener's publication path (`HostReplyDelivery.swift`). It reads the existing
-`WebSocketListener.peers` set and each `HostSession`'s `selectedTarget`, `state` and `replyRequests`;
-no second registry or selection cache is introduced.
+`WebSocketListener.peers` set and each `HostSession`'s `selectedTarget`, `state` and `replyRequests`. The only
+added state is #370's host-side last-input ledger, which names a connection and selection generation, never a
+selection cache: selection is still read from the session at delivery. Every frame of a request-less reply after
+the first goes only to the connection that received the first, or is refused.
 
 ## Gates that still apply
 
@@ -98,11 +107,16 @@ Synthetic only, with `DEVELOPER_DIR=/Applications/Xcode.app/Contents/Developer`:
   `noRecipient`, and the owner still hears a request-less reply; a stale reference after the requester
   selected away is refused while the new sole selector hears a request-less reply; with two connections
   selecting the target a correlated reply reaches its owner, its duplicate is `noRecipient` rather than
-  falling back, and a request-less one is `notUniqueRecipient`; the flag is off by default; the option
+  falling back, and a request-less one reaches the device that sent the input (#370); the flag is off by default; the option
   requires `--personal-terminal`.
 - `SingleTerminalReplyFallbackRefusalTests` (never-started transports): zero selecting connections,
   three selecting connections, an ended peer still listed, a known request's media refusal, lockdown,
   deny, locked tier, rebound binding and deselection each refuse before any enqueue; an explicit
   reference never falls back even after expiry.
+- `LastInputReplyRoutingTests` and `LastInputRecordTests` (#370): with two devices selecting one tmux target,
+  tap-to-talk then ambient then alternating each reply reaches only the last input device; a reply that started
+  on one device stays there; a request reference wins; a disconnected last input device, a moved selection and an
+  expired record fall back to this rule; contextual adapters keep correlated routing and unaltered text; only
+  delivered device input records.
 - Existing reply suites (`HostReplyDeliveryTests`, `HostReplyRecipientRoutingTests`,
   `CorrelatedReplyPublicationTests`, `LocalReplyEndpointTests`) are unchanged and pass with the flag off.

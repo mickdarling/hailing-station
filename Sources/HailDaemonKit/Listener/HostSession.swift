@@ -152,6 +152,8 @@ public actor HostSession {
     let connectionID = UUID()
     var selectionGeneration = UUID()
     var replyRequests: [UUID: HostReplyRequest] = [:]
+    /// The listener's last-input ledger (#370), written only at an admitted, delivered handoff; nil records nothing.
+    var lastInputLedger: LastInputLedger?
 
     public init(
         host: HailHost, authorizer: any HostSessionAuthorizing = ConnectionProbeAuthorizer(),
