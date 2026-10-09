@@ -204,6 +204,15 @@ public actor WebSocketListener {
 }
 
 extension AmbientAudioEvent {
+    /// A label for the trace (#378): starts and ends only, so audio never floods it.
+    var traceKind: String? {
+        switch self {
+        case .started: "event=started"
+        case .segment: nil
+        case .ended(_, let reason): "event=ended reason=\(reason)"
+        }
+    }
+
     /// The stream every event names.
     var stream: UUID {
         switch self {
@@ -383,6 +392,9 @@ public final class AmbientRightyoRouter: AmbientAudioSink, AmbientListenerWiring
         public var acknowledgements: AmbientAckLibrary?
         /// Reply control (rightyo#124): each child gets `--control-fd`, and `replyPlayback` feeds it. Off by default.
         public var replyControl = false
+        /// Logs `ambient_trace` lines (#378): labels only (event kinds, paths, end reasons), never ids, audio or text.
+        /// For tests and diagnosis; off by default.
+        public var trace = false
 
         public init(executable: URL, config: URL, target: String, binding: String, allowSynthetic: Bool = false,
                     timing: RightyoChildProcess.Timing = .init(),
@@ -484,6 +496,7 @@ public final class AmbientRightyoRouter: AmbientAudioSink, AmbientListenerWiring
             }
             return false
         }
+        if configuration.trace, let kind = event.traceKind { trace("\(kind) path=\(queued ? "queued" : "inline")") }
         if queued { wake.yield() } else { handle(event) }
     }
 
@@ -532,8 +545,10 @@ public final class AmbientRightyoRouter: AmbientAudioSink, AmbientListenerWiring
             state.shuttingDown = true
             return state.worker
         }
+        trace("shutdown=begin")
         wake.finish()
         await worker?.value
+        trace("shutdown=worker_done")
         let pipelines = state.withLock { state in
             state.active = nil
             state.latest = [:]
@@ -558,11 +573,17 @@ public final class AmbientRightyoRouter: AmbientAudioSink, AmbientListenerWiring
     var peakQueue: Int { state.withLock { $0.peakQueue } }
 
     /// Waits (at most 30 s) for queued events to be handled, then for every current run to return (tests).
-    func settle() async {
+}
+
+/// Test support (#378).
+extension AmbientRightyoRouter {
+    /// Bounded (#378): returns false if either step is still waiting after 30 s, so a test can name it.
+    @discardableResult func settle() async -> Bool {
         for _ in 0..<3_000 where state.withLock({ !$0.queue.isEmpty || $0.working }) {
             try? await Task.sleep(for: .milliseconds(10))
         }
-        for task in state.withLock({ $0.runs.values.compactMap(\.task) }) { await task.value }
+        for _ in 0..<3_000 where state.withLock({ !$0.runs.isEmpty }) { try? await Task.sleep(for: .milliseconds(10)) }
+        return state.withLock { $0.queue.isEmpty && !$0.working && $0.runs.isEmpty }
     }
 }
 
@@ -625,9 +646,10 @@ extension AmbientRightyoRouter {
     /// every event is handled as it would be inline.
     private func work(_ event: AmbientAudioEvent) async {
         if case .started(let stream, _) = event {
-            guard isLive(stream) else { return }
+            guard isLive(stream) else { return trace("work=started outcome=skipped") }
             await makeRoom(for: stream)
-            guard isLive(stream) else { return }
+            guard isLive(stream) else { return trace("work=started outcome=skipped_after_room") }
+            trace("work=started outcome=spawning")
         }
         handle(event)
     }
@@ -696,9 +718,10 @@ extension AmbientRightyoRouter {
                 state.runs[stream]?.forced = true
                 return (stream, run.pipeline)
             }
-            guard let (stream, pipeline) = victim else { return }
+            guard let (stream, pipeline) = victim else { return trace("make_room=done") }
             emit("ambient_retired_forced", detail: nil)
             await pipeline.stop(grace: Self.forcedStopGrace)
+            trace("make_room=forced_stopped")
             state.withLock { $0.runs[stream]?.reaped = true }
             for _ in 0..<50 where state.withLock({ $0.runs[stream] != nil }) {
                 try? await Task.sleep(for: .milliseconds(20))
@@ -882,6 +905,12 @@ extension AmbientRightyoRouter {
         case let error as LocalReplyRefusal: "dispatch \(error.rawValue)"
         default: "failed"
         }
+    }
+
+    /// One labels-only `ambient_trace` line, when `configuration.trace` is on (#378).
+    fileprivate func trace(_ labels: String) {
+        guard configuration.trace else { return }
+        emit("ambient_trace", detail: labels)
     }
 
     fileprivate func emit(_ event: String, detail: String?) {
