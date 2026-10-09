@@ -19,6 +19,9 @@ public final class HostConnectionStore {
     public let conversation = ConversationLog()
     /// True while ambient listening is streaming; leaving the foreground then keeps the destination authorized (#282).
     public var ambientStreaming = false
+    /// Told when a host says this device's ambient stream took listening over from another device (#366), with
+    /// that device's class. The ambient card hands it to its controller.
+    @ObservationIgnored public var onAmbientMovedHere: (@MainActor (HostEndpoint.Identifier, String?) -> Void)?
 
     /// Bumped on every target selection, per host, so an ambient stream ends on any target change (#203).
     private var selectionSerials: [HostEndpoint.Identifier: UInt64] = [:]
@@ -170,6 +173,11 @@ public final class HostConnectionStore {
 
     private func receive(_ event: HostReplyEvent, token: UUID) {
         guard tokens[event.endpointID] == token else { return }
+        // A take-over notice (#366) is for ambient listening, not the reply list or the conversation.
+        if case .control(.ambientMovedHere(let from)) = event.frame.payload {
+            onAmbientMovedHere?(event.endpointID, from)
+            return
+        }
         replyFrames.append(event)
         conversation.noteReply(event)
         onReplyFrame?(event)
@@ -294,6 +302,9 @@ public final class AmbientListeningController {
     @ObservationIgnored public var onUnexpectedStop: (@MainActor (String) -> Void)?
     public private(set) var stopReason: String?
     public private(set) var binding: AmbientAudioBinding?
+    /// Ambient take-over (#366): where listening went after another device took it (not an error), or, briefly,
+    /// where it came from after this device took it. Nil otherwise.
+    public private(set) var handoff: AmbientHandoff?
 
     @ObservationIgnored private let send: Send
     @ObservationIgnored private let requestPermission: @MainActor () async -> Bool
@@ -307,6 +318,10 @@ public final class AmbientListeningController {
     @ObservationIgnored private var sendFailure: String?
     /// The send failure's cause as a token (`host_refused` with the host's code, or `send_failed`) for diagnostics.
     @ObservationIgnored private var sendFailureCause: (cause: String, code: String?)?
+    /// Set when the host refused a segment because another device took listening over (#366).
+    @ObservationIgnored private var movedAway: AmbientHandoff?
+    /// Identifies the current "listening here now" confirmation, so only its own timer clears it.
+    @ObservationIgnored private var confirmation = UUID()
     /// The device diagnostics log (#234): ambient start, stop with its cause, and host refusals. Never audio.
     @ObservationIgnored public var diagnostics: DeviceDiagnostics?
     /// The session that most recently began activating the audio session. Only it may release the audio session,
@@ -350,6 +365,8 @@ public final class AmbientListeningController {
         session = current
         isOn = true
         stopReason = nil
+        handoff = nil
+        movedAway = nil
         sendFailure = nil
         sendFailureCause = nil
         recoveries = 0
@@ -368,32 +385,6 @@ public final class AmbientListeningController {
     }
 
     public func turnOff() async { await end(session, reason: nil, cause: "user") }
-
-    /// Called on every scene or binding change. Streaming starts only in the foreground, for the binding it began
-    /// with. A running stream survives the background (#282); one not yet started ends there, and any binding
-    /// change ends it.
-    public func update(binding current: AmbientAudioBinding?, scene: AmbientScene) async {
-        let previous = self.scene
-        self.scene = scene
-        guard isOn else { return }
-        if current != binding {
-            return await end(session, reason: "Stopped: the destination or connection changed.",
-                             cause: "binding_changed")
-        }
-        switch scene {
-        case .active where pendingStart:
-            pendingStart = false
-            await start(session)
-        case .active:
-            break
-        case .inactive where awaitingPermission || (pendingStart && previous == .inactive):
-            break
-        case .inactive where isListening, .background where isListening:
-            break
-        case .inactive, .background:
-            await end(session, reason: "Stopped: Hailing Station left the foreground.", cause: "background")
-        }
-    }
 
     private func start(_ current: UUID) async {
         guard let binding else { return }
@@ -443,7 +434,10 @@ public final class AmbientListeningController {
         binding = nil
         recoveryWait?.cancel()
         recoveryWait = nil
-        if cause != "user", let reason { onUnexpectedStop?(reason) }
+        // Moved away (#366) is where listening went, not a failure: no alert, and "Listen here" brings it back.
+        handoff = cause == "user" ? nil : movedAway.flatMap { reason == $0.status ? $0 : nil }
+        movedAway = nil
+        if cause != "user", handoff == nil, let reason { onUnexpectedStop?(reason) }
         if let systemEndObserver {
             notificationCenter.removeObserver(systemEndObserver)
             self.systemEndObserver = nil
@@ -469,7 +463,8 @@ extension AmbientListeningController {
 
     private func recordSendFailure(_ error: any Error, session current: UUID) {
         guard session == current, sendFailure == nil else { return }
-        sendFailure = "Stopped: \(Self.describe(error))"
+        movedAway = AmbientHandoff(refusal: error)
+        sendFailure = movedAway?.status ?? "Stopped: \(Self.describe(error))"
         sendFailureCause = Self.diagnosticCause(error)
         if let code = sendFailureCause?.code { diagnostics?.record(.hostRefusal, [.code: .token(code)]) }
     }
@@ -512,6 +507,53 @@ extension AmbientListeningController {
         case HostConnectionFailure.remote(let message): "the host ended listening (\(message))."
         case HostConnectionFailure.malformed(let message): "\(message)."
         default: error.localizedDescription
+        }
+    }
+}
+
+/// Scene and binding changes (#282).
+extension AmbientListeningController {
+    /// Called on every scene or binding change. Streaming starts only in the foreground, for the binding it began
+    /// with. A running stream survives the background (#282); one not yet started ends there, and any binding
+    /// change ends it.
+    public func update(binding current: AmbientAudioBinding?, scene: AmbientScene) async {
+        let previous = self.scene
+        self.scene = scene
+        guard isOn else { return }
+        if current != binding {
+            return await end(session, reason: "Stopped: the destination or connection changed.",
+                             cause: "binding_changed")
+        }
+        switch scene {
+        case .active where pendingStart:
+            pendingStart = false
+            await start(session)
+        case .active:
+            break
+        case .inactive where awaitingPermission || (pendingStart && previous == .inactive):
+            break
+        case .inactive where isListening, .background where isListening:
+            break
+        case .inactive, .background:
+            await end(session, reason: "Stopped: Hailing Station left the foreground.", cause: "background")
+        }
+    }
+}
+
+/// Ambient take-over (#366) on the device that took listening over.
+extension AmbientListeningController {
+    /// The host said this device's stream took listening over from a device of class `from`. While listening to
+    /// that host, shows a calm confirmation for `AmbientHandoff.confirmationDuration`, then clears it.
+    public func movedHere(from kind: String?, host: HostEndpoint.Identifier) {
+        guard isOn, binding?.hostID == host else { return }
+        let current = UUID()
+        confirmation = current
+        handoff = .movedHere(from: kind)
+        let sleep = sleep
+        Task { [weak self] in
+            try? await sleep(AmbientHandoff.confirmationDuration)
+            guard let self, self.confirmation == current, case .movedHere? = self.handoff else { return }
+            self.handoff = nil
         }
     }
 }
