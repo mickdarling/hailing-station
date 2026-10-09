@@ -45,6 +45,22 @@ import Testing
         #expect(details.contains("outcome=skipped reason=no_clips"))
     }
 
+    /// A gated session's `acknowledge: false` request (rightyo#132) is still delivered, but no clip reaches the
+    /// phone and the skip is logged with labels and numbers only.
+    @Test func aGatedRequestPlaysNothingAndTheSkipIsLogged() async throws {
+        let details = try await run(clips: ["rightyo": [Self.clip]], fixture: Self.gatedFixture) { socket in
+            try await recipientSocketBarrier(on: socket)
+        }
+        #expect(details == ["outcome=skipped reason=gated follow_up=false confidence=1.00"])
+    }
+
+    /// The fixture with names, under a `started` that also advertises gating, and its request marked not to
+    /// acknowledge.
+    static let gatedFixture = AmbientAcknowledgementTests.fixtureWithNames
+        .replacingOccurrences(of: #""addressing": {"#, with: #""acknowledgement": {"version": 1}, "addressing": {"#)
+        .replacingOccurrences(of: "events.jsonl",
+                              with: #"events.jsonl | /usr/bin/sed 's/^{"context"/{"acknowledge": false, "context"/'"#)
+
     /// The send itself (#326 review): only to the named connection, only while it selects the ambient target, and
     /// never past the host permit.
     @Test(arguments: ["sent", "not_ready", "refused", "no_connection"])
@@ -76,9 +92,10 @@ import Testing
     /// Starts one ambient stream from the phone, lets the fixture's request through, checks the phone's socket,
     /// then ends the stream and returns every `ambient_acknowledged` detail.
     private func run(
-        clips: [String: [AmbientAckClip]], check: (URLSessionWebSocketTask) async throws -> Void
+        clips: [String: [AmbientAckClip]], fixture: String = AmbientAcknowledgementTests.fixtureWithNames,
+        check: (URLSessionWebSocketTask) async throws -> Void
     ) async throws -> [String] {
-        let fake = try FakeRightyo(AmbientAcknowledgementTests.fixtureWithNames)
+        let fake = try FakeRightyo(fixture)
         defer { fake.cleanUp() }
         try fake.install(fixture: "tool-events.jsonl")
         let details = Mutex<[String]>([])

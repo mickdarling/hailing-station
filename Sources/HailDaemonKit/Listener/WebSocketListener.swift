@@ -552,7 +552,7 @@ extension AmbientRightyoRouter {
                 onDismiss: dismissed(on: connection, listener: listener),
                 onAcknowledge: acknowledged(on: connection, listener: listener)
             )
-            settings.replyControl = configuration.replyControl
+            (settings.replyControl, settings.onAcknowledgementSkipped) = (configuration.replyControl, skipped())
             pipeline = try RightyoAmbientPipeline(configuration: settings,
                                                   dispatcher: AmbientListenerDispatcher(listener: listener,
                                                                                         audit: configuration.audit))
@@ -602,6 +602,12 @@ extension AmbientRightyoRouter {
                            + "rightyo_ms=\(request.rightyoMs) host_ms=\(hostMs) outcome=\(outcome)")
             }
         }
+    }
+
+    /// A request RightyO marked not to acknowledge (rightyo#132) plays nothing; its skip is logged with labels and
+    /// numbers only, never transcript text.
+    private func skipped() -> @Sendable (AmbientAckSkip) -> Void {
+        { [weak self] skip in self?.emit("ambient_acknowledged", detail: skip.detail) }
     }
 
     /// A `dismiss` with `playback` in scope stops reply playback on its connection (#309) before it is logged, so
