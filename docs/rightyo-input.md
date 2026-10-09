@@ -566,3 +566,13 @@ The old device's next segment is refused with `ambient moved to <class>` (see
 `ambient_takeover`, is sent `ambient_moved_here`. A refused start disturbs nothing. Another device can never
 continue or restart the owner's own stream id. The gate remembers the last 64 take-overs, and forgets a device's
 entries when it disconnects. Nothing is taken over across hosts: each daemon has its own gate and target.
+
+Fast swaps (phone, pad, phone, pad) can leave retired children still stopping when the next start arrives. When
+every child slot is taken (`maxLiveChildren`, or `maxRuns`), the router forces the oldest retired child out
+before spawning the new one: EOF, SIGTERM after 0.5 s, SIGKILL after 0.5 s more, then reaped. It logs
+`ambient_retired_forced`. A dispatch that child had not yet made is lost, which is acceptable because the
+speaker has moved device. Its run is never cancelled. Until that start has its child, every later gate event
+waits behind it in order, then is handled as usual. With nothing waiting, events are handled at once, as
+before. A start that still finds no slot (runs stuck dispatching) is refused as busy, as before. Shutdown lets a
+forced stop in progress finish, then stops and drains every child. A take-over also drops the old stream from
+its device's latest-stream record, so a forced-out child's failure is not reported to that device as a stop.
