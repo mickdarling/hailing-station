@@ -144,6 +144,8 @@ public actor HostSession {
     var peerName = "terminal"
     /// What the device said it can do in its hello (#309), bounded; it gates host-sent `stop_playback`.
     var peerCapabilities: Set<String> = []
+    /// The device class its hello gave (#366), already checked against `AmbientTakeOver.deviceKinds`; or nil.
+    var peerDeviceKind: String?
     /// Replies whose audio is reaching this connection and has not finished, oldest first, and replies stopped
     /// mid-stream whose remaining frames are refused (#309). Both bounded, ids only.
     var repliesInFlight: [UUID] = []
@@ -247,6 +249,7 @@ public actor HostSession {
         state = .ready(version: version)
         peerName = hello.deviceName
         peerCapabilities = Set(hello.capabilities.prefix(64))
+        peerDeviceKind = AmbientTakeOver.deviceKind(hello.deviceKind)
         let info = HelloInfo(
             versions: VersionNegotiation.supported,
             capabilities: authorizer.capabilities,

@@ -94,16 +94,19 @@ import Testing
         #expect(sink.events.isEmpty)
     }
 
+    /// One stream per daemon across sessions; since #366 the newest start holds it (see AmbientTakeOverTests).
     @Test func oneStreamPerDaemonAcrossSessions() async throws {
         let (host, _) = try await ambientHost()
         let authorizer = PersonalTerminalAuthorizer(ambientAudio: ambientGate(sink: sink, clock: clock))
         let (first, _) = try await openSession(authorizer, host: host)
         let (second, _) = try await openSession(authorizer, host: host)
-        #expect((await first.receive(audioFrame(ambientSegment(stream: UUID(), sequence: 0)))).frames.isEmpty)
-        let busy = await second.receive(audioFrame(ambientSegment(stream: UUID(), sequence: 0)))
-        #expect(try onlyControl(busy) == .error(code: .notAllowed, message: "ambient busy"))
-        #expect(busy.disposition == .keepOpen)
-        #expect(sink.endings.isEmpty)
+        let stream = UUID()
+        #expect((await first.receive(audioFrame(ambientSegment(stream: stream, sequence: 0)))).frames.isEmpty)
+        #expect((await second.receive(audioFrame(ambientSegment(stream: UUID(), sequence: 0)))).frames.isEmpty)
+        #expect(sink.endings == [.superseded])
+        let moved = await first.receive(audioFrame(ambientSegment(stream: stream, sequence: 1)))
+        #expect(try onlyControl(moved) == .error(code: .notAllowed, message: "ambient moved to another device"))
+        #expect(moved.disposition == .keepOpen)
     }
 
     @Test func localDispatchNeverAuthorizesAudio() async throws {

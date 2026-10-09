@@ -71,22 +71,25 @@ import Testing
         #expect(sink.events.isEmpty)
     }
 
-    @Test func secondConnectionIsBusyAndCannotDisturbTheOwner() async {
+    /// #366 replaced the "ambient busy" refusal: the second connection's valid start takes over, and the first
+    /// connection's leftovers (more segments, its disconnect) cannot disturb the new owner.
+    @Test func secondConnectionTakesOverAndTheFirstCannotDisturbIt() async {
         let gate = ambientGate(sink: sink, clock: clock)
-        let other = UUID()
+        let other = UUID(), next = UUID()
         #expect(await gate.admit(ambientSegment(stream: stream, sequence: 0), connection: phone) == nil)
+        #expect(await gate.admit(ambientSegment(stream: next, sequence: 0), connection: other) == nil)
+        #expect(sink.endings == [.superseded])
         let refusal = await gate.admit(
-            ambientSegment(stream: UUID(), sequence: 0), frameTarget: "tmux:a", selectedTarget: "tmux:a",
-            connection: other
+            ambientSegment(stream: stream, sequence: 1), frameTarget: "tmux:a", selectedTarget: "tmux:a",
+            connection: phone
         )
         #expect(refusal?.0 == .notAllowed)
-        #expect(refusal?.1 == "ambient busy")
-        await gate.end(connection: other)
-        #expect(await gate.activeStream == stream)
-        #expect(await gate.admit(ambientSegment(stream: stream, sequence: 1), connection: phone) == nil)
+        #expect(refusal?.1 == "ambient moved to another device")
         await gate.end(connection: phone)
-        #expect(sink.endings == [.peerEnded])
-        #expect(await gate.admit(ambientSegment(stream: UUID(), sequence: 0), connection: other) == nil)
+        #expect(await gate.activeStream == next)
+        #expect(await gate.admit(ambientSegment(stream: next, sequence: 1), connection: other) == nil)
+        await gate.end(connection: other)
+        #expect(sink.endings == [.superseded, .peerEnded])
     }
 
     @Test func idleStreamEndsAfterTheIdleTimeoutAndFreesTheDaemon() async {

@@ -17,6 +17,14 @@ public enum AmbientAudioEvent: Sendable, Equatable {
     case ended(stream: UUID, reason: AmbientStreamEndReason)
 }
 
+/// The gate's answer to one segment (#366). `tookOver` admits a segment whose new stream took ambient listening
+/// over from another connection; `from` is that connection's device class, if it gave one.
+enum AmbientAdmission: Sendable, Equatable {
+    case admitted
+    case tookOver(from: String?)
+    case refused(ErrorCode, String)
+}
+
 /// The consumer of admitted ambient audio (#203). Called synchronously from the gate's actor, in order, so
 /// an implementation must only enqueue (bounded, drop-with-gap); it must never block or await.
 public protocol AmbientAudioSink: Sendable {
@@ -32,6 +40,13 @@ public protocol AmbientAudioSink: Sendable {
 /// kept and the oldest is evicted first (FIFO), so reuse is possible only for an id that ended thousands of
 /// streams ago. A start is charged against the bucket before anything is announced or recorded, so a refused
 /// start leaves no trace and cannot burn identities.
+///
+/// Take-over (#366): the most recent device to start a stream holds it. A valid first segment of a new stream from
+/// another connection ends the current stream as `superseded` and opens the new one; the previous owner's further
+/// segments of its ended stream are refused with `AmbientTakeOver.movedMessage`, a final refusal on the phone.
+/// Only a connection this daemon negotiated, whose authorizer admitted the audio frame and whose selection names
+/// this gate's target, can take over, and only with a start that passes every check here; a refused start disturbs
+/// nothing. The gate belongs to one daemon and its one target, so nothing is taken over across hosts.
 public actor AmbientAudioGate {
     public static let sampleRate = 16_000
     public static let maxSegmentBytes = 8 * 1024
@@ -47,10 +62,21 @@ public actor AmbientAudioGate {
     public static let idleTimeout = Duration.seconds(30)
     /// Default bound on remembered ended ids (16 B each, about 64 KB); the oldest is evicted at the bound.
     public static let defaultEndedStreamCapacity = 4_096
+    /// Taken-over streams remembered so their owner is told where listening went (#366); the oldest is evicted.
+    public static let movedStreamCapacity = 64
+
+    /// A stream ended by a take-over (#366): the connection that owned it and the new owner's device class.
+    struct Move {
+        let stream: UUID
+        let connection: UUID
+        let to: String?
+    }
 
     struct Stream {
         let id: UUID
         let connection: UUID
+        /// The owner's device class from its hello (#366), or nil; used only to name it to the next owner.
+        let device: String?
         var lastSequence: Int
         var lastActivity: ContinuousClock.Instant
     }
@@ -66,6 +92,8 @@ public actor AmbientAudioGate {
     /// Ended ids in end order, as a ring once full; `evictNext` is the oldest slot.
     private var endedOrder: [UUID] = []
     private var evictNext = 0
+    /// Streams ended by a take-over (#366), oldest first: the connection that owned each and the new device class.
+    private var moved: [Move] = []
     private var tokens: Double
     private var refilledAt: ContinuousClock.Instant
     private var sweeper: Task<Void, Never>?
@@ -89,50 +117,9 @@ public actor AmbientAudioGate {
         refilledAt = clock()
     }
 
-    /// Nil admits the segment (no reply frame); otherwise the refusal to report on the same connection.
-    func admit(
-        _ audio: AudioPayload, frameTarget: String?, selectedTarget: String?, connection: UUID
-    ) -> (ErrorCode, String)? {
-        expireIdle()
-        if let owner = active?.connection, owner != connection { return (.notAllowed, "ambient busy") }
-        guard frameTarget == target, selectedTarget == target else {
-            return refuse(.notAllowed, "ambient target is not selected", connection: connection)
-        }
-        guard audio.codec == .pcm16, audio.sampleRate == Self.sampleRate, audio.channels == 1,
-              audio.reply == nil, Self.wholeSamples(audio.bytes.count), let stream = audio.streamID else {
-            return refuse(.malformed, "ambient segment shape", connection: connection)
-        }
-        if active?.id != stream {
-            if let refusal = start(stream, audio: audio, connection: connection) { return refusal }
-        } else {
-            guard let current = active, audio.sequence > current.lastSequence else {
-                return refuse(.malformed, "ambient sequence must increase", connection: connection)
-            }
-            guard spend(audio.bytes.count) else { return overRate(audio, connection: connection) }
-        }
-        active?.lastSequence = audio.sequence
-        active?.lastActivity = clock()
-        sink.ambientAudio(.segment(stream: stream, sequence: audio.sequence, bytes: audio.bytes))
-        if audio.isFinal { end(.final) }
-        return nil
-    }
-
-    /// Opens a stream only after its first segment is validated and paid for. Only then is the owner's current
-    /// stream superseded: a refused start (stale or retried id, rate) announces, records and disturbs nothing.
-    private func start(_ stream: UUID, audio: AudioPayload, connection: UUID) -> (ErrorCode, String)? {
-        guard audio.sequence == 0, !ended.contains(stream) else {
-            return (.malformed, "ambient stream must be new and start at sequence 0")
-        }
-        guard spend(audio.bytes.count) else { return (.rateLimited, "ambient rate exceeded") }
-        end(.superseded)
-        active = Stream(id: stream, connection: connection, lastSequence: -1, lastActivity: clock())
-        sink.ambientAudio(.started(stream: stream, connection: connection))
-        startSweeper()
-        return nil
-    }
-
-    /// Ends `connection`'s stream, if it owns the active one (peer gone, session closed).
+    /// Ends `connection`'s stream, if it owns the active one (peer gone, session closed), and forgets its moves.
     public func end(connection: UUID) {
+        moved.removeAll { $0.connection == connection }
         guard active?.connection == connection else { return }
         end(.peerEnded)
     }
@@ -217,5 +204,83 @@ public actor AmbientAudioGate {
                 await self.expireIdle()
             }
         }
+    }
+}
+
+/// Admission (#203) with take-over (#366).
+extension AmbientAudioGate {
+    /// Nil admits the segment (no reply frame); otherwise the refusal to report on the same connection.
+    func admit(
+        _ audio: AudioPayload, frameTarget: String?, selectedTarget: String?, connection: UUID, device: String? = nil
+    ) -> (ErrorCode, String)? {
+        guard case .refused(let code, let message) = admission(
+            audio, frameTarget: frameTarget, selectedTarget: selectedTarget, connection: connection, device: device
+        ) else { return nil }
+        return (code, message)
+    }
+
+    /// One segment from `connection`, whose device said it is `device` (#366). A refusal is reported on the same
+    /// connection; `tookOver` also tells it that its new stream took listening over from another connection.
+    func admission(
+        _ audio: AudioPayload, frameTarget: String?, selectedTarget: String?, connection: UUID, device: String?
+    ) -> AmbientAdmission {
+        expireIdle()
+        if let stream = audio.streamID,
+           let move = moved.last(where: { $0.stream == stream && $0.connection == connection }) {
+            return .refused(.notAllowed, AmbientTakeOver.movedMessage(to: move.to))
+        }
+        let previous = active.flatMap { $0.connection == connection ? nil : $0 }
+        guard let refusal = check(audio, frameTarget: frameTarget, selectedTarget: selectedTarget,
+                                  connection: connection, device: device) else {
+            return previous.map { .tookOver(from: $0.device) } ?? .admitted
+        }
+        return .refused(refusal.0, refusal.1)
+    }
+
+    private func check(
+        _ audio: AudioPayload, frameTarget: String?, selectedTarget: String?, connection: UUID, device: String?
+    ) -> (ErrorCode, String)? {
+        guard frameTarget == target, selectedTarget == target else {
+            return refuse(.notAllowed, "ambient target is not selected", connection: connection)
+        }
+        guard audio.codec == .pcm16, audio.sampleRate == Self.sampleRate, audio.channels == 1,
+              audio.reply == nil, Self.wholeSamples(audio.bytes.count), let stream = audio.streamID else {
+            return refuse(.malformed, "ambient segment shape", connection: connection)
+        }
+        if active?.id != stream {
+            if let refusal = start(stream, audio: audio, connection: connection, device: device) { return refusal }
+        } else {
+            // Another connection's stream id is never continued, and refusing it leaves that stream untouched.
+            guard active?.connection == connection else { return (.notAllowed, "ambient stream is not this device's") }
+            guard let current = active, audio.sequence > current.lastSequence else {
+                return refuse(.malformed, "ambient sequence must increase", connection: connection)
+            }
+            guard spend(audio.bytes.count) else { return overRate(audio, connection: connection) }
+        }
+        active?.lastSequence = audio.sequence
+        active?.lastActivity = clock()
+        sink.ambientAudio(.segment(stream: stream, sequence: audio.sequence, bytes: audio.bytes))
+        if audio.isFinal { end(.final) }
+        return nil
+    }
+
+    /// Opens a stream only after its first segment is validated and paid for. Only then is the current stream,
+    /// this connection's or another's (#366), superseded: a refused start (stale or retried id, rate) announces,
+    /// records and disturbs nothing.
+    private func start(_ stream: UUID, audio: AudioPayload, connection: UUID, device: String?) -> (ErrorCode, String)? {
+        guard audio.sequence == 0, !ended.contains(stream) else {
+            return (.malformed, "ambient stream must be new and start at sequence 0")
+        }
+        guard spend(audio.bytes.count) else { return (.rateLimited, "ambient rate exceeded") }
+        let device = AmbientTakeOver.deviceKind(device)
+        if let previous = active, previous.connection != connection {
+            moved.append(Move(stream: previous.id, connection: previous.connection, to: device))
+            moved.removeFirst(max(0, moved.count - Self.movedStreamCapacity))
+        }
+        end(.superseded)
+        active = Stream(id: stream, connection: connection, device: device, lastSequence: -1, lastActivity: clock())
+        sink.ambientAudio(.started(stream: stream, connection: connection))
+        startSweeper()
+        return nil
     }
 }

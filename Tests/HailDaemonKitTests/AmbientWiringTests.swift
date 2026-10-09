@@ -86,24 +86,6 @@ import Testing
         await env.listener.stop(reason: "synthetic test complete")
     }
 
-    @Test func aSecondDeviceIsToldAmbientIsBusy() async throws {
-        let fake = try FakeRightyo("exec /bin/cat > /dev/null")
-        defer { fake.cleanUp() }
-        let env = try await ambientRig(fake, timing: .init(eofGrace: 5, termGrace: 5))
-        let pair = try await FallbackSocketPair.connect(
-            port: env.port, selecting: [RecipientTestRig.target, RecipientTestRig.target]
-        )
-        defer { pair.close() }
-        try await recipientSocketSend(audio(UUID(), 0), on: pair.sockets[0])
-        try await pair.barrier()
-        try await recipientSocketSend(audio(UUID(), 0), on: pair.sockets[1])
-        let refusal = try await recipientSocketReceive(on: pair.sockets[1])
-        #expect(refusal.payload == .control(.error(code: .notAllowed, message: "ambient busy")))
-        #expect(env.router.liveRuns == 1)
-        await env.listener.stop(reason: "synthetic test complete")
-        #expect(env.router.liveRuns == 0)
-    }
-
     /// The #212 constraint: daemon stop reaps the child but never cancels a run mid-dispatch; it waits.
     @Test func daemonStopWaitsForAnInFlightDispatchToFinish() async throws {
         let fake = try FakeRightyo("/usr/bin/sed \"s/tool-demo/$7/g\" events.jsonl\nexec /bin/sleep 60")

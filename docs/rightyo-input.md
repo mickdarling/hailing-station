@@ -550,3 +550,33 @@ nothing restarts it. The daemon's dispatcher mints each request's reply referenc
 
 The consumer still ends a session after 4,096 events, so a long ambient stream stops there. Raising or windowing that
 cap is separate work. Audio and transcript content are never logged.
+
+### Ambient take-over (#366)
+
+The daemon has one ambient stream, and the most recent device to start one holds it. When a second device's first
+segment of a new stream passes every gate check (a negotiated session of this daemon whose authorizer admits
+audio, the gate's target selected, the stream shape, a new id at sequence 0, and the daemon-wide rate), the gate
+ends the current stream as `superseded` and opens the new one. The router retires the old stream's RightyO child
+(EOF, then the usual stop) and starts a fresh child for the new stream. RightyO session state is not carried over.
+A request the old child already admitted is still dispatched on behalf of the old device, so its reply reference
+keeps reaching that device until it expires, while the new stream's requests and replies belong to the new device.
+
+The old device's next segment is refused with `ambient moved to <class>` (see
+[reply-protocol.md](reply-protocol.md#ambient-take-over-366)), and the new device, if it advertised
+`ambient_takeover`, is sent `ambient_moved_here`. A refused start disturbs nothing. Another device can never
+continue or restart the owner's own stream id. The gate remembers the last 64 take-overs, and forgets a device's
+entries when it disconnects. Nothing is taken over across hosts: each daemon has its own gate and target.
+
+Fast swaps (phone, pad, phone, pad) can leave retired children still stopping when the next start arrives. When
+every child slot is taken (`maxLiveChildren`, or `maxRuns`), the router forces the oldest retired child out
+before spawning the new one: EOF, SIGTERM after 0.5 s, SIGKILL after 0.5 s more, then up to 2 s to settle (about
+3 s at most), plus up to 1 s for its run to return. It logs `ambient_retired_forced`. A dispatch that child had
+not yet made is lost, which is acceptable because the speaker has moved device. Its run is never cancelled. Until
+that start has its child, later gate events wait behind it in order, then are handled as usual. With nothing
+waiting, events are handled at once, as before. The queue stays small whatever a client sends. Only the newest
+start is kept: a newer start drops an older queued start with its audio and end. That newest start keeps at most
+64 segments (oldest dropped). Only the newest start ever forces a child out or spawns, and a start the gate has
+already ended (other than on its final segment) is skipped. A superseded child is forced out before one whose
+stream ended normally, so a device's last utterance is not cut off. A start that still finds no slot (runs stuck dispatching) is refused as busy, as before. Shutdown lets a
+forced stop in progress finish, then stops and drains every child. A take-over also drops the old stream from
+its device's latest-stream record, so a forced-out child's failure is not reported to that device as a stop.
