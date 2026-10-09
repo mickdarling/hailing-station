@@ -45,7 +45,7 @@ public actor WebSocketListener {
     let singleTerminalReplyFallback: Bool
     private let maxConnections: Int
     private let helloTimeout: Duration
-    private let log: @Sendable (WebSocketListenerEvent) -> Void
+    let log: @Sendable (WebSocketListenerEvent) -> Void
     var peers: [UUID: WebSocketPeer] = [:]
     private var readyWaiters: [CheckedContinuation<UInt16, any Error>] = []
     private var stopWaiters: [CheckedContinuation<Void, Never>] = []
@@ -57,6 +57,8 @@ public actor WebSocketListener {
     var stopped = false, stoppedReplyIDs: [UUID] = [], stopsInFlight: [UUID: HostSession] = [:]
     /// Opt-in ambient listening (#203): the sink of the authorizer's `AmbientAudioGate`. Nil by default.
     let ambient: (any AmbientListenerWiring)?
+    /// Per target, the connection that most recently sent it admitted input (#370). Host-side only.
+    let lastInput = LastInputLedger()
 
     public init(
         bindAddress: String, port: UInt16, host: HailHost,
@@ -175,10 +177,10 @@ public actor WebSocketListener {
     }
 
     private func accept(_ connection: NWConnection) async {
-        guard !stopped else {
-            connection.cancel()
-            return
-        }
+        // Attached before the admission checks, so no suspension separates them from the insertion below (#370).
+        let session = HostSession(host: host, authorizer: authorizer, hostName: hostName)
+        await session.attachLastInput(lastInput)
+        guard !stopped else { return connection.cancel() }
         let id = UUID()
         guard peers.count < maxConnections else {
             connection.cancel()
@@ -188,7 +190,6 @@ public actor WebSocketListener {
             ))
             return
         }
-        let session = HostSession(host: host, authorizer: authorizer, hostName: hostName)
         let peer = WebSocketPeer(
             id: id, connection: connection, session: session, queue: queue,
             helloTimeout: helloTimeout, log: log
@@ -230,6 +231,7 @@ extension AmbientListenerWiring {
 extension WebSocketListener {
     fileprivate func peerEnded(_ id: UUID) async {
         guard let peer = peers.removeValue(forKey: id) else { return }
+        lastInput.forget(connection: peer.session.connectionID)
         await endAmbient(of: peer)
     }
 
@@ -260,8 +262,11 @@ extension WebSocketListener {
         }
         var named = request
         named.connection = peer.key
-        guard let reference else { return try await dispatch(named) }
-        return try await HostSession.$ambientReplyReference.withValue(reference) { try await dispatch(named) }
+        // The streaming device's own input (#370): a delivered handoff makes it the target's last input device.
+        return try await HostSession.$ambientInputDispatch.withValue(true) {
+            guard let reference else { return try await dispatch(named) }
+            return try await HostSession.$ambientReplyReference.withValue(reference) { try await dispatch(named) }
+        }
     }
 
     /// #230: for a plain legacy target only (an adapter without contextual delivery, such as `tmux:`), mints a fresh
