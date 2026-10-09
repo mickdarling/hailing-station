@@ -250,13 +250,24 @@ extension WebSocketListener {
 
     /// An ambient request names the `HostSession` connection the gate saw; it is dispatched on behalf of the
     /// listener peer that owns that session, through the same `dispatch(_:)` as `--reply-to`.
+    ///
+    /// #230: a fresh opaque reply reference is minted here and written into the prompt's own trailing reply block,
+    /// so the session can answer with `haild reply <target> --request <ref>`. The session binds it, host-side, to
+    /// this connection, its selection generation and the exact target binding, even for a legacy adapter that
+    /// cannot lease (`HostSession.ambientReplyReference`). A prompt that does not end in the target's block, or
+    /// would outgrow the dispatch cap, is dispatched unchanged with no reference, exactly as before.
     func dispatchAmbient(_ request: LocalDispatchRequest) async throws -> UUID? {
         guard let peer = peers.first(where: { $0.value.session.connectionID == request.connection }) else {
             throw LocalDispatchRefusal.unknownConnection
         }
         var named = request
         named.connection = peer.key
-        return try await dispatch(named)
+        let reference = UUID()
+        guard let text = RightyoInputEvent.referencing(named.text, target: named.target, request: reference) else {
+            return try await dispatch(named)
+        }
+        named.text = text
+        return try await HostSession.$ambientReplyReference.withValue(reference) { try await dispatch(named) }
     }
 
     /// Ambient failed for `stream` (#203): end it at the gate if it is still the active one, so audio stops

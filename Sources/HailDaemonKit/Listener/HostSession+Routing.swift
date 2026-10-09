@@ -6,7 +6,8 @@ import HailProtocol
 
 /// Both ingress paths share one lease, permit, handoff and commit; they differ only in how they report it.
 enum HostDeliveryOutcome: Sendable, Equatable {
-    /// Handed off; `request` is this connection's committed reply owner, or nil for legacy generic input.
+    /// Handed off; `request` is this connection's committed reply owner, or nil for legacy generic input that
+    /// carried no host-minted ambient reference (#230).
     case delivered(request: UUID?)
     case confirmationRequired
     /// The connection selected another target while this input was suspended; nothing was handed off.
@@ -16,7 +17,20 @@ enum HostDeliveryOutcome: Sendable, Equatable {
     case refused(ErrorCode, String)
 }
 
+/// One input's reply owner. A contextual adapter receives `context` with the text. A host-minted ambient reference on
+/// a legacy adapter (#230) is recorded host-side only: the text goes the legacy way, pinned to the recorded binding.
+struct HostReplyOwnership {
+    let context: ProviderTurnContext
+    let contextual: Bool
+}
+
 extension HostSession {
+    /// The opaque reply reference `WebSocketListener.dispatchAmbient` minted for one ambient handoff and wrote into
+    /// that prompt's reply block (#230), bound only for the duration of that dispatch. It names the request record
+    /// this session mints for its own connection, selection generation and exact target binding; it is a routing
+    /// handle, not origin evidence, and nothing a client or the local socket sends can set it.
+    @TaskLocal static var ambientReplyReference: UUID?
+
     func route(_ admitted: consuming AdmittedFrame, version: Int) async -> HostSessionResult {
         switch consume admitted {
         case .input(let input):
@@ -70,24 +84,24 @@ extension HostSession {
         }
         do {
             let generation = selectionGeneration
-            let context = try await replyContext(for: input, generation: generation)
+            let owner = try await replyOwnership(for: input, generation: generation)
             // Legacy generic input has no retained record, so the captured selection is checked here and
             // again after the handoff; a caller outside the peer's serialized receive loop can race `select`.
             guard selects(input.target, generation: generation) else {
-                if let context { replyRequests[context.id] = nil }
+                if let owner { replyRequests[owner.context.id] = nil }
                 return .selectionChanged
             }
-            switch try await send(input, context: context) {
+            switch try await send(input, owner: owner) {
             case .delivered:
-                guard let context else {
+                guard let owner else {
                     guard selects(input.target, generation: generation) else {
                         return .unowned("request destination changed")
                     }
                     return .delivered(request: nil)
                 }
-                return commit(context, generation: generation)
+                return commit(owner.context, generation: generation)
             case .needsConfirmation:
-                if let context { replyRequests[context.id] = nil }
+                if let owner { replyRequests[owner.context.id] = nil }
                 return .confirmationRequired
             }
         } catch {
@@ -117,53 +131,72 @@ extension HostSession {
         return .delivered(request: context.id)
     }
 
-    private func send(_ input: borrowing AuthorizedInput, context: ProviderTurnContext?) async throws -> SendOutcome {
+    private func send(_ input: borrowing AuthorizedInput, owner: HostReplyOwnership?) async throws -> SendOutcome {
         do {
-            if let context { return try await host.send(input.text, context: context, from: input.device) }
+            if let owner, owner.contextual {
+                return try await host.send(input.text, context: owner.context, from: input.device)
+            }
+            // Legacy generic input. An unleased ambient record (#230) pins the exact binding it was minted for.
             return try await host.send(
-                input.text, to: input.target, from: input.device, expectedBinding: input.expectedBinding
+                input.text, to: input.target, from: input.device,
+                expectedBinding: owner?.context.binding.sessionID ?? input.expectedBinding
             )
         } catch {
-            if let context { replyRequests[context.id] = nil }
+            if let owner { replyRequests[owner.context.id] = nil }
             throw error
         }
     }
 
     /// Capability preflight does not grant execution. HailHost still checks shape, exact binding and policy.
-    private func replyContext(
+    private func replyOwnership(
         for input: borrowing AuthorizedInput, generation: UUID
-    ) async throws -> ProviderTurnContext? {
+    ) async throws -> HostReplyOwnership? {
         let target = input.target
         let listing = try await host.registry.listing()
         guard let listed = listing.first(where: { $0.info.id == target }), let binding = listed.binding,
               listed.info.alive else { throw HostError.unknownTarget(target) }
         if let expected = input.expectedBinding, expected != binding { throw HostError.denied(.rebound(target)) }
+        let reference = Self.ambientReplyReference
         let context = ProviderTurnContext(
-            utteranceID: input.utteranceID, connectionID: connectionID,
+            id: reference ?? UUID(), utteranceID: input.utteranceID, connectionID: connectionID,
             binding: try .init(hostID: hostName, providerID: listed.info.kind, targetID: target, sessionID: binding)
         )
+        let contextual: Bool
         do {
             try await host.registry.requireInputDelivery(to: target, context: context, lineCount: 1)
+            contextual = true
         } catch RegistryError.contextualDeliveryUnsupported {
-            // Legacy generic input is unchanged; it cannot establish a private reply recipient.
-            return nil
+            // Legacy generic input cannot establish a private reply recipient on its own. Only a reference the host
+            // minted for this ambient handoff and wrote into its reply block (#230) is recorded, host-side, unleased.
+            guard reference != nil else { return nil }
+            contextual = false
         }
         // Listings are snapshots, not leases. Contextual adapters without cooperative binding authority
         // refuse before dispatch; they must not masquerade as safe private reply bridges.
-        let lease = try await host.registry.acquireReplyBindingLease(context.binding)
+        let lease = contextual ? try await host.registry.acquireReplyBindingLease(context.binding) : nil
         guard let permit = await host.replyPublicationPermit(for: context.binding) else {
             throw HostError.denied(.notAllowed(target))
         }
+        try recordOwner(context, generation: generation, permit: permit, lease: lease)
+        return HostReplyOwnership(context: context, contextual: contextual)
+    }
+
+    /// The record is minted only while the captured selection still holds, under capacity, never over another.
+    private func recordOwner(
+        _ context: ProviderTurnContext, generation: UUID, permit: ReplyPublicationPermit,
+        lease: ProviderReplyBindingLease?
+    ) throws {
+        let target = context.binding.targetID
         pruneReplyRequests()
         guard case .ready = state, generation == selectionGeneration, selectedTarget == target else {
             throw HostError.denied(.notAllowed(target))
         }
         guard replyRequests.count < HostReplyRequest.capacity else { throw ProviderContractError.capacityExceeded }
+        guard replyRequests[context.id] == nil else { throw HostError.denied(.notAllowed(target)) }
         replyRequests[context.id] = HostReplyRequest(
             context: context, generation: generation, createdAt: requestClock(),
             policyPermit: permit, bindingLease: lease
         )
-        return context
     }
 
     private func route(_ control: ControlPayload, version: Int) async -> HostSessionResult {
