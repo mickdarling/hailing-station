@@ -73,8 +73,10 @@ struct RootView: View {
                     // would stop capture and let iOS suspend the app. The controller releases it when it stops.
                     await audioRoutes.sceneBecameInactive()
                 }
-                // Only after that release, which would otherwise stop the keepalive it started.
-                if scenePhaseRevision == revision { keepalive.sceneActive = false }
+                // Only after that release, which would otherwise stop the keepalive it started. Only in the
+                // background: Control Center, a permission alert or the app switcher leave the scene merely
+                // inactive, and a keepalive started there could deactivate capture ambient has just activated (#354).
+                if scenePhaseRevision == revision, phase == .background { keepalive.sceneActive = false }
             }
         }
         .onChange(of: connections.hosts) { _, _ in
@@ -86,7 +88,8 @@ struct RootView: View {
             let playback = playback
             connections.onReplyFrame = { playback.ingest($0) }
             let keepalive = keepalive
-            keepalive.isReplyAudible = { playback.isReplyAudioOutputBusy }
+            // Releases a session left active for an audible reply once that reply ends (#354).
+            keepalive.follow(playback)
             audioRoutes.onDeactivate = { keepalive.sessionWasReleased() }
             keepalive.follow(connections)
         }
