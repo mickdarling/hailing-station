@@ -550,3 +550,19 @@ nothing restarts it. The daemon's dispatcher mints each request's reply referenc
 
 The consumer still ends a session after 4,096 events, so a long ambient stream stops there. Raising or windowing that
 cap is separate work. Audio and transcript content are never logged.
+
+### Ambient take-over (#366)
+
+The daemon has one ambient stream, and the most recent device to start one holds it. When a second device's first
+segment of a new stream passes every gate check (a negotiated session of this daemon whose authorizer admits
+audio, the gate's target selected, the stream shape, a new id at sequence 0, and the daemon-wide rate), the gate
+ends the current stream as `superseded` and opens the new one. The router retires the old stream's RightyO child
+(EOF, then the usual stop) and starts a fresh child for the new stream. RightyO session state is not carried over.
+A request the old child already admitted is still dispatched on behalf of the old device, so its reply reference
+keeps reaching that device until it expires, while the new stream's requests and replies belong to the new device.
+
+The old device's next segment is refused with `ambient moved to <class>` (see
+[reply-protocol.md](reply-protocol.md#ambient-take-over-366)), and the new device, if it advertised
+`ambient_takeover`, is sent `ambient_moved_here`. A refused start disturbs nothing. Another device can never
+continue or restart the owner's own stream id. The gate remembers the last 64 take-overs, and forgets a device's
+entries when it disconnects. Nothing is taken over across hosts: each daemon has its own gate and target.

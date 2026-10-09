@@ -54,15 +54,24 @@ extension HostSession {
         }
     }
 
-    /// Ambient segments never reach `HailHost.send`; the gate hands admitted bytes to its injected sink.
+    /// Ambient segments never reach `HailHost.send`; the gate hands admitted bytes to its injected sink. A stream
+    /// that took listening over from another device (#366) is told so, if this device advertised that it can hear it.
     private func ambient(_ audio: AudioPayload, target: String?, version: Int) async -> HostSessionResult {
         guard let gate = authorizer.ambientAudio else {
             return failure(.unauthorized, "terminal action is not authorized", close: false, version: version)
         }
-        guard let (code, message) = await gate.admit(
-            audio, frameTarget: target, selectedTarget: selectedTarget, connection: connectionID
-        ) else { return HostSessionResult(frames: []) }
-        return failure(code, message, close: false, version: version)
+        switch await gate.admission(
+            audio, frameTarget: target, selectedTarget: selectedTarget, connection: connectionID,
+            device: peerDeviceKind
+        ) {
+        case .admitted:
+            return HostSessionResult(frames: [])
+        case .tookOver(let from):
+            guard peerCapabilities.contains(AmbientTakeOver.capability) else { return HostSessionResult(frames: []) }
+            return HostSessionResult(frames: [response(.ambientMovedHere(from: from), version: version)])
+        case .refused(let code, let message):
+            return failure(code, message, close: false, version: version)
+        }
     }
 
     private func deliver(_ input: consuming AuthorizedInput, version: Int) async -> HostSessionResult {
