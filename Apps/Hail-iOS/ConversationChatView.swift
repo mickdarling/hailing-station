@@ -87,8 +87,9 @@ struct ConversationChatView: View {
                         .foregroundStyle(.secondary)
                         .accessibilityHidden(true) // The bubble's own label says it.
                 }
-                Text(entry.text)
+                Text(Self.linked(entry.text))
                     .foregroundStyle(entry.overheard ? Color.secondary : isYou ? Color.white : Color.primary)
+                    .tint(isYou ? Color.white : Color.accentColor)
                     .italic(entry.overheard)
                 if entry.speaker == .haili, entry.id == controlledReplyID {
                     replyControls
@@ -106,6 +107,7 @@ struct ConversationChatView: View {
                 Button("Copy", systemImage: "doc.on.doc") { UIPasteboard.general.string = entry.text }
                 ShareLink(item: entry.text)
                 Button("Select Text", systemImage: "selection.pin.in.out") { selecting = entry }
+                linkActions(entry.text)
             }
             .accessibilityElement(children: .contain)
             .accessibilityLabel(Self.accessibilityLabel(entry))
