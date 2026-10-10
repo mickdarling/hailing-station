@@ -6,7 +6,7 @@ import Testing
 
 /// Synthetic only: scratch folders, an injected host environment and the invented App Server child.
 @Suite struct CodexLaunchSetupTests {
-    private static func root(mode: mode_t = 0o700) throws -> URL {
+    static func root(mode: mode_t = 0o700) throws -> URL {
         let folder = FileManager.default.temporaryDirectory.appendingPathComponent("codex-setup-\(UUID())")
         try FileManager.default.createDirectory(at: folder, withIntermediateDirectories: false)
         guard chmod(folder.path, mode) == 0 else { throw CodexLaunchSetupError.invalidRoot }

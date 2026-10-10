@@ -80,17 +80,27 @@ with his login, MCP servers (including Dollhouse), hooks, `notify` and global
 AGENTS.md. `CodexLaunchSetup.prepare` builds the rest:
 
 - **Environment:** only `HOME`, `USER`, `LOGNAME`, `PATH`, `LANG`, `TMPDIR` and
-  `SHELL` are copied from haild's environment, in that order. The CLI finds
-  `~/.codex`, and MCP servers find `npx` and `node`. API keys, `CODEX_HOME`
-  overrides, `DYLD_*`, agent sockets and everything else stay behind.
+  `SHELL` are copied from haild's environment, in that order, so the CLI finds
+  `~/.codex`. API keys, `CODEX_HOME` overrides, `DYLD_*`, agent sockets and
+  everything else stay behind. haild runs under launchd with only the system
+  PATH (`/usr/bin:/bin:/usr/sbin:/sbin`) and no `LANG`, so the owner's `npx`-
+  and `node`-based MCP servers would not start. The trusted composition must
+  pass the owner's PATH as `path:`, which replaces the inherited one. Every
+  component must be absolute, so the cwd is never searched.
 - **Workspace:** the thread `cwd` is `<root>/workspace`, created 0700. It must
-  be a real, private, empty folder, so no repository AGENTS.md or files are
-  picked up. The `thread/start` response must echo that exact `cwd`. The
-  owner's own instruction files may load.
+  be a real, private, empty folder (hidden files count), and the root must not
+  sit inside a git checkout, so no repository AGENTS.md or files are picked up.
+  The `thread/start` response must echo that exact `cwd`. The owner's own
+  instruction files may load. Privacy is checked on mode bits, not ACLs. If a
+  hook or MCP server writes into the workspace, every later launch refuses with
+  `workspaceNotEmpty` until the owner empties it; that is deliberate.
 - **Disabled MCP servers:** an optional list of names becomes per-launch
   `-c mcp_servers.<name>.enabled=false` overrides, for example to leave Chief
   out. Names are limited to letters, digits, `_` and `-`, up to 64 characters.
-  His config file is never edited.
+  His config file is never edited. Two behaviours are still unverified against
+  the real binary and are part of spike E: whether `-c` is accepted after
+  `app-server --listen stdio://`, and what happens when the name is not in his
+  config (a partial table may fail to load, which fails closed).
 
 His MCP servers and hooks run inside these sessions. A model turn could call
 MCP tools, which act with his normal authority. The per-thread restrictions
