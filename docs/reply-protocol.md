@@ -89,8 +89,8 @@ The wire carries two things for this, and each names a device only by its class 
 `{"command": "ambient_heard", "target": "<target>", "text": "<words>"}` gives the device that spoke the request its
 ambient stream just handed to `target`, as heard, so the thread can show the user's own words as their message.
 The host sends it once per delivered request, only to that device and only while it still selects `target`, before
-the request is typed. So it arrives ahead of the acknowledgement clip and the reply. `text` is the producer's formed
-request when it gave one, or else the heard turn, never the prompt envelope. It is 1 to 8 KiB of UTF-8, the text
+the request is typed. So it arrives ahead of the acknowledgement clip and the reply. `text` is the request's heard turn
+(the user's own words), never the prompt envelope or a producer's formed request. It is 1 to 8 KiB of UTF-8, the text
 payload's cap. The decoder and the schema refuse any other key. The command grants no authority, and a host refuses
 it from a device. A device advertises `ambient_heard` (`AmbientHeard.capability`) in its `hello` when it can show the
 text, and a host never sends the command to a device that did not. The host never logs the text.

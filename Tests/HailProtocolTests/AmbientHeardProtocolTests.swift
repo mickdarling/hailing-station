@@ -23,6 +23,8 @@ import Testing
             #"{"command":"ambient_heard","target":"tmux:a"}"#,
             #"{"command":"ambient_heard","text":"hi"}"#,
             #"{"command":"ambient_heard","target":"tmux:a","text":""}"#,
+            #"{"command":"ambient_heard","target":"","text":"hi"}"#,
+            #"{"command":"ambient_heard","target":"tmux:a","text":5}"#,
             #"{"command":"ambient_heard","target":"tmux:a","text":"\#(oversized)"}"#,
             #"{"command":"ambient_heard","target":"tmux:a","text":"hi","request":"x"}"#,
             #"{"command":"ambient_heard","target":"tmux:a","text":"hi","from":"phone"}"#

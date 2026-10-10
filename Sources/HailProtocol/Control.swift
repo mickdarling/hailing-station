@@ -176,13 +176,15 @@ extension ControlPayload: Codable {
         }
     }
 
-    /// Strict (#318): only `command`, `target` and non-empty `text` within the text payload's byte cap.
+    /// Strict (#318): only `command`, a non-empty `target`, and non-empty `text` within the text payload's byte cap.
     private static func ambientHeard(from decoder: any Decoder) throws -> ControlPayload {
         try requireOnly(["command", "target", "text"], "ambient_heard", decoder)
         let container = try decoder.container(keyedBy: CodingKeys.self)
         let text = try container.decode(String.self, forKey: .text)
         try requireRange(text.utf8.count, in: 1...PayloadLimits.maxTextBytes, "text", decoder)
-        return .ambientHeard(targetID: try container.decode(String.self, forKey: .targetID), text: text)
+        let target = try container.decode(String.self, forKey: .targetID)
+        try requireRange(target.utf8.count, in: 1...PayloadLimits.maxTextBytes, "target", decoder)
+        return .ambientHeard(targetID: target, text: text)
     }
 
     /// Refuses any payload key outside `allowed`, so nothing rides along on a strict command.
