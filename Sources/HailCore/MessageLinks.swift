@@ -16,8 +16,9 @@ public enum MessageLinks {
         var rest = Substring(text)
         while let match = rest.firstMatch(of: markdownLink) {
             plain += rest[rest.startIndex..<match.range.lowerBound]
-            let (label, target) = (String(match.output.1), String(match.output.2))
-            if let url = webURL(target), !label.trimmingCharacters(in: .whitespaces).isEmpty {
+            let label = visible(String(match.output.1)), target = String(match.output.2)
+            if target.utf8.count <= 2_048, let url = webURL(target),
+               !label.trimmingCharacters(in: .whitespaces).isEmpty {
                 segments += bareLinks(plain)
                 plain = ""
                 segments.append(.link(label: label, url: url))
@@ -30,30 +31,59 @@ public enum MessageLinks {
         return segments
     }
 
-    /// The links in `text`, in order, for Copy Link.
-    public static func links(_ text: String) -> [URL] {
-        segments(text).compactMap { if case .link(_, let url) = $0 { url } else { nil } }
+    /// The links in `segments`, in order, for Copy Link and Share Link.
+    public static func links(_ segments: [MessageSegment]) -> [URL] {
+        segments.compactMap { if case .link(_, let url) = $0 { url } else { nil } }
     }
+
+    /// The links in `text`, in order.
+    public static func links(_ text: String) -> [URL] { links(segments(text)) }
 
     /// The URL when `string` is an absolute http or https URL with a host, else nil.
     public static func webURL(_ string: String) -> URL? {
         guard let url = URL(string: string), let scheme = url.scheme?.lowercased(),
-              scheme == "http" || scheme == "https", let host = url.host(), !host.isEmpty else { return nil }
+              scheme == "http" || scheme == "https", let host = host(of: url), !host.isEmpty else { return nil }
         return url
     }
 
-    nonisolated(unsafe) private static let markdownLink = /\[([^\[\]\n]{1,200})\]\(([^()\s]{1,2048})\)/
+    /// The site to show after a link's label, or nil when the label already is the destination: exactly the URL, or
+    /// a web URL whose host is identical. A label that merely mentions a host (`paypal.com` linking to `aypal.com`, or
+    /// `https://evil.com.paypal.com` linking to `evil.com`) always gets the real host shown beside it.
+    public static func destinationHint(label: String, url: URL) -> String? {
+        guard let host = host(of: url) else { return nil }
+        if label == url.absoluteString { return nil }
+        if let shown = webURL(label), let shownHost = Self.host(of: shown),
+           shownHost.lowercased() == host.lowercased() { return nil }
+        return host
+    }
+
+    /// The decoded host, so a percent-encoded host never hides what it spells.
+    public static func host(of url: URL) -> String? { url.host(percentEncoded: false) }
+
+    /// Removes bidirectional controls, which could reorder a label to disguise where it leads.
+    public static func visible(_ label: String) -> String {
+        String(String.UnicodeScalarView(label.unicodeScalars.filter { !bidiControls.contains($0.value) }))
+    }
+
+    private static let bidiControls: Set<UInt32> = [
+        0x200E, 0x200F, 0x061C, 0x202A, 0x202B, 0x202C, 0x202D, 0x202E, 0x2066, 0x2067, 0x2068, 0x2069
+    ]
+
+    /// `[label](target)`; the target may hold one level of balanced parentheses, as Wikipedia links do.
+    nonisolated(unsafe) private static let markdownLink = /\[([^\[\]\n]{1,200})\]\(((?:[^()\s]|\([^()\s]*\))+)\)/
+
+    private static let detector = try? NSDataDetector(
+        types: NSTextCheckingResult.CheckingType.link.rawValue
+    )
 
     /// Bare URLs in plain text. The detector also finds schemeless domains and mailto:, which stay plain text.
     private static func bareLinks(_ text: String) -> [MessageSegment] {
         guard !text.isEmpty else { return [] }
-        guard let detector = try? NSDataDetector(types: NSTextCheckingResult.CheckingType.link.rawValue) else {
-            return [.text(text)]
-        }
+        guard let detector else { return [.text(text)] }
         var segments: [MessageSegment] = []
         var cursor = text.startIndex
         for result in detector.matches(in: text, range: NSRange(text.startIndex..., in: text)) {
-            guard let range = Range(result.range, in: text) else { continue }
+            guard let range = Range(result.range, in: text), range.lowerBound >= cursor else { continue }
             let written = trimmed(text[range])
             guard written.lowercased().hasPrefix("http://") || written.lowercased().hasPrefix("https://"),
                   let url = webURL(String(written)) else { continue }

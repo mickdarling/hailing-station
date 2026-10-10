@@ -47,6 +47,40 @@ import Testing
         ])
     }
 
+    @Test func aLabelThatOnlyMentionsAHostStillShowsTheRealOne() {
+        // Review round 1 bypasses: a substring of the label must never hide the destination.
+        #expect(MessageLinks.destinationHint(label: "https://evil.com.paypal.com/login", url: url("https://evil.com"))
+            == "evil.com")
+        #expect(MessageLinks.destinationHint(label: "paypal.com", url: url("https://aypal.com")) == "aypal.com")
+        #expect(MessageLinks.destinationHint(label: "PR 438", url: url("https://github.com/x/y/pull/438"))
+            == "github.com")
+    }
+
+    @Test func aLabelThatIsTheDestinationNeedsNoHint() {
+        #expect(MessageLinks.destinationHint(label: "https://example.com/a", url: url("https://example.com/a")) == nil)
+        #expect(MessageLinks.destinationHint(label: "https://Example.com/other", url: url("https://example.com/a"))
+            == nil)
+        for case .link(let label, let link) in MessageLinks.segments("see https://example.com/a.") {
+            #expect(MessageLinks.destinationHint(label: label, url: link) == nil)
+        }
+    }
+
+    @Test func bidiControlsAreRemovedFromLabels() {
+        let segments = MessageLinks.segments("[Docs\u{202E}moc.elgoog](https://evil.com)")
+        #expect(segments == [link("Docsmoc.elgoog", "https://evil.com")])
+        #expect(MessageLinks.visible("a\u{200E}b\u{2066}c\u{2069}d\u{061C}e") == "abcde")
+    }
+
+    @Test func hostsAreShownDecoded() {
+        #expect(MessageLinks.destinationHint(label: "Docs", url: url("https://%65vil.com/x")) == "evil.com")
+    }
+
+    @Test func markdownTargetsMayHoldBalancedParentheses() {
+        #expect(MessageLinks.segments("[Swift](https://en.wikipedia.org/wiki/Swift_(programming_language)).") == [
+            link("Swift", "https://en.wikipedia.org/wiki/Swift_(programming_language)"), .text(".")
+        ])
+    }
+
     @Test func plainTextIsUnchanged() {
         #expect(MessageLinks.segments("no links here") == [.text("no links here")])
         #expect(MessageLinks.segments("").isEmpty)
