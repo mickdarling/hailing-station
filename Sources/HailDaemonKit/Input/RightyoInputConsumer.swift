@@ -27,9 +27,12 @@ public struct RightyoDismissReceipt: Sendable, Equatable {
     public var withdrawn: Int
     /// Listed ids already delivered: withdrawal is advisory and nothing delivered is undone.
     public var alreadyDelivered: Int
+    /// The dismissal came from the enrolled owner: RightyO may only say `owner` on an enrolled session (#418).
+    public var owner: Bool
     public var stopsPlayback: Bool { scope.contains("playback") }
-    public init(reason: String, scope: [String], withdrawn: Int, alreadyDelivered: Int) {
+    public init(reason: String, scope: [String], withdrawn: Int, alreadyDelivered: Int, owner: Bool = false) {
         (self.reason, self.scope, self.withdrawn, self.alreadyDelivered) = (reason, scope, withdrawn, alreadyDelivered)
+        self.owner = owner
     }
 }
 /// The final delivery step of an admitted request. The consumer keeps every validation and correlation rule
@@ -351,6 +354,6 @@ extension RightyoInputConsumer {
         guard withdrawn.count + fresh.count <= 1000 else { throw RightyoInputError.capacity }
         withdrawn.formUnion(fresh)
         lastDismissal = RightyoDismissReceipt(reason: reason, scope: scope, withdrawn: ids.count - delivered.count,
-                                              alreadyDelivered: delivered.count)
+                                              alreadyDelivered: delivered.count, owner: event.role == "owner")
     }
 }

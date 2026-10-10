@@ -933,7 +933,8 @@ extension AmbientRightyoRouter {
     }
 
     /// A `dismiss` with `playback` in scope stops reply playback on its connection (#309) before it is logged, so
-    /// the diagnostic says what happened; any other dismissal is logged at once. Neither ends the stream.
+    /// the diagnostic says what happened; any other dismissal is logged at once. Neither ends the stream. The owner's
+    /// stop is then confirmed out loud on that connection (#418), after the stop, so the stop never cuts it.
     private func dismissed(
         on connection: UUID, listener: WebSocketListener
     ) -> @Sendable (RightyoDismissReceipt) -> Void {
@@ -945,8 +946,26 @@ extension AmbientRightyoRouter {
             Task { [weak self] in
                 let playback = await listener?.stopReplyPlayback(connection: connection) ?? "no_connection"
                 self?.emit("ambient_dismissed", detail: Self.describe(receipt, playback: playback))
+                await self?.confirmStop(receipt, playback: playback, on: connection, listener: listener)
             }
         }
+    }
+
+    /// Plays the stop confirmation clip (#418) on the connection that said stop, through the same guarded path as an
+    /// acknowledgement: only that connection, never the Mac, never the agent session, and recorded for echo matching.
+    /// Logs tokens only.
+    private func confirmStop(
+        _ receipt: RightyoDismissReceipt, playback: String, on connection: UUID, listener: WebSocketListener?
+    ) async {
+        guard let library = configuration.acknowledgements,
+              let wanted = AmbientStopConfirmation.persona(for: receipt, playback: playback) else { return }
+        guard let pick = AmbientStopConfirmation.clip(wanted, in: library) else {
+            emit("ambient_stop_confirmed", detail: "outcome=skipped reason=no_clips")
+            return
+        }
+        let outcome = await listener?.acknowledgeAmbient(connection: connection, target: configuration.target,
+                                                         clip: pick.clip) ?? "no_connection"
+        emit("ambient_stop_confirmed", detail: "clip=\(pick.persona)/\(pick.index) outcome=\(outcome)")
     }
 
     private func run(_ pipeline: RightyoAmbientPipeline, id: UUID, stream: UUID, connection: UUID) async {
