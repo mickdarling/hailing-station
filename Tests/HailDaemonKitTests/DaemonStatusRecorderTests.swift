@@ -95,6 +95,9 @@ import Testing
         let ambient = try #require(DaemonStatus.read(from: file)?.ambient)
         #expect(ambient.running == 0)
         #expect(ambient.lastEvent == "ambient_ended" && ambient.lastDetail == "child transportLost")
+        // A reload's own lines never displace it either.
+        for name in ["ambient_reload_refused", "ambient_reloaded"] { recorder.observe(.init(event: name)) }
+        #expect(try #require(DaemonStatus.read(from: file)?.ambient) == ambient)
     }
 
     @Test func aSnapshotWithoutAmbientStillReads() throws {
