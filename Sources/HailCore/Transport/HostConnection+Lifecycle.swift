@@ -1,4 +1,5 @@
 import Foundation
+import HailProtocol
 
 struct SerializedWebSocketConnector: WebSocketConnecting {
     let predecessor: Task<Void, Never>
@@ -132,5 +133,12 @@ extension HostConnection {
         } catch {
             return false
         }
+    }
+
+    /// Which overheard turns this connection wants (#398). Only to a ready host that advertised the capability: an
+    /// older host refuses the command.
+    public func sendOverheardScope(_ scope: String) async throws {
+        try requireReady(capability: AmbientOverheard.capability)
+        try await send(.overheardScope(scope: scope), generation: generation)
     }
 }

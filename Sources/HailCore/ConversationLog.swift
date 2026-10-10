@@ -2,9 +2,10 @@ public import Foundation
 import HailProtocol
 public import Observation
 
-/// One message in the station chat (#288): something the user sent, or Haili's reply.
+/// One message in the station chat (#288): something the user sent, Haili's reply, or (#398) a remark the ambient
+/// stream heard but did not send, by the user or by someone else.
 public struct ConversationEntry: Identifiable, Equatable, Sendable {
-    public enum Speaker: Sendable { case you, haili }
+    public enum Speaker: Sendable { case you, haili, someone }
 
     public let id: String
     public let speaker: Speaker
@@ -12,6 +13,8 @@ public struct ConversationEntry: Identifiable, Equatable, Sendable {
     public let endpointID: HostEndpoint.Identifier
     public let targetID: String
     public let date: Date
+    /// Heard but not sent to the target (#398): shown greyed, and hidden with the overheard setting.
+    public var overheard = false
 }
 
 /// The session's conversation, in the order things happened: each request as it is sent, each reply as its text
@@ -41,6 +44,18 @@ public final class ConversationLog {
             id: "you|\(UUID().uuidString.lowercased())", speaker: .you, text: trimmed,
             endpointID: endpointID, targetID: targetID, date: now()
         ))
+    }
+
+    /// A turn the ambient stream heard but did not send (#398), as the owner's or someone else's.
+    func noteOverheard(_ text: String, owner: Bool, endpointID: HostEndpoint.Identifier, targetID: String) {
+        let trimmed = text.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !trimmed.isEmpty else { return }
+        var entry = ConversationEntry(
+            id: "heard|\(UUID().uuidString.lowercased())", speaker: owner ? .you : .someone, text: trimmed,
+            endpointID: endpointID, targetID: targetID, date: now()
+        )
+        entry.overheard = true
+        append(entry)
     }
 
     /// A reply's text frame. The id matches `ReplyPresentation.id`, so the chat can show that reply's playback.
