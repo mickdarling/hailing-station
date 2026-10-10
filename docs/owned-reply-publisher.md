@@ -5,6 +5,24 @@ a target grant/selection, TestFlight delivery or physically validated origin rou
 The only payload is the retained `DiagnosticBridgeReply` UUID and its explicitly labelled fixed
 diagnostic phrase; no model chooses a recipient or supplies executable, environment or working directory.
 
+## Generic owned replies (#153 step D1, #403)
+
+The publisher now carries a generic `OwnedReply`: request, host, target and final text. That lets other
+reply-owning adapters publish their own final answers through the same bounded `haild reply` path. Examples
+are the owned Codex adapter (#153) and a Slack dot bridge (#403).
+
+- Each publisher is constructed with the exact set of targets it may speak for. The default is only the
+  diagnostic bridge. A reply for any other target, or for another host, is refused before a directory or
+  child exists. The argv names the reply's own target, still with no shell.
+- Text must contain something other than whitespace, is limited to `PayloadLimits.maxTextBytes`, and may
+  contain no NUL or control characters other than newline and tab. The target must be non-empty, 1–256
+  bytes and free of control characters.
+- `DiagnosticBridgeReply` keeps its fixed phrase and reaches the same path through `owned`. Diagnostic
+  behaviour, limits, deadlines and cleanup are unchanged.
+
+Capture permission, output disclosure and the choice of which text is final remain the adapter's and
+host policy's job. This step only lets a configured target hand over its text.
+
 ## Admission and caller retirement
 
 Trusted local construction supplies the exact CLI executable, matching host, reply socket and existing

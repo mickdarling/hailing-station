@@ -29,11 +29,12 @@ struct PublisherFixture: Sendable {
     }
 
     func publisher(
-        deadline: Duration = .seconds(3), hooks: OwnedReplyGroupHooks = .init()
+        deadline: Duration = .seconds(3), hooks: OwnedReplyGroupHooks = .init(),
+        targets: Set<String> = [DiagnosticReplyBridgeAdapter.targetID]
     ) throws -> OwnedReplyPublisher {
         try OwnedReplyPublisher(configuration: .init(
             executable: executable, socket: base.appendingPathComponent("reply.sock"), root: root,
-            hostID: "synthetic-host", environment: environment, deadline: deadline, hooks: hooks))
+            hostID: "synthetic-host", environment: environment, deadline: deadline, targets: targets, hooks: hooks))
     }
 
     func reply(_ sequence: Int = 1) -> DiagnosticBridgeReply {
@@ -62,6 +63,9 @@ struct PublisherFixture: Sendable {
     die 'group contract' unless getpgrp(0) == $$;
     die 'private root' unless ((stat($root))[2] & 07777) == 0700;
     my $mode = $ENV{RP_MODE};
+    if ($mode eq 'argv') {
+        open(my $a, '>', $ENV{RP_RECORD}) or die 'record'; print {$a} join(chr(31), @ARGV); close($a); exit(0);
+    }
     $SIG{TERM} = 'IGNORE' if $mode eq 'ignore' || $mode eq 'descendant';
     if ($mode eq 'descendant') {
         my $child = fork(); die 'fork failed' unless defined($child);

@@ -26,6 +26,10 @@ public struct DiagnosticBridgeReply: Sendable, Equatable {
     public let targetID: String
     public let sequence: Int
     public var text: String { "Hailing Station diagnostic reply \(sequence). Over to you." }
+    /// The fixed diagnostic phrase as a generic owned reply for this bridge's own target.
+    var owned: OwnedReply {
+        get throws { try OwnedReply(requestID: requestID, hostID: hostID, targetID: targetID, text: text) }
+    }
 }
 
 /// A bounded, exactly one-line envelope. Unknown/duplicate fields, nonliteral version 1 and wrong
