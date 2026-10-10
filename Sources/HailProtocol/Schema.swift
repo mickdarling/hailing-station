@@ -153,7 +153,7 @@ public enum Schema {
             "command": .object(["enum": .array(
                 [
                     "hello", "list_targets", "targets", "select", "subscribe", "unsubscribe", "escape", "ping", "pong",
-                    "error", "diagnostic", "stop_playback", "ambient_moved_here"
+                    "error", "diagnostic", "stop_playback", "ambient_moved_here", "ambient_heard"
                 ]
                     .map(JSONValue.string)
             )]),
@@ -182,7 +182,11 @@ public enum Schema {
                 "type": .string("string"), "maxLength": .integer(Int64(ControlLimits.maxErrorMessage))
             ]),
             "events": diagnosticEvents,
-            "from": .object(["enum": .array(AmbientTakeOver.deviceKinds.map(JSONValue.string))])
+            "from": .object(["enum": .array(AmbientTakeOver.deviceKinds.map(JSONValue.string))]),
+            "text": .object([
+                "type": .string("string"), "minLength": .integer(1),
+                "maxLength": .integer(Int64(PayloadLimits.maxTextBytes))
+            ])
         ]),
         "allOf": .array([
             commandRule("hello", requires: ["hello"]),
@@ -195,9 +199,11 @@ public enum Schema {
             commandRule("pong", requires: ["nonce"]),
             commandRule("error", requires: ["code", "message"]),
             commandRule("diagnostic", requires: ["events"]),
+            commandRule("ambient_heard", requires: ["target", "text"]),
             diagnosticPayloadRule,
             stopPlaybackPayloadRule,
-            ambientMovedHerePayloadRule
+            ambientMovedHerePayloadRule,
+            ambientHeardPayloadRule
         ])
     ])
 }
