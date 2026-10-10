@@ -19,8 +19,8 @@ public final class HostConnectionStore {
     public let conversation = ConversationLog()
     /// True while ambient listening is streaming; leaving the foreground then keeps the destination authorized (#282).
     public var ambientStreaming = false
-    /// Which overheard turns hosts should send (#398): `off`, `owner` or `everyone`; re-sent (unless `off`, the host
-    /// default) to each host as it reaches ready. Sends to one host run in order, so the last choice is the one it keeps.
+    /// Which overheard turns hosts should send (#398): `off`, `owner` or `everyone`; re-sent to each capable host as it
+    /// reaches ready. Sends to one host run in order, so the last choice is the one it keeps.
     public private(set) var overheardScope = "off"
     @ObservationIgnored var overheardScopeSends: [HostEndpoint.Identifier: Task<Void, Never>] = [:]
     /// Told when a host says this device's ambient stream took listening over from another device (#366), with
@@ -210,7 +210,8 @@ extension HostConnectionStore {
 }
 
 /// Overheard remarks (#398): the scope the user chose, sent to every ready host that supports it. A host starts each
-/// connection at `off`, so it is sent again whenever a connection reaches ready; `off` is never sent, being the default.
+/// connection at `off`, but the current choice, `off` included, is sent again whenever a connection reaches ready: it
+/// lands after any older choice still queued for that host, so a stale scope can never outlive a newer `off`.
 extension HostConnectionStore {
     public func setOverheardScope(_ scope: String) {
         guard let scope = AmbientOverheard.scope(scope), scope != overheardScope else { return }
@@ -219,7 +220,7 @@ extension HostConnectionStore {
     }
 
     func applyOverheardScope(to id: HostEndpoint.Identifier) {
-        if overheardScope != "off" { send(overheardScope, to: id) }
+        send(overheardScope, to: id)
     }
 
     private func send(_ scope: String, to id: HostEndpoint.Identifier) {

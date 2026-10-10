@@ -58,10 +58,12 @@ import Testing
     @Test func quickChangesReachTheHostInOrderSoTheLastChoiceWins() async throws {
         let connected = try await connect(hostCapabilities: ["receive_replies", AmbientOverheard.capability])
         let (store, socket, endpoint) = (connected.store, connected.socket, connected.endpoint)
+        // The current choice (the default `off`) is applied at ready, ahead of the changes.
+        try await waitUntil { try await scopesSent(socket) == ["off"] }
         for scope in ["everyone", "owner", "everyone", "off", "owner", "off"] { store.setOverheardScope(scope) }
-        try await waitUntil { try await scopesSent(socket).count == 6 }
+        try await waitUntil { try await scopesSent(socket).count == 7 }
         let sent = try await scopesSent(socket)
-        #expect(sent == ["everyone", "owner", "everyone", "off", "owner", "off"])
+        #expect(sent == ["off", "everyone", "owner", "everyone", "off", "owner", "off"])
         await store.disconnect(endpoint.id)
     }
 
