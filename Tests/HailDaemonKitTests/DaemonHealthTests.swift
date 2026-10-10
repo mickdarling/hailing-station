@@ -112,6 +112,17 @@ import Testing
             == ["daemon_running"])
     }
 
+    /// #405: a child `haild ambient reload` replaced ends however it ends; the stream lives on in the new child.
+    @Test func aReplacedChildsEndIsHealthyAndAReloadRefusalLeavesTheStreamRunning() {
+        let replaced = ambient("ambient_ended", "replaced delivered=0 written=9 dropped=0 echo=0 exit=signaled(15)",
+                               running: 1)
+        #expect(replaced?.outcome == .ok)
+        #expect(replaced?.detail == "1 running")
+        #expect(ambient("ambient_ended", "replaced child transportLost", running: 1)?.outcome == .ok)
+        #expect(ambient("ambient_reloaded", running: 2)?.outcome == .ok)
+        #expect(ambient("ambient_reload_refused", "child unsafeConfig", running: 1)?.outcome == .ok)
+    }
+
     @Test func ambientRefusalsAndShutdownTimeoutsFail() {
         #expect(ambient("ambient_refused", "child unsafeExecutable")?.fix?.contains("host.json") == true)
         #expect(ambient("ambient_refused", "stopping")?.outcome == .fail)

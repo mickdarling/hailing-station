@@ -914,15 +914,17 @@ extension AmbientRightyoRouter {
 
     private func run(_ pipeline: RightyoAmbientPipeline, id: UUID, stream: UUID, connection: UUID) async {
         var failure: String?
+        // A reload's replaced child (#405) is marked `replaced`, so `haild doctor` does not read its end as a failure.
+        func replacedPrefix() -> String { state.withLock { $0.runs[id]?.replaced == true } ? "replaced " : "" }
         do {
             let summary = try await pipeline.run()
             let gateEnd = state.withLock { $0.runs[id]?.gateEnd.map { "\($0)" } } ?? "none"
-            emit("ambient_ended", detail: "delivered=\(summary.delivered) written=\(summary.child.writtenBytes)"
-                 + " dropped=\(summary.child.droppedBytes) echo=\(await pipeline.echoDropped) ended=\(gateEnd)"
-                 + " exit=\(summary.exit)")
+            emit("ambient_ended", detail: replacedPrefix() + "delivered=\(summary.delivered)"
+                 + " written=\(summary.child.writtenBytes) dropped=\(summary.child.droppedBytes)"
+                 + " echo=\(await pipeline.echoDropped) ended=\(gateEnd) exit=\(summary.exit)")
         } catch {
             failure = Self.describe(error)
-            emit("ambient_ended", detail: failure)
+            emit("ambient_ended", detail: replacedPrefix() + (failure ?? "failed"))
         }
         let (stillActive, replaced, listener, waiters) = state.withLock { state in
             let replaced = state.runs.removeValue(forKey: id)?.replaced ?? false
@@ -1009,7 +1011,8 @@ extension AmbientRightyoRouter {
         }
         let outcome = swap(old, for: pipeline, connection: connection)
         guard outcome == .reloaded else {
-            // Awaited, so a reload refused by shutdown leaves no child behind the daemon's drain.
+            // Awaited, so the reload answers only once this child is reaped. Shutdown's drain does not wait for it
+            // (it was never a run); a daemon exit closes its input anyway.
             await pipeline.stop(grace: Self.forcedStopGrace)
             return outcome
         }
@@ -1026,6 +1029,9 @@ extension AmbientRightyoRouter {
             // The stream ended, moved or failed meanwhile; this child is not wanted.
             guard active.stream == old.stream, active.pipeline === old.pipeline, !Self.full(state) else { return .busy }
             state.runs[old.run]?.replaced = true
+            // Retired in the same lock, so a take-over start in the meantime finds it as a victim to force out.
+            state.retirements += 1
+            state.runs[old.run]?.retiredAt = state.retirements
             let id = register(pipeline, stream: old.stream, connection: connection, in: &state)
             state.active = Active(stream: old.stream, run: id, pipeline: pipeline, since: old.since)
             return .reloaded

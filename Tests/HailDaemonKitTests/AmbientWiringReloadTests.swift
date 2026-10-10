@@ -2,6 +2,7 @@
 import Darwin
 import Foundation
 import HailProtocol
+import Synchronization
 import Testing
 @testable import HailDaemonKit
 
@@ -24,7 +25,10 @@ import Testing
         defer { fake.cleanUp() }
         try fake.install(fixture: "tool-events.jsonl")
         let events = AmbientEventNames()
-        let env = try await ambientRig(fake, timing: .init(eofGrace: 2, termGrace: 2), events: events)
+        let ended = Mutex<[String]>([])
+        let env = try await ambientRig(fake, timing: .init(eofGrace: 2, termGrace: 2), events: events) { event in
+            if event.event == "ambient_ended" { ended.withLock { $0.append(event.detail ?? "") } }
+        }
         let pair = try await FallbackSocketPair.connect(port: env.port, selecting: [RecipientTestRig.target])
         defer { pair.close() }
         let stream = UUID()
@@ -54,11 +58,19 @@ import Testing
         #expect(size(fake, "v1-audio.bin") == 16_000)
         #expect(await env.rig.adapter.contexts.count == 1)
         try await pair.barrier()
-        let names = events.all
+        expectBalanced(events.all, ended: ended.withLock { $0 })
+        await env.listener.stop(reason: "synthetic test complete")
+    }
+
+    /// One reload: two starts and two ends, and the replaced child's end is marked, so `haild doctor` does not read
+    /// it as a failure; the new child's is not.
+    private func expectBalanced(_ names: [String], ended details: [String]) {
         #expect(names.filter { $0 == "ambient_started" }.count == 2)
         #expect(names.filter { $0 == "ambient_ended" }.count == 2)
         #expect(names.filter { $0 == "ambient_reloaded" }.count == 1)
-        await env.listener.stop(reason: "synthetic test complete")
+        #expect(details.count == 2)
+        #expect(details.first?.hasPrefix("replaced ") == true)
+        #expect(details.last?.hasPrefix("delivered=1 ") == true)
     }
 
     @Test func reloadWhenIdleStartsNothing() async throws {

@@ -144,6 +144,9 @@ public struct HealthReport: Codable, Sendable, Equatable {
         let detail = ambient.lastDetail ?? ""
         let logs = "check ~/Library/Logs/HailingStation/haild.err.log for ambient_* events"
         switch ambient.lastEvent {
+        // A child `haild ambient reload` replaced (#405): its stream lives on in the new child, whatever its exit.
+        case "ambient_ended" where detail.hasPrefix("replaced "):
+            return .ok("ambient_listening", ambient.running > 0 ? "\(ambient.running) running" : "idle")
         case "ambient_ended" where detail == "input confirmationRequired":
             return .ok("ambient_listening", "idle; the last request needed confirmation (target tier confirm)")
         case "ambient_ended" where detail.hasPrefix("delivered="):
