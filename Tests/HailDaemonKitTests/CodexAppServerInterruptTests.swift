@@ -62,11 +62,35 @@ import Testing
         #expect(await adapter.isReaped)
     }
 
-    @Test func withoutAnActiveTurnNoInterruptIsSent() async throws {
+    @Test func afterACompletedTurnThereIsNothingToInterrupt() async throws {
         let adapter = try await CodexAppServerAdapter.withOwnedAdapter(
             command: CodexAppServerFixtures.command(), verifiedVersion: "0.159.0") { adapter in
-            #expect(await adapter.interruptActiveTurn() == false) // The child dies on an unexpected interrupt.
+            let host = try await CodexAppServerFixtures.host(adapter)
+            try await host.withObservedSession(target: CodexAppServerFixtures.target) { session in
+                _ = try await session.submit("invented input", utteranceID: UUID())
+                for _ in 0..<3 { _ = try await session.next() } // Accepted, text, finished.
+                #expect(await adapter.interruptActiveTurn() == false)
+            }
+            #expect(await adapter.interruptActiveTurn() == false) // Not observing: no transport at all.
             return adapter
+        }
+        #expect(await adapter.isReaped)
+    }
+
+    @Test func concurrentInterruptsResolveOnceAndBothReturn() async throws {
+        let (adapter, kinds) = try await Self.withActiveTurn(interrupt: "ack") { adapter in
+            async let first = adapter.interruptActiveTurn()
+            async let second = adapter.interruptActiveTurn()
+            let results = await [first, second]
+            #expect(results.filter { $0 }.count == 1)
+        }
+        #expect(kinds == [.interrupted])
+        #expect(await adapter.isReaped)
+    }
+
+    @Test(arguments: [Duration.zero, .seconds(11)]) func anUnboundedGraceIsRefused(grace: Duration) async throws {
+        let (adapter, _) = try await Self.withActiveTurn(interrupt: "silent", terminal: false) { adapter in
+            #expect(await adapter.interruptActiveTurn(grace: grace) == false)
         }
         #expect(await adapter.isReaped)
     }

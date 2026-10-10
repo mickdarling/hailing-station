@@ -7,6 +7,12 @@ private struct CodexActiveTurn {
     let context: ProviderTurnContext
     var accepted = false
 }
+/// One bounded wait for an exact turn's explicit terminal after a provider interrupt request (adapter-owned).
+struct CodexTerminalWaiter {
+    let turn: String
+    let done: CheckedContinuation<Bool, Never>
+    let timer: Task<Void, Never>
+}
 /// Exact-ID reconciliation only; no visibility inference, delta reconstruction or arrival-order attribution.
 struct CodexAppServerEvents {
     let binding: ProviderSessionBinding
