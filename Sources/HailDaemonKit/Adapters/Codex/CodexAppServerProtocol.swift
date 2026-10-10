@@ -20,6 +20,7 @@ enum CodexAppServerProtocol {
             throw CodexAppServerError.invalidProtocol
         }
         try await transport.notify(.initialized)
+        try await requireNoProjectLayers(transport, workspace: workspace)
         let response = try fields(try await transport.request(.threadStart, params: .object([
             "ephemeral": .bool(true), "approvalPolicy": .string("never"),
             "approvalsReviewer": .string("user"), "sandbox": .string("read-only"), "cwd": .string(workspace)
@@ -48,6 +49,20 @@ enum CodexAppServerProtocol {
         for source in sources {
             guard case .string(let path) = source, path.hasPrefix(home),
                   !path.split(separator: "/").contains("..") else { throw CodexAppServerError.notIsolated }
+        }
+    }
+    /// Runtime evidence for configuration, whatever discovery rules or managed config applied: the effective config
+    /// as seen from the workspace may include user, system, managed, packaged and session layers, but no project
+    /// `.codex/` layer, which could add MCP servers or hooks the owner did not choose for these sessions.
+    private static func requireNoProjectLayers(_ transport: CodexStdioTransport, workspace: String) async throws {
+        let response = try fields(try await transport.request(.configRead, params: .object([
+            "cwd": .string(workspace), "includeLayers": .bool(true)
+        ])))
+        guard case .array(let layers) = response["layers"] else { throw CodexAppServerError.invalidProtocol }
+        for layer in layers {
+            let source = try fields(try fields(layer)["name"] ?? .null)
+            guard case .string(let type) = source["type"] else { throw CodexAppServerError.invalidProtocol }
+            guard type != "project" else { throw CodexAppServerError.notIsolated }
         }
     }
     static func turnInput(_ text: String, threadID: String) throws -> JSONValue {

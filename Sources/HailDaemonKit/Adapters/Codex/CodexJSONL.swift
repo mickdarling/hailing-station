@@ -5,7 +5,9 @@ enum CodexStdioError: Error, Sendable, Equatable {
     case invalidConfiguration, stopped, transportLost, malformedFrame, oversizedFrame, truncatedFrame
     case capacityExceeded, timedOut, unknownResponse, serverRequest, providerRefused
 }
-enum CodexStdioMethod: String, Sendable { case initialize, threadStart = "thread/start", turnStart = "turn/start" }
+enum CodexStdioMethod: String, Sendable {
+    case initialize, threadStart = "thread/start", turnStart = "turn/start", configRead = "config/read"
+}
 enum CodexStdioNotice: String, Sendable { case initialized }
 struct CodexStdioLimits: Sendable {
     var requestTimeout: Duration = .seconds(2)
