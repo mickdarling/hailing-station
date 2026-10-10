@@ -75,6 +75,7 @@ public final class AVAudioEngineCapture: AudioCapturing {
     private let notificationCenter: NotificationCenter
     private let operations: AudioEngineOperations
     private let routeInputChanged: AudioCaptureEndingSignal.RouteInputChange
+    private let routeOverrideWindow: AppRouteOverrideWindow
     private var continuation: AsyncStream<AudioCaptureBuffer>.Continuation?
     private var hasTap = false
     private var observer: AudioCaptureEndingObserver?
@@ -98,6 +99,7 @@ public final class AVAudioEngineCapture: AudioCapturing {
     init(
         engine: AVAudioEngine, notificationCenter: NotificationCenter, operations: AudioEngineOperations,
         routeInputChanged: @escaping AudioCaptureEndingSignal.RouteInputChange = AudioCaptureEndingSignal.inputChanged,
+        routeOverrideWindow: AppRouteOverrideWindow = .shared,
         stallPolicy: StallPolicy? = nil,
         now: @escaping @Sendable () -> ContinuousClock.Instant = { ContinuousClock().now },
         sleep: @escaping @Sendable (Duration) async throws -> Void = { try await Task.sleep(for: $0) }
@@ -106,6 +108,7 @@ public final class AVAudioEngineCapture: AudioCapturing {
         self.notificationCenter = notificationCenter
         self.operations = operations
         self.routeInputChanged = routeInputChanged
+        self.routeOverrideWindow = routeOverrideWindow
         self.stallPolicy = stallPolicy
         self.now = now
         self.sleep = sleep
@@ -125,7 +128,8 @@ public final class AVAudioEngineCapture: AudioCapturing {
         // Observe before starting, so a call or route change that lands while the engine starts is not lost. Its
         // signal is handled on the main actor after `start` returns, against the engine's state at that point.
         observer = AudioCaptureEndingObserver(
-            center: notificationCenter, engine: engine, inputChanged: routeInputChanged
+            center: notificationCenter, engine: engine, inputChanged: routeInputChanged,
+            overrideWindow: routeOverrideWindow
         ) { [weak self] signal, id in
             Task { @MainActor in self?.systemSignal(signal, observer: id) }
         }
@@ -155,12 +159,15 @@ public final class AVAudioEngineCapture: AudioCapturing {
     /// Only the observer of the current run may end it; a late signal from an earlier run is ignored.
     private func systemSignal(_ signal: AudioCaptureEndingSignal, observer id: UUID) {
         guard observer?.id == id, signal.endsCapture(engineRunning: operations.isRunning(engine)) else { return }
-        endBySystem()
+        endBySystem(reason: signal.endReason)
     }
 
-    private func endBySystem() {
+    /// `endedBySystem`'s `userInfo` key: the `ambient_stop` reason token for what ended the run (#459).
+    public nonisolated static let endedReasonKey = "HailCaptureEndedReason"
+
+    private func endBySystem(reason: String = "capture_ended") {
         stop()
-        notificationCenter.post(name: Self.endedBySystem, object: self)
+        notificationCenter.post(name: Self.endedBySystem, object: self, userInfo: [Self.endedReasonKey: reason])
     }
 
     private func installTap(_ continuation: AsyncStream<AudioCaptureBuffer>.Continuation) {
@@ -266,8 +273,9 @@ struct AudioEngineOperations {
 enum AudioCaptureEndingSignal: Equatable, Sendable {
     case interruptionBegan
     case interruptionEnded
-    /// `inputChanged` is false only when the route change left the input ports as they were (#343).
-    case routeChanged(reason: UInt, inputChanged: Bool = true)
+    /// `inputChanged` is false only when the route change left the input ports as they were (#343). `selfOverride`
+    /// marks an `override` the app itself made while restoring the preferred input (#459).
+    case routeChanged(reason: UInt, inputChanged: Bool = true, selfOverride: Bool = false)
     case mediaServicesReset
     case engineConfigurationChanged
 
@@ -284,7 +292,8 @@ enum AudioCaptureEndingSignal: Equatable, Sendable {
         switch self {
         case .interruptionBegan, .mediaServicesReset: true
         case .interruptionEnded: false
-        case .routeChanged(let reason, let inputChanged):
+        case .routeChanged(_, _, true): !engineRunning
+        case .routeChanged(let reason, let inputChanged, false):
             (Self.hardwareRouteReasons.contains(reason) && (inputChanged || reason == Self.noSuitableRoute))
                 || !engineRunning
         case .engineConfigurationChanged: !engineRunning
@@ -292,6 +301,17 @@ enum AudioCaptureEndingSignal: Equatable, Sendable {
     }
 
     static let noSuitableRoute: UInt = 7
+    static let override: UInt = 4
+
+    /// The `ambient_stop` reason token for a run this signal ended (#459): the route-change reason, or
+    /// `system_interruption` for a call or Siri, or `capture_ended` when the engine or media services stopped.
+    var endReason: String {
+        switch self {
+        case .interruptionBegan, .interruptionEnded: "system_interruption"
+        case .routeChanged(let reason, _, _): DeviceDiagnostics.routeChangeReason(reason)
+        case .mediaServicesReset, .engineConfigurationChanged: "capture_ended"
+        }
+    }
 
     /// Whether a route-change notification changed the input ports.
     typealias RouteInputChange = @Sendable (Notification) -> Bool
@@ -330,15 +350,19 @@ enum AudioCaptureEndingSignal: Equatable, Sendable {
     }
 
     /// `AVAudioSession.InterruptionType.began` is 1 and `.ended` is 0; a missing type is treated as began.
-    init?(_ notification: Notification, inputChanged: RouteInputChange = Self.inputChanged) {
+    init?(
+        _ notification: Notification, inputChanged: RouteInputChange = Self.inputChanged,
+        overrideWindow: AppRouteOverrideWindow = .shared
+    ) {
         switch notification.name {
         case Names.interruption:
             let type = notification.userInfo?[Names.interruptionTypeKey] as? UInt
             self = type == 0 ? .interruptionEnded : .interruptionBegan
         case Names.routeChange:
+            let reason = notification.userInfo?[Names.routeChangeReasonKey] as? UInt ?? 0
             self = .routeChanged(
-                reason: notification.userInfo?[Names.routeChangeReasonKey] as? UInt ?? 0,
-                inputChanged: inputChanged(notification)
+                reason: reason, inputChanged: inputChanged(notification),
+                selfOverride: reason == Self.override && overrideWindow.isOpen
             )
         case Names.mediaServicesReset: self = .mediaServicesReset
         case .AVAudioEngineConfigurationChange: self = .engineConfigurationChanged
@@ -358,6 +382,7 @@ final class AudioCaptureEndingObserver {
     init(
         center: NotificationCenter, engine: AnyObject?,
         inputChanged: @escaping AudioCaptureEndingSignal.RouteInputChange = AudioCaptureEndingSignal.inputChanged,
+        overrideWindow: AppRouteOverrideWindow = .shared,
         handler: @escaping Handler
     ) {
         self.center = center
@@ -366,7 +391,9 @@ final class AudioCaptureEndingObserver {
         let sessionNames = names.map { ($0, nil as AnyObject?) }
         for (name, object) in sessionNames + [(.AVAudioEngineConfigurationChange, engine)] {
             tokens.append(center.addObserver(forName: name, object: object, queue: nil) { notification in
-                guard let signal = AudioCaptureEndingSignal(notification, inputChanged: inputChanged) else { return }
+                guard let signal = AudioCaptureEndingSignal(
+                    notification, inputChanged: inputChanged, overrideWindow: overrideWindow
+                ) else { return }
                 handler(signal, id)
             })
         }

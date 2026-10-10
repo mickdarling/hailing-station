@@ -25,9 +25,11 @@ import Testing
 
     @Test func aHardwareRouteChangeEndsCaptureEvenIfTheEngineStillRuns() throws {
         for reason: UInt in [1, 2, 4, 6, 7] {
-            let signal = try #require(AudioCaptureEndingSignal(Notification(
+            // A fresh override window: the shared one may be open from a parallel input-selection test (#459).
+            let parsed = AudioCaptureEndingSignal(Notification(
                 name: Names.routeChange, userInfo: [Names.routeChangeReasonKey: reason]
-            )))
+            ), overrideWindow: AppRouteOverrideWindow())
+            let signal = try #require(parsed)
             #expect(signal == .routeChanged(reason: reason))
             #expect(signal.endsCapture(engineRunning: true))
         }
