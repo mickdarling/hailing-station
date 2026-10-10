@@ -39,14 +39,27 @@ public enum MessageLinks {
     /// The links in `text`, in order.
     public static func links(_ text: String) -> [URL] { links(segments(text)) }
 
-    /// The URL when `string` is an absolute http or https URL with a host and no user or password, else nil.
-    /// Userinfo is never linked: in `https://paypal.com@evil.com` the site is evil.com.
+    /// The URL when `string` is an absolute http or https URL with a plain host and no user or password, else nil.
+    /// Userinfo is never linked: in `https://paypal.com@evil.com` the site is evil.com. Nor is a host with percent
+    /// escapes or any character outside letters, digits, "." and "-" (or an IPv6 address): Foundation keeps such
+    /// hosts unencoded, so `%D0%B0pple.com` or `paypal.com%2F.evil.com` would otherwise name a different-looking site.
     public static func webURL(_ string: String) -> URL? {
         guard let url = URL(string: string), let scheme = url.scheme?.lowercased(),
-              scheme == "http" || scheme == "https", let host = host(of: url), !host.isEmpty,
+              scheme == "http" || scheme == "https", let host = host(of: url), isPlainHost(host),
               url.user == nil, url.password == nil else { return nil }
         return url
     }
+
+    /// ASCII letters, digits, "." and "-", or an IPv6 address; so a shown host is plain ASCII or `xn--` punycode.
+    private static func isPlainHost(_ host: String) -> Bool {
+        guard !host.isEmpty else { return false }
+        if host.unicodeScalars.allSatisfy({ hostCharacters.contains($0) }) { return true }
+        return host.contains(":") && host.unicodeScalars.allSatisfy { ipv6Characters.contains($0) }
+    }
+
+    private static let hostCharacters = CharacterSet(charactersIn:
+        "abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789.-")
+    private static let ipv6Characters = CharacterSet(charactersIn: "0123456789abcdefABCDEF:.")
 
     /// The site to show after a link's label, or nil when the label already is the destination: exactly the URL, or
     /// a web URL whose host is identical. A label that merely mentions a host (`paypal.com` linking to `aypal.com`, or
@@ -64,8 +77,8 @@ public enum MessageLinks {
         return host
     }
 
-    /// The decoded host, so a percent-encoded host never hides what it spells.
-    public static func host(of url: URL) -> String? { url.host(percentEncoded: false) }
+    /// The host exactly as written in the URL, never decoded: `webURL` admits only plain ASCII hosts.
+    public static func host(of url: URL) -> String? { url.host(percentEncoded: true) }
 
     /// Removes Unicode format characters (category Cf: bidirectional controls, zero-width characters, soft hyphens,
     /// byte-order marks), which could reorder or hide parts of a label to disguise where it leads.

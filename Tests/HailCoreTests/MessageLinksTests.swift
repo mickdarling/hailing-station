@@ -71,8 +71,16 @@ import Testing
         #expect(MessageLinks.visible("a\u{200E}b\u{2066}c\u{2069}d\u{061C}e") == "abcde")
     }
 
-    @Test func hostsAreShownDecoded() {
-        #expect(MessageLinks.destinationHint(label: "Docs", url: url("https://%65vil.com/x")) == "evil.com")
+    @Test func hostsWithPercentEscapesOrOtherCharactersAreNeverLinked() {
+        // Review round 3: a decoded host could spell a lookalike, a path, an "@" or invisible controls.
+        for target in ["https://%D0%B0pple.com", "https://paypal.com%2F.evil.com", "https://paypal.com%40evil.com",
+                       "https://evil%E2%80%AE.com", "https://ev%E2%80%8Bil.com", "https://%65vil.com/x"] {
+            #expect(MessageLinks.webURL(target) == nil, "\(target)")
+            #expect(MessageLinks.links("[x](\(target))").isEmpty, "\(target)")
+        }
+        #expect(MessageLinks.links("see https://%D0%B0pple.com/x").isEmpty)
+        #expect(MessageLinks.links("https://[2001:db8::1]/status") == [url("https://[2001:db8::1]/status")])
+        #expect(MessageLinks.links("https://example-1.co.uk/a") == [url("https://example-1.co.uk/a")])
     }
 
     @Test func markdownTargetsMayHoldBalancedParentheses() {
