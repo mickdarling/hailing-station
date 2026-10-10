@@ -1,5 +1,5 @@
 // The generated schema mirrors every payload in one auditable value.
-// swiftlint:disable type_body_length
+// swiftlint:disable type_body_length file_length
 /// JSON Schema (draft 2020-12) for the frame envelope and payloads, emitted by `hail-protocol-gen` so
 /// non-Swift implementers (#15) and the CI drift check (#28) have a machine-readable reference. Maintained
 /// beside the Codable types; the conformance job fails when a fixture stops validating.
@@ -108,13 +108,18 @@ public enum Schema {
             "streamId": .object(["type": .string("string"), "format": .string("uuid")]),
             "final": .object(["type": .string("boolean")]),
             "bytes": bytesField(max: PayloadLimits.maxAudioBytes),
-            "reply": .object(["$ref": .string("#/$defs/reply")])
+            "reply": .object(["$ref": .string("#/$defs/reply")]),
+            "resume": .object(["const": .bool(true)]) // #373: only `true`, only on a first segment (below)
         ]),
         "allOf": .array([
             .object([
                 "if": .object(["required": .array([.string("reply")])]),
                 "then": .object(["required": .array([.string("streamId"), .string("final")])])
-            ])
+            ]),
+            .object(["if": .object(["required": .array([.string("resume")])]), "then": .object([
+                "required": .array([.string("streamId")]),
+                "properties": .object(["sequence": .object(["const": .integer(0)])])
+            ])])
         ])
     ])
 

@@ -32,6 +32,9 @@ public enum AmbientAudioError: Error, Equatable, Sendable {
 /// Confined to the single pump task that owns it; the converter is rebuilt when the input route's format changes.
 struct AmbientAudioEncoder {
     let streamID: UUID
+    /// True for a stream opened by an automatic restart (#373): its first segment says `resume`, so the host never
+    /// lets it take listening back from a device someone moved to.
+    let isResume: Bool
     private let outputFormat: AVAudioFormat
     private var converter: AVAudioConverter?
     private var pending = Data()
@@ -40,9 +43,10 @@ struct AmbientAudioEncoder {
     private var held: Data?
     private(set) var nextSequence = 0
 
-    init(streamID: UUID) throws {
+    init(streamID: UUID, isResume: Bool = false) throws {
         guard let format = AmbientAudioFormat.outputFormat() else { throw AmbientAudioError.unsupportedFormat }
         self.streamID = streamID
+        self.isResume = isResume
         outputFormat = format
     }
 
@@ -110,7 +114,8 @@ struct AmbientAudioEncoder {
         defer { nextSequence += 1 }
         return AudioPayload(
             codec: .pcm16, sampleRate: AmbientAudioFormat.sampleRate, channels: AmbientAudioFormat.channels,
-            sequence: nextSequence, streamID: streamID, isFinal: isFinal, bytes: bytes
+            sequence: nextSequence, streamID: streamID, isFinal: isFinal, bytes: bytes,
+            isResume: isResume && nextSequence == 0
         )
     }
 
@@ -362,7 +367,7 @@ public final class AmbientAudioStreamer {
             return nil
         }
         let identity = makeStreamID()
-        guard let encoder = try? AmbientAudioEncoder(streamID: identity) else {
+        guard let encoder = try? AmbientAudioEncoder(streamID: identity, isResume: true) else {
             stopCapture(ifRun: current)
             return nil
         }

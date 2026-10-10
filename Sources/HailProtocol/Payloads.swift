@@ -143,10 +143,14 @@ public struct AudioPayload: Codable, Sendable, Equatable {
     public var isFinal: Bool
     public var bytes: Data
     public var reply: ReplyDescriptor?
+    /// True only on the first segment of an ambient stream that a device opened by itself to resume listening after
+    /// the host ended its last one (#373), not because someone asked to listen there. A host never lets such a start
+    /// take listening over from another device. On the wire it is `"resume": true` or absent, never `false`.
+    public var isResume: Bool
 
     public init(
         codec: AudioCodec, sampleRate: Int, channels: Int, sequence: Int,
-        streamID: UUID? = nil, isFinal: Bool = true, bytes: Data, reply: ReplyDescriptor? = nil
+        streamID: UUID? = nil, isFinal: Bool = true, bytes: Data, reply: ReplyDescriptor? = nil, isResume: Bool = false
     ) {
         self.codec = codec
         self.sampleRate = sampleRate
@@ -156,6 +160,7 @@ public struct AudioPayload: Codable, Sendable, Equatable {
         self.isFinal = isFinal
         self.bytes = bytes
         self.reply = reply
+        self.isResume = isResume
     }
 
     public init(from decoder: any Decoder) throws {
@@ -179,10 +184,33 @@ public struct AudioPayload: Codable, Sendable, Equatable {
             )
             throw DecodingError.dataCorrupted(context)
         }
+        // Strict, like the schema: `resume` is `true` (never `false` or null), on a stream's first segment only.
+        isResume = container.contains(.isResume)
+        if isResume, try !container.decode(Bool.self, forKey: .isResume) || sequence != 0 || streamID == nil {
+            let context = DecodingError.Context(
+                codingPath: decoder.codingPath + [CodingKeys.isResume],
+                debugDescription: "resume is only true, on the first segment of a stream"
+            )
+            throw DecodingError.dataCorrupted(context)
+        }
+    }
+
+    public func encode(to encoder: any Encoder) throws {
+        var container = encoder.container(keyedBy: CodingKeys.self)
+        try container.encode(codec, forKey: .codec)
+        try container.encode(sampleRate, forKey: .sampleRate)
+        try container.encode(channels, forKey: .channels)
+        try container.encode(sequence, forKey: .sequence)
+        try container.encodeIfPresent(streamID, forKey: .streamID)
+        try container.encode(isFinal, forKey: .isFinal)
+        try container.encode(bytes, forKey: .bytes)
+        try container.encodeIfPresent(reply, forKey: .reply)
+        if isResume { try container.encode(true, forKey: .isResume) }
     }
 
     private enum CodingKeys: String, CodingKey {
         case codec, sampleRate, channels, sequence, streamID = "streamId", isFinal = "final", bytes, reply
+        case isResume = "resume"
     }
 }
 

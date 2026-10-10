@@ -77,3 +77,9 @@ The wire carries two things for this, and each names a device only by its class 
   the vocabulary. The command grants no authority. A device advertises `ambient_takeover`
   (`AmbientTakeOver.capability`) in its `hello` when it can act on the command, and a host never sends the
   command to a device that did not.
+- `"resume": true` on an ambient segment (#373) marks a device's own automatic restart after the host ended its
+  last stream, not a start someone asked for. It is allowed only on a stream's first segment (sequence 0, with a
+  `streamId`). `false`, `null` or any later segment is refused by both the decoder and the schema, and an absent key
+  means the start was asked for. A host never lets a resume start take listening over: while another device holds
+  the stream, the start is refused with that device's `ambient moved to <class>`. The restarting device then shows
+  the move, as if it had been taken over directly. With nobody listening, a resume start opens normally.

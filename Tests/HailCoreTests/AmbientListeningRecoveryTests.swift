@@ -18,8 +18,12 @@ import Testing
         /// Every segment of the first `failingStreams` stream identities is refused with `refusal`.
         var failingStreams = 0
         var refusal: any Error = AmbientListeningRecoveryTests.idleEnded
+        /// Per stream index, a refusal that replaces `refusal` (#373).
+        var refusals: [Int: any Error] = [:]
         var streams: [UUID] = []
         var sent: [AudioPayload] = []
+        /// Every segment offered to the host, refused or not.
+        var offered: [AudioPayload] = []
         var delays: [Duration] = []
         var unexpectedStops: [String] = []
         var holdsBackoff = false
@@ -38,7 +42,8 @@ import Testing
         func record(_ payload: AudioPayload) throws {
             guard let stream = payload.streamID else { return }
             if !streams.contains(stream) { streams.append(stream) }
-            if let index = streams.firstIndex(of: stream), index < failingStreams { throw refusal }
+            offered.append(payload)
+            if let index = streams.firstIndex(of: stream), index < failingStreams { throw refusals[index] ?? refusal }
             sent.append(payload)
         }
 
