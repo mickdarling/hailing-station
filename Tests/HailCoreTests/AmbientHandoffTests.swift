@@ -61,12 +61,13 @@ import Testing
         lazy var controller: AmbientListeningController = {
             let controller = AmbientListeningController(
                 requestPermission: { true },
-                makeStreamer: { [unowned self] send in AmbientAudioStreamer(capture: capture, send: send) },
+                // Weak (#394): the controller can call back after a test has returned and freed the harness.
+                makeStreamer: { [capture] send in AmbientAudioStreamer(capture: capture, send: send) },
                 releaseSession: {},
-                sleep: { [unowned self] _ in try await wait() },
-                send: { [unowned self] _, _ in try await record() }
+                sleep: { [weak self] _ in try await self?.wait() },
+                send: { [weak self] _, _ in try await self?.record() }
             )
-            controller.onUnexpectedStop = { [unowned self] in unexpectedStops.append($0) }
+            controller.onUnexpectedStop = { [weak self] in self?.unexpectedStops.append($0) }
             return controller
         }()
 
