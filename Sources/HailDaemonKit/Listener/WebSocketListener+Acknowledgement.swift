@@ -52,6 +52,32 @@ extension HostSession {
     }
 }
 
+extension HostSession {
+    /// A turn heard but not sent (#398), only while this ready session still selects `target`, only to a device that
+    /// advertised `AmbientOverheard.capability`, only within the scope it asked for (`owner` sends the owner's turns,
+    /// `everyone` all; `off` nothing), and only text the command can carry: anything else is nil.
+    func overheardFrame(_ text: String, owner: Bool, target: String) -> Frame? {
+        guard case .ready(let version) = state, selectedTarget == target,
+              peerCapabilities.contains(AmbientOverheard.capability),
+              overheardScope == "everyone" || (overheardScope == "owner" && owner),
+              (1...PayloadLimits.maxTextBytes).contains(text.utf8.count),
+              (1...PayloadLimits.maxTextBytes).contains(target.utf8.count) else { return nil }
+        let speaker = owner ? "owner" : "other"
+        return response(.ambientOverheard(targetID: target, text: text, speaker: speaker), version: version)
+    }
+}
+
+extension WebSocketListener {
+    /// Shows the connection that heard a turn it did not send (#398), queued like `ambient_heard`. Only that connection
+    /// is told, within its own scope; the text is never logged. Returns whether the frame was queued.
+    @discardableResult
+    func showAmbientOverheard(connection: UUID, target: String, text: String, owner: Bool) async -> Bool {
+        guard !stopped, let peer = peers.values.first(where: { $0.session.connectionID == connection }),
+              let frame = await peer.session.overheardFrame(text, owner: owner, target: target) else { return false }
+        return await peer.post(frame)
+    }
+}
+
 extension WebSocketListener {
     /// Shows the connection that heard an admitted request what it heard (#318), before the request is typed. Only
     /// that connection is told. A device that cannot show it, or no longer selects `target`, gets nothing, and the
