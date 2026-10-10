@@ -231,6 +231,9 @@ public protocol AmbientListenerWiring: AnyObject, Sendable {
     func reload() async -> AmbientReloadOutcome
     /// The active stream, if any, and the live children (#405). Never transcript content.
     func status() -> AmbientRouterStatus
+    /// The connection whose ambient stream feeds the active child, or nil (#230): the device the user is listening on,
+    /// the recipient of last resort for a reply with no request reference. The default has none.
+    func activeConnection() -> UUID?
 }
 
 extension AmbientListenerWiring {
@@ -245,6 +248,7 @@ extension AmbientListenerWiring {
     /// A wiring that cannot reload refuses rather than touching the stream.
     public func reload() async -> AmbientReloadOutcome { .refused("unsupported") }
     public func status() -> AmbientRouterStatus { AmbientRouterStatus() }
+    public func activeConnection() -> UUID? { nil }
 }
 
 /// What `haild ambient reload` did (#405). `refused` carries a content-free rule name.
@@ -585,6 +589,9 @@ public final class AmbientRightyoRouter: AmbientAudioSink, AmbientListenerWiring
     /// The stream whose child is fed audio now, and the most events ever queued at once (tests).
     var activeStream: UUID? { state.withLock { $0.active?.stream } }
     var activePipeline: RightyoAmbientPipeline? { state.withLock { $0.active?.pipeline } }
+    public func activeConnection() -> UUID? {
+        state.withLock { state in state.active.flatMap { state.runs[$0.run]?.connection } }
+    }
     var peakQueue: Int { state.withLock { $0.peakQueue } }
 
     /// Waits (at most 30 s) for queued events to be handled, then for every current run to return (tests).

@@ -421,8 +421,16 @@ extension WebSocketListener {
         }
         try Task.checkCancellation()
         guard !stopped else { throw WebSocketListenerError.stoppedBeforeReady }
-        // The whole scan completes first so the refusal code never depends on peer iteration order.
-        guard candidates.count <= 1 else { throw LocalReplyRefusal.notUniqueRecipient }
+        // The whole scan completes first so the refusal code never depends on peer iteration order. Several selecting
+        // devices and no current last input (#230): the one the user is listening on, if it is among them, else refuse.
+        var path = "single_selector"
+        if candidates.count > 1 {
+            guard let owner = ambient?.activeConnection(),
+                  let listening = candidates.first(where: { $0.1.session.connectionID == owner }) else {
+                throw LocalReplyRefusal.notUniqueRecipient
+            }
+            (candidates, path) = ([listening], "ambient_owner")
+        }
         // A stop that landed during the scan made its own connection refuse, which could leave another connection
         // as the only candidate; check again before handing the reply to it.
         if await isStopped(frame) { throw LocalReplyRefusal.replyStopped }
@@ -431,7 +439,7 @@ extension WebSocketListener {
             throw LocalReplyRefusal.publicationFailed
         }
         pin(frame, to: delivered)
-        noteRoute(frame, to: peerID, path: "single_selector")
+        noteRoute(frame, to: peerID, path: path)
         return 1
     }
 
