@@ -99,6 +99,23 @@ extension CodexLaunchSetupTests {
         }
     }
 
+    @Test func aRetainedSetupIsRevalidatedBeforeEveryLaunch() async throws {
+        let folder = try Self.root()
+        defer { try? FileManager.default.removeItem(at: folder) }
+        let setup = try CodexLaunchSetup.prepare(root: folder.path, host: [:])
+        #expect(try setup.revalidated() == setup)
+        try Data("invented".utf8).write(to: URL(fileURLWithPath: setup.workspace + "/AGENTS.md"))
+        #expect(throws: CodexLaunchSetupError.workspaceNotEmpty) { _ = try setup.revalidated() }
+        let evidence = try await CodexLauncher.verify(path: "/bin/ls", requirement: "anchor apple") { _ in
+            Data("codex-cli 0.162.0-alpha.17.2\n".utf8)
+        }
+        await #expect(throws: CodexLaunchSetupError.workspaceNotEmpty) {
+            _ = try await CodexAppServerAdapter.withOwnedAdapter(launch: evidence, setup: setup) { _ in
+                Issue.record("operation entered with a changed workspace")
+            }
+        }
+    }
+
     @Test func aHiddenFileMakesTheWorkspaceNonEmpty() throws {
         let folder = try Self.root()
         defer { try? FileManager.default.removeItem(at: folder) }

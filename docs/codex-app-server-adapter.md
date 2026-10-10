@@ -108,6 +108,9 @@ AGENTS.md. `CodexLaunchSetup.prepare` builds the rest:
   AGENTS.md). Any file from the workspace, an ancestor project or elsewhere
   refuses the session before any turn (internally `notIsolated`, surfaced as
   unavailable).
+- **Single construction, fresh checks:** only `prepare` can construct a setup.
+  The adapter's launch entry point re-runs every workspace check immediately
+  before each launch, so a retained setup is never trusted from memory.
 - **Config evidence:** before `thread/start`, `config/read` with the workspace
   as `cwd` and `includeLayers` must report no `project` layer. User, system,
   managed, packaged and session layers are fine. A project `.codex/` layer,

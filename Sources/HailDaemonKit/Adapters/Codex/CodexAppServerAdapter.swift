@@ -62,6 +62,7 @@ actor CodexAppServerAdapter: ProviderContextDelivering, ProviderSessionObserving
         launch: CodexLaunchEvidence, setup: CodexLaunchSetup, limits: CodexStdioLimits = .init(),
         operation: @Sendable (CodexAppServerAdapter) async throws -> Result
     ) async throws -> Result {
+        let setup = try setup.revalidated()
         let command = try launch.appServerCommand(environment: setup.environment,
                                                   configOverrides: setup.configOverrides)
         return try await withOwnedAdapter(command: command, verifiedVersion: launch.version,

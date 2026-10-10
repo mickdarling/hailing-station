@@ -19,6 +19,20 @@ struct CodexLaunchSetup: Sendable, Equatable {
     /// Per-launch `-c` overrides that switch off named MCP servers from the owner's config for these sessions only.
     let configOverrides: [String]
 
+    /// Only `prepare` constructs a setup, so every instance has passed its checks and carries the mandatory overrides.
+    private init(workspace: String, environment: [String], configOverrides: [String]) {
+        self.workspace = workspace; self.environment = environment; self.configOverrides = configOverrides
+    }
+
+    /// Re-runs every workspace check immediately before a launch: a retained setup is never trusted from memory,
+    /// so a workspace written to or re-permissioned since `prepare` refuses the next session.
+    func revalidated() throws -> CodexLaunchSetup {
+        guard try Self.preparedWorkspace((workspace as NSString).deletingLastPathComponent) == workspace else {
+            throw CodexLaunchSetupError.invalidRoot
+        }
+        return self
+    }
+
     /// `root` and `path` come from trusted host configuration. Creates `root/workspace` (0700) when missing; it
     /// must be a real, private, empty folder outside any git checkout, so no repository instructions are loaded.
     static func prepare(root: String, disabledServers: [String] = [], path: String? = nil,
