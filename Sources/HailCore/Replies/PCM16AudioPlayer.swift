@@ -8,6 +8,8 @@ public enum ReplyAudioPlayerError: Error, Equatable, Sendable {
     case invalidBuffer
 }
 
+extension PCM16AudioPlayer: CaptureRoutedReplies {}
+
 /// AVAudioEngine renderer for the raw signed 16-bit, mono stream produced by the current vbsay bridge.
 @MainActor
 public final class PCM16AudioPlayer: ReplyAudioPlaying {
@@ -96,6 +98,13 @@ public final class PCM16AudioPlayer: ReplyAudioPlaying {
         target.attach(node)
         target.connect(node, to: target.mainMixerNode, format: sourceFormat)
         engine = target
+    }
+
+    /// A stall froze `capture`, which was then restarted (#443). Stopping the node fires the completion of any reply
+    /// that was playing through it, so the playback queue advances; the next `schedule` plays the node again.
+    func captureEngineRestarted(_ capture: AVAudioEngine) {
+        guard engine === capture else { return }
+        node.stop()
     }
 
     /// True while replies play through a capture engine's echo canceller.

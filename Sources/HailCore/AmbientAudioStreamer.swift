@@ -315,10 +315,10 @@ public final class AmbientAudioStreamer {
     }
 
     /// Engine capture with voice processing so reply playback is echo-cancelled rather than re-streamed.
-    /// Call after `ManagedAudioSession` has activated a play-and-record session. A stalled engine restarts (#443).
+    /// Call after `ManagedAudioSession` has activated a play-and-record session.
     public static func voiceProcessingCapture(engine: AVAudioEngine = AVAudioEngine()) throws -> AVAudioEngineCapture {
         try engine.inputNode.setVoiceProcessingEnabled(true)
-        return AVAudioEngineCapture(engine: engine, stallPolicy: .ambient)
+        return AVAudioEngineCapture(engine: engine)
     }
 
     /// Segments dropped because the send backlog exceeded one second.

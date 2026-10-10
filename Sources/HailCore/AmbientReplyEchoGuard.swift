@@ -84,7 +84,7 @@ public final class AmbientReplyEchoGuard: Sendable {
 
     @MainActor
     public func guarding(_ player: any ReplyAudioPlaying) -> any ReplyAudioPlaying {
-        route.player = player as? PCM16AudioPlayer
+        route.player = player as? any CaptureRoutedReplies
         return EchoGuardedReplyPlayer(player: player, echoGuard: self)
     }
 
@@ -102,7 +102,17 @@ public final class AmbientReplyEchoGuard: Sendable {
         _ = engine.mainMixerNode // Wire the output path before the engine first starts.
         let capture = try Self.voiceProcessingCapture(engine: engine)
         let routing = CaptureReplyRouting(engine: engine, route: route, echoGuard: self, cancelsEcho: true)
-        return EchoMaskedCapture(capture: capture, echoGuard: self, routing: routing)
+        return EchoMaskedCapture(capture: Self.watchingForStalls(capture, routing), echoGuard: self, routing: routing)
+    }
+
+    /// Ambient engines restart themselves when they stall (#443). A restart also drops a reply the stall froze on
+    /// the same engine, so the playback queue and the guard's masking move on instead of waiting forever.
+    @MainActor
+    static func watchingForStalls(_ capture: any AudioCapturing, _ routing: CaptureReplyRouting) -> any AudioCapturing {
+        guard let engineCapture = capture as? AVAudioEngineCapture else { return capture }
+        if engineCapture.stallPolicy == nil { engineCapture.stallPolicy = .ambient }
+        engineCapture.onEngineRestarted = { [weak routing] in routing?.engineRestarted() }
+        return engineCapture
     }
 
     /// Ambient capture for `mode` (#343). Voice processing echo-cancels replies through the capture engine. Plain
@@ -112,9 +122,7 @@ public final class AmbientReplyEchoGuard: Sendable {
     @MainActor
     public func ambientCapture(
         mode: AmbientCaptureMode,
-        plainCapture: @MainActor (AVAudioEngine) -> any AudioCapturing = {
-            AVAudioEngineCapture(engine: $0, stallPolicy: .ambient)
-        }
+        plainCapture: @MainActor (AVAudioEngine) -> any AudioCapturing = { AVAudioEngineCapture(engine: $0) }
     ) throws -> any AudioCapturing {
         switch mode {
         case .voiceProcessing: return try echoCancelledCapture()
@@ -122,7 +130,8 @@ public final class AmbientReplyEchoGuard: Sendable {
             let engine = AVAudioEngine()
             _ = engine.mainMixerNode // Wire the output path before the engine first starts.
             let routing = CaptureReplyRouting(engine: engine, route: route, echoGuard: self, cancelsEcho: false)
-            return EchoMaskedCapture(capture: plainCapture(engine), echoGuard: self, routing: routing)
+            let capture = Self.watchingForStalls(plainCapture(engine), routing)
+            return EchoMaskedCapture(capture: capture, echoGuard: self, routing: routing)
         }
     }
 
@@ -222,7 +231,20 @@ final class EchoGuardedReplyPlayer: ReplyAudioPlaying {
 
 /// The reply player that echo-cancelled capture moves onto its engine. Only the main actor touches it.
 final class ReplyRoute: @unchecked Sendable {
-    @MainActor weak var player: PCM16AudioPlayer?
+    @MainActor weak var player: (any CaptureRoutedReplies)?
+
+    nonisolated init() {}
+}
+
+/// A reply player that can play through a capture engine (#269): `PCM16AudioPlayer`, or a test double.
+@MainActor
+protocol CaptureRoutedReplies: AnyObject {
+    func route(through capture: AVAudioEngine?)
+    var isRoutedThroughCapture: Bool { get }
+    func isOnAnotherCapture(than capture: AVAudioEngine) -> Bool
+    /// `capture` was stopped and started again after a stall (#443): if replies play through it, drop whatever the
+    /// stall froze, firing its completions, so the next reply plays.
+    func captureEngineRestarted(_ capture: AVAudioEngine)
 }
 
 /// Moves replies onto a running capture engine and back again, keeping the guard's routing flag truthful. The
@@ -256,6 +278,11 @@ final class CaptureReplyRouting {
         if let player = route.player, player.isOnAnotherCapture(than: engine) { return }
         echoGuard.setRoutedThroughCapture(false)
         route.player?.route(through: nil)
+    }
+
+    /// The engine restarted after a stall (#443): a reply frozen on it is dropped so playback and masking move on.
+    func engineRestarted() {
+        route.player?.captureEngineRestarted(engine)
     }
 }
 

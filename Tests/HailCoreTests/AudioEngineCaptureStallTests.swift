@@ -93,7 +93,7 @@ import Testing
         let attempts = notes.named(AVAudioEngineCapture.stalled).map {
             $0.userInfo?[AVAudioEngineCapture.restartAttemptKey] as? UInt
         }
-        #expect(attempts == [1, 2, 3], "two restarts, then the third stall ends the run")
+        #expect(attempts == [1, 2], "two restarts are reported; the third stall ends the run without one")
         #expect(fake.starts == 3 && !fake.running && fake.tap == nil)
         var iterator = stream.makeAsyncIterator()
         #expect(await iterator.next() == nil, "the stream finishes, so the consumer sees capture end")
@@ -102,10 +102,14 @@ import Testing
     @Test func aRestartThatFailsEndsTheRun() async throws {
         let notes = PostedNotes(center, [AVAudioEngineCapture.stalled, AVAudioEngineCapture.endedBySystem])
         let capture = capture()
+        var restarted = 0
+        capture.onEngineRestarted = { restarted += 1 }
         let stream = try capture.start()
         fake.failNextStart = true
         for _ in 0..<5 { try await step(capture, notes: notes) }
         #expect(notes.named(AVAudioEngineCapture.endedBySystem).count == 1)
+        #expect(notes.named(AVAudioEngineCapture.stalled).isEmpty, "a restart that failed is not reported as one")
+        #expect(restarted == 0)
         #expect(!fake.running && fake.tap == nil)
         var iterator = stream.makeAsyncIterator()
         #expect(await iterator.next() == nil)

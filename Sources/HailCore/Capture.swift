@@ -47,14 +47,16 @@ public protocol AudioCapturing: Sendable {
 public final class AVAudioEngineCapture: AudioCapturing {
     /// Posted on the capture's notification center, with the capture as object, after the system ended a run.
     public static let endedBySystem = Notification.Name("HailAudioCaptureEndedBySystem")
-    /// Posted, with the capture as object, each time a stalled engine is restarted or given up on (#443). Its
-    /// `userInfo` holds `UInt` values under `stalledMillisecondsKey` and `restartAttemptKey`.
+    /// Posted, with the capture as object, each time a stalled engine is restarted (#443). Its `userInfo` holds
+    /// `UInt` values under `stalledMillisecondsKey` and `restartAttemptKey`. A stall that ends the run posts
+    /// `endedBySystem` instead.
     public static let stalled = Notification.Name("HailAudioCaptureStalled")
     public static let stalledMillisecondsKey = "HailCaptureStalledMilliseconds"
     public static let restartAttemptKey = "HailCaptureRestartAttempt"
 
-    /// When a run counts as stalled (#443): no buffer for `limit`, checked every `check`. After `maxRestarts`
-    /// restarts with no buffer in between, the next stall ends the run instead.
+    /// When a run counts as stalled (#443): no buffer for `limit`, on at least two consecutive checks every
+    /// `check` (so one late wake after the app was suspended is not a stall). After `maxRestarts` restarts with no
+    /// buffer in between, the next stall ends the run instead.
     public struct StallPolicy: Sendable, Equatable {
         public var limit: Duration
         public var check: Duration
@@ -64,8 +66,9 @@ public final class AVAudioEngineCapture: AudioCapturing {
             (self.limit, self.check, self.maxRestarts) = (limit, check, maxRestarts)
         }
 
-        /// Ambient listening: a USB route once froze capture for 111 s with the engine still "running" (#443).
-        public static let ambient = StallPolicy(limit: .seconds(5), check: .seconds(1), maxRestarts: 3)
+        /// Ambient listening: a USB route once froze capture for 111 s with the engine still "running" (#443). Two
+        /// restarts; the third stall in a row ends listening.
+        public static let ambient = StallPolicy(limit: .seconds(5), check: .seconds(1), maxRestarts: 2)
     }
 
     private let engine: AVAudioEngine
@@ -75,7 +78,10 @@ public final class AVAudioEngineCapture: AudioCapturing {
     private var continuation: AsyncStream<AudioCaptureBuffer>.Continuation?
     private var hasTap = false
     private var observer: AudioCaptureEndingObserver?
-    private let stallPolicy: StallPolicy?
+    /// Read when a run starts; set it before `start` to watch that run for stalls (#443).
+    var stallPolicy: StallPolicy?
+    /// Called after a stalled engine restarted, so whatever plays through it can drop a reply the stall froze.
+    var onEngineRestarted: (@MainActor () -> Void)?
     private let now: @Sendable () -> ContinuousClock.Instant
     private let sleep: @Sendable (Duration) async throws -> Void
     /// Buffers delivered this run, counted on the audio thread; the watchdog only compares it with its last read.
@@ -176,31 +182,29 @@ extension AVAudioEngineCapture {
             var seen = delivered.count
             var since = now()
             var restarts = 0
+            var staleChecks = 0
             while true {
                 guard (try? await sleep(policy.check)) != nil, !Task.isCancelled, let self,
                       self.continuation != nil else { return }
                 let current = delivered.count
                 if current != seen {
-                    (seen, since, restarts) = (current, now(), 0)
+                    (seen, since, restarts, staleChecks) = (current, now(), 0, 0)
                     continue
                 }
+                staleChecks += 1
                 let stalled = now() - since
-                guard stalled >= policy.limit else { continue }
+                // A single check that wakes long after the last (the app was suspended) is not yet a stall.
+                guard stalled >= policy.limit, staleChecks >= 2 else { continue }
                 restarts += 1
                 guard self.restartStalled(after: stalled, attempt: restarts, policy: policy) else { return }
-                since = now()
+                (since, staleChecks) = (now(), 0)
             }
         }
     }
 
-    /// Reports the stall, then restarts the engine on the same stream. Past `maxRestarts`, or if the engine won't
-    /// start again, the run ends as if the system had stopped it. Returns whether the run goes on.
+    /// Restarts the engine on the same stream and reports it. Past `maxRestarts`, or if the engine won't start
+    /// again, the run ends as if the system had stopped it, with no "restarted" report. Returns whether it goes on.
     private func restartStalled(after stalled: Duration, attempt: Int, policy: StallPolicy) -> Bool {
-        let (seconds, attoseconds) = stalled.components
-        let milliseconds = seconds * 1_000 + attoseconds / 1_000_000_000_000_000
-        notificationCenter.post(name: Self.stalled, object: self, userInfo: [
-            Self.stalledMillisecondsKey: UInt(clamping: milliseconds), Self.restartAttemptKey: UInt(clamping: attempt)
-        ])
         guard attempt <= policy.maxRestarts, let continuation else {
             endBySystem()
             return false
@@ -217,15 +221,21 @@ extension AVAudioEngineCapture {
             endBySystem()
             return false
         }
+        let (seconds, attoseconds) = stalled.components
+        let milliseconds = seconds * 1_000 + attoseconds / 1_000_000_000_000_000
+        notificationCenter.post(name: Self.stalled, object: self, userInfo: [
+            Self.stalledMillisecondsKey: UInt(clamping: milliseconds), Self.restartAttemptKey: UInt(clamping: attempt)
+        ])
+        onEngineRestarted?()
         return true
     }
 }
 
 /// A count of tap callbacks, bumped on the audio thread and read on the main actor.
 final class DeliveredBuffers: Sendable {
-    private let value = Mutex<UInt64>(0)
-    func increment() { value.withLock { $0 &+= 1 } }
-    var count: UInt64 { value.withLock { $0 } }
+    private let value = Atomic<UInt64>(0)
+    func increment() { value.wrappingAdd(1, ordering: .relaxed) }
+    var count: UInt64 { value.load(ordering: .relaxed) }
 }
 
 /// The engine calls capture makes. Tests substitute them to simulate the system around a run without a microphone.

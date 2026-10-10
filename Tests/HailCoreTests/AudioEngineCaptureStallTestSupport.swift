@@ -13,10 +13,12 @@ final class CountingEngineOperations {
     var failNextStart = false
 
     var operations: AudioEngineOperations {
+        // Weak: a capture's late stop (its stream's termination) may run after a test has released the fake.
         AudioEngineOperations(
-            installTap: { [unowned self] _, tap in self.tap = tap },
-            removeTap: { [unowned self] _ in tap = nil },
-            start: { [unowned self] _ in
+            installTap: { [weak self] _, tap in self?.tap = tap },
+            removeTap: { [weak self] _ in self?.tap = nil },
+            start: { [weak self] _ in
+                guard let self else { return }
                 starts += 1
                 if failNextStart {
                     failNextStart = false
@@ -24,11 +26,12 @@ final class CountingEngineOperations {
                 }
                 running = true
             },
-            stop: { [unowned self] _ in
+            stop: { [weak self] _ in
+                guard let self else { return }
                 stops += 1
                 running = false
             },
-            isRunning: { [unowned self] _ in running }
+            isRunning: { [weak self] _ in self?.running ?? false }
         )
     }
 
