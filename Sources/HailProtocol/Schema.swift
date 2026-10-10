@@ -153,7 +153,8 @@ public enum Schema {
             "command": .object(["enum": .array(
                 [
                     "hello", "list_targets", "targets", "select", "subscribe", "unsubscribe", "escape", "ping", "pong",
-                    "error", "diagnostic", "stop_playback", "ambient_moved_here", "ambient_heard"
+                    "error", "diagnostic", "stop_playback", "ambient_moved_here", "ambient_heard",
+                    "ambient_overheard", "overheard_scope"
                 ]
                     .map(JSONValue.string)
             )]),
@@ -196,10 +197,14 @@ public enum Schema {
             commandRule("error", requires: ["code", "message"]),
             commandRule("diagnostic", requires: ["events"]),
             commandRule("ambient_heard", requires: ["target", "text"]),
+            commandRule("ambient_overheard", requires: ["target", "text", "speaker"]),
+            commandRule("overheard_scope", requires: ["scope"]),
             diagnosticPayloadRule,
             stopPlaybackPayloadRule,
             ambientMovedHerePayloadRule,
-            ambientHeardPayloadRule
+            ambientHeardPayloadRule,
+            ambientOverheardPayloadRule,
+            overheardScopePayloadRule
         ])
     ])
 }

@@ -98,3 +98,17 @@ as before. A heard turn over the 8 KiB cap is not shown (RightyO admits turns up
 payload's cap. The decoder and the schema refuse any other key. The command grants no authority, and a host refuses
 it from a device. A device advertises `ambient_heard` (`AmbientHeard.capability`) in its `hello` when it can show the
 text, and a host never sends the command to a device that did not. The host never logs the text.
+
+### Overheard remarks (#398)
+
+`{"command": "overheard_scope", "scope": "off" | "owner" | "everyone"}` is sent by a device to choose which turns its
+ambient stream heard but did **not** send it wants to see. A host starts every connection at `off`, so nothing is sent
+until the device asks. The scope applies to that connection only and resets on reconnect. `owner` means only turns
+attributed to the enrolled owner; `everyone` includes other speakers. The decoder and the schema refuse any other key or
+value.
+
+`{"command": "ambient_overheard", "target": "<target>", "text": "<words>", "speaker": "owner" | "other"}` gives the
+device one such turn, within its scope, only while it still selects `target`, and only when it advertised
+`ambient_overheard` (`AmbientOverheard.capability`). `text` is the heard turn, 1 to 8 KiB of UTF-8. The command
+grants no authority, and a host refuses it from a device. A host never sends the assistant's own reply heard back, and
+never logs the text.
