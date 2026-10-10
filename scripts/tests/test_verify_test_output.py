@@ -5,14 +5,22 @@ import shutil
 import subprocess
 import sys
 import tempfile
+import time
 import unittest
 
 
-SWIFT = r'''import os, stat, sys
-lane = sys.argv[2:4]
-assert sys.argv[1] == "test" and lane[0] in ("--parallel", "--no-parallel"), sys.argv
+SWIFT = r'''import os, stat, subprocess, sys, time
+if sys.argv[1] == "build":
+    # The tests are built once, before the lanes, so the lanes' --verbose output is test events only (#449).
+    assert sys.argv[2:] == ["--build-tests", "-Xswiftc", "-warnings-as-errors"], sys.argv
+    with open(os.environ["FAKE_SWIFT_CALLS"], "a") as calls:
+        calls.write("build\n")
+    sys.exit(0)
+assert sys.argv[1:4] == ["test", "--skip-build", "--verbose"], sys.argv
+lane = sys.argv[4:6]
+assert lane[0] in ("--parallel", "--no-parallel"), sys.argv
 assert lane[1] == ("--skip" if lane[0] == "--parallel" else "--filter"), sys.argv
-assert sys.argv[5:] == ["-Xswiftc", "-warnings-as-errors"], sys.argv
+assert len(sys.argv) == 7, sys.argv
 with open(os.environ["FAKE_SWIFT_CALLS"], "a") as calls:
     calls.write(lane[0] + "\n")
 mode = os.fstat(1).st_mode
@@ -22,6 +30,15 @@ if not stat.S_ISREG(mode) or mode & 0o077:
 print("fixture stdout")
 print("fixture stderr", file=sys.stderr)
 print("x" * 65536)
+if os.environ.get("FAKE_SWIFT_HANG"):
+    print("\u25c7 Test finishes() started.")
+    print("\u2714 Test finishes() passed after 0.001 seconds.")
+    print("\u25c7 Test hangsForever() started.", flush=True)
+    # A child that would outlive its parent if only the parent were stopped.
+    child = subprocess.Popen([sys.executable, "-c", "import time; time.sleep(600)"])
+    with open(os.environ["FAKE_SWIFT_CHILD"], "w") as pid:
+        pid.write(str(child.pid))
+    time.sleep(600)
 sys.exit(int(os.environ["FAKE_SWIFT_STATUS"]))
 '''
 
@@ -72,7 +89,7 @@ class VerifyTestOutputTests(SuccessfulFixtureCleanup):
         self.assertIn("x" * 65536 + "\n", result.stdout)
         # Both lanes are captured and replayed; a failure stops at the parallel lane.
         lanes = ["--parallel"] if status else ["--parallel", "--no-parallel"]
-        self.assertEqual((self.scratch / "swift-calls").read_text().split(), lanes)
+        self.assertEqual((self.scratch / "swift-calls").read_text().split(), ["build"] + lanes)
         self.assertEqual(result.stdout.count("fixture stdout\n"), len(lanes))
         captures = list(self.scratch.glob("hailing-swift-tests.*"))
         self.assertEqual(len(captures), int(status != 0))
@@ -119,6 +136,35 @@ class VerifyTestOutputTests(SuccessfulFixtureCleanup):
         self.assertEqual(result.returncode, 7)
         self.assertIn("fixture stdout\n", result.stdout)
         self.assertEqual(len(list(self.scratch.glob("hailing-swift-tests.*"))), 1)
+
+
+    def test_a_silent_lane_is_stopped_and_names_the_unfinished_test(self):
+        # #449: a hang fails fast with the started-but-unfinished test named, and leaves no process behind.
+        self.env.update(FAKE_SWIFT_HANG="1", HAIL_TEST_STALL_SECONDS="2",
+                        FAKE_SWIFT_CHILD=str(self.scratch / "child-pid"))
+        result = self.run_lane()
+        self.assertEqual(result.returncode, 124, result.stderr)
+        self.assertIn("Stalled: no test output for 2 s", result.stderr)
+        self.assertIn("  hangsForever()\n", result.stderr)
+        self.assertNotIn("finishes()", result.stderr)
+        self.assertIn("fixture stdout\n", result.stdout)
+        self.assertEqual((self.scratch / "swift-calls").read_text().split(), ["build", "--parallel"])
+        child = int((self.scratch / "child-pid").read_text())
+        deadline = time.monotonic() + 5
+        while time.monotonic() < deadline and alive(child):
+            time.sleep(0.1)
+        self.assertFalse(alive(child), "the stalled lane's descendants must be stopped")
+        captures = list(self.scratch.glob("hailing-swift-tests.*"))
+        self.assertEqual(len(captures), 1)
+        self.assertIn(str(captures[0]), result.stderr)
+
+
+def alive(pid):
+    try:
+        os.kill(pid, 0)
+    except ProcessLookupError:
+        return False
+    return True
 
 
 class VerifyFixtureCleanupTests(SuccessfulFixtureCleanup):

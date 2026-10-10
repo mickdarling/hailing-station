@@ -33,15 +33,59 @@ TIMING_SUITES=(
 )
 TIMING_PATTERN="($(IFS='|'; echo "${TIMING_SUITES[*]}"))"
 
+# A lane whose capture stays silent this long is stalled (#449): it is stopped and fails at once, naming the tests
+# that started and never finished, instead of hanging until the CI job's timeout.
+STALL_SECONDS="${HAIL_TEST_STALL_SECONDS:-300}"
+
+# Stops a process and every descendant, deepest first.
+stop_tree() {
+  local child
+  for child in $(pgrep -P "$1" || :); do stop_tree "$child"; done
+  kill -TERM "$1" 2>/dev/null || :
+}
+
+# The tests (not test cases) the verbose capture shows as started without a matching pass, failure or skip.
+unfinished_tests() {
+  awk '
+    /^◇ Test case / || /^◇ Test run / { next }
+    /^◇ Test .* started\.$/ { name = substr($0, index($0, "Test ") + 5); sub(/ started\.$/, "", name); open[name]++; next }
+    /^[✔✘↷] Test case / || / recorded an issue / { next }
+    /^[✔✘↷] Test .* (passed|failed|skipped)/ {
+      name = substr($0, index($0, "Test ") + 5)
+      sub(/ (with [0-9]+ test cases? )?(passed|failed|skipped).*$/, "", name)
+      if (open[name] > 0) open[name]--
+    }
+    END { for (name in open) if (open[name] > 0) print "  " name }
+  ' "$1" | sort
+}
+
 # A slow console consumer must not stall test reporting while deadlines run (#185): output goes to a private file
 # and is replayed in full afterwards. A failed capture is kept, and neither failure masks the other.
 run_captured() {
-  local log status=0 report=0 dir="${HAIL_TEST_CAPTURE_DIR:-${TMPDIR:-/tmp}}"
+  local log pid idle status=0 report=0 stalled=0 dir="${HAIL_TEST_CAPTURE_DIR:-${TMPDIR:-/tmp}}"
   # CI points HAIL_TEST_CAPTURE_DIR at a directory it uploads even when the job fails or times out (#264).
   mkdir -p "$dir"
   log="$(mktemp "$dir/hailing-swift-tests.XXXXXX")"
-  "$@" > "$log" 2>&1 || status=$?
+  "$@" > "$log" 2>&1 &
+  pid=$!
+  while kill -0 "$pid" 2>/dev/null; do
+    sleep 1
+    idle=$(( $(date +%s) - $(stat -f %m "$log") ))
+    if (( idle >= STALL_SECONDS )); then
+      stalled=1
+      stop_tree "$pid"
+      break
+    fi
+  done
+  wait "$pid" || status=$?
   cat "$log" || report=$?
+  if (( stalled )); then
+    status=124
+    {
+      printf 'Stalled: no test output for %s s; stopped (#449). Started and never finished:\n' "$STALL_SECONDS"
+      unfinished_tests "$log"
+    } >&2 || :
+  fi
   if (( status || report )); then
     printf 'Preserved Swift test output: %s\n' "$log" >&2 || :
     (( status == 0 )) || return "$status"
@@ -51,10 +95,13 @@ run_captured() {
 }
 
 test_() {
+  # Tests are built first so the lanes' --verbose output names each test as it starts, not each compile (#449).
+  echo "== build tests"
+  swift build --build-tests ${SWIFT_FLAGS[@]+"${SWIFT_FLAGS[@]}"}
   echo "== test (parallel)"
-  run_captured swift test --parallel --skip "$TIMING_PATTERN" ${SWIFT_FLAGS[@]+"${SWIFT_FLAGS[@]}"}
+  run_captured swift test --skip-build --verbose --parallel --skip "$TIMING_PATTERN"
   echo "== test (timing suites, serial, #208)"
-  run_captured swift test --no-parallel --filter "$TIMING_PATTERN" ${SWIFT_FLAGS[@]+"${SWIFT_FLAGS[@]}"}
+  run_captured swift test --skip-build --verbose --no-parallel --filter "$TIMING_PATTERN"
 }
 
 lint()  { echo "== lint";  swiftlint lint --strict --quiet; }
