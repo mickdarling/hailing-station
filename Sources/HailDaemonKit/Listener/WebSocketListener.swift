@@ -843,11 +843,14 @@ extension AmbientRightyoRouter {
     /// Registers a run for `pipeline` under the caller's lock and returns its id. The task is created under the lock,
     /// so the run's own removal cannot precede its registration. The run's own task emits `ambient_started` first, so
     /// it always precedes that run's `ambient_ended`, even when a child exits at once beside another live run (#273).
-    fileprivate func register(_ pipeline: RightyoAmbientPipeline, stream: UUID, connection: UUID,
+    /// A reload's run (#405) emits `ambient_reloaded` first for the same reason: a new child that fails at once must
+    /// leave its failure, not the reload, as the last event.
+    fileprivate func register(_ pipeline: RightyoAmbientPipeline, stream: UUID, connection: UUID, reload: Bool = false,
                               in state: inout State) -> UUID {
         let id = UUID()
         state.runs[id] = Run(stream: stream, connection: connection, pipeline: pipeline)
         state.runs[id]?.task = Task { [weak self] in
+            if reload { self?.emit("ambient_reloaded", detail: nil) }
             self?.emit("ambient_started", detail: nil)
             await self?.run(pipeline, id: id, stream: stream, connection: connection)
         }
@@ -1016,7 +1019,6 @@ extension AmbientRightyoRouter {
             await pipeline.stop(grace: Self.forcedStopGrace)
             return outcome
         }
-        emit("ambient_reloaded", detail: nil)
         retire(old.run, grace: Self.forcedStopGrace)
         return .reloaded
     }
@@ -1032,7 +1034,7 @@ extension AmbientRightyoRouter {
             // Retired in the same lock, so a take-over start in the meantime finds it as a victim to force out.
             state.retirements += 1
             state.runs[old.run]?.retiredAt = state.retirements
-            let id = register(pipeline, stream: old.stream, connection: connection, in: &state)
+            let id = register(pipeline, stream: old.stream, connection: connection, reload: true, in: &state)
             state.active = Active(stream: old.stream, run: id, pipeline: pipeline, since: old.since)
             return .reloaded
         }
