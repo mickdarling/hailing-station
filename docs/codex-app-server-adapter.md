@@ -47,7 +47,9 @@ evidence. The `verifiedVersion` seam stays internal, for synthetic tests.
   writable by nobody else, with no extended ACL on either. Every ancestor up
   to `/` must be owned by root or the current user and not world-writable;
   group write is accepted only on root-owned wheel/admin folders such as
-  `/Applications`, whose members can already become root.
+  `/Applications`, whose members can already become root. Ancestors may carry
+  deny ACL entries (a home folder has one by default) but no allow entry that
+  grants add, delete, re-permission or ownership changes.
 - The code signature must validate strictly against a configured requirement.
   The default is OpenAI's Developer ID designated requirement: identifier
   `codex`, Apple-anchored, a Developer ID intermediate and Developer ID

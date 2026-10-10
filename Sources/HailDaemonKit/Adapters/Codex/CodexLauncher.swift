@@ -128,35 +128,6 @@ enum CodexLauncher {
                                             modified: file.st_mtimespec, changed: file.st_ctimespec))
     }
 
-    /// Every folder up to `/` must be owned by root or this user and not world-writable. Group write is accepted
-    /// only for root-owned wheel/admin folders such as `/Applications`: those members can already become root.
-    private static func ancestorsAreTrusted(_ folder: String) throws -> Bool {
-        var path = folder
-        while true {
-            var info = stat()
-            guard lstat(path, &info) == 0, info.st_mode & S_IFMT == S_IFDIR else { throw CodexLaunchError.invalidPath }
-            let groupWriteTrusted = info.st_uid == 0 && (info.st_gid == 0 || info.st_gid == 80)
-            guard info.st_uid == 0 || info.st_uid == geteuid(), info.st_mode & S_IWOTH == 0,
-                  info.st_mode & S_IWGRP == 0 || groupWriteTrusted else { return false }
-            if path == "/" { return true }
-            path = (path as NSString).deletingLastPathComponent
-        }
-    }
-
-    private static func safelyOwned(_ info: stat) -> Bool {
-        (info.st_uid == 0 || info.st_uid == geteuid()) && info.st_mode & (S_IWGRP | S_IWOTH) == 0
-    }
-
-    /// Any extended ACL could grant another user write or delete beyond the mode bits, so none is accepted.
-    private static func hasExtendedACL(descriptor: Int32) -> Bool {
-        guard let acl = acl_get_fd_np(descriptor, ACL_TYPE_EXTENDED) else { return errno != ENOENT }
-        acl_free(UnsafeMutableRawPointer(acl)); return true
-    }
-    private static func hasExtendedACL(folder: String) -> Bool {
-        guard let acl = acl_get_link_np(folder, ACL_TYPE_EXTENDED) else { return errno != ENOENT }
-        acl_free(UnsafeMutableRawPointer(acl)); return true
-    }
-
     /// Thin 64-bit or universal Mach-O only, so a shell or interpreter wrapper is refused.
     private static func isMachO(_ descriptor: Int32) -> Bool {
         var magic = [UInt8](repeating: 0, count: 4)
