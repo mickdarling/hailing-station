@@ -36,6 +36,15 @@ struct AmbientCaptureModeTests {
         #expect(AmbientCaptureModeResolver.mode(for: [.other]) == .voiceProcessing)
     }
 
+    /// #433: voice processing crashed the iPad app on a Mac, so there every route captures plain.
+    @Test func theIPadAppOnAMacNeverUsesVoiceProcessing() {
+        for kind in AudioOutputKind.allCases {
+            #expect(AmbientCaptureModeResolver.mode(for: [kind], onMac: true) == .plain)
+        }
+        #expect(AmbientCaptureModeResolver.mode(for: [], onMac: true) == .plain)
+        #expect(AmbientCaptureModeResolver.mode(for: [.builtInSpeaker], onMac: false) == .voiceProcessing)
+    }
+
     @Test func modesHaveStableEnumeratedNames() {
         #expect(AmbientCaptureMode.allCases.map(\.rawValue) == ["vpio", "plain"])
     }
