@@ -49,18 +49,22 @@ import Testing
         let folder = try Self.root()
         defer { try? FileManager.default.removeItem(at: folder) }
         try FileManager.default.createSymbolicLink(atPath: folder.path + "/workspace", withDestinationPath: "/tmp")
-        #expect(throws: CodexLaunchSetupError.invalidRoot) { _ = try CodexLaunchSetup.prepare(root: folder.path) }
+        #expect(throws: CodexLaunchSetupError.invalidRoot) {
+            _ = try CodexLaunchSetup.prepare(root: folder.path, host: [:])
+        }
     }
 
     @Test func aRootOthersCanReadIsRefused() throws {
         let folder = try Self.root(mode: 0o750)
         defer { try? FileManager.default.removeItem(at: folder) }
-        #expect(throws: CodexLaunchSetupError.unsafeOwnership) { _ = try CodexLaunchSetup.prepare(root: folder.path) }
+        #expect(throws: CodexLaunchSetupError.unsafeOwnership) {
+            _ = try CodexLaunchSetup.prepare(root: folder.path, host: [:])
+        }
     }
 
     @Test(arguments: ["relative/root", "", "/nonexistent-synthetic-root"])
     func invalidRootsAreRefused(root: String) {
-        #expect(throws: CodexLaunchSetupError.invalidRoot) { _ = try CodexLaunchSetup.prepare(root: root) }
+        #expect(throws: CodexLaunchSetupError.invalidRoot) { _ = try CodexLaunchSetup.prepare(root: root, host: [:]) }
     }
 
     @Test func disabledServersBecomeExactPerLaunchOverrides() throws {
