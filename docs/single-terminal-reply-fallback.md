@@ -23,7 +23,7 @@ target's **last input device**: the connection that most recently sent that targ
 tap-to-talk, while it still selects the target on the same selection and within 10 minutes
 ([request-origin-routing.md](request-origin-routing.md#unified-reply-routing-the-last-input-device-370)). The
 single-selector rule below is the fallback when there is no such device. Two or more selecting connections are
-refused `notUniqueRecipient` only then.
+refused `notUniqueRecipient` only then, and only when none of them owns the active ambient stream (#230).
 
 ## The rule
 

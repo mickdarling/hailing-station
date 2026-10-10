@@ -160,8 +160,9 @@ target, from any connection, replaces it.
    younger than the lifetime, and the host issues a reply permit for the target's exact listed binding. Selection,
    generation and lifetime are checked again in the actor turn of the enqueue, inside the permit's gate, with the
    same prepared transport as every reply. Several devices selecting the target do not matter on this path.
-3. Otherwise the [single-terminal rule](single-terminal-reply-fallback.md) runs unchanged: one selecting
-   connection, else `noRecipient` or `notUniqueRecipient`.
+3. Otherwise the [single-terminal rule](single-terminal-reply-fallback.md) runs: one selecting connection; with
+   several, the one owning the active ambient stream when it is among them (#230); else `noRecipient` or
+   `notUniqueRecipient`.
 
 Steps 2 and 3 need `--single-terminal-reply-fallback` (set by `scripts/host.sh` from `host.json`). Without the
 flag, request-less replies are still refused `noRecipient`, as before.

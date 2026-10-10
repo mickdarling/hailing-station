@@ -44,7 +44,7 @@ routed in this order:
    Otherwise `notUniqueRecipient`. The owner is only ever chosen from the already-admitted selectors, never added.
    Validated with synthetic loopback sockets (`AmbientOwnerReplyRoutingTests`); not yet proven by device hearing.
 
-Steps 2 and 3 run only on a host started with `--single-terminal-reply-fallback`, which `scripts/host.sh` passes
+Steps 2 to 4 run only on a host started with `--single-terminal-reply-fallback`, which `scripts/host.sh` passes
 when `host.json` sets `singleTerminalReplyFallback`. Every frame of one request-less reply goes to the device that
 received its first frame, or is refused; a reply never splits across devices.
 
