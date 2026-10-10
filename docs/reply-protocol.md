@@ -88,8 +88,12 @@ The wire carries two things for this, and each names a device only by its class 
 
 `{"command": "ambient_heard", "target": "<target>", "text": "<words>"}` gives the device that spoke the request its
 ambient stream just handed to `target`, as heard, so the thread can show the user's own words as their message.
-The host sends it once per delivered request, only to that device and only while it still selects `target`, before
-the request is typed. So it arrives ahead of the acknowledgement clip and the reply. `text` is the request's heard turn
+The host sends it at most once per request it admits for delivery (after the echo, withdrawal and duplicate checks),
+only to that device and only while it still selects `target`, just before the dispatch step. So it arrives ahead of
+the acknowledgement clip and the reply. It is sent before dispatch's own checks: a dispatch refused after it (policy,
+lockdown, a changed binding or selection, an audit failure) leaves the words shown, and the refusal reaches the device
+as before. A heard turn over the 8 KiB cap is not shown (RightyO admits turns up to 16,000 bytes). Both are tracked in
+#392. `text` is the request's heard turn
 (the user's own words), never the prompt envelope or a producer's formed request. It is 1 to 8 KiB of UTF-8, the text
 payload's cap. The decoder and the schema refuse any other key. The command grants no authority, and a host refuses
 it from a device. A device advertises `ambient_heard` (`AmbientHeard.capability`) in its `hello` when it can show the
