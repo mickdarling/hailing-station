@@ -34,7 +34,10 @@ public enum AmbientCaptureModeResolver {
     /// Plain capture only when every output plays into the listener's ears, so no reply can reach the mic through
     /// the room. Anything else, including an unknown or empty route, keeps voice processing, today's behaviour.
     /// An A2DP car stereo also resolves to plain; the echo guard still silences the mic while replies play.
-    public static func mode(for outputs: [AudioOutputKind]) -> AmbientCaptureMode {
+    /// The iPad app on a Mac always captures plain: enabling voice processing there raised an Objective-C exception
+    /// that crashed the app (#433), so the echo guard's mic mask stands in for the echo canceller.
+    public static func mode(for outputs: [AudioOutputKind], onMac: Bool = false) -> AmbientCaptureMode {
+        if onMac { return .plain }
         guard !outputs.isEmpty, outputs.allSatisfy(\.isPrivateListening) else { return .voiceProcessing }
         return .plain
     }
@@ -57,7 +60,10 @@ extension AmbientCaptureModeResolver {
     /// processing starts, because voice processing moves the route off A2DP (#343).
     @MainActor
     public static func currentMode(session: AVAudioSession = .sharedInstance()) -> AmbientCaptureMode {
-        mode(for: session.currentRoute.outputs.map { AudioOutputKind($0.portType) })
+        mode(
+            for: session.currentRoute.outputs.map { AudioOutputKind($0.portType) },
+            onMac: ProcessInfo.processInfo.isiOSAppOnMac
+        )
     }
 }
 #endif
