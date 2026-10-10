@@ -20,11 +20,29 @@ struct MicBusy: Error {}
 final class InterruptionPauseHarness {
     let center = NotificationCenter()
     let steps = BackoffSteps()
+    let sent: SentAudio
+    /// Refuses every send while set, as the host would.
+    var refusal: (any Error)?
+    /// What `onListeningChange` reported: listening or paused.
+    var activity: [Bool] = []
     var fakes: [FakeEngineOperations] = []
     var micBusy = false
     var releases = 0
     var unexpected: [String] = []
     lazy var controller = makeController()
+
+    init(holdingSends: Bool = false) { sent = SentAudio(holding: holdingSends) }
+
+    func deliver(_ payload: AudioPayload) async throws {
+        if let refusal { throw refusal }
+        await sent.send(payload)
+    }
+
+    /// Feeds three 100 ms buffers to the newest capture, enough for at least one segment to be sent.
+    func speak() throws {
+        let fake = try #require(fakes.last)
+        for offset in [0, 4_800, 9_600] { fake.feed(try sineBuffer(offset: offset)) }
+    }
 
     private func makeController() -> AmbientListeningController {
         let steps = steps
@@ -43,9 +61,10 @@ final class InterruptionPauseHarness {
             releaseSession: { [weak self] in self?.releases += 1 },
             sleep: { _ in await steps.sleep() },
             now: { ContinuousClock().now },
-            send: { _, _ in }
+            send: { [weak self] payload, _ in try await self?.deliver(payload) }
         )
         controller.onUnexpectedStop = { [weak self] in self?.unexpected.append($0) }
+        controller.onListeningChange = { [weak self] in self?.activity.append($0) }
         return controller
     }
 

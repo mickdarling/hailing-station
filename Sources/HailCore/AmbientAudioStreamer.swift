@@ -272,6 +272,9 @@ public final class AmbientAudioStreamer {
     /// Nil stops capture on the first send failure. Otherwise capture keeps running (the app stays alive in the
     /// background) and, if this returns true, the next audio opens a new stream identity at sequence 0 (#287).
     @ObservationIgnored public var recovery: Recovery?
+    /// True for a stream reopened automatically after an interruption (#445): like a recovered stream (#373), its
+    /// first segment says `resume`, so it never takes listening back from a device someone moved to meanwhile.
+    @ObservationIgnored public var opensAsResume = false
     /// The recovery decision for the current queue's failure, begun by whichever of the failed send or the pump
     /// sees it first, and asked once.
     @ObservationIgnored private var decision: (queue: AmbientAudioSendQueue, task: Task<Bool, Never>)?
@@ -331,7 +334,7 @@ public final class AmbientAudioStreamer {
     public func start() throws {
         guard pump == nil else { throw AudioCaptureError.alreadyRunning }
         let identity = makeStreamID()
-        let encoder = try AmbientAudioEncoder(streamID: identity)
+        let encoder = try AmbientAudioEncoder(streamID: identity, isResume: opensAsResume)
         let buffers = try capture.start()
         let current = UUID()
         let queue = makeQueue(run: current)
