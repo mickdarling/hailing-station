@@ -7,17 +7,17 @@ import Testing
 /// Synthetic only: system binaries for signature checks, invented scripts for the version probe.
 /// No real Codex binary, account, thread or inference is used.
 @Suite struct CodexLauncherTests {
-    private static let apple = "anchor apple"
-    private static func fixed(_ text: String) -> @Sendable (String) async throws -> Data {
+    static let apple = "anchor apple"
+    static func fixed(_ text: String) -> @Sendable (String) async throws -> Data {
         { _ in Data(text.utf8) }
     }
-    private static func scratch() throws -> URL {
+    static func scratch() throws -> URL {
         let folder = FileManager.default.temporaryDirectory.appendingPathComponent("codex-launcher-\(UUID())")
         try FileManager.default.createDirectory(at: folder, withIntermediateDirectories: false,
                                                 attributes: [.posixPermissions: 0o700])
         return folder
     }
-    private static func script(_ body: String, in folder: URL) throws -> String {
+    static func script(_ body: String, in folder: URL) throws -> String {
         let path = folder.appendingPathComponent("synthetic-\(UUID())").path
         try Data(body.utf8).write(to: URL(fileURLWithPath: path))
         guard chmod(path, 0o700) == 0 else { throw CodexLaunchError.invalidPath }
@@ -45,11 +45,37 @@ import Testing
         #expect(evidence.executable == "/bin/ls")
     }
 
-    @Test(arguments: ["bin/ls", "", "/nonexistent-synthetic/codex", "/bin"])
-    func relativeMissingOrNonFilePathsAreRefused(path: String) async {
-        await #expect(throws: (any Error).self) {
+    @Test(arguments: [("bin/ls", CodexLaunchError.invalidPath), ("", .invalidPath),
+                      ("/nonexistent-synthetic/codex", .invalidPath), ("/bin", .notExecutable)])
+    func relativeMissingOrNonFilePathsAreRefused(path: String, refusal: CodexLaunchError) async {
+        await #expect(throws: refusal) {
             _ = try await CodexLauncher.verify(path: path, requirement: Self.apple, probe: Self.fixed(""))
         }
+    }
+
+    @Test func anExecutableThatIsNotMachOIsRefused() async throws {
+        let folder = try Self.scratch()
+        defer { try? FileManager.default.removeItem(at: folder) }
+        let path = try Self.script(String(repeating: "\u{7f}ELF invented bytes ", count: 8), in: folder)
+        await #expect(throws: CodexLaunchError.notExecutable) {
+            _ = try await CodexLauncher.verify(path: path, requirement: Self.apple, probe: Self.fixed(""))
+        }
+    }
+
+    @Test func theDefaultRequirementDemandsDeveloperIDMarkersAndOpenAITeam() {
+        let requirement = CodexLauncher.defaultRequirement
+        #expect(requirement.contains(#"identifier "codex""#))
+        #expect(requirement.contains("certificate 1[field.1.2.840.113635.100.6.2.6] exists"))
+        #expect(requirement.contains("certificate leaf[field.1.2.840.113635.100.6.1.13] exists"))
+        #expect(requirement.contains(#"certificate leaf[subject.OU] = "2DC432GLL2""#))
+    }
+
+    @Test func aProbeThatCannotSpawnIsAFixedVersionRefusal() async throws {
+        let folder = try Self.scratch()
+        defer { try? FileManager.default.removeItem(at: folder) }
+        let path = try Self.script("#!/bin/sh\necho 'codex-cli 0.159.0'\n", in: folder)
+        #expect(chmod(path, 0o600) == 0)
+        await #expect(throws: CodexLaunchError.versionUnavailable) { _ = try await CodexLauncher.readVersion(path) }
     }
 
     @Test func aShellWrapperIsRefusedBeforeSignatureOrProbe() async throws {
@@ -112,56 +138,6 @@ import Testing
                       "codex-cli \n", "codex-cli 0.159.0 extra\n", "codex-cli 0.159.0\r\n", "Codex-cli 0.159.0\n"])
     func malformedVersionOutputIsRefused(output: String) {
         #expect(throws: CodexLaunchError.versionUnavailable) { _ = try CodexLauncher.parseVersion(Data(output.utf8)) }
-    }
-
-    @Test func theProbePassesOnlyVersionArgumentAndAnEmptyEnvironment() async throws {
-        let folder = try Self.scratch()
-        defer { try? FileManager.default.removeItem(at: folder) }
-        let child = try Self.script(#"""
-            #!/usr/bin/perl
-            print "codex-cli " . scalar(keys %ENV) . "." . scalar(@ARGV) . ".$ARGV[0]\n";
-            """#, in: folder)
-        let output = try await CodexLauncher.readVersion(child)
-        #expect(String(data: output, encoding: .utf8) == "codex-cli 0.1.--version\n")
-    }
-
-    @Test func oversizedProbeOutputIsRefused() async throws {
-        let folder = try Self.scratch()
-        defer { try? FileManager.default.removeItem(at: folder) }
-        let child = try Self.script("#!/usr/bin/perl\n$|=1; print 'x' x 4096; sleep 30;\n", in: folder)
-        let started = ContinuousClock.now
-        await #expect(throws: CodexLaunchError.versionUnavailable) { _ = try await CodexLauncher.readVersion(child) }
-        #expect(ContinuousClock.now - started < .seconds(4))
-    }
-
-    @Test func aSilentProbePastItsDeadlineIsRefusedAndReaped() async throws {
-        let folder = try Self.scratch()
-        defer { try? FileManager.default.removeItem(at: folder) }
-        let pidFile = folder.appendingPathComponent("pid").path
-        let child = try Self.script(
-            "#!/usr/bin/perl\n$SIG{TERM}='IGNORE'; open(F,'>','\(pidFile)'); print F $$; close F; sleep 30;\n",
-            in: folder)
-        let started = ContinuousClock.now
-        await #expect(throws: CodexLaunchError.versionUnavailable) {
-            _ = try await CodexLauncher.readVersion(child, deadline: .milliseconds(300))
-        }
-        #expect(ContinuousClock.now - started < .seconds(4))
-        let pid = try #require(pid_t(String(contentsOfFile: pidFile, encoding: .utf8)))
-        #expect(kill(pid, 0) == -1 && errno == ESRCH)
-    }
-
-    @Test func aBinarySwappedAfterVerificationIsRefusedAtLaunch() async throws {
-        let folder = try Self.scratch()
-        defer { try? FileManager.default.removeItem(at: folder) }
-        let copy = folder.appendingPathComponent("codex").path
-        try FileManager.default.copyItem(atPath: "/bin/ls", toPath: copy)
-        #expect(chmod(copy, 0o700) == 0)
-        let evidence = try await CodexLauncher.verify(path: copy, requirement: Self.apple,
-                                                      probe: Self.fixed("codex-cli 0.159.0\n"))
-        try FileManager.default.removeItem(atPath: copy)
-        try FileManager.default.copyItem(atPath: "/bin/cat", toPath: copy)
-        #expect(chmod(copy, 0o700) == 0)
-        #expect(throws: CodexLaunchError.binaryChanged) { _ = try evidence.appServerCommand(environment: []) }
     }
 }
 #endif

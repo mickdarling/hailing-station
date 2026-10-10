@@ -14,9 +14,11 @@ private struct CodexFileIdentity: Sendable, Equatable {
     let inode: UInt64
     let size: Int64
     let modified: timespec
+    let changed: timespec // ctime: unlike mtime, the owner cannot set it back.
     static func == (lhs: Self, rhs: Self) -> Bool {
         lhs.device == rhs.device && lhs.inode == rhs.inode && lhs.size == rhs.size
             && lhs.modified.tv_sec == rhs.modified.tv_sec && lhs.modified.tv_nsec == rhs.modified.tv_nsec
+            && lhs.changed.tv_sec == rhs.changed.tv_sec && lhs.changed.tv_nsec == rhs.changed.tv_nsec
     }
 }
 
@@ -36,8 +38,11 @@ struct CodexLaunchEvidence: Sendable {
 
 /// Checks a configured Codex binary before anything launches it. No PATH lookup, shell wrapper or account access.
 enum CodexLauncher {
-    /// OpenAI's Developer ID designated requirement for the CLI bundled in ChatGPT.app.
+    /// OpenAI's Developer ID designated requirement for the CLI bundled in ChatGPT.app. The two OIDs mark a
+    /// Developer ID intermediate and a Developer ID Application leaf, so team development certificates fail.
     static let defaultRequirement = #"identifier "codex" and anchor apple generic"#
+        + #" and certificate 1[field.1.2.840.113635.100.6.2.6] exists"#
+        + #" and certificate leaf[field.1.2.840.113635.100.6.1.13] exists"#
         + #" and certificate leaf[subject.OU] = "2DC432GLL2""#
 
     static func verify(
@@ -68,7 +73,10 @@ enum CodexLauncher {
 
     /// Runs `<binary> --version` with an empty environment through the owned child; reaped on every exit.
     static func readVersion(_ path: String, deadline: Duration = .seconds(5), limit: Int = 256) async throws -> Data {
-        let child = try OwnedStdioChild(command: OwnedStdioCommand(executable: path, arguments: ["--version"]))
+        let child: OwnedStdioChild
+        do {
+            child = try OwnedStdioChild(command: OwnedStdioCommand(executable: path, arguments: ["--version"]))
+        } catch { throw CodexLaunchError.versionUnavailable }
         do {
             let output = try await withThrowingTaskGroup(of: Data?.self) { group in
                 group.addTask {
@@ -87,6 +95,7 @@ enum CodexLauncher {
                 return output
             }
             child.cancel(); await child.join()
+            try Task.checkCancellation()
             return output
         } catch {
             child.cancel(); await child.join()
@@ -112,7 +121,7 @@ enum CodexLauncher {
         }
         guard safelyOwned(file), safelyOwned(folder) else { throw CodexLaunchError.unsafeOwnership }
         return (resolved, CodexFileIdentity(device: file.st_dev, inode: file.st_ino, size: file.st_size,
-                                            modified: file.st_mtimespec))
+                                            modified: file.st_mtimespec, changed: file.st_ctimespec))
     }
 
     private static func safelyOwned(_ info: stat) -> Bool {
