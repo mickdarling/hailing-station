@@ -14,7 +14,8 @@ import Testing
         #expect(reply.text == "Invented answer.\n\tSecond line.")
     }
 
-    @Test(arguments: ["", "   \n", "bad\0text", "bell\u{7}", "del\u{7f}", "cr\rtext",
+    @Test(arguments: ["", "   \n", "bad\0text", "bell\u{7}", "del\u{7f}", "cr\rtext", "csi\u{9b}text",
+                      "bidi\u{202e}text", "zero\u{200b}width", "isolate\u{2066}text",
                       String(repeating: "a", count: PayloadLimits.maxTextBytes + 1)])
     func unsafeTextIsRefused(text: String) {
         #expect(throws: OwnedReplyPublisherError.invalidConfiguration) {
@@ -54,6 +55,7 @@ import Testing
                                                        text: "invented"))
         }
         #expect(!FileManager.default.fileExists(atPath: fixture.record.path))
+        #expect(try FileManager.default.contentsOfDirectory(atPath: fixture.root.path).isEmpty)
         try await fixture.shutdown(publisher)
     }
 
@@ -62,6 +64,10 @@ import Testing
         #expect(throws: OwnedReplyPublisherError.invalidConfiguration) {
             _ = try OwnedReplyPublisher(executable: fixture.executable, socket: fixture.base, outputRoot: fixture.root,
                                         hostID: "synthetic-host", targets: [])
+        }
+        #expect(throws: OwnedReplyPublisherError.invalidConfiguration) {
+            _ = try OwnedReplyPublisher(executable: fixture.executable, socket: fixture.base, outputRoot: fixture.root,
+                                        hostID: "synthetic-host", targets: ["codex-owned:owned", "bad\u{7}"])
         }
         try FileManager.default.removeItem(at: fixture.base)
     }

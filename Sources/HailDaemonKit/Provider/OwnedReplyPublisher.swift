@@ -23,7 +23,8 @@ public struct OwnedReplyPublisherDiagnostics: Sendable {
 }
 
 /// One final reply a reply-owning adapter publishes for its own target and exact request. Text is spoken and shown
-/// as-is, so it is bounded and carries no NUL or control characters other than newline and tab.
+/// as-is, so it is bounded and carries no control (C0/C1) or invisible format characters (bidi overrides,
+/// zero-width), other than newline and tab: the same hidden-character rule as inbound sanitizing.
 public struct OwnedReply: Sendable, Equatable {
     public let requestID: UUID
     public let hostID: String
@@ -31,13 +32,22 @@ public struct OwnedReply: Sendable, Equatable {
     public let text: String
 
     public init(requestID: UUID, hostID: String, targetID: String, text: String) throws {
-        let controls = { (value: String, allowed: Set<UInt32>) in
-            value.unicodeScalars.contains { ($0.value < 32 && !allowed.contains($0.value)) || $0.value == 127 }
-        }
-        guard !targetID.isEmpty, targetID.utf8.count <= 256, !controls(targetID, []),
+        guard Self.isSafeTarget(targetID),
               text.contains(where: { !$0.isWhitespace }), text.utf8.count <= PayloadLimits.maxTextBytes,
-              !controls(text, [9, 10]) else { throw OwnedReplyPublisherError.invalidConfiguration }
+              !Self.hasHidden(text, allowing: [9, 10]) else { throw OwnedReplyPublisherError.invalidConfiguration }
         self.requestID = requestID; self.hostID = hostID; self.targetID = targetID; self.text = text
+    }
+
+    static func isSafeTarget(_ target: String) -> Bool {
+        !target.isEmpty && target.utf8.count <= 256 && !hasHidden(target, allowing: [])
+    }
+
+    private static func hasHidden(_ value: String, allowing allowed: Set<UInt32>) -> Bool {
+        value.unicodeScalars.contains { scalar in
+            guard !allowed.contains(scalar.value) else { return false }
+            let category = scalar.properties.generalCategory
+            return category == .control || category == .format
+        }
     }
 }
 
@@ -80,7 +90,9 @@ public final class OwnedReplyPublisher: Sendable {
     /// `targets` are the reply-owning targets this publisher may speak for; the default is the diagnostic bridge.
     public convenience init(executable: URL, socket: URL, outputRoot: URL, hostID: String,
                             targets: Set<String> = [DiagnosticReplyBridgeAdapter.targetID]) throws {
-        guard !targets.isEmpty else { throw OwnedReplyPublisherError.invalidConfiguration }
+        guard !targets.isEmpty, targets.allSatisfy(OwnedReply.isSafeTarget) else {
+            throw OwnedReplyPublisherError.invalidConfiguration
+        }
         try self.init(configuration: OwnedReplyPublisherConfiguration(
             executable: executable, socket: socket, root: outputRoot, hostID: hostID,
             environment: ProcessInfo.processInfo.environment, deadline: .seconds(30), targets: targets))

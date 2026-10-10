@@ -15,10 +15,12 @@ are the owned Codex adapter (#153) and a Slack dot bridge (#403).
   diagnostic bridge. A reply for any other target, or for another host, is refused before a directory or
   child exists. The argv names the reply's own target, still with no shell.
 - Text must contain something other than whitespace, is limited to `PayloadLimits.maxTextBytes`, and may
-  contain no NUL or control characters other than newline and tab. The target must be non-empty, 1–256
-  bytes and free of control characters.
+  contain no control (C0/C1) or invisible format characters, such as bidi overrides or zero-width
+  characters. Newline and tab are the only exceptions. Targets, including each configured target, must be
+  1–256 bytes with none of those characters.
 - `DiagnosticBridgeReply` keeps its fixed phrase and reaches the same path through `owned`. Diagnostic
-  behaviour, limits, deadlines and cleanup are unchanged.
+  limits, deadlines and cleanup are unchanged. One difference: a sequence-0 diagnostic reply is now refused
+  as `invalidConfiguration` before the cancellation and stop checks. The real bridge never produces one.
 
 Capture permission, output disclosure and the choice of which text is final remain the adapter's and
 host policy's job. This step only lets a configured target hand over its text.
