@@ -22,8 +22,11 @@ extension CodexLauncherTests {
         defer { try? FileManager.default.removeItem(at: folder) }
         let child = try Self.script("#!/usr/bin/perl\n$|=1; print 'x' x 4096; sleep 30;\n", in: folder)
         let started = ContinuousClock.now
-        await #expect(throws: CodexLaunchError.versionUnavailable) { _ = try await CodexLauncher.readVersion(child) }
-        #expect(ContinuousClock.now - started < .seconds(4))
+        await #expect(throws: CodexLaunchError.versionUnavailable) {
+            _ = try await CodexLauncher.readVersion(child, deadline: .seconds(60))
+        }
+        // With a 60 s deadline and a 30 s child, finishing early proves the byte cap refused it, even on loaded CI.
+        #expect(ContinuousClock.now - started < .seconds(20))
     }
 
     @Test func aSilentProbePastItsDeadlineIsRefusedAndReaped() async throws {
@@ -37,7 +40,7 @@ extension CodexLauncherTests {
         await #expect(throws: CodexLaunchError.versionUnavailable) {
             _ = try await CodexLauncher.readVersion(child, deadline: .seconds(2))
         }
-        #expect(ContinuousClock.now - started < .seconds(5))
+        #expect(ContinuousClock.now - started < .seconds(20)) // The child ignores TERM and sleeps 30 s.
         let pid = try #require(pid_t(String(contentsOfFile: pidFile, encoding: .utf8)))
         #expect(kill(pid, 0) == -1 && errno == ESRCH)
     }

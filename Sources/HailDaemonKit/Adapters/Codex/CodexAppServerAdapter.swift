@@ -47,6 +47,8 @@ actor CodexAppServerAdapter: ProviderContextDelivering, ProviderSessionObserving
     private var lifecycle: Task<Void, Never>?
     private var startup: CheckedContinuation<ProviderObservation, any Error>?
     private var transport: CodexStdioTransport?
+    private var terminalWaiter: CodexTerminalWaiter?
+    private var interrupting = false // Reserved before the request await: one interrupt at a time.
 
     private let workspace: String
     /// Real launches re-run every workspace check at the actual child launch; nil only for the synthetic seam.
@@ -155,11 +157,42 @@ extension CodexAppServerAdapter {
             while !lease.stopped {
                 if let record = try CodexAppServerRecord(try await transport.nextNotification()) {
                     lease.yield(try events?.receive(record) ?? [])
+                    if let waiter = terminalWaiter, let kind = events?.terminal(for: waiter.turn) { resolve(kind) }
                 }
             }
+            resolve(nil) // A normal stop never leaves an interrupt waiting out its grace.
         } catch { failed() }
     }
+    /// Exact-ID provider interruption of the active turn. True only when the provider accepted the request and
+    /// the matching explicit `interrupted` terminal arrived within `grace`. Never kills the child; stopping the
+    /// lease remains separate. A request timeout ends the lease; caller cancellation never does (the request is
+    /// shielded) and returns false. `grace` is bounded to (0, 10 s].
+    func interruptActiveTurn(grace: Duration = .seconds(2)) async -> Bool {
+        guard grace > .zero, grace <= .seconds(10), !interrupting, !lease.stopped, let transport, let events,
+              let turn = events.activeTurnID else { return false }
+        interrupting = true; defer { interrupting = false }
+        // Unstructured: caller cancellation must not cancel the transport request (and with it the whole lease).
+        let request = Task { [thread = events.threadID] in
+            try await CodexAppServerProtocol.interrupt(transport, threadID: thread, turnID: turn) }
+        guard case .success = await request.result, !Task.isCancelled else { return false }
+        if let kind = self.events?.terminal(for: turn) { return kind == .interrupted }
+        guard !lease.stopped else { return false }
+        let token = UUID(); let interrupted = await withTaskCancellationHandler {
+            await withCheckedContinuation { done in
+                // A cancelled sleep means the waiter was already resolved; only this exact waiter can expire.
+                let timer = Task { if (try? await Task.sleep(for: grace)) != nil { self.expire(token) } }
+                terminalWaiter = CodexTerminalWaiter(turn: turn, token: token, done: done, timer: timer)
+            }
+        } onCancel: { Task { await self.expire(token) } }
+        return interrupted && !Task.isCancelled // Cancellation wins even if the terminal raced it.
+    }
+    private func expire(_ token: UUID) { if terminalWaiter?.token == token { resolve(nil) } }
+    private func resolve(_ kind: ProviderEventKind?) {
+        guard let waiter = terminalWaiter else { return }
+        terminalWaiter = nil; waiter.timer.cancel(); waiter.done.resume(returning: kind == .interrupted)
+    }
     private func failed() {
+        resolve(nil)
         startup?.resume(throwing: CodexAppServerError.unavailable); startup = nil
         lease.channel.finish(throwing: ProviderObservationError.unavailable); cancel()
     }

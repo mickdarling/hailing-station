@@ -70,6 +70,13 @@ enum CodexAppServerProtocol {
             guard knownLayers.contains(type) else { throw CodexAppServerError.notIsolated }
         }
     }
+    /// Exact-ID `turn/interrupt`; the pinned schema's response is an empty object.
+    static func interrupt(_ transport: CodexStdioTransport, threadID: String, turnID: String) async throws {
+        let response = try fields(try await transport.request(.turnInterrupt, params: .object([
+            "threadId": .string(threadID), "turnId": .string(turnID)
+        ])))
+        guard response.isEmpty else { throw CodexAppServerError.invalidProtocol }
+    }
     static func turnInput(_ text: String, threadID: String) throws -> JSONValue {
         guard !text.isEmpty, text.utf8.count <= ProviderEventLimits.maxTextBytes,
               !text.contains("\n"), !text.contains("\r") else { throw CodexAppServerError.invalidProtocol }

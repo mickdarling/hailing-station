@@ -7,6 +7,13 @@ private struct CodexActiveTurn {
     let context: ProviderTurnContext
     var accepted = false
 }
+/// One bounded wait for an exact turn's explicit terminal after a provider interrupt request (adapter-owned).
+struct CodexTerminalWaiter {
+    let turn: String
+    let token: UUID
+    let done: CheckedContinuation<Bool, Never>
+    let timer: Task<Void, Never>
+}
 /// Exact-ID reconciliation only; no visibility inference, delta reconstruction or arrival-order attribution.
 struct CodexAppServerEvents {
     let binding: ProviderSessionBinding
@@ -21,6 +28,10 @@ struct CodexAppServerEvents {
     private var items: [CodexItemIdentity: Data] = [:]
     private var sequence = 0
     var bufferedEarlyRecords: Int { early.count }
+    /// The provider turn currently bound to a delivered context, if any.
+    var activeTurnID: String? { active?.id }
+    /// The explicit terminal already reconciled for an exact provider turn.
+    func terminal(for turn: String) -> ProviderEventKind? { terminals[turn] }
 
     init(binding: ProviderSessionBinding, threadID: String) { self.binding = binding; self.threadID = threadID }
     mutating func begin(_ context: ProviderTurnContext) throws {
