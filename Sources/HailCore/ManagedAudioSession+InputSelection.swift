@@ -55,6 +55,7 @@ extension ManagedAudioSession {
             return currentDiagnostics
         }
         do {
+            AppRouteOverrideWindow.shared.open()
             try await backend.selectInput(id: input.id)
         } catch {
             guard expectedGeneration != nil else { throw error }

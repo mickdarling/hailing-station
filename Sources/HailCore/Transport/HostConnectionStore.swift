@@ -535,9 +535,11 @@ extension AmbientListeningController {
     private func observeSystemEnd(session current: UUID) {
         systemEndObserver = notificationCenter.addObserver(
             forName: AVAudioEngineCapture.endedBySystem, object: nil, queue: nil
-        ) { [weak self] _ in
+        ) { [weak self] notification in
+            // What ended it (#459): an interruption, a route change by its reason, or the engine stopping.
+            let ended = notification.userInfo?[AVAudioEngineCapture.endedReasonKey] as? String
             Task { @MainActor in
-                await self?.end(current, reason: Self.interruptedReason, cause: "system_interruption")
+                await self?.end(current, reason: Self.interruptedReason, cause: ended ?? "system_interruption")
             }
         }
     }
