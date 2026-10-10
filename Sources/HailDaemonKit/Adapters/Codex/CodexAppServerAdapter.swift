@@ -49,13 +49,16 @@ actor CodexAppServerAdapter: ProviderContextDelivering, ProviderSessionObserving
     private var transport: CodexStdioTransport?
 
     private let workspace: String
+    /// Real launches re-run every workspace check at the actual child launch; nil only for the synthetic seam.
+    private let setup: CodexLaunchSetup?
 
     private init(command: OwnedStdioCommand, verifiedVersion: String?, workspace: String,
-                 limits: CodexStdioLimits) throws {
+                 setup: CodexLaunchSetup? = nil, limits: CodexStdioLimits) throws {
         guard let verifiedVersion, CodexAppServerProtocol.supportedVersions.contains(verifiedVersion) else {
             throw CodexAppServerError.incompatibleVersion
         }
-        self.command = command; self.workspace = workspace; self.limits = limits; lease = try CodexOwnedLease()
+        self.command = command; self.workspace = workspace; self.setup = setup; self.limits = limits
+        lease = try CodexOwnedLease()
     }
     /// The real-binary entry point: evidence comes from `CodexLauncher.verify`, not a caller's claim.
     static func withOwnedAdapter<Result: Sendable>(
@@ -65,8 +68,10 @@ actor CodexAppServerAdapter: ProviderContextDelivering, ProviderSessionObserving
         let setup = try setup.revalidated()
         let command = try launch.appServerCommand(environment: setup.environment,
                                                   configOverrides: setup.configOverrides)
-        return try await withOwnedAdapter(command: command, verifiedVersion: launch.version,
-                                          workspace: setup.workspace, limits: limits, operation: operation)
+        try Task.checkCancellation()
+        let adapter = try CodexAppServerAdapter(command: command, verifiedVersion: launch.version,
+                                                workspace: setup.workspace, setup: setup, limits: limits)
+        return try await scoped(adapter, operation: operation)
     }
     /// Synthetic-test seam: `verifiedVersion` is an attestation only. Real composition uses `launch:`.
     static func withOwnedAdapter<Result: Sendable>(
@@ -76,7 +81,12 @@ actor CodexAppServerAdapter: ProviderContextDelivering, ProviderSessionObserving
         try Task.checkCancellation()
         let adapter = try CodexAppServerAdapter(command: command, verifiedVersion: verifiedVersion,
                                                 workspace: workspace, limits: limits)
-        return try await withTaskCancellationHandler {
+        return try await scoped(adapter, operation: operation)
+    }
+    private static func scoped<Result: Sendable>(
+        _ adapter: CodexAppServerAdapter, operation: @Sendable (CodexAppServerAdapter) async throws -> Result
+    ) async throws -> Result {
+        try await withTaskCancellationHandler {
             do { let result = try await operation(adapter); await adapter.join(); return result } catch {
                 await adapter.join(); throw error
             }
@@ -105,6 +115,7 @@ actor CodexAppServerAdapter: ProviderContextDelivering, ProviderSessionObserving
                 lifecycle = Task {
                     var launched: CodexStdioTransport?
                     do {
+                        _ = try setup?.revalidated() // At the actual launch, not only on scope entry.
                         let transport = try lease.start(command, limits: limits); launched = transport
                         try await withTaskCancellationHandler {
                             try await self.run(transport, binding: binding)

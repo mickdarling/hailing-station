@@ -109,11 +109,13 @@ AGENTS.md. `CodexLaunchSetup.prepare` builds the rest:
   refuses the session before any turn (internally `notIsolated`, surfaced as
   unavailable).
 - **Single construction, fresh checks:** only `prepare` can construct a setup.
-  The adapter's launch entry point re-runs every workspace check immediately
-  before each launch, so a retained setup is never trusted from memory.
+  The adapter re-runs every workspace check on entry to the launch scope and
+  again at the actual child launch, so a retained setup is never trusted from
+  memory.
 - **Config evidence:** before `thread/start`, `config/read` with the workspace
-  as `cwd` and `includeLayers` must report no `project` layer. User, system,
-  managed, packaged and session layers are fine. A project `.codex/` layer,
+  as `cwd` and `includeLayers` must report only known non-project layer
+  sources (user, system, MDM, enterprise-managed, packaged, session and the
+  legacy managed layers). A project layer or any unknown type refuses. A project `.codex/` layer,
   which could add MCP servers or hooks, refuses the session the same way.
 - **Disabled MCP servers:** an optional list of names becomes per-launch
   `-c mcp_servers.<name>.enabled=false` overrides, for example to leave Chief

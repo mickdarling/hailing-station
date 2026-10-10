@@ -10,6 +10,7 @@ import Testing
         ("[]", "accepted"),
         ("[{name=>{type=>'mdm'}},{name=>{type=>'sessionFlags'}},{name=>{type=>'packagedDefaults'}}]", "accepted"),
         ("[{name=>{type=>'user'}},{name=>{type=>'project',dotCodexFolder=>'/synthetic/.codex'}}]", "notIsolated"),
+        ("[{name=>{type=>'user'}},{name=>{type=>'inventedFutureLayer'}}]", "notIsolated"),
         ("undef", "invalidProtocol"),
         ("[{name=>{}}]", "invalidProtocol")
     ])
