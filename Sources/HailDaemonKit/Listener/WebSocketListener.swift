@@ -757,6 +757,7 @@ extension AmbientRightyoRouter {
                 onAcknowledge: acknowledged(on: connection, listener: listener)
             )
             (settings.replyControl, settings.onAcknowledgementSkipped) = (configuration.replyControl, skipped())
+            settings.onHeard = heard(on: connection, listener: listener)
             pipeline = try RightyoAmbientPipeline(configuration: settings,
                                                   dispatcher: AmbientListenerDispatcher(listener: listener,
                                                                                         audit: configuration.audit))
@@ -805,6 +806,15 @@ extension AmbientRightyoRouter {
                 self?.emit("ambient_acknowledged", detail: "persona=\(persona) clip=\(index) "
                            + "rightyo_ms=\(request.rightyoMs) host_ms=\(hostMs) outcome=\(outcome)")
             }
+        }
+    }
+
+    /// Shows the phone that heard an admitted request its own words (#318), awaited before the acknowledgement and the
+    /// typing. Nothing is logged: the text is transcript content.
+    private func heard(on connection: UUID, listener: WebSocketListener) -> @Sendable (String) async -> Void {
+        let target = configuration.target
+        return { [weak listener] text in
+            await listener?.showAmbientHeard(connection: connection, target: target, text: text)
         }
     }
 

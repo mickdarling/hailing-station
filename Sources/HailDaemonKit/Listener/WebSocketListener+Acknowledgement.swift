@@ -40,3 +40,26 @@ extension WebSocketListener {
         return "sent"
     }
 }
+
+extension HostSession {
+    /// The user's own ambient request as heard (#318), only while this ready session still selects `target`, only to a
+    /// device that advertised `AmbientHeard.capability`, and only text the command can carry: anything else is nil.
+    func heardFrame(_ text: String, target: String) -> Frame? {
+        guard case .ready(let version) = state, selectedTarget == target,
+              peerCapabilities.contains(AmbientHeard.capability),
+              (1...PayloadLimits.maxTextBytes).contains(text.utf8.count) else { return nil }
+        return response(.ambientHeard(targetID: target, text: text), version: version)
+    }
+}
+
+extension WebSocketListener {
+    /// Shows the connection that heard an admitted request what it heard (#318), before the request is typed. Only
+    /// that connection is told. A device that cannot show it, or no longer selects `target`, gets nothing, and the
+    /// request is delivered as before. The text is never logged. Returns whether the frame was sent.
+    @discardableResult
+    func showAmbientHeard(connection: UUID, target: String, text: String) async -> Bool {
+        guard !stopped, let peer = peers.values.first(where: { $0.session.connectionID == connection }),
+              let frame = await peer.session.heardFrame(text, target: target) else { return false }
+        return await peer.send(frame)
+    }
+}

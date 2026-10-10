@@ -42,14 +42,16 @@ struct FallbackSocketPair {
     let sockets: [URLSessionWebSocketTask]
 
     /// Two negotiated loopback clients; each selects the given target (nil leaves it unselected).
-    static func connect(port: UInt16, selecting targets: [String?]) async throws -> Self {
+    static func connect(
+        port: UInt16, selecting targets: [String?], capabilities: [String] = ["probe"]
+    ) async throws -> Self {
         var sessions: [URLSession] = []
         var sockets: [URLSessionWebSocketTask] = []
         for target in targets {
             let (session, socket) = try recipientSocket(port: port)
             sessions.append(session)
             sockets.append(socket)
-            try await recipientSocketSend(helloFrame(), on: socket)
+            try await recipientSocketSend(helloFrame(capabilities: capabilities), on: socket)
             _ = try await recipientSocketReceive(on: socket)
             if let target {
                 try await recipientSocketSend(sessionFrame(payload: .control(.select(targetID: target))), on: socket)

@@ -18,10 +18,10 @@ func sessionHost(
     return (host, adapter)
 }
 
-func helloFrame(versions: [Int] = [1], envelopeVersion: Int = 1) -> Frame {
+func helloFrame(versions: [Int] = [1], envelopeVersion: Int = 1, capabilities: [String] = ["probe"]) -> Frame {
     sessionFrame(
         version: envelopeVersion,
-        payload: .control(.hello(HelloInfo(versions: versions, capabilities: ["probe"], deviceName: "test")))
+        payload: .control(.hello(HelloInfo(versions: versions, capabilities: capabilities, deviceName: "test")))
     )
 }
 
