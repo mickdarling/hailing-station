@@ -64,7 +64,9 @@ import Testing
         try await waitUntil { try await scopesSent(socket).count == 7 }
         let sent = try await scopesSent(socket)
         // Each queued send carries the newest choice when it runs, so the host ends on it and never on a stale one.
-        #expect(sent.last == "off")
+        // All six choices are made before any queued send runs, so every one of them carries the newest: a broader
+        // scope the user already left is never transmitted.
+        #expect(sent.dropFirst().allSatisfy { $0 == "off" })
         await store.disconnect(endpoint.id)
     }
 
