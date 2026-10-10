@@ -41,6 +41,10 @@ struct CodexLaunchSetup: Sendable, Equatable {
         }
         let resolved = String(cString: real); free(real)
         try checkPrivateFolder(resolved)
+        // The same ancestor rule as the binary: nobody else may swap the root or a folder above it.
+        guard (try? CodexLauncher.ancestorsAreTrusted((resolved as NSString).deletingLastPathComponent)) == true else {
+            throw CodexLaunchSetupError.unsafeOwnership
+        }
         var ancestor = resolved
         while true { // Codex reads project instructions from the git root down to the cwd.
             if FileManager.default.fileExists(atPath: ancestor + "/.git") {
@@ -70,13 +74,14 @@ struct CodexLaunchSetup: Sendable, Equatable {
             && path.split(separator: ":", omittingEmptySubsequences: false).allSatisfy { $0.hasPrefix("/") }
     }
 
-    /// A real directory (not a symlink) owned by this user with no group or other mode bits. ACLs are not read.
+    /// A real directory (not a symlink) owned by this user with no group or other mode bits and no extended ACL,
+    /// since an ACL can grant another account access the mode bits do not show.
     private static func checkPrivateFolder(_ path: String) throws {
         var info = stat()
         guard lstat(path, &info) == 0, info.st_mode & S_IFMT == S_IFDIR else {
             throw CodexLaunchSetupError.invalidRoot
         }
-        guard info.st_uid == geteuid(), info.st_mode & 0o077 == 0 else {
+        guard info.st_uid == geteuid(), info.st_mode & 0o077 == 0, !CodexLauncher.hasExtendedACL(folder: path) else {
             throw CodexLaunchSetupError.unsafeOwnership
         }
     }
