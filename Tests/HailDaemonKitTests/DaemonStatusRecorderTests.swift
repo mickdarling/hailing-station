@@ -83,6 +83,20 @@ import Testing
         #expect(try #require(DaemonStatus.read(from: file)?.ambient).running == 1)
     }
 
+    /// #405: a child `haild ambient reload` replaced is counted out, but never hides a newer child's failure.
+    @Test func aReplacedChildsEndCountsButNeverBecomesTheLastEvent() throws {
+        let recorder = DaemonStatusRecorder(file: file, hostID: "themachine.local", build: nil, ambientEnabled: true,
+                                            pid: 4242)
+        recorder.observe(.init(event: "ambient_started"))
+        recorder.observe(.init(event: "ambient_started"))
+        recorder.observe(.init(event: "ambient_reloaded"))
+        recorder.observe(.init(event: "ambient_ended", detail: "child transportLost"))
+        recorder.observe(.init(event: "ambient_ended", detail: "replaced delivered=0 written=9 exit=signaled(15)"))
+        let ambient = try #require(DaemonStatus.read(from: file)?.ambient)
+        #expect(ambient.running == 0)
+        #expect(ambient.lastEvent == "ambient_ended" && ambient.lastDetail == "child transportLost")
+    }
+
     @Test func aSnapshotWithoutAmbientStillReads() throws {
         _ = recorder()
         var json = try #require(JSONSerialization.jsonObject(with: Data(contentsOf: file)) as? [String: Any])

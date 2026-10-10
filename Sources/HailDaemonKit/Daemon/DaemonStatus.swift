@@ -141,6 +141,12 @@ public final class DaemonStatusRecorder: Sendable {
             ambient.running += 1
         case "ambient_ended":
             if ambient.running > 0 { ambient.running -= 1 } else { state.endsBeforeStart += 1 }
+            // A child `haild ambient reload` replaced (#405) is counted out, but its end never becomes the last event:
+            // its stream lives on in the new child, and a failure of that newer child must stay visible.
+            if event.detail?.hasPrefix("replaced ") == true {
+                state.status.ambient = ambient
+                return true
+            }
         case "ambient_refused": ambient.refusals += 1
         default: break
         }
