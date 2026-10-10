@@ -41,7 +41,8 @@ public struct ConnectionProbeAuthorizer: HostSessionAuthorizing {
 
 /// Explicitly enabled personal-testing mode. It exposes only target selection, final text delivery,
 /// and literal Escape in addition to the probe operations; the default listener remains read-only.
-/// Ambient audio (#203) is admitted, and `stream_audio` advertised, only when a gate is supplied. Device
+/// Ambient audio (#203) is admitted, and `stream_audio` advertised, only when a gate is supplied; so is a device's
+/// `overheard_scope` (#398), with `ambient_overheard` advertised. Device
 /// diagnostics (#234) are admitted, and `device_diagnostics` advertised, only when a sink is supplied.
 public struct PersonalTerminalAuthorizer: HostSessionAuthorizing {
     public let capabilities: [String]
@@ -52,7 +53,7 @@ public struct PersonalTerminalAuthorizer: HostSessionAuthorizing {
         self.ambientAudio = ambientAudio
         self.diagnostics = diagnostics
         capabilities = ["list_targets", "ping", "select_target", "send_text", "escape", "receive_replies"]
-            + (ambientAudio == nil ? [] : ["stream_audio"])
+            + (ambientAudio == nil ? [] : ["stream_audio", AmbientOverheard.capability])
             + (diagnostics == nil ? [] : [DiagnosticLimits.capability])
     }
 
@@ -64,6 +65,7 @@ public struct PersonalTerminalAuthorizer: HostSessionAuthorizing {
             switch control {
             case .hello, .ping, .listTargets, .select, .escape: .allow
             case .diagnostic: diagnostics == nil ? .deny : .allow
+            case .overheardScope: ambientAudio == nil ? .deny : .allow
             default: .deny
             }
         default: .deny
@@ -151,6 +153,9 @@ public actor HostSession {
     var repliesInFlight: [UUID] = []
     var stoppedReplies: [UUID] = []
     var selectedTarget: String?
+    /// Which overheard turns this connection asked for (#398), one of `AmbientOverheard.scopes`. Every connection
+    /// starts at `off`, so nothing overheard is sent until the device asks on this connection.
+    var overheardScope = "off"
     let connectionID = UUID()
     var selectionGeneration = UUID()
     var replyRequests: [UUID: HostReplyRequest] = [:]
