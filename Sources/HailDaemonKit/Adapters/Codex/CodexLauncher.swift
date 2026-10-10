@@ -29,9 +29,10 @@ struct CodexLaunchEvidence: Sendable {
     fileprivate let identity: CodexFileIdentity
 
     /// The owned App Server argv for this exact binary. Environment and configuration isolation are the caller's.
-    func appServerCommand(environment: [String]) throws -> OwnedStdioCommand {
+    func appServerCommand(environment: [String], configOverrides: [String] = []) throws -> OwnedStdioCommand {
         guard try CodexLauncher.inspect(executable).identity == identity else { throw CodexLaunchError.binaryChanged }
-        return OwnedStdioCommand(executable: executable, arguments: ["app-server", "--listen", "stdio://"],
+        return OwnedStdioCommand(executable: executable,
+                                 arguments: ["app-server", "--listen", "stdio://"] + configOverrides,
                                  environment: environment)
     }
 }

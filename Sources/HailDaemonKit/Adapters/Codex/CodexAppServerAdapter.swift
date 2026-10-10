@@ -48,27 +48,33 @@ actor CodexAppServerAdapter: ProviderContextDelivering, ProviderSessionObserving
     private var startup: CheckedContinuation<ProviderObservation, any Error>?
     private var transport: CodexStdioTransport?
 
-    private init(command: OwnedStdioCommand, verifiedVersion: String?, limits: CodexStdioLimits) throws {
+    private let workspace: String
+
+    private init(command: OwnedStdioCommand, verifiedVersion: String?, workspace: String,
+                 limits: CodexStdioLimits) throws {
         guard let verifiedVersion, CodexAppServerProtocol.supportedVersions.contains(verifiedVersion) else {
             throw CodexAppServerError.incompatibleVersion
         }
-        self.command = command; self.limits = limits; lease = try CodexOwnedLease()
+        self.command = command; self.workspace = workspace; self.limits = limits; lease = try CodexOwnedLease()
     }
     /// The real-binary entry point: evidence comes from `CodexLauncher.verify`, not a caller's claim.
     static func withOwnedAdapter<Result: Sendable>(
-        launch: CodexLaunchEvidence, environment: [String], limits: CodexStdioLimits = .init(),
+        launch: CodexLaunchEvidence, setup: CodexLaunchSetup, limits: CodexStdioLimits = .init(),
         operation: @Sendable (CodexAppServerAdapter) async throws -> Result
     ) async throws -> Result {
-        try await withOwnedAdapter(command: try launch.appServerCommand(environment: environment),
-                                   verifiedVersion: launch.version, limits: limits, operation: operation)
+        let command = try launch.appServerCommand(environment: setup.environment,
+                                                  configOverrides: setup.configOverrides)
+        return try await withOwnedAdapter(command: command, verifiedVersion: launch.version,
+                                          workspace: setup.workspace, limits: limits, operation: operation)
     }
     /// Synthetic-test seam: `verifiedVersion` is an attestation only. Real composition uses `launch:`.
     static func withOwnedAdapter<Result: Sendable>(
-        command: OwnedStdioCommand, verifiedVersion: String?, limits: CodexStdioLimits = .init(),
-        operation: @Sendable (CodexAppServerAdapter) async throws -> Result
+        command: OwnedStdioCommand, verifiedVersion: String?, workspace: String = "/synthetic-workspace",
+        limits: CodexStdioLimits = .init(), operation: @Sendable (CodexAppServerAdapter) async throws -> Result
     ) async throws -> Result {
         try Task.checkCancellation()
-        let adapter = try CodexAppServerAdapter(command: command, verifiedVersion: verifiedVersion, limits: limits)
+        let adapter = try CodexAppServerAdapter(command: command, verifiedVersion: verifiedVersion,
+                                                workspace: workspace, limits: limits)
         return try await withTaskCancellationHandler {
             do { let result = try await operation(adapter); await adapter.join(); return result } catch {
                 await adapter.join(); throw error
@@ -127,7 +133,7 @@ actor CodexAppServerAdapter: ProviderContextDelivering, ProviderSessionObserving
 extension CodexAppServerAdapter {
     private func run(_ transport: CodexStdioTransport, binding: ProviderSessionBinding) async throws {
         self.transport = transport
-        let threadID = try await CodexAppServerProtocol.start(transport)
+        let threadID = try await CodexAppServerProtocol.start(transport, workspace: workspace)
         guard !lease.stopped else { throw CodexAppServerError.unavailable }
         events = CodexAppServerEvents(binding: binding, threadID: threadID)
         startup?.resume(returning: ProviderObservation(events: lease.channel.stream) { self.cancel() }); startup = nil

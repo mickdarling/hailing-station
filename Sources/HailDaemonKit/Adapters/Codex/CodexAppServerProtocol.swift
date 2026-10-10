@@ -9,7 +9,7 @@ enum CodexAppServerError: Error, Sendable, Equatable {
 enum CodexAppServerProtocol {
     /// Exact CLI versions whose stable schema covers every shape used here (#153, #399).
     static let supportedVersions: Set<String> = ["0.159.0", "0.162.0-alpha.17.2"]
-    static func start(_ transport: CodexStdioTransport) async throws -> String {
+    static func start(_ transport: CodexStdioTransport, workspace: String) async throws -> String {
         let hello = try await transport.request(.initialize, params: .object([
             "clientInfo": .object(["name": .string("hailing_station"), "version": .string("0.1.25")]),
             "capabilities": .object(["experimentalApi": .bool(false)])
@@ -22,8 +22,10 @@ enum CodexAppServerProtocol {
         try await transport.notify(.initialized)
         let response = try fields(try await transport.request(.threadStart, params: .object([
             "ephemeral": .bool(true), "approvalPolicy": .string("never"),
-            "approvalsReviewer": .string("user"), "sandbox": .string("read-only")
+            "approvalsReviewer": .string("user"), "sandbox": .string("read-only"), "cwd": .string(workspace)
         ])))
+        // The owner's own instruction files may load (#153 revision); the cwd must be the owned workspace.
+        guard response["cwd"] == .string(workspace) else { throw CodexAppServerError.invalidProtocol }
         let sandbox = try fields(response["sandbox"] ?? .null)
         let thread = try fields(response["thread"] ?? .null)
         guard response["approvalPolicy"] == .string("never"), response["approvalsReviewer"] == .string("user"),
