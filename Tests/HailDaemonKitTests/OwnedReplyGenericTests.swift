@@ -23,7 +23,7 @@ import Testing
     @Test(arguments: ["", "   \n", "bad\0text", "bell\u{7}", "del\u{7f}", "cr\rtext", "csi\u{9b}text",
                       "bidi\u{202e}text", "zero\u{200b}width", "isolate\u{2066}text", "a\u{FE01}\u{E0100}",
                       "a\u{034F}b", "a\u{3164}b", "a\u{2800}b", "a\u{FFFE}b",
-                      String(repeating: "a", count: PayloadLimits.maxTextBytes + 1)])
+                      String(repeating: "a", count: OwnedReply.maxSpokenBytes + 1)])
     func unsafeTextIsRefused(text: String) {
         #expect(throws: OwnedReplyPublisherError.invalidConfiguration) {
             _ = try OwnedReply(requestID: UUID(), hostID: "synthetic-host", targetID: Self.target, text: text)
@@ -76,7 +76,7 @@ import Testing
             _ = try OwnedReplyPublisher(executable: fixture.executable, socket: fixture.base, outputRoot: fixture.root,
                                         hostID: "synthetic-host", targets: ["codex-owned:owned", "bad\u{7}"])
         }
-        for deadline in [Duration.zero, .seconds(601)] {
+        for deadline in [Duration.zero, .seconds(301)] {
             #expect(throws: OwnedReplyPublisherError.invalidConfiguration) {
                 _ = try OwnedReplyPublisher(executable: fixture.executable, socket: fixture.base,
                                             outputRoot: fixture.root, hostID: "synthetic-host",
@@ -85,6 +85,9 @@ import Testing
         }
         _ = try OwnedReplyPublisher(executable: fixture.executable, socket: fixture.base, outputRoot: fixture.root,
                                     hostID: "synthetic-host", targets: ["codex-owned:owned"], deadline: .seconds(300))
+        let longest = String(repeating: "a", count: OwnedReply.maxSpokenBytes)
+        let reply = try OwnedReply(requestID: UUID(), hostID: "h", targetID: "codex-owned:owned", text: longest)
+        #expect(reply.text == longest)
         try FileManager.default.removeItem(at: fixture.base)
     }
 }

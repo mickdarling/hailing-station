@@ -1,6 +1,5 @@
 #if os(macOS)
 public import Foundation
-import HailProtocol
 import Synchronization
 
 // Admission, cancellation and retained ownership share one synchronized lifecycle boundary.
@@ -27,6 +26,10 @@ public struct OwnedReplyPublisherDiagnostics: Sendable {
 /// inbound sanitizer's hidden-character rule (format, default-ignorable, variation-selector smuggling, fillers,
 /// braille blank, noncharacters), including its narrow emoji exceptions such as ZWJ sequences.
 public struct OwnedReply: Sendable, Equatable {
+    /// Spoken replies stream as PCM under the reply endpoint's 120-frame budget (about 146 s of speech for one job,
+    /// shared per minute across jobs). This bound keeps one reply's speech well inside it (roughly 80-90 s at
+    /// typical rates), so an admitted reply is publishable whole. Adapters shorten longer answers before publishing.
+    public static let maxSpokenBytes = 1_200
     public let requestID: UUID
     public let hostID: String
     public let targetID: String
@@ -34,7 +37,7 @@ public struct OwnedReply: Sendable, Equatable {
 
     public init(requestID: UUID, hostID: String, targetID: String, text: String) throws {
         guard Self.isSafeTarget(targetID),
-              text.contains(where: { !$0.isWhitespace }), text.utf8.count <= PayloadLimits.maxTextBytes,
+              text.contains(where: { !$0.isWhitespace }), text.utf8.count <= Self.maxSpokenBytes,
               !Self.hasHidden(text, allowing: [9, 10]) else { throw OwnedReplyPublisherError.invalidConfiguration }
         self.requestID = requestID; self.hostID = hostID; self.targetID = targetID; self.text = text
     }
@@ -87,12 +90,14 @@ public final class OwnedReplyPublisher: Sendable {
     private let state = Mutex(ReplyPublisherState())
 
     /// `targets` are the reply-owning targets this publisher may speak for; the default is the diagnostic bridge.
-    /// `deadline` bounds each whole job (render, publish, cleanup). The 30-second default suits the short diagnostic
-    /// phrase; adapters publishing long provider answers pass a longer bound, at most ten minutes.
+    /// `deadline` bounds admission to outcome (queue wait, render and publication), not directory cleanup, which
+    /// is retained and reported separately. The 30-second default suits the short diagnostic phrase; adapters
+    /// publishing spoken provider answers pass a longer bound, at most five minutes. Use one publisher per adapter:
+    /// its 4 slots are shared, so a long-deadline target must not share an instance with the diagnostic target.
     public convenience init(executable: URL, socket: URL, outputRoot: URL, hostID: String,
                             targets: Set<String> = [DiagnosticReplyBridgeAdapter.targetID],
                             deadline: Duration = .seconds(30)) throws {
-        guard !targets.isEmpty, targets.allSatisfy(OwnedReply.isSafeTarget), deadline <= .seconds(600) else {
+        guard !targets.isEmpty, targets.allSatisfy(OwnedReply.isSafeTarget), deadline <= .seconds(300) else {
             throw OwnedReplyPublisherError.invalidConfiguration
         }
         try self.init(configuration: OwnedReplyPublisherConfiguration(
