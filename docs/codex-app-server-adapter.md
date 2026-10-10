@@ -149,9 +149,11 @@ These all return false:
 
 The `interrupted` event reaches observers through the normal exact-ID path. The
 method never kills the child itself, but a request timeout is a transport failure
-that ends the lease. Only one interrupt runs at a time (a concurrent call returns
-false), `grace` must be in (0, 10 s], and caller cancellation ends the wait with
-false. Scope exit, parent cancellation and observation
+that ends the lease. Caller cancellation never ends the lease, because the request
+runs shielded from it, and a cancelled call returns false even if the terminal
+raced it. Only one interrupt runs at a time (a concurrent call returns false),
+`grace` must be in (0, 10 s], each wait has its own token so a stale expiry cannot
+end a later one, and a normal lease stop resolves any wait at once. Scope exit, parent cancellation and observation
 stop are still a hard lease stop, which is not counted as provider
 interruption. A host-level "stop" command that calls this method is part of the
 composition step (D).

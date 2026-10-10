@@ -10,6 +10,7 @@ private struct CodexActiveTurn {
 /// One bounded wait for an exact turn's explicit terminal after a provider interrupt request (adapter-owned).
 struct CodexTerminalWaiter {
     let turn: String
+    let token: UUID
     let done: CheckedContinuation<Bool, Never>
     let timer: Task<Void, Never>
 }

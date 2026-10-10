@@ -88,6 +88,19 @@ import Testing
         #expect(await adapter.isReaped)
     }
 
+    @Test func aCancelledCallerGetsFalsePromptlyAndTheSessionSurvives() async throws {
+        let (adapter, _) = try await Self.withActiveTurn(interrupt: "silent", terminal: false) { adapter in
+            let started = ContinuousClock.now
+            let call = Task { await adapter.interruptActiveTurn(grace: .seconds(10)) }
+            try await Task.sleep(for: .milliseconds(100)); call.cancel()
+            #expect(await call.value == false)
+            #expect(ContinuousClock.now - started < .seconds(5))
+            let launched = await adapter.launchedChild, reaped = await adapter.isReaped
+            #expect(launched && !reaped) // The lease is still alive.
+        }
+        #expect(await adapter.isReaped)
+    }
+
     @Test(arguments: [Duration.zero, .seconds(11)]) func anUnboundedGraceIsRefused(grace: Duration) async throws {
         let (adapter, _) = try await Self.withActiveTurn(interrupt: "silent", terminal: false) { adapter in
             #expect(await adapter.interruptActiveTurn(grace: grace) == false)
