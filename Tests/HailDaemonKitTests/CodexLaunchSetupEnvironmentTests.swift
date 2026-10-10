@@ -33,6 +33,15 @@ extension CodexLaunchSetupTests {
         }
     }
 
+    @Test(arguments: ["/usr/bin:.", ":/usr/bin", "bin:/usr/bin"])
+    func anUnsafeInheritedPathIsRefused(path: String) throws {
+        let folder = try Self.root()
+        defer { try? FileManager.default.removeItem(at: folder) }
+        #expect(throws: CodexLaunchSetupError.invalidPath) {
+            _ = try CodexLaunchSetup.prepare(root: folder.path, host: ["PATH": path])
+        }
+    }
+
     @Test func aRootInsideAGitCheckoutIsRefused() throws {
         let folder = try Self.root()
         defer { try? FileManager.default.removeItem(at: folder) }

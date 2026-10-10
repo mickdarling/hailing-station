@@ -24,14 +24,18 @@ struct CodexLaunchSetup: Sendable, Equatable {
     static func prepare(root: String, disabledServers: [String] = [], path: String? = nil,
                         host: [String: String] = ProcessInfo.processInfo.environment) throws -> CodexLaunchSetup {
         guard disabledServers.allSatisfy(isSafeServerName) else { throw CodexLaunchSetupError.invalidServerName }
-        if let path, !isSafeSearchPath(path) { throw CodexLaunchSetupError.invalidPath }
-        let workspace = try preparedWorkspace(root)
         var inherited = host
         if let path { inherited["PATH"] = path }
+        // The effective PATH, configured or inherited, never searches a relative or empty (cwd) component.
+        if let effective = inherited["PATH"], !isSafeSearchPath(effective) { throw CodexLaunchSetupError.invalidPath }
+        let workspace = try preparedWorkspace(root)
         let environment = inheritedVariables.compactMap { name in
             inherited[name].flatMap { $0.contains("\0") ? nil : "\(name)=\($0)" }
         }
-        let overrides = disabledServers.flatMap { ["-c", "mcp_servers.\($0).enabled=false"] }
+        // No project-root discovery: even custom `project_root_markers` in the owner's config cannot make Codex
+        // walk above the empty workspace for AGENTS.md or project configuration.
+        let overrides = ["-c", "project_root_markers=[]"]
+            + disabledServers.flatMap { ["-c", "mcp_servers.\($0).enabled=false"] }
         return CodexLaunchSetup(workspace: workspace, environment: environment, configOverrides: overrides)
     }
 
