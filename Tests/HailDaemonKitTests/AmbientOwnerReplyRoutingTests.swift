@@ -5,9 +5,11 @@ import Synchronization
 import Testing
 @testable import HailDaemonKit
 
-/// #230: a reply with no request reference, with several devices selecting its target and no current last input
-/// (a restart, or ten quiet minutes), goes to the device the user is listening on, instead of being refused.
-@Suite struct AmbientOwnerReplyRoutingTests {
+/// #230 over loopback sockets: a reply with no request reference, with two devices selecting its target and no
+/// last input yet (a restart, or ten quiet minutes), goes to the device the user is listening on instead of being
+/// refused. Synthetic only; not device hearing.
+@Suite(.serialized) struct AmbientOwnerReplyRoutingTests {
+    /// Reports `owner` as the connection whose ambient stream feeds the active child.
     final class FakeWiring: AmbientListenerWiring {
         let owner = Mutex<UUID?>(nil)
         func attach(_ listener: WebSocketListener) {}
@@ -17,44 +19,49 @@ import Testing
         func activeConnection() -> UUID? { owner.withLock { $0 } }
     }
 
-    final class Routes: Sendable {
-        let details = Mutex<[String]>([])
-    }
-
-    private func setUp(listening: Int?, routes: Routes = Routes()) async throws -> WebSocketListener {
+    /// Two loopback devices selecting the legacy target; device `listening`, if any, owns the active stream.
+    private func withTwoDevices(
+        listening: Int?, _ body: (WebSocketListener, RoutedReplyEvents, FallbackSocketPair) async throws -> Void
+    ) async throws {
         let rig = try await LegacyReferenceRig.make()
         let wiring = FakeWiring()
-        let listener = try WebSocketListener(
-            bindAddress: "127.0.0.1", port: 0, host: rig.host, authorizer: PersonalTerminalAuthorizer(),
-            hostName: "mac-test", singleTerminalReplyFallback: true, ambient: wiring,
-            log: { event in
-                if event.event == "reply_routed" { routes.details.withLock { $0.append(event.detail ?? "") } }
-            }
+        let (listener, events) = try rig.routedListener(ambient: wiring)
+        let port = try await listener.start()
+        let devices = try await FallbackSocketPair.connect(
+            port: port, selecting: Array(repeating: LegacyReferenceRig.target, count: 2)
         )
-        let sessions = [await rig.session(), await rig.session()]
-        _ = await listener.installFallbackSyntheticPeers(sessions)
-        if let listening {
-            let owner = await sessions[listening].connectionID
-            wiring.owner.withLock { $0 = owner }
+        defer { devices.close() }
+        do {
+            if let listening {
+                let owner = try await listener.sessionConnection(of: events.connected[listening])
+                wiring.owner.withLock { $0 = owner }
+            }
+            try await body(listener, events, devices)
+        } catch {
+            await listener.stop(reason: "synthetic test failed")
+            throw error
         }
-        return listener
+        await listener.stop(reason: "synthetic test complete")
     }
 
     @Test func itGoesToTheDeviceTheUserIsListeningOn() async throws {
-        let routes = Routes()
-        let listener = try await setUp(listening: 1, routes: routes)
-        let frame = recipientText(referenceDescriptor(nil))
-        #expect(await listener.lastInputRoute(frame) == nil, "no device input yet: a fresh restart")
-        #expect(try await listener.publish(frame) == 1)
-        #expect(routes.details.withLock { $0 } == ["path=ambient_owner"])
-        await listener.stop(reason: "synthetic test complete")
+        try await withTwoDevices(listening: 1) { listener, events, devices in
+            let frame = recipientText(referenceDescriptor(nil))
+            #expect(await listener.lastInputRoute(frame) == nil, "no device input yet: a fresh restart")
+            #expect(try await listener.publish(frame) == 1)
+            #expect(try await recipientSocketReceive(on: devices.sockets[1]) == frame)
+            try await devices.barrier()
+            #expect(events.routes.map(\.0) == [events.connected[1]])
+            #expect(events.routes.map(\.1) == ["path=ambient_owner"])
+        }
     }
 
     @Test func withNobodyListeningItIsRefusedAsBefore() async throws {
-        let listener = try await setUp(listening: nil)
-        let frame = recipientText(referenceDescriptor(nil))
-        await #expect(throws: LocalReplyRefusal.notUniqueRecipient) { try await listener.publish(frame) }
-        await listener.stop(reason: "synthetic test complete")
+        try await withTwoDevices(listening: nil) { listener, events, _ in
+            let frame = recipientText(referenceDescriptor(nil))
+            await #expect(throws: LocalReplyRefusal.notUniqueRecipient) { try await listener.publish(frame) }
+            #expect(events.routes.isEmpty)
+        }
     }
 }
 

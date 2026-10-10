@@ -19,11 +19,13 @@ final class RoutedReplyEvents: Sendable {
 }
 
 extension LegacyReferenceRig {
-    func routedListener() throws -> (WebSocketListener, RoutedReplyEvents) {
+    func routedListener(
+        ambient: (any AmbientListenerWiring)? = nil
+    ) throws -> (WebSocketListener, RoutedReplyEvents) {
         let events = RoutedReplyEvents()
         let listener = try WebSocketListener(
             bindAddress: "127.0.0.1", port: 0, host: host, authorizer: PersonalTerminalAuthorizer(),
-            hostName: "mac-test", singleTerminalReplyFallback: true, log: { events.record($0) }
+            hostName: "mac-test", singleTerminalReplyFallback: true, ambient: ambient, log: { events.record($0) }
         )
         return (listener, events)
     }

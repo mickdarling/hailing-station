@@ -36,6 +36,9 @@ func fakeFileSize(_ fake: FakeRightyo, _ name: String) -> Int {
         try await pair.barrier()
         #expect(await eventually { fakeFileSize(fake, "v1-audio.bin") == 16_000 })
         let before = env.router.status()
+        // #230: the recipient of last resort is the connection whose stream feeds the active child.
+        #expect(env.router.activeConnection() != nil)
+        #expect(env.router.activeConnection() == before.connection)
         try rewriteFake(fake, ambientEchoAtEOF)
         #expect(await env.router.reload() == .reloaded)
         #expect(await env.gate.activeStream == stream)
