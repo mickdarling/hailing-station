@@ -4,8 +4,21 @@ import SwiftUI
 /// The station chat (#288): what you said and what Haili replied, newest at the bottom, scrolling to each new
 /// message. The reply that owns the player shows its status and Pause, Replay and Mute.
 struct ConversationChatView: View {
-    let entries: [ConversationEntry]
+    let allEntries: [ConversationEntry]
     @Bindable var playback: ReplyPlaybackController
+    /// Overheard remarks (#398) appear only when the user chose to show them.
+    @AppStorage(OverheardSettingsView.showKey) private var showsOverheard = false
+    /// The message whose text is open for selecting part of it (#412).
+    @State private var selecting: ConversationEntry?
+
+    init(entries: [ConversationEntry], playback: ReplyPlaybackController) {
+        allEntries = entries
+        self.playback = playback
+    }
+
+    private var entries: [ConversationEntry] {
+        showsOverheard ? allEntries : allEntries.filter { !$0.overheard }
+    }
 
     var body: some View {
         VStack(alignment: .leading, spacing: 10) {
@@ -46,6 +59,7 @@ struct ConversationChatView: View {
         .background(.regularMaterial, in: RoundedRectangle(cornerRadius: 24, style: .continuous))
         .accessibilityElement(children: .contain)
         .accessibilityIdentifier("station.chat")
+        .sheet(item: $selecting) { entry in SelectableTextSheet(text: entry.text) }
     }
 
     /// The reply the player controls now, else the newest reply.
@@ -59,22 +73,43 @@ struct ConversationChatView: View {
         HStack {
             if isYou { Spacer(minLength: 48) }
             VStack(alignment: .leading, spacing: 8) {
+                if entry.overheard {
+                    Text(entry.speaker == .you ? "You · not sent" : "Someone · not sent")
+                        .font(.caption2.weight(.semibold))
+                        .foregroundStyle(.secondary)
+                }
                 Text(entry.text)
-                    .foregroundStyle(isYou ? Color.white : Color.primary)
-                    .textSelection(.enabled)
-                if !isYou, entry.id == controlledReplyID {
+                    .foregroundStyle(entry.overheard ? Color.secondary : isYou ? Color.white : Color.primary)
+                    .italic(entry.overheard)
+                if entry.speaker == .haili, entry.id == controlledReplyID {
                     replyControls
                 }
             }
             .padding(.horizontal, 14)
             .padding(.vertical, 10)
             .background(
-                isYou ? AnyShapeStyle(Color.accentColor) : AnyShapeStyle(.quaternary),
+                entry.overheard ? AnyShapeStyle(.quinary)
+                    : isYou ? AnyShapeStyle(Color.accentColor) : AnyShapeStyle(.quaternary),
                 in: RoundedRectangle(cornerRadius: 18, style: .continuous)
             )
+            // Copy, Share or select part of any message (#412).
+            .contextMenu {
+                Button("Copy", systemImage: "doc.on.doc") { UIPasteboard.general.string = entry.text }
+                ShareLink(item: entry.text)
+                Button("Select Text", systemImage: "selection.pin.in.out") { selecting = entry }
+            }
             .accessibilityElement(children: .contain)
-            .accessibilityLabel(isYou ? "You said" : "Haili replied")
+            .accessibilityLabel(Self.accessibilityLabel(entry))
             if !isYou { Spacer(minLength: 48) }
+        }
+    }
+
+    private static func accessibilityLabel(_ entry: ConversationEntry) -> String {
+        switch (entry.speaker, entry.overheard) {
+        case (.you, false): "You said"
+        case (.you, true): "You said, heard but not sent"
+        case (.someone, _): "Someone said, heard but not sent"
+        case (.haili, _): "Haili replied"
         }
     }
 
@@ -116,4 +151,38 @@ struct ConversationChatView: View {
             .controlSize(.small)
         }
     }
+}
+
+/// The whole message in a read-only text view, where any part of it can be selected and copied (#412).
+private struct SelectableTextSheet: View {
+    let text: String
+    @Environment(\.dismiss) private var dismiss
+
+    var body: some View {
+        NavigationStack {
+            SelectableText(text: text)
+                .padding()
+                .navigationTitle("Select Text")
+                .navigationBarTitleDisplayMode(.inline)
+                .toolbar { ToolbarItem(placement: .confirmationAction) { Button("Done") { dismiss() } } }
+        }
+        .presentationDetents([.medium, .large])
+    }
+}
+
+/// A non-editable, selectable `UITextView`: SwiftUI's `Text` selects only the whole string on iOS.
+private struct SelectableText: UIViewRepresentable {
+    let text: String
+
+    func makeUIView(context: Context) -> UITextView {
+        let view = UITextView()
+        view.isEditable = false
+        view.isSelectable = true
+        view.font = .preferredFont(forTextStyle: .body)
+        view.adjustsFontForContentSizeCategory = true
+        view.backgroundColor = .clear
+        return view
+    }
+
+    func updateUIView(_ view: UITextView, context: Context) { view.text = text }
 }
