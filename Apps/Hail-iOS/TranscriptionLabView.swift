@@ -109,9 +109,10 @@ struct TranscriptionLabView: View {
                     .frame(maxWidth: .infinity, alignment: .trailing)
             }
 
-            liveTranscript
-
             talkButton
+
+            // Below the button, so its appearing never moves Tap to talk under a finishing tap.
+            liveTranscript
 
             if let onEscape {
                 Button(role: .destructive) {
