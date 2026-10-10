@@ -173,17 +173,30 @@ public final class HostConnectionStore {
 
     private func receive(_ event: HostReplyEvent, token: UUID) {
         guard tokens[event.endpointID] == token else { return }
-        // A take-over notice (#366) is for ambient listening, not the reply list or the conversation.
-        if case .control(.ambientMovedHere(let from)) = event.frame.payload {
-            onAmbientMovedHere?(event.endpointID, from)
-            return
-        }
+        if receiveAmbientNotice(event) { return }
         replyFrames.append(event)
         conversation.noteReply(event)
         onReplyFrame?(event)
         if replyFrames.count > Self.replyFrameLimit {
             replyFrames.removeFirst(replyFrames.count - Self.replyFrameLimit)
         }
+    }
+}
+
+/// Ambient notices are not replies: neither joins the reply list.
+extension HostConnectionStore {
+    /// True when `event` was an ambient notice, now handled. A take-over notice (#366) goes to ambient listening; the
+    /// user's own ambient request (#318) joins the chat as theirs, like a tap-to-talk send.
+    func receiveAmbientNotice(_ event: HostReplyEvent) -> Bool {
+        switch event.frame.payload {
+        case .control(.ambientMovedHere(let from)):
+            onAmbientMovedHere?(event.endpointID, from)
+        case .control(.ambientHeard(let targetID, let text)):
+            conversation.noteSent(text, endpointID: event.endpointID, targetID: targetID)
+        default:
+            return false
+        }
+        return true
     }
 }
 
