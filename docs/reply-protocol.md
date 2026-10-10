@@ -37,8 +37,12 @@ routed in this order:
 2. **Last input device.** A reply with no `request` goes to the target's last input device, text and audio, even
    when several devices select the target.
 3. **Single selector.** Otherwise (no last input device, or it disconnected, selected away or reselected, or its
-   record is older than 10 minutes), the single-terminal rule applies unchanged: the one device selecting the
-   target, else `noRecipient` or `notUniqueRecipient`.
+   record is older than 10 minutes), the single-terminal rule applies: the one device selecting the target, else
+   `noRecipient`.
+4. **Ambient owner (#230).** When two or more devices select the target, the one whose ambient stream feeds the
+   active RightyO child (the device the user is listening on) receives it, if it is among those selecting devices.
+   Otherwise `notUniqueRecipient`. The owner is only ever chosen from the already-admitted selectors, never added.
+   Validated with synthetic loopback sockets (`AmbientOwnerReplyRoutingTests`); not yet proven by device hearing.
 
 Steps 2 and 3 run only on a host started with `--single-terminal-reply-fallback`, which `scripts/host.sh` passes
 when `host.json` sets `singleTerminalReplyFallback`. Every frame of one request-less reply goes to the device that

@@ -45,8 +45,11 @@ requester's answer to another phone.
    currently selects the reply's target and whether the host would issue a reply permit for that exact
    target binding right now.
 3. **Exactly one** selecting connection receives the reply. Zero selecting connections answers
-   `noRecipient`; two or more answer `notUniqueRecipient`. Both are the existing refusal codes, logged and
-   returned over the local reply socket the same way; neither permits retry.
+   `noRecipient`. With two or more, the connection whose ambient stream feeds the active RightyO child receives it
+   when it is one of them (#230, logged `reply_routed path=ambient_owner`); otherwise `notUniqueRecipient`. Both
+   refusals are the existing codes, logged and returned over the local reply socket the same way; neither permits
+   retry. Ambient-owner routing is validated synthetically (`AmbientOwnerReplyRoutingTests`), not yet by device
+   hearing.
 4. A correlated refusal of a known request (duplicate frame ID, wrong audio sequence, pinned descriptor
    mismatch) stays `noRecipient`; the fallback never second-guesses it, because the frame carries a
    request reference. That rule holds while the record exists. Records are pruned on new input from the
