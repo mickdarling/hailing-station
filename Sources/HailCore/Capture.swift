@@ -1,6 +1,7 @@
 // swiftlint:disable file_length
 public import AVFAudio
 public import Foundation
+import Synchronization
 
 /// Events a trigger emits as the user speaks. Push-to-talk, wake phrase, continuous, and intent-gate
 /// triggers all produce this same stream (#5, #51).
@@ -40,10 +41,35 @@ public protocol AudioCapturing: Sendable {
 /// stream so every consumer sees the microphone stop, and posts `endedBySystem` so a consumer still draining
 /// earlier audio can drop its "listening" state at once. It never restarts by itself (#218). Headphones attaching or
 /// detaching as an output only, with the microphone unchanged, does not end a run whose engine still records (#343).
+/// With a `StallPolicy`, a run whose engine stays "running" but delivers no buffers restarts the engine in place, on
+/// the same stream; repeated stalls end the run as `endedBySystem` (#443).
 @MainActor
 public final class AVAudioEngineCapture: AudioCapturing {
     /// Posted on the capture's notification center, with the capture as object, after the system ended a run.
     public static let endedBySystem = Notification.Name("HailAudioCaptureEndedBySystem")
+    /// Posted, with the capture as object, each time a stalled engine is restarted (#443). Its `userInfo` holds
+    /// `UInt` values under `stalledMillisecondsKey` and `restartAttemptKey`. A stall that ends the run posts
+    /// `endedBySystem` instead.
+    public static let stalled = Notification.Name("HailAudioCaptureStalled")
+    public static let stalledMillisecondsKey = "HailCaptureStalledMilliseconds"
+    public static let restartAttemptKey = "HailCaptureRestartAttempt"
+
+    /// When a run counts as stalled (#443): no buffer for `limit`, on at least two consecutive checks every
+    /// `check` (so one late wake after the app was suspended is not a stall). After `maxRestarts` restarts with no
+    /// buffer in between, the next stall ends the run instead.
+    public struct StallPolicy: Sendable, Equatable {
+        public var limit: Duration
+        public var check: Duration
+        public var maxRestarts: Int
+
+        public init(limit: Duration, check: Duration, maxRestarts: Int) {
+            (self.limit, self.check, self.maxRestarts) = (limit, check, maxRestarts)
+        }
+
+        /// Ambient listening: a USB route once froze capture for 111 s with the engine still "running" (#443). Two
+        /// restarts; the third stall in a row ends listening.
+        public static let ambient = StallPolicy(limit: .seconds(5), check: .seconds(1), maxRestarts: 2)
+    }
 
     private let engine: AVAudioEngine
     private let notificationCenter: NotificationCenter
@@ -52,21 +78,37 @@ public final class AVAudioEngineCapture: AudioCapturing {
     private var continuation: AsyncStream<AudioCaptureBuffer>.Continuation?
     private var hasTap = false
     private var observer: AudioCaptureEndingObserver?
+    /// Read when a run starts; set it before `start` to watch that run for stalls (#443).
+    var stallPolicy: StallPolicy?
+    /// Called after a stalled engine restarted, so whatever plays through it can drop a reply the stall froze.
+    var onEngineRestarted: (@MainActor () -> Void)?
+    private let now: @Sendable () -> ContinuousClock.Instant
+    private let sleep: @Sendable (Duration) async throws -> Void
+    /// Buffers delivered this run, counted on the audio thread; the watchdog only compares it with its last read.
+    private let delivered = DeliveredBuffers()
+    private var watchdog: Task<Void, Never>?
 
     public convenience init(
-        engine: AVAudioEngine = AVAudioEngine(), notificationCenter: NotificationCenter = .default
+        engine: AVAudioEngine = AVAudioEngine(), notificationCenter: NotificationCenter = .default,
+        stallPolicy: StallPolicy? = nil
     ) {
-        self.init(engine: engine, notificationCenter: notificationCenter, operations: .live)
+        self.init(engine: engine, notificationCenter: notificationCenter, operations: .live, stallPolicy: stallPolicy)
     }
 
     init(
         engine: AVAudioEngine, notificationCenter: NotificationCenter, operations: AudioEngineOperations,
-        routeInputChanged: @escaping AudioCaptureEndingSignal.RouteInputChange = AudioCaptureEndingSignal.inputChanged
+        routeInputChanged: @escaping AudioCaptureEndingSignal.RouteInputChange = AudioCaptureEndingSignal.inputChanged,
+        stallPolicy: StallPolicy? = nil,
+        now: @escaping @Sendable () -> ContinuousClock.Instant = { ContinuousClock().now },
+        sleep: @escaping @Sendable (Duration) async throws -> Void = { try await Task.sleep(for: $0) }
     ) {
         self.engine = engine
         self.notificationCenter = notificationCenter
         self.operations = operations
         self.routeInputChanged = routeInputChanged
+        self.stallPolicy = stallPolicy
+        self.now = now
+        self.sleep = sleep
     }
 
     public func start() throws -> AsyncStream<AudioCaptureBuffer> {
@@ -79,11 +121,7 @@ public final class AVAudioEngineCapture: AudioCapturing {
             Task { @MainActor in self?.stop() }
         }
 
-        operations.installTap(engine) { @Sendable buffer, _ in
-            guard let ownedBuffer = AudioCaptureBuffer(copying: buffer) else { return }
-            streamContinuation.yield(ownedBuffer)
-        }
-        hasTap = true
+        installTap(streamContinuation)
         // Observe before starting, so a call or route change that lands while the engine starts is not lost. Its
         // signal is handled on the main actor after `start` returns, against the engine's state at that point.
         observer = AudioCaptureEndingObserver(
@@ -97,10 +135,13 @@ public final class AVAudioEngineCapture: AudioCapturing {
             stop()
             throw error
         }
+        if let stallPolicy { watchdog = watch(stallPolicy) }
         return pair.stream
     }
 
     public func stop() {
+        watchdog?.cancel()
+        watchdog = nil
         observer = nil
         if hasTap {
             operations.removeTap(engine)
@@ -114,9 +155,87 @@ public final class AVAudioEngineCapture: AudioCapturing {
     /// Only the observer of the current run may end it; a late signal from an earlier run is ignored.
     private func systemSignal(_ signal: AudioCaptureEndingSignal, observer id: UUID) {
         guard observer?.id == id, signal.endsCapture(engineRunning: operations.isRunning(engine)) else { return }
+        endBySystem()
+    }
+
+    private func endBySystem() {
         stop()
         notificationCenter.post(name: Self.endedBySystem, object: self)
     }
+
+    private func installTap(_ continuation: AsyncStream<AudioCaptureBuffer>.Continuation) {
+        let delivered = delivered
+        operations.installTap(engine) { @Sendable buffer, _ in
+            delivered.increment()
+            guard let ownedBuffer = AudioCaptureBuffer(copying: buffer) else { return }
+            continuation.yield(ownedBuffer)
+        }
+        hasTap = true
+    }
+}
+
+/// The stall watchdog (#443). It runs on the main actor for one run; `stop` cancels it.
+extension AVAudioEngineCapture {
+    private func watch(_ policy: StallPolicy) -> Task<Void, Never> {
+        let (now, sleep, delivered) = (now, sleep, delivered)
+        return Task { @MainActor [weak self] in
+            var seen = delivered.count
+            var since = now()
+            var restarts = 0
+            var staleChecks = 0
+            while true {
+                guard (try? await sleep(policy.check)) != nil, !Task.isCancelled, let self,
+                      self.continuation != nil else { return }
+                let current = delivered.count
+                if current != seen {
+                    (seen, since, restarts, staleChecks) = (current, now(), 0, 0)
+                    continue
+                }
+                staleChecks += 1
+                let stalled = now() - since
+                // A single check that wakes long after the last (the app was suspended) is not yet a stall.
+                guard stalled >= policy.limit, staleChecks >= 2 else { continue }
+                restarts += 1
+                guard self.restartStalled(after: stalled, attempt: restarts, policy: policy) else { return }
+                (since, staleChecks) = (now(), 0)
+            }
+        }
+    }
+
+    /// Restarts the engine on the same stream and reports it. Past `maxRestarts`, or if the engine won't start
+    /// again, the run ends as if the system had stopped it, with no "restarted" report. Returns whether it goes on.
+    private func restartStalled(after stalled: Duration, attempt: Int, policy: StallPolicy) -> Bool {
+        guard attempt <= policy.maxRestarts, let continuation else {
+            endBySystem()
+            return false
+        }
+        if hasTap {
+            operations.removeTap(engine)
+            hasTap = false
+        }
+        operations.stop(engine)
+        installTap(continuation)
+        do {
+            try operations.start(engine)
+        } catch {
+            endBySystem()
+            return false
+        }
+        let (seconds, attoseconds) = stalled.components
+        let milliseconds = seconds * 1_000 + attoseconds / 1_000_000_000_000_000
+        notificationCenter.post(name: Self.stalled, object: self, userInfo: [
+            Self.stalledMillisecondsKey: UInt(clamping: milliseconds), Self.restartAttemptKey: UInt(clamping: attempt)
+        ])
+        onEngineRestarted?()
+        return true
+    }
+}
+
+/// A count of tap callbacks, bumped on the audio thread and read on the main actor.
+final class DeliveredBuffers: Sendable {
+    private let value = Atomic<UInt64>(0)
+    func increment() { value.wrappingAdd(1, ordering: .relaxed) }
+    var count: UInt64 { value.load(ordering: .relaxed) }
 }
 
 /// The engine calls capture makes. Tests substitute them to simulate the system around a run without a microphone.

@@ -274,7 +274,8 @@ extension DeviceDiagnostics {
     /// the system, from `center`. Call once; the observers live as long as this log.
     public func observeSystem(center: NotificationCenter = .default) {
         guard observers.isEmpty else { return }
-        var names = [AVAudioEngineCapture.endedBySystem, Self.backgroundNotification, Self.foregroundNotification]
+        var names = [AVAudioEngineCapture.endedBySystem, AVAudioEngineCapture.stalled,
+                     Self.backgroundNotification, Self.foregroundNotification]
         #if os(iOS)
         names += [AVAudioSession.routeChangeNotification, AVAudioSession.interruptionNotification,
                   AVAudioSession.mediaServicesWereResetNotification]
@@ -313,6 +314,14 @@ extension DeviceDiagnostics {
     func handle(_ name: Notification.Name, _ info: [String: UInt]) {
         switch name {
         case AVAudioEngineCapture.endedBySystem: record(.captureState, [.state: .token("ended_by_system")])
+        // A capture stall (#443). It reuses the existing vocabulary, so older hosts accept it: `capture_error` with
+        // code `other` plus how long nothing arrived and which restart this is. A dedicated token needs a capability.
+        case AVAudioEngineCapture.stalled:
+            record(.captureError, [
+                .code: .token("other"),
+                .ms: .integer(Int64(min(info[AVAudioEngineCapture.stalledMillisecondsKey] ?? 0, UInt(Int32.max)))),
+                .attempt: .integer(Int64(min(info[AVAudioEngineCapture.restartAttemptKey] ?? 0, UInt(Int32.max))))
+            ])
         case Self.backgroundNotification: record(.appBackground)
         case Self.foregroundNotification: record(.appForeground)
         default: handleAudioSession(name, info)
