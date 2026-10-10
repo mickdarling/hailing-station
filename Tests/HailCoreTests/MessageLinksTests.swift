@@ -113,13 +113,15 @@ import Testing
     }
 
     @Test func internationalizedHostsAlwaysShowTheirPunycode() {
-        // Review round 2: a Cyrillic "а" makes аpple.com look like apple.com. Whether a non-ASCII host is detected and
-        // IDN-encoded at all depends on the Foundation version (CI's older one links nothing). Every outcome must be
-        // safe: no link, or a link to the punycode host whose hint shows that punycode. Never "apple.com".
-        for text in ["https://\u{0430}pple.com/login", "[https://\u{0430}pple.com/login](https://\u{0430}pple.com/login)",
-                     "[apple](https://\u{0430}pple.com)"] {
+        // Review round 2: a Cyrillic "a" (U+0430) makes the host look like apple.com. Whether a non-ASCII host is
+        // detected and IDN-encoded at all depends on the Foundation version (CI's older one links nothing). Every
+        // outcome must be safe: no link, or a link to the punycode host whose hint shows that punycode. Never
+        // "apple.com".
+        let cyrillic = "https://\u{0430}pple.com"
+        for text in ["\(cyrillic)/login", "[\(cyrillic)/login](\(cyrillic)/login)", "[apple](\(cyrillic))"] {
             let segments = MessageLinks.segments(text)
-            #expect(MessageLinks.links(segments).allSatisfy { MessageLinks.host(of: $0) == "xn--pple-43d.com" }, "\(text)")
+            let hosts = MessageLinks.links(segments).map { MessageLinks.host(of: $0) }
+            #expect(hosts.allSatisfy { $0 == "xn--pple-43d.com" }, "\(text)")
             for case .link(let label, let link) in segments {
                 #expect(MessageLinks.destinationHint(label: label, url: link) == "xn--pple-43d.com", "\(text)")
             }
