@@ -34,7 +34,8 @@ enum CodexAppServerFixtures {
     static let target = "codex-owned:owned"
     static func command(gate: CodexFixtureGate? = nil, status: String = "completed",
                         early: Bool = true, terminal: Bool = true, extra: String = "",
-                        approvalsReviewer: String? = "user", nullApprovalsReviewer: Bool = false) -> OwnedStdioCommand {
+                        approvalsReviewer: String? = "user", nullApprovalsReviewer: Bool = false,
+                        echoedCwd: String? = nil) -> OwnedStdioCommand {
         let reviewer = nullApprovalsReviewer ? "approvalsReviewer=>undef,"
             : approvalsReviewer.map { "approvalsReviewer=>'\($0)'," } ?? ""
         let code = #"use JSON::PP; $|=1; $SIG{TERM}='IGNORE'; $gate=shift @ARGV; $number=0; "# +
@@ -45,7 +46,8 @@ enum CodexAppServerFixtures {
             #"die unless $r->{params}->{approvalsReviewer} eq 'user'; "# +
             #"sendmsg({id=>$id,result=>{approvalPolicy=>'never',"# + reviewer +
             #"sandbox=>{type=>'readOnly',networkAccess=>"# +
-            #"JSON::PP::false},thread=>{id=>'synthetic-thread',ephemeral=>JSON::PP::true}}}); } else { "# +
+            #"JSON::PP::false},cwd=>"# + (echoedCwd.map { "'\($0)'" } ?? #"$r->{params}->{cwd}"#) + "," +
+            #"thread=>{id=>'synthetic-thread',ephemeral=>JSON::PP::true}}}); } else { "# +
             #"$number++; $turn='synthetic-turn-'.$number; "# +
             (early ? "" : response) + events + extra +
             (terminal ? terminalEvent(status) : "") +

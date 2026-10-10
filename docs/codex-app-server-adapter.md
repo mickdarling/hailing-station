@@ -73,6 +73,30 @@ it between the identity check and `posix_spawn`. Running the real binary
 against these checks is a local check only. CI uses system binaries and
 synthetic scripts.
 
+## Launch setup (#153 step B)
+
+Mick's decision: Hailing Station's Codex sessions use his normal `~/.codex`,
+with his login, MCP servers (including Dollhouse), hooks, `notify` and global
+AGENTS.md. `CodexLaunchSetup.prepare` builds the rest:
+
+- **Environment:** only `HOME`, `USER`, `LOGNAME`, `PATH`, `LANG`, `TMPDIR` and
+  `SHELL` are copied from haild's environment, in that order. The CLI finds
+  `~/.codex`, and MCP servers find `npx` and `node`. API keys, `CODEX_HOME`
+  overrides, `DYLD_*`, agent sockets and everything else stay behind.
+- **Workspace:** the thread `cwd` is `<root>/workspace`, created 0700. It must
+  be a real, private, empty folder, so no repository AGENTS.md or files are
+  picked up. The `thread/start` response must echo that exact `cwd`. The
+  owner's own instruction files may load.
+- **Disabled MCP servers:** an optional list of names becomes per-launch
+  `-c mcp_servers.<name>.enabled=false` overrides, for example to leave Chief
+  out. Names are limited to letters, digits, `_` and `-`, up to 64 characters.
+  His config file is never edited.
+
+His MCP servers and hooks run inside these sessions. A model turn could call
+MCP tools, which act with his normal authority. The per-thread restrictions
+(ephemeral, approvals `never`, reviewer `user`, read-only sandbox, no network)
+and the refusal of every server request still apply.
+
 ## Authority, input and lifetime
 
 Use `CodexAppServerAdapter.withOwnedAdapter` as the explicit trusted scope. The
