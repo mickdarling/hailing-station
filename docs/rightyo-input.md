@@ -567,6 +567,11 @@ The old device's next segment is refused with `ambient moved to <class>` (see
 continue or restart the owner's own stream id. The gate remembers the last 64 take-overs, and forgets a device's
 entries when it disconnects. Nothing is taken over across hosts: each daemon has its own gate and target.
 
+A device's automatic restart after its stream failed (#373) marks its first segment `resume`. Such a start never
+takes over. If another device started listening during the restart's backoff, the start is refused with that
+device's `ambient moved to <class>`, before it costs any rate budget or uses up its stream id. So the device someone
+moved to keeps listening. Only a start someone asked for (the toggle or "Listen here") takes over.
+
 Fast swaps (phone, pad, phone, pad) can leave retired children still stopping when the next start arrives. When
 every child slot is taken (`maxLiveChildren`, or `maxRuns`), the router forces the oldest retired child out
 before spawning the new one: EOF, SIGTERM after 0.5 s, SIGKILL after 0.5 s more, then up to 2 s to settle (about

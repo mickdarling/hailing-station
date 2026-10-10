@@ -46,7 +46,8 @@ public protocol AmbientAudioSink: Sendable {
 /// segments of its ended stream are refused with `AmbientTakeOver.movedMessage`, a final refusal on the phone.
 /// Only a connection this daemon negotiated, whose authorizer admitted the audio frame and whose selection names
 /// this gate's target, can take over, and only with a start that passes every check here; a refused start disturbs
-/// nothing. The gate belongs to one daemon and its one target, so nothing is taken over across hosts.
+/// nothing. A `resume` start (#373), a device's automatic restart, never takes over: it opens a stream only when no
+/// other connection holds one, and is otherwise refused with the moved message. The gate belongs to one daemon and its one target, so nothing is taken over across hosts.
 public actor AmbientAudioGate {
     public static let sampleRate = 16_000
     public static let maxSegmentBytes = 8 * 1024
@@ -270,6 +271,11 @@ extension AmbientAudioGate {
     private func start(_ stream: UUID, audio: AudioPayload, connection: UUID, device: String?) -> (ErrorCode, String)? {
         guard audio.sequence == 0, !ended.contains(stream) else {
             return (.malformed, "ambient stream must be new and start at sequence 0")
+        }
+        // A device's own automatic restart (#373) only resumes when nobody else is listening: it never takes
+        // listening back from the device someone moved to. It is told where listening went, as a moved device is.
+        if audio.isResume, let current = active, current.connection != connection {
+            return (.notAllowed, AmbientTakeOver.movedMessage(to: current.device))
         }
         guard spend(audio.bytes.count) else { return (.rateLimited, "ambient rate exceeded") }
         let device = AmbientTakeOver.deviceKind(device)
