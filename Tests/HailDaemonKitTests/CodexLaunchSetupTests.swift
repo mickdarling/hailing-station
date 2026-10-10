@@ -21,7 +21,7 @@ import Testing
         defer { try? FileManager.default.removeItem(at: folder) }
         let setup = try CodexLaunchSetup.prepare(root: folder.path, host: Self.host)
         #expect(setup.environment == ["HOME=/Users/synthetic", "PATH=/opt/synthetic/bin:/usr/bin", "LANG=en_US.UTF-8"])
-        #expect(setup.configOverrides.isEmpty)
+        #expect(setup.configOverrides == ["-c", "project_root_markers=[]"])
     }
 
     @Test func theWorkspaceIsCreatedPrivateAndEmpty() throws {
@@ -68,7 +68,7 @@ import Testing
         defer { try? FileManager.default.removeItem(at: folder) }
         let setup = try CodexLaunchSetup.prepare(root: folder.path, disabledServers: ["chief", "cloud_api-2"],
                                                  host: [:])
-        #expect(setup.configOverrides == ["-c", "mcp_servers.chief.enabled=false",
+        #expect(setup.configOverrides == ["-c", "project_root_markers=[]", "-c", "mcp_servers.chief.enabled=false",
                                           "-c", "mcp_servers.cloud_api-2.enabled=false"])
     }
 

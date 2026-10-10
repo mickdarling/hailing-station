@@ -86,7 +86,8 @@ AGENTS.md. `CodexLaunchSetup.prepare` builds the rest:
   PATH (`/usr/bin:/bin:/usr/sbin:/sbin`) and no `LANG`, so the owner's `npx`-
   and `node`-based MCP servers would not start. The trusted composition must
   pass the owner's PATH as `path:`, which replaces the inherited one. Every
-  component must be absolute, so the cwd is never searched.
+  component of the effective PATH, configured or inherited, must be absolute,
+  so the cwd is never searched.
 - **Workspace:** the thread `cwd` is `<root>/workspace`, created 0700. It must
   be a real, private, empty folder (hidden files count), and the root must not
   sit inside a git checkout, so no repository AGENTS.md or files are picked up.
@@ -97,6 +98,10 @@ AGENTS.md. `CodexLaunchSetup.prepare` builds the rest:
   changes), so the path cannot be swapped after `prepare`. If a
   hook or MCP server writes into the workspace, every later launch refuses with
   `workspaceNotEmpty` until the owner empties it; that is deliberate.
+- **No project-root discovery:** every launch passes `-c project_root_markers=[]`,
+  so custom markers in the owner's config cannot make Codex walk above the
+  empty workspace for AGENTS.md or project configuration. Whether 0.162
+  honours an empty list is verified in spike E.
 - **Disabled MCP servers:** an optional list of names becomes per-launch
   `-c mcp_servers.<name>.enabled=false` overrides, for example to leave Chief
   out. Names are limited to letters, digits, `_` and `-`, up to 64 characters.
