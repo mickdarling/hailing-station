@@ -4,26 +4,29 @@ import CryptoKit
 import HailProtocol
 
 enum CodexAppServerError: Error, Sendable, Equatable {
-    case incompatibleVersion, unavailable, invalidProtocol, turnInProgress, capacityExceeded
+    case incompatibleVersion, unavailable, invalidProtocol, turnInProgress, capacityExceeded, notIsolated
 }
 enum CodexAppServerProtocol {
     /// Exact CLI versions whose stable schema covers every shape used here (#153, #399).
     static let supportedVersions: Set<String> = ["0.159.0", "0.162.0-alpha.17.2"]
-    static func start(_ transport: CodexStdioTransport) async throws -> String {
+    static func start(_ transport: CodexStdioTransport, workspace: String) async throws -> String {
         let hello = try await transport.request(.initialize, params: .object([
             "clientInfo": .object(["name": .string("hailing_station"), "version": .string("0.1.25")]),
             "capabilities": .object(["experimentalApi": .bool(false)])
         ]))
         let object = try fields(hello)
-        guard case .string = object["userAgent"], case .string = object["codexHome"],
+        guard case .string = object["userAgent"], case .string(let codexHome) = object["codexHome"],
               object["platformFamily"] == .string("unix"), object["platformOs"] == .string("macos") else {
             throw CodexAppServerError.invalidProtocol
         }
         try await transport.notify(.initialized)
         let response = try fields(try await transport.request(.threadStart, params: .object([
             "ephemeral": .bool(true), "approvalPolicy": .string("never"),
-            "approvalsReviewer": .string("user"), "sandbox": .string("read-only")
+            "approvalsReviewer": .string("user"), "sandbox": .string("read-only"), "cwd": .string(workspace)
         ])))
+        // The owner's own instruction files may load (#153 revision); the cwd must be the owned workspace.
+        guard response["cwd"] == .string(workspace) else { throw CodexAppServerError.invalidProtocol }
+        try requireOwnerInstructions(response["instructionSources"], codexHome: codexHome)
         let sandbox = try fields(response["sandbox"] ?? .null)
         let thread = try fields(response["thread"] ?? .null)
         guard response["approvalPolicy"] == .string("never"), response["approvalsReviewer"] == .string("user"),
@@ -32,6 +35,20 @@ enum CodexAppServerProtocol {
               sandbox["networkAccess"] == nil || sandbox["networkAccess"] == .bool(false),
               thread["ephemeral"] == .bool(true) else { throw CodexAppServerError.invalidProtocol }
         return try identifier(thread["id"])
+    }
+    /// Runtime evidence, whatever discovery rules or managed config applied: every loaded instruction file must sit
+    /// inside the owner's Codex home (for example his global AGENTS.md). Anything from the workspace, an ancestor
+    /// project or elsewhere refuses the session before any turn.
+    private static func requireOwnerInstructions(_ value: JSONValue?, codexHome: String) throws {
+        guard let value, value != .null else { return }
+        guard case .array(let sources) = value, codexHome.hasPrefix("/"), codexHome.count > 1 else {
+            throw CodexAppServerError.invalidProtocol
+        }
+        let home = codexHome.hasSuffix("/") ? codexHome : codexHome + "/"
+        for source in sources {
+            guard case .string(let path) = source, path.hasPrefix(home),
+                  !path.split(separator: "/").contains("..") else { throw CodexAppServerError.notIsolated }
+        }
     }
     static func turnInput(_ text: String, threadID: String) throws -> JSONValue {
         guard !text.isEmpty, text.utf8.count <= ProviderEventLimits.maxTextBytes,
