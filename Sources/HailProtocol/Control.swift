@@ -222,6 +222,15 @@ extension ControlPayload: Codable {
         return .ambientHeard(targetID: target, text: text)
     }
 
+    /// A closed-vocabulary token as matched, or an encoding error, so this type never writes a frame it would refuse.
+    private static func closed(_ matched: String?, _ raw: String, _ encoder: any Encoder) throws -> String {
+        guard let matched else {
+            throw EncodingError.invalidValue(raw, .init(codingPath: encoder.codingPath,
+                                                        debugDescription: "not in the closed vocabulary"))
+        }
+        return matched
+    }
+
     /// Refuses any payload key outside `allowed`, so nothing rides along on a strict command.
     private static func requireOnly(_ allowed: [String], _ command: String, _ decoder: any Decoder) throws {
         let keys = try decoder.container(keyedBy: DiagnosticCodingKey.self).allKeys.map(\.stringValue)
@@ -281,10 +290,10 @@ extension ControlPayload: Codable {
             try container.encode(Command.ambientOverheard, forKey: .command)
             try container.encode(id, forKey: .targetID)
             try container.encode(text, forKey: .text)
-            try container.encode(speaker, forKey: .speaker)
+            try container.encode(try Self.closed(AmbientOverheard.speaker(speaker), speaker, encoder), forKey: .speaker)
         case .overheardScope(let scope):
             try container.encode(Command.overheardScope, forKey: .command)
-            try container.encode(scope, forKey: .scope)
+            try container.encode(try Self.closed(AmbientOverheard.scope(scope), scope, encoder), forKey: .scope)
         }
     }
 }
@@ -647,7 +656,11 @@ extension Schema {
         "then": .object([
             "additionalProperties": .bool(false),
             "properties": .object([
-                "command": .object([:]), "target": .object([:]),
+                "command": .object([:]),
+                "target": .object([
+                    "type": .string("string"), "minLength": .integer(1),
+                    "maxLength": .integer(Int64(PayloadLimits.maxTextBytes))
+                ]),
                 "text": .object([
                     "type": .string("string"), "minLength": .integer(1),
                     "maxLength": .integer(Int64(PayloadLimits.maxTextBytes))

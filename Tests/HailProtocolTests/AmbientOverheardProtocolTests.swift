@@ -38,6 +38,15 @@ import Testing
         }
     }
 
+    @Test func unknownTokensAreRefusedWhenEncodingToo() {
+        for control in [ControlPayload.overheardScope(scope: "all"),
+                        .ambientOverheard(targetID: "tmux:a", text: "hi", speaker: "Owner")] {
+            #expect(throws: EncodingError.self) {
+                try FrameCoding.encode(Frame(timestamp: 1, source: "host", payload: .control(control)))
+            }
+        }
+    }
+
     @Test func overheardScopeRefusesAnythingButAKnownScope() {
         for payload in [
             #"{"command":"overheard_scope"}"#,
