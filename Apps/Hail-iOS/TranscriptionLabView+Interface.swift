@@ -1,6 +1,26 @@
 import SwiftUI
 
 extension TranscriptionLabView {
+    /// Read-only words as they are recognized. The station shows them only while capturing, since each sent request
+    /// then appears in the conversation as You (#318, #429); Labs, with no destination, keeps its last transcript.
+    @ViewBuilder
+    var liveTranscript: some View {
+        let capturing = isRecording || isStarting || isFinalizing
+        if capturing || (onFinalized == nil && !transcript.isEmpty) {
+            Text(transcript.isEmpty ? "Listening…" : transcript)
+                .frame(maxWidth: .infinity, alignment: .leading)
+                .foregroundStyle(transcript.isEmpty ? .secondary : .primary)
+                .lineLimit(onFinalized == nil ? nil : 4)
+                .textSelection(.enabled)
+                .padding(12)
+                .background(.quaternary, in: RoundedRectangle(cornerRadius: 14, style: .continuous))
+        }
+    }
+
+    var transcript: String {
+        [finalText, volatileText].filter { !$0.isEmpty }.joined(separator: " ")
+    }
+
     var talkButton: some View {
         Button {
             if isRecording {
@@ -37,8 +57,7 @@ extension TranscriptionLabView {
         .accessibilityHint(talkHint)
     }
 
-    @ViewBuilder
-    var transcriptActions: some View {
+    var statusRow: some View {
         HStack(spacing: 12) {
             if showsProgress && !reduceMotion {
                 ProgressView().accessibilityHidden(true)

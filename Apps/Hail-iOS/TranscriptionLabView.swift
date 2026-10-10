@@ -109,6 +109,8 @@ struct TranscriptionLabView: View {
                     .frame(maxWidth: .infinity, alignment: .trailing)
             }
 
+            liveTranscript
+
             talkButton
 
             if let onEscape {
@@ -123,7 +125,7 @@ struct TranscriptionLabView: View {
                 .accessibilityHint("Discards any active recording and sends Escape immediately to the target.")
             }
 
-            transcriptActions
+            statusRow
         }
         .padding(18)
         .background(.regularMaterial, in: RoundedRectangle(cornerRadius: 24, style: .continuous))
