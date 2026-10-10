@@ -213,6 +213,14 @@ public enum Fixtures {
             id: id(205), timestamp: 1_758_200_050_200, source: "host",
             payload: .control(.ambientMovedHere(from: "phone"))
         )),
+        Example(name: "control-ambient-overheard", frame: Frame(
+            id: id(207), timestamp: 1_758_200_050_400, source: "host",
+            payload: .control(.ambientOverheard(targetID: "tmux:codex-hail", text: "Pass the salt.", speaker: "owner"))
+        )),
+        Example(name: "control-overheard-scope", frame: Frame(
+            id: id(208), timestamp: 1_758_200_050_500, source: "terminal",
+            payload: .control(.overheardScope(scope: "owner"))
+        )),
         Example(name: "control-ambient-heard", frame: Frame(
             id: id(206), timestamp: 1_758_200_050_300, source: "host",
             payload: .control(.ambientHeard(targetID: "tmux:codex-hail", text: "Haili, what's on my calendar?"))
