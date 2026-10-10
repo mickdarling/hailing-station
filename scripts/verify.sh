@@ -33,44 +33,80 @@ TIMING_SUITES=(
 )
 TIMING_PATTERN="($(IFS='|'; echo "${TIMING_SUITES[*]}"))"
 
-# A lane whose capture stays silent this long is stalled (#449): it is stopped and fails at once, naming the tests
-# that started and never finished, instead of hanging until the CI job's timeout.
+# A lane whose Swift Testing event stream stays silent this long is stalled (#449): it is stopped and fails at once,
+# naming the tests that started and never ended, instead of hanging until the CI job's timeout. The event stream is
+# written per event; the captured console output is block-buffered and would lose its tail when the lane is stopped.
 STALL_SECONDS="${HAIL_TEST_STALL_SECONDS:-300}"
+[[ $STALL_SECONDS =~ ^[1-9][0-9]{0,5}$ ]] || {
+  echo "HAIL_TEST_STALL_SECONDS must be a positive integer of at most 6 digits" >&2
+  exit 2
+}
+LANE_PID=""
 
-# Stops a process and every descendant, deepest first.
-stop_tree() {
+# Prints a process and every descendant, deepest first.
+process_tree() {
   local child
-  for child in $(pgrep -P "$1" || :); do stop_tree "$child"; done
-  kill -TERM "$1" 2>/dev/null || :
+  for child in $(pgrep -P "$1" || :); do process_tree "$child"; done
+  echo "$1"
 }
 
-# The tests (not test cases) the verbose capture shows as started without a matching pass, failure or skip.
+# Stops a process and its descendants: TERM, then KILL whatever is left after 5 s, so `wait` cannot block forever.
+stop_tree() {
+  local pid alive tries pids=()
+  while IFS= read -r pid; do pids+=("$pid"); done < <(process_tree "$1")
+  kill -TERM "${pids[@]}" 2>/dev/null || :
+  for (( tries = 0; tries < 50; tries++ )); do
+    alive=0
+    for pid in "${pids[@]}"; do kill -0 "$pid" 2>/dev/null && alive=1; done
+    (( alive )) || return 0
+    sleep 0.1
+  done
+  kill -KILL "${pids[@]}" 2>/dev/null || :
+}
+
+# Interrupting verify.sh must not leave a test lane running behind it.
+stop_lane_and_exit() {
+  [[ -z $LANE_PID ]] || stop_tree "$LANE_PID"
+  exit 130
+}
+
+# The test functions the event stream shows as started without having ended or been skipped.
 unfinished_tests() {
-  awk '
-    /^◇ Test case / || /^◇ Test run / { next }
-    /^◇ Test .* started\.$/ { name = substr($0, index($0, "Test ") + 5); sub(/ started\.$/, "", name); open[name]++; next }
-    /^[✔✘↷] Test case / || / recorded an issue / { next }
-    /^[✔✘↷] Test .* (passed|failed|skipped)/ {
-      name = substr($0, index($0, "Test ") + 5)
-      sub(/ (with [0-9]+ test cases? )?(passed|failed|skipped).*$/, "", name)
-      if (open[name] > 0) open[name]--
-    }
-    END { for (name in open) if (open[name] > 0) print "  " name }
-  ' "$1" | sort
+  python3 - "$1" <<'PY'
+import json, sys
+started = {}
+for line in open(sys.argv[1], encoding="utf-8", errors="replace"):
+    try:
+        payload = json.loads(line)["payload"]
+    except (ValueError, KeyError, TypeError):
+        continue  # A record cut off when the lane was stopped.
+    test, kind = payload.get("testID"), payload.get("kind")
+    if not test or "/" not in test:
+        continue  # Suites and the run itself.
+    if kind == "testStarted":
+        started[test] = started.get(test, 0) + 1
+    elif kind in ("testEnded", "testSkipped") and started.get(test):
+        started[test] -= 1
+for test in sorted(t for t, n in started.items() if n > 0):
+    print("  " + test)
+PY
 }
 
 # A slow console consumer must not stall test reporting while deadlines run (#185): output goes to a private file
 # and is replayed in full afterwards. A failed capture is kept, and neither failure masks the other.
 run_captured() {
-  local log pid idle status=0 report=0 stalled=0 dir="${HAIL_TEST_CAPTURE_DIR:-${TMPDIR:-/tmp}}"
+  local log events pid idle status=0 report=0 stalled=0 dir="${HAIL_TEST_CAPTURE_DIR:-${TMPDIR:-/tmp}}"
   # CI points HAIL_TEST_CAPTURE_DIR at a directory it uploads even when the job fails or times out (#264).
   mkdir -p "$dir"
   log="$(mktemp "$dir/hailing-swift-tests.XXXXXX")"
-  "$@" > "$log" 2>&1 &
+  events="$(mktemp "$dir/hailing-swift-events.XXXXXX")"
+  trap stop_lane_and_exit INT TERM
+  "$@" --experimental-event-stream-output "$events" --experimental-event-stream-version 0 > "$log" 2>&1 &
   pid=$!
+  LANE_PID=$pid
   while kill -0 "$pid" 2>/dev/null; do
     sleep 1
-    idle=$(( $(date +%s) - $(stat -f %m "$log") ))
+    idle=$(( $(date +%s) - $(stat -f %m "$events") ))
     if (( idle >= STALL_SECONDS )); then
       stalled=1
       stop_tree "$pid"
@@ -78,30 +114,32 @@ run_captured() {
     fi
   done
   wait "$pid" || status=$?
+  LANE_PID=""
+  trap - INT TERM
   cat "$log" || report=$?
   if (( stalled )); then
     status=124
     {
-      printf 'Stalled: no test output for %s s; stopped (#449). Started and never finished:\n' "$STALL_SECONDS"
-      unfinished_tests "$log"
+      printf 'Stalled: no test event for %s s; stopped (#449). Started and never ended:\n' "$STALL_SECONDS"
+      unfinished_tests "$events"
     } >&2 || :
   fi
   if (( status || report )); then
-    printf 'Preserved Swift test output: %s\n' "$log" >&2 || :
+    printf 'Preserved Swift test output: %s\nPreserved Swift test events: %s\n' "$log" "$events" >&2 || :
     (( status == 0 )) || return "$status"
     return "$report"
   fi
-  rm -f -- "$log"
+  rm -f -- "$log" "$events"
 }
 
 test_() {
-  # Tests are built first so the lanes' --verbose output names each test as it starts, not each compile (#449).
+  # Tests are built once, before the lanes, so each lane's event stream starts with the tests, not a build (#449).
   echo "== build tests"
   swift build --build-tests ${SWIFT_FLAGS[@]+"${SWIFT_FLAGS[@]}"}
   echo "== test (parallel)"
-  run_captured swift test --skip-build --verbose --parallel --skip "$TIMING_PATTERN"
+  run_captured swift test --skip-build --parallel --skip "$TIMING_PATTERN"
   echo "== test (timing suites, serial, #208)"
-  run_captured swift test --skip-build --verbose --no-parallel --filter "$TIMING_PATTERN"
+  run_captured swift test --skip-build --no-parallel --filter "$TIMING_PATTERN"
 }
 
 lint()  { echo "== lint";  swiftlint lint --strict --quiet; }

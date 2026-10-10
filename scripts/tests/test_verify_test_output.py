@@ -9,33 +9,45 @@ import time
 import unittest
 
 
-SWIFT = r'''import os, stat, subprocess, sys, time
+SWIFT = r'''import json, os, signal, stat, subprocess, sys, time
 if sys.argv[1] == "build":
-    # The tests are built once, before the lanes, so the lanes' --verbose output is test events only (#449).
+    # The tests are built once, before the lanes (#449).
     assert sys.argv[2:] == ["--build-tests", "-Xswiftc", "-warnings-as-errors"], sys.argv
     with open(os.environ["FAKE_SWIFT_CALLS"], "a") as calls:
         calls.write("build\n")
     sys.exit(0)
-assert sys.argv[1:4] == ["test", "--skip-build", "--verbose"], sys.argv
-lane = sys.argv[4:6]
+assert sys.argv[1:3] == ["test", "--skip-build"], sys.argv
+lane = sys.argv[3:5]
 assert lane[0] in ("--parallel", "--no-parallel"), sys.argv
 assert lane[1] == ("--skip" if lane[0] == "--parallel" else "--filter"), sys.argv
-assert len(sys.argv) == 7, sys.argv
+assert sys.argv[6] == "--experimental-event-stream-output", sys.argv
+assert sys.argv[8:] == ["--experimental-event-stream-version", "0"], sys.argv
+events = sys.argv[7]
 with open(os.environ["FAKE_SWIFT_CALLS"], "a") as calls:
     calls.write(lane[0] + "\n")
 mode = os.fstat(1).st_mode
 if not stat.S_ISREG(mode) or mode & 0o077:
     print("test output is not an owner-only regular capture", file=sys.stderr)
     sys.exit(97)
+# Console output is left block-buffered, as the real test runner's is when captured to a file.
 print("fixture stdout")
 print("fixture stderr", file=sys.stderr)
 print("x" * 65536)
+
+def event(kind, test):
+    with open(events, "a") as stream:  # Swift Testing writes each event as it happens.
+        stream.write(json.dumps({"kind": "event", "version": 0,
+                                 "payload": {"kind": kind, "testID": test}}) + "\n")
+
 if os.environ.get("FAKE_SWIFT_HANG"):
-    print("\u25c7 Test finishes() started.")
-    print("\u2714 Test finishes() passed after 0.001 seconds.")
-    print("\u25c7 Test hangsForever() started.", flush=True)
-    # A child that would outlive its parent if only the parent were stopped.
-    child = subprocess.Popen([sys.executable, "-c", "import time; time.sleep(600)"])
+    event("testStarted", "Fake.Suite")
+    event("testStarted", "Fake.Suite/finishes()/F.swift:1:1")
+    event("testEnded", "Fake.Suite/finishes()/F.swift:1:1")
+    event("testStarted", "Fake.Suite/hangsForever()/F.swift:2:1")
+    print("unflushed tail that a stopped lane loses")
+    # A descendant that ignores TERM, which only the KILL after the grace stops.
+    child = subprocess.Popen([sys.executable, "-c",
+                              "import signal, time; signal.signal(signal.SIGTERM, signal.SIG_IGN); time.sleep(600)"])
     with open(os.environ["FAKE_SWIFT_CHILD"], "w") as pid:
         pid.write(str(child.pid))
     time.sleep(600)
@@ -93,6 +105,7 @@ class VerifyTestOutputTests(SuccessfulFixtureCleanup):
         self.assertEqual(result.stdout.count("fixture stdout\n"), len(lanes))
         captures = list(self.scratch.glob("hailing-swift-tests.*"))
         self.assertEqual(len(captures), int(status != 0))
+        self.assertEqual(len(list(self.scratch.glob("hailing-swift-events.*"))), int(status != 0))
         if status:
             self.assertIn(str(captures[0]), result.stderr)
             self.assertEqual(captures[0].stat().st_mode & 0o777, 0o600)
@@ -139,24 +152,56 @@ class VerifyTestOutputTests(SuccessfulFixtureCleanup):
 
 
     def test_a_silent_lane_is_stopped_and_names_the_unfinished_test(self):
-        # #449: a hang fails fast with the started-but-unfinished test named, and leaves no process behind.
+        # #449: a hang fails fast with the started-but-unended test named from the event stream, not the
+        # block-buffered console, and leaves no process behind, even one that ignores TERM.
         self.env.update(FAKE_SWIFT_HANG="1", HAIL_TEST_STALL_SECONDS="2",
                         FAKE_SWIFT_CHILD=str(self.scratch / "child-pid"))
         result = self.run_lane()
         self.assertEqual(result.returncode, 124, result.stderr)
-        self.assertIn("Stalled: no test output for 2 s", result.stderr)
-        self.assertIn("  hangsForever()\n", result.stderr)
+        self.assertIn("Stalled: no test event for 2 s", result.stderr)
+        self.assertIn("  Fake.Suite/hangsForever()/F.swift:2:1\n", result.stderr)
         self.assertNotIn("finishes()", result.stderr)
-        self.assertIn("fixture stdout\n", result.stdout)
+        self.assertNotIn("  Fake.Suite\n", result.stderr)
         self.assertEqual((self.scratch / "swift-calls").read_text().split(), ["build", "--parallel"])
         child = int((self.scratch / "child-pid").read_text())
-        deadline = time.monotonic() + 5
+        deadline = time.monotonic() + 10
         while time.monotonic() < deadline and alive(child):
             time.sleep(0.1)
         self.assertFalse(alive(child), "the stalled lane's descendants must be stopped")
-        captures = list(self.scratch.glob("hailing-swift-tests.*"))
-        self.assertEqual(len(captures), 1)
-        self.assertIn(str(captures[0]), result.stderr)
+        for kind in ("tests", "events"):
+            kept = list(self.scratch.glob(f"hailing-swift-{kind}.*"))
+            self.assertEqual(len(kept), 1, kind)
+            self.assertIn(str(kept[0]), result.stderr)
+
+    def test_interrupting_verify_stops_the_running_lane(self):
+        self.env.update(FAKE_SWIFT_HANG="1", HAIL_TEST_STALL_SECONDS="300",
+                        FAKE_SWIFT_CHILD=str(self.scratch / "child-pid"))
+        lane = subprocess.Popen(["bash", str(self.script), "test"], env=self.env,
+                                stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+        child_pid = self.scratch / "child-pid"
+        deadline = time.monotonic() + 10
+        while time.monotonic() < deadline and not child_pid.exists():
+            time.sleep(0.1)
+        self.assertTrue(child_pid.exists(), "the fake lane never started")
+        time.sleep(0.5)  # Let the lane's process record its child.
+        lane.terminate()
+        self.assertEqual(lane.wait(timeout=20), 130)
+        child = int(child_pid.read_text())
+        deadline = time.monotonic() + 10
+        while time.monotonic() < deadline and alive(child):
+            time.sleep(0.1)
+        self.assertFalse(alive(child), "an interrupted verify must not leave the lane running")
+
+    def test_a_stall_limit_that_is_not_a_positive_integer_is_refused_before_any_test(self):
+        marker = self.scratch / "injected"
+        for value in (f"a[$(touch {marker})]", "5m", "0", "-1", "1234567"):
+            with self.subTest(value=value):
+                self.env["HAIL_TEST_STALL_SECONDS"] = value
+                result = self.run_lane()
+                self.assertEqual(result.returncode, 2, result.stderr)
+                self.assertIn("HAIL_TEST_STALL_SECONDS must be a positive integer", result.stderr)
+                self.assertFalse(marker.exists(), "the value must never be evaluated")
+                self.assertFalse((self.scratch / "swift-calls").exists())
 
 
 def alive(pid):
