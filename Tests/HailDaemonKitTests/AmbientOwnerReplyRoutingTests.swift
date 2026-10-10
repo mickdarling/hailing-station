@@ -56,6 +56,22 @@ import Testing
         }
     }
 
+    /// Codex P1 on #432: while a take-over or end is queued, the previous device no longer counts as the owner.
+    @Test func ownershipIsWithheldWhileAStartOrEndIsQueued() {
+        let (stream, newer, connection) = (UUID(), UUID(), UUID())
+        let owner = { (newest: UUID?, queued: [AmbientAudioEvent]) in
+            AmbientRightyoRouter.ambientOwner(stream: stream, connection: connection, newestStart: newest,
+                                              queued: queued)
+        }
+        #expect(owner(stream, []) == connection)
+        #expect(owner(stream, [.segment(stream: stream, sequence: 3, bytes: Data())]) == connection)
+        #expect(owner(newer, []) == nil, "a newer stream has started: the take-over is under way")
+        #expect(owner(stream, [.started(stream: newer, connection: UUID())]) == nil)
+        #expect(owner(stream, [.ended(stream: stream, reason: .superseded)]) == nil)
+        #expect(AmbientRightyoRouter.ambientOwner(stream: nil, connection: connection, newestStart: nil,
+                                                  queued: []) == nil)
+    }
+
     @Test func withNobodyListeningItIsRefusedAsBefore() async throws {
         try await withTwoDevices(listening: nil) { listener, events, _ in
             let frame = recipientText(referenceDescriptor(nil))

@@ -590,8 +590,13 @@ public final class AmbientRightyoRouter: AmbientAudioSink, AmbientListenerWiring
     var activeStream: UUID? { state.withLock { $0.active?.stream } }
     var activePipeline: RightyoAmbientPipeline? { state.withLock { $0.active?.pipeline } }
     public func activeConnection() -> UUID? {
-        state.withLock { state in state.active.flatMap { state.runs[$0.run]?.connection } }
+        state.withLock { state in
+            let connection = state.active.flatMap { state.runs[$0.run]?.connection }
+            return Self.ambientOwner(stream: state.active?.stream, connection: connection,
+                                     newestStart: state.newestStart, queued: state.queue)
+        }
     }
+
     var peakQueue: Int { state.withLock { $0.peakQueue } }
 
     /// Waits (at most 30 s) for queued events to be handled, then for every current run to return (tests).
@@ -1110,4 +1115,19 @@ struct AmbientListenerDispatcher: RightyoAmbientDispatching {
         return try await listener.dispatchAmbient(prepared, reference: reference)
     }
 }
+extension AmbientRightyoRouter {
+    /// The active run's connection, unless ownership may already have moved (#230): a newer stream has started, or
+    /// a start or end still waits for the worker (a take-over making room, a reload). Then nobody, so the reply is
+    /// refused rather than sent to a device that has just lost ambient listening.
+    static func ambientOwner(stream: UUID?, connection: UUID?, newestStart: UUID?,
+                             queued: [AmbientAudioEvent]) -> UUID? {
+        guard let stream, stream == newestStart else { return nil }
+        let ownershipPending = queued.contains { event in
+            if case .segment = event { return false }
+            return true
+        }
+        return ownershipPending ? nil : connection
+    }
+}
+
 #endif

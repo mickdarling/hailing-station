@@ -177,8 +177,8 @@ selection (64 most recent replies). Its later frames go only there, even if anot
 and are refused `noRecipient` rather than moved when that device is gone or selected away. This applies to replies
 the single-selector rule started too.
 
-**Audit.** The listener log records `reply_routed` once per reply, with `path=request`, `path=last_input` or
-`path=single_selector`. The event
+**Audit.** The listener log records `reply_routed` once per reply, with `path=request`, `path=last_input`,
+`path=single_selector` or `path=ambient_owner` (#230; withheld while a take-over or stream end is still queued). The event
 carries only the listener connection id that `session_connected` already logs. No text, target binding or device
 name is added.
 
