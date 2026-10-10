@@ -365,7 +365,8 @@ extension WebSocketPeer {
 }
 
 extension WebSocketListener {
-    /// Publishes a correlated reply only to its requesting connection; ambiguous legacy replies reach nobody.
+    /// Publishes a correlated reply only to its requesting connection. An ambiguous legacy reply reaches nobody,
+    /// except the device the user is listening on when it is among the selectors (#230).
     /// Encoding and decoding at this trust boundary applies the same size, identity, stream, and provenance
     /// validation as a network sender; programmatically constructed mismatches cannot bypass it.
     @discardableResult
@@ -410,8 +411,8 @@ extension WebSocketListener {
 
     /// Demo-era single-terminal bridge (#188): with the opt-in flag, a reply carrying no request reference
     /// reaches the one live connection selecting its target. Any explicit reference that is not currently
-    /// owned keeps today's refusal, as do zero or several selecting connections; this is bounded, not a
-    /// return to broadcast. The scan is a snapshot; uniqueness is not rescanned at enqueue.
+    /// owned keeps today's refusal, as do zero selecting connections, and several unless one of them owns the active
+    /// ambient stream (#230); this is bounded, not a return to broadcast. The scan is a snapshot; uniqueness is not rescanned at enqueue.
     private func publishUncorrelated(_ frame: Frame) async throws -> Int {
         guard singleTerminalReplyFallback else { throw LocalReplyRefusal.noRecipient }
         if let delivered = try await publishToLastInput(frame) { return delivered }
@@ -421,8 +422,16 @@ extension WebSocketListener {
         }
         try Task.checkCancellation()
         guard !stopped else { throw WebSocketListenerError.stoppedBeforeReady }
-        // The whole scan completes first so the refusal code never depends on peer iteration order.
-        guard candidates.count <= 1 else { throw LocalReplyRefusal.notUniqueRecipient }
+        // The whole scan completes first so the refusal code never depends on peer iteration order. Several selecting
+        // devices and no current last input (#230): the one the user is listening on, if it is among them, else refuse.
+        var path = "single_selector"
+        if candidates.count > 1 {
+            guard let owner = ambient?.activeConnection(),
+                  let listening = candidates.first(where: { $0.1.session.connectionID == owner }) else {
+                throw LocalReplyRefusal.notUniqueRecipient
+            }
+            (candidates, path) = ([listening], "ambient_owner")
+        }
         // A stop that landed during the scan made its own connection refuse, which could leave another connection
         // as the only candidate; check again before handing the reply to it.
         if await isStopped(frame) { throw LocalReplyRefusal.replyStopped }
@@ -431,7 +440,7 @@ extension WebSocketListener {
             throw LocalReplyRefusal.publicationFailed
         }
         pin(frame, to: delivered)
-        noteRoute(frame, to: peerID, path: "single_selector")
+        noteRoute(frame, to: peerID, path: path)
         return 1
     }
 

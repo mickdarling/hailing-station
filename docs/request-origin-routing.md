@@ -160,8 +160,9 @@ target, from any connection, replaces it.
    younger than the lifetime, and the host issues a reply permit for the target's exact listed binding. Selection,
    generation and lifetime are checked again in the actor turn of the enqueue, inside the permit's gate, with the
    same prepared transport as every reply. Several devices selecting the target do not matter on this path.
-3. Otherwise the [single-terminal rule](single-terminal-reply-fallback.md) runs unchanged: one selecting
-   connection, else `noRecipient` or `notUniqueRecipient`.
+3. Otherwise the [single-terminal rule](single-terminal-reply-fallback.md) runs: one selecting connection; with
+   several, the one owning the active ambient stream when it is among them (#230); else `noRecipient` or
+   `notUniqueRecipient`.
 
 Steps 2 and 3 need `--single-terminal-reply-fallback` (set by `scripts/host.sh` from `host.json`). Without the
 flag, request-less replies are still refused `noRecipient`, as before.
@@ -176,8 +177,8 @@ selection (64 most recent replies). Its later frames go only there, even if anot
 and are refused `noRecipient` rather than moved when that device is gone or selected away. This applies to replies
 the single-selector rule started too.
 
-**Audit.** The listener log records `reply_routed` once per reply, with `path=request`, `path=last_input` or
-`path=single_selector`. The event
+**Audit.** The listener log records `reply_routed` once per reply, with `path=request`, `path=last_input`,
+`path=single_selector` or `path=ambient_owner` (#230; withheld while a take-over or stream end is still queued). The event
 carries only the listener connection id that `session_connected` already logs. No text, target binding or device
 name is added.
 
