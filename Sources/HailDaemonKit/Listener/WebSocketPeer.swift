@@ -227,6 +227,21 @@ extension WebSocketPeer {
             connection.cancel()
         }
     }
+
+    /// Queues `frame` on the connection and returns without waiting for it to go out (#318 review): a stalled peer
+    /// cannot hold the caller up, and whatever the connection is given later still goes out after it.
+    func post(_ frame: Frame) -> Bool {
+        guard !ended, !closing, let data = try? FrameCoding.encode(frame),
+              let permit = replyTransport.issuePermit() else { return false }
+        let metadata = NWProtocolWebSocket.Metadata(opcode: .text)
+        let context = NWConnection.ContentContext(identifier: "hail.frame", metadata: [metadata])
+        return permit.performIfCurrent {
+            connection.send(
+                content: data, contentContext: context, isComplete: true, completion: .contentProcessed { _ in }
+            )
+            return true
+        } ?? false
+    }
 }
 
 /// One peer's terminal lifecycle. Unlike restorable policy authority, retired transport never reopens.

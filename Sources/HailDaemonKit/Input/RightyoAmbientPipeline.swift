@@ -21,10 +21,13 @@ struct RightyoAmbientDispatchStep: RightyoDispatching {
     let dispatcher: any RightyoAmbientDispatching
     /// Acknowledges the admitted request (rightyo#105) before it is typed; never awaited, never throws.
     var acknowledge: (@Sendable () -> Void)?
+    /// Shows the speaking device what it said (#318); awaited, so it precedes the acknowledgement and the typing.
+    var heard: (@Sendable () async -> Void)?
 
     func dispatch(text: String, target: String, binding: String) async throws -> RightyoDispatchReceipt {
         // The daemon's own local-dispatch cap, as for `--reply-to`; in process there is no socket answer deadline.
         guard text.utf8.count <= LocalDispatchRequest.maxTextBytes else { throw RightyoInputError.capacity }
+        await heard?()
         acknowledge?()
         let request = LocalDispatchRequest(connection: connection, target: target, binding: binding, text: text)
         do {
@@ -63,6 +66,10 @@ public final class RightyoAmbientPipeline: Sendable {
         /// Called instead of `onAcknowledge` for an admitted request RightyO marked `acknowledge: false` on a session
         /// that advertised `acknowledgement` (rightyo#132). Labels and numbers only. It must return at once.
         public var onAcknowledgementSkipped: (@Sendable (AmbientAckSkip) -> Void)?
+        /// Called once per admitted request with its heard turn's text (#318), before it is acknowledged or typed, and
+        /// awaited, so the device has the user's own words ahead of both. Echo-dropped, withdrawn and duplicate
+        /// requests never reach it. The text goes only to the speaking device; it is never logged.
+        public var onHeard: (@Sendable (String) async -> Void)?
 
         public init(executable: URL, config: URL, target: String, binding: String, connection: UUID,
                     allowSynthetic: Bool = false, timing: RightyoChildProcess.Timing = .init(),
@@ -88,14 +95,16 @@ public final class RightyoAmbientPipeline: Sendable {
     private let consumer: RightyoInputConsumer
     private let onDismiss: (@Sendable (RightyoDismissReceipt) -> Void)?
     private let acknowledgement: AmbientAckRelay
+    private let heard: AmbientHeardRelay
 
     /// Validates the target and the executable before launching the child; a refusal launches nothing.
     public init(configuration: Configuration, dispatcher: any RightyoAmbientDispatching) throws {
         let session = "hail-\(UUID().uuidString.lowercased())"
         let relay = AmbientAckRelay(onAcknowledge: configuration.onAcknowledge,
                                     onSkip: configuration.onAcknowledgementSkipped)
+        let heard = AmbientHeardRelay(onHeard: configuration.onHeard)
         let step = RightyoAmbientDispatchStep(connection: configuration.connection, dispatcher: dispatcher,
-                                              acknowledge: { relay.fire() })
+                                              acknowledge: { relay.fire() }, heard: { await heard.deliver() })
         consumer = try RightyoInputConsumer(host: nil, target: configuration.target, binding: configuration.binding,
                                             session: session, allowSynthetic: configuration.allowSynthetic,
                                             dispatcher: step, echoFilter: configuration.isEcho)
@@ -105,6 +114,7 @@ public final class RightyoAmbientPipeline: Sendable {
         self.session = session
         onDismiss = configuration.onDismiss
         acknowledgement = relay
+        self.heard = heard
     }
 
     /// Hands one raw mono 16 kHz s16le chunk to the child without blocking; false once input has closed or for
@@ -139,6 +149,7 @@ public final class RightyoAmbientPipeline: Sendable {
             for try await line in child.lines {
                 let event = try RightyoInputEvent.decode(line)
                 acknowledgement.observe(event, readAt: .now)
+                heard.observe(event)
                 if try await consumer.consume(event), event.type == "request" { delivered += 1 }
                 // A newly admitted `dismiss` delivers nothing and leaves its receipt; a replayed one leaves none.
                 if event.type == "dismiss", let receipt = await consumer.lastDismissal { onDismiss?(receipt) }
@@ -400,5 +411,25 @@ final class AmbientAckRelay: Sendable {
     }
 
     private enum Outcome { case acknowledge(AmbientAckRequest), skipped(AmbientAckSkip) }
+}
+
+/// The admitted request's heard turn (#318), held from the line's read to its delivery step, like the acknowledgement:
+/// set by a `request` line, cleared by any other, taken once. Echo-dropped, withdrawn and duplicate requests never
+/// reach the delivery step, so they are never shown. The text is never logged.
+final class AmbientHeardRelay: Sendable {
+    private let held = Mutex<String?>(nil)
+    private let onHeard: (@Sendable (String) async -> Void)?
+
+    init(onHeard: (@Sendable (String) async -> Void)?) { self.onHeard = onHeard }
+
+    func observe(_ event: RightyoInputEvent) {
+        guard onHeard != nil else { return }
+        held.withLock { $0 = event.type == "request" ? event.turn?.text : nil }
+    }
+
+    func deliver() async {
+        guard let onHeard, let text = held.withLock({ held in defer { held = nil }; return held }) else { return }
+        await onHeard(text)
+    }
 }
 #endif
