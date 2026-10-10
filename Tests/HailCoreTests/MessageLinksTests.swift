@@ -128,8 +128,14 @@ import Testing
             ["github.com/a (1)", "github.com/a (2)"])
         let long = MessageLinks.titles([url("https://example.com/" + String(repeating: "x", count: 80)),
                                         url("https://example.com/b")])
-        #expect(long[0].count == 48 && long[0].hasSuffix("…"))
+        #expect(long[0] == "example.com/" + String(repeating: "x", count: 31) + "…")
         #expect(Set(long).count == 2)
+        // Review round 5: the host is never shortened, so a long one keeps its real domain at the end.
+        let host = "paypal.com.secure-account-verification-login-update.evil.com"
+        let spoof = MessageLinks.titles([url("https://\(host)/" + String(repeating: "y", count: 60)),
+                                         url("https://\(host)/b")])
+        #expect(spoof.allSatisfy { $0.hasPrefix(host + "/") })
+        #expect(Set(spoof).count == 2)
     }
 
     @Test func plainTextIsUnchanged() {

@@ -49,13 +49,15 @@ public enum MessageLinks {
         }
     }
 
-    /// The host and the last two path components, eliding the rest, at most 48 characters.
+    /// The whole host, never shortened, then the last two path components with the rest elided; only the path part
+    /// is truncated (to 32 characters), so a long host can't push its real domain out of the name.
     private static func withPath(_ host: String, _ url: URL) -> String {
         let parts = url.path(percentEncoded: true).split(separator: "/")
         guard !parts.isEmpty else { return host }
-        let tail = parts.suffix(2).joined(separator: "/")
-        let name = parts.count > 2 ? "\(host)/…/\(tail)" : "\(host)/\(tail)"
-        return name.count > 48 ? String(name.prefix(47)) + "…" : name
+        var tail = parts.suffix(2).joined(separator: "/")
+        if parts.count > 2 { tail = "…/" + tail }
+        if tail.count > 32 { tail = String(tail.prefix(31)) + "…" }
+        return "\(host)/\(tail)"
     }
 
     /// The links in `text`, in order.
