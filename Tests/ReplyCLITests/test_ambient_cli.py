@@ -109,6 +109,8 @@ class AmbientCLITests(unittest.TestCase):
         result, _ = self.run_ambient(["reload"], {"delivered": 0, "error": "rate limited"})
         self.assertEqual(result.returncode, 1)
         self.assertIn("refused: rate limited", result.stderr)
+        # The current daemon's own refusal carries no version hint.
+        self.assertNotIn("predate", result.stderr)
 
     def test_usage_and_a_socket_open_to_others_are_refused(self):
         for arguments in [[], ["on"], ["off"], ["reload", "--force"]]:
@@ -122,7 +124,8 @@ class AmbientCLITests(unittest.TestCase):
         self.assertEqual(requests, [])
 
     def test_an_older_daemon_and_a_lost_answer_are_named(self):
-        result, _ = self.run_ambient(["reload"], {"delivered": 0, "error": "frame decode failure"})
+        result, _ = self.run_ambient(["reload"], {"delivered": 0, "error": "frame decode failure",
+                                                  "code": "decodeFailure"})
         self.assertEqual(result.returncode, 1)
         self.assertIn("refused: frame decode failure", result.stderr)
         self.assertIn("may predate `haild ambient`", result.stderr)

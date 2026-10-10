@@ -24,8 +24,13 @@ func ambient(_ arguments: ArraySlice<String>) async throws {
         fail("unknown: no answer from the daemon after the request was sent (\(why)); run `haild ambient status`")
     }
     guard let report = response.ambient else {
-        let reason = response.error ?? "no ambient report"
-        fail("refused: \(reason) (the daemon may predate `haild ambient`; run `haild doctor`)")
+        // Only a missing reason or a decode failure points at a daemon older than #409 (which reads this line as a
+        // reply frame); a rate limit or audit failure is the current daemon's own refusal, given as is.
+        guard let error = response.error, response.code != .decodeFailure else {
+            fail("refused: \(response.error ?? "no ambient report") (the daemon may predate `haild ambient`;"
+                 + " run `haild doctor`)")
+        }
+        fail("refused: \(error)")
     }
     for output in AmbientReportText.lines(report) { print(output) }
     exit(AmbientReportText.exitCode(report.outcome))
