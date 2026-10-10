@@ -44,11 +44,11 @@ extension CodexAppServerEventsTests {
         let command = CodexAppServerFixtures.command(approvalsReviewer: reviewer == "missing" ? nil : reviewer)
         let transport = try await CodexStdioTransport.withTransport(command: command) { transport in
             if reviewer == "user" {
-                let thread = try await CodexAppServerProtocol.start(transport)
+                let thread = try await CodexAppServerProtocol.start(transport, workspace: "/synthetic-workspace")
                 #expect(thread == "synthetic-thread")
             } else {
                 await #expect(throws: CodexAppServerError.invalidProtocol) {
-                    try await CodexAppServerProtocol.start(transport)
+                    try await CodexAppServerProtocol.start(transport, workspace: "/synthetic-workspace")
                 }
             }
             return transport

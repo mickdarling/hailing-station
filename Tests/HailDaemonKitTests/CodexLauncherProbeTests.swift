@@ -55,7 +55,8 @@ extension CodexLauncherTests {
         #expect(chmod(copy, 0o700) == 0)
         #expect(throws: CodexLaunchError.binaryChanged) { _ = try evidence.appServerCommand(environment: []) }
         await #expect(throws: CodexLaunchError.binaryChanged) {
-            _ = try await CodexAppServerAdapter.withOwnedAdapter(launch: evidence, environment: []) { _ in
+            let setup = try CodexLaunchSetup.prepare(root: folder.path, host: [:])
+            _ = try await CodexAppServerAdapter.withOwnedAdapter(launch: evidence, setup: setup) { _ in
                 Issue.record("operation entered for a swapped binary")
             }
         }
