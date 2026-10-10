@@ -70,6 +70,10 @@ public final class RightyoAmbientPipeline: Sendable {
         /// awaited, so the device has the user's own words ahead of both. Echo-dropped, withdrawn and duplicate
         /// requests never reach it. The text goes only to the speaking device; it is never logged.
         public var onHeard: (@Sendable (String) async -> Void)?
+        /// Called once per finalized turn RightyO decided not to send (#398), with its text and whether both its
+        /// transcript and its decision carried the owner role. Echo-matched turns never reach it. The text goes only to
+        /// the speaking device, within its chosen scope; it is never logged.
+        public var onOverheard: (@Sendable (String, Bool) async -> Void)?
 
         public init(executable: URL, config: URL, target: String, binding: String, connection: UUID,
                     allowSynthetic: Bool = false, timing: RightyoChildProcess.Timing = .init(),
@@ -96,6 +100,7 @@ public final class RightyoAmbientPipeline: Sendable {
     private let onDismiss: (@Sendable (RightyoDismissReceipt) -> Void)?
     private let acknowledgement: AmbientAckRelay
     private let heard: AmbientHeardRelay
+    private let overheard: AmbientOverheardRelay
 
     /// Validates the target and the executable before launching the child; a refusal launches nothing.
     public init(configuration: Configuration, dispatcher: any RightyoAmbientDispatching) throws {
@@ -115,6 +120,7 @@ public final class RightyoAmbientPipeline: Sendable {
         onDismiss = configuration.onDismiss
         acknowledgement = relay
         self.heard = heard
+        overheard = AmbientOverheardRelay(onOverheard: configuration.onOverheard, isEcho: configuration.isEcho)
     }
 
     /// Hands one raw mono 16 kHz s16le chunk to the child without blocking; false once input has closed or for
@@ -151,6 +157,8 @@ public final class RightyoAmbientPipeline: Sendable {
                 acknowledgement.observe(event, readAt: .now)
                 heard.observe(event)
                 if try await consumer.consume(event), event.type == "request" { delivered += 1 }
+                // Only after the consumer admitted the line: an invalid one has already ended the stream.
+                await overheard.observe(event)
                 // A newly admitted `dismiss` delivers nothing and leaves its receipt; a replayed one leaves none.
                 if event.type == "dismiss", let receipt = await consumer.lastDismissal { onDismiss?(receipt) }
             }
@@ -430,6 +438,48 @@ final class AmbientHeardRelay: Sendable {
     func deliver() async {
         guard let onHeard, let text = held.withLock({ held in defer { held = nil }; return held }) else { return }
         await onHeard(text)
+    }
+}
+
+/// Turns heard but not sent (#398): a finalized transcript's text and role are held, bounded and in memory only, until
+/// RightyO decides the turn. An `attention` that forms no request reports it once; one that names a request, or the
+/// request itself, drops it (that turn is shown as `ambient_heard`). Owner means both records carried `owner`, as the
+/// consumer's own rule. Echo-matched turns (the assistant's own reply heard back) are never reported.
+final class AmbientOverheardRelay: Sendable {
+    static let maxHeld = 32
+    private struct Held { let text: String, owner: Bool }
+    private let held = Mutex<[(String, Held)]>([])
+    private let onOverheard: (@Sendable (String, Bool) async -> Void)?
+    private let isEcho: (@Sendable (String) -> Bool)?
+
+    init(onOverheard: (@Sendable (String, Bool) async -> Void)?, isEcho: (@Sendable (String) -> Bool)?) {
+        (self.onOverheard, self.isEcho) = (onOverheard, isEcho)
+    }
+
+    func observe(_ event: RightyoInputEvent) async {
+        guard let onOverheard else { return }
+        switch event.type {
+        case "transcript":
+            guard let turn = event.turn else { return }
+            held.withLock { held in
+                guard !held.contains(where: { $0.0 == turn.utteranceId }) else { return }
+                held.append((turn.utteranceId, Held(text: turn.text, owner: turn.role == "owner")))
+                if held.count > Self.maxHeld { held.removeFirst(held.count - Self.maxHeld) }
+            }
+        case "attention", "request":
+            guard let utterance = event.utteranceId ?? event.turn?.utteranceId,
+                  let turn = take(utterance), event.type == "attention", event.requestId == nil,
+                  isEcho?(turn.text) != true else { return }
+            await onOverheard(turn.text, turn.owner && event.decision?.role == "owner")
+        default: break
+        }
+    }
+
+    private func take(_ utterance: String) -> Held? {
+        held.withLock { held in
+            guard let index = held.firstIndex(where: { $0.0 == utterance }) else { return nil }
+            return held.remove(at: index).1
+        }
     }
 }
 #endif
