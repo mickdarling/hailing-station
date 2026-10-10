@@ -112,7 +112,9 @@ public final class AmbientReplyEchoGuard: Sendable {
     @MainActor
     public func ambientCapture(
         mode: AmbientCaptureMode,
-        plainCapture: @MainActor (AVAudioEngine) -> any AudioCapturing = { AVAudioEngineCapture(engine: $0) }
+        plainCapture: @MainActor (AVAudioEngine) -> any AudioCapturing = {
+            AVAudioEngineCapture(engine: $0, stallPolicy: .ambient)
+        }
     ) throws -> any AudioCapturing {
         switch mode {
         case .voiceProcessing: return try echoCancelledCapture()
