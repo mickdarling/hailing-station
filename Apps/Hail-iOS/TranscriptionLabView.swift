@@ -60,7 +60,6 @@ struct TranscriptionLabView: View {
     @State var finishGeneration: UUID?
     @State var bufferTask: Task<Void, Never>?
     @Environment(\.scenePhase) var scenePhase
-    @Environment(\.horizontalSizeClass) var horizontalSizeClass
     @Environment(\.accessibilityReduceMotion) var reduceMotion
 
     init(
@@ -101,21 +100,19 @@ struct TranscriptionLabView: View {
 
     var body: some View {
         VStack(spacing: 18) {
-            HStack(alignment: .firstTextBaseline) {
-                Label("You", systemImage: "person.wave.2")
-                    .font(.headline)
-                Spacer()
-                if let destinationLabel {
-                    Label(destinationLabel, systemImage: "desktopcomputer")
-                        .font(.caption.weight(.semibold))
-                        .foregroundStyle(.secondary)
-                        .lineLimit(1)
-                }
+            // The conversation thread shows each request as You (#318), so no separate last-request panel (#429).
+            if let destinationLabel {
+                Label(destinationLabel, systemImage: "desktopcomputer")
+                    .font(.caption.weight(.semibold))
+                    .foregroundStyle(.secondary)
+                    .lineLimit(1)
+                    .frame(maxWidth: .infinity, alignment: .trailing)
             }
 
-            transcriptSurface
-
             talkButton
+
+            // Below the button, so its appearing never moves Tap to talk under a finishing tap.
+            liveTranscript
 
             if let onEscape {
                 Button(role: .destructive) {
@@ -129,7 +126,7 @@ struct TranscriptionLabView: View {
                 .accessibilityHint("Discards any active recording and sends Escape immediately to the target.")
             }
 
-            transcriptActions
+            statusRow
         }
         .padding(18)
         .background(.regularMaterial, in: RoundedRectangle(cornerRadius: 24, style: .continuous))

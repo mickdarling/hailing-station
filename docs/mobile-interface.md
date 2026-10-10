@@ -23,7 +23,7 @@ These screenshots use the sanitized unconfigured state on iOS/iPadOS 26.2 simula
 - The selected Mac and target, plus connection health, remain visible above the conversation.
 - Tap to talk is the primary action. A second tap stops capture, finalizes on-device transcription, and sends immediately.
 - Escape remains a separate destructive action so a running host process can be interrupted without starting another utterance.
-- The last transcript remains editable after sending; an edited correction is an explicit secondary action rather than a review gate.
+- Each sent request appears in the conversation thread as You (#318); there is no separate last-request panel or edited-correction action (#429). While capturing, a read-only live caption below Tap to talk shows the words as they are recognized, then clears. Labs > Live transcription keeps its last transcript, read-only.
 - Microphone and output are glanceable on the station. Microphone choices use the injected audio-session controller while output uses Apple's native route picker.
 - Replies retain transcript, source identity, playback state, pause/resume, replay, and mute controls.
 - Connections, detailed audio diagnostics, and experimental labs remain reachable but are visually secondary.
@@ -37,4 +37,4 @@ On 2026-09-21, a physical iPad on iPadOS 26.6.2 passed both of these sanitized c
 1. Restore the remembered destination and expose the active two-column conversation without reselecting it.
 2. Open the transcription lab, start capture, observe incoming audio buffers, stop capture, and return to the ready state without terminating the app.
 
-The regular-width active view kept the selected destination, transcript editor, tap-to-talk control, Escape, audio route, and station tools visible in one screen. The automated compact-width smoke test also verified the station chrome before and after iPhone rotation.
+At the time of that record (before #429 removed the editor), the regular-width active view kept the selected destination, transcript editor, tap-to-talk control, Escape, audio route, and station tools visible in one screen. The automated compact-width smoke test also verified the station chrome before and after iPhone rotation.

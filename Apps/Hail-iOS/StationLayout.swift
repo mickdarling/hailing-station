@@ -2,7 +2,7 @@ import HailCore
 import SwiftUI
 
 /// How the station fills the screen (#288). On a regular-width iPad at a non-accessibility text size everything fits
-/// one screen: the content is exactly the visible height and the transcript absorbs the slack. Elsewhere it scrolls.
+/// one screen: the content is exactly the visible height and the chat absorbs the slack. Elsewhere it scrolls.
 /// The view tree is the same either way, so rotating or resizing never remounts the conversation or ambient card.
 struct StationFit {
     let fitsOneScreen: Bool

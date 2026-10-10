@@ -1,39 +1,24 @@
 import SwiftUI
 
 extension TranscriptionLabView {
+    /// Read-only words as they are recognized. The station shows them only while capturing, since each sent request
+    /// then appears in the conversation as You (#318, #429); Labs, with no destination, keeps its last transcript.
     @ViewBuilder
-    var transcriptSurface: some View {
-        Group {
-            if isRecording || isStarting || isFinalizing {
-                ScrollView {
-                    Text(transcript.isEmpty ? "Listening…" : transcript)
-                        .frame(maxWidth: .infinity, alignment: .leading)
-                        .foregroundStyle(transcript.isEmpty ? .secondary : .primary)
-                        .textSelection(.enabled)
-                }
-            } else {
-                TextEditor(text: $finalText)
-                    .scrollContentBackground(.hidden)
-                    .overlay(alignment: .topLeading) {
-                        if finalText.isEmpty {
-                            Text("Your last request will appear here.")
-                                .foregroundStyle(.secondary)
-                                .padding(.horizontal, 5)
-                                .padding(.vertical, 8)
-                                .allowsHitTesting(false)
-                        }
-                    }
-                    .accessibilityLabel("Last transcript")
-            }
+    var liveTranscript: some View {
+        let capturing = isRecording || isStarting || isFinalizing
+        if capturing || (onFinalized == nil && !transcript.isEmpty) {
+            Text(transcript.isEmpty ? "Listening…" : transcript)
+                .frame(maxWidth: .infinity, alignment: .leading)
+                .foregroundStyle(transcript.isEmpty ? .secondary : .primary)
+                .lineLimit(onFinalized == nil ? nil : 4)
+                .textSelection(.enabled)
+                .padding(12)
+                .background(.quaternary, in: RoundedRectangle(cornerRadius: 14, style: .continuous))
         }
-        // On iPad the transcript takes whatever height the one-screen station leaves (#288).
-        .frame(
-            minHeight: horizontalSizeClass == .regular ? 120 : 150,
-            idealHeight: horizontalSizeClass == .regular ? 320 : 190,
-            maxHeight: horizontalSizeClass == .regular ? .infinity : 240
-        )
-        .padding(12)
-        .background(.quaternary, in: RoundedRectangle(cornerRadius: 18, style: .continuous))
+    }
+
+    var transcript: String {
+        [finalText, volatileText].filter { !$0.isEmpty }.joined(separator: " ")
     }
 
     var talkButton: some View {
@@ -72,8 +57,7 @@ extension TranscriptionLabView {
         .accessibilityHint(talkHint)
     }
 
-    @ViewBuilder
-    var transcriptActions: some View {
+    var statusRow: some View {
         HStack(spacing: 12) {
             if showsProgress && !reduceMotion {
                 ProgressView().accessibilityHidden(true)
@@ -96,32 +80,6 @@ extension TranscriptionLabView {
         .accessibilityLabel(status)
         .accessibilityValue(replyPlaybackStatus.map { "Reply: \(replyStatusLabel($0))" } ?? "")
         .accessibilityIdentifier("transcription.status")
-
-        HStack {
-            if onFinalized != nil {
-                Button("Send edited correction") {
-                    let correction = finalText.trimmingCharacters(in: .whitespacesAndNewlines)
-                    Task {
-                        await send(correction, failurePrefix: "Correction failed")
-                    }
-                }
-                .disabled(
-                    showsActivity || isInterrupting || interruptTask != nil || finishTask != nil || finalText.isEmpty
-                )
-            }
-
-            Button("Clear") {
-                finalText = ""
-                volatileText = ""
-            }
-            .disabled(isRecording || transcript.isEmpty)
-        }
-        .buttonStyle(.borderless)
-        .font(.subheadline)
-    }
-
-    var transcript: String {
-        [finalText, volatileText].filter { !$0.isEmpty }.joined(separator: " ")
     }
 
     var actionLabel: String {
