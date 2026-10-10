@@ -37,7 +37,7 @@ enum CodexAppServerFixtures {
                         early: Bool = true, terminal: Bool = true, extra: String = "",
                         approvalsReviewer: String? = "user", nullApprovalsReviewer: Bool = false,
                         echoedCwd: String? = nil, instructionSources: String = "[]",
-                        configLayers: String = defaultLayers) -> OwnedStdioCommand {
+                        configLayers: String = defaultLayers, interrupt: String = "ack") -> OwnedStdioCommand {
         let reviewer = nullApprovalsReviewer ? "approvalsReviewer=>undef,"
             : approvalsReviewer.map { "approvalsReviewer=>'\($0)'," } ?? ""
         let code = #"use JSON::PP; $|=1; $SIG{TERM}='IGNORE'; $gate=shift @ARGV; $number=0; "# +
@@ -53,7 +53,9 @@ enum CodexAppServerFixtures {
             #"sandbox=>{type=>'readOnly',networkAccess=>"# +
             #"JSON::PP::false},cwd=>"# + (echoedCwd.map { "'\($0)'" } ?? #"$r->{params}->{cwd}"#) + "," +
             "instructionSources=>\(instructionSources)," +
-            #"thread=>{id=>'synthetic-thread',ephemeral=>JSON::PP::true}}}); } else { "# +
+            #"thread=>{id=>'synthetic-thread',ephemeral=>JSON::PP::true}}}); } "# +
+            #"elsif($r->{method} eq 'turn/interrupt') { die unless $r->{params}->{threadId} eq 'synthetic-thread' "# +
+            #"&& $r->{params}->{turnId} eq $turn; "# + interruptReply(interrupt) + #"} else { "# +
             #"$number++; $turn='synthetic-turn-'.$number; "# +
             (early ? "" : response) + events + extra +
             (terminal ? terminalEvent(status) : "") +
@@ -62,6 +64,17 @@ enum CodexAppServerFixtures {
         var command = OwnedStdioCommand(executable: "/usr/bin/perl", arguments: ["-e", code])
         if let gate { command.arguments.append(gate.path) }
         return command
+    }
+    /// ack: empty result then the matching interrupted terminal; early: terminal first; silent: no terminal;
+    /// refuse: a JSON-RPC error.
+    private static func interruptReply(_ mode: String) -> String {
+        let ack = #"sendmsg({id=>$id,result=>{}}); "#
+        switch mode {
+        case "silent": return ack
+        case "early": return terminalEvent("interrupted") + ack
+        case "refuse": return #"sendmsg({id=>$id,error=>{code=>-32600,message=>'invented'}}); "#
+        default: return ack + terminalEvent("interrupted")
+        }
     }
     private static let response = #"sendmsg({id=>$id,result=>{turn=>{id=>$turn,status=>'inProgress',items=>[]}}}); "#
     static let events =

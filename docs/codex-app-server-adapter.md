@@ -132,6 +132,27 @@ MCP tools, which act with his normal authority. The per-thread restrictions
 (ephemeral, approvals `never`, reviewer `user`, read-only sandbox, no network)
 and the refusal of every server request still apply.
 
+## Provider interrupt (#153 step C)
+
+`interruptActiveTurn(grace:)` asks the provider to stop the active turn with an
+exact-ID `turn/interrupt {threadId, turnId}`. It returns true only when the
+provider accepts the request (an empty result object) and the matching explicit
+`interrupted` terminal is reconciled within `grace` (default 2 s). That terminal
+may arrive before or after the response.
+
+These all return false:
+- a refused or malformed response;
+- an accepted request with no terminal inside the bound;
+- a different terminal;
+- no active turn;
+- a stopped lease.
+
+The `interrupted` event reaches observers through the normal exact-ID path. The
+method never kills the child. Scope exit, parent cancellation and observation
+stop are still a hard lease stop, which is not counted as provider
+interruption. A host-level "stop" command that calls this method is part of the
+composition step (D).
+
 ## Authority, input and lifetime
 
 Use `CodexAppServerAdapter.withOwnedAdapter` as the explicit trusted scope. The

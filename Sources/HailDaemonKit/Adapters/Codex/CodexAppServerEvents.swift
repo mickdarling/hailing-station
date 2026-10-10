@@ -21,6 +21,10 @@ struct CodexAppServerEvents {
     private var items: [CodexItemIdentity: Data] = [:]
     private var sequence = 0
     var bufferedEarlyRecords: Int { early.count }
+    /// The provider turn currently bound to a delivered context, if any.
+    var activeTurnID: String? { active?.id }
+    /// The explicit terminal already reconciled for an exact provider turn.
+    func terminal(for turn: String) -> ProviderEventKind? { terminals[turn] }
 
     init(binding: ProviderSessionBinding, threadID: String) { self.binding = binding; self.threadID = threadID }
     mutating func begin(_ context: ProviderTurnContext) throws {

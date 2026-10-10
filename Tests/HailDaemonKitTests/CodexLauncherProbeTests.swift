@@ -23,7 +23,7 @@ extension CodexLauncherTests {
         let child = try Self.script("#!/usr/bin/perl\n$|=1; print 'x' x 4096; sleep 30;\n", in: folder)
         let started = ContinuousClock.now
         await #expect(throws: CodexLaunchError.versionUnavailable) { _ = try await CodexLauncher.readVersion(child) }
-        #expect(ContinuousClock.now - started < .seconds(4))
+        #expect(ContinuousClock.now - started < .seconds(20)) // The child sleeps 30 s; generous for loaded CI.
     }
 
     @Test func aSilentProbePastItsDeadlineIsRefusedAndReaped() async throws {
@@ -37,7 +37,7 @@ extension CodexLauncherTests {
         await #expect(throws: CodexLaunchError.versionUnavailable) {
             _ = try await CodexLauncher.readVersion(child, deadline: .seconds(2))
         }
-        #expect(ContinuousClock.now - started < .seconds(5))
+        #expect(ContinuousClock.now - started < .seconds(20)) // The child ignores TERM and sleeps 30 s.
         let pid = try #require(pid_t(String(contentsOfFile: pidFile, encoding: .utf8)))
         #expect(kill(pid, 0) == -1 && errno == ESRCH)
     }

@@ -7,6 +7,7 @@ enum CodexStdioError: Error, Sendable, Equatable {
 }
 enum CodexStdioMethod: String, Sendable {
     case initialize, threadStart = "thread/start", turnStart = "turn/start", configRead = "config/read"
+    case turnInterrupt = "turn/interrupt"
 }
 enum CodexStdioNotice: String, Sendable { case initialized }
 struct CodexStdioLimits: Sendable {
