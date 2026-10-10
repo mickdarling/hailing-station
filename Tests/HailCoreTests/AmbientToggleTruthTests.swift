@@ -156,7 +156,8 @@ import Testing
         await harness.sent.release()
         await harness.controller.turnOn(for: current)
         try #require(harness.captures.first).stop()
-        try await waitUntil { await MainActor.run { !harness.controller.isOn } }
+        // The session is released after listening turns off, not with it (#394): wait for both.
+        try await waitUntil { await MainActor.run { !harness.controller.isOn && harness.releases > 0 } }
         #expect(!harness.controller.isListening)
         #expect(harness.controller.stopReason?.contains("interrupted") == true)
         #expect(harness.releases == 1)

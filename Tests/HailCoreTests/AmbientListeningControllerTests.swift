@@ -124,7 +124,8 @@ import Testing
         try harness.capture.yield(sineBuffer(offset: 4_800))
         try harness.capture.yield(sineBuffer(offset: 9_600))
 
-        try await waitUntil { await MainActor.run { !harness.controller.isOn } }
+        // The session is released after listening turns off, not with it (#394): wait for both.
+        try await waitUntil { await MainActor.run { !harness.controller.isOn && harness.released > 0 } }
         #expect(!harness.controller.isListening)
         #expect(harness.controller.stopReason?.contains("ambient busy") == true)
         #expect(harness.released == 1)
