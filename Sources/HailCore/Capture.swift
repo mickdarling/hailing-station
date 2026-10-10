@@ -47,6 +47,10 @@ public protocol AudioCapturing: Sendable {
 public final class AVAudioEngineCapture: AudioCapturing {
     /// Posted on the capture's notification center, with the capture as object, after the system ended a run.
     public static let endedBySystem = Notification.Name("HailAudioCaptureEndedBySystem")
+    /// `endedBySystem`'s `userInfo` key: `interruptionCause` when another app or a call took the microphone, so
+    /// ambient listening can pause and resume instead of turning off (#445). Absent for every other end.
+    public nonisolated static let endedCauseKey = "HailCaptureEndedCause"
+    public nonisolated static let interruptionCause = "interruption"
     /// Posted, with the capture as object, each time a stalled engine is restarted (#443). Its `userInfo` holds
     /// `UInt` values under `stalledMillisecondsKey` and `restartAttemptKey`. A stall that ends the run posts
     /// `endedBySystem` instead.
@@ -159,15 +163,18 @@ public final class AVAudioEngineCapture: AudioCapturing {
     /// Only the observer of the current run may end it; a late signal from an earlier run is ignored.
     private func systemSignal(_ signal: AudioCaptureEndingSignal, observer id: UUID) {
         guard observer?.id == id, signal.endsCapture(engineRunning: operations.isRunning(engine)) else { return }
-        endBySystem(reason: signal.endReason)
+        endBySystem(reason: signal.endReason, interrupted: signal == .interruptionBegan)
     }
 
     /// `endedBySystem`'s `userInfo` key: the `ambient_stop` reason token for what ended the run (#459).
     public nonisolated static let endedReasonKey = "HailCaptureEndedReason"
 
-    private func endBySystem(reason: String = "capture_ended") {
+    /// Posts the reason token (#459) and, for an interruption, the pause marker (#445).
+    private func endBySystem(reason: String = "capture_ended", interrupted: Bool = false) {
         stop()
-        notificationCenter.post(name: Self.endedBySystem, object: self, userInfo: [Self.endedReasonKey: reason])
+        var info: [String: String] = [Self.endedReasonKey: reason]
+        if interrupted { info[Self.endedCauseKey] = Self.interruptionCause }
+        notificationCenter.post(name: Self.endedBySystem, object: self, userInfo: info)
     }
 
     private func installTap(_ continuation: AsyncStream<AudioCaptureBuffer>.Continuation) {

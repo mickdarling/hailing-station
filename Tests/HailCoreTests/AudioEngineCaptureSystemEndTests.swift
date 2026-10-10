@@ -85,8 +85,9 @@ private typealias Names = AudioCaptureEndingSignal.Names
     }
 }
 
-/// #218 review round 1 (Codex P2): an interruption turns the toggle and "Listening" off at once, even while
-/// earlier audio is still draining behind a backpressured sender.
+/// #218 review round 1 (Codex P2): a system end turns the toggle and "Listening" off at once, even while earlier
+/// audio is still draining behind a backpressured sender. A hardware route change ends it; an interruption now
+/// pauses instead (#445, AmbientInterruptionPauseTests).
 @MainActor
 @Suite struct AmbientToggleDrainingInterruptionTests {
     @Test func theToggleDropsBeforeTheBacklogDrains() async throws {
@@ -113,7 +114,7 @@ private typealias Names = AudioCaptureEndingSignal.Names
         fake.feed(try sineBuffer(offset: 9_600))
         try await waitUntil { await sent.isHolding() }
 
-        center.post(name: Names.interruption, object: nil, userInfo: [Names.interruptionTypeKey: UInt(1)])
+        center.post(name: Names.routeChange, object: nil, userInfo: [Names.routeChangeReasonKey: UInt(2)])
         try await waitUntil { await MainActor.run { !controller.isOn } }
         #expect(!controller.isListening)
         #expect(controller.stopReason?.contains("interrupted") == true)
