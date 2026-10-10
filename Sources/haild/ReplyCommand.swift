@@ -353,7 +353,7 @@ private func replyTimestamp() -> Int64 {
     Int64((Date().timeIntervalSince1970 * 1_000).rounded(.down))
 }
 
-private enum ReplyClientError: Error, CustomStringConvertible {
+enum ReplyClientError: Error, CustomStringConvertible {
     case invalidSocket(String)
     case timeout
     case failed(String)
