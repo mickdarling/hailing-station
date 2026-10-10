@@ -243,6 +243,10 @@ extension HostSession {
             return await select(targetID, version: version)
         case .escape(let targetID):
             return await escape(targetID, version: version)
+        case .overheardScope(let scope):
+            // Already a closed-vocabulary value (the decoder refuses anything else); nothing is sent back.
+            overheardScope = scope
+            return HostSessionResult(frames: [])
         case .hello:
             return failure(.malformed, "hello already received", close: true, version: version)
         default:
