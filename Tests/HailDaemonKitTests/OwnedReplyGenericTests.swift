@@ -76,6 +76,15 @@ import Testing
             _ = try OwnedReplyPublisher(executable: fixture.executable, socket: fixture.base, outputRoot: fixture.root,
                                         hostID: "synthetic-host", targets: ["codex-owned:owned", "bad\u{7}"])
         }
+        for deadline in [Duration.zero, .seconds(601)] {
+            #expect(throws: OwnedReplyPublisherError.invalidConfiguration) {
+                _ = try OwnedReplyPublisher(executable: fixture.executable, socket: fixture.base,
+                                            outputRoot: fixture.root, hostID: "synthetic-host",
+                                            targets: ["codex-owned:owned"], deadline: deadline)
+            }
+        }
+        _ = try OwnedReplyPublisher(executable: fixture.executable, socket: fixture.base, outputRoot: fixture.root,
+                                    hostID: "synthetic-host", targets: ["codex-owned:owned"], deadline: .seconds(300))
         try FileManager.default.removeItem(at: fixture.base)
     }
 }

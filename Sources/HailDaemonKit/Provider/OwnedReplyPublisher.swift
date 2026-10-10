@@ -87,14 +87,17 @@ public final class OwnedReplyPublisher: Sendable {
     private let state = Mutex(ReplyPublisherState())
 
     /// `targets` are the reply-owning targets this publisher may speak for; the default is the diagnostic bridge.
+    /// `deadline` bounds each whole job (render, publish, cleanup). The 30-second default suits the short diagnostic
+    /// phrase; adapters publishing long provider answers pass a longer bound, at most ten minutes.
     public convenience init(executable: URL, socket: URL, outputRoot: URL, hostID: String,
-                            targets: Set<String> = [DiagnosticReplyBridgeAdapter.targetID]) throws {
-        guard !targets.isEmpty, targets.allSatisfy(OwnedReply.isSafeTarget) else {
+                            targets: Set<String> = [DiagnosticReplyBridgeAdapter.targetID],
+                            deadline: Duration = .seconds(30)) throws {
+        guard !targets.isEmpty, targets.allSatisfy(OwnedReply.isSafeTarget), deadline <= .seconds(600) else {
             throw OwnedReplyPublisherError.invalidConfiguration
         }
         try self.init(configuration: OwnedReplyPublisherConfiguration(
             executable: executable, socket: socket, root: outputRoot, hostID: hostID,
-            environment: ProcessInfo.processInfo.environment, deadline: .seconds(30), targets: targets))
+            environment: ProcessInfo.processInfo.environment, deadline: deadline, targets: targets))
     }
 
     // Internal local fixture seam, never exposed through mobile or daemon configuration.

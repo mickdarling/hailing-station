@@ -20,6 +20,8 @@ are the owned Codex adapter (#153) and a Slack dot bridge (#403).
   variation-selector smuggling, Hangul fillers, the braille blank and noncharacters. That rule keeps its
   narrow emoji exceptions, such as ZWJ sequences and emoji presentation selectors. Targets, including each
   configured target, must be 1–256 bytes and follow the same rule, with no newline or tab.
+- The whole-job deadline is configurable at construction, with a 30-second default and a 10-minute maximum.
+  Spoken provider answers of up to 8 KiB can outlast 30 seconds, so their adapters pass a longer bound.
 - `DiagnosticBridgeReply` keeps its fixed phrase and reaches the same path through `owned`. Diagnostic
   limits, deadlines and cleanup are unchanged. One difference: a sequence-0 diagnostic reply is now refused
   as `invalidConfiguration` before the cancellation and stop checks. The real bridge never produces one.
