@@ -301,9 +301,10 @@ public enum AmbientHeard {
     public static let capability = "ambient_heard"
 }
 
-/// Overheard remarks in the thread (#398): turns the ambient stream heard but did not send. The device advertises the
-/// capability in its `hello` and chooses a scope with `overheard_scope`; the host starts every connection at `off`, so
-/// nothing is sent until the device asks, and never to a device without the capability.
+/// Overheard remarks in the thread (#398): turns the ambient stream heard but did not send. Both sides advertise
+/// `capability` in their `hello`. A device sends `overheard_scope` only to a host that advertised it (an older host
+/// refuses the command), and a host sends `ambient_overheard` only to a device that advertised it. The host starts every
+/// connection at `off`, so nothing is sent until the device asks.
 public enum AmbientOverheard {
     public static let capability = "ambient_overheard"
     public static let scopes = ["off", "owner", "everyone"]

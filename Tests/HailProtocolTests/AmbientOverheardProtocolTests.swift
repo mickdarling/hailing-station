@@ -31,7 +31,8 @@ import Testing
             #"{"command":"ambient_overheard","target":"tmux:a","text":"","speaker":"owner"}"#,
             #"{"command":"ambient_overheard","target":"","text":"hi","speaker":"owner"}"#,
             #"{"command":"ambient_overheard","target":"tmux:a","text":"\#(oversized)","speaker":"owner"}"#,
-            #"{"command":"ambient_overheard","target":"tmux:a","text":"hi","speaker":"owner","role":"x"}"#
+            #"{"command":"ambient_overheard","target":"tmux:a","text":"hi","speaker":"owner","role":"x"}"#,
+            #"{"command":"ambient_overheard","target":"tmux:a","text":"hi","speaker":null}"#
         ] {
             #expect(throws: DecodingError.self) { try decodeControl(payload) }
         }
@@ -42,7 +43,9 @@ import Testing
             #"{"command":"overheard_scope"}"#,
             #"{"command":"overheard_scope","scope":"all"}"#,
             #"{"command":"overheard_scope","scope":"Owner"}"#,
-            #"{"command":"overheard_scope","scope":"owner","target":"tmux:a"}"#
+            #"{"command":"overheard_scope","scope":"owner","target":"tmux:a"}"#,
+            #"{"command":"overheard_scope","scope":1}"#,
+            #"{"command":"overheard_scope","scope":null}"#
         ] {
             #expect(throws: DecodingError.self) { try decodeControl(payload) }
         }

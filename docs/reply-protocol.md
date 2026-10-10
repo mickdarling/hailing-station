@@ -101,6 +101,9 @@ text, and a host never sends the command to a device that did not. The host neve
 
 ### Overheard remarks (#398)
 
+Both sides advertise `ambient_overheard` (`AmbientOverheard.capability`) in their `hello`. A device sends
+`overheard_scope` only to a host that advertised it, because an older host refuses the command.
+
 `{"command": "overheard_scope", "scope": "off" | "owner" | "everyone"}` is sent by a device to choose which turns its
 ambient stream heard but did **not** send it wants to see. A host starts every connection at `off`, so nothing is sent
 until the device asks. The scope applies to that connection only and resets on reconnect. `owner` means only turns
