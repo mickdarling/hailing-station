@@ -216,20 +216,22 @@ extension HostConnectionStore {
     public func setOverheardScope(_ scope: String) {
         guard let scope = AmbientOverheard.scope(scope), scope != overheardScope else { return }
         overheardScope = scope
-        for id in order where snapshots[id]?.state == .ready { send(scope, to: id) }
+        for id in order where snapshots[id]?.state == .ready { sendCurrentScope(to: id) }
     }
 
     func applyOverheardScope(to id: HostEndpoint.Identifier) {
-        send(overheardScope, to: id)
+        sendCurrentScope(to: id)
     }
 
-    private func send(_ scope: String, to id: HostEndpoint.Identifier) {
+    /// Chained per host, and each send reads the choice when it runs, not when it was queued: a send delayed across a
+    /// reconnect or overtaken by a newer choice carries the newest one, so a stale broader scope is never sent.
+    private func sendCurrentScope(to id: HostEndpoint.Identifier) {
         guard let connection = connections[id],
               snapshots[id]?.capabilities.contains(AmbientOverheard.capability) == true else { return }
-        // Chained per host: a later choice can never be overtaken by an earlier one still in flight.
         let previous = overheardScopeSends[id]
-        overheardScopeSends[id] = Task {
+        overheardScopeSends[id] = Task { [weak self] in
             await previous?.value
+            guard let scope = self?.overheardScope else { return }
             try? await connection.sendOverheardScope(scope)
         }
     }
