@@ -8,6 +8,7 @@ struct ConversationChatView: View {
     @Bindable var playback: ReplyPlaybackController
     /// Overheard remarks (#398) appear only when the user chose to show them.
     @AppStorage(OverheardSettingsView.showKey) private var showsOverheard = false
+    @AppStorage(OverheardSettingsView.whoseKey) private var overheardWhose = "owner"
     /// The message whose text is open for selecting part of it (#412).
     @State private var selecting: ConversationEntry?
 
@@ -16,8 +17,12 @@ struct ConversationChatView: View {
         self.playback = playback
     }
 
+    /// Overheard entries only while shown, and only within the current choice: narrowing to "Just me" hides other
+    /// speakers' remarks already received, not just future ones.
     private var entries: [ConversationEntry] {
-        showsOverheard ? allEntries : allEntries.filter { !$0.overheard }
+        allEntries.filter { entry in
+            !entry.overheard || (showsOverheard && (overheardWhose == "everyone" || entry.speaker == .you))
+        }
     }
 
     var body: some View {
@@ -59,7 +64,10 @@ struct ConversationChatView: View {
         .background(.regularMaterial, in: RoundedRectangle(cornerRadius: 24, style: .continuous))
         .accessibilityElement(children: .contain)
         .accessibilityIdentifier("station.chat")
-        .sheet(item: $selecting) { entry in SelectableTextSheet(text: entry.text) }
+        // The entry's current text, so a reply still streaming in keeps growing in the sheet.
+        .sheet(item: $selecting) { entry in
+            SelectableTextSheet(text: allEntries.first { $0.id == entry.id }?.text ?? entry.text)
+        }
     }
 
     /// The reply the player controls now, else the newest reply.
@@ -180,6 +188,7 @@ private struct SelectableText: UIViewRepresentable {
         view.isEditable = false
         view.isSelectable = true
         view.font = .preferredFont(forTextStyle: .body)
+        view.textColor = .label // Dynamic, so it stays readable in Dark Mode over the clear background.
         view.adjustsFontForContentSizeCategory = true
         view.backgroundColor = .clear
         return view
