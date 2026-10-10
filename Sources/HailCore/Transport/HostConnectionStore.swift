@@ -19,6 +19,8 @@ public final class HostConnectionStore {
     public let conversation = ConversationLog()
     /// True while ambient listening is streaming; leaving the foreground then keeps the destination authorized (#282).
     public var ambientStreaming = false
+    /// Which overheard turns hosts should send (#398): `off`, `owner` or `everyone`; re-sent to each host it reaches ready.
+    public private(set) var overheardScope = "off"
     /// Told when a host says this device's ambient stream took listening over from another device (#366), with
     /// that device's class. The ambient card hands it to its controller.
     @ObservationIgnored public var onAmbientMovedHere: (@MainActor (HostEndpoint.Identifier, String?) -> Void)?
@@ -169,6 +171,7 @@ public final class HostConnectionStore {
         let previous = snapshots[snapshot.id]?.state
         snapshots[snapshot.id] = snapshot
         recordDiagnostics(from: previous, to: snapshot.state)
+        if snapshot.state == .ready, previous != .ready { applyOverheardScope(to: snapshot.id) }
     }
 
     private func receive(_ event: HostReplyEvent, token: UUID) {
@@ -193,10 +196,34 @@ extension HostConnectionStore {
             onAmbientMovedHere?(event.endpointID, from)
         case .control(.ambientHeard(let targetID, let text)):
             conversation.noteSent(text, endpointID: event.endpointID, targetID: targetID)
+        case .control(.ambientOverheard(let targetID, let text, let speaker)):
+            conversation.noteOverheard(
+                text, owner: speaker == "owner", endpointID: event.endpointID, targetID: targetID
+            )
         default:
             return false
         }
         return true
+    }
+}
+
+/// Overheard remarks (#398): the scope the user chose, sent to every ready host that supports it. A host starts each
+/// connection at `off`, so it is sent again whenever a connection reaches ready; `off` is never sent, being the default.
+extension HostConnectionStore {
+    public func setOverheardScope(_ scope: String) {
+        guard let scope = AmbientOverheard.scope(scope), scope != overheardScope else { return }
+        overheardScope = scope
+        for id in order where snapshots[id]?.state == .ready { send(scope, to: id) }
+    }
+
+    func applyOverheardScope(to id: HostEndpoint.Identifier) {
+        if overheardScope != "off" { send(overheardScope, to: id) }
+    }
+
+    private func send(_ scope: String, to id: HostEndpoint.Identifier) {
+        guard let connection = connections[id],
+              snapshots[id]?.capabilities.contains(AmbientOverheard.capability) == true else { return }
+        Task { try? await connection.sendOverheardScope(scope) }
     }
 }
 
