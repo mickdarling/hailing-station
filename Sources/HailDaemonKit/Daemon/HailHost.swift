@@ -203,6 +203,12 @@ public actor HailHost {
     }
 }
 extension HailHost {
+    /// The policy as stored now, for a device's target list: a CLI `targets allow` (another process) is
+    /// seen without a restart (#386). Nil when the stored policy cannot be trusted, so the list fails closed.
+    public func refreshedPolicy() -> Policy? {
+        do { try refreshPolicy() } catch { return nil }
+        return policy
+    }
     /// A trusted local scope. Consumer return always ends capture; no listener path calls this API.
     public func withObservedSession<Result: Sendable>(
         target: String, configuration: ProviderObservedSession.Configuration = .init(),

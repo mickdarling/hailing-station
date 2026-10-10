@@ -302,8 +302,7 @@ extension HostSession {
 
     private func policyFilteredTargets() async throws -> [TargetInfo] {
         let listing = try await host.registry.listing()
-        guard await host.policyFailure == nil else { return [] }
-        let policy = await host.currentPolicy
+        guard let policy = await host.refreshedPolicy() else { return [] }
         return listing.compactMap { listed in
             guard let allowed = policy.targets[listed.info.id], allowed.binding == listed.binding else { return nil }
             return listed.info
