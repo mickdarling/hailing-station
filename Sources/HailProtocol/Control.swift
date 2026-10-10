@@ -113,16 +113,21 @@ public enum ControlPayload: Sendable, Equatable {
     /// kind `from` (an `AmbientTakeOver.deviceKinds` token, or nil when that device did not say). Sent only to a
     /// device that advertises `AmbientTakeOver.capability`. It carries nothing else and grants no authority.
     case ambientMovedHere(from: String?)
+    /// Host to device (#318): the request this connection's ambient stream just handed to `targetID`, as heard,
+    /// so the device can show the user's own words in the thread. Sent only to the device that spoke, before the
+    /// request is typed, and only when it advertises `AmbientHeard.capability`. It grants no authority.
+    case ambientHeard(targetID: String, text: String)
 }
 
 extension ControlPayload: Codable {
     private enum CodingKeys: String, CodingKey {
-        case command, hello, targets, targetID = "target", nonce, code, message, events, from
+        case command, hello, targets, targetID = "target", nonce, code, message, events, from, text
     }
 
     private enum Command: String, Codable {
         case hello, listTargets = "list_targets", targets, select, subscribe, unsubscribe, escape, ping, pong, error
         case diagnostic, stopPlayback = "stop_playback", ambientMovedHere = "ambient_moved_here"
+        case ambientHeard = "ambient_heard"
     }
 
     // A closed wire enum is clearest as one exhaustive switch.
@@ -167,7 +172,19 @@ extension ControlPayload: Codable {
                                                         debugDescription: "unknown ambient_moved_here device"))
             }
             self = .ambientMovedHere(from: from)
+        case .ambientHeard: self = try Self.ambientHeard(from: decoder)
         }
+    }
+
+    /// Strict (#318): only `command`, a non-empty `target`, and non-empty `text` within the text payload's byte cap.
+    private static func ambientHeard(from decoder: any Decoder) throws -> ControlPayload {
+        try requireOnly(["command", "target", "text"], "ambient_heard", decoder)
+        let container = try decoder.container(keyedBy: CodingKeys.self)
+        let text = try container.decode(String.self, forKey: .text)
+        try requireRange(text.utf8.count, in: 1...PayloadLimits.maxTextBytes, "text", decoder)
+        let target = try container.decode(String.self, forKey: .targetID)
+        try requireRange(target.utf8.count, in: 1...PayloadLimits.maxTextBytes, "target", decoder)
+        return .ambientHeard(targetID: target, text: text)
     }
 
     /// Refuses any payload key outside `allowed`, so nothing rides along on a strict command.
@@ -179,7 +196,8 @@ extension ControlPayload: Codable {
         }
     }
 
-    // swiftlint:disable:next cyclomatic_complexity
+    // One exhaustive switch over the closed wire enum, like the decoder.
+    // swiftlint:disable:next cyclomatic_complexity function_body_length
     public func encode(to encoder: any Encoder) throws {
         var container = encoder.container(keyedBy: CodingKeys.self)
         switch self {
@@ -220,6 +238,10 @@ extension ControlPayload: Codable {
         case .ambientMovedHere(let from):
             try container.encode(Command.ambientMovedHere, forKey: .command)
             try container.encodeIfPresent(AmbientTakeOver.deviceKind(from), forKey: .from)
+        case .ambientHeard(let id, let text):
+            try container.encode(Command.ambientHeard, forKey: .command)
+            try container.encode(id, forKey: .targetID)
+            try container.encode(text, forKey: .text)
         }
     }
 }
@@ -228,6 +250,12 @@ extension ControlPayload: Codable {
 /// `stop_playback` to a device without it, because an older device refuses an unknown command as malformed.
 public enum PlaybackStop {
     public static let capability = "stop_playback"
+}
+
+/// The user's own ambient request, shown in the thread (#318). The device advertises the capability in its `hello`;
+/// a host never sends `ambient_heard` to a device without it, because an older device refuses an unknown command.
+public enum AmbientHeard {
+    public static let capability = "ambient_heard"
 }
 
 /// Ambient take-over (#366): the most recent device to start ambient listening on a host takes it over. The
@@ -531,6 +559,22 @@ extension Schema {
         "then": .object([
             "additionalProperties": .bool(false),
             "properties": .object(["command": .object([:]), "from": .object([:])])
+        ])
+    ])
+
+    /// `ambient_heard` carries `command`, `target` and `text` and nothing else (#318). The `text` limits live here, not
+    /// in the shared control properties, so no other command's extension field named `text` is constrained.
+    static let ambientHeardPayloadRule: JSONValue = .object([
+        "if": .object(["properties": .object(["command": .object(["const": .string("ambient_heard")])])]),
+        "then": .object([
+            "additionalProperties": .bool(false),
+            "properties": .object([
+                "command": .object([:]), "target": .object([:]),
+                "text": .object([
+                    "type": .string("string"), "minLength": .integer(1),
+                    "maxLength": .integer(Int64(PayloadLimits.maxTextBytes))
+                ])
+            ])
         ])
     ])
 

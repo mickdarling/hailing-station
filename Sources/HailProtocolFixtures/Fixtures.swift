@@ -213,6 +213,10 @@ public enum Fixtures {
             id: id(205), timestamp: 1_758_200_050_200, source: "host",
             payload: .control(.ambientMovedHere(from: "phone"))
         )),
+        Example(name: "control-ambient-heard", frame: Frame(
+            id: id(206), timestamp: 1_758_200_050_300, source: "host",
+            payload: .control(.ambientHeard(targetID: "tmux:codex-hail", text: "Haili, what's on my calendar?"))
+        )),
         Example(name: "control-diagnostic", frame: Frame(
             id: id(25), timestamp: 1_758_200_050_000, source: "terminal",
             payload: .control(.diagnostic(events: diagnosticEvents))
