@@ -30,12 +30,13 @@ import Testing
         lazy var controller: AmbientListeningController = {
             let controller = AmbientListeningController(
                 requestPermission: { true },
-                makeStreamer: { [unowned self] send in AmbientAudioStreamer(capture: capture, send: send) },
-                releaseSession: { [unowned self] in released += 1 },
-                sleep: { [unowned self] delay in try await backoff(delay) },
-                send: { [unowned self] payload, _ in try await record(payload) }
+                // Weak (#394): the controller can call back after a test has returned and freed the harness.
+                makeStreamer: { [capture] send in AmbientAudioStreamer(capture: capture, send: send) },
+                releaseSession: { [weak self] in self?.released += 1 },
+                sleep: { [weak self] delay in try await self?.backoff(delay) },
+                send: { [weak self] payload, _ in try await self?.record(payload) }
             )
-            controller.onUnexpectedStop = { [unowned self] in unexpectedStops.append($0) }
+            controller.onUnexpectedStop = { [weak self] in self?.unexpectedStops.append($0) }
             return controller
         }()
 
@@ -84,7 +85,8 @@ import Testing
         harness.failingStreams = 10
         await harness.controller.turnOn(for: try binding())
 
-        try await harness.feed { !harness.controller.isOn }
+        // The session is released after listening turns off, not with it (#394): wait for both.
+        try await harness.feed { !harness.controller.isOn && harness.released > 0 }
         #expect(harness.delays == [.seconds(1), .seconds(3), .seconds(10)])
         #expect(harness.streams.count == 4)
         #expect(harness.controller.stopReason?.contains("Gave up after 3 restarts.") == true)

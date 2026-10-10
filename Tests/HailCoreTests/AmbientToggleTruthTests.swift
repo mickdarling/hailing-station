@@ -93,19 +93,20 @@ import Testing
         var permission = true
         let sent = SentAudio(holding: true)
         lazy var controller = AmbientListeningController(
-            requestPermission: { [unowned self] in permission },
-            makeStreamer: { [unowned self] send in
-                activations += 1
-                sessionActive = true
+            // Weak (#394): the controller can call back after a test has returned and freed the harness.
+            requestPermission: { [weak self] in self?.permission ?? false },
+            makeStreamer: { [weak self] send in
                 let capture = FakeAudioCapture()
-                captures.append(capture)
+                self?.activations += 1
+                self?.sessionActive = true
+                self?.captures.append(capture)
                 return AmbientAudioStreamer(capture: capture, send: send)
             },
-            releaseSession: { [unowned self] in
-                releases += 1
-                sessionActive = false
+            releaseSession: { [weak self] in
+                self?.releases += 1
+                self?.sessionActive = false
             },
-            send: { [unowned self] payload, _ in await record(payload) }
+            send: { [weak self] payload, _ in await self?.record(payload) }
         )
 
         func record(_ payload: AudioPayload) async { await sent.send(payload) }
@@ -155,7 +156,8 @@ import Testing
         await harness.sent.release()
         await harness.controller.turnOn(for: current)
         try #require(harness.captures.first).stop()
-        try await waitUntil { await MainActor.run { !harness.controller.isOn } }
+        // The session is released after listening turns off, not with it (#394): wait for both.
+        try await waitUntil { await MainActor.run { !harness.controller.isOn && harness.releases > 0 } }
         #expect(!harness.controller.isListening)
         #expect(harness.controller.stopReason?.contains("interrupted") == true)
         #expect(harness.releases == 1)

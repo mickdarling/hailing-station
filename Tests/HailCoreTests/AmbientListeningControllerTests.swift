@@ -15,10 +15,11 @@ import Testing
         var sendError: (any Error)?
         var sent: [AudioPayload] = []
         lazy var controller = AmbientListeningController(
-            requestPermission: { [unowned self] in permission },
-            makeStreamer: { [unowned self] send in AmbientAudioStreamer(capture: capture, send: send) },
-            releaseSession: { [unowned self] in released += 1 },
-            send: { [unowned self] payload, _ in try await record(payload) }
+            // Weak (#394): the controller can call back after a test has returned and freed the harness.
+            requestPermission: { [weak self] in self?.permission ?? false },
+            makeStreamer: { [capture] send in AmbientAudioStreamer(capture: capture, send: send) },
+            releaseSession: { [weak self] in self?.released += 1 },
+            send: { [weak self] payload, _ in try await self?.record(payload) }
         )
 
         func record(_ payload: AudioPayload) throws {
@@ -123,7 +124,8 @@ import Testing
         try harness.capture.yield(sineBuffer(offset: 4_800))
         try harness.capture.yield(sineBuffer(offset: 9_600))
 
-        try await waitUntil { await MainActor.run { !harness.controller.isOn } }
+        // The session is released after listening turns off, not with it (#394): wait for both.
+        try await waitUntil { await MainActor.run { !harness.controller.isOn && harness.released > 0 } }
         #expect(!harness.controller.isListening)
         #expect(harness.controller.stopReason?.contains("ambient busy") == true)
         #expect(harness.released == 1)
