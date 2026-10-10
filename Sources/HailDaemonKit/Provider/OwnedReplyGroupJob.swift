@@ -113,7 +113,7 @@ final class OwnedReplyGroupJob: Sendable {
     private let cleaned: @Sendable () -> Void
     private let cleanupFailure: ReplyCleanupFailureReporter
 
-    init(configuration: OwnedReplyPublisherConfiguration, reply: DiagnosticBridgeReply,
+    init(configuration: OwnedReplyPublisherConfiguration, reply: OwnedReply,
          cancelled: @Sendable () -> Bool,
          outcome: @escaping @Sendable (Result<Void, OwnedReplyPublisherError>) -> Void,
          cleanup: ReplyCleanupCallbacks) throws {
@@ -308,8 +308,11 @@ extension OwnedReplyGroupJob {
     }
 
     private static func spawn(_ configuration: OwnedReplyPublisherConfiguration,
-                              reply: DiagnosticBridgeReply, root: URL) throws -> pid_t {
-        let argv = [configuration.executable.path, "reply", DiagnosticReplyBridgeAdapter.targetID,
+                              reply: OwnedReply, root: URL) throws -> pid_t {
+        guard configuration.targets.contains(reply.targetID) else {
+            throw OwnedReplyPublisherError.invalidConfiguration
+        }
+        let argv = [configuration.executable.path, "reply", reply.targetID,
                     "--host", configuration.hostID, "--request", reply.requestID.uuidString,
                     "--say", reply.text, "--socket", configuration.socket.path,
                     "--renderer-output-root", root.path]

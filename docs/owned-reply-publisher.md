@@ -5,6 +5,36 @@ a target grant/selection, TestFlight delivery or physically validated origin rou
 The only payload is the retained `DiagnosticBridgeReply` UUID and its explicitly labelled fixed
 diagnostic phrase; no model chooses a recipient or supplies executable, environment or working directory.
 
+## Generic owned replies (#153 step D1, #403)
+
+The publisher now carries a generic `OwnedReply`: request, host, target and final text. That lets other
+reply-owning adapters publish their own final answers through the same bounded `haild reply` path. Examples
+are the owned Codex adapter (#153) and a Slack dot bridge (#403).
+
+- Each publisher is constructed with the exact set of targets it may speak for. The default is only the
+  diagnostic bridge. A reply for any other target, or for another host, is refused before a directory or
+  child exists. The argv names the reply's own target, still with no shell.
+- Text must contain something other than whitespace and is limited to `OwnedReply.maxSpokenBytes` (1,200
+  bytes). Speech streams as PCM under the reply endpoint's 120-frame budget, about 146 s for one job and shared
+  per minute across jobs. The bound keeps one reply's speech well inside it, so an admitted reply is publishable
+  whole. Adapters shorten longer answers before publishing.
+  It may contain no control (C0/C1) characters other than newline and tab. It must also pass the inbound
+  sanitizer's hidden-character rule, which refuses format and default-ignorable characters, bidi controls,
+  variation-selector smuggling, Hangul fillers, the braille blank and noncharacters. That rule keeps its
+  narrow emoji exceptions, such as ZWJ sequences and emoji presentation selectors. Targets, including each
+  configured target, must be 1–256 bytes and follow the same rule, with no newline or tab.
+- The deadline is configurable at construction, with a 30-second default and a 5-minute maximum. It bounds
+  admission to outcome, including queue wait, rendering and publication. It does not bound directory cleanup,
+  which is retained and reported separately. Spoken provider answers outlast 30 seconds, so their adapters pass
+  a longer bound. Use one publisher per adapter: its 4 slots are shared, so a long-deadline target must not
+  share an instance with the diagnostic target.
+- `DiagnosticBridgeReply` keeps its fixed phrase and reaches the same path through `owned`. Diagnostic
+  limits, deadlines and cleanup are unchanged. One difference: a sequence-0 diagnostic reply is now refused
+  as `invalidConfiguration` before the cancellation and stop checks. The real bridge never produces one.
+
+Capture permission, output disclosure and the choice of which text is final remain the adapter's and
+host policy's job. This step only lets a configured target hand over its text.
+
 ## Admission and caller retirement
 
 Trusted local construction supplies the exact CLI executable, matching host, reply socket and existing

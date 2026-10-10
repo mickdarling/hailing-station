@@ -21,6 +21,38 @@ public struct OwnedReplyPublisherDiagnostics: Sendable {
     public var lastFailure: OwnedReplyPublisherError?
 }
 
+/// One final reply a reply-owning adapter publishes for its own target and exact request. Text is spoken and shown
+/// as-is, so it is bounded, carries no control (C0/C1) characters other than newline and tab, and passes the
+/// inbound sanitizer's hidden-character rule (format, default-ignorable, variation-selector smuggling, fillers,
+/// braille blank, noncharacters), including its narrow emoji exceptions such as ZWJ sequences.
+public struct OwnedReply: Sendable, Equatable {
+    /// Spoken replies stream as PCM under the reply endpoint's 120-frame budget (about 146 s of speech for one job,
+    /// shared per minute across jobs). This bound keeps one reply's speech well inside it (roughly 80-90 s at
+    /// typical rates), so an admitted reply is publishable whole. Adapters shorten longer answers before publishing.
+    public static let maxSpokenBytes = 1_200
+    public let requestID: UUID
+    public let hostID: String
+    public let targetID: String
+    public let text: String
+
+    public init(requestID: UUID, hostID: String, targetID: String, text: String) throws {
+        guard Self.isSafeTarget(targetID),
+              text.contains(where: { !$0.isWhitespace }), text.utf8.count <= Self.maxSpokenBytes,
+              !Self.hasHidden(text, allowing: [9, 10]) else { throw OwnedReplyPublisherError.invalidConfiguration }
+        self.requestID = requestID; self.hostID = hostID; self.targetID = targetID; self.text = text
+    }
+
+    static func isSafeTarget(_ target: String) -> Bool {
+        !target.isEmpty && target.utf8.count <= 256 && !hasHidden(target, allowing: [])
+    }
+
+    private static func hasHidden(_ value: String, allowing allowed: Set<UInt32>) -> Bool {
+        value.unicodeScalars.contains {
+            !allowed.contains($0.value) && $0.properties.generalCategory == .control
+        } || Sanitizer.firstHiddenCharacterClass(in: value) != nil
+    }
+}
+
 struct OwnedReplyPublisherConfiguration: Sendable {
     let executable: URL
     let socket: URL
@@ -28,11 +60,12 @@ struct OwnedReplyPublisherConfiguration: Sendable {
     let hostID: String
     let environment: [String: String]
     let deadline: Duration
+    var targets: Set<String> = [DiagnosticReplyBridgeAdapter.targetID]
     var hooks = OwnedReplyGroupHooks()
 }
 
 private struct ReplyPublisherEntry {
-    let reply: DiagnosticBridgeReply
+    let reply: OwnedReply
     var continuation: CheckedContinuation<Void, any Error>?
     var starting = false
     var cancelled = false
@@ -56,10 +89,20 @@ public final class OwnedReplyPublisher: Sendable {
     private let configuration: OwnedReplyPublisherConfiguration
     private let state = Mutex(ReplyPublisherState())
 
-    public convenience init(executable: URL, socket: URL, outputRoot: URL, hostID: String) throws {
+    /// `targets` are the reply-owning targets this publisher may speak for; the default is the diagnostic bridge.
+    /// `deadline` bounds admission to outcome (queue wait, render and publication), not directory cleanup, which
+    /// is retained and reported separately. The 30-second default suits the short diagnostic phrase; adapters
+    /// publishing spoken provider answers pass a longer bound, at most five minutes. Use one publisher per adapter:
+    /// its 4 slots are shared, so a long-deadline target must not share an instance with the diagnostic target.
+    public convenience init(executable: URL, socket: URL, outputRoot: URL, hostID: String,
+                            targets: Set<String> = [DiagnosticReplyBridgeAdapter.targetID],
+                            deadline: Duration = .seconds(30)) throws {
+        guard !targets.isEmpty, targets.allSatisfy(OwnedReply.isSafeTarget), deadline <= .seconds(300) else {
+            throw OwnedReplyPublisherError.invalidConfiguration
+        }
         try self.init(configuration: OwnedReplyPublisherConfiguration(
             executable: executable, socket: socket, root: outputRoot, hostID: hostID,
-            environment: ProcessInfo.processInfo.environment, deadline: .seconds(30)))
+            environment: ProcessInfo.processInfo.environment, deadline: deadline, targets: targets))
     }
 
     // Internal local fixture seam, never exposed through mobile or daemon configuration.
@@ -76,15 +119,15 @@ public final class OwnedReplyPublisher: Sendable {
         self.configuration = configuration
     }
 
-    public func publish(_ reply: DiagnosticBridgeReply) async throws {
+    /// Publishes one reply for a target this publisher was configured to own; any other target is refused.
+    public func publish(_ reply: OwnedReply) async throws {
         let admission = UUID()
         try await withTaskCancellationHandler {
             try Task.checkCancellation()
             try await withCheckedThrowingContinuation { continuation in
                 let failure = state.withLock { current -> OwnedReplyPublisherError? in
                     guard !current.stopped else { return .stopped }
-                    guard reply.hostID == configuration.hostID,
-                          reply.targetID == DiagnosticReplyBridgeAdapter.targetID, reply.sequence > 0 else {
+                    guard reply.hostID == configuration.hostID, configuration.targets.contains(reply.targetID) else {
                         return .invalidConfiguration
                     }
                     guard current.entries.count < Self.capacity else { return .capacityExceeded }
@@ -103,8 +146,8 @@ public final class OwnedReplyPublisher: Sendable {
     }
 
     private func pump() {
-        let starts = state.withLock { current -> [(UUID, DiagnosticBridgeReply)] in
-            var starts: [(UUID, DiagnosticBridgeReply)] = []
+        let starts = state.withLock { current -> [(UUID, OwnedReply)] in
+            var starts: [(UUID, OwnedReply)] = []
             var occupied = current.entries.values.filter { $0.starting || $0.job != nil }.count
             while !current.stopped, occupied < Self.concurrency, !current.queued.isEmpty {
                 let id = current.queued.removeFirst()
@@ -119,7 +162,7 @@ public final class OwnedReplyPublisher: Sendable {
         }
     }
 
-    private func start(_ id: UUID, reply: DiagnosticBridgeReply) {
+    private func start(_ id: UUID, reply: OwnedReply) {
         do {
             let job = try OwnedReplyGroupJob(configuration: configuration, reply: reply,
                                             cancelled: { self.cancelled(id) },
@@ -217,6 +260,12 @@ public final class OwnedReplyPublisher: Sendable {
 }
 
 extension OwnedReplyPublisher {
+    /// The diagnostic bridge's fixed phrase, published as a generic owned reply for its own target.
+    public func publish(_ reply: DiagnosticBridgeReply) async throws {
+        guard reply.sequence > 0 else { throw OwnedReplyPublisherError.invalidConfiguration }
+        try await publish(try reply.owned)
+    }
+
     private func armDeadline(_ id: UUID) {
         let timer = DispatchSource.makeTimerSource(queue: .global(qos: .utility))
         timer.setEventHandler { self.cancel(id, failure: .deadline) }

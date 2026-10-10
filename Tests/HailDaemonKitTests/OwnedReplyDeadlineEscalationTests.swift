@@ -52,7 +52,8 @@ private final class OwnedReplyDeadlineProbe: Sendable {
             executable: fixture.executable, socket: fixture.base.appendingPathComponent("reply.sock"),
             root: fixture.root, hostID: "synthetic-host", environment: fixture.environment,
             deadline: .seconds(30), hooks: hooks)
-        return try OwnedReplyGroupJob(configuration: configuration, reply: fixture.reply(), cancelled: { false },
+        let reply = try fixture.reply().owned
+        return try OwnedReplyGroupJob(configuration: configuration, reply: reply, cancelled: { false },
             outcome: { result in
                 self.outcome.withLock { $0 = result }; self.outcomeCount.withLock { $0 += 1 }
             },
