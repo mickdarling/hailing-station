@@ -39,18 +39,25 @@ public enum MessageLinks {
     /// The links in `text`, in order.
     public static func links(_ text: String) -> [URL] { links(segments(text)) }
 
-    /// The URL when `string` is an absolute http or https URL with a host, else nil.
+    /// The URL when `string` is an absolute http or https URL with a host and no user or password, else nil.
+    /// Userinfo is never linked: in `https://paypal.com@evil.com` the site is evil.com.
     public static func webURL(_ string: String) -> URL? {
         guard let url = URL(string: string), let scheme = url.scheme?.lowercased(),
-              scheme == "http" || scheme == "https", let host = host(of: url), !host.isEmpty else { return nil }
+              scheme == "http" || scheme == "https", let host = host(of: url), !host.isEmpty,
+              url.user == nil, url.password == nil else { return nil }
         return url
     }
 
     /// The site to show after a link's label, or nil when the label already is the destination: exactly the URL, or
     /// a web URL whose host is identical. A label that merely mentions a host (`paypal.com` linking to `aypal.com`, or
     /// `https://evil.com.paypal.com` linking to `evil.com`) always gets the real host shown beside it.
+    /// An internationalized host (punycode `xn--`, or non-ASCII in the label) or an "@" in the label always shows the
+    /// host, in its ASCII (punycode) form, since either can make one site look like another.
     public static func destinationHint(label: String, url: URL) -> String? {
         guard let host = host(of: url) else { return nil }
+        let internationalized = host.split(separator: ".").contains { $0.lowercased().hasPrefix("xn--") }
+            || !label.unicodeScalars.allSatisfy(\.isASCII)
+        if internationalized || label.contains("@") { return host }
         if label == url.absoluteString { return nil }
         if let shown = webURL(label), let shownHost = Self.host(of: shown),
            shownHost.lowercased() == host.lowercased() { return nil }
@@ -60,14 +67,11 @@ public enum MessageLinks {
     /// The decoded host, so a percent-encoded host never hides what it spells.
     public static func host(of url: URL) -> String? { url.host(percentEncoded: false) }
 
-    /// Removes bidirectional controls, which could reorder a label to disguise where it leads.
+    /// Removes Unicode format characters (category Cf: bidirectional controls, zero-width characters, soft hyphens,
+    /// byte-order marks), which could reorder or hide parts of a label to disguise where it leads.
     public static func visible(_ label: String) -> String {
-        String(String.UnicodeScalarView(label.unicodeScalars.filter { !bidiControls.contains($0.value) }))
+        String(String.UnicodeScalarView(label.unicodeScalars.filter { $0.properties.generalCategory != .format }))
     }
-
-    private static let bidiControls: Set<UInt32> = [
-        0x200E, 0x200F, 0x061C, 0x202A, 0x202B, 0x202C, 0x202D, 0x202E, 0x2066, 0x2067, 0x2068, 0x2069
-    ]
 
     /// `[label](target)`; the target may hold one level of balanced parentheses, as Wikipedia links do.
     nonisolated(unsafe) private static let markdownLink = /\[([^\[\]\n]{1,200})\]\(((?:[^()\s]|\([^()\s]*\))+)\)/

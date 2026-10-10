@@ -81,6 +81,34 @@ import Testing
         ])
     }
 
+    @Test func userinfoIsNeverLinkedAndAnAtInALabelShowsTheHost() {
+        // Review round 2: everything before "@" is a user name, not the site.
+        #expect(MessageLinks.links("log in at https://paypal.com@evil.com/login").isEmpty)
+        #expect(MessageLinks.webURL("https://user:secret@example.com") == nil)
+        for label in ["https://paypal.com@evil.com", "https://paypal.com @evil.com", "https://paypal.com\\@evil.com"] {
+            let segments = MessageLinks.segments("[\(label)](https://evil.com)")
+            #expect(segments == [link(label, "https://evil.com")], "\(label)")
+            #expect(MessageLinks.destinationHint(label: label, url: url("https://evil.com")) == "evil.com", "\(label)")
+        }
+    }
+
+    @Test func internationalizedHostsAlwaysShowTheirPunycode() {
+        // Review round 2: a Cyrillic "а" makes аpple.com look like apple.com.
+        let bare = MessageLinks.segments("https://\u{0430}pple.com/login")
+        #expect(MessageLinks.links(bare) == [url("https://xn--pple-43d.com/login")])
+        for case .link(let label, let link) in bare {
+            #expect(MessageLinks.destinationHint(label: label, url: link) == "xn--pple-43d.com")
+        }
+        #expect(MessageLinks.destinationHint(label: "https://\u{0430}pple.com", url: url("https://xn--pple-43d.com"))
+            == "xn--pple-43d.com")
+        #expect(MessageLinks.destinationHint(label: "https://xn--pple-43d.com", url: url("https://xn--pple-43d.com"))
+            == "xn--pple-43d.com")
+    }
+
+    @Test func formatCharactersAreRemovedFromLabels() {
+        #expect(MessageLinks.visible("a\u{200B}b\u{200D}c\u{FEFF}d\u{00AD}e") == "abcde")
+    }
+
     @Test func plainTextIsUnchanged() {
         #expect(MessageLinks.segments("no links here") == [.text("no links here")])
         #expect(MessageLinks.segments("").isEmpty)
