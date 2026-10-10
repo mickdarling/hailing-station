@@ -55,11 +55,12 @@ extension HostSession {
 extension WebSocketListener {
     /// Shows the connection that heard an admitted request what it heard (#318), before the request is typed. Only
     /// that connection is told. A device that cannot show it, or no longer selects `target`, gets nothing, and the
-    /// request is delivered as before. The text is never logged. Returns whether the frame was sent.
+    /// request is delivered as before. The text is never logged. Returns whether the frame was queued: it waits for
+    /// the connection to take it, not for it to go out, so a stalled phone cannot hold up the typing.
     @discardableResult
     func showAmbientHeard(connection: UUID, target: String, text: String) async -> Bool {
         guard !stopped, let peer = peers.values.first(where: { $0.session.connectionID == connection }),
               let frame = await peer.session.heardFrame(text, target: target) else { return false }
-        return await peer.send(frame)
+        return await peer.post(frame)
     }
 }
