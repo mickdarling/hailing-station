@@ -77,6 +77,7 @@ struct ConversationChatView: View {
                     Text(entry.speaker == .you ? "You · not sent" : "Someone · not sent")
                         .font(.caption2.weight(.semibold))
                         .foregroundStyle(.secondary)
+                        .accessibilityHidden(true) // The bubble's own label says it.
                 }
                 Text(entry.text)
                     .foregroundStyle(entry.overheard ? Color.secondary : isYou ? Color.white : Color.primary)
