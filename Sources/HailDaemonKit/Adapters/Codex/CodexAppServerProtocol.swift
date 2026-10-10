@@ -7,7 +7,8 @@ enum CodexAppServerError: Error, Sendable, Equatable {
     case incompatibleVersion, unavailable, invalidProtocol, turnInProgress, capacityExceeded
 }
 enum CodexAppServerProtocol {
-    static let supportedVersion = "0.159.0"
+    /// Exact CLI versions whose stable schema covers every shape used here (#153, #399).
+    static let supportedVersions: Set<String> = ["0.159.0", "0.162.0-alpha.17.2"]
     static func start(_ transport: CodexStdioTransport) async throws -> String {
         let hello = try await transport.request(.initialize, params: .object([
             "clientInfo": .object(["name": .string("hailing_station"), "version": .string("0.1.25")]),

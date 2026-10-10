@@ -49,11 +49,20 @@ actor CodexAppServerAdapter: ProviderContextDelivering, ProviderSessionObserving
     private var transport: CodexStdioTransport?
 
     private init(command: OwnedStdioCommand, verifiedVersion: String?, limits: CodexStdioLimits) throws {
-        guard verifiedVersion == CodexAppServerProtocol.supportedVersion else {
+        guard let verifiedVersion, CodexAppServerProtocol.supportedVersions.contains(verifiedVersion) else {
             throw CodexAppServerError.incompatibleVersion
         }
         self.command = command; self.limits = limits; lease = try CodexOwnedLease()
     }
+    /// The real-binary entry point: evidence comes from `CodexLauncher.verify`, not a caller's claim.
+    static func withOwnedAdapter<Result: Sendable>(
+        launch: CodexLaunchEvidence, environment: [String], limits: CodexStdioLimits = .init(),
+        operation: @Sendable (CodexAppServerAdapter) async throws -> Result
+    ) async throws -> Result {
+        try await withOwnedAdapter(command: try launch.appServerCommand(environment: environment),
+                                   verifiedVersion: launch.version, limits: limits, operation: operation)
+    }
+    /// Synthetic-test seam: `verifiedVersion` is an attestation only. Real composition uses `launch:`.
     static func withOwnedAdapter<Result: Sendable>(
         command: OwnedStdioCommand, verifiedVersion: String?, limits: CodexStdioLimits = .init(),
         operation: @Sendable (CodexAppServerAdapter) async throws -> Result
