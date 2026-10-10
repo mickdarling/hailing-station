@@ -56,6 +56,18 @@ import Testing
             == "github.com")
     }
 
+    @Test func aLabelNamingAnotherSchemeOrPortShowsTheRealOrigin() {
+        // Codex P2: the label's whole origin (scheme, host, effective port) must match to hide the hint.
+        #expect(MessageLinks.destinationHint(label: "https://example.com", url: url("http://example.com"))
+            == "http://example.com")
+        #expect(MessageLinks.destinationHint(label: "https://example.com", url: url("https://example.com:8443"))
+            == "example.com:8443")
+        #expect(MessageLinks.destinationHint(label: "https://example.com", url: url("https://example.com:443")) == nil)
+        #expect(MessageLinks.destinationHint(label: "http://example.com", url: url("http://example.com:80/a")) == nil)
+        #expect(MessageLinks.destinationHint(label: "Docs", url: url("http://example.com:8080")) ==
+            "http://example.com:8080")
+    }
+
     @Test func aLabelThatIsTheDestinationNeedsNoHint() {
         #expect(MessageLinks.destinationHint(label: "https://example.com/a", url: url("https://example.com/a")) == nil)
         #expect(MessageLinks.destinationHint(label: "https://Example.com/other", url: url("https://example.com/a"))
@@ -101,20 +113,22 @@ import Testing
     }
 
     @Test func internationalizedHostsAlwaysShowTheirPunycode() {
-        // Review round 2: a Cyrillic "а" makes аpple.com look like apple.com.
-        // A bare one depends on NSDataDetector, which on some macOS versions doesn't detect it at all. Either outcome
-        // is safe: no link, or a link to the punycode host that shows the punycode beside it. Never "apple.com".
-        let bare = MessageLinks.segments("https://\u{0430}pple.com/login")
-        #expect(MessageLinks.links(bare).allSatisfy { MessageLinks.host(of: $0) == "xn--pple-43d.com" })
-        for case .link(let label, let link) in bare {
-            #expect(MessageLinks.destinationHint(label: label, url: link) == "xn--pple-43d.com")
+        // Review round 2: a Cyrillic "а" makes аpple.com look like apple.com. Whether a non-ASCII host is detected and
+        // IDN-encoded at all depends on the Foundation version (CI's older one links nothing). Every outcome must be
+        // safe: no link, or a link to the punycode host whose hint shows that punycode. Never "apple.com".
+        for text in ["https://\u{0430}pple.com/login", "[https://\u{0430}pple.com/login](https://\u{0430}pple.com/login)",
+                     "[apple](https://\u{0430}pple.com)"] {
+            let segments = MessageLinks.segments(text)
+            #expect(MessageLinks.links(segments).allSatisfy { MessageLinks.host(of: $0) == "xn--pple-43d.com" }, "\(text)")
+            for case .link(let label, let link) in segments {
+                #expect(MessageLinks.destinationHint(label: label, url: link) == "xn--pple-43d.com", "\(text)")
+            }
         }
-        // A Markdown target doesn't use the detector, so this one is strict.
-        let marked = MessageLinks.segments("[https://\u{0430}pple.com/login](https://\u{0430}pple.com/login)")
-        #expect(MessageLinks.links(marked) == [url("https://xn--pple-43d.com/login")])
-        for case .link(let label, let link) in marked {
-            #expect(MessageLinks.destinationHint(label: label, url: link) == "xn--pple-43d.com")
-        }
+        // Platform-independent: an already-punycoded target always links and always shows its punycode.
+        #expect(MessageLinks.segments("[https://apple.com](https://xn--pple-43d.com)") ==
+            [link("https://apple.com", "https://xn--pple-43d.com")])
+        #expect(MessageLinks.destinationHint(label: "https://apple.com", url: url("https://xn--pple-43d.com"))
+            == "xn--pple-43d.com")
         #expect(MessageLinks.destinationHint(label: "https://\u{0430}pple.com", url: url("https://xn--pple-43d.com"))
             == "xn--pple-43d.com")
         #expect(MessageLinks.destinationHint(label: "https://xn--pple-43d.com", url: url("https://xn--pple-43d.com"))

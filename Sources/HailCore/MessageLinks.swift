@@ -88,20 +88,36 @@ public enum MessageLinks {
     private static let ipv6Characters = CharacterSet(charactersIn: "0123456789abcdefABCDEF:.")
 
     /// The site to show after a link's label, or nil when the label already is the destination: exactly the URL, or
-    /// a web URL whose host is identical. A label that merely mentions a host (`paypal.com` linking to `aypal.com`, or
-    /// `https://evil.com.paypal.com` linking to `evil.com`) always gets the real host shown beside it.
+    /// a web URL with the same origin (scheme, host ignoring case, and effective port). A label that merely mentions a
+    /// host (`paypal.com` linking to `aypal.com`, or `https://evil.com.paypal.com` linking to `evil.com`), or names
+    /// another scheme or port, always gets the real origin shown beside it.
     /// An internationalized host (punycode `xn--`, or non-ASCII in the label) or an "@" in the label always shows the
-    /// host, in its ASCII (punycode) form, since either can make one site look like another.
+    /// origin, in its ASCII (punycode) form, since either can make one site look like another.
     public static func destinationHint(label: String, url: URL) -> String? {
-        guard let host = host(of: url) else { return nil }
+        guard let host = host(of: url), let shown = origin(of: url) else { return nil }
         let internationalized = host.split(separator: ".").contains { $0.lowercased().hasPrefix("xn--") }
             || !label.unicodeScalars.allSatisfy(\.isASCII)
-        if internationalized || label.contains("@") { return host }
+        if internationalized || label.contains("@") { return shown }
         if label == url.absoluteString { return nil }
-        if let shown = webURL(label), let shownHost = Self.host(of: shown),
-           shownHost.lowercased() == host.lowercased() { return nil }
-        return host
+        if let named = webURL(label), originKey(named) == originKey(url) { return nil }
+        return shown
     }
+
+    /// The origin as shown in a hint: the host, then ":port" when it isn't the scheme's default, with "http://" in
+    /// front for plain http ("example.com", "example.com:8443", "http://example.com").
+    public static func origin(of url: URL) -> String? {
+        guard let host = host(of: url), let scheme = url.scheme?.lowercased() else { return nil }
+        let site = url.port.map { $0 == defaultPort(scheme) ? host : "\(host):\($0)" } ?? host
+        return scheme == "https" ? site : "\(scheme)://\(site)"
+    }
+
+    /// Scheme, host ignoring case, and effective port: what decides where a link actually goes.
+    private static func originKey(_ url: URL) -> String? {
+        guard let host = host(of: url), let scheme = url.scheme?.lowercased() else { return nil }
+        return "\(scheme)://\(host.lowercased()):\(url.port ?? defaultPort(scheme))"
+    }
+
+    private static func defaultPort(_ scheme: String) -> Int { scheme == "https" ? 443 : 80 }
 
     /// The host exactly as written in the URL, never decoded: `webURL` admits only plain ASCII hosts.
     public static func host(of url: URL) -> String? { url.host(percentEncoded: true) }
