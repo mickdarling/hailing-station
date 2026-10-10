@@ -106,8 +106,12 @@ AGENTS.md. `CodexLaunchSetup.prepare` builds the rest:
   the `thread/start` response's `instructionSources` must all sit inside the
   `codexHome` reported by `initialize` (for example the owner's global
   AGENTS.md). Any file from the workspace, an ancestor project or elsewhere
-  refuses the session with `notIsolated` before any turn. Project
-  `.codex/config.toml` layers are not covered by this check.
+  refuses the session before any turn (internally `notIsolated`, surfaced as
+  unavailable).
+- **Config evidence:** before `thread/start`, `config/read` with the workspace
+  as `cwd` and `includeLayers` must report no `project` layer. User, system,
+  managed, packaged and session layers are fine. A project `.codex/` layer,
+  which could add MCP servers or hooks, refuses the session the same way.
 - **Disabled MCP servers:** an optional list of names becomes per-launch
   `-c mcp_servers.<name>.enabled=false` overrides, for example to leave Chief
   out. Names are limited to letters, digits, `_` and `-`, up to 64 characters.
