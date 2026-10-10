@@ -32,17 +32,22 @@ final class CodexFixtureGate: Sendable {
 }
 enum CodexAppServerFixtures {
     static let target = "codex-owned:owned"
+    static let defaultLayers = "[{name=>{type=>'user'}},{name=>{type=>'system'}}]"
     static func command(gate: CodexFixtureGate? = nil, status: String = "completed",
                         early: Bool = true, terminal: Bool = true, extra: String = "",
                         approvalsReviewer: String? = "user", nullApprovalsReviewer: Bool = false,
-                        echoedCwd: String? = nil, instructionSources: String = "[]") -> OwnedStdioCommand {
+                        echoedCwd: String? = nil, instructionSources: String = "[]",
+                        configLayers: String = defaultLayers) -> OwnedStdioCommand {
         let reviewer = nullApprovalsReviewer ? "approvalsReviewer=>undef,"
             : approvalsReviewer.map { "approvalsReviewer=>'\($0)'," } ?? ""
         let code = #"use JSON::PP; $|=1; $SIG{TERM}='IGNORE'; $gate=shift @ARGV; $number=0; "# +
             #"sub sendmsg { print encode_json($_[0]), "\n"; } while(<STDIN>) { $r=decode_json($_); "# +
             #"next unless exists $r->{id}; $id=$r->{id}; if($r->{method} eq 'initialize') { "# +
             #"sendmsg({id=>$id,result=>{userAgent=>'invented',codexHome=>'/synthetic-home',"# +
-            #"platformFamily=>'unix',platformOs=>'macos'}}); } elsif($r->{method} eq 'thread/start') { "# +
+            #"platformFamily=>'unix',platformOs=>'macos'}}); } elsif($r->{method} eq 'config/read') { "# +
+            #"die unless $r->{params}->{includeLayers} && $r->{params}->{cwd} eq '/synthetic-workspace'; "# +
+            "sendmsg({id=>\u{24}id,result=>{config=>{},origins=>{},layers=>\(configLayers)}}); " +
+            #"} elsif($r->{method} eq 'thread/start') { "# +
             #"die unless $r->{params}->{approvalsReviewer} eq 'user'; "# +
             #"sendmsg({id=>$id,result=>{approvalPolicy=>'never',"# + reviewer +
             #"sandbox=>{type=>'readOnly',networkAccess=>"# +

@@ -106,8 +106,19 @@ AGENTS.md. `CodexLaunchSetup.prepare` builds the rest:
   the `thread/start` response's `instructionSources` must all sit inside the
   `codexHome` reported by `initialize` (for example the owner's global
   AGENTS.md). Any file from the workspace, an ancestor project or elsewhere
-  refuses the session with `notIsolated` before any turn. Project
-  `.codex/config.toml` layers are not covered by this check.
+  refuses the session before any turn (internally `notIsolated`, surfaced as
+  unavailable).
+- **Single construction, fresh checks:** only `prepare` can construct a setup.
+  The adapter re-runs every workspace check on entry to the launch scope and
+  again at the actual child launch, so a retained setup is never trusted from
+  memory.
+- **Config evidence:** before `thread/start`, `config/read` with the workspace
+  as `cwd` and `includeLayers` must report only known non-project layer
+  sources (user, system, MDM, enterprise-managed, packaged, session and the
+  legacy managed layers). A project `.codex/` layer, which could add MCP
+  servers or hooks, or any unknown type refuses the session. A small window
+  between the last workspace check and the child reading it cannot be closed
+  from the host; these runtime checks cover it.
 - **Disabled MCP servers:** an optional list of names becomes per-launch
   `-c mcp_servers.<name>.enabled=false` overrides, for example to leave Chief
   out. Names are limited to letters, digits, `_` and `-`, up to 64 characters.
