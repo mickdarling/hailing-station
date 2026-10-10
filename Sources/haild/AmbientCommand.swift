@@ -16,10 +16,16 @@ func ambient(_ arguments: ArraySlice<String>) async throws {
     }
     var line = try JSONEncoder().encode(LocalAmbientRequest(action: action))
     line.append(UInt8(ascii: "\n"))
-    let response = try await ReplyClient.transact(line, socketURL: socket)
+    let response: LocalReplyResponse
+    do {
+        response = try await ReplyClient.transact(line, socketURL: socket)
+    } catch ReplyClientError.unanswered(let why) {
+        // Sent, but no answer (or one this haild cannot read): whether a reload happened is unknown.
+        fail("unknown: no answer from the daemon after the request was sent (\(why)); run `haild ambient status`")
+    }
     guard let report = response.ambient else {
-        let reason = response.error ?? "the daemon answered without an ambient report; it may predate `haild ambient`"
-        fail("refused: \(reason)")
+        let reason = response.error ?? "no ambient report"
+        fail("refused: \(reason) (the daemon may predate `haild ambient`; run `haild doctor`)")
     }
     for output in AmbientReportText.lines(report) { print(output) }
     exit(AmbientReportText.exitCode(report.outcome))
@@ -33,7 +39,8 @@ enum AmbientReportText {
             return ["reloaded: a fresh RightyO child serves the active stream (a second or so of audio around the"
                     + " restart may be lost)"]
         case .idle: return ["idle: no active ambient stream; nothing started"]
-        case .busy: return ["busy: a stream is starting or a child is still stopping; try again in a few seconds"]
+        case .busy: return ["busy: the daemon is busy with this stream (starting, reloading or stopping a child);"
+                            + " try again in a few seconds"]
         case .stopping: return ["stopping: the daemon is shutting down"]
         case .refused: return ["refused: \(report.reason ?? "no reason given"); the running child keeps the stream"]
         case .notEnabled: return ["not enabled: haild is running without --ambient-rightyo"]

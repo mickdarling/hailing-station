@@ -81,9 +81,9 @@ The daemon keeps the snapshot in `~/.config/hail/status.json` (owner-only). It h
 
 ## Reload RightyO without touching the phone
 
-After a RightyO reinstall, run `haild ambient reload`. It restarts the RightyO child for the stream that is listening now, using the current install and config. The phone keeps streaming and is not told; a second or so of audio around the restart may be lost. It only re-arms listening that is already on: with no active stream it prints `idle` and starts nothing. `busy` (a stream is starting, or a child is still stopping) and `stopping` exit 75; try again shortly. `refused: <reason>` means the new child could not launch, and the running child keeps the stream.
+After a RightyO reinstall, run `haild ambient reload`. It restarts the RightyO child for the stream that is listening now, using the current install and config. The phone keeps streaming and is not told; a second or so of audio around the restart may be lost. It only re-arms listening that is already on: with no active stream it prints `idle` and starts nothing. `busy` (the daemon is busy with this stream: starting, reloading or stopping a child) and `stopping` exit 75; try again shortly. `refused: <reason>` means the new child could not launch, and the running child keeps the stream.
 
-`haild ambient status` shows whether a stream is active, the device class, target, when the stream and its current child started, the RightyO install time (flagged when it is newer than the running child), and the live child count. Neither command prints transcript text. Both use the owner-only reply socket (`--socket <path>` to choose another) and are audited as `local-ambient`. The daemon must include #405.
+`haild ambient status` shows whether a stream is active, the device class, target, when the stream and its current child started, the RightyO install time (flagged when it is newer than the running child), and the live child count. Neither command prints transcript text. Both use the owner-only reply socket (`--socket <path>` to choose another) and are audited as `local-ambient`. The running daemon must include #409; an older one answers `refused: ... (the daemon may predate ...)`.
 
 ## When replies stop arriving
 

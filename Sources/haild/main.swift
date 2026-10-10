@@ -9,8 +9,8 @@ import HailDaemonKit
 // probe (#98); the push endpoint, LaunchAgent, and `pair` arrive with their slices. Exit codes: 2 unknown
 // target, 3 refused by the sanitizer, 4 adapter
 // unavailable or adapter error, 5 unbound, 6 partial, 7 denied by policy, 8 confirmation needed or cancelled,
-// 9 policy file unusable, 64 usage, 75 `ambient reload` busy or stopping (try again). A `rightyo --reply-to` dispatch the daemon refuses keeps the direct
-// path's code where the outcome is the same (8 confirmation needed, 7 rebound); every other dispatch or
+// 9 policy file unusable, 64 usage, 75 `ambient reload` busy or stopping (try again). A `rightyo --reply-to`
+// dispatch the daemon refuses keeps the direct path's code where the outcome is the same (8 confirmation needed, 7 rebound); every other dispatch or
 // socket refusal exits 1 with the daemon's reason, as `haild reply` does.
 
 // A launchd job often inherits only the system PATH, which omits Homebrew on Apple Silicon and Intel.

@@ -39,7 +39,8 @@ class AmbientCLITests(unittest.TestCase):
                                     return
                                 request += chunk
                             requests.append(request)
-                            client.sendall(json.dumps(response).encode() + b"\n")
+                            if response is not None:  # None: read the request, then close without answering.
+                                client.sendall(json.dumps(response).encode() + b"\n")
                     except socket.timeout:
                         pass
                     except Exception as error:  # Hand thread failures back to the test.
@@ -51,6 +52,9 @@ class AmbientCLITests(unittest.TestCase):
                     [str(HAILD), "ambient", *arguments, "--socket", path],
                     cwd=REPO, capture_output=True, text=True, timeout=20, check=False,
                 )
+                if not requests:  # haild never connected (a refused socket): release the waiting accept at once.
+                    with socket.socket(socket.AF_UNIX, socket.SOCK_STREAM) as poke:
+                        poke.connect(path)
                 worker.join(timeout=12)
             self.assertFalse(errors, errors)
             return result, requests
@@ -65,7 +69,7 @@ class AmbientCLITests(unittest.TestCase):
         self.assertEqual(result.returncode, 0, result.stderr)
         self.assertEqual([json.loads(r) for r in requests], [{"kind": "ambient", "action": "reload"}])
         self.assertTrue(result.stdout.startswith("reloaded: "))
-        self.assertIn("audio", result.stdout)
+        self.assertIn("audio around the restart may be lost", result.stdout)
 
     def test_outcomes_map_to_plain_lines_and_exit_codes(self):
         cases = [
@@ -113,8 +117,23 @@ class AmbientCLITests(unittest.TestCase):
                                         text=True, timeout=15, check=False)
                 self.assertEqual(result.returncode, 64)
         result, requests = self.run_ambient(["reload"], self.report("reloaded"), mode=0o666)
-        self.assertNotEqual(result.returncode, 0)
+        self.assertEqual(result.returncode, 1)
+        self.assertIn("invalid owner-only reply socket", result.stderr)
         self.assertEqual(requests, [])
+
+    def test_an_older_daemon_and_a_lost_answer_are_named(self):
+        result, _ = self.run_ambient(["reload"], {"delivered": 0, "error": "frame decode failure"})
+        self.assertEqual(result.returncode, 1)
+        self.assertIn("refused: frame decode failure", result.stderr)
+        self.assertIn("may predate `haild ambient`", result.stderr)
+        result, _ = self.run_ambient(["reload"], {"delivered": 0})
+        self.assertIn("refused: no ambient report", result.stderr)
+        result, requests = self.run_ambient(["reload"], None)
+        self.assertEqual(len(requests), 1)
+        self.assertEqual(result.returncode, 1)
+        self.assertIn("unknown: no answer from the daemon", result.stderr)
+        self.assertIn("haild ambient status", result.stderr)
+        self.assertNotIn("dispatch", result.stderr)
 
 
 if __name__ == "__main__":
