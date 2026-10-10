@@ -34,6 +34,35 @@ restrictions. These checks are not proof that inherited hooks, instruction files
 credentials or configuration are isolated. No server approval/tool request is
 answered; the underlying transport rejects server requests.
 
+## Launcher evidence (#399)
+
+`CodexLauncher.verify` replaces the attestation for real composition. The
+adapter's `withOwnedAdapter(launch:environment:)` launches only from that
+evidence. The `verifiedVersion` seam stays internal, for synthetic tests.
+
+- Takes a configured absolute path, with no PATH lookup, and resolves symlinks.
+  The target must be a regular executable thin-64 or universal Mach-O, so the
+  `bin/codex` shell wrapper in ChatGPT.app is refused.
+- The file and its folder must be owned by root or the current user and be
+  writable by nobody else.
+- The code signature must validate strictly against a configured requirement.
+  The default is OpenAI's Developer ID: identifier `codex`, Apple-anchored,
+  team `2DC432GLL2`.
+- `--version` comes from that same file, run through the owned stdio child
+  with an empty environment, a 5 s deadline and a 256-byte cap. The child is
+  reaped on every exit. The output must be exactly `codex-cli <version>\n`, and
+  the version must be in an exact allowlist (`0.159.0`, `0.162.0-alpha.17.2`).
+  The second entry is based on the stable-schema subset check recorded on #153.
+- The file's device, inode, size and modified time are rechecked after the probe
+  and again when the App Server command is built. A swapped file is refused.
+
+What this does not prove: configuration or authentication isolation (#153 step
+B), provider interruption (step C), or that the binary behaves as its schema
+says. The file is user-owned in ChatGPT.app, so the same user can still replace
+it between the identity check and `posix_spawn`. Running the real binary
+against these checks is a local check only. CI uses system binaries and
+synthetic scripts.
+
 ## Authority, input and lifetime
 
 Use `CodexAppServerAdapter.withOwnedAdapter` as the explicit trusted scope. The
