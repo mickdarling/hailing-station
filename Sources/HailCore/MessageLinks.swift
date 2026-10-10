@@ -36,6 +36,28 @@ public enum MessageLinks {
         segments.compactMap { if case .link(_, let url) = $0 { url } else { nil } }
     }
 
+    /// One distinct, readable name per link for Copy Link and Share Link (and VoiceOver): the host, or, when several
+    /// links share it, the host and a short path ("github.com/…/pull/438"), numbered if those still repeat.
+    public static func titles(_ urls: [URL]) -> [String] {
+        let hosts = urls.map { host(of: $0) ?? $0.absoluteString }
+        let named = zip(urls, hosts).map { url, host in
+            hosts.filter { $0 == host }.count > 1 ? withPath(host, url) : host
+        }
+        return named.enumerated().map { index, name in
+            let earlier = named[..<index].filter { $0 == name }.count
+            return earlier == 0 && named.filter({ $0 == name }).count == 1 ? name : "\(name) (\(earlier + 1))"
+        }
+    }
+
+    /// The host and the last two path components, eliding the rest, at most 48 characters.
+    private static func withPath(_ host: String, _ url: URL) -> String {
+        let parts = url.path(percentEncoded: true).split(separator: "/")
+        guard !parts.isEmpty else { return host }
+        let tail = parts.suffix(2).joined(separator: "/")
+        let name = parts.count > 2 ? "\(host)/…/\(tail)" : "\(host)/\(tail)"
+        return name.count > 48 ? String(name.prefix(47)) + "…" : name
+    }
+
     /// The links in `text`, in order.
     public static func links(_ text: String) -> [URL] { links(segments(text)) }
 

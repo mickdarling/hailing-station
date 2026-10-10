@@ -23,8 +23,9 @@ extension ConversationChatView {
     /// Copy Link and Share Link for the first few links in a message, in the long-press menu (#412, #444).
     @ViewBuilder
     func linkActions(_ segments: [MessageSegment]) -> some View {
-        ForEach(Array(MessageLinks.links(segments).prefix(3).enumerated()), id: \.offset) { _, url in
-            let site = MessageLinks.host(of: url) ?? url.absoluteString
+        let urls = Array(MessageLinks.links(segments).prefix(3))
+        ForEach(Array(zip(urls, MessageLinks.titles(urls)).enumerated()), id: \.offset) { _, link in
+            let (url, site) = link
             Button("Copy Link: \(site)", systemImage: "link") {
                 UIPasteboard.general.url = url
             }

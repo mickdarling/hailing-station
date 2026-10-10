@@ -117,6 +117,21 @@ import Testing
         #expect(MessageLinks.visible("a\u{200B}b\u{200D}c\u{FEFF}d\u{00AD}e") == "abcde")
     }
 
+    @Test func linkTitlesAreDistinctWhenHostsRepeat() {
+        // Codex P2: Copy Link and Share Link for two links on one host must be told apart, by sight and VoiceOver.
+        #expect(MessageLinks.titles([url("https://github.com/a"), url("https://example.com/b")]) ==
+            ["github.com", "example.com"])
+        #expect(MessageLinks.titles([url("https://github.com/x/y/pull/438"), url("https://github.com/x/y/issues/444"),
+                                     url("https://example.com/")]) ==
+            ["github.com/…/pull/438", "github.com/…/issues/444", "example.com"])
+        #expect(MessageLinks.titles([url("https://github.com/a"), url("https://github.com/a?tab=files")]) ==
+            ["github.com/a (1)", "github.com/a (2)"])
+        let long = MessageLinks.titles([url("https://example.com/" + String(repeating: "x", count: 80)),
+                                        url("https://example.com/b")])
+        #expect(long[0].count == 48 && long[0].hasSuffix("…"))
+        #expect(Set(long).count == 2)
+    }
+
     @Test func plainTextIsUnchanged() {
         #expect(MessageLinks.segments("no links here") == [.text("no links here")])
         #expect(MessageLinks.segments("").isEmpty)
