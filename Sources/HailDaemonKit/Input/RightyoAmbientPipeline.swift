@@ -290,8 +290,6 @@ final class RecentSpokenReplies: Sendable {
     }
 
     private let replies = Mutex<[UUID: Reply]>([:])
-    /// Host clip phrases (#418, "Stopped."): heard back word for word, they are echo whatever their length.
-    private let phrases = Mutex<[(words: [String], expires: ContinuousClock.Instant)]>([])
     private let now: @Sendable () -> ContinuousClock.Instant
 
     init(now: @escaping @Sendable () -> ContinuousClock.Instant = { ContinuousClock.now }) {
@@ -329,25 +327,10 @@ final class RecentSpokenReplies: Sendable {
         }
     }
 
-    /// Records a host clip about to play: its exact words count as echo until `hold` after its audio would end.
-    func observeHostPhrase(_ clip: AmbientAckClip) {
-        guard let text = clip.text, clip.sampleRate > 0 else { return }
-        let instant = now()
-        let expires = instant.advanced(by: .seconds(Double(clip.pcm.count) / Double(2 * clip.sampleRate)) + Self.hold)
-        phrases.withLock { phrases in
-            phrases.removeAll { $0.expires <= instant }
-            phrases.append((Self.words(text), expires))
-            if phrases.count > Self.maxReplies { phrases.removeFirst(phrases.count - Self.maxReplies) }
-        }
-    }
-
-    /// True when `heard` reads as the echo of a reply still playing or within `hold` of its end, or repeats a recent
-    /// host phrase word for word.
+    /// True when `heard` reads as the echo of a reply still playing or within `hold` of its end.
     func isEcho(_ heard: String) -> Bool {
         let instant = now()
         let heardWords = Self.words(heard)
-        if !heardWords.isEmpty,
-           phrases.withLock({ $0.contains { $0.expires > instant && $0.words == heardWords } }) { return true }
         guard heardWords.count >= Self.minimumWords else { return false }
         return replies.withLock { replies in
             // A text-only reply is never spoken, so its words cannot echo.

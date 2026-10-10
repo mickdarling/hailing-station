@@ -1,4 +1,5 @@
 public import Foundation
+import Synchronization
 
 // The delivery-step protocol and its direct implementation stay beside the consumer that owns their contract.
 // swiftlint:disable file_length
@@ -73,6 +74,46 @@ enum AmbientStopConfirmation {
             }
         }
         return nil
+    }
+}
+
+extension AmbientAckLibrary {
+    /// No persona and no confirmation clip: acknowledgements stay off. Confirmation clips alone keep the library, for
+    /// stop confirmations without any persona (#418).
+    var isEmpty: Bool { clips.isEmpty && reserved.isEmpty }
+    /// The `ambient_ack_clips` startup detail: counts only.
+    var summary: String {
+        "personas=\(clips.count) clips=\(clips.values.map(\.count).reduce(0, +)) reserved=\(reserved.count)"
+    }
+}
+
+/// Host clip phrases this host sent (#418, "Stopped."): heard back word for word they are echo, however short, until
+/// `RecentSpokenReplies.hold` after the clip's audio would end. Only a clip whose delivery reported `sent` is held, so
+/// a user's own words are never dropped as the echo of audio they never heard. In memory only, never logged.
+final class HostPhrases: Sendable {
+    static let maxPhrases = 8
+    private let phrases = Mutex<[(words: [String], expires: ContinuousClock.Instant)]>([])
+    private let now: @Sendable () -> ContinuousClock.Instant
+
+    init(now: @escaping @Sendable () -> ContinuousClock.Instant = { ContinuousClock.now }) { self.now = now }
+
+    /// Holds `clip`'s words when its delivery `outcome` was `sent`; any other outcome holds nothing.
+    func observe(_ clip: AmbientAckClip, outcome: String) {
+        guard outcome == "sent", let text = clip.text, clip.sampleRate > 0 else { return }
+        let instant = now(), words = RecentSpokenReplies.words(text)
+        let audio = Duration.seconds(Double(clip.pcm.count) / Double(2 * clip.sampleRate))
+        phrases.withLock { phrases in
+            phrases.removeAll { $0.expires <= instant }
+            phrases.append((words, instant.advanced(by: audio + RecentSpokenReplies.hold)))
+            if phrases.count > Self.maxPhrases { phrases.removeFirst(phrases.count - Self.maxPhrases) }
+        }
+    }
+
+    /// True when `heard` repeats a held phrase word for word.
+    func isEcho(_ heard: String) -> Bool {
+        let instant = now(), words = RecentSpokenReplies.words(heard)
+        guard !words.isEmpty else { return false }
+        return phrases.withLock { $0.contains { $0.expires > instant && $0.words == words } }
     }
 }
 #endif

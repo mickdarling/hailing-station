@@ -439,6 +439,8 @@ public final class AmbientRightyoRouter: AmbientAudioSink, AmbientListenerWiring
     public static let maxLiveChildren = 2
     /// Replies this host delivered recently; an ambient request repeating one is the assistant's echo (#269).
     let spokenReplies = RecentSpokenReplies()
+    /// Confirmation clips this host sent (#418); heard back word for word, they are echo however short.
+    let hostPhrases = HostPhrases()
 
     public func observeReply(_ frame: Frame) { spokenReplies.observe(frame) }
     /// Runs at once, including those whose child is reaped but whose dispatch is still typing. A run stuck in a
@@ -847,7 +849,7 @@ extension AmbientRightyoRouter {
             executable: configuration.executable, config: configuration.config, target: configuration.target,
             binding: configuration.binding, connection: connection,
             allowSynthetic: configuration.allowSynthetic, timing: configuration.timing,
-            isEcho: { [spokenReplies] heard in spokenReplies.isEcho(heard) },
+            isEcho: { [spokenReplies, hostPhrases] heard in hostPhrases.isEcho(heard) || spokenReplies.isEcho(heard) },
             onDismiss: dismissed(on: connection, listener: listener),
             onAcknowledge: acknowledged(on: connection, listener: listener)
         )
@@ -952,9 +954,9 @@ extension AmbientRightyoRouter {
     }
 
     /// Plays the stop confirmation clip (#418) on the connection that said stop, through the same guarded path as an
-    /// acknowledgement: only that connection, never the Mac, never the agent session. Its words are also held as a
-    /// host phrase, so hearing them back, however short, is echo rather than a request or an overheard turn. Logs
-    /// tokens only.
+    /// acknowledgement: only that connection, never the Mac, never the agent session. Once sent, its words are held
+    /// as a host phrase, so hearing them back, however short, is echo rather than a request or an overheard turn; an
+    /// undelivered clip is never held. Logs tokens only.
     private func confirmStop(
         _ receipt: RightyoDismissReceipt, playback: String, on connection: UUID, listener: WebSocketListener?
     ) async {
@@ -968,9 +970,9 @@ extension AmbientRightyoRouter {
             emit("ambient_stop_confirmed", detail: "outcome=skipped reason=no_clips")
             return
         }
-        spokenReplies.observeHostPhrase(pick.clip)
         let outcome = await listener?.acknowledgeAmbient(connection: connection, target: configuration.target,
                                                          clip: pick.clip) ?? "no_connection"
+        hostPhrases.observe(pick.clip, outcome: outcome)
         emit("ambient_stop_confirmed", detail: "clip=\(pick.persona)/\(pick.index) outcome=\(outcome)")
     }
 

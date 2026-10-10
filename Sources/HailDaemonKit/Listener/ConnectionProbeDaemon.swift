@@ -188,9 +188,9 @@ extension ConnectionProbeDaemon {
         guard listed.info.alive, let binding = listed.binding, !binding.isEmpty else {
             throw RightyoInputError.unavailableBinding
         }
-        let clips = options.ackClips.map(AmbientAckLibrary.init(directory:)).flatMap { $0.clips.isEmpty ? nil : $0 }
-        let counts = clips.map { "personas=\($0.clips.count) clips=\($0.clips.values.map(\.count).reduce(0, +))" }
-        if options.ackClips != nil { log(.init(event: "ambient_ack_clips", detail: counts ?? "personas=0 clips=0")) }
+        let clips = options.ackClips.map(AmbientAckLibrary.init(directory:)).flatMap { $0.isEmpty ? nil : $0 }
+        let counts = clips?.summary ?? "personas=0 clips=0 reserved=0"
+        if options.ackClips != nil { log(.init(event: "ambient_ack_clips", detail: counts)) }
         return AmbientRightyoRouter(configuration: .init(
             executable: options.executable, config: options.config, target: options.target, binding: binding,
             timing: timing, audit: audit, acknowledgements: clips, replyControl: options.replyControl

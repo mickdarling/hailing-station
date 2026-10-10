@@ -49,22 +49,30 @@ import Testing
         for folder in users + ["confirm-stopped", "confirm-idle"] {
             let directory = root.appendingPathComponent(folder)
             try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
-            try Self.wav(samples: 240).write(to: directory.appendingPathComponent("clip.wav"))
+            try AmbientAcknowledgementTests.wav(samples: 240).write(to: directory.appendingPathComponent("clip.wav"))
         }
         let library = AmbientAckLibrary(directory: root)
         #expect(Set(library.clips.keys) == Set(users))
         #expect(library.nextReserved("confirmstopped") != nil && library.nextReserved("confirmidle") != nil)
     }
 
-    @Test func aHostPhraseHeardBackWordForWordIsEchoHoweverShort() {
+    @Test func aSentHostPhraseHeardBackWordForWordIsEchoHoweverShort() {
         let clock = Mutex(ContinuousClock.now)
-        let replies = RecentSpokenReplies(now: { clock.withLock { $0 } })
-        replies.observeHostPhrase(Self.stopped)
-        #expect(replies.isEcho("stopped"))
-        #expect(!replies.isEcho("stopped, now go on"))
-        #expect(!replies.isEcho("stop"))
+        let phrases = HostPhrases(now: { clock.withLock { $0 } })
+        phrases.observe(Self.stopped, outcome: "sent")
+        #expect(phrases.isEcho("stopped"))
+        #expect(!phrases.isEcho("stopped, now go on"))
+        #expect(!phrases.isEcho("stop"))
         clock.withLock { $0 = $0.advanced(by: RecentSpokenReplies.hold + .seconds(1)) }
-        #expect(!replies.isEcho("stopped"))
+        #expect(!phrases.isEcho("stopped"))
+    }
+
+    /// A clip that was not delivered was never heard, so its words are never held as echo.
+    @Test(arguments: ["no_connection", "not_ready", "refused"])
+    func anUndeliveredHostPhraseIsNeverEcho(outcome: String) {
+        let phrases = HostPhrases()
+        phrases.observe(Self.stopped, outcome: outcome)
+        #expect(!phrases.isEcho("stopped"))
     }
 
     /// The dismissal fixture under an enrolled session, its `dismiss` and the transcript it cites with these roles.
@@ -107,6 +115,9 @@ import Testing
             }
             #expect(words.text == "Stopped.")
             _ = try await receiveFrame(on: socket, step: "confirmation clip")
+        } after: { router in
+            // Sent, so its words are now the host's own echo.
+            #expect(router.hostPhrases.isEcho("Stopped"))
         }
         #expect(details == ["clip=confirmstopped/0 outcome=sent"])
     }
@@ -125,7 +136,8 @@ import Testing
     /// advertising `capabilities`; waits for the confirmation's own log line, runs `check`, then returns every
     /// `ambient_stop_confirmed` detail.
     private func run(
-        fixture: String, capabilities: [String]? = nil, check: (URLSessionWebSocketTask) async throws -> Void
+        fixture: String, capabilities: [String]? = nil, check: (URLSessionWebSocketTask) async throws -> Void,
+        after: (AmbientRightyoRouter) -> Void = { _ in }
     ) async throws -> [String] {
         let fake = try FakeRightyo(fixture)
         defer { fake.cleanUp() }
@@ -147,6 +159,7 @@ import Testing
         try await recipientSocketSend(audio(stream, 0), on: socket)
         #expect(await eventually { details.withLock { !$0.isEmpty } })
         try await check(socket)
+        after(env.router)
         try await recipientSocketSend(audio(stream, 1, final: true), on: socket)
         await env.router.settle()
         await env.listener.stop(reason: "synthetic test complete")
@@ -165,17 +178,6 @@ import Testing
         )
         try await recipientSocketBarrier(on: socket)
         return (session, socket)
-    }
-
-    /// A canonical mono 16-bit 24 kHz WAVE file of `samples` silent samples.
-    static func wav(samples: Int) -> Data {
-        func le32(_ value: Int) -> [UInt8] { (0..<4).map { UInt8(truncatingIfNeeded: value >> (8 * $0)) } }
-        func le16(_ value: Int) -> [UInt8] { (0..<2).map { UInt8(truncatingIfNeeded: value >> (8 * $0)) } }
-        let pcm = 2 * samples
-        var bytes = Array("RIFF".utf8) + le32(36 + pcm) + Array("WAVE".utf8)
-        bytes += Array("fmt ".utf8) + le32(16) + le16(1) + le16(1) + le32(24_000) + le32(48_000) + le16(2) + le16(16)
-        bytes += Array("data".utf8) + le32(pcm) + [UInt8](repeating: 0, count: pcm)
-        return Data(bytes)
     }
 }
 #endif
