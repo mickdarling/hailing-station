@@ -562,12 +562,19 @@ extension Schema {
         ])
     ])
 
-    /// `ambient_heard` carries `command`, `target` and `text` and nothing else (#318).
+    /// `ambient_heard` carries `command`, `target` and `text` and nothing else (#318). The `text` limits live here, not
+    /// in the shared control properties, so no other command's extension field named `text` is constrained.
     static let ambientHeardPayloadRule: JSONValue = .object([
         "if": .object(["properties": .object(["command": .object(["const": .string("ambient_heard")])])]),
         "then": .object([
             "additionalProperties": .bool(false),
-            "properties": .object(["command": .object([:]), "target": .object([:]), "text": .object([:])])
+            "properties": .object([
+                "command": .object([:]), "target": .object([:]),
+                "text": .object([
+                    "type": .string("string"), "minLength": .integer(1),
+                    "maxLength": .integer(Int64(PayloadLimits.maxTextBytes))
+                ])
+            ])
         ])
     ])
 
