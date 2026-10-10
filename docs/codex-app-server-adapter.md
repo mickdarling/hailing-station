@@ -44,7 +44,7 @@ evidence. The `verifiedVersion` seam stays internal, for synthetic tests.
   The target must be a regular executable thin-64 or universal Mach-O, so the
   `bin/codex` shell wrapper in ChatGPT.app is refused.
 - The file and its folder must be owned by root or the current user and be
-  writable by nobody else.
+  writable by nobody else, with no extended ACL on either.
 - The code signature must validate strictly against a configured requirement.
   The default is OpenAI's Developer ID designated requirement: identifier
   `codex`, Apple-anchored, a Developer ID intermediate and Developer ID
@@ -61,7 +61,7 @@ evidence. The `verifiedVersion` seam stays internal, for synthetic tests.
 
 What this does not prove: configuration or authentication isolation (#153 step
 B), provider interruption (step C), or that the binary behaves as its schema
-says. Ownership checks read mode bits only, not ACLs, and the child's exit
+says. Any extended ACL on the file or its folder is refused. The child's exit
 status is not checked; the exact output format is. The file is user-owned in
 ChatGPT.app, so the same user can still replace
 it between the identity check and `posix_spawn`. Running the real binary

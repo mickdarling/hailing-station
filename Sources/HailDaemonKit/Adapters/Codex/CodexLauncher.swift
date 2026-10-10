@@ -119,13 +119,26 @@ enum CodexLauncher {
         guard file.st_mode & S_IFMT == S_IFREG, file.st_mode & S_IXUSR != 0, isMachO(descriptor) else {
             throw CodexLaunchError.notExecutable
         }
-        guard safelyOwned(file), safelyOwned(folder) else { throw CodexLaunchError.unsafeOwnership }
+        guard safelyOwned(file), safelyOwned(folder), !hasExtendedACL(descriptor: descriptor),
+              !hasExtendedACL(folder: (resolved as NSString).deletingLastPathComponent) else {
+            throw CodexLaunchError.unsafeOwnership
+        }
         return (resolved, CodexFileIdentity(device: file.st_dev, inode: file.st_ino, size: file.st_size,
                                             modified: file.st_mtimespec, changed: file.st_ctimespec))
     }
 
     private static func safelyOwned(_ info: stat) -> Bool {
         (info.st_uid == 0 || info.st_uid == geteuid()) && info.st_mode & (S_IWGRP | S_IWOTH) == 0
+    }
+
+    /// Any extended ACL could grant another user write or delete beyond the mode bits, so none is accepted.
+    private static func hasExtendedACL(descriptor: Int32) -> Bool {
+        guard let acl = acl_get_fd_np(descriptor, ACL_TYPE_EXTENDED) else { return errno != ENOENT }
+        acl_free(UnsafeMutableRawPointer(acl)); return true
+    }
+    private static func hasExtendedACL(folder: String) -> Bool {
+        guard let acl = acl_get_link_np(folder, ACL_TYPE_EXTENDED) else { return errno != ENOENT }
+        acl_free(UnsafeMutableRawPointer(acl)); return true
     }
 
     /// Thin 64-bit or universal Mach-O only, so a shell or interpreter wrapper is refused.

@@ -112,6 +112,22 @@ import Testing
         }
     }
 
+    @Test(arguments: [false, true]) func anExtendedACLOnTheBinaryOrFolderIsRefused(onFolder: Bool) async throws {
+        let folder = try Self.scratch()
+        defer { try? FileManager.default.removeItem(at: folder) }
+        let copy = folder.appendingPathComponent("codex").path
+        try FileManager.default.copyItem(atPath: "/bin/ls", toPath: copy)
+        #expect(chmod(copy, 0o700) == 0)
+        let chmodACL = Process()
+        chmodACL.executableURL = URL(fileURLWithPath: "/bin/chmod")
+        chmodACL.arguments = ["+a", "everyone allow write", onFolder ? folder.path : copy]
+        try chmodACL.run(); chmodACL.waitUntilExit()
+        #expect(chmodACL.terminationStatus == 0)
+        await #expect(throws: CodexLaunchError.unsafeOwnership) {
+            _ = try await CodexLauncher.verify(path: copy, requirement: Self.apple, probe: Self.fixed(""))
+        }
+    }
+
     @Test func theDefaultRequirementRefusesAnAppleBinaryBeforeTheProbe() async {
         await #expect(throws: CodexLaunchError.signatureRejected) {
             _ = try await CodexLauncher.verify(path: "/bin/ls") { _ in
