@@ -1,4 +1,5 @@
 public import Foundation
+import Synchronization
 
 // The delivery-step protocol and its direct implementation stay beside the consumer that owns their contract.
 // swiftlint:disable file_length
@@ -27,11 +28,95 @@ public struct RightyoDismissReceipt: Sendable, Equatable {
     public var withdrawn: Int
     /// Listed ids already delivered: withdrawal is advisory and nothing delivered is undone.
     public var alreadyDelivered: Int
+    /// The dismissal came from the enrolled owner (#418): it said `owner`, which RightyO may only say on an enrolled
+    /// session, and so did the transcript it cites, as for a supersede.
+    public var owner: Bool
     public var stopsPlayback: Bool { scope.contains("playback") }
-    public init(reason: String, scope: [String], withdrawn: Int, alreadyDelivered: Int) {
+    public init(reason: String, scope: [String], withdrawn: Int, alreadyDelivered: Int, owner: Bool = false) {
         (self.reason, self.scope, self.withdrawn, self.alreadyDelivered) = (reason, scope, withdrawn, alreadyDelivered)
+        self.owner = owner
     }
 }
+#if os(macOS)
+/// The spoken confirmation of the owner's stop (#418): a short host-recorded clip, sent like an acknowledgement to the
+/// connection that said stop, with no round trip through the agent session. Clips live in reserved folders of the
+/// acknowledgement directory: `confirm-stopped/` ("Stopped.") and `confirm-idle/` ("Nothing playing, standing by.").
+/// A later mute (#404) adds its own folder here.
+enum AmbientStopConfirmation {
+    static let stopped = RightyoAddressing.key("confirm-stopped"), idle = RightyoAddressing.key("confirm-idle")
+    static let reserved: Set<String> = [stopped, idle]
+
+    /// Why a playback stop is not confirmed, as a log token, or nil when it is: only the enrolled owner's stop, and
+    /// only on a connection still there to hear it.
+    static func skipReason(for receipt: RightyoDismissReceipt, playback: String) -> String? {
+        if !receipt.owner { return "not_owner" }
+        return playback == "no_connection" ? "no_connection" : nil
+    }
+
+    /// The clip folder for a playback stop, or nil when nothing is confirmed (see `skipReason`). `idle` means the
+    /// host had no reply in flight and sent no `stop_playback`; a phone that takes `stop_playback` always reports
+    /// `stopped`, since only it knows whether audio was still playing (#442).
+    static func persona(for receipt: RightyoDismissReceipt, playback: String) -> String? {
+        guard receipt.stopsPlayback, skipReason(for: receipt, playback: playback) == nil else { return nil }
+        return playback == "idle" ? idle : stopped
+    }
+
+    /// A chosen confirmation clip and the folder and index it came from, for the log.
+    struct Pick: Equatable {
+        let persona: String, index: Int, clip: AmbientAckClip
+    }
+
+    /// The next clip for `persona`; an idle stop without its own clips says "Stopped." instead.
+    static func clip(_ persona: String, in library: AmbientAckLibrary) -> Pick? {
+        for candidate in persona == idle ? [idle, stopped] : [persona] {
+            if let (index, clip) = library.nextReserved(candidate) {
+                return Pick(persona: candidate, index: index, clip: clip)
+            }
+        }
+        return nil
+    }
+}
+
+extension AmbientAckLibrary {
+    /// No persona and no confirmation clip: acknowledgements stay off. Confirmation clips alone keep the library, for
+    /// stop confirmations without any persona (#418).
+    var isEmpty: Bool { clips.isEmpty && reserved.isEmpty }
+    /// The `ambient_ack_clips` startup detail: counts only.
+    var summary: String {
+        "personas=\(clips.count) clips=\(clips.values.map(\.count).reduce(0, +)) reserved=\(reserved.count)"
+    }
+}
+
+/// Host clip phrases this host sent (#418, "Stopped."): heard back word for word they are echo, however short, until
+/// `RecentSpokenReplies.hold` after the clip's audio would end. Only a clip whose delivery reported `sent` is held, so
+/// a user's own words are never dropped as the echo of audio they never heard. In memory only, never logged.
+final class HostPhrases: Sendable {
+    static let maxPhrases = 8
+    private let phrases = Mutex<[(words: [String], expires: ContinuousClock.Instant)]>([])
+    private let now: @Sendable () -> ContinuousClock.Instant
+
+    init(now: @escaping @Sendable () -> ContinuousClock.Instant = { ContinuousClock.now }) { self.now = now }
+
+    /// Holds `clip`'s words when its delivery `outcome` was `sent`; any other outcome holds nothing.
+    func observe(_ clip: AmbientAckClip, outcome: String) {
+        guard outcome == "sent", let text = clip.text, clip.sampleRate > 0 else { return }
+        let instant = now(), words = RecentSpokenReplies.words(text)
+        let audio = Duration.seconds(Double(clip.pcm.count) / Double(2 * clip.sampleRate))
+        phrases.withLock { phrases in
+            phrases.removeAll { $0.expires <= instant }
+            phrases.append((words, instant.advanced(by: audio + RecentSpokenReplies.hold)))
+            if phrases.count > Self.maxPhrases { phrases.removeFirst(phrases.count - Self.maxPhrases) }
+        }
+    }
+
+    /// True when `heard` repeats a held phrase word for word.
+    func isEcho(_ heard: String) -> Bool {
+        let instant = now(), words = RecentSpokenReplies.words(heard)
+        guard !words.isEmpty else { return false }
+        return phrases.withLock { $0.contains { $0.expires > instant && $0.words == words } }
+    }
+}
+#endif
 /// The final delivery step of an admitted request. The consumer keeps every validation and correlation rule
 /// in front of this call and treats any thrown error as terminal; implementations must not retry on their own.
 /// `RightyoHostDispatcher` is the direct path; `haild rightyo --reply-to` supplies a reply-socket dispatcher.
@@ -351,6 +436,7 @@ extension RightyoInputConsumer {
         guard withdrawn.count + fresh.count <= 1000 else { throw RightyoInputError.capacity }
         withdrawn.formUnion(fresh)
         lastDismissal = RightyoDismissReceipt(reason: reason, scope: scope, withdrawn: ids.count - delivered.count,
-                                              alreadyDelivered: delivered.count)
+                                              alreadyDelivered: delivered.count,
+                                              owner: event.role == "owner" && owners.contains(utterance))
     }
 }

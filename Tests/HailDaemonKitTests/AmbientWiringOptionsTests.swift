@@ -132,7 +132,17 @@ import Testing
         options.ackClips = root.appendingPathComponent("missing")
         let missing = try await ConnectionProbeDaemon.ambientRouter(options, host: rig.host, log: log)
         #expect(missing.configuration.acknowledgements == nil)
-        #expect(logged.withLock { $0 } == ["personas=1 clips=1", "personas=0 clips=0"])
+        // Stop confirmation clips alone (#418) keep the library, with no persona.
+        let confirmOnly = root.appendingPathComponent("confirm-only/confirm-stopped")
+        try FileManager.default.createDirectory(at: confirmOnly, withIntermediateDirectories: true)
+        try AmbientAcknowledgementTests.wav(samples: 10).write(to: confirmOnly.appendingPathComponent("a.wav"))
+        options.ackClips = root.appendingPathComponent("confirm-only")
+        let reserved = try await ConnectionProbeDaemon.ambientRouter(options, host: rig.host, log: log)
+        #expect(reserved.configuration.acknowledgements?.clips.isEmpty == true)
+        #expect(reserved.configuration.acknowledgements?.nextReserved("confirmstopped") != nil)
+        #expect(logged.withLock { $0 } == [
+            "personas=1 clips=1 reserved=0", "personas=0 clips=0 reserved=0", "personas=0 clips=0 reserved=1"
+        ])
     }
 }
 #endif

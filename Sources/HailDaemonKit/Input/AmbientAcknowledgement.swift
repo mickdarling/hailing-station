@@ -122,21 +122,30 @@ public struct AmbientAckClip: Sendable, Equatable {
 
 /// Acknowledgement clips by persona key, loaded once from `<directory>/<persona>/*.wav` (with an optional
 /// `<clip>.txt` holding the spoken words). Clips are local files, never part of the repository. Unreadable or
-/// unsupported files are skipped; each persona rotates through its clips without repeating the last one.
+/// unsupported files are skipped; each persona rotates through its clips without repeating the last one. The reserved
+/// confirmation folders (#418, `AmbientStopConfirmation.reserved`) load beside the personas, outside their cap, and
+/// are never an acknowledgement voice: `clips` holds the personas only.
 public final class AmbientAckLibrary: Sendable {
     public static let maxPersonas = 8, maxClipsPerPersona = 16
     public let clips: [String: [AmbientAckClip]]
+    /// Confirmation clips by reserved key; never chosen for an acknowledgement.
+    let reserved: [String: [AmbientAckClip]]
     private let lastPlayed = Mutex<[String: Int]>([:])
 
-    public init(clips: [String: [AmbientAckClip]]) { self.clips = clips }
+    /// Reserved keys in `clips` are taken as confirmation clips, not personas.
+    public init(clips: [String: [AmbientAckClip]]) {
+        self.clips = clips.filter { !AmbientStopConfirmation.reserved.contains($0.key) }
+        reserved = clips.filter { AmbientStopConfirmation.reserved.contains($0.key) }
+    }
 
     public convenience init(directory: URL) {
         let files = FileManager.default
-        var clips: [String: [AmbientAckClip]] = [:]
+        var clips: [String: [AmbientAckClip]] = [:], reserved: [String: [AmbientAckClip]] = [:]
         let personas = (try? files.contentsOfDirectory(at: directory, includingPropertiesForKeys: nil)) ?? []
         for folder in personas.sorted(by: { $0.lastPathComponent < $1.lastPathComponent }) {
             let persona = RightyoAddressing.key(folder.lastPathComponent)
-            guard !persona.isEmpty, clips.count < Self.maxPersonas,
+            let isReserved = AmbientStopConfirmation.reserved.contains(persona)
+            guard !persona.isEmpty, isReserved || clips.count < Self.maxPersonas,
                   let entries = try? files.contentsOfDirectory(at: folder, includingPropertiesForKeys: nil)
             else { continue }
             let loaded = entries.filter { $0.pathExtension.lowercased() == "wav" }
@@ -148,9 +157,10 @@ public final class AmbientAckLibrary: Sendable {
                     return AmbientAckClip.wav(data, text: words.flatMap { $0.isEmpty || $0.count > 200 ? nil : $0 })
                 }
                 .prefix(Self.maxClipsPerPersona)
-            if !loaded.isEmpty { clips[persona] = Array(loaded) }
+            guard !loaded.isEmpty else { continue }
+            if isReserved { reserved[persona] = Array(loaded) } else { clips[persona] = Array(loaded) }
         }
-        self.init(clips: clips)
+        self.init(clips: clips.merging(reserved) { user, _ in user })
     }
 
     /// A regular file's contents when it is no larger than `limit`, checked before reading: a FIFO, device or
@@ -164,10 +174,19 @@ public final class AmbientAckLibrary: Sendable {
 
     /// The next clip for `persona` and its index, rotating and never repeating the last one; nil without clips.
     public func next(for persona: String) -> (index: Int, clip: AmbientAckClip)? {
-        guard let options = clips[persona], !options.isEmpty else { return nil }
+        rotate(clips[persona], key: persona)
+    }
+
+    /// The next confirmation clip for a reserved key, rotating like a persona's.
+    func nextReserved(_ key: String) -> (index: Int, clip: AmbientAckClip)? {
+        rotate(reserved[key], key: key)
+    }
+
+    private func rotate(_ options: [AmbientAckClip]?, key: String) -> (index: Int, clip: AmbientAckClip)? {
+        guard let options, !options.isEmpty else { return nil }
         let index = lastPlayed.withLock { last -> Int in
-            let next = ((last[persona] ?? -1) + 1) % options.count
-            last[persona] = next
+            let next = ((last[key] ?? -1) + 1) % options.count
+            last[key] = next
             return next
         }
         return (index, options[index])
