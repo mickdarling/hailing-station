@@ -526,8 +526,9 @@ extension AmbientListeningController {
         }
     }
 
-    private func recordSendFailure(_ error: any Error, session current: UUID) {
-        guard session == current, sendFailure == nil else { return }
+    /// Only the live stream's failure counts: a stream replaced by a pause (#445) still draining is ignored.
+    private func recordSendFailure(_ error: any Error, session current: UUID, from source: AmbientAudioStreamer?) {
+        guard session == current, sendFailure == nil, let source, source === streamer else { return }
         movedAway = AmbientHandoff(refusal: error)
         sendFailure = movedAway?.status ?? "Stopped: \(Self.describe(error))"
         sendFailureCause = Self.diagnosticCause(error)
@@ -695,14 +696,16 @@ extension AmbientListeningController {
 
     func openStreamer(_ current: UUID, binding: AmbientAudioBinding) async throws -> AmbientAudioStreamer {
         let send = send
+        let source = StreamerSource()
         let streamer = try await makeStreamer { [weak self] payload in
             do {
                 try await send(payload, binding)
             } catch {
-                await self?.recordSendFailure(error, session: current)
+                await self?.recordSendFailure(error, session: current, from: source.streamer)
                 throw error
             }
         }
+        source.streamer = streamer
         streamer.recovery = { [weak self] error in await self?.recover(from: error, session: current) ?? false }
         return streamer
     }
@@ -740,9 +743,12 @@ extension AmbientListeningController {
         )
         guard let streamer else { return await release(current) }
         self.streamer = nil
+        // The outgoing stream must not spend the live stream's recoveries (#287) while it drains.
+        streamer.recovery = nil
         await streamer.stop()
-        // A resume that already reopened the session owns it now; only a still-paused session is released.
-        if session == current, pausedReason != nil, self.streamer == nil { await release(current) }
+        // Released unless a resumed stream or a resume in flight owns the session now. Listening may have ended
+        // meanwhile (turned off, moved, gave up) with nothing else to release it; `release` checks the owner.
+        if self.streamer == nil, resumer?.attempting != true { await release(current) }
     }
 
     /// True once nothing is left to resume: listening is back, or it ended. A failed attempt stays paused.
@@ -802,4 +808,9 @@ final class AmbientResumer {
         if let token { center.removeObserver(token) }
         token = nil
     }
+}
+
+/// The streamer a send closure belongs to, filled in once it exists (#445).
+private final class StreamerSource: @unchecked Sendable {
+    @MainActor weak var streamer: AmbientAudioStreamer?
 }

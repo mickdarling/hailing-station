@@ -33,9 +33,10 @@ final class InterruptionPauseHarness {
 
     init(holdingSends: Bool = false) { sent = SentAudio(holding: holdingSends) }
 
+    /// A held send is refused if `refusal` is set by the time it is released, as a host answering late would.
     func deliver(_ payload: AudioPayload) async throws {
-        if let refusal { throw refusal }
         await sent.send(payload)
+        if let refusal { throw refusal }
     }
 
     /// Feeds three 100 ms buffers to the newest capture, enough for at least one segment to be sent.
