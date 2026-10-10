@@ -39,13 +39,15 @@ public enum MessageLinks {
     /// One distinct, readable name per link for Copy Link and Share Link (and VoiceOver): the host, or, when several
     /// links share it, the host and a short path ("github.com/…/pull/438"), numbered if those still repeat.
     public static func titles(_ urls: [URL]) -> [String] {
+        // Hosts and names compare case-insensitively: GitHub.com and github.com are the same site.
         let hosts = urls.map { host(of: $0) ?? $0.absoluteString }
         let named = zip(urls, hosts).map { url, host in
-            hosts.filter { $0 == host }.count > 1 ? withPath(host, url) : host
+            hosts.filter { $0.lowercased() == host.lowercased() }.count > 1 ? withPath(host, url) : host
         }
+        let keys = named.map { $0.lowercased() }
         return named.enumerated().map { index, name in
-            let earlier = named[..<index].filter { $0 == name }.count
-            return earlier == 0 && named.filter({ $0 == name }).count == 1 ? name : "\(name) (\(earlier + 1))"
+            let earlier = keys[..<index].filter { $0 == keys[index] }.count
+            return earlier == 0 && keys.filter({ $0 == keys[index] }).count == 1 ? name : "\(name) (\(earlier + 1))"
         }
     }
 

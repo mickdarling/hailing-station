@@ -102,9 +102,17 @@ import Testing
 
     @Test func internationalizedHostsAlwaysShowTheirPunycode() {
         // Review round 2: a Cyrillic "а" makes аpple.com look like apple.com.
+        // A bare one depends on NSDataDetector, which on some macOS versions doesn't detect it at all. Either outcome
+        // is safe: no link, or a link to the punycode host that shows the punycode beside it. Never "apple.com".
         let bare = MessageLinks.segments("https://\u{0430}pple.com/login")
-        #expect(MessageLinks.links(bare) == [url("https://xn--pple-43d.com/login")])
+        #expect(MessageLinks.links(bare).allSatisfy { MessageLinks.host(of: $0) == "xn--pple-43d.com" })
         for case .link(let label, let link) in bare {
+            #expect(MessageLinks.destinationHint(label: label, url: link) == "xn--pple-43d.com")
+        }
+        // A Markdown target doesn't use the detector, so this one is strict.
+        let marked = MessageLinks.segments("[https://\u{0430}pple.com/login](https://\u{0430}pple.com/login)")
+        #expect(MessageLinks.links(marked) == [url("https://xn--pple-43d.com/login")])
+        for case .link(let label, let link) in marked {
             #expect(MessageLinks.destinationHint(label: label, url: link) == "xn--pple-43d.com")
         }
         #expect(MessageLinks.destinationHint(label: "https://\u{0430}pple.com", url: url("https://xn--pple-43d.com"))
@@ -121,6 +129,11 @@ import Testing
         // Codex P2: Copy Link and Share Link for two links on one host must be told apart, by sight and VoiceOver.
         #expect(MessageLinks.titles([url("https://github.com/a"), url("https://example.com/b")]) ==
             ["github.com", "example.com"])
+        // Codex P2: hosts differing only in case are the same site, so they get paths (and numbers if those repeat).
+        #expect(MessageLinks.titles([url("https://GitHub.com/a"), url("https://github.com/b")]) ==
+            ["GitHub.com/a", "github.com/b"])
+        #expect(MessageLinks.titles([url("https://GitHub.com/a"), url("https://github.com/a")]) ==
+            ["GitHub.com/a (1)", "github.com/a (2)"])
         #expect(MessageLinks.titles([url("https://github.com/x/y/pull/438"), url("https://github.com/x/y/issues/444"),
                                      url("https://example.com/")]) ==
             ["github.com/…/pull/438", "github.com/…/issues/444", "example.com"])
