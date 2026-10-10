@@ -15,12 +15,19 @@ public protocol HostReplyPublishing: Sendable {
     /// Runs the named connection's own ingress path for `request.text` (#188); the result is the committed
     /// request id, or nil when the target's adapter cannot own a reply. Refusals throw.
     func dispatch(_ request: LocalDispatchRequest) async throws -> UUID?
+    /// `haild ambient reload|status` (#405): restarts or describes the active ambient stream's child.
+    func ambient(_ request: LocalAmbientRequest) async -> LocalAmbientReport
 }
 
 extension HostReplyPublishing {
     /// A destination that cannot dispatch fails closed rather than publishing input anywhere.
     public func dispatch(_ request: LocalDispatchRequest) async throws -> UUID? {
         throw LocalDispatchRefusal.unsupported
+    }
+
+    /// A destination without ambient wiring touches nothing.
+    public func ambient(_ request: LocalAmbientRequest) async -> LocalAmbientReport {
+        LocalAmbientReport(outcome: .notEnabled)
     }
 }
 
@@ -42,6 +49,8 @@ public struct LocalReplyResponse: Codable, Equatable, Sendable {
     /// responses omit the key, byte for byte as before.
     public var request: UUID?
     public private(set) var isDispatch = false
+    /// Ambient answers (#405) only; every other response omits the key, byte for byte as before.
+    public var ambient: LocalAmbientReport?
 
     public init(delivered: Int, error: String? = nil, code: LocalReplyRefusal? = nil) {
         self.delivered = delivered
@@ -57,7 +66,13 @@ public struct LocalReplyResponse: Codable, Equatable, Sendable {
         return response
     }
 
-    private enum CodingKeys: String, CodingKey { case delivered, error, code, request }
+    public static func ambient(_ report: LocalAmbientReport) -> Self {
+        var response = Self(delivered: 0)
+        response.ambient = report
+        return response
+    }
+
+    private enum CodingKeys: String, CodingKey { case delivered, error, code, request, ambient }
 
     public init(from decoder: any Decoder) throws {
         let container = try decoder.container(keyedBy: CodingKeys.self)
@@ -66,6 +81,7 @@ public struct LocalReplyResponse: Codable, Equatable, Sendable {
         code = try container.decodeIfPresent(LocalReplyRefusal.self, forKey: .code)
         isDispatch = container.contains(.request)
         request = try container.decodeIfPresent(UUID.self, forKey: .request)
+        ambient = try container.decodeIfPresent(LocalAmbientReport.self, forKey: .ambient)
     }
 
     public func encode(to encoder: any Encoder) throws {
@@ -74,6 +90,7 @@ public struct LocalReplyResponse: Codable, Equatable, Sendable {
         try container.encodeIfPresent(error, forKey: .error)
         try container.encodeIfPresent(code, forKey: .code)
         if isDispatch { try container.encode(request, forKey: .request) }
+        try container.encodeIfPresent(ambient, forKey: .ambient)
     }
 }
 
@@ -177,9 +194,9 @@ extension LocalReplyEndpoint {
     static let maxLineBytes = max(PayloadLimits.defaultMaxFrameBytes, LocalDispatchRequest.maxLineBytes)
 
     func submit(_ data: Data, from client: LocalReplyConnection) async {
-        // Only the exact `dispatch` kind leaves the reply path; a frame or any other shape is a reply.
-        let isDispatch = (try? JSONDecoder().decode(LocalRequestKind.self, from: data))?.kind
-            == LocalDispatchRequest.kind
+        // Only the exact `dispatch` and `ambient` kinds leave the reply path; a frame or any other shape is a reply.
+        let kind = (try? JSONDecoder().decode(LocalRequestKind.self, from: data))?.kind
+        let isDispatch = kind == LocalDispatchRequest.kind
         // A reply frame keeps the pre-#200 line cap and answer; only a dispatch may use the larger line.
         guard isDispatch || data.count <= PayloadLimits.defaultMaxFrameBytes else {
             return await respond(.init(delivered: 0, error: "frame too large"), to: client)
@@ -193,6 +210,7 @@ extension LocalReplyEndpoint {
         }
         limiter.record("local-reply", at: now)
         if isDispatch { return await submitDispatch(data, from: client) }
+        if kind == LocalAmbientRequest.kind { return await submitAmbient(data, from: client) }
         await submitReply(data, from: client)
     }
 

@@ -227,6 +227,10 @@ public protocol AmbientListenerWiring: AnyObject, Sendable {
     func observe(_ diagnostics: DiagnosticLog) async
     /// Told of every reply frame this host delivered, so ambient requests repeating one can be dropped (#269).
     func observeReply(_ frame: Frame)
+    /// Restarts the active stream's child with the current install (#405); the stream and the phone are untouched.
+    func reload() async -> AmbientReloadOutcome
+    /// The active stream, if any, and the live children (#405). Never transcript content.
+    func status() -> AmbientRouterStatus
 }
 
 extension AmbientListenerWiring {
@@ -235,6 +239,38 @@ extension AmbientListenerWiring {
 
 extension AmbientListenerWiring {
     public func observeReply(_ frame: Frame) {}
+}
+
+extension AmbientListenerWiring {
+    /// A wiring that cannot reload refuses rather than touching the stream.
+    public func reload() async -> AmbientReloadOutcome { .refused("unsupported") }
+    public func status() -> AmbientRouterStatus { AmbientRouterStatus() }
+}
+
+/// What `haild ambient reload` did (#405). `refused` carries a content-free rule name.
+public enum AmbientReloadOutcome: Sendable, Equatable {
+    case reloaded, idle, busy, stopping
+    case refused(String)
+}
+
+/// The router's view of ambient listening (#405): ids, times and counts only.
+public struct AmbientRouterStatus: Sendable, Equatable {
+    /// The connection whose stream feeds the active child; nil when idle.
+    public var connection: UUID?
+    public var target: String?
+    /// When the active stream started, and when its current child started (later after a reload).
+    public var streamSince: Date?
+    public var childSince: Date?
+    /// The configured executable's modification time, to tell whether a newer install is not yet running.
+    public var installedAt: Date?
+    /// Children not yet reaped, including retired ones still finishing.
+    public var liveChildren = 0
+
+    public init(connection: UUID? = nil, target: String? = nil, streamSince: Date? = nil, childSince: Date? = nil,
+                installedAt: Date? = nil, liveChildren: Int = 0) {
+        (self.connection, self.target, self.streamSince) = (connection, target, streamSince)
+        (self.childSince, self.installedAt, self.liveChildren) = (childSince, installedAt, liveChildren)
+    }
 }
 
 extension WebSocketListener {
@@ -410,22 +446,13 @@ public final class AmbientRightyoRouter: AmbientAudioSink, AmbientListenerWiring
     /// Segments of the newest start kept while it makes room: 6.4 s of 100 ms segments; the oldest is dropped.
     public static let maxQueuedSegments = 64
 
-    fileprivate struct Run {
-        let connection: UUID
-        let pipeline: RightyoAmbientPipeline
-        var reaped = false
-        /// Order of retirement (EOF sent), so the oldest retired child is the one forced out (#366).
-        var retiredAt: Int?
-        var forced = false
-        /// Why the gate ended the stream (idle, final, malformed, …), reported in `ambient_ended` (#282).
-        var gateEnd: AmbientStreamEndReason?
-        var task: Task<Void, Never>?
-    }
     fileprivate struct State {
         var listener: WeakListener?
-        var active: (stream: UUID, pipeline: RightyoAmbientPipeline)?
+        var active: Active?
         var runs: [UUID: Run] = [:]
         var shuttingDown = false
+        /// A reload is building its child (#405); a second one is refused as busy.
+        var reloading = false
         var drainWaiters: [UUID: CheckedContinuation<Void, Never>] = [:]
         /// Each live connection's most recent started stream (one entry per connection, dropped when it ends),
         /// so a normally ended stream's late failure is still reported until the connection starts another.
@@ -520,10 +547,10 @@ public final class AmbientRightyoRouter: AmbientAudioSink, AmbientListenerWiring
     public func stop(connection: UUID) {
         let streams = state.withLock { state -> [UUID] in
             state.latest[connection] = nil
-            if let active = state.active, state.runs[active.stream]?.connection == connection { state.active = nil }
+            if let active = state.active, state.runs[active.run]?.connection == connection { state.active = nil }
             return state.runs.filter { $0.value.connection == connection }.map(\.key)
         }
-        streams.forEach(retire)
+        streams.forEach { retire($0) }
     }
 
     public func shutdown() async {
@@ -555,6 +582,7 @@ public final class AmbientRightyoRouter: AmbientAudioSink, AmbientListenerWiring
     var liveRuns: Int { state.withLock { $0.runs.count } }
     /// The stream whose child is fed audio now, and the most events ever queued at once (tests).
     var activeStream: UUID? { state.withLock { $0.active?.stream } }
+    var activePipeline: RightyoAmbientPipeline? { state.withLock { $0.active?.pipeline } }
     var peakQueue: Int { state.withLock { $0.peakQueue } }
 
     /// Waits (at most 30 s) for queued events to be handled, then for every current run to return (tests).
@@ -567,21 +595,48 @@ public final class AmbientRightyoRouter: AmbientAudioSink, AmbientListenerWiring
 }
 
 extension AmbientRightyoRouter {
+    /// Keyed by its own id, not its stream's: a reload (#405) gives one stream a second run.
+    fileprivate struct Run {
+        let stream: UUID
+        let connection: UUID
+        let pipeline: RightyoAmbientPipeline
+        let since = Date()
+        var reaped = false
+        /// Swapped out by a reload (#405): its stream lives on in a newer run, so its end is logged, never reported.
+        var replaced = false
+        /// Order of retirement (EOF sent), so the oldest retired child is the one forced out (#366).
+        var retiredAt: Int?
+        var forced = false
+        /// Why the gate ended the stream (idle, final, malformed, …), reported in `ambient_ended` (#282).
+        var gateEnd: AmbientStreamEndReason?
+        var task: Task<Void, Never>?
+    }
+    /// The stream whose child is fed audio now: its run, and when the stream itself started (kept across reloads).
+    fileprivate struct Active {
+        let stream: UUID
+        let run: UUID
+        let pipeline: RightyoAmbientPipeline
+        let since: Date
+    }
+}
+
+extension AmbientRightyoRouter {
     /// Closes the child's input and stops it; once it is reaped it no longer counts against `maxLiveChildren`.
-    fileprivate func retire(_ stream: UUID) {
+    /// `grace` shortens the stop (#405); nil keeps the configured timing.
+    fileprivate func retire(_ id: UUID, grace: TimeInterval? = nil) {
         let pipeline = state.withLock { state -> RightyoAmbientPipeline? in
-            guard let run = state.runs[stream] else { return nil }
+            guard let run = state.runs[id] else { return nil }
             if run.retiredAt == nil {
                 state.retirements += 1
-                state.runs[stream]?.retiredAt = state.retirements
+                state.runs[id]?.retiredAt = state.retirements
             }
             return run.pipeline
         }
         guard let pipeline else { return }
         pipeline.finishInput()
         Task {
-            await pipeline.stop()
-            self.state.withLock { $0.runs[stream]?.reaped = true }
+            if let grace { await pipeline.stop(grace: grace) } else { await pipeline.stop() }
+            self.state.withLock { $0.runs[id]?.reaped = true }
         }
     }
 
@@ -594,15 +649,15 @@ extension AmbientRightyoRouter {
             let pipeline = state.withLock { $0.active?.stream == stream ? $0.active?.pipeline : nil }
             // Overload drops the oldest audio; it never blocks the gate. Refused input means the child is gone
             // (its run may still be finishing a dispatch), so the stream ends instead of absorbing audio.
-            if let pipeline, !pipeline.send(audio: bytes) { inputClosed(stream) }
+            if let pipeline, !pipeline.send(audio: bytes) { inputClosed(stream, pipeline: pipeline) }
         case .ended(let stream, let reason):
-            let pipeline = state.withLock { state -> RightyoAmbientPipeline? in
-                state.runs[stream]?.gateEnd = reason
+            let run = state.withLock { state -> UUID? in
+                for (id, run) in state.runs where run.stream == stream { state.runs[id]?.gateEnd = reason }
                 guard let active = state.active, active.stream == stream else { return nil }
                 state.active = nil
-                return active.pipeline
+                return active.run
             }
-            if pipeline != nil { retire(stream) }
+            if let run { retire(run) }
         }
     }
 
@@ -659,7 +714,9 @@ extension AmbientRightyoRouter {
                 state.queue.remove(at: oldest)
             }
         case .ended(let stream, _):
-            guard stream == state.newestStart || state.runs[stream] != nil else { return }
+            guard stream == state.newestStart || state.runs.values.contains(where: { $0.stream == stream }) else {
+                return
+            }
         }
         state.queue.append(event)
         state.peakQueue = max(state.peakQueue, state.queue.count)
@@ -690,31 +747,34 @@ extension AmbientRightyoRouter {
         while true {
             let victim = state.withLock { state -> (UUID, RightyoAmbientPipeline)? in
                 guard !state.shuttingDown, state.newestStart == start, Self.full(state),
-                      let (stream, run) = state.runs
+                      let (id, run) = state.runs
                         .filter({ $0.value.retiredAt != nil && !$0.value.reaped && !$0.value.forced })
                         .min(by: { Self.forcingOrder($0.value) < Self.forcingOrder($1.value) }) else { return nil }
-                state.runs[stream]?.forced = true
-                return (stream, run.pipeline)
+                state.runs[id]?.forced = true
+                return (id, run.pipeline)
             }
-            guard let (stream, pipeline) = victim else { return }
+            guard let (id, pipeline) = victim else { return }
             emit("ambient_retired_forced", detail: nil)
             await pipeline.stop(grace: Self.forcedStopGrace)
-            state.withLock { $0.runs[stream]?.reaped = true }
-            for _ in 0..<50 where state.withLock({ $0.runs[stream] != nil }) {
+            state.withLock { $0.runs[id]?.reaped = true }
+            for _ in 0..<50 where state.withLock({ $0.runs[id] != nil }) {
                 try? await Task.sleep(for: .milliseconds(20))
             }
         }
     }
 
-    /// The active child refused audio: end its stream at the gate and tell the peer, once.
-    fileprivate func inputClosed(_ stream: UUID) {
-        let (connection, listener) = state.withLock { state -> (UUID?, WebSocketListener?) in
-            guard state.active?.stream == stream else { return (nil, nil) }
+    /// The active child refused audio: end its stream at the gate and tell the peer, once. Only while `pipeline` is
+    /// still the active one: a segment that raced to a child a reload just replaced (#405) ends nothing.
+    func inputClosed(_ stream: UUID, pipeline: RightyoAmbientPipeline) {
+        let closed = state.withLock { state -> (run: UUID, connection: UUID)? in
+            guard let active = state.active, active.stream == stream, active.pipeline === pipeline,
+                  let connection = state.runs[active.run]?.connection else { return nil }
             state.active = nil
-            return (state.runs[stream]?.connection, state.listener?.value)
+            return (active.run, connection)
         }
-        guard let connection else { return }
-        retire(stream)
+        guard let (run, connection) = closed else { return }
+        let listener = state.withLock { $0.listener?.value }
+        retire(run)
         emit("ambient_input_closed", detail: nil)
         Task { await listener?.ambientFailed(stream: stream, connection: connection,
                                              message: "ambient stopped: listener input closed") }
@@ -747,40 +807,54 @@ extension AmbientRightyoRouter {
             return refuse(stream, connection: connection, reason: refusal ?? "stopping")
         }
         let pipeline: RightyoAmbientPipeline
-        do {
-            var settings = RightyoAmbientPipeline.Configuration(
-                executable: configuration.executable, config: configuration.config, target: configuration.target,
-                binding: configuration.binding, connection: connection,
-                allowSynthetic: configuration.allowSynthetic, timing: configuration.timing,
-                isEcho: { [spokenReplies] heard in spokenReplies.isEcho(heard) },
-                onDismiss: dismissed(on: connection, listener: listener),
-                onAcknowledge: acknowledged(on: connection, listener: listener)
-            )
-            (settings.replyControl, settings.onAcknowledgementSkipped) = (configuration.replyControl, skipped())
-            settings.onHeard = heard(on: connection, listener: listener)
-            pipeline = try RightyoAmbientPipeline(configuration: settings,
-                                                  dispatcher: AmbientListenerDispatcher(listener: listener,
-                                                                                        audit: configuration.audit))
-        } catch {
+        do { pipeline = try makePipeline(connection: connection, listener: listener) } catch {
             return refuse(stream, connection: connection, reason: Self.describe(error))
         }
         let admitted = state.withLock { state -> Bool in
             guard !state.shuttingDown else { return false }
-            state.active = (stream, pipeline)
-            state.runs[stream] = Run(connection: connection, pipeline: pipeline)
-            // Created under the lock, so the run's own removal cannot precede its registration. The run's own task
-            // emits `ambient_started` first, so it always precedes that run's `ambient_ended`, even when a child
-            // exits at once beside another live run (#273).
-            state.runs[stream]?.task = Task { [weak self] in
-                self?.emit("ambient_started", detail: nil)
-                await self?.run(pipeline, stream, connection)
-            }
+            let id = register(pipeline, stream: stream, connection: connection, in: &state)
+            state.active = Active(stream: stream, run: id, pipeline: pipeline, since: Date())
             return true
         }
         guard admitted else {
             Task { await pipeline.stop() }
             return
         }
+    }
+
+    /// One child for `connection`'s stream, launched now; a refusal launches nothing. Shared by a start and a
+    /// reload (#405), so a reloaded child is configured exactly as a fresh one.
+    fileprivate func makePipeline(connection: UUID, listener: WebSocketListener) throws -> RightyoAmbientPipeline {
+        var settings = RightyoAmbientPipeline.Configuration(
+            executable: configuration.executable, config: configuration.config, target: configuration.target,
+            binding: configuration.binding, connection: connection,
+            allowSynthetic: configuration.allowSynthetic, timing: configuration.timing,
+            isEcho: { [spokenReplies] heard in spokenReplies.isEcho(heard) },
+            onDismiss: dismissed(on: connection, listener: listener),
+            onAcknowledge: acknowledged(on: connection, listener: listener)
+        )
+        (settings.replyControl, settings.onAcknowledgementSkipped) = (configuration.replyControl, skipped())
+        settings.onHeard = heard(on: connection, listener: listener)
+        return try RightyoAmbientPipeline(configuration: settings,
+                                          dispatcher: AmbientListenerDispatcher(listener: listener,
+                                                                                audit: configuration.audit))
+    }
+
+    /// Registers a run for `pipeline` under the caller's lock and returns its id. The task is created under the lock,
+    /// so the run's own removal cannot precede its registration. The run's own task emits `ambient_started` first, so
+    /// it always precedes that run's `ambient_ended`, even when a child exits at once beside another live run (#273).
+    /// A reload's run (#405) emits `ambient_reloaded` first for the same reason: a new child that fails at once must
+    /// leave its failure, not the reload, as the last event.
+    fileprivate func register(_ pipeline: RightyoAmbientPipeline, stream: UUID, connection: UUID, reload: Bool = false,
+                              in state: inout State) -> UUID {
+        let id = UUID()
+        state.runs[id] = Run(stream: stream, connection: connection, pipeline: pipeline)
+        state.runs[id]?.task = Task { [weak self] in
+            if reload { self?.emit("ambient_reloaded", detail: nil) }
+            self?.emit("ambient_started", detail: nil)
+            await self?.run(pipeline, id: id, stream: stream, connection: connection)
+        }
+        return id
     }
 
     /// Plays an acknowledgement clip on the phone that heard an admitted request (rightyo#105), in the addressed
@@ -841,30 +915,34 @@ extension AmbientRightyoRouter {
         }
     }
 
-    private func run(_ pipeline: RightyoAmbientPipeline, _ stream: UUID, _ connection: UUID) async {
+    private func run(_ pipeline: RightyoAmbientPipeline, id: UUID, stream: UUID, connection: UUID) async {
         var failure: String?
+        // A reload's replaced child (#405) is marked `replaced`, so `haild doctor` does not read its end as a failure.
+        func replacedPrefix() -> String { state.withLock { $0.runs[id]?.replaced == true } ? "replaced " : "" }
         do {
             let summary = try await pipeline.run()
-            let gateEnd = state.withLock { $0.runs[stream]?.gateEnd.map { "\($0)" } } ?? "none"
-            emit("ambient_ended", detail: "delivered=\(summary.delivered) written=\(summary.child.writtenBytes)"
-                 + " dropped=\(summary.child.droppedBytes) echo=\(await pipeline.echoDropped) ended=\(gateEnd)"
-                 + " exit=\(summary.exit)")
+            let gateEnd = state.withLock { $0.runs[id]?.gateEnd.map { "\($0)" } } ?? "none"
+            emit("ambient_ended", detail: replacedPrefix() + "delivered=\(summary.delivered)"
+                 + " written=\(summary.child.writtenBytes) dropped=\(summary.child.droppedBytes)"
+                 + " echo=\(await pipeline.echoDropped) ended=\(gateEnd) exit=\(summary.exit)")
         } catch {
             failure = Self.describe(error)
-            emit("ambient_ended", detail: failure)
+            emit("ambient_ended", detail: replacedPrefix() + (failure ?? "failed"))
         }
-        let (stillActive, listener, waiters) = state.withLock { state in
-            state.runs[stream] = nil
-            let active = state.active?.stream == stream
+        let (stillActive, replaced, listener, waiters) = state.withLock { state in
+            let replaced = state.runs.removeValue(forKey: id)?.replaced ?? false
+            // By identity, not stream: after a reload (#405) the stream is the same but the active run is not.
+            let active = state.active?.run == id
             if active { state.active = nil }
             let waiters = state.runs.isEmpty ? Array(state.drainWaiters.values) : []
             if state.runs.isEmpty { state.drainWaiters = [:] }
-            return (active, state.shuttingDown ? nil : state.listener?.value, waiters)
+            return (active, replaced, state.shuttingDown ? nil : state.listener?.value, waiters)
         }
         waiters.forEach { $0.resume() }
         // A clean run whose stream already ended is the normal path; anything else ends the stream and tells
-        // the phone, even a refusal after the stream ended (for example confirmation required).
-        guard failure != nil || stillActive, let listener else { return }
+        // the phone, even a refusal after the stream ended (for example confirmation required). A run a reload
+        // replaced is only logged above: its stream lives on in the new child, so even a non-zero exit stays here.
+        guard !replaced, failure != nil || stillActive, let listener else { return }
         await listener.ambientFailed(stream: stream, connection: connection,
                                      message: "ambient stopped: \(failure ?? "listener exited")")
     }
@@ -896,6 +974,84 @@ extension AmbientRightyoRouter {
 
     fileprivate func emit(_ event: String, detail: String?) {
         log(WebSocketListenerEvent(event: event, detail: detail))
+    }
+}
+
+extension AmbientRightyoRouter {
+    private enum ReloadClaim {
+        case refused(AmbientReloadOutcome)
+        case claimed(old: Active, connection: UUID, listener: WebSocketListener)
+    }
+
+    /// `haild ambient reload` (#405): a fresh child for the active stream, with the current install and config, on the
+    /// same connection, target and binding. The phone is not told: its stream id stays valid at the gate, and its audio
+    /// goes to the new child from the swap on (a second or so of speech around it may be lost). The child is built
+    /// outside the lock and swapped in only if the same stream and child are still active; a refused launch keeps the
+    /// old child. The replaced child gets EOF and the short forced-stop graces (#366); its run is never cancelled, so a
+    /// dispatch in flight finishes typing, and its end is logged only. It only re-arms listening already on.
+    public func reload() async -> AmbientReloadOutcome {
+        let claim = state.withLock { state -> ReloadClaim in
+            if state.shuttingDown { return .refused(.stopping) }
+            guard let active = state.active, let run = state.runs[active.run] else { return .refused(.idle) }
+            guard let listener = state.listener?.value else { return .refused(.stopping) }
+            // A start making room, another reload, or no free child slot: try again shortly.
+            guard !state.reloading, state.queue.isEmpty, !state.working, !Self.full(state) else {
+                return .refused(.busy)
+            }
+            state.reloading = true
+            return .claimed(old: active, connection: run.connection, listener: listener)
+        }
+        guard case .claimed(let old, let connection, let listener) = claim else {
+            if case .refused(let outcome) = claim { return outcome }
+            return .busy
+        }
+        defer { state.withLock { $0.reloading = false } }
+        let pipeline: RightyoAmbientPipeline
+        do { pipeline = try makePipeline(connection: connection, listener: listener) } catch {
+            let reason = Self.describe(error)
+            emit("ambient_reload_refused", detail: reason)
+            return .refused(reason)
+        }
+        let outcome = swap(old, for: pipeline, connection: connection)
+        guard outcome == .reloaded else {
+            // Awaited, so the reload answers only once this child is reaped. Shutdown's drain does not wait for it
+            // (it was never a run); a daemon exit closes its input anyway.
+            await pipeline.stop(grace: Self.forcedStopGrace)
+            return outcome
+        }
+        retire(old.run, grace: Self.forcedStopGrace)
+        return .reloaded
+    }
+
+    /// Swaps `pipeline` in under one lock, only if `old` is still the active child and a slot is still free.
+    private func swap(_ old: Active, for pipeline: RightyoAmbientPipeline, connection: UUID) -> AmbientReloadOutcome {
+        state.withLock { state -> AmbientReloadOutcome in
+            if state.shuttingDown { return .stopping }
+            guard let active = state.active else { return .idle }
+            // The stream ended, moved or failed meanwhile; this child is not wanted.
+            guard active.stream == old.stream, active.pipeline === old.pipeline, !Self.full(state) else { return .busy }
+            state.runs[old.run]?.replaced = true
+            // Retired in the same lock, so a take-over start in the meantime finds it as a victim to force out.
+            state.retirements += 1
+            state.runs[old.run]?.retiredAt = state.retirements
+            let id = register(pipeline, stream: old.stream, connection: connection, reload: true, in: &state)
+            state.active = Active(stream: old.stream, run: id, pipeline: pipeline, since: old.since)
+            return .reloaded
+        }
+    }
+
+    /// Ids, times and counts only (#405). `installedAt` is the configured executable's (symlink-resolved) mtime.
+    public func status() -> AmbientRouterStatus {
+        let installed = try? FileManager.default.attributesOfItem(
+            atPath: configuration.executable.resolvingSymlinksInPath().path)[.modificationDate] as? Date
+        return state.withLock { state in
+            var status = AmbientRouterStatus(target: configuration.target, installedAt: installed,
+                                             liveChildren: state.runs.values.filter { !$0.reaped }.count)
+            if let active = state.active, let run = state.runs[active.run] {
+                (status.connection, status.streamSince, status.childSince) = (run.connection, active.since, run.since)
+            }
+            return status
+        }
     }
 }
 
