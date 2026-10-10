@@ -23,8 +23,9 @@ public struct OwnedReplyPublisherDiagnostics: Sendable {
 }
 
 /// One final reply a reply-owning adapter publishes for its own target and exact request. Text is spoken and shown
-/// as-is, so it is bounded and carries no control (C0/C1) or invisible format characters (bidi overrides,
-/// zero-width), other than newline and tab: the same hidden-character rule as inbound sanitizing.
+/// as-is, so it is bounded, carries no control (C0/C1) characters other than newline and tab, and passes the
+/// inbound sanitizer's hidden-character rule (format, default-ignorable, variation-selector smuggling, fillers,
+/// braille blank, noncharacters), including its narrow emoji exceptions such as ZWJ sequences.
 public struct OwnedReply: Sendable, Equatable {
     public let requestID: UUID
     public let hostID: String
@@ -43,11 +44,9 @@ public struct OwnedReply: Sendable, Equatable {
     }
 
     private static func hasHidden(_ value: String, allowing allowed: Set<UInt32>) -> Bool {
-        value.unicodeScalars.contains { scalar in
-            guard !allowed.contains(scalar.value) else { return false }
-            let category = scalar.properties.generalCategory
-            return category == .control || category == .format
-        }
+        value.unicodeScalars.contains {
+            !allowed.contains($0.value) && $0.properties.generalCategory == .control
+        } || Sanitizer.firstHiddenCharacterClass(in: value) != nil
     }
 }
 

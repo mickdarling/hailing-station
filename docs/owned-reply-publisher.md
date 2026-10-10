@@ -14,10 +14,12 @@ are the owned Codex adapter (#153) and a Slack dot bridge (#403).
 - Each publisher is constructed with the exact set of targets it may speak for. The default is only the
   diagnostic bridge. A reply for any other target, or for another host, is refused before a directory or
   child exists. The argv names the reply's own target, still with no shell.
-- Text must contain something other than whitespace, is limited to `PayloadLimits.maxTextBytes`, and may
-  contain no control (C0/C1) or invisible format characters, such as bidi overrides or zero-width
-  characters. Newline and tab are the only exceptions. Targets, including each configured target, must be
-  1–256 bytes with none of those characters.
+- Text must contain something other than whitespace and is limited to `PayloadLimits.maxTextBytes`.
+  It may contain no control (C0/C1) characters other than newline and tab. It must also pass the inbound
+  sanitizer's hidden-character rule, which refuses format and default-ignorable characters, bidi controls,
+  variation-selector smuggling, Hangul fillers, the braille blank and noncharacters. That rule keeps its
+  narrow emoji exceptions, such as ZWJ sequences and emoji presentation selectors. Targets, including each
+  configured target, must be 1–256 bytes and follow the same rule, with no newline or tab.
 - `DiagnosticBridgeReply` keeps its fixed phrase and reaches the same path through `owned`. Diagnostic
   limits, deadlines and cleanup are unchanged. One difference: a sequence-0 diagnostic reply is now refused
   as `invalidConfiguration` before the cancellation and stop checks. The real bridge never produces one.

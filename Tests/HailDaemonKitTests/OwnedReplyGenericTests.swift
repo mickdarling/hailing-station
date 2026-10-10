@@ -8,6 +8,12 @@ import Testing
 @Suite struct OwnedReplyGenericTests {
     private static let target = "codex-owned:owned"
 
+    @Test func emojiSequencesThatInboundSanitizingAllowsAreKept() throws {
+        let text = "Done \u{1F469}\u{200D}\u{1F4BB} \u{2764}\u{FE0F}"
+        let reply = try OwnedReply(requestID: UUID(), hostID: "synthetic-host", targetID: Self.target, text: text)
+        #expect(reply.text == text)
+    }
+
     @Test func validRepliesKeepNewlinesAndTabs() throws {
         let reply = try OwnedReply(requestID: UUID(), hostID: "synthetic-host", targetID: Self.target,
                                    text: "Invented answer.\n\tSecond line.")
@@ -15,7 +21,8 @@ import Testing
     }
 
     @Test(arguments: ["", "   \n", "bad\0text", "bell\u{7}", "del\u{7f}", "cr\rtext", "csi\u{9b}text",
-                      "bidi\u{202e}text", "zero\u{200b}width", "isolate\u{2066}text",
+                      "bidi\u{202e}text", "zero\u{200b}width", "isolate\u{2066}text", "a\u{FE01}\u{E0100}",
+                      "a\u{034F}b", "a\u{3164}b", "a\u{2800}b", "a\u{FFFE}b",
                       String(repeating: "a", count: PayloadLimits.maxTextBytes + 1)])
     func unsafeTextIsRefused(text: String) {
         #expect(throws: OwnedReplyPublisherError.invalidConfiguration) {
