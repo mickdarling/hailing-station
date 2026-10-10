@@ -99,12 +99,13 @@ enum CodexLauncher {
             return output
         } catch {
             child.cancel(); await child.join()
+            if Task.isCancelled { throw CancellationError() }
             throw CodexLaunchError.versionUnavailable
         }
     }
 
     /// Absolute path, symlinks resolved, regular executable Mach-O owned by root or this user and
-    /// writable by nobody else, inside a folder with the same ownership rule.
+    /// writable by nobody else, inside a folder with the same rule and no ACL, under ancestors nobody else can swap.
     fileprivate static func inspect(_ path: String) throws -> (path: String, identity: CodexFileIdentity) {
         guard path.hasPrefix("/"), !path.contains("\0"), let real = realpath(path, nil) else {
             throw CodexLaunchError.invalidPath
@@ -114,17 +115,32 @@ enum CodexLauncher {
         guard descriptor >= 0 else { throw CodexLaunchError.invalidPath }
         defer { close(descriptor) }
         var file = stat(), folder = stat()
-        guard fstat(descriptor, &file) == 0, stat((resolved as NSString).deletingLastPathComponent, &folder) == 0
-        else { throw CodexLaunchError.invalidPath }
+        let parent = (resolved as NSString).deletingLastPathComponent
+        guard fstat(descriptor, &file) == 0, stat(parent, &folder) == 0 else { throw CodexLaunchError.invalidPath }
         guard file.st_mode & S_IFMT == S_IFREG, file.st_mode & S_IXUSR != 0, isMachO(descriptor) else {
             throw CodexLaunchError.notExecutable
         }
         guard safelyOwned(file), safelyOwned(folder), !hasExtendedACL(descriptor: descriptor),
-              !hasExtendedACL(folder: (resolved as NSString).deletingLastPathComponent) else {
+              !hasExtendedACL(folder: parent), try ancestorsAreTrusted(parent) else {
             throw CodexLaunchError.unsafeOwnership
         }
         return (resolved, CodexFileIdentity(device: file.st_dev, inode: file.st_ino, size: file.st_size,
                                             modified: file.st_mtimespec, changed: file.st_ctimespec))
+    }
+
+    /// Every folder up to `/` must be owned by root or this user and not world-writable. Group write is accepted
+    /// only for root-owned wheel/admin folders such as `/Applications`: those members can already become root.
+    private static func ancestorsAreTrusted(_ folder: String) throws -> Bool {
+        var path = folder
+        while true {
+            var info = stat()
+            guard lstat(path, &info) == 0, info.st_mode & S_IFMT == S_IFDIR else { throw CodexLaunchError.invalidPath }
+            let groupWriteTrusted = info.st_uid == 0 && (info.st_gid == 0 || info.st_gid == 80)
+            guard info.st_uid == 0 || info.st_uid == geteuid(), info.st_mode & S_IWOTH == 0,
+                  info.st_mode & S_IWGRP == 0 || groupWriteTrusted else { return false }
+            if path == "/" { return true }
+            path = (path as NSString).deletingLastPathComponent
+        }
     }
 
     private static func safelyOwned(_ info: stat) -> Bool {

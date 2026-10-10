@@ -35,9 +35,9 @@ extension CodexLauncherTests {
             in: folder)
         let started = ContinuousClock.now
         await #expect(throws: CodexLaunchError.versionUnavailable) {
-            _ = try await CodexLauncher.readVersion(child, deadline: .seconds(1))
+            _ = try await CodexLauncher.readVersion(child, deadline: .seconds(2))
         }
-        #expect(ContinuousClock.now - started < .seconds(4))
+        #expect(ContinuousClock.now - started < .seconds(5))
         let pid = try #require(pid_t(String(contentsOfFile: pidFile, encoding: .utf8)))
         #expect(kill(pid, 0) == -1 && errno == ESRCH)
     }

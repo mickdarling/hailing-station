@@ -128,6 +128,20 @@ import Testing
         }
     }
 
+    @Test func aGroupWritableAncestorIsRefusedAsUnsafe() async throws {
+        let folder = try Self.scratch()
+        defer { try? FileManager.default.removeItem(at: folder) }
+        let inner = folder.appendingPathComponent("outer/inner")
+        try FileManager.default.createDirectory(at: inner, withIntermediateDirectories: true)
+        let copy = inner.appendingPathComponent("codex").path
+        try FileManager.default.copyItem(atPath: "/bin/ls", toPath: copy)
+        #expect(chmod(copy, 0o700) == 0 && chmod(inner.path, 0o700) == 0)
+        #expect(chmod(folder.appendingPathComponent("outer").path, 0o777) == 0)
+        await #expect(throws: CodexLaunchError.unsafeOwnership) {
+            _ = try await CodexLauncher.verify(path: copy, requirement: Self.apple, probe: Self.fixed(""))
+        }
+    }
+
     @Test func theDefaultRequirementRefusesAnAppleBinaryBeforeTheProbe() async {
         await #expect(throws: CodexLaunchError.signatureRejected) {
             _ = try await CodexLauncher.verify(path: "/bin/ls") { _ in
