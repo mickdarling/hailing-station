@@ -1022,6 +1022,8 @@ extension AmbientRightyoRouter {
         let claim = state.withLock { state -> ReloadClaim in
             if state.shuttingDown { return .refused(.stopping) }
             guard let active = state.active, let run = state.runs[active.run] else { return .refused(.idle) }
+            // Its child has already ended; the stream is ending with it, and its end event must stay the last one.
+            guard !run.ending else { return .refused(.busy) }
             guard let listener = state.listener?.value else { return .refused(.stopping) }
             // A start making room, another reload, or no free child slot: try again shortly.
             guard !state.reloading, state.queue.isEmpty, !state.working, !Self.full(state) else {
