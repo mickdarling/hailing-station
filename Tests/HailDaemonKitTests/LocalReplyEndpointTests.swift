@@ -751,7 +751,7 @@ private func submit(_ frame: Frame, socket: String) async throws -> LocalReplyRe
     try await submit(FrameCoding.encode(frame), socket: socket)
 }
 
-private func submit(_ data: Data, socket: String) async throws -> LocalReplyResponse {
+func submit(_ data: Data, socket: String) async throws -> LocalReplyResponse {
     let connection = NWConnection(to: .unix(path: socket), using: .tcp)
     let queue = DispatchQueue(label: "hail.local-reply-test")
     var encoded = data
