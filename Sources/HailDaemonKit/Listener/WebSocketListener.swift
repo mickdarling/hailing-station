@@ -757,7 +757,7 @@ extension AmbientRightyoRouter {
                 onAcknowledge: acknowledged(on: connection, listener: listener)
             )
             (settings.replyControl, settings.onAcknowledgementSkipped) = (configuration.replyControl, skipped())
-            settings.onHeard = heard(on: connection, listener: listener)
+            (settings.onHeard, settings.onOverheard) = transcriptRelays(on: connection, listener: listener)
             pipeline = try RightyoAmbientPipeline(configuration: settings,
                                                   dispatcher: AmbientListenerDispatcher(listener: listener,
                                                                                         audit: configuration.audit))
@@ -815,6 +815,22 @@ extension AmbientRightyoRouter {
         let target = configuration.target
         return { [weak listener] text in
             await listener?.showAmbientHeard(connection: connection, target: target, text: text)
+        }
+    }
+
+    /// The phone's own words, sent (#318) and not sent (#398), for the stream on `connection`.
+    private func transcriptRelays(
+        on connection: UUID, listener: WebSocketListener
+    ) -> (@Sendable (String) async -> Void, @Sendable (String, Bool) async -> Void) {
+        (heard(on: connection, listener: listener), overheard(on: connection, listener: listener))
+    }
+
+    /// Shows the phone that heard a turn RightyO did not send (#398), within the scope that phone asked for. Nothing is
+    /// logged: the text is transcript content.
+    private func overheard(on connection: UUID, listener: WebSocketListener) -> @Sendable (String, Bool) async -> Void {
+        let target = configuration.target
+        return { [weak listener] text, owner in
+            await listener?.showAmbientOverheard(connection: connection, target: target, text: text, owner: owner)
         }
     }
 
