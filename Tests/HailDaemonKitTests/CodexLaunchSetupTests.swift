@@ -85,6 +85,20 @@ import Testing
         }
     }
 
+    @Test(arguments: [("[]", true), ("['/synthetic-home/AGENTS.md']", true), ("undef", true),
+                      ("['/synthetic-workspace/AGENTS.md']", false), ("['/synthetic/AGENTS.md']", false),
+                      ("['/synthetic-home/../elsewhere/AGENTS.md']", false),
+                      ("['/synthetic-homeless/AGENTS.md']", false)])
+    func onlyInstructionFilesInsideTheOwnersCodexHomeAreAccepted(sources: String, accepted: Bool) async throws {
+        let command = CodexAppServerFixtures.command(instructionSources: sources)
+        let start = { try await CodexStdioTransport.withTransport(command: command) {
+            try await CodexAppServerProtocol.start($0, workspace: "/synthetic-workspace")
+        } }
+        if accepted { #expect(try await start() == "synthetic-thread") } else {
+            await #expect(throws: CodexAppServerError.notIsolated) { _ = try await start() }
+        }
+    }
+
     @Test func threadStartSendsTheWorkspaceAndRefusesADifferentCwd() async throws {
         let echoed = try await CodexStdioTransport.withTransport(command: CodexAppServerFixtures.command()) {
             try await CodexAppServerProtocol.start($0, workspace: "/synthetic-workspace")

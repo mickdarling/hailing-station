@@ -35,7 +35,7 @@ enum CodexAppServerFixtures {
     static func command(gate: CodexFixtureGate? = nil, status: String = "completed",
                         early: Bool = true, terminal: Bool = true, extra: String = "",
                         approvalsReviewer: String? = "user", nullApprovalsReviewer: Bool = false,
-                        echoedCwd: String? = nil) -> OwnedStdioCommand {
+                        echoedCwd: String? = nil, instructionSources: String = "[]") -> OwnedStdioCommand {
         let reviewer = nullApprovalsReviewer ? "approvalsReviewer=>undef,"
             : approvalsReviewer.map { "approvalsReviewer=>'\($0)'," } ?? ""
         let code = #"use JSON::PP; $|=1; $SIG{TERM}='IGNORE'; $gate=shift @ARGV; $number=0; "# +
@@ -47,6 +47,7 @@ enum CodexAppServerFixtures {
             #"sendmsg({id=>$id,result=>{approvalPolicy=>'never',"# + reviewer +
             #"sandbox=>{type=>'readOnly',networkAccess=>"# +
             #"JSON::PP::false},cwd=>"# + (echoedCwd.map { "'\($0)'" } ?? #"$r->{params}->{cwd}"#) + "," +
+            "instructionSources=>\(instructionSources)," +
             #"thread=>{id=>'synthetic-thread',ephemeral=>JSON::PP::true}}}); } else { "# +
             #"$number++; $turn='synthetic-turn-'.$number; "# +
             (early ? "" : response) + events + extra +
