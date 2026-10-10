@@ -215,6 +215,7 @@ struct AmbientListeningCard: View {
                 .font(.subheadline)
                 .accessibilityHint("Sends silence while a reply plays, instead of relying on echo cancellation")
                 .accessibilityIdentifier("station.ambient-mask-toggle")
+            OverheardSettingsView(connections: connections)
             if controller.isListening, playback.isReplyAudioOutputBusy {
                 Label("Speaking", systemImage: "speaker.wave.2.fill")
                     .font(.subheadline.bold())
