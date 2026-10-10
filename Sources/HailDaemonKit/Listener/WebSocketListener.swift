@@ -952,17 +952,23 @@ extension AmbientRightyoRouter {
     }
 
     /// Plays the stop confirmation clip (#418) on the connection that said stop, through the same guarded path as an
-    /// acknowledgement: only that connection, never the Mac, never the agent session, and recorded for echo matching.
-    /// Logs tokens only.
+    /// acknowledgement: only that connection, never the Mac, never the agent session. Its words are also held as a
+    /// host phrase, so hearing them back, however short, is echo rather than a request or an overheard turn. Logs
+    /// tokens only.
     private func confirmStop(
         _ receipt: RightyoDismissReceipt, playback: String, on connection: UUID, listener: WebSocketListener?
     ) async {
-        guard let library = configuration.acknowledgements,
-              let wanted = AmbientStopConfirmation.persona(for: receipt, playback: playback) else { return }
-        guard let pick = AmbientStopConfirmation.clip(wanted, in: library) else {
+        guard let library = configuration.acknowledgements else { return }
+        if let reason = AmbientStopConfirmation.skipReason(for: receipt, playback: playback) {
+            emit("ambient_stop_confirmed", detail: "outcome=skipped reason=\(reason)")
+            return
+        }
+        guard let wanted = AmbientStopConfirmation.persona(for: receipt, playback: playback),
+              let pick = AmbientStopConfirmation.clip(wanted, in: library) else {
             emit("ambient_stop_confirmed", detail: "outcome=skipped reason=no_clips")
             return
         }
+        spokenReplies.observeHostPhrase(pick.clip)
         let outcome = await listener?.acknowledgeAmbient(connection: connection, target: configuration.target,
                                                          clip: pick.clip) ?? "no_connection"
         emit("ambient_stop_confirmed", detail: "clip=\(pick.persona)/\(pick.index) outcome=\(outcome)")
