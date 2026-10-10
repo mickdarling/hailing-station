@@ -55,6 +55,16 @@ import Testing
         #expect(sent == ["owner", "everyone"])
     }
 
+    @Test func quickChangesReachTheHostInOrderSoTheLastChoiceWins() async throws {
+        let connected = try await connect(hostCapabilities: ["receive_replies", AmbientOverheard.capability])
+        let (store, socket, endpoint) = (connected.store, connected.socket, connected.endpoint)
+        for scope in ["everyone", "owner", "everyone", "off", "owner", "off"] { store.setOverheardScope(scope) }
+        try await waitUntil { try await scopesSent(socket).count == 6 }
+        let sent = try await scopesSent(socket)
+        #expect(sent == ["everyone", "owner", "everyone", "off", "owner", "off"])
+        await store.disconnect(endpoint.id)
+    }
+
     @Test func aHostWithoutTheCapabilityIsNeverSentAScope() async throws {
         let connected = try await connect(hostCapabilities: ["receive_replies"], scope: "everyone")
         let (store, socket, endpoint) = (connected.store, connected.socket, connected.endpoint)

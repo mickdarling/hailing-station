@@ -19,8 +19,10 @@ public final class HostConnectionStore {
     public let conversation = ConversationLog()
     /// True while ambient listening is streaming; leaving the foreground then keeps the destination authorized (#282).
     public var ambientStreaming = false
-    /// Which overheard turns hosts should send (#398): `off`, `owner` or `everyone`; re-sent to each host it reaches ready.
+    /// Which overheard turns hosts should send (#398): `off`, `owner` or `everyone`; re-sent (unless `off`, the host
+    /// default) to each host as it reaches ready. Sends to one host run in order, so the last choice is the one it keeps.
     public private(set) var overheardScope = "off"
+    @ObservationIgnored var overheardScopeSends: [HostEndpoint.Identifier: Task<Void, Never>] = [:]
     /// Told when a host says this device's ambient stream took listening over from another device (#366), with
     /// that device's class. The ambient card hands it to its controller.
     @ObservationIgnored public var onAmbientMovedHere: (@MainActor (HostEndpoint.Identifier, String?) -> Void)?
@@ -223,7 +225,12 @@ extension HostConnectionStore {
     private func send(_ scope: String, to id: HostEndpoint.Identifier) {
         guard let connection = connections[id],
               snapshots[id]?.capabilities.contains(AmbientOverheard.capability) == true else { return }
-        Task { try? await connection.sendOverheardScope(scope) }
+        // Chained per host: a later choice can never be overtaken by an earlier one still in flight.
+        let previous = overheardScopeSends[id]
+        overheardScopeSends[id] = Task {
+            await previous?.value
+            try? await connection.sendOverheardScope(scope)
+        }
     }
 }
 
