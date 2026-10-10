@@ -20,7 +20,7 @@ enum CodexAppServerProtocol {
             throw CodexAppServerError.invalidProtocol
         }
         try await transport.notify(.initialized)
-        try await requireNoProjectLayers(transport, workspace: workspace)
+        try await requireKnownNonProjectLayers(transport, workspace: workspace)
         let response = try fields(try await transport.request(.threadStart, params: .object([
             "ephemeral": .bool(true), "approvalPolicy": .string("never"),
             "approvalsReviewer": .string("user"), "sandbox": .string("read-only"), "cwd": .string(workspace)
@@ -51,15 +51,15 @@ enum CodexAppServerProtocol {
                   !path.split(separator: "/").contains("..") else { throw CodexAppServerError.notIsolated }
         }
     }
-    /// Runtime evidence for configuration, whatever discovery rules or managed config applied: the effective config
-    /// as seen from the workspace may include user, system, managed, packaged and session layers, but no project
-    /// `.codex/` layer, which could add MCP servers or hooks the owner did not choose for these sessions.
     /// Every non-project layer source in the pinned 0.162 schema. An unknown or project layer refuses the session.
     private static let knownLayers: Set<String> = [
         "packagedDefaults", "mdm", "system", "enterpriseManaged", "user", "sessionFlags",
         "legacyManagedConfigTomlFromFile", "legacyManagedConfigTomlFromMdm"
     ]
-    private static func requireNoProjectLayers(_ transport: CodexStdioTransport, workspace: String) async throws {
+    /// Runtime evidence for configuration, whatever discovery rules or managed config applied: the effective config
+    /// as seen from the workspace may include only known owner, admin or package layers, never a project `.codex/`
+    /// layer, which could add MCP servers or hooks the owner did not choose for these sessions.
+    private static func requireKnownNonProjectLayers(_ transport: CodexStdioTransport, workspace: String) async throws {
         let response = try fields(try await transport.request(.configRead, params: .object([
             "cwd": .string(workspace), "includeLayers": .bool(true)
         ])))

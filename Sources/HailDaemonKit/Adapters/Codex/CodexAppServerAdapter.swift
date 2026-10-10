@@ -95,6 +95,8 @@ actor CodexAppServerAdapter: ProviderContextDelivering, ProviderSessionObserving
     nonisolated func cancel() { lease.stop() }
     func join() async { cancel(); await lifecycle?.value }
     var isReaped: Bool { get async { await transport?.isReaped ?? true } }
+    /// Whether a child transport was ever started for this adapter (reaped or not).
+    var launchedChild: Bool { transport != nil }
     var bufferedEarlyRecords: Int { events?.bufferedEarlyRecords ?? 0 }
     func listTargets() async throws -> [AdapterTarget] {
         lease.stopped ? [] : [AdapterTarget(name: "owned", binding: sessionID)]

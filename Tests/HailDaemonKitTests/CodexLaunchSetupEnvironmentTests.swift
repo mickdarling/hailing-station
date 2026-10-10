@@ -130,7 +130,8 @@ extension CodexLaunchSetupTests {
             await #expect(throws: CodexAppServerError.unavailable) { _ = try await adapter.observe(binding) }
             return adapter
         }
-        #expect(await adapter.isReaped) // No child was ever started.
+        #expect(await adapter.launchedChild == false) // Refused before lease.start, not a launched-and-failed child.
+        #expect(await adapter.isReaped)
     }
 
     @Test func aHiddenFileMakesTheWorkspaceNonEmpty() throws {

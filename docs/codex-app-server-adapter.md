@@ -115,8 +115,10 @@ AGENTS.md. `CodexLaunchSetup.prepare` builds the rest:
 - **Config evidence:** before `thread/start`, `config/read` with the workspace
   as `cwd` and `includeLayers` must report only known non-project layer
   sources (user, system, MDM, enterprise-managed, packaged, session and the
-  legacy managed layers). A project layer or any unknown type refuses. A project `.codex/` layer,
-  which could add MCP servers or hooks, refuses the session the same way.
+  legacy managed layers). A project `.codex/` layer, which could add MCP
+  servers or hooks, or any unknown type refuses the session. A small window
+  between the last workspace check and the child reading it cannot be closed
+  from the host; these runtime checks cover it.
 - **Disabled MCP servers:** an optional list of names becomes per-launch
   `-c mcp_servers.<name>.enabled=false` overrides, for example to leave Chief
   out. Names are limited to letters, digits, `_` and `-`, up to 64 characters.
