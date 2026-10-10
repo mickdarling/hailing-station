@@ -91,7 +91,10 @@ AGENTS.md. `CodexLaunchSetup.prepare` builds the rest:
   be a real, private, empty folder (hidden files count), and the root must not
   sit inside a git checkout, so no repository AGENTS.md or files are picked up.
   The `thread/start` response must echo that exact `cwd`. The owner's own
-  instruction files may load. Privacy is checked on mode bits, not ACLs. If a
+  instruction files may load. The root and workspace may carry no extended
+  ACL, and every folder above the root follows the binary's ancestor rule
+  (owned by root or the owner, not writable by others, no allow ACL granting
+  changes), so the path cannot be swapped after `prepare`. If a
   hook or MCP server writes into the workspace, every later launch refuses with
   `workspaceNotEmpty` until the owner empties it; that is deliberate.
 - **Disabled MCP servers:** an optional list of names becomes per-launch

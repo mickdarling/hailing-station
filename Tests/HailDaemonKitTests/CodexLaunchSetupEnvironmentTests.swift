@@ -54,6 +54,42 @@ extension CodexLaunchSetupTests {
         }
     }
 
+    @Test(arguments: [false, true]) func anACLOnTheRootOrWorkspaceIsRefused(onWorkspace: Bool) throws {
+        let folder = try Self.root()
+        defer { try? FileManager.default.removeItem(at: folder) }
+        let setup = try CodexLaunchSetup.prepare(root: folder.path, host: [:])
+        try CodexLauncherTests.addACL("everyone allow list", to: onWorkspace ? setup.workspace : folder.path)
+        #expect(throws: CodexLaunchSetupError.unsafeOwnership) {
+            _ = try CodexLaunchSetup.prepare(root: folder.path, host: [:])
+        }
+    }
+
+    @Test(arguments: ["0o770", "acl"]) func aSwappableAncestorOfTheRootIsRefused(kind: String) throws {
+        let folder = try Self.root()
+        defer { try? FileManager.default.removeItem(at: folder) }
+        let nested = folder.path + "/codex"
+        #expect(mkdir(nested, 0o700) == 0)
+        if kind == "acl" {
+            try CodexLauncherTests.addACL("everyone allow delete_child,add_subdirectory", to: folder.path)
+        } else {
+            #expect(chmod(folder.path, 0o770) == 0)
+        }
+        #expect(throws: CodexLaunchSetupError.unsafeOwnership) {
+            _ = try CodexLaunchSetup.prepare(root: nested, host: [:])
+        }
+    }
+
+    @Test func aGitFileAncestorIsRefusedLikeAWorktree() throws {
+        let folder = try Self.root()
+        defer { try? FileManager.default.removeItem(at: folder) }
+        try Data("gitdir: /synthetic\n".utf8).write(to: URL(fileURLWithPath: folder.path + "/.git"))
+        let nested = folder.path + "/codex"
+        #expect(mkdir(nested, 0o700) == 0)
+        #expect(throws: CodexLaunchSetupError.insideRepository) {
+            _ = try CodexLaunchSetup.prepare(root: nested, host: [:])
+        }
+    }
+
     @Test func aHiddenFileMakesTheWorkspaceNonEmpty() throws {
         let folder = try Self.root()
         defer { try? FileManager.default.removeItem(at: folder) }
