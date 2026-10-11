@@ -31,7 +31,8 @@ package struct ReplyStreamPacer: Sendable {
     /// Admits one frame carrying `audio` seconds (zero for text or a terminal marker) and returns the instant
     /// it may be sent. Throws, admitting nothing, once the job's audio would pass `maxAudioSeconds`.
     package mutating func admit(audio: Double, at now: ContinuousClock.Instant) throws -> ContinuousClock.Instant {
-        guard audio >= 0, audioSeconds + audio <= Self.maxAudioSeconds else {
+        // A microsecond of slack: summing per-segment durations must not refuse a file exactly at the bound.
+        guard audio >= 0, audioSeconds + audio <= Self.maxAudioSeconds + 1e-6 else {
             throw ReplyStreamPacerError.audioBoundExceeded
         }
         var sendAt = now

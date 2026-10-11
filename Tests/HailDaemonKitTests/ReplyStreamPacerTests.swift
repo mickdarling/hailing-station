@@ -44,6 +44,21 @@ import Testing
         #expect(throws: ReplyStreamPacerError.audioBoundExceeded) { try pacer.admit(audio: 0.01, at: now) }
     }
 
+    @Test(arguments: [16_000, 24_000, 32_000, 44_100, 48_000])
+    func aFileExactlyAtTheBoundIsAdmittedSegmentBySegment(sampleRate: Int) throws {
+        var pacer = ReplyStreamPacer(paced: false)
+        let now = ContinuousClock.now
+        var remaining = sampleRate * 2 * Int(ReplyStreamPacer.maxAudioSeconds)
+        while remaining > 0 {
+            let segment = min(remaining, 48 * 1_024)
+            _ = try pacer.admit(audio: ReplyStreamPacer.seconds(pcm16Bytes: segment, sampleRate: sampleRate), at: now)
+            remaining -= segment
+        }
+        #expect(throws: ReplyStreamPacerError.audioBoundExceeded) {
+            try pacer.admit(audio: ReplyStreamPacer.seconds(pcm16Bytes: 2, sampleRate: sampleRate), at: now)
+        }
+    }
+
     @Test func unpacedFramesGoAtOnce() throws {
         var pacer = ReplyStreamPacer(paced: false)
         let now = ContinuousClock.now
