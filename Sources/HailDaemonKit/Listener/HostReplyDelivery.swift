@@ -13,6 +13,9 @@ enum ReplyPublicationStatus: Equatable, Sendable {
 struct HostReplyRequest {
     static let capacity = 64
     static let lifetime: Duration = .seconds(120)
+    /// A committed provider-owned turn (#430) answers for as long as it runs: Codex or a dot can take many minutes. The
+    /// bound only stops a record whose end was never reported from living for ever; ending the turn starts `lifetime`.
+    static let providerTurnBound: Duration = .seconds(6 * 3_600)
     static let frameLimit = 1_024
     let context: ProviderTurnContext
     let generation: UUID
@@ -28,10 +31,19 @@ struct HostReplyRequest {
     var audioSequence = 0
     var audioFinished = false
     var frames: Set<UUID> = []
+    /// When the provider reported the turn finished, interrupted or failed (#430); its final frames get `lifetime`.
+    var providerTurnEndedAt: ContinuousClock.Instant?
+
+    /// Only a leased (provider-owned) request whose handoff committed outlives `lifetime`, and only while its turn
+    /// runs; its binding lease and policy permit are still re-checked on every use (`withAuthority`).
+    var isProviderTurn: Bool { committed && bindingLease != nil }
 
     func isCurrent(at timestamp: ContinuousClock.Instant) -> Bool {
         let elapsed = createdAt.duration(to: timestamp)
-        return elapsed >= .zero && elapsed < Self.lifetime
+        guard elapsed >= .zero else { return false }
+        guard isProviderTurn else { return elapsed < Self.lifetime }
+        if let ended = providerTurnEndedAt { return ended.duration(to: timestamp) < Self.lifetime }
+        return elapsed < Self.providerTurnBound
     }
 
     /// Keep these exact admission tickets: revocation followed by restoration cannot revive a request.
@@ -157,6 +169,14 @@ extension HostSession {
         guard !route.pinned else { return true }
         let elapsed = route.entry.at.duration(to: requestClock())
         return elapsed >= .zero && elapsed < LastInputLedger.lifetime
+    }
+
+    /// The provider reported this turn finished, interrupted or failed (#430): its reply keeps `lifetime` for the final
+    /// frames, then the record is pruned and its capacity slot freed. Unknown or already-ended turns are ignored.
+    func providerTurnEnded(_ requestID: UUID) {
+        guard var request = replyRequests[requestID], request.providerTurnEndedAt == nil else { return }
+        request.providerTurnEndedAt = requestClock()
+        replyRequests[requestID] = request
     }
 
     func pruneReplyRequests() {
@@ -365,6 +385,13 @@ extension WebSocketPeer {
 }
 
 extension WebSocketListener {
+    /// Forwards a provider turn's end (#430) to the session that owns its reply record, found by connection id.
+    public func providerTurnEnded(_ context: ProviderTurnContext) async {
+        for peer in peers.values where peer.session.connectionID == context.connectionID {
+            await peer.session.providerTurnEnded(context.id)
+        }
+    }
+
     /// Publishes a correlated reply only to its requesting connection. An ambiguous legacy reply reaches nobody,
     /// except the device the user is listening on when it is among the selectors (#230).
     /// Encoding and decoding at this trust boundary applies the same size, identity, stream, and provenance

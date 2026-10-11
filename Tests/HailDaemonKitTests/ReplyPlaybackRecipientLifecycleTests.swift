@@ -8,7 +8,10 @@ import Testing
     func wallClockChangesCannotAlterMonotonicReplyLifetime(adjustment: Int64) async throws {
         let rig = try await RecipientTestRig.make()
         let session = await rig.session()
-        let descriptor = recipientDescriptor(try await rig.submit(on: session), audio: true)
+        let context = try await rig.submit(on: session)
+        // An ended provider turn (#430) keeps the ordinary monotonic two-minute lifetime for its final frames.
+        await session.providerTurnEnded(context.id)
+        let descriptor = recipientDescriptor(context, audio: true)
         rig.clock.advance(100_000)
         rig.clock.adjustWallClock(adjustment)
         #expect(await session.acceptsHostReply(recipientText(descriptor)))
@@ -52,7 +55,9 @@ import Testing
     @Test func expiryInvalidatesAnOpenAudioStream() async throws {
         let rig = try await RecipientTestRig.make()
         let session = await rig.session()
-        let reply = recipientDescriptor(try await rig.submit(on: session), audio: true)
+        let context = try await rig.submit(on: session)
+        await session.providerTurnEnded(context.id)
+        let reply = recipientDescriptor(context, audio: true)
         rig.clock.advance(119_999)
         #expect(await session.acceptsHostReply(recipientAudio(reply, sequence: 0)))
         rig.clock.advance(1)
@@ -72,6 +77,8 @@ import Testing
         #expect(refused.disposition == .keepOpen)
         #expect(await rig.adapter.contexts.count == 64)
         #expect(await session.acceptsHostReply(recipientText(recipientDescriptor(contexts[0]))))
+        // Running provider turns hold their slots (#430); ended ones free them after the final-frame grace.
+        for context in contexts { await session.providerTurnEnded(context.id) }
         rig.clock.advance(120_000)
         _ = try await rig.submit(on: session)
         #expect(await rig.adapter.contexts.count == 65)
