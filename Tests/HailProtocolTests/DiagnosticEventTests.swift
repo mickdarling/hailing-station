@@ -16,6 +16,7 @@ import Testing
 
     @Test func limitLiteralsAreTheDocumentedOnes() {
         #expect(DiagnosticLimits.capability == "device_diagnostics")
+        #expect(DiagnosticLimits.streamAbandonedCapability == "device_diagnostics_stream_abandoned")
         #expect(DiagnosticLimits.maxEventsPerBatch == 32)
         #expect(DiagnosticLimits.versionPattern == "^[0-9]{1,6}([.][0-9]{1,6}){0,3}$")
         #expect(DiagnosticLimits.integers == -2_147_483_648...2_147_483_647)
@@ -33,6 +34,13 @@ import Testing
             try DiagnosticEvent(.connectionError, timestamp: 8, fields: [.error: .integer(-1_009)])
         ])))
         #expect(try FrameCoding.decode(FrameCoding.encode(original)) == original)
+    }
+
+    /// #469: the app records a reply stream ended for want of its terminal marker; the host must accept it.
+    @Test func aStreamAbandonedPlaybackErrorIsAccepted() throws {
+        let event = try DiagnosticEvent(.replyPlaybackError, timestamp: 9, fields: [.code: .token("stream_abandoned")])
+        let frame = Frame(timestamp: 9, source: "phone", payload: .control(.diagnostic(events: [event])))
+        #expect(try FrameCoding.decode(FrameCoding.encode(frame)).payload == frame.payload)
     }
 
     @Test func fieldsMayBeOmitted() throws {
