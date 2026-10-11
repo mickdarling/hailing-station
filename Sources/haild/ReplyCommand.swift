@@ -71,47 +71,88 @@ private struct PCMReplyContext {
     var streamID: UUID
     var descriptor: ReplyDescriptor
     var socket: URL
-    var frameLimit: Int
+    /// The job's pacing (#430): a long reply plays in full, under the endpoint's per-minute frame limit.
+    var pacing: ReplyStreamPacing
+    /// An unpaced `--request` reply keeps main's per-job frame budget, with the terminal frame reserved, so a long
+    /// one is refused whole or ends with an accepted final marker instead of tripping the endpoint's limit mid-stream
+    /// and leaving the phone an unterminated stream (#466 round 2). Nil for a paced, detached reply.
+    var frameLimit: Int?
 }
 
 func reply(_ arguments: ArraySlice<String>) async throws {
     let options = try replyOptions(arguments)
     let rendererRoot = options.rendererOutputRoot ?? FileManager.default.temporaryDirectory
     if options.say != nil { try OwnedReplyRenderer.validateOutputRoot(rendererRoot) }
+    // Only a target-only reply is paced and detached (#430). A `--request` reply stays unpaced and in the
+    // foreground: its host-minted request expires two minutes after it was made, and pacing would outlast it.
+    let targetOnlyAudio = options.requestID == nil && (options.pcm16 != nil || options.say != nil)
+    let pacingOff = ProcessInfo.processInfo.environment["HAILD_REPLY_PACING"] == "off"
+    if let file = options.pcm16 {
+        try requireWithinAudioBound(file, sampleRate: options.sampleRate, paced: targetOnlyAudio && !pacingOff,
+                                    text: options.text != nil)
+    }
+    if targetOnlyAudio, pacingOff, !ReplyBackground.isDetachedJob {
+        note("HAILD_REPLY_PACING=off: sending without pacing; the endpoint's per-minute limit still applies")
+    }
+    let pacing = ReplyStreamPacing(paced: targetOnlyAudio && !pacingOff)
+    guard targetOnlyAudio else { return try await streamReply(options, rendererRoot: rendererRoot, pacing: pacing) }
+    guard ReplyBackground.isDetachedJob else { try ReplyBackground.detach() }
+    try await ReplyBackground.bounded { try await streamReply(options, rendererRoot: rendererRoot, pacing: pacing) }
+}
+
+/// Checked before any text is sent. A paced static file must also fit its frames into the paced sending time: at a
+/// high sample rate each 48 KiB segment is short, so 30 minutes of audio can need more frames than 100 a minute
+/// sends within the detached job's bound.
+private func requireWithinAudioBound(_ file: URL, sampleRate: Int, paced: Bool, text: Bool) throws {
+    let size = (try FileManager.default.attributesOfItem(atPath: file.path)[.size] as? NSNumber)?.intValue ?? 0
+    guard ReplyStreamPacer.seconds(pcm16Bytes: size, sampleRate: sampleRate) <= ReplyStreamPacer.maxAudioSeconds
+    else { throw audioBoundRefusal }
+    let frames = (size + pcmSegmentBytes - 1) / pcmSegmentBytes + (text ? 1 : 0)
+    let sendable = Int(ReplyStreamPacer.maxAudioSeconds / 60) * ReplyStreamPacer.framesPerMinute
+    guard !paced || frames <= sendable else {
+        throw ReplyCommandError.invalid("PCM16 reply needs \(frames) frames; at most \(sendable) can be paced")
+    }
+}
+
+private let pcmSegmentBytes = 48 * 1_024
+
+private func streamReply(_ options: ReplyOptions, rendererRoot: URL, pacing: ReplyStreamPacing) async throws {
     let streamID = (options.pcm16 != nil || options.say != nil) ? UUID() : nil
     let descriptor = ReplyDescriptor(
         id: UUID(), hostID: options.host, targetID: options.target, audioStreamID: streamID,
         requestID: options.requestID
     )
-    let audioFrameLimit = LocalReplyEndpoint.maxFramesPerMinute - (options.text == nil ? 0 : 1)
-    var frames = 0
-    var deliveries = 0
+    var frames = 0, deliveries = 0
     if let text = options.text {
         let frame = Frame(
             timestamp: replyTimestamp(), target: options.target, source: options.host,
             payload: .text(TextPayload(text: text, reply: descriptor))
         )
-        deliveries += try await ReplyClient.submit(frame, socketURL: options.socket)
+        try await admit(audioBytes: 0, sampleRate: options.sampleRate, pacing: pacing)
+        deliveries += try await ReplyBackground.submit(frame, socketURL: options.socket)
         frames += 1
     }
-    if let file = options.pcm16, let streamID {
-        let context = PCMReplyContext(
-            sampleRate: options.sampleRate, streamID: streamID, descriptor: descriptor,
-            socket: options.socket, frameLimit: audioFrameLimit
-        )
+    guard let streamID else { return printSubmitted(frames: frames, deliveries: deliveries) }
+    try await ReplyBackground.awaitAudioTurn(socket: options.socket)
+    let context = PCMReplyContext(
+        sampleRate: options.sampleRate, streamID: streamID, descriptor: descriptor,
+        socket: options.socket, pacing: pacing,
+        frameLimit: options.requestID.map { _ in LocalReplyEndpoint.maxFramesPerMinute - (options.text == nil ? 0 : 1) }
+    )
+    if let file = options.pcm16 {
         let result = try await sendPCM(file, context: context)
         frames += result.frames
         deliveries += result.deliveries
     }
-    if let spoken = options.say, let streamID {
-        let context = PCMReplyContext(
-            sampleRate: options.sampleRate, streamID: streamID, descriptor: descriptor,
-            socket: options.socket, frameLimit: audioFrameLimit
-        )
+    if let spoken = options.say {
         let result = try await streamVBSay(spoken, outputRoot: rendererRoot, context: context)
         frames += result.frames
         deliveries += result.deliveries
     }
+    printSubmitted(frames: frames, deliveries: deliveries)
+}
+
+private func printSubmitted(frames: Int, deliveries: Int) {
     let frameWord = frames == 1 ? "frame" : "frames"
     let deliveryWord = deliveries == 1 ? "delivery" : "deliveries"
     print("submitted \(frames) \(frameWord); \(deliveries) terminal \(deliveryWord)")
@@ -153,12 +194,15 @@ private func sendPCMFile(
 ) async throws -> (frames: Int, deliveries: Int) {
     let attributes = try FileManager.default.attributesOfItem(atPath: url.path)
     let size = (attributes[.size] as? NSNumber)?.intValue ?? 0
-    let segmentBytes = 48 * 1_024
+    let segmentBytes = pcmSegmentBytes
     let segments = (size + segmentBytes - 1) / segmentBytes
-    let usableLimit = context.frameLimit - (marksFinal ? 0 : 1)
-    guard size > 0, size.isMultiple(of: 2),
-          startingSequence + segments <= usableLimit else {
-        throw ReplyCommandError.invalid("PCM16 reply exceeds the endpoint frame budget")
+    guard size > 0, size.isMultiple(of: 2), segments > 0 else {
+        throw ReplyCommandError.invalid("PCM16 reply is empty or has a partial sample")
+    }
+    guard ReplyStreamPacer.seconds(pcm16Bytes: size, sampleRate: context.sampleRate)
+            <= ReplyStreamPacer.maxAudioSeconds else { throw audioBoundRefusal }
+    if let limit = context.frameLimit, startingSequence + segments > limit - (marksFinal ? 0 : 1) {
+        throw frameBudgetRefusal
     }
     let handle = try FileHandle(forReadingFrom: url)
     defer { try? handle.close() }
@@ -176,10 +220,12 @@ private func sendPCMFile(
             timestamp: replyTimestamp(), target: context.descriptor.targetID, source: context.descriptor.hostID,
             payload: .audio(payload)
         )
+        try await admit(audioBytes: current.count, sampleRate: context.sampleRate, pacing: context.pacing)
         if renderedAudio {
             deliveries += try await submitSpeechAudio(frame, socketURL: context.socket)
         } else {
-            deliveries += try await ReplyClient.submit(frame, socketURL: context.socket)
+            deliveries += try await ReplyBackground.submit(frame, socketURL: context.socket)
+            ReplyBackground.ready()
         }
         sequence += 1
         current = next
@@ -225,7 +271,11 @@ private func speechReplyFailure(_ error: any Error, cleanupDeferred: Bool) -> an
 }
 
 private func submitSpeechAudio(_ frame: Frame, socketURL: URL) async throws -> Int {
-    do { return try await ReplyClient.submit(frame, socketURL: socketURL) } catch {
+    do {
+        let delivered = try await ReplyBackground.submit(frame, socketURL: socketURL)
+        ReplyBackground.ready() // A detached job's first accepted audio lets `haild reply` return (#430).
+        return delivered
+    } catch {
         if error is CancellationError { throw error }
         // Local refusal/lost acknowledgement remains the primary category, not a renderer cleanup
         // failure. Never forward raw endpoint/NW errors or restart the whole accepted-text command.
@@ -272,7 +322,7 @@ private func publishRenderer(
         }
         guard sequence > 0 else { throw ReplyCommandError.invalid("vbsay produced no PCM audio") }
     } catch {
-        if sequence > 0, sequence < context.frameLimit {
+        if sequence > 0, sequence < context.frameLimit ?? .max {
             _ = try? await sendFinalPCM(sequence: sequence, context: context)
         }
         throw error
@@ -281,9 +331,9 @@ private func publishRenderer(
     return (sequence + 1, deliveries)
 }
 
-/// Streamed frame sizes: a short first frame so the phone starts quickly, then larger frames so a long reply
-/// stays inside the per-minute frame budget. Each frame is generated at ~2.5x realtime, well before the one
-/// ahead of it finishes playing.
+/// Streamed frame sizes: a short first frame so the phone starts quickly, then larger frames so a long reply needs
+/// fewer of the endpoint's per-minute frames. Each frame is generated at ~2.5x realtime, well before the one ahead
+/// of it finishes playing; `ReplyStreamPacing` holds the rest back to stay a bounded lead ahead of playback.
 enum StreamedReplyFrames {
     static func bytes(sequence: Int) -> Int {
         switch sequence {
@@ -294,11 +344,26 @@ enum StreamedReplyFrames {
     }
 }
 
+private let audioBoundRefusal = ReplyCommandError.invalid(
+    "reply audio exceeds the \(Int(ReplyStreamPacer.maxAudioSeconds / 60))-minute bound"
+)
+
+/// Waits for this frame's turn under the job's pacing; the audio bound is a command refusal, not a renderer failure.
+private func admit(audioBytes: Int, sampleRate: Int, pacing: ReplyStreamPacing) async throws {
+    try ReplyBackground.requireCaller()
+    do {
+        try await pacing.admit(audio: ReplyStreamPacer.seconds(pcm16Bytes: audioBytes, sampleRate: sampleRate))
+    } catch ReplyStreamPacerError.audioBoundExceeded {
+        throw audioBoundRefusal
+    }
+}
+
+private let frameBudgetRefusal = ReplyCommandError.invalid("PCM16 reply exceeds the endpoint frame budget")
+
 private func sendStreamedPCM(_ bytes: Data, sequence: Int, context: PCMReplyContext) async throws -> Int {
     // One frame stays reserved for the terminal marker.
-    guard sequence + 1 < context.frameLimit else {
-        throw ReplyCommandError.invalid("PCM16 reply exceeds the endpoint frame budget")
-    }
+    if let limit = context.frameLimit, sequence + 1 >= limit { throw frameBudgetRefusal }
+    try await admit(audioBytes: bytes.count, sampleRate: context.sampleRate, pacing: context.pacing)
     let payload = AudioPayload(
         codec: .pcm16, sampleRate: context.sampleRate, channels: 1, sequence: sequence,
         streamID: context.streamID, isFinal: false, bytes: Data(bytes), reply: context.descriptor
@@ -310,6 +375,7 @@ private func sendStreamedPCM(_ bytes: Data, sequence: Int, context: PCMReplyCont
 }
 
 private func sendFinalPCM(sequence: Int, context: PCMReplyContext) async throws -> Int {
+    try await admit(audioBytes: 0, sampleRate: context.sampleRate, pacing: context.pacing)
     let final = AudioPayload(
         codec: .pcm16, sampleRate: context.sampleRate, channels: 1, sequence: sequence,
         streamID: context.streamID, isFinal: true, bytes: Data([0, 0]), reply: context.descriptor
@@ -584,5 +650,47 @@ private final class ReplyTransaction: @unchecked Sendable {
         guard let pending else { return }
         connection.cancel()
         pending.resume(with: result)
+    }
+}
+
+// Sharing the phone and the endpoint with other detached replies.
+extension ReplyBackground {
+    /// One detached reply's audio at a time per reply socket (#430). The phone plays replies one after another, so a
+    /// second reply sent alongside the first would sit almost whole in the phone's queue, and two paced jobs would
+    /// share the endpoint's per-minute frames. A queued job tells its caller and waits; its text has already gone.
+    /// The lock is a file beside the owner-only socket, held open for the job's life: the kernel drops it at exit.
+    static func awaitAudioTurn(socket: URL) async throws {
+        guard isDetachedJob else { return }
+        let path = socket.deletingLastPathComponent().appendingPathComponent("reply-audio.lock").path
+        let lock = open(path, O_RDWR | O_CREAT | O_CLOEXEC | O_NOFOLLOW, 0o600)
+        guard lock >= 0 else { throw ReplyCommandError.invalid("cannot open the reply audio lock") }
+        var queued = false
+        defer { restartBound() } // a queued job gets the whole bound for its own stream (Codex P1)
+        while flock(lock, LOCK_EX | LOCK_NB) != 0 {
+            guard errno == EWOULDBLOCK || errno == EINTR else {
+                close(lock)
+                throw ReplyCommandError.invalid("cannot take the reply audio lock")
+            }
+            if !queued {
+                queued = true
+                suspendBound()
+                note("reply audio queued behind another reply")
+                ready()
+            }
+            try await Task.sleep(for: .milliseconds(250))
+        }
+    }
+
+    /// In a detached job, a frame the endpoint refused for its shared per-minute limit is sent again once there is
+    /// room: that refusal comes before anything is published. Every other outcome, and every foreground reply,
+    /// is unchanged.
+    static func submit(_ frame: Frame, socketURL: URL) async throws -> Int {
+        while true {
+            do { return try await ReplyClient.submit(frame, socketURL: socketURL) } catch let error {
+                guard isDetachedJob, case ReplyClientError.refused("rate limited") = error else { throw error }
+                extendBound(by: .seconds(2)) // waiting on others' traffic is not the stream's own time
+                try await Task.sleep(for: .seconds(2))
+            }
+        }
     }
 }

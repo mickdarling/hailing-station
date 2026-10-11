@@ -112,7 +112,8 @@ package final class OwnedReplyRenderer: Sendable {
     deinit { lifetime.retire(cancel: true) }
     /// The renderer's stdout: PCM s16le 24 kHz mono as vbsay produces it (VBSAY_STDOUT, #268). Ends at EOF,
     /// once the child and anything sharing its stdout have exited. Empty from a vbsay without stdout support.
-    package var audio: AsyncThrowingStream<Data, any Error> { lifetime.audio }
+    /// Backpressured (#430): at most `RendererOutputGate.limit` unconsumed bytes, then the child blocks on its pipe.
+    package var audio: RendererAudio { RendererAudio(stream: lifetime.audio, gate: lifetime.gate) }
     package var isRunning: Bool { lifetime.isRunning }
     package var cleanupComplete: Bool { lifetime.cleanupComplete }
     package var cleanupDisposition: OwnedReplyRendererCleanupDisposition { lifetime.cleanupDisposition }
@@ -127,6 +128,7 @@ package final class OwnedReplyRenderer: Sendable {
 private final class ReplyRendererLifetime: Sendable {
     let folder: ReplyRendererFolder
     let audio: AsyncThrowingStream<Data, any Error>
+    let gate = RendererOutputGate()
     private let state: Mutex<ReplyRendererState>
     private let processExit: any DispatchSourceProcess
     private let cleanupQueue = DispatchQueue(label: "hailing.reply-renderer.cleanup")
@@ -143,7 +145,7 @@ private final class ReplyRendererLifetime: Sendable {
             throw error
         }
         folder = owned
-        audio = Self.read(output)
+        audio = Self.read(output, gate: gate)
         self.hooks = hooks
         state = Mutex(ReplyRendererState(child: ReplyRendererChildIdentity(pid: pid)))
         processExit = DispatchSource.makeProcessSource(identifier: pid, eventMask: .exit, queue: .global())
@@ -172,6 +174,7 @@ private final class ReplyRendererLifetime: Sendable {
     /// Consumer retirement follows stable-file/finalization reads. Abnormal retirement reports
     /// deferred cleanup immediately, but the source retains exact-child responsibility while alive.
     func retire(cancel: Bool) {
+        gate.close()
         let transition = state.withLock { current -> (first: Bool, signal: Bool) in
             let first = !current.retired
             current.retired = true
@@ -186,6 +189,7 @@ private final class ReplyRendererLifetime: Sendable {
     }
 
     func cancel() {
+        gate.close()
         let signal = state.withLock { recordCancellation(&$0) }
         scheduleEscalation(ifNeeded: signal)
     }
@@ -290,17 +294,66 @@ private final class ReplyRendererLifetime: Sendable {
     }
 }
 
+/// The renderer's unconsumed stdout bytes (#430). The reader thread waits while `limit` are held; each element the
+/// consumer takes frees its bytes. `close` releases a waiting reader for good, so it can never strand the thread.
+package final class RendererOutputGate: @unchecked Sendable { // State is only touched under `condition`.
+    /// About 22 s of 24 kHz speech: above the pacer's lead, so the gate never starves a paced reply.
+    package static let limit = 1_048_576
+    private let condition = NSCondition()
+    private var held = 0
+    private var closed = false
+
+    /// False once closed: the reader stops.
+    func waitForRoom() -> Bool {
+        condition.lock(); defer { condition.unlock() }
+        while held >= Self.limit, !closed { condition.wait() }
+        return !closed
+    }
+
+    func add(_ count: Int) { condition.lock(); held += count; condition.unlock() }
+
+    func take(_ count: Int) {
+        condition.lock(); held = max(0, held - count); condition.signal(); condition.unlock()
+    }
+
+    func close() { condition.lock(); closed = true; condition.broadcast(); condition.unlock() }
+}
+
+/// The renderer's PCM as the consumer pulls it; each pull frees its bytes in the gate.
+package struct RendererAudio: AsyncSequence, Sendable {
+    package typealias Element = Data
+    let stream: AsyncThrowingStream<Data, any Error>
+    let gate: RendererOutputGate
+
+    package struct AsyncIterator: AsyncIteratorProtocol {
+        var base: AsyncThrowingStream<Data, any Error>.AsyncIterator
+        let gate: RendererOutputGate
+
+        package mutating func next() async throws -> Data? {
+            guard let bytes = try await base.next() else { return nil }
+            gate.take(bytes.count)
+            return bytes
+        }
+    }
+
+    package func makeAsyncIterator() -> AsyncIterator {
+        AsyncIterator(base: stream.makeAsyncIterator(), gate: gate)
+    }
+}
+
 extension ReplyRendererLifetime {
     /// Drains the read end on its own thread, so PCM reaches the consumer as soon as the child writes it.
-    /// Unbuffered by size: the child is bounded by the reply's own length and the job deadline.
-    private static func read(_ descriptor: Int32) -> AsyncThrowingStream<Data, any Error> {
+    /// Bounded by `gate` (#430): a paced consumer stops this thread reading, so the child blocks on its pipe rather
+    /// than the whole of a long reply collecting in memory. Retirement or cancellation opens the gate and ends it.
+    private static func read(_ descriptor: Int32, gate: RendererOutputGate) -> AsyncThrowingStream<Data, any Error> {
         let (stream, continuation) = AsyncThrowingStream<Data, any Error>.makeStream()
         let reader = Thread {
             defer { close(descriptor) }
             var buffer = [UInt8](repeating: 0, count: 16_384)
             while true {
+                guard gate.waitForRoom() else { continuation.finish(); return }
                 let count = buffer.withUnsafeMutableBytes { Darwin.read(descriptor, $0.baseAddress, $0.count) }
-                if count > 0 { continuation.yield(Data(buffer[0..<count])); continue }
+                if count > 0 { gate.add(count); continuation.yield(Data(buffer[0..<count])); continue }
                 if count < 0, errno == EINTR { continue }
                 if count < 0 { continuation.finish(throwing: OwnedReplyRendererError.invalidAudio) } else {
                     continuation.finish()
