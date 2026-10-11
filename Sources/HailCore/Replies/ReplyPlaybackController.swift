@@ -43,7 +43,7 @@ public final class ReplyPlaybackController {
 
     public internal(set) var replies: [ReplyPresentation] = []
     public internal(set) var isPaused = false
-    public internal(set) var isMuted = false
+    public internal(set) var isMuted = false { didSet { pendingMuteAfter = nil } } // a change ends a waiting mute
     public internal(set) var isCaptureSuppressed = false
     public internal(set) var status = "No replies yet"
 
@@ -65,6 +65,7 @@ public final class ReplyPlaybackController {
     @ObservationIgnored var idleScheduler: @MainActor (Duration, @escaping @MainActor () -> Void)
         -> @MainActor () -> Void = ReplyPlaybackController.sleepThenFire
     @ObservationIgnored public var onStreamAbandoned: (@MainActor () -> Void)?
+    @ObservationIgnored var pendingMuteAfter: ReplyStreamKey? // a voice mute waiting for this reply (#404, `+Stop`)
 
     var presentationKeysToRetain: Set<ReplyStreamKey> {
         var keys = Set(queue)
@@ -92,10 +93,7 @@ public final class ReplyPlaybackController {
     }
 
     public func ingest(_ event: HostReplyEvent) {
-        if case .control(.stopPlayback) = event.frame.payload {
-            if remember(event.frame.id) { stopPlayback(from: event.endpointID) }
-            return
-        }
+        if case .control(let control) = event.frame.payload { return handlePlaybackControl(control, event) }
         guard remember(event.frame.id), let descriptor = descriptor(in: event.frame) else { return }
         guard case .audio(let audio) = event.frame.payload else {
             let presentationID = upsertPresentation(event, descriptor: descriptor)
@@ -163,6 +161,7 @@ public final class ReplyPlaybackController {
 
     func drain() {
         watchHeadIfChanged() // before any segment of a new head is scheduled (#469)
+        applyPendingMuteIfDue() // before the next reply starts, so it plays silently (#404)
         guard !isCaptureSuppressed, !isPaused else {
             status = isCaptureSuppressed ? "Paused while listening" : "Paused"
             return
