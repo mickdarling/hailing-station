@@ -79,10 +79,12 @@ func reply(_ arguments: ArraySlice<String>) async throws {
     let options = try replyOptions(arguments)
     let rendererRoot = options.rendererOutputRoot ?? FileManager.default.temporaryDirectory
     if options.say != nil { try OwnedReplyRenderer.validateOutputRoot(rendererRoot) }
-    if let file = options.pcm16 { try requireWithinAudioBound(file, sampleRate: options.sampleRate) }
     // Only a target-only reply is paced and detached (#430). A `--request` reply stays unpaced and in the
     // foreground: its host-minted request expires two minutes after it was made, and pacing would outlast it.
     let targetOnlyAudio = options.requestID == nil && (options.pcm16 != nil || options.say != nil)
+    if let file = options.pcm16 {
+        try requireWithinAudioBound(file, sampleRate: options.sampleRate, paced: targetOnlyAudio)
+    }
     let pacingOff = ProcessInfo.processInfo.environment["HAILD_REPLY_PACING"] == "off"
     if targetOnlyAudio, pacingOff, !ReplyBackground.isDetachedJob {
         note("HAILD_REPLY_PACING=off: sending without pacing; the endpoint's per-minute limit still applies")
@@ -93,11 +95,21 @@ func reply(_ arguments: ArraySlice<String>) async throws {
     try await ReplyBackground.bounded { try await streamReply(options, rendererRoot: rendererRoot, pacing: pacing) }
 }
 
-private func requireWithinAudioBound(_ file: URL, sampleRate: Int) throws {
+/// Checked before any text is sent. A paced static file must also fit its frames into the paced sending time: at a
+/// high sample rate each 48 KiB segment is short, so 30 minutes of audio can need more frames than 100 a minute
+/// sends within the detached job's bound.
+private func requireWithinAudioBound(_ file: URL, sampleRate: Int, paced: Bool) throws {
     let size = (try FileManager.default.attributesOfItem(atPath: file.path)[.size] as? NSNumber)?.intValue ?? 0
     guard ReplyStreamPacer.seconds(pcm16Bytes: size, sampleRate: sampleRate) <= ReplyStreamPacer.maxAudioSeconds
     else { throw audioBoundRefusal }
+    let frames = (size + pcmSegmentBytes - 1) / pcmSegmentBytes + 1 // and the text frame
+    let sendable = Int(ReplyStreamPacer.maxAudioSeconds / 60) * ReplyStreamPacer.framesPerMinute
+    guard !paced || frames <= sendable else {
+        throw ReplyCommandError.invalid("PCM16 reply needs \(frames) frames; at most \(sendable) can be paced")
+    }
 }
+
+private let pcmSegmentBytes = 48 * 1_024
 
 private func streamReply(_ options: ReplyOptions, rendererRoot: URL, pacing: ReplyStreamPacing) async throws {
     let streamID = (options.pcm16 != nil || options.say != nil) ? UUID() : nil
@@ -174,7 +186,7 @@ private func sendPCMFile(
 ) async throws -> (frames: Int, deliveries: Int) {
     let attributes = try FileManager.default.attributesOfItem(atPath: url.path)
     let size = (attributes[.size] as? NSNumber)?.intValue ?? 0
-    let segmentBytes = 48 * 1_024
+    let segmentBytes = pcmSegmentBytes
     let segments = (size + segmentBytes - 1) / segmentBytes
     guard size > 0, size.isMultiple(of: 2), segments > 0 else {
         throw ReplyCommandError.invalid("PCM16 reply is empty or has a partial sample")

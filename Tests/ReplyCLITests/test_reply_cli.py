@@ -155,6 +155,21 @@ class ReplyCLITests(unittest.TestCase):
         self.assertIn("speech reply publication failed", result.stderr)
         self.assertNotIn("background", result.stdout)
 
+    def test_high_rate_pcm_that_cannot_be_paced_in_time_is_refused_before_text(self):
+        # 13 minutes at 96 kHz is under the 30-minute audio bound but needs ~3,050 short frames (Codex P1 on #466).
+        with tempfile.TemporaryDirectory(prefix="hail-reply-high-rate-") as scratch:
+            path = Path(scratch) / "high-rate.pcm"
+            with open(path, "wb") as handle:
+                handle.truncate(96_000 * 2 * 780)  # sparse: only its size is read before the refusal
+            with self.reply_server(lambda index: {"delivered": 1}) as (socket_path, frames):
+                result = self.run_reply(
+                    ["--text", "synthetic reply", "--pcm16", str(path), "--sample-rate", "96000"], socket_path,
+                    os.environ.copy(),
+                )
+            self.assertEqual(result.returncode, 1)
+            self.assertIn("can be paced", result.stderr)
+            self.assertEqual(frames, [])
+
     def test_interrupting_the_caller_before_ready_ends_the_job(self):
         self.assert_caller_loss_before_ready_ends_the_job(signal.SIGINT)
 
