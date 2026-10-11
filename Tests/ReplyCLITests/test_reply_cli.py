@@ -676,6 +676,60 @@ class ReplyCLITests(unittest.TestCase):
                 self.assertEqual(len(requests), 1)
                 self.assertEqual(result.stdout, "")
 
+    def test_a_connection_refused_before_sending_is_retried(self):
+        # #144: the socket exists but is not listening yet (refused, nothing sent): a fresh connection after a short
+        # wait reaches it once it listens, instead of failing or waiting out the 15 s timeout.
+        with tempfile.TemporaryDirectory(prefix="hail-reply-refused-") as scratch:
+            path = os.path.join(scratch, "reply.sock")
+            with socket.socket(socket.AF_UNIX, socket.SOCK_STREAM) as server:
+                server.bind(path)
+                os.chmod(path, 0o600)
+                requests = []
+
+                def listen_later():
+                    time.sleep(0.6)
+                    server.listen(4)
+                    server.settimeout(10)
+                    with server.accept()[0] as client:
+                        request = b""
+                        while not request.endswith(b"\n"):
+                            request += client.recv(8192)
+                        requests.append(request)
+                        client.sendall(b'{"delivered":1}\n')
+
+                worker = threading.Thread(target=listen_later, daemon=True)
+                worker.start()
+                started = time.monotonic()
+                result = subprocess.run(
+                    [str(HAILD), "reply", "tmux:test", "--host", "mac-test", "--text", "synthetic reply",
+                     "--socket", path],
+                    cwd=REPO, capture_output=True, text=True, timeout=30, check=False,
+                )
+                elapsed = time.monotonic() - started
+                worker.join(timeout=10)
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertEqual(len(requests), 1)  # sent exactly once
+        self.assertLess(elapsed, 10)
+
+    def test_a_socket_that_never_listens_fails_within_the_retry_budget(self):
+        with tempfile.TemporaryDirectory(prefix="hail-reply-deaf-") as scratch:
+            path = os.path.join(scratch, "reply.sock")
+            with socket.socket(socket.AF_UNIX, socket.SOCK_STREAM) as server:
+                server.bind(path)
+                os.chmod(path, 0o600)
+                started = time.monotonic()
+                result = subprocess.run(
+                    [str(HAILD), "reply", "tmux:test", "--host", "mac-test", "--text", "synthetic reply",
+                     "--socket", path],
+                    cwd=REPO, capture_output=True, text=True, timeout=30, check=False,
+                )
+                elapsed = time.monotonic() - started
+        self.assertEqual(result.returncode, 1)
+        self.assertIn("refused", result.stderr.lower())
+        # Four short waits (about 3.3 s), not the 15 s transaction timeout.
+        self.assertLess(elapsed, 12)
+        self.assertGreater(elapsed, 3)
+
     def test_ambiguous_socket_completion_does_not_retry(self):
         result, requests = self.submit_responses([None])
         self.assertEqual(result.returncode, 1)

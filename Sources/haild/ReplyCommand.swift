@@ -478,11 +478,10 @@ enum ReplyClient {
         guard line.count <= max(PayloadLimits.defaultMaxFrameBytes, LocalDispatchRequest.maxLineBytes) + 1 else {
             throw ReplyClientError.failed("frame too large")
         }
-        let transaction = ReplyTransaction(socketURL: socketURL)
-        do { return try await transaction.perform(line) } catch {
+        do { return try await ReplyTransaction.perform(line, socketURL: socketURL) } catch let failure {
             // Once written, a lost answer is not a refusal: the daemon may have delivered (#204).
-            guard transaction.didSend else { throw error }
-            throw ReplyClientError.unanswered("\(error)")
+            guard failure.didSend else { throw failure.error }
+            throw ReplyClientError.unanswered("\(failure.error)")
         }
     }
 
@@ -501,7 +500,10 @@ enum ReplyClient {
             guard retryWindow.canStart(attempt: attempt) else {
                 throw ReplyClientError.refused("reply request did not become ready within the retry budget")
             }
-            let response = try await ReplyTransaction(socketURL: socketURL).perform(request)
+            let response: LocalReplyResponse
+            do { response = try await ReplyTransaction.perform(request, socketURL: socketURL) } catch let failure {
+                throw failure.error
+            }
             if response.code == .requestPending, response.delivered == 0 {
                 guard try await retryWindow.waitForRetry(after: attempt) else {
                     throw ReplyClientError.refused("reply request did not become ready within the retry budget")
@@ -588,7 +590,43 @@ struct RightyoSocketDispatcher: RightyoDispatching {
     }
 }
 
+/// A transaction's failure, and whether its request had been handed to the socket when it failed.
+private struct ReplyTransactionFailure: Error {
+    let error: any Error
+    let didSend: Bool
+}
+
+/// The connection failed before anything was written: nothing reached the daemon, so it is safe to try again.
+private struct ReplyConnectFailure: Error, CustomStringConvertible {
+    let error: any Error
+    var description: String { "\(error)" }
+}
+
 private final class ReplyTransaction: @unchecked Sendable {
+    /// #144: a connection that fails before anything is written (the daemon not yet listening, a transient
+    /// "Network is down") is tried again on a fresh connection after these waits. Nothing reached the daemon, so a
+    /// retry cannot deliver twice. Once the request is written nothing is retried here (#204).
+    static let connectBackoff: [Duration] = [.milliseconds(100), .milliseconds(300), .milliseconds(900), .seconds(2)]
+
+    static func perform(
+        _ request: Data, socketURL: URL
+    ) async throws(ReplyTransactionFailure) -> LocalReplyResponse {
+        for wait in connectBackoff + [nil] {
+            let transaction = ReplyTransaction(socketURL: socketURL)
+            do { return try await transaction.perform(request) } catch let refused as ReplyConnectFailure {
+                guard let wait else {
+                    throw ReplyTransactionFailure(error: ReplyClientError.failed(refused.description), didSend: false)
+                }
+                do { try await Task.sleep(for: wait) } catch {
+                    throw ReplyTransactionFailure(error: error, didSend: false)
+                }
+            } catch {
+                throw ReplyTransactionFailure(error: error, didSend: transaction.didSend)
+            }
+        }
+        throw ReplyTransactionFailure(error: ReplyClientError.failed("connection failed"), didSend: false)
+    }
+
     private let queue = DispatchQueue(label: "hail.local-reply-client")
     private let connection: NWConnection
     private let lock = NSLock()
@@ -628,7 +666,10 @@ private final class ReplyTransaction: @unchecked Sendable {
                 }
             )
         case .failed(let error):
-            finish(.failure(ReplyClientError.failed("\(error)")))
+            finish(.failure(didSend ? ReplyClientError.failed("\(error)") : ReplyConnectFailure(error: error)))
+        case .waiting(let error) where !didSend:
+            // Refused or no path yet: try a fresh connection after a short wait rather than wait out the timeout.
+            finish(.failure(ReplyConnectFailure(error: error)))
         case .cancelled:
             finish(.failure(ReplyClientError.failed("connection cancelled")))
         default:
