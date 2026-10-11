@@ -2,7 +2,6 @@ import Darwin
 import Foundation
 import HailDaemonKit
 import HailProtocol
-import Network
 import Synchronization
 
 // Parsing, static PCM submission, and the streaming vbsay adapter stay together to share reply identity.
@@ -602,11 +601,22 @@ private struct ReplyConnectFailure: Error, CustomStringConvertible {
     var description: String { "\(error)" }
 }
 
-private final class ReplyTransaction: @unchecked Sendable {
+/// A failed socket call, worded as `NWError.posix` was, so refusal and `unanswered` texts are unchanged (#144).
+private struct ReplySocketError: Error, CustomStringConvertible {
+    let code: Int32
+    var description: String { "POSIXErrorCode(rawValue: \(code)): \(String(cString: strerror(code)))" }
+}
+
+/// One request and its one-line answer over the daemon's owner-only Unix socket. A plain `AF_UNIX` stream socket,
+/// non-blocking with `poll` deadlines, on one serial queue (#144): Network.framework evaluated a network path even
+/// for this local socket and could fail a request the daemon had already received with "Network is down".
+private final class ReplyTransaction: Sendable {
     /// #144: a connection that fails before anything is written (the daemon not yet listening, a transient
     /// "Network is down") is tried again on a fresh connection after these waits. Nothing reached the daemon, so a
     /// retry cannot deliver twice. Once the request is written nothing is retried here (#204).
     static let connectBackoff: [Duration] = [.milliseconds(100), .milliseconds(300), .milliseconds(900), .seconds(2)]
+    static let timeout: Duration = .seconds(15)
+    static let responseLimit = 4 * 1_024
 
     static func perform(
         _ request: Data, socketURL: URL
@@ -627,89 +637,116 @@ private final class ReplyTransaction: @unchecked Sendable {
         throw ReplyTransactionFailure(error: ReplyClientError.failed("connection failed"), didSend: false)
     }
 
-    private let queue = DispatchQueue(label: "hail.local-reply-client")
-    private let connection: NWConnection
-    private let lock = NSLock()
-    private var continuation: CheckedContinuation<LocalReplyResponse, any Error>?
-    private var sent = false
+    private static let queue = DispatchQueue(label: "hail.local-reply-client")
+    private let path: String
+    private let state = Mutex((sent: false, cancelled: false))
     /// Whether the request was handed to the socket; a failure after that has an unknown outcome.
-    var didSend: Bool { lock.withLock { sent } }
+    var didSend: Bool { state.withLock { $0.sent } }
 
     init(socketURL: URL) {
-        connection = NWConnection(to: .unix(path: socketURL.path), using: .tcp)
+        path = socketURL.path
     }
 
     func perform(_ request: Data) async throws -> LocalReplyResponse {
-        try await withCheckedThrowingContinuation { continuation in
-            lock.withLock { self.continuation = continuation }
-            connection.stateUpdateHandler = { [weak self] state in self?.changed(state, request: request) }
-            connection.start(queue: queue)
-            queue.asyncAfter(deadline: .now() + 15) { [weak self] in
-                self?.finish(.failure(ReplyClientError.timeout))
+        try await withTaskCancellationHandler {
+            try await withCheckedThrowingContinuation { continuation in
+                Self.queue.async { continuation.resume(with: Result { try self.exchange(request) }) }
             }
+        } onCancel: {
+            state.withLock { $0.cancelled = true }
         }
     }
 
-    private func changed(_ state: NWConnection.State, request: Data) {
-        switch state {
-        case .ready:
-            let shouldSend = lock.withLock {
-                guard !sent else { return false }
-                sent = true
-                return true
+    private func exchange(_ request: Data) throws -> LocalReplyResponse {
+        let deadline = ContinuousClock.now.advanced(by: Self.timeout)
+        let socket = Darwin.socket(AF_UNIX, SOCK_STREAM, 0)
+        guard socket >= 0 else { throw ReplyConnectFailure(error: ReplySocketError(code: errno)) }
+        defer { close(socket) }
+        var on: Int32 = 1
+        _ = setsockopt(socket, SOL_SOCKET, SO_NOSIGPIPE, &on, socklen_t(MemoryLayout<Int32>.size))
+        _ = fcntl(socket, F_SETFD, FD_CLOEXEC)
+        guard fcntl(socket, F_SETFL, fcntl(socket, F_GETFL) | O_NONBLOCK) >= 0 else {
+            throw ReplyConnectFailure(error: ReplySocketError(code: errno))
+        }
+        try open(socket, deadline: deadline)
+        state.withLock { $0.sent = true }
+        try send(request, on: socket, deadline: deadline)
+        return try receive(on: socket, deadline: deadline)
+    }
+
+    /// Connects, or throws a pre-send failure the caller may retry.
+    private func open(_ socket: Int32, deadline: ContinuousClock.Instant) throws {
+        var address = sockaddr_un()
+        let bytes = Array(path.utf8)
+        guard bytes.count < MemoryLayout.size(ofValue: address.sun_path) else {
+            throw ReplyClientError.failed("\(ReplySocketError(code: ENAMETOOLONG))")
+        }
+        address.sun_family = sa_family_t(AF_UNIX)
+        address.sun_len = UInt8(MemoryLayout<sockaddr_un>.size)
+        withUnsafeMutableBytes(of: &address.sun_path) { $0.copyBytes(from: bytes) }
+        let result = withUnsafePointer(to: &address) {
+            $0.withMemoryRebound(to: sockaddr.self, capacity: 1) {
+                Darwin.connect(socket, $0, socklen_t(MemoryLayout<sockaddr_un>.size))
             }
-            guard shouldSend else { return }
-            connection.send(
-                content: request, contentContext: .defaultMessage, isComplete: false,
-                completion: .contentProcessed { [weak self] error in
-                    if let error { self?.finish(.failure(error)) } else { self?.receive(Data()) }
-                }
-            )
-        case .failed(let error):
-            finish(.failure(didSend ? ReplyClientError.failed("\(error)") : ReplyConnectFailure(error: error)))
-        case .waiting(let error) where !didSend:
-            // Refused or no path yet: try a fresh connection after a short wait rather than wait out the timeout.
-            finish(.failure(ReplyConnectFailure(error: error)))
-        case .cancelled:
-            finish(.failure(ReplyClientError.failed("connection cancelled")))
-        default:
-            break
+        }
+        guard result != 0 else { return }
+        guard errno == EINPROGRESS || errno == EINTR else {
+            throw ReplyConnectFailure(error: ReplySocketError(code: errno))
+        }
+        try wait(socket, for: Int16(POLLOUT), deadline: deadline)
+        var error: Int32 = 0
+        var length = socklen_t(MemoryLayout<Int32>.size)
+        guard getsockopt(socket, SOL_SOCKET, SO_ERROR, &error, &length) == 0, error == 0 else {
+            throw ReplyConnectFailure(error: ReplySocketError(code: error == 0 ? errno : error))
         }
     }
 
-    private func receive(_ buffer: Data) {
-        connection.receive(minimumIncompleteLength: 1, maximumLength: 1_024) { [weak self] data, _, done, error in
-            guard let self else { return }
-            if let error { finish(.failure(error)); return }
-            var response = buffer
-            if let data { response.append(data) }
-            guard response.count <= 4 * 1_024 else {
-                finish(.failure(ReplyClientError.failed("response too large")))
-                return
+    private func send(_ request: Data, on socket: Int32, deadline: ContinuousClock.Instant) throws {
+        var offset = 0
+        while offset < request.count {
+            let written = request.withUnsafeBytes { bytes in
+                Darwin.send(socket, bytes.baseAddress?.advanced(by: offset), request.count - offset, 0)
             }
+            if written > 0 { offset += written; continue }
+            guard written < 0, errno == EAGAIN || errno == EINTR else { throw ReplySocketError(code: errno) }
+            try wait(socket, for: Int16(POLLOUT), deadline: deadline)
+        }
+    }
+
+    /// Reads the one-line answer: at most `responseLimit` bytes, ending in a newline.
+    private func receive(on socket: Int32, deadline: ContinuousClock.Instant) throws -> LocalReplyResponse {
+        var response = Data()
+        var buffer = [UInt8](repeating: 0, count: 1_024)
+        while true {
             if let newline = response.firstIndex(of: UInt8(ascii: "\n")) {
-                do {
-                    finish(.success(try JSONDecoder().decode(LocalReplyResponse.self, from: response[..<newline])))
-                } catch {
-                    finish(.failure(ReplyClientError.failed("malformed response")))
+                do { return try JSONDecoder().decode(LocalReplyResponse.self, from: response[..<newline]) } catch {
+                    throw ReplyClientError.failed("malformed response")
                 }
-            } else if done {
-                finish(.failure(ReplyClientError.failed("response ended early")))
-            } else {
-                receive(response)
             }
+            let count = buffer.withUnsafeMutableBytes { Darwin.recv(socket, $0.baseAddress, $0.count, 0) }
+            if count > 0 {
+                response.append(contentsOf: buffer[0..<count])
+                guard response.count <= Self.responseLimit else { throw ReplyClientError.failed("response too large") }
+                continue
+            }
+            if count == 0 { throw ReplyClientError.failed("response ended early") }
+            guard errno == EAGAIN || errno == EINTR else { throw ReplySocketError(code: errno) }
+            try wait(socket, for: Int16(POLLIN), deadline: deadline)
         }
     }
 
-    private func finish(_ result: Result<LocalReplyResponse, any Error>) {
-        let pending = lock.withLock {
-            let pending = continuation
-            continuation = nil
-            return pending
+    /// Waits for `events` in short slices, so a cancelled task stops within 100 ms and the deadline is exact.
+    private func wait(_ socket: Int32, for events: Int16, deadline: ContinuousClock.Instant) throws {
+        while true {
+            if state.withLock({ $0.cancelled }) { throw CancellationError() }
+            let remaining = ContinuousClock.now.duration(to: deadline)
+            guard remaining > .zero else { throw ReplyClientError.timeout }
+            let slice = Int32(min(100, max(1, remaining / .milliseconds(1))))
+            var descriptor = pollfd(fd: socket, events: events, revents: 0)
+            let ready = poll(&descriptor, 1, slice)
+            if ready > 0 { return }
+            if ready < 0, errno != EINTR { throw ReplySocketError(code: errno) }
         }
-        guard let pending else { return }
-        connection.cancel()
-        pending.resume(with: result)
     }
 }
 
