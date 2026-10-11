@@ -59,11 +59,12 @@ public final class ReplyPlaybackController {
     var seenFrames: [UUID] = []
     var seenFrameSet: Set<UUID> = []
     var presentationStatuses: [String: String] = [:]
-    /// The head stream's idle watch (#469) and its injectable clock and scheduler (tests drive both).
+    /// The head stream's idle watch, its injectable clock and scheduler, and its diagnostics hook (#469, `+Idle`).
     @ObservationIgnored var idleWatch = ReplyIdleWatch()
     @ObservationIgnored var idleNow: @MainActor () -> ContinuousClock.Instant = { .now }
     @ObservationIgnored var idleScheduler: @MainActor (Duration, @escaping @MainActor () -> Void)
         -> @MainActor () -> Void = ReplyPlaybackController.sleepThenFire
+    @ObservationIgnored public var onStreamAbandoned: (@MainActor () -> Void)?
 
     var presentationKeysToRetain: Set<ReplyStreamKey> {
         var keys = Set(queue)
@@ -77,6 +78,7 @@ public final class ReplyPlaybackController {
 
     public init(player: any ReplyAudioPlaying) {
         self.player = player
+        observeAudioInterruptions(on: .default)
     }
 
     public var latest: ReplyPresentation? { replies.last }

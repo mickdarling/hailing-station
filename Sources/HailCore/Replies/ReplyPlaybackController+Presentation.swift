@@ -97,6 +97,7 @@ extension ReplyPlaybackController {
             try player.replaceQueue(with: lastAudio) { [weak self] in
                 self?.playbackFinished(lastKey, generation: generation)
             }
+            noteReplay(lastAudio)
             setPresentationStatus(nil, for: lastKey)
             isPaused = false
             status = "Replaying"

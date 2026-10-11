@@ -220,9 +220,7 @@ extension DeviceDiagnostics {
         [
             "Playback failed": "playback_failed", "Playback could not resume": "resume_failed",
             "Replay failed": "replay_failed", "Audio format is not yet playable": "format_unplayable",
-            "Conflicting audio segment refused": "conflicting_segment",
-            // A stream whose terminal marker never came, ended after its idle timeout (#469).
-            ReplyPlaybackController.abandonedStatus: "stream_abandoned"
+            "Conflicting audio segment refused": "conflicting_segment"
         ][status]
     }
 
@@ -241,6 +239,11 @@ extension DeviceDiagnostics {
     /// Reply playback start and end (busy rising and falling) with the echo guard that follows it, and new
     /// playback failures. The guard masks while busy and for its tail after, so `echo_guard` records both edges.
     public func watch(_ playback: ReplyPlaybackController) {
+        // A stream ended for want of its terminal marker (#469) is recorded when it happens, not from its status,
+        // which a presentation trim can drop before this observer runs.
+        playback.onStreamAbandoned = { [weak self] in
+            self?.record(.replyPlaybackError, [.code: .token("stream_abandoned")])
+        }
         let (busy, failures) = withObservationTracking {
             (playback.isReplyAudioOutputBusy, Set(playback.presentationStatuses.compactMap { id, status in
                 Self.playbackFailure(status).map { "\(id)|\($0)" }
