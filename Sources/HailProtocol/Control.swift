@@ -484,6 +484,8 @@ public enum DiagnosticVocabulary {
             "host_rate_limit", "app_buffer",
             // reply playback and capture failures
             "playback_failed", "resume_failed", "replay_failed", "format_unplayable", "conflicting_segment",
+            // a reply stream ended because its terminal marker never came (#469)
+            "stream_abandoned",
             "media_services_reset", "other"
         ],
         .domain: ["avfoundation", "coreaudio", "network", "posix", "other"],

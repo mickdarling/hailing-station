@@ -35,6 +35,13 @@ import Testing
         #expect(try FrameCoding.decode(FrameCoding.encode(original)) == original)
     }
 
+    /// #469: the app records a reply stream ended for want of its terminal marker; the host must accept it.
+    @Test func aStreamAbandonedPlaybackErrorIsAccepted() throws {
+        let event = try DiagnosticEvent(.replyPlaybackError, timestamp: 9, fields: [.code: .token("stream_abandoned")])
+        let frame = Frame(timestamp: 9, source: "phone", payload: .control(.diagnostic(events: [event])))
+        #expect(try FrameCoding.decode(FrameCoding.encode(frame)).payload == frame.payload)
+    }
+
     @Test func fieldsMayBeOmitted() throws {
         let decoded = try FrameCoding.decode(frame(#"{"ts":1,"name":"app_background"}"#))
         #expect(decoded.payload == .control(.diagnostic(events: [try DiagnosticEvent(.appBackground, timestamp: 1)])))
