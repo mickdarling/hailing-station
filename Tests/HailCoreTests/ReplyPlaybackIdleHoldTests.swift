@@ -37,8 +37,7 @@ import Testing
                     userInfo: [ReplyPlaybackController.interruptionTypeKey: UInt(1)])
         rig.advance(by: .seconds(60))
         #expect(rig.status(of: long) != ReplyPlaybackController.abandonedStatus)
-        center.post(name: ReplyPlaybackController.interruptionNotification, object: nil,
-                    userInfo: [ReplyPlaybackController.interruptionTypeKey: UInt(0)])
+        rig.controller.noteAudioSession(.interruptionEnded(resumed: true))
         rig.advance(by: .seconds(38))
         #expect(rig.status(of: long) != ReplyPlaybackController.abandonedStatus)
         rig.advance(by: .seconds(2))
@@ -116,6 +115,40 @@ import Testing
         #expect(rig.status(of: next) == ReplyPlaybackController.abandonedStatus)
     }
 
+    /// Codex round 5 (#469): an interruption that ends without the session resuming (no `shouldResume`, or a failed
+    /// reactivation) leaves the player stopped, so the hold stays; neither the raw end notification nor that
+    /// unresumed end releases it. Only a resume, or the app coming to the foreground, does.
+    @Test func anInterruptionEndedWithoutAResumeKeepsTheHold() {
+        let rig = IdleRig()
+        let center = NotificationCenter()
+        rig.controller.observeAudioInterruptions(on: center)
+        let stream = idleReply()
+        rig.controller.ingest(idleAudio(stream, sequence: 0, final: false, byte: 10))
+        rig.hold("interruption", true, on: center)
+        center.post(name: ReplyPlaybackController.interruptionNotification, object: nil,
+                    userInfo: [ReplyPlaybackController.interruptionTypeKey: UInt(0)])
+        rig.controller.noteAudioSession(.interruptionEnded(resumed: false))
+        rig.advance(by: .seconds(120))
+        #expect(rig.status(of: stream) != ReplyPlaybackController.abandonedStatus)
+        rig.controller.noteAudioSession(.interruptionEnded(resumed: true))
+        rig.advance(by: .seconds(22))
+        #expect(rig.status(of: stream) == ReplyPlaybackController.abandonedStatus)
+    }
+
+    /// Codex round 5 (#469): a replay tapped while paused unpauses playback, so it releases the hold.
+    @Test func aReplayTappedWhilePausedReleasesTheHold() {
+        let rig = IdleRig()
+        let played = idleReply(), next = idleReply()
+        rig.controller.ingest(idleAudio(played, sequence: 0, final: true, byte: 10))
+        rig.player.completeReply()
+        rig.controller.togglePause()
+        rig.controller.ingest(idleAudio(next, sequence: 1, final: false, byte: 30)) // a gap: queued, nothing plays
+        rig.advance(by: .seconds(60))
+        rig.controller.replayLatest() // 1.25 s
+        rig.advance(by: .seconds(23))
+        #expect(rig.status(of: next) == ReplyPlaybackController.abandonedStatus)
+    }
+
     /// #473 review: an interruption whose end is never posted is cleared when the app comes to the foreground.
     @Test func comingToTheForegroundEndsAStaleInterruptionHold() {
         let rig = IdleRig()
@@ -133,10 +166,12 @@ import Testing
 }
 
 extension IdleRig {
-    /// Starts or ends a pause, or an audio-session interruption posted on `center`.
+    /// Starts or ends a pause, or an audio-session interruption: it begins on `center` and ends when the session
+    /// reports playback resumed.
     func hold(_ kind: String, _ on: Bool, on center: NotificationCenter) {
         if kind == "pause" { return controller.togglePause() }
+        guard on else { return controller.noteAudioSession(.interruptionEnded(resumed: true)) }
         center.post(name: ReplyPlaybackController.interruptionNotification, object: nil,
-                    userInfo: [ReplyPlaybackController.interruptionTypeKey: UInt(on ? 1 : 0)])
+                    userInfo: [ReplyPlaybackController.interruptionTypeKey: UInt(1)])
     }
 }

@@ -27,6 +27,8 @@ Field keys: tokens `reason`, `state`, `code`, `domain`, `route`, `device`; versi
 
 A client sends `diagnostic` frames only to a host whose hello lists the `device_diagnostics` capability. A host without that capability never receives one. Adding an event name or field later needs a new capability, because a strict host refuses unknown names. The protocol version stays 1.
 
+The same applies to a new token. `reply_playback_error` code `stream_abandoned` (#469) means a reply stream was ended because its terminal marker never came: its audio had played out and `ms` (the idle timeout) passed with no new frame. A host whose hello also lists `device_diagnostics_stream_abandoned` accepts that code. Any other collecting host receives `other` instead, because an older host decodes an unknown token as a malformed frame and closes the connection.
+
 Canonical fixture: `fixtures/frames/control-diagnostic.json`. Negative fixtures: `fixtures/invalid/control-diagnostic-*.json`.
 
 ## Host sink (shipped in the second slice)

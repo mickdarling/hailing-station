@@ -155,10 +155,14 @@ public struct DiagnosticBatch: Sendable, Equatable {
 }
 
 extension HostConnection {
-    /// Sends one diagnostics batch; only to a ready host that advertises `device_diagnostics` (#234).
+    /// Sends one diagnostics batch; only to a ready host that advertises `device_diagnostics` (#234). A host that
+    /// does not also advertise `device_diagnostics_stream_abandoned` gets `other` for that code (#469): an older
+    /// host decodes an unknown token as a malformed frame and closes the connection.
     public func sendDiagnostics(_ events: [DiagnosticEvent]) async throws {
         try requireReady(capability: DiagnosticLimits.capability)
-        try await send(.diagnostic(events: events), generation: generation)
+        let accepted = snapshot.capabilities.contains(DiagnosticLimits.streamAbandonedCapability)
+        let sendable = accepted ? events : events.map(DeviceDiagnostics.withoutStreamAbandoned)
+        try await send(.diagnostic(events: sendable), generation: generation)
     }
 }
 
@@ -216,6 +220,16 @@ extension DeviceDiagnostics {
     }
 
     /// Reply-status strings the playback controller sets on failure, as tokens. Other statuses are not failures.
+    nonisolated static let streamAbandoned = "stream_abandoned"
+
+    /// `event` with `stream_abandoned` replaced by `other`, for a host whose vocabulary predates it.
+    nonisolated static func withoutStreamAbandoned(_ event: DiagnosticEvent) -> DiagnosticEvent {
+        guard event.fields[.code] == .token(streamAbandoned) else { return event }
+        var fields = event.fields
+        fields[.code] = .token("other")
+        return (try? DiagnosticEvent(event.name, timestamp: event.timestamp, fields: fields)) ?? event
+    }
+
     nonisolated static func playbackFailure(_ status: String) -> String? {
         [
             "Playback failed": "playback_failed", "Playback could not resume": "resume_failed",
@@ -240,11 +254,11 @@ extension DeviceDiagnostics {
     /// playback failures. The guard masks while busy and for its tail after, so `echo_guard` records both edges.
     public func watch(_ playback: ReplyPlaybackController) {
         // A stream ended for want of its terminal marker (#469) is recorded when it happens, not from its status,
-        // which a presentation trim can drop before this observer runs. Like a capture stall it reuses the existing
-        // vocabulary, so every host accepts it: code `other` with the idle timeout. A dedicated token needs #476.
+        // which a presentation trim can drop before this observer runs. Its own code, `stream_abandoned`, goes
+        // only to a host that advertises it (#476); `sendDiagnostics` sends `other` to any other host.
         playback.onStreamAbandoned = { [weak self] in
             let timeout = Int64(ReplyPlaybackController.streamIdleTimeout / .milliseconds(1))
-            self?.record(.replyPlaybackError, [.code: .token("other"), .ms: .integer(timeout)])
+            self?.record(.replyPlaybackError, [.code: .token(Self.streamAbandoned), .ms: .integer(timeout)])
         }
         let (busy, failures) = withObservationTracking {
             (playback.isReplyAudioOutputBusy, Set(playback.presentationStatuses.compactMap { id, status in

@@ -97,6 +97,9 @@ struct RootView: View {
             await audioRoutes.observe()
         }
         .task {
+            await playback.follow(audioSession) // interruption holds end on the session's actual resume (#469)
+        }
+        .task {
             connections.diagnostics = diagnostics
             diagnostics.observeSystem()
             diagnostics.watch(playback)
