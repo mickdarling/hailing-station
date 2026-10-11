@@ -652,8 +652,9 @@ extension AmbientListeningController {
 
     /// True after the backoff when the failure is transient and retries remain: the streamer then opens a new
     /// stream at sequence 0 on the same capture. False lets the failure end listening as before.
-    func recover(from error: any Error, session current: UUID) async -> Bool {
-        guard session == current, isOn, Self.isTransient(error) else { return false }
+    /// Only the live stream recovers: one a pause (#445) replaced, even mid-backoff, never renews.
+    func recover(from error: any Error, session current: UUID, streamer: AmbientAudioStreamer?) async -> Bool {
+        guard session == current, isOn, Self.isTransient(error), isLive(streamer) else { return false }
         if let lastRecovery, now() - lastRecovery >= Self.recoveryQuietPeriod { recoveries = 0 }
         guard recoveries < Self.recoveryBackoff.count else {
             sendFailure = sendFailure.map { "\($0) Gave up after \(recoveries) restarts." }
@@ -664,13 +665,18 @@ extension AmbientListeningController {
         recoveries += 1
         let wait = Task { try await sleep(delay) }
         recoveryWait = wait
-        guard (try? await wait.value) != nil, session == current, isOn else { return false }
+        guard (try? await wait.value) != nil, session == current, isOn, isLive(streamer) else { return false }
         recoveryWait = nil
         lastRecovery = now()
         sendFailure = nil
         sendFailureCause = nil
         diagnostics?.record(.ambientStart)
         return true
+    }
+
+    private func isLive(_ candidate: AmbientAudioStreamer?) -> Bool {
+        guard let candidate, pausedReason == nil else { return false }
+        return candidate === streamer
     }
 
     /// The host ended our stream but will take a new one: it idled out, its listener exited, or it refused audio
@@ -706,7 +712,9 @@ extension AmbientListeningController {
             }
         }
         source.streamer = streamer
-        streamer.recovery = { [weak self] error in await self?.recover(from: error, session: current) ?? false }
+        streamer.recovery = { [weak self, weak streamer] error in
+            await self?.recover(from: error, session: current, streamer: streamer) ?? false
+        }
         return streamer
     }
 
@@ -743,8 +751,11 @@ extension AmbientListeningController {
         )
         guard let streamer else { return await release(current) }
         self.streamer = nil
-        // The outgoing stream must not spend the live stream's recoveries (#287) while it drains.
+        // The outgoing stream must not spend the live stream's recoveries (#287) while it drains, nor finish a
+        // recovery it had already begun.
         streamer.recovery = nil
+        recoveryWait?.cancel()
+        recoveryWait = nil
         await streamer.stop()
         // Released unless a resumed stream or a resume in flight owns the session now. Listening may have ended
         // meanwhile (turned off, moved, gave up) with nothing else to release it; `release` checks the owner.

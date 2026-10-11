@@ -28,6 +28,36 @@ import Testing
         #expect(harness.releases == 1)
     }
 
+    /// Codex P2 (round 4): a transient-refusal recovery already waiting when the interruption arrives must not
+    /// renew the replaced stream, clear failure state, or log a start.
+    @Test func aRecoveryInFlightAtThePauseNeverRenewsTheOldStream() async throws {
+        let suite = "hail-445-recovery-\(UUID().uuidString)"
+        let defaults = try #require(UserDefaults(suiteName: suite))
+        defer { defaults.removePersistentDomain(forName: suite) }
+        let log = DeviceDiagnostics(defaults: defaults, appInfo: [:], wallNow: { 1_000 },
+                                    clock: { ContinuousClock().now })
+        log.setEnabled(true)
+        let harness = Harness()
+        let controller = harness.controller
+        controller.diagnostics = log
+        await controller.turnOn(for: try binding())
+        harness.refusal = HostConnectionFailure.remote("not_allowed: ambient stopped: idle")
+        try harness.speak()
+        try await harness.waitForBackoff()
+
+        harness.interruption(began: true)
+        try await waitUntil { await MainActor.run { controller.pausedReason != nil } }
+        harness.refusal = nil
+        // The oldest parked wait is the recovery's: let it finish after the pause.
+        await harness.steps.release()
+        await settle()
+        let starts = try #require(log.nextBatch()).events.filter { $0.name == .ambientStart }
+        #expect(starts.count == 1, "only the user's start; no phantom start from the replaced stream")
+        #expect(controller.pausedReason != nil)
+        #expect(harness.fakes.count == 1)
+        await controller.turnOff()
+    }
+
     @Test func theReplacedStreamsLateRefusalDoesNotStopTheResumedOne() async throws {
         let harness = Harness(holdingSends: true)
         let controller = harness.controller
