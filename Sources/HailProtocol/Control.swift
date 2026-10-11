@@ -124,17 +124,22 @@ public enum ControlPayload: Sendable, Equatable {
     /// Device to host (#398): which overheard turns this connection wants, one of `AmbientOverheard.scopes`. The host
     /// starts every connection at `off`. It grants no authority beyond choosing what the host may send back.
     case overheardScope(scope: String)
+    /// Host to device (#404): mute or unmute this device's reply audio, as its own mute control does. Sent only to a
+    /// device that advertises `ReplyMute.capability`. It carries nothing else and grants no authority.
+    case setReplyMute(muted: Bool)
 }
 
 extension ControlPayload: Codable {
     private enum CodingKeys: String, CodingKey {
         case command, hello, targets, targetID = "target", nonce, code, message, events, from, text, speaker, scope
+        case muted
     }
 
     private enum Command: String, Codable {
         case hello, listTargets = "list_targets", targets, select, subscribe, unsubscribe, escape, ping, pong, error
         case diagnostic, stopPlayback = "stop_playback", ambientMovedHere = "ambient_moved_here"
         case ambientHeard = "ambient_heard", ambientOverheard = "ambient_overheard", overheardScope = "overheard_scope"
+        case setReplyMute = "set_reply_mute"
     }
 
     // A closed wire enum is clearest as one exhaustive switch.
@@ -170,19 +175,30 @@ extension ControlPayload: Codable {
             // Strict, like `diagnostic`: only `command`, so nothing rides along on a stop.
             try Self.requireOnly(["command"], "stop_playback", decoder)
             self = .stopPlayback
-        case .ambientMovedHere:
-            // Strict, like `stop_playback` (#366): only `command` and an optional class from the closed vocabulary.
-            try Self.requireOnly(["command", "from"], "ambient_moved_here", decoder)
-            let from = try container.decodeIfPresent(String.self, forKey: .from)
-            guard from == nil || AmbientTakeOver.deviceKind(from) != nil else {
-                throw DecodingError.dataCorrupted(.init(codingPath: decoder.codingPath,
-                                                        debugDescription: "unknown ambient_moved_here device"))
-            }
-            self = .ambientMovedHere(from: from)
+        case .ambientMovedHere: self = try Self.ambientMovedHere(from: decoder)
         case .ambientHeard: self = try Self.ambientHeard(from: decoder)
         case .ambientOverheard: self = try Self.ambientOverheard(from: decoder)
         case .overheardScope: self = try Self.overheardScope(from: decoder)
+        case .setReplyMute: self = try Self.setReplyMute(from: decoder)
         }
+    }
+
+    /// Strict, like `stop_playback` (#366): only `command` and an optional class from the closed vocabulary.
+    private static func ambientMovedHere(from decoder: any Decoder) throws -> ControlPayload {
+        try requireOnly(["command", "from"], "ambient_moved_here", decoder)
+        let from = try decoder.container(keyedBy: CodingKeys.self).decodeIfPresent(String.self, forKey: .from)
+        guard from == nil || AmbientTakeOver.deviceKind(from) != nil else {
+            throw DecodingError.dataCorrupted(.init(codingPath: decoder.codingPath,
+                                                    debugDescription: "unknown ambient_moved_here device"))
+        }
+        return .ambientMovedHere(from: from)
+    }
+
+    /// Strict, like `stop_playback` (#404): only `command` and the boolean `muted`.
+    private static func setReplyMute(from decoder: any Decoder) throws -> ControlPayload {
+        try requireOnly(["command", "muted"], "set_reply_mute", decoder)
+        let container = try decoder.container(keyedBy: CodingKeys.self)
+        return .setReplyMute(muted: try container.decode(Bool.self, forKey: .muted))
     }
 
     /// Strict (#398): like `ambient_heard`, plus a `speaker` from `AmbientOverheard.speakers`.
@@ -294,6 +310,9 @@ extension ControlPayload: Codable {
         case .overheardScope(let scope):
             try container.encode(Command.overheardScope, forKey: .command)
             try container.encode(try Self.closed(AmbientOverheard.scope(scope), scope, encoder), forKey: .scope)
+        case .setReplyMute(let muted):
+            try container.encode(Command.setReplyMute, forKey: .command)
+            try container.encode(muted, forKey: .muted)
         }
     }
 }
@@ -302,6 +321,15 @@ extension ControlPayload: Codable {
 /// `stop_playback` to a device without it, because an older device refuses an unknown command as malformed.
 public enum PlaybackStop {
     public static let capability = "stop_playback"
+}
+
+/// Reply mute (#404): the owner's spoken "mute" or "unmute", carried out on the device that heard it. The device
+/// advertises the capability in its `hello`; a host never sends `set_reply_mute` to a device without it, because an
+/// older device refuses an unknown command as malformed. `muted` is the device's own reply mute: later reply audio
+/// plays silently while its text still shows, so a replay still works, until the device or the host unmutes it.
+/// The host sends `stop_playback` first when the reply now playing should end at once.
+public enum ReplyMute {
+    public static let capability = "reply_mute"
 }
 
 /// The user's own ambient request, shown in the thread (#318). The device advertises the capability in its `hello`;
@@ -685,6 +713,15 @@ extension Schema {
                 "command": .object([:]),
                 "scope": .object(["enum": .array(AmbientOverheard.scopes.map(JSONValue.string))])
             ])
+        ])
+    ])
+
+    /// `set_reply_mute` carries `command` and a boolean `muted` and nothing else (#404).
+    static let setReplyMutePayloadRule: JSONValue = .object([
+        "if": .object(["properties": .object(["command": .object(["const": .string("set_reply_mute")])])]),
+        "then": .object([
+            "additionalProperties": .bool(false),
+            "properties": .object(["command": .object([:]), "muted": .object(["type": .string("boolean")])])
         ])
     ])
 

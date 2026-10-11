@@ -19,7 +19,7 @@ import Testing
             .escape(targetID: "tmux:a"),
             .ping(nonce: "n1"), .pong(nonce: "n1"),
             .error(code: .unauthorized, message: "no such device"), .error(code: .unknown("future"), message: ""),
-            .stopPlayback
+            .stopPlayback, .setReplyMute(muted: true), .setReplyMute(muted: false)
         ]
         for command in commands { _ = try roundTrip(command) }
     }
@@ -28,6 +28,19 @@ import Testing
         #expect(try roundTrip(.stopPlayback).contains(#""payload":{"command":"stop_playback"}"#))
         let extra = Data(#"{"command":"stop_playback","target":"tmux:a"}"#.utf8)
         #expect(throws: DecodingError.self) { try JSONDecoder().decode(ControlPayload.self, from: extra) }
+    }
+
+    /// #404: `set_reply_mute` carries exactly a boolean `muted`, and nothing rides along.
+    @Test func setReplyMuteCarriesOnlyABooleanMuted() throws {
+        let wire = #""payload":{"command":"set_reply_mute","muted":true}"#
+        #expect(try roundTrip(.setReplyMute(muted: true)).contains(wire))
+        #expect(ReplyMute.capability == "reply_mute")
+        for refused in [#"{"command":"set_reply_mute"}"#, #"{"command":"set_reply_mute","muted":"yes"}"#,
+                        #"{"command":"set_reply_mute","muted":true,"target":"tmux:a"}"#] {
+            #expect(throws: DecodingError.self) {
+                try JSONDecoder().decode(ControlPayload.self, from: Data(refused.utf8))
+            }
+        }
     }
 
     @Test func commandNamesUseSnakeCaseOnTheWire() throws {
