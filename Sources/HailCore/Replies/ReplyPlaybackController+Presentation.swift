@@ -100,6 +100,7 @@ extension ReplyPlaybackController {
             noteReplay(lastAudio)
             setPresentationStatus(nil, for: lastKey)
             isPaused = false
+            syncIdleHold() // a replay tapped while paused unpauses: the idle watch is no longer held (#469)
             status = "Replaying"
         } catch {
             playbackFinished(lastKey, generation: generation)

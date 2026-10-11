@@ -64,8 +64,9 @@ extension ReplyPlaybackController {
     /// Coming to the foreground ends any interruption hold, in case its end was never posted (#473 review).
     nonisolated static let foregroundNotification = Notification.Name("UIApplicationWillEnterForegroundNotification")
 
-    /// Follows interruptions on `center`, by name, so the hold works wherever the controller runs. `began` is
-    /// `AVAudioSession.InterruptionType.began` (1); anything else, or the app coming to the foreground, ends it.
+    /// Starts the interruption hold when one begins on `center` (`AVAudioSession.InterruptionType.began`, 1, by name
+    /// so it works wherever the controller runs). Its end follows the audio session's actual result (`follow`), and
+    /// the app coming to the foreground also ends it.
     func observeAudioInterruptions(on center: NotificationCenter) {
         _ = center.addObserver(forName: Self.foregroundNotification, object: nil, queue: nil) { [weak self] _ in
             guard Thread.isMainThread else {
@@ -75,12 +76,30 @@ extension ReplyPlaybackController {
             MainActor.assumeIsolated { self?.audioInterruption(began: false) }
         }
         _ = center.addObserver(forName: Self.interruptionNotification, object: nil, queue: nil) { [weak self] note in
-            let began = (note.userInfo?[Self.interruptionTypeKey] as? UInt) == 1
+            guard (note.userInfo?[Self.interruptionTypeKey] as? UInt) == 1 else { return }
             guard Thread.isMainThread else {
-                Task { @MainActor in self?.audioInterruption(began: began) }
+                Task { @MainActor in self?.audioInterruption(began: true) }
                 return
             }
-            MainActor.assumeIsolated { self?.audioInterruption(began: began) }
+            MainActor.assumeIsolated { self?.audioInterruption(began: true) }
+        }
+    }
+
+    /// Follows `session`'s events for as long as the caller's task runs: an interruption holds the idle watch until
+    /// the session reports playback resumed. An end without a resume (or a failed reactivation) leaves the player
+    /// stopped, so the hold stays until a later resume or the app comes to the foreground (Codex round 5, #469).
+    public func follow(_ session: any AudioSessionDiagnosticsProviding) async {
+        for await event in await session.events {
+            guard !Task.isCancelled else { return }
+            noteAudioSession(event)
+        }
+    }
+
+    func noteAudioSession(_ event: AudioSessionEvent) {
+        switch event {
+        case .interruptionBegan: audioInterruption(began: true)
+        case .interruptionEnded(resumed: true): audioInterruption(began: false)
+        case .interruptionEnded(resumed: false), .routeChanged: break
         }
     }
 
