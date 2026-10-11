@@ -20,9 +20,17 @@ enum ReplyBackground {
     /// The detached job's stream: the 30-minute audio bound plus time to render, start and finish. It restarts when
     /// the job's audio turn begins, so time queued behind another reply is not taken from its own stream.
     static let wallClockBound: Duration = .seconds(ReplyStreamPacer.maxAudioSeconds + 300)
-    private static let deadline = Mutex(ContinuousClock.now)
-    static func restartBound() { deadline.withLock { $0 = .now.advanced(by: wallClockBound) } }
-    static func extendBound(by wait: Duration) { deadline.withLock { $0 = $0.advanced(by: wait) } }
+    /// Waiting on others' traffic for the endpoint's shared limit extends the bound by at most this much in all, so
+    /// sustained traffic delays a reply without ever holding its audio turn open indefinitely.
+    static let maxExtension: Duration = .seconds(600)
+    private static let deadline = Mutex((end: ContinuousClock.now, extended: Duration.zero))
+    static func restartBound() { deadline.withLock { $0 = (.now.advanced(by: wallClockBound), .zero) } }
+    static func extendBound(by wait: Duration) {
+        deadline.withLock { state in
+            let step = min(wait, maxExtension - state.extended)
+            state = (state.end.advanced(by: step), state.extended + step)
+        }
+    }
     private static let readyLine = Data("haild: reply streaming in the background\n".utf8)
     private static let relayLimit = 65_536
     private static let startFailure = ReplyCommandError.invalid("cannot start the background reply")
@@ -113,7 +121,7 @@ enum ReplyBackground {
         try await withThrowingTaskGroup(of: Void.self) { group in
             group.addTask { try await job() }
             group.addTask {
-                while case let end = deadline.withLock({ $0 }), ContinuousClock.now < end {
+                while case let end = deadline.withLock({ $0.end }), ContinuousClock.now < end {
                     try await Task.sleep(until: end, clock: .continuous)
                 }
                 throw ReplyCommandError.invalid("background reply exceeded its time bound")
