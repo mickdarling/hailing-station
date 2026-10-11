@@ -33,7 +33,7 @@ import HailProtocolFixtures
         let expected: Set<String> = [
             "hello", "listTargets", "targets", "select", "subscribe", "unsubscribe", "escape", "ping", "pong",
             "error", "diagnostic", "stopPlayback", "ambientMovedHere", "ambientHeard", "ambientOverheard",
-            "overheardScope"
+            "overheardScope", "setReplyMute"
         ]
         #expect(Fixtures.controlCommandsCovered == expected)
     }

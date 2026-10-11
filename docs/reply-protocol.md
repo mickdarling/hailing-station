@@ -63,6 +63,16 @@ older device refuses an unknown command as malformed. The host sends it when a R
 in its scope, and refuses the rest of every reply that was mid-stream on that connection whether or not the device
 advertised the command ([rightyo-input.md](rightyo-input.md)).
 
+## Muting reply audio (#404)
+
+`{"command": "set_reply_mute", "muted": true}` is a host-to-device control command that mutes the device's reply
+audio, as its own mute control does. Later replies still arrive, and their text shows, but their audio plays
+silently, so a replay still works. `"muted": false` unmutes. It carries only `command` and the boolean `muted`: the
+decoder and the schema refuse any other key, and it grants no authority. A device advertises `reply_mute`
+(`ReplyMute.capability`) in its `hello` when it can act on the command. A host never sends it to a device that did
+not advertise it, because an older device refuses an unknown command as malformed. The host sends it when the owner
+says "mute" or "unmute". To cut the reply now playing, it sends `stop_playback` first.
+
 ## Ambient take-over (#366)
 
 The most recent device to start ambient listening on a host takes it over. There is no "ambient busy" refusal.

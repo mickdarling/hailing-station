@@ -221,6 +221,9 @@ public enum Fixtures {
             id: id(208), timestamp: 1_758_200_050_500, source: "terminal",
             payload: .control(.overheardScope(scope: "owner"))
         )),
+        Example(name: "control-set-reply-mute", frame: Frame(
+            id: id(209), timestamp: 1_758_200_050_600, source: "host", payload: .control(.setReplyMute(muted: true))
+        )),
         Example(name: "control-ambient-heard", frame: Frame(
             id: id(206), timestamp: 1_758_200_050_300, source: "host",
             payload: .control(.ambientHeard(targetID: "tmux:codex-hail", text: "Haili, what's on my calendar?"))

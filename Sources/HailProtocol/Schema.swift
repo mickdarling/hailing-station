@@ -154,7 +154,7 @@ public enum Schema {
                 [
                     "hello", "list_targets", "targets", "select", "subscribe", "unsubscribe", "escape", "ping", "pong",
                     "error", "diagnostic", "stop_playback", "ambient_moved_here", "ambient_heard",
-                    "ambient_overheard", "overheard_scope"
+                    "ambient_overheard", "overheard_scope", "set_reply_mute"
                 ]
                     .map(JSONValue.string)
             )]),
@@ -183,7 +183,8 @@ public enum Schema {
                 "type": .string("string"), "maxLength": .integer(Int64(ControlLimits.maxErrorMessage))
             ]),
             "events": diagnosticEvents,
-            "from": .object(["enum": .array(AmbientTakeOver.deviceKinds.map(JSONValue.string))])
+            "from": .object(["enum": .array(AmbientTakeOver.deviceKinds.map(JSONValue.string))]),
+            "muted": .object(["type": .string("boolean")])
         ]),
         "allOf": .array([
             commandRule("hello", requires: ["hello"]),
@@ -199,12 +200,14 @@ public enum Schema {
             commandRule("ambient_heard", requires: ["target", "text"]),
             commandRule("ambient_overheard", requires: ["target", "text", "speaker"]),
             commandRule("overheard_scope", requires: ["scope"]),
+            commandRule("set_reply_mute", requires: ["muted"]),
             diagnosticPayloadRule,
             stopPlaybackPayloadRule,
             ambientMovedHerePayloadRule,
             ambientHeardPayloadRule,
             ambientOverheardPayloadRule,
-            overheardScopePayloadRule
+            overheardScopePayloadRule,
+            setReplyMutePayloadRule
         ])
     ])
 }
