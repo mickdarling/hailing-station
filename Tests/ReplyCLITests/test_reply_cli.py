@@ -763,6 +763,21 @@ class ReplyCLITests(unittest.TestCase):
         self.assertEqual(len(requests), 1)  # sent exactly once
         self.assertLess(elapsed, 10)
 
+    def test_two_hundred_back_to_back_frames_all_arrive(self):
+        # #144: one connection per frame, 201 in a row (text and 200 PCM segments, pacing off), none failing.
+        with tempfile.TemporaryDirectory(prefix="hail-reply-loop-") as scratch:
+            pcm = Path(scratch) / "loop.pcm"
+            pcm.write_bytes(bytes(200 * 48 * 1024))
+            environment = os.environ.copy()
+            environment["HAILD_REPLY_PACING"] = "off"
+            with self.reply_server(lambda index: {"delivered": 1}) as (path, frames):
+                result = self.run_reply(["--text", "synthetic reply", "--pcm16", str(pcm)], path, environment)
+                self.assertEqual(result.returncode, 0, result.stderr)
+                self.wait_for(lambda: len(frames) == 201, SLOW)
+        audio = [frame for _, frame in frames[1:]]
+        self.assertEqual([frame["payload"]["sequence"] for frame in audio], list(range(200)))
+        self.assertTrue(audio[-1]["payload"]["final"])
+
     def test_a_socket_that_never_listens_fails_within_the_retry_budget(self):
         with tempfile.TemporaryDirectory(prefix="hail-reply-deaf-") as scratch:
             path = os.path.join(scratch, "reply.sock")
