@@ -941,10 +941,10 @@ class ReplyCLITests(unittest.TestCase):
 
                 def answer():
                     try:
-                        server.settimeout(10)
+                        server.settimeout(SLOW)
                         for _ in range(count):
                             with server.accept()[0] as client:
-                                client.settimeout(10)
+                                client.settimeout(SLOW)
                                 request = b""
                                 while not request.endswith(b"\n"):
                                     chunk = client.recv(8192)
@@ -992,7 +992,7 @@ class ReplyCLITests(unittest.TestCase):
 
                     def answer():
                         try:
-                            server.settimeout(10)
+                            server.settimeout(SLOW)
                             with server.accept()[0] as client:
                                 request = b""
                                 while not request.endswith(b"\n"):

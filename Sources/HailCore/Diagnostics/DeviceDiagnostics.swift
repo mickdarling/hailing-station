@@ -239,6 +239,13 @@ extension DeviceDiagnostics {
     /// Reply playback start and end (busy rising and falling) with the echo guard that follows it, and new
     /// playback failures. The guard masks while busy and for its tail after, so `echo_guard` records both edges.
     public func watch(_ playback: ReplyPlaybackController) {
+        // A stream ended for want of its terminal marker (#469) is recorded when it happens, not from its status,
+        // which a presentation trim can drop before this observer runs. Like a capture stall it reuses the existing
+        // vocabulary, so every host accepts it: code `other` with the idle timeout. A dedicated token needs #476.
+        playback.onStreamAbandoned = { [weak self] in
+            let timeout = Int64(ReplyPlaybackController.streamIdleTimeout / .milliseconds(1))
+            self?.record(.replyPlaybackError, [.code: .token("other"), .ms: .integer(timeout)])
+        }
         let (busy, failures) = withObservationTracking {
             (playback.isReplyAudioOutputBusy, Set(playback.presentationStatuses.compactMap { id, status in
                 Self.playbackFailure(status).map { "\(id)|\($0)" }

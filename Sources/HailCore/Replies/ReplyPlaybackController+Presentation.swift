@@ -6,6 +6,7 @@ extension ReplyPlaybackController {
     /// continue to queue, but none are scheduled or resumed until capture finalization releases the
     /// suppression. A user's explicit pause choice remains authoritative across the transition.
     public func beginCaptureSuppression() {
+        defer { syncIdleHold() }
         guard !isCaptureSuppressed else { return }
         isCaptureSuppressed = true
         if !isPaused, activeKey != nil {
@@ -15,6 +16,7 @@ extension ReplyPlaybackController {
     }
 
     public func endCaptureSuppression(resumingPlayback: Bool = true) {
+        defer { syncIdleHold() }
         guard isCaptureSuppressed else { return }
         isCaptureSuppressed = false
         guard resumingPlayback else {
@@ -49,6 +51,7 @@ extension ReplyPlaybackController {
     }
 
     public func togglePause() {
+        defer { syncIdleHold() }
         if isCaptureSuppressed {
             isPaused.toggle()
             status = isPaused ? "Paused" : "Paused while listening"
@@ -94,6 +97,7 @@ extension ReplyPlaybackController {
             try player.replaceQueue(with: lastAudio) { [weak self] in
                 self?.playbackFinished(lastKey, generation: generation)
             }
+            noteReplay(lastAudio)
             setPresentationStatus(nil, for: lastKey)
             isPaused = false
             status = "Replaying"
