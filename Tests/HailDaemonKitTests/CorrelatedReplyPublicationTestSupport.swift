@@ -1,6 +1,5 @@
 import Foundation
 import Synchronization
-@testable import HailDaemonKit
 
 /// A synthetic admission boundary; advances causally between status and actual enqueue, not by sleeping.
 final class PublicationExpiryClock: Sendable {
@@ -14,7 +13,6 @@ final class PublicationExpiryClock: Sendable {
             remaining = reads - 1
             return false
         }
-        // Past the provider-turn bound too (#430): a committed leased request outlives the ordinary 120 s.
-        return expired ? origin.advanced(by: HostReplyRequest.providerTurnBound) : origin
+        return expired ? origin.advanced(by: .seconds(120)) : origin
     }
 }

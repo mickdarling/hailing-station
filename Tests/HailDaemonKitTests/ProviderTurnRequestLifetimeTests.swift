@@ -11,7 +11,7 @@ import Testing
 
     @Test func aRunningProviderTurnStillAnswersAfterTwoMinutes() async throws {
         let rig = try await RecipientTestRig.make()
-        let session = await rig.session()
+        let session = await rig.session(providerTurnEndsReported: true)
         let context = try await rig.submit(on: session)
         let frame = recipientText(recipientDescriptor(context))
         rig.clock.advance(2 * Self.minute + 1_000)
@@ -23,7 +23,7 @@ import Testing
 
     @Test func anEndedTurnKeepsTwoMinutesForItsFinalFrames() async throws {
         let rig = try await RecipientTestRig.make()
-        let session = await rig.session()
+        let session = await rig.session(providerTurnEndsReported: true)
         let context = try await rig.submit(on: session)
         let frame = recipientText(recipientDescriptor(context))
         rig.clock.advance(30 * Self.minute)
@@ -39,7 +39,7 @@ import Testing
 
     @Test func aTurnWhoseEndIsNeverReportedStopsAtTheSafetyBound() async throws {
         let rig = try await RecipientTestRig.make()
-        let session = await rig.session()
+        let session = await rig.session(providerTurnEndsReported: true)
         let context = try await rig.submit(on: session)
         let frame = recipientText(recipientDescriptor(context))
         rig.clock.advance(6 * 60 * Self.minute - 1_000)
@@ -50,7 +50,7 @@ import Testing
 
     @Test func aLateEndReportCannotReviveAnExpiredTurn() async throws {
         let rig = try await RecipientTestRig.make()
-        let session = await rig.session()
+        let session = await rig.session(providerTurnEndsReported: true)
         let context = try await rig.submit(on: session)
         let frame = recipientText(recipientDescriptor(context))
         rig.clock.advance(6 * 60 * Self.minute + 1_000)
@@ -62,7 +62,7 @@ import Testing
     @Test(arguments: ["selection", "policy"])
     func aLongRunningTurnIsStillRevoked(change: String) async throws {
         let rig = try await RecipientTestRig.make()
-        let session = await rig.session()
+        let session = await rig.session(providerTurnEndsReported: true)
         let context = try await rig.submit(on: session)
         let frame = recipientText(recipientDescriptor(context))
         rig.clock.advance(30 * Self.minute)
@@ -78,7 +78,7 @@ import Testing
 
     @Test func theListenerEndsOnlyTheExactTurnItIsGiven() async throws {
         let rig = try await RecipientTestRig.make()
-        let session = await rig.session()
+        let session = await rig.session(providerTurnEndsReported: true)
         let context = try await rig.submit(on: session)
         let frame = recipientText(recipientDescriptor(context))
         let listener = try WebSocketListener(bindAddress: "127.0.0.1", port: 0, host: rig.host, hostName: "mac-test")
@@ -98,9 +98,20 @@ import Testing
         await listener.stop(reason: "synthetic test complete")
     }
 
-    @Test func aHandoffThatNeverCommittedKeepsTheOrdinaryTwoMinutes() async throws {
+    @Test func withoutATurnEndSourceAProviderRequestKeepsTheOrdinaryTwoMinutes() async throws {
         let rig = try await RecipientTestRig.make()
         let session = await rig.session()
+        let context = try await rig.submit(on: session)
+        let frame = recipientText(recipientDescriptor(context))
+        rig.clock.advance(2 * Self.minute - 1_000)
+        #expect(await session.replyPublicationStatus(frame) == .ready)
+        rig.clock.advance(2_000)
+        #expect(await session.replyPublicationStatus(frame) == .absent)
+    }
+
+    @Test func aHandoffThatNeverCommittedKeepsTheOrdinaryTwoMinutes() async throws {
+        let rig = try await RecipientTestRig.make()
+        let session = await rig.session(providerTurnEndsReported: true)
         let context = try await rig.submit(on: session)
         await session.markUncommitted(context.id)
         let frame = recipientText(recipientDescriptor(context))
@@ -112,7 +123,7 @@ import Testing
 
     @Test func endedTurnsFreeTheirCapacitySlotsAndRunningOnesKeepThem() async throws {
         let rig = try await RecipientTestRig.make()
-        let session = await rig.session()
+        let session = await rig.session(providerTurnEndsReported: true)
         var contexts: [ProviderTurnContext] = []
         for _ in 0..<HostReplyRequest.capacity { contexts.append(try await rig.submit(on: session)) }
         rig.clock.advance(10 * Self.minute)

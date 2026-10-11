@@ -98,10 +98,10 @@ struct RecipientTestRig {
         return Self(host: try HailHost(registry: registry, store: InMemoryPolicyStore(policy)), adapter: adapter)
     }
 
-    func session() async -> HostSession {
+    func session(providerTurnEndsReported: Bool = false) async -> HostSession {
         let session = HostSession(
             host: host, authorizer: PersonalTerminalAuthorizer(), hostName: "mac-test", now: clock.now,
-            requestClock: clock.instant
+            requestClock: clock.instant, providerTurnEndsReported: providerTurnEndsReported
         )
         _ = await session.receive(helloFrame())
         _ = await session.receive(sessionFrame(payload: .control(.select(targetID: Self.target))))

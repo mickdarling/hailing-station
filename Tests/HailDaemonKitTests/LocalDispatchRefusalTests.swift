@@ -91,10 +91,8 @@ import Testing
         await #expect(throws: LocalReplyRefusal.noRecipient) { try await listener.publish(frame) }
         let later = recipientText(recipientDescriptor(try #require(await rig.adapter.contexts.last)))
         _ = try #require(await session.dispatch(dispatchRequest(connection: UUID())))
-        let freshContext = try #require(await rig.adapter.contexts.last)
-        let fresh = recipientText(recipientDescriptor(freshContext))
+        let fresh = recipientText(recipientDescriptor(try #require(await rig.adapter.contexts.last)))
         #expect(!(await session.acceptsHostReply(later)))
-        await session.providerTurnEnded(freshContext)
         rig.clock.advance(120_000)
         #expect(!(await session.acceptsHostReply(fresh)))
         await listener.stop(reason: "synthetic test complete")

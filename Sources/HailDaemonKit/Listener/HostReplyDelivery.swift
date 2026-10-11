@@ -31,12 +31,15 @@ struct HostReplyRequest {
     var audioSequence = 0
     var audioFinished = false
     var frames: Set<UUID> = []
+    /// Minted on a session whose provider turn ends are reported (#430); otherwise the ordinary lifetime applies.
+    var awaitsTurnEnd = false
     /// When the provider reported the turn finished, interrupted or failed (#430); its final frames get `lifetime`.
     var providerTurnEndedAt: ContinuousClock.Instant?
 
-    /// Only a leased (provider-owned) request whose handoff committed outlives `lifetime`, and only while its turn
-    /// runs; its binding lease and policy permit are still re-checked on every use (`withAuthority`).
-    var isProviderTurn: Bool { committed && bindingLease != nil }
+    /// Only a leased (provider-owned) request whose handoff committed, on a session that hears its turn end, outlives
+    /// `lifetime`, and only while that turn runs; its binding lease and policy permit are still re-checked on every
+    /// use (`withAuthority`).
+    var isProviderTurn: Bool { committed && bindingLease != nil && awaitsTurnEnd }
 
     func isCurrent(at timestamp: ContinuousClock.Instant) -> Bool {
         let elapsed = createdAt.duration(to: timestamp)
