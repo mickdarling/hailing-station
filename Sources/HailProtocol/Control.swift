@@ -376,6 +376,10 @@ public enum VersionNegotiation {
 public enum DiagnosticLimits {
     /// The host capability that admits `diagnostic` frames. A host without it never receives one.
     public static let capability = "device_diagnostics"
+    /// A host whose `code` vocabulary includes `stream_abandoned` (#469). An older host decodes an unknown token as
+    /// a malformed frame and closes the connection, so a device sends that token only to a host advertising this,
+    /// and `other` otherwise.
+    public static let streamAbandonedCapability = "device_diagnostics_stream_abandoned"
     public static let maxEventsPerBatch = 32
     public static let integers: ClosedRange<Int64> = -2_147_483_648...2_147_483_647
     /// One to four dot-separated groups of one to six digits, as in `0.1.84` or `26.0.1`.

@@ -16,6 +16,7 @@ import Testing
 
     @Test func limitLiteralsAreTheDocumentedOnes() {
         #expect(DiagnosticLimits.capability == "device_diagnostics")
+        #expect(DiagnosticLimits.streamAbandonedCapability == "device_diagnostics_stream_abandoned")
         #expect(DiagnosticLimits.maxEventsPerBatch == 32)
         #expect(DiagnosticLimits.versionPattern == "^[0-9]{1,6}([.][0-9]{1,6}){0,3}$")
         #expect(DiagnosticLimits.integers == -2_147_483_648...2_147_483_647)
