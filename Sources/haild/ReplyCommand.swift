@@ -639,3 +639,43 @@ private final class ReplyTransaction: @unchecked Sendable {
         pending.resume(with: result)
     }
 }
+
+// Sharing the phone and the endpoint with other detached replies.
+extension ReplyBackground {
+    /// One detached reply's audio at a time per reply socket (#430). The phone plays replies one after another, so a
+    /// second reply sent alongside the first would sit almost whole in the phone's queue, and two paced jobs would
+    /// share the endpoint's per-minute frames. A queued job tells its caller and waits; its text has already gone.
+    /// The lock is a file beside the owner-only socket, held open for the job's life: the kernel drops it at exit.
+    static func awaitAudioTurn(socket: URL) async throws {
+        guard isDetachedJob else { return }
+        let path = socket.deletingLastPathComponent().appendingPathComponent("reply-audio.lock").path
+        let lock = open(path, O_RDWR | O_CREAT | O_CLOEXEC | O_NOFOLLOW, 0o600)
+        guard lock >= 0 else { throw ReplyCommandError.invalid("cannot open the reply audio lock") }
+        var queued = false
+        defer { restartBound() } // a queued job gets the whole bound for its own stream (Codex P1)
+        while flock(lock, LOCK_EX | LOCK_NB) != 0 {
+            guard errno == EWOULDBLOCK || errno == EINTR else {
+                close(lock)
+                throw ReplyCommandError.invalid("cannot take the reply audio lock")
+            }
+            if !queued {
+                queued = true
+                note("reply audio queued behind another reply")
+                ready()
+            }
+            try await Task.sleep(for: .milliseconds(250))
+        }
+    }
+
+    /// In a detached job, a frame the endpoint refused for its shared per-minute limit is sent again once there is
+    /// room: that refusal comes before anything is published. Every other outcome, and every foreground reply,
+    /// is unchanged.
+    static func submit(_ frame: Frame, socketURL: URL) async throws -> Int {
+        while true {
+            do { return try await ReplyClient.submit(frame, socketURL: socketURL) } catch let error {
+                guard isDetachedJob, case ReplyClientError.refused("rate limited") = error else { throw error }
+                try await Task.sleep(for: .seconds(2))
+            }
+        }
+    }
+}

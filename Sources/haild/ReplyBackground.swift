@@ -17,8 +17,11 @@ import Synchronization
 /// more.
 enum ReplyBackground {
     static let variable = "HAILD_REPLY_BACKGROUND"
-    /// The whole detached job: the 30-minute audio bound plus time to render, start and finish.
+    /// The detached job's stream: the 30-minute audio bound plus time to render, start and finish. It restarts when
+    /// the job's audio turn begins, so time queued behind another reply is not taken from its own stream.
     static let wallClockBound: Duration = .seconds(ReplyStreamPacer.maxAudioSeconds + 300)
+    private static let deadline = Mutex(ContinuousClock.now)
+    static func restartBound() { deadline.withLock { $0 = .now.advanced(by: wallClockBound) } }
     private static let readyLine = Data("haild: reply streaming in the background\n".utf8)
     private static let relayLimit = 65_536
     private static let startFailure = ReplyCommandError.invalid("cannot start the background reply")
@@ -84,6 +87,7 @@ enum ReplyBackground {
     /// Runs the detached job under its wall-clock bound. SIGTERM, or losing the caller before ready, cancels it
     /// cooperatively, so the renderer is cancelled and its private output cleaned up rather than abandoned.
     static func bounded(_ job: @escaping @Sendable () async throws -> Void) async throws {
+        restartBound()
         let task = Task { try await boundedJob(job) }
         let cancel: @Sendable () -> Void = {
             // Before ready, the caller's pipe may have no reader left; a final error must not die writing to it.
@@ -108,7 +112,9 @@ enum ReplyBackground {
         try await withThrowingTaskGroup(of: Void.self) { group in
             group.addTask { try await job() }
             group.addTask {
-                try await Task.sleep(for: wallClockBound)
+                while case let end = deadline.withLock({ $0 }), ContinuousClock.now < end {
+                    try await Task.sleep(until: end, clock: .continuous)
+                }
                 throw ReplyCommandError.invalid("background reply exceeded its time bound")
             }
             defer { group.cancelAll() }
@@ -157,44 +163,5 @@ enum ReplyBackground {
             throw startFailure
         }
         return pid
-    }
-}
-
-// Sharing the phone and the endpoint with other detached replies.
-extension ReplyBackground {
-    /// One detached reply's audio at a time per reply socket (#430). The phone plays replies one after another, so a
-    /// second reply sent alongside the first would sit almost whole in the phone's queue, and two paced jobs would
-    /// share the endpoint's per-minute frames. A queued job tells its caller and waits; its text has already gone.
-    /// The lock is a file beside the owner-only socket, held open for the job's life: the kernel drops it at exit.
-    static func awaitAudioTurn(socket: URL) async throws {
-        guard isDetachedJob else { return }
-        let path = socket.deletingLastPathComponent().appendingPathComponent("reply-audio.lock").path
-        let lock = open(path, O_RDWR | O_CREAT | O_CLOEXEC | O_NOFOLLOW, 0o600)
-        guard lock >= 0 else { throw ReplyCommandError.invalid("cannot open the reply audio lock") }
-        var queued = false
-        while flock(lock, LOCK_EX | LOCK_NB) != 0 {
-            guard errno == EWOULDBLOCK || errno == EINTR else {
-                close(lock)
-                throw ReplyCommandError.invalid("cannot take the reply audio lock")
-            }
-            if !queued {
-                queued = true
-                note("reply audio queued behind another reply")
-                ready()
-            }
-            try await Task.sleep(for: .milliseconds(250))
-        }
-    }
-
-    /// In a detached job, a frame the endpoint refused for its shared per-minute limit is sent again once there is
-    /// room: that refusal comes before anything is published. Every other outcome, and every foreground reply,
-    /// is unchanged.
-    static func submit(_ frame: Frame, socketURL: URL) async throws -> Int {
-        while true {
-            do { return try await ReplyClient.submit(frame, socketURL: socketURL) } catch let error {
-                guard isDetachedJob, case ReplyClientError.refused("rate limited") = error else { throw error }
-                try await Task.sleep(for: .seconds(2))
-            }
-        }
     }
 }
