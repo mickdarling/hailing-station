@@ -354,6 +354,24 @@ extension WebSocketListener {
 }
 
 extension WebSocketListener {
+    /// Whether the connection's device advertised `reply_mute` (#404).
+    func acceptsReplyMute(connection: UUID) async -> Bool {
+        guard !stopped, let peer = peers.values.first(where: { $0.session.connectionID == connection }) else {
+            return false
+        }
+        return await peer.session.replyMuteFrame(muted: true) != nil
+    }
+
+    /// Sends `set_reply_mute` (#404) to the connection's device: `sent`, `unsupported` (it did not advertise
+    /// `reply_mute`), `failed` (the send failed) or `no_connection`.
+    func setReplyMute(_ muted: Bool, connection: UUID) async -> String {
+        guard !stopped, let peer = peers.values.first(where: { $0.session.connectionID == connection }) else {
+            return "no_connection"
+        }
+        guard let frame = await peer.session.replyMuteFrame(muted: muted) else { return "unsupported" }
+        return await peer.send(frame) ? "sent" : "failed"
+    }
+
     /// Stops reply playback for the dismissing connection (#309) and returns a fixed outcome token:
     /// `stopped` (sent to the device), `cut` (frames refused only: an older device, or the send failed),
     /// `idle` (nothing mid-stream and no device stop), or `no_connection`.
@@ -855,6 +873,7 @@ extension AmbientRightyoRouter {
         )
         (settings.replyControl, settings.onAcknowledgementSkipped) = (configuration.replyControl, skipped())
         (settings.onHeard, settings.onOverheard) = transcriptRelays(on: connection, listener: listener)
+        settings.onVoiceMute = voiceMuted(on: connection, listener: listener)
         return try RightyoAmbientPipeline(configuration: settings,
                                           dispatcher: AmbientListenerDispatcher(listener: listener,
                                                                                 audit: configuration.audit))
@@ -951,6 +970,42 @@ extension AmbientRightyoRouter {
                 await self?.confirmStop(receipt, playback: playback, on: connection, listener: listener)
             }
         }
+    }
+
+    /// The owner's spoken "mute" or "unmute" (#404) on the connection that said it; it is never typed to the agent. A
+    /// mute stops the reply now playing, plays "Muted." and only then sends `set_reply_mute`, so the device lets the
+    /// confirmation finish before it goes quiet; an unmute sends it first, so "Unmuted." is heard. A device without
+    /// `reply_mute` is only stopped, and confirmed as a stop. Logs tokens only.
+    private func voiceMuted(on connection: UUID, listener: WebSocketListener) -> @Sendable (Bool) -> Void {
+        { [weak self, weak listener] muted in
+            Task { [weak self] in
+                guard let self else { return }
+                let supported = await listener?.acceptsReplyMute(connection: connection) ?? false
+                var mute = supported ? "pending" : "unsupported"
+                if !muted, supported { mute = await listener?.setReplyMute(false, connection: connection) ?? "" }
+                let playback = muted ? await listener?.stopReplyPlayback(connection: connection) ?? "no_connection"
+                    : "none"
+                let persona = supported ? (muted ? AmbientStopConfirmation.muted : AmbientStopConfirmation.unmuted)
+                    : (muted ? AmbientStopConfirmation.stopped : nil)
+                var confirm = "none"
+                if let persona { confirm = await confirmVoiceMute(persona, on: connection, listener: listener) }
+                if muted, supported { mute = await listener?.setReplyMute(true, connection: connection) ?? "" }
+                emit("ambient_voice_mute",
+                     detail: "muted=\(muted) mute=\(mute) playback=\(playback) confirm=\(confirm)")
+            }
+        }
+    }
+
+    /// One confirmation clip from `persona`'s reserved folder, sent like the stop confirmation; its outcome token.
+    private func confirmVoiceMute(
+        _ persona: String, on connection: UUID, listener: WebSocketListener?
+    ) async -> String {
+        guard let library = configuration.acknowledgements,
+              let pick = AmbientStopConfirmation.clip(persona, in: library) else { return "no_clips" }
+        let outcome = await listener?.acknowledgeAmbient(connection: connection, target: configuration.target,
+                                                         clip: pick.clip) ?? "no_connection"
+        hostPhrases.observe(pick.clip, outcome: outcome)
+        return "\(pick.persona)/\(pick.index):\(outcome)"
     }
 
     /// Plays the stop confirmation clip (#418) on the connection that said stop, through the same guarded path as an

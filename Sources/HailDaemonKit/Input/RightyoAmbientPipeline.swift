@@ -74,6 +74,9 @@ public final class RightyoAmbientPipeline: Sendable {
         /// transcript and its decision carried the owner role. Echo-matched turns never reach it. The text goes only to
         /// the speaking device, within its chosen scope; it is never logged.
         public var onOverheard: (@Sendable (String, Bool) async -> Void)?
+        /// Called once per admitted request that is the owner's spoken mute (true) or unmute (false) (#404), instead
+        /// of typing it: it is never acknowledged, shown or delivered to the target. It must return at once.
+        public var onVoiceMute: (@Sendable (Bool) -> Void)?
 
         public init(executable: URL, config: URL, target: String, binding: String, connection: UUID,
                     allowSynthetic: Bool = false, timing: RightyoChildProcess.Timing = .init(),
@@ -98,6 +101,7 @@ public final class RightyoAmbientPipeline: Sendable {
     private let child: RightyoChildProcess
     private let consumer: RightyoInputConsumer
     private let onDismiss: (@Sendable (RightyoDismissReceipt) -> Void)?
+    private let onVoiceMute: (@Sendable (Bool) -> Void)?
     private let acknowledgement: AmbientAckRelay
     private let heard: AmbientHeardRelay
     private let overheard: AmbientOverheardRelay
@@ -118,6 +122,7 @@ public final class RightyoAmbientPipeline: Sendable {
                                         replyControl: configuration.replyControl)
         self.session = session
         onDismiss = configuration.onDismiss
+        onVoiceMute = configuration.onVoiceMute
         acknowledgement = relay
         self.heard = heard
         overheard = AmbientOverheardRelay(onOverheard: configuration.onOverheard, isEcho: configuration.isEcho)
@@ -161,6 +166,10 @@ public final class RightyoAmbientPipeline: Sendable {
                 await overheard.observe(event)
                 // A newly admitted `dismiss` delivers nothing and leaves its receipt; a replayed one leaves none.
                 if event.type == "dismiss", let receipt = await consumer.lastDismissal { onDismiss?(receipt) }
+                // A newly admitted voice mute (#404) is handed to the host instead of being typed.
+                if event.type == "request", let command = await consumer.lastVoiceMute {
+                    onVoiceMute?(command == .mute)
+                }
             }
             try await consumer.finish()
         } catch {

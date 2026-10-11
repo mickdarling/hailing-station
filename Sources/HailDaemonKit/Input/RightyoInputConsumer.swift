@@ -37,14 +37,51 @@ public struct RightyoDismissReceipt: Sendable, Equatable {
         self.owner = owner
     }
 }
+/// The owner's spoken mute (#404): a whole turn that is only a mute or unmute phrase, optionally after a greeting, one
+/// name word ("Jarvis") and "please", and with any punctuation. Anything longer, or a negation ("don't mute"), is not
+/// one: it goes to the agent as a request. Matched on the heard words only; nothing is logged.
+enum VoiceMute {
+    static let mutePhrases: Set<String> = ["mute", "go quiet", "text only", "mute replies"]
+    static let unmutePhrases: Set<String> = ["unmute", "you can talk again", "talk again", "unmute replies"]
+    static let greetings: Set<String> = ["hey", "ok", "okay"]
+    static let negations: Set<String> = ["don't", "dont", "do", "not", "never", "no", "stop", "can't", "cannot"]
+
+    enum Command: Sendable { case mute, unmute }
+
+    /// The command a whole turn says; nil for anything else.
+    static func command(in heard: String) -> Command? {
+        var words = heard.lowercased().split { !$0.isLetter && $0 != "'" }.map(String.init)
+        while words.last == "please" { words.removeLast() }
+        for candidate in candidates(words) {
+            let phrase = candidate.joined(separator: " ")
+            if mutePhrases.contains(phrase) { return .mute }
+            if unmutePhrases.contains(phrase) { return .unmute }
+        }
+        return nil
+    }
+
+    /// The turn as said, and with its leading greeting, name word and "please" taken off in turn.
+    private static func candidates(_ words: [String]) -> [ArraySlice<String>] {
+        var rest = words[...], found = [rest]
+        if let first = rest.first, greetings.contains(first) { rest = rest.dropFirst(); found.append(rest) }
+        if let first = rest.first, !negations.contains(first), rest.count > 1 {
+            rest = rest.dropFirst()
+            found.append(rest)
+        }
+        if rest.first == "please" { found.append(rest.dropFirst()) }
+        return found
+    }
+}
+
 #if os(macOS)
 /// The spoken confirmation of the owner's stop (#418): a short host-recorded clip, sent like an acknowledgement to the
 /// connection that said stop, with no round trip through the agent session. Clips live in reserved folders of the
-/// acknowledgement directory: `confirm-stopped/` ("Stopped.") and `confirm-idle/` ("Nothing playing, standing by.").
-/// A later mute (#404) adds its own folder here.
+/// acknowledgement directory: `confirm-stopped/` ("Stopped.") and `confirm-idle/` ("Nothing playing, standing by."),
+/// and for the owner's spoken mute (#404) `confirm-muted/` ("Muted.") and `confirm-unmuted/` ("Unmuted.").
 enum AmbientStopConfirmation {
     static let stopped = RightyoAddressing.key("confirm-stopped"), idle = RightyoAddressing.key("confirm-idle")
-    static let reserved: Set<String> = [stopped, idle]
+    static let muted = RightyoAddressing.key("confirm-muted"), unmuted = RightyoAddressing.key("confirm-unmuted")
+    static let reserved: Set<String> = [stopped, idle, muted, unmuted]
 
     /// Why a playback stop is not confirmed, as a log token, or nil when it is: only the enrolled owner's stop, and
     /// only on a connection still there to hear it.
@@ -199,6 +236,9 @@ public actor RightyoInputConsumer {
     public private(set) var lastReceipt: RightyoDispatchReceipt?
     /// What the most recent admitted `dismiss` did; cleared as each event is consumed, like `lastReceipt`.
     public private(set) var lastDismissal: RightyoDismissReceipt?
+    /// The owner's spoken mute or unmute (#404): an admitted request that is exactly a mute phrase, held back from
+    /// the target and left here, like a dismissal. Nil for any other line.
+    private(set) var lastVoiceMute: VoiceMute.Command?
     /// `streamBudgetMs` is an optional ceiling on producer stream time; the default is no ceiling (#188).
     /// `dispatcher` replaces the direct `HailHost.send` step (#188 item 1); without it, `host` delivers directly
     /// and nil `host` validates only. A dispatcher with no host still delivers (it owns its own host access).
@@ -242,6 +282,7 @@ public actor RightyoInputConsumer {
     public func consume(_ event: RightyoInputEvent) async throws -> Bool {
         lastReceipt = nil
         lastDismissal = nil
+        lastVoiceMute = nil
         do {
             guard try admit(event) else { return false }
             if event.type == "override" { return true }
@@ -251,6 +292,13 @@ public actor RightyoInputConsumer {
             // Matched on the heard turn, not the built prompt, whose envelope would bury the echo (#269).
             if let echoFilter, let heard = event.turn?.text, echoFilter(heard) {
                 echoDropped += 1
+                return false
+            }
+            // The owner's "mute" or "unmute" (#404) is carried out by the host, never typed to the agent. On an
+            // enrolled session only the owner's turn counts; anyone else's is a request like any other.
+            if let heard = event.turn?.text, let command = VoiceMute.command(in: heard),
+               speakers != "enrolled" || event.turn?.role == "owner" {
+                lastVoiceMute = command
                 return false
             }
             busy = true
@@ -320,16 +368,19 @@ public actor RightyoInputConsumer {
         seen[event.sequence] = fingerprint
         return true
     }
+    public func finish() throws {
+        guard terminal, !busy else { throw RightyoInputError.invalidLifecycle }
+        if failed { throw RightyoInputError.producerFailed }
+    }
+}
+/// Correlation against admitted records lives here so the actor body stays within the type-length limit.
+extension RightyoInputConsumer {
     private func startCapabilities(_ event: RightyoInputEvent) throws -> RightyoInputEvent.Capabilities {
         guard let caps = event.capabilities, ["finalized-turn", "disabled"].contains(caps.activation),
               !caps.partials, ["anonymous", "enrolled"].contains(caps.speakers), caps.context else {
             throw RightyoInputError.invalidEvent
         }
         return caps
-    }
-    public func finish() throws {
-        guard terminal, !busy else { throw RightyoInputError.invalidLifecycle }
-        if failed { throw RightyoInputError.producerFailed }
     }
     private func lifecycle(_ phase: String?) throws {
         switch phase {
@@ -343,9 +394,6 @@ public actor RightyoInputConsumer {
         default: throw RightyoInputError.invalidLifecycle
         }
     }
-}
-/// Correlation against admitted records lives here so the actor body stays within the type-length limit.
-extension RightyoInputConsumer {
     private func correlate(_ event: RightyoInputEvent) throws {
         switch event.type {
         case "transcript":
