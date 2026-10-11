@@ -78,8 +78,31 @@ import Testing
         rig.advance(by: .seconds(120))
         #expect(rig.status(of: paused) != ReplyPlaybackController.abandonedStatus)
         rig.controller.togglePause()
+        // Its 1.25 s of audio still plays after the pause, then the 20 s timeout.
         rig.advance(by: .seconds(21))
+        #expect(rig.status(of: paused) != ReplyPlaybackController.abandonedStatus)
+        rig.advance(by: .seconds(1))
         #expect(rig.status(of: paused) == ReplyPlaybackController.abandonedStatus)
+    }
+
+    /// Codex P1 on #473: 20 s buffered, paused 1 s in until long past the original deadline, then resumed. The
+    /// 19 s still to play are kept across the pause, so the stream is not ended while that audio is audible.
+    @Test(arguments: ["pause", "listening"])
+    func aPauseKeepsTheUnplayedAudioOfAStream(hold: String) {
+        let rig = IdleRig()
+        let long = reply(), next = reply()
+        for sequence in 0..<16 { rig.controller.ingest(audio(long, sequence: sequence, final: false, byte: 10)) }
+        rig.controller.ingest(audio(next, sequence: 0, final: true, byte: 99))
+        rig.advance(by: .seconds(1))
+        if hold == "pause" { rig.controller.togglePause() } else { rig.controller.beginCaptureSuppression() }
+        rig.advance(by: .seconds(60))
+        if hold == "pause" { rig.controller.togglePause() } else { rig.controller.endCaptureSuppression() }
+        rig.advance(by: .seconds(38)) // 19 s of audio and most of the 20 s timeout
+        #expect(rig.status(of: long) != ReplyPlaybackController.abandonedStatus)
+        #expect(!rig.player.scheduled.contains { $0.bytes.first == 99 })
+        rig.advance(by: .seconds(2))
+        #expect(rig.status(of: long) == ReplyPlaybackController.abandonedStatus)
+        #expect(rig.player.scheduled.last?.bytes.first == 99)
     }
 }
 

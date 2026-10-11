@@ -6,6 +6,8 @@ struct ReplyIdleWatch {
     var key: ReplyStreamKey?
     var bufferedUntil = ContinuousClock.now
     var lastFrameAt = ContinuousClock.now
+    /// While paused or listening nothing plays out: the head's unplayed audio, kept until playback resumes.
+    var heldRemaining: Duration?
     var cancel: (@MainActor () -> Void)?
 }
 
@@ -49,17 +51,34 @@ extension ReplyPlaybackController {
 
     /// A new head (or none) starts its own watch; frames of other streams never extend the head's.
     func watchHeadIfChanged() {
+        syncIdleHold()
         guard queue.first != idleWatch.key else { return }
         idleWatch.key = queue.first
         idleWatch.bufferedUntil = idleNow()
         idleWatch.lastFrameAt = idleNow()
+        idleWatch.heldRemaining = isPaused || isCaptureSuppressed ? .zero : nil
         armIdleWatch()
+    }
+
+    /// Paused or listening, the player holds its audio (Codex P1 on #473): the head's unplayed duration is kept
+    /// and the watch stops, then it resumes with that duration still to play, so a pause never ends a stream early.
+    func syncIdleHold() {
+        let held = isPaused || isCaptureSuppressed
+        if held, idleWatch.heldRemaining == nil {
+            idleWatch.heldRemaining = max(.zero, idleNow().duration(to: idleWatch.bufferedUntil))
+            idleWatch.cancel?()
+            idleWatch.cancel = nil
+        } else if !held, let remaining = idleWatch.heldRemaining {
+            idleWatch.heldRemaining = nil
+            idleWatch.bufferedUntil = idleNow().advanced(by: remaining)
+            armIdleWatch()
+        }
     }
 
     func armIdleWatch() {
         idleWatch.cancel?()
         idleWatch.cancel = nil
-        guard let key = queue.first, key == idleWatch.key else { return }
+        guard let key = queue.first, key == idleWatch.key, idleWatch.heldRemaining == nil else { return }
         let deadline = max(idleWatch.bufferedUntil, idleWatch.lastFrameAt).advanced(by: Self.streamIdleTimeout)
         let delay = max(.zero, idleNow().duration(to: deadline))
         idleWatch.cancel = idleScheduler(delay) { [weak self] in self?.idleDeadlinePassed(for: key) }
@@ -69,11 +88,7 @@ extension ReplyPlaybackController {
         guard queue.first == key, idleWatch.key == key else { return }
         let deadline = max(idleWatch.bufferedUntil, idleWatch.lastFrameAt).advanced(by: Self.streamIdleTimeout)
         guard idleNow() >= deadline else { return armIdleWatch() }
-        // Paused or listening, nothing is playing out: the stream is not idle by its own doing. Look again later.
-        guard !isPaused, !isCaptureSuppressed else {
-            idleWatch.lastFrameAt = idleNow()
-            return armIdleWatch()
-        }
+        guard !isPaused, !isCaptureSuppressed else { return syncIdleHold() }
         abandonHead(key)
     }
 
