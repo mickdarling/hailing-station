@@ -40,15 +40,20 @@ extension ReplyPlaybackController {
     }
 
     /// The head's segment was handed to the player: its audio now runs out that much later, after anything ahead.
+    /// While held nothing plays, so it joins the held audio, which all plays once the hold ends (Codex P1 on #473).
     func noteScheduled(_ segment: AudioPayload) {
+        let duration = Duration.seconds(Self.seconds(of: segment))
+        if let held = idleWatch.heldRemaining { return idleWatch.heldRemaining = held + duration }
         let start = max(idleNow(), idleWatch.bufferedUntil, idleWatch.aheadUntil)
-        idleWatch.bufferedUntil = start.advanced(by: .seconds(Self.seconds(of: segment)))
+        idleWatch.bufferedUntil = start.advanced(by: duration)
     }
 
-    /// A replay went into the player ahead of whatever reply comes next; that reply's audio plays after it.
+    /// A replay went into the player ahead of whatever reply comes next; that reply's audio plays after it. It
+    /// replaces the player's queue, so an earlier replay's backlog is gone (Codex P2 on #473).
     func noteReplay(_ payloads: [AudioPayload]) {
-        let total = payloads.reduce(0) { $0 + Self.seconds(of: $1) }
-        idleWatch.aheadUntil = max(idleNow(), idleWatch.aheadUntil).advanced(by: .seconds(total))
+        let total = Duration.seconds(payloads.reduce(0) { $0 + Self.seconds(of: $1) })
+        idleWatch.aheadUntil = idleNow().advanced(by: total)
+        if let held = idleWatch.heldRemaining { idleWatch.heldRemaining = held + total }
         armIdleWatch()
     }
 
@@ -56,9 +61,19 @@ extension ReplyPlaybackController {
     nonisolated static let interruptionNotification = Notification.Name("AVAudioSessionInterruptionNotification")
     nonisolated static let interruptionTypeKey = "AVAudioSessionInterruptionTypeKey"
 
+    /// Coming to the foreground ends any interruption hold, in case its end was never posted (#473 review).
+    nonisolated static let foregroundNotification = Notification.Name("UIApplicationWillEnterForegroundNotification")
+
     /// Follows interruptions on `center`, by name, so the hold works wherever the controller runs. `began` is
-    /// `AVAudioSession.InterruptionType.began` (1); anything else ends the interruption.
+    /// `AVAudioSession.InterruptionType.began` (1); anything else, or the app coming to the foreground, ends it.
     func observeAudioInterruptions(on center: NotificationCenter) {
+        _ = center.addObserver(forName: Self.foregroundNotification, object: nil, queue: nil) { [weak self] _ in
+            guard Thread.isMainThread else {
+                Task { @MainActor in self?.audioInterruption(began: false) }
+                return
+            }
+            MainActor.assumeIsolated { self?.audioInterruption(began: false) }
+        }
         _ = center.addObserver(forName: Self.interruptionNotification, object: nil, queue: nil) { [weak self] note in
             let began = (note.userInfo?[Self.interruptionTypeKey] as? UInt) == 1
             guard Thread.isMainThread else {

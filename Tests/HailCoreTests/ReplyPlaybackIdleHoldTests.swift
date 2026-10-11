@@ -79,4 +79,64 @@ import Testing
         #expect(rig.status(of: long) == ReplyPlaybackController.abandonedStatus)
         #expect(rig.player.scheduled.last?.bytes.first == 99)
     }
+
+    /// Codex P1 on #473: audio scheduled while held (during a call, or queued while paused and scheduled on resume)
+    /// plays after the held audio. 5 s buffered, held 1 s in for a minute while 15 s more arrives: 19 s to play.
+    @Test(arguments: ["pause", "interruption"])
+    func audioScheduledDuringAHoldIsKept(hold: String) {
+        let rig = IdleRig()
+        let center = NotificationCenter()
+        rig.controller.observeAudioInterruptions(on: center)
+        let stream = idleReply()
+        for sequence in 0..<4 { rig.controller.ingest(idleAudio(stream, sequence: sequence, final: false, byte: 10)) }
+        rig.advance(by: .seconds(1))
+        rig.hold(hold, true, on: center)
+        rig.advance(by: .seconds(30))
+        for sequence in 4..<16 { rig.controller.ingest(idleAudio(stream, sequence: sequence, final: false, byte: 10)) }
+        rig.advance(by: .seconds(30))
+        rig.hold(hold, false, on: center)
+        rig.advance(by: .seconds(37)) // 19 s of audio and most of the 20 s timeout
+        #expect(rig.status(of: stream) != ReplyPlaybackController.abandonedStatus)
+        rig.advance(by: .seconds(3))
+        #expect(rig.status(of: stream) == ReplyPlaybackController.abandonedStatus)
+    }
+
+    /// Codex P2 on #473: a second replay replaces the first in the player, so its backlog is not added to the first.
+    @Test func aSecondReplayReplacesTheFirstsBacklog() {
+        let rig = IdleRig()
+        let played = idleReply(), next = idleReply()
+        for sequence in 0..<21 {
+            rig.controller.ingest(idleAudio(played, sequence: sequence, final: sequence == 20, byte: 10))
+        }
+        rig.player.completeReply()
+        rig.controller.replayLatest()
+        rig.controller.replayLatest() // 26.25 s again, not 52.5 s
+        rig.controller.ingest(idleAudio(next, sequence: 0, final: false, byte: 30))
+        rig.advance(by: .seconds(49))
+        #expect(rig.status(of: next) == ReplyPlaybackController.abandonedStatus)
+    }
+
+    /// #473 review: an interruption whose end is never posted is cleared when the app comes to the foreground.
+    @Test func comingToTheForegroundEndsAStaleInterruptionHold() {
+        let rig = IdleRig()
+        let center = NotificationCenter()
+        rig.controller.observeAudioInterruptions(on: center)
+        let stream = idleReply()
+        rig.controller.ingest(idleAudio(stream, sequence: 0, final: false, byte: 10))
+        rig.hold("interruption", true, on: center)
+        rig.advance(by: .seconds(120))
+        #expect(rig.status(of: stream) != ReplyPlaybackController.abandonedStatus)
+        center.post(name: ReplyPlaybackController.foregroundNotification, object: nil)
+        rig.advance(by: .seconds(22)) // its 1.25 s of audio, then the 20 s timeout
+        #expect(rig.status(of: stream) == ReplyPlaybackController.abandonedStatus)
+    }
+}
+
+extension IdleRig {
+    /// Starts or ends a pause, or an audio-session interruption posted on `center`.
+    func hold(_ kind: String, _ on: Bool, on center: NotificationCenter) {
+        if kind == "pause" { return controller.togglePause() }
+        center.post(name: ReplyPlaybackController.interruptionNotification, object: nil,
+                    userInfo: [ReplyPlaybackController.interruptionTypeKey: UInt(on ? 1 : 0)])
+    }
 }
