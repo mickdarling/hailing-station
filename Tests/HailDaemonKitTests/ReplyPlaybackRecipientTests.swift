@@ -135,10 +135,11 @@ import Testing
         let rig = try await RecipientTestRig.make()
         let session = await rig.session()
         let reply = recipientDescriptor(try await rig.submit(on: session), audio: true)
-        for sequence in 0..<1_024 {
+        for sequence in 0..<HostReplyRequest.frameLimit {
             try #require(await session.acceptsHostReply(recipientAudio(reply, sequence: sequence)))
         }
-        #expect(!(await session.acceptsHostReply(recipientAudio(reply, sequence: 1_024, final: true))))
+        let next = HostReplyRequest.frameLimit
+        #expect(!(await session.acceptsHostReply(recipientAudio(reply, sequence: next, final: true))))
         #expect(!(await session.acceptsHostReply(recipientText(reply))))
     }
 }

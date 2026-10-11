@@ -16,7 +16,14 @@ struct HostReplyRequest {
     /// A committed provider-owned turn (#430) answers for as long as it runs: Codex or a dot can take many minutes. The
     /// bound only stops a record whose end was never reported from living for ever; ending the turn starts `lifetime`.
     static let providerTurnBound: Duration = .seconds(6 * 3_600)
-    static let frameLimit = 1_024
+    /// #467: once a request's reply is flowing, it stays current while accepted frames keep coming, each within
+    /// `streamIdleGap` of the last, for at most `streamCap` from the first. A paced reply sends a frame every second
+    /// or so; a stalled or abandoned one goes quiet and expires. The cap matches the reply CLI's 35-minute job bound
+    /// (30 minutes of audio). Only frames this request accepted count, never refused ones.
+    static let streamIdleGap: Duration = .seconds(60)
+    static let streamCap: Duration = .seconds(35 * 60)
+    /// 3,000 paced frames (the CLI's limit for 30 minutes) plus the text and the terminal marker, with margin.
+    static let frameLimit = 3_072
     let context: ProviderTurnContext
     let generation: UUID
     let createdAt: ContinuousClock.Instant
@@ -35,6 +42,9 @@ struct HostReplyRequest {
     var awaitsTurnEnd = false
     /// When the provider reported the turn finished, interrupted or failed (#430); its final frames get `lifetime`.
     var providerTurnEndedAt: ContinuousClock.Instant?
+    /// When this request first and last accepted a frame that was enqueued (#467).
+    var firstFrameAt: ContinuousClock.Instant?
+    var lastFrameAt: ContinuousClock.Instant?
 
     /// Only a leased (provider-owned) request whose handoff committed, on a session that hears its turn end, outlives
     /// `lifetime`, and only while that turn runs; its binding lease and policy permit are still re-checked on every
@@ -44,9 +54,22 @@ struct HostReplyRequest {
     func isCurrent(at timestamp: ContinuousClock.Instant) -> Bool {
         let elapsed = createdAt.duration(to: timestamp)
         guard elapsed >= .zero else { return false }
-        guard isProviderTurn else { return elapsed < Self.lifetime }
+        guard isProviderTurn else { return elapsed < Self.lifetime || isStreaming(at: timestamp) }
         if let ended = providerTurnEndedAt { return ended.duration(to: timestamp) < Self.lifetime }
         return elapsed < Self.providerTurnBound
+    }
+
+    /// A flowing reply (#467): its last accepted frame is recent and its first is within the cap.
+    private func isStreaming(at timestamp: ContinuousClock.Instant) -> Bool {
+        guard let firstFrameAt, let lastFrameAt else { return false }
+        let idle = lastFrameAt.duration(to: timestamp), streaming = firstFrameAt.duration(to: timestamp)
+        return idle >= .zero && idle < Self.streamIdleGap && streaming < Self.streamCap
+    }
+
+    /// Only after the frame was enqueued under the authority gates; a refused frame never reaches this.
+    mutating func recordEnqueuedFrame(at timestamp: ContinuousClock.Instant) {
+        if firstFrameAt == nil { firstFrameAt = timestamp }
+        lastFrameAt = timestamp
     }
 
     /// Keep these exact admission tickets: revocation followed by restoration cannot revive a request.
@@ -234,8 +257,11 @@ extension HostSession {
         // Policy, cooperative binding, recipient/media state and actual network submission share one
         // no-await commit. Recheck expiry after waiting for the gates; completion is awaited outside them.
         guard request.withAuthority({
-            guard !Task.isCancelled, request.isCurrent(at: requestClock()), enqueue() else { return false }
-            replyRequests[requestID] = request
+            let now = requestClock()
+            guard !Task.isCancelled, request.isCurrent(at: now), enqueue() else { return false }
+            var delivered = request
+            delivered.recordEnqueuedFrame(at: now)
+            replyRequests[requestID] = delivered
             noteReplyDelivered(frame)
             return true
         }) == true else {
