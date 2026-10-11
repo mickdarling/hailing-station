@@ -755,6 +755,8 @@ extension ReplyBackground {
                 return delivered
             } catch let error {
                 guard isDetachedJob, case ReplyClientError.refused("rate limited") = error else { throw error }
+                // A superseded job stops resending its audio at once; only its terminal marker is still sent.
+                if !final, isSuperseded { throw supersededRefusal }
                 if let latest = RequestKeepAlive.latest(final: final) {
                     guard ContinuousClock.now.advanced(by: .seconds(2)) < latest else { throw error }
                 } else {

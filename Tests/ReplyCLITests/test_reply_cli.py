@@ -452,6 +452,42 @@ class ReplyCLITests(unittest.TestCase):
         self.assertEqual(len(newer_audio), 6)
         self.assertGreater(newer_audio[0][0], older_audio[-1][0])
 
+    def test_a_superseded_reply_stops_resending_a_rate_limited_frame(self):
+        # Codex P1 on #472: the older reply is stuck resending a rate-limited frame when the newer one arrives.
+        limited = {"delivered": 0, "error": "rate limited"}
+        holder = {}
+
+        def respond(index):
+            frame = frames_seen[index][1]
+            if frame["type"] == "audio":
+                holder.setdefault("stream", frame["payload"]["streamId"])
+                stuck = frame["payload"]["streamId"] == holder["stream"] and frame["payload"]["sequence"] >= 2
+                if stuck and not frame["payload"]["final"]:
+                    return limited
+            return {"delivered": 1}
+
+        older_environment = self.speech_environment(60)
+        older_environment["HAILD_REPLY_PACING"] = "off"
+        with self.reply_server(respond) as (path, frames):
+            frames_seen = frames
+            older = self.run_reply(["--say", "older reply"], path, older_environment)
+            self.assertEqual(older.returncode, 0, older.stderr)
+            self.wait_for(lambda: len(frames) >= 5, 10)  # resending sequence 2 by now
+            started = time.monotonic()
+            newer = self.run_reply(
+                ["--say", "newer reply", "--request", str(uuid.uuid4()).upper()], path, self.speech_environment(5),
+            )
+            self.assertEqual(newer.returncode, 0, newer.stderr)
+            stopped = lambda: any(f["type"] == "audio" and f["payload"]["streamId"] == holder["stream"]  # noqa: E731
+                                  and f["payload"]["final"] for _, f in frames)
+            self.wait_for(stopped, 15)
+            stopped_after = time.monotonic() - started
+            self.wait_for(lambda: sum(1 for _, f in frames if f["type"] == "audio" and f["payload"]["final"]) == 2, 20)
+        # The older job let go within a few seconds, not after the newer reply's 40 s budget ran out.
+        self.assertLess(stopped_after, 8)
+        newer_audio = [f for _, f in frames if f["type"] == "audio" and f["payload"]["streamId"] != holder["stream"]]
+        self.assertEqual(len(newer_audio), 6)
+
     def test_a_request_reply_stops_resending_in_time_to_end_its_stream(self):
         # #467 / Codex P2 on #470: the endpoint refuses data frames as rate limited; a request-bound job resends
         # only within its request's idle gap, then sends its terminal marker while the request is still current.
