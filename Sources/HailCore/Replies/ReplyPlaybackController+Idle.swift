@@ -60,13 +60,16 @@ extension ReplyPlaybackController {
     /// An audio-session interruption (a phone call) stops the player without pausing it (Codex P1 on #473).
     nonisolated static let interruptionNotification = Notification.Name("AVAudioSessionInterruptionNotification")
     nonisolated static let interruptionTypeKey = "AVAudioSessionInterruptionTypeKey"
+    /// `AVAudioSession.InterruptionOptions`; `shouldResume` is 1.
+    nonisolated static let interruptionOptionKey = "AVAudioSessionInterruptionOptionKey"
 
     /// Coming to the foreground ends any interruption hold, in case its end was never posted (#473 review).
     nonisolated static let foregroundNotification = Notification.Name("UIApplicationWillEnterForegroundNotification")
 
-    /// Starts the interruption hold when one begins on `center` (`AVAudioSession.InterruptionType.began`, 1, by name
-    /// so it works wherever the controller runs). Its end follows the audio session's actual result (`follow`), and
-    /// the app coming to the foreground also ends it.
+    /// Follows interruptions on `center`, by name so it works wherever the controller runs. A begin (type 1) holds the
+    /// watch. An end with `shouldResume` releases it: reply-only playback and the keepalive activate the session
+    /// themselves, so no managed-session result may come (Codex P1 on #478). An end without it keeps the hold. When
+    /// the managed session is active its actual result (`follow`) wins, and the foreground also releases it.
     func observeAudioInterruptions(on center: NotificationCenter) {
         _ = center.addObserver(forName: Self.foregroundNotification, object: nil, queue: nil) { [weak self] _ in
             guard Thread.isMainThread else {
@@ -76,12 +79,14 @@ extension ReplyPlaybackController {
             MainActor.assumeIsolated { self?.audioInterruption(began: false) }
         }
         _ = center.addObserver(forName: Self.interruptionNotification, object: nil, queue: nil) { [weak self] note in
-            guard (note.userInfo?[Self.interruptionTypeKey] as? UInt) == 1 else { return }
+            let began = (note.userInfo?[Self.interruptionTypeKey] as? UInt) == 1
+            let shouldResume = ((note.userInfo?[Self.interruptionOptionKey] as? UInt) ?? 0) & 1 == 1
+            guard began || shouldResume else { return }
             guard Thread.isMainThread else {
-                Task { @MainActor in self?.audioInterruption(began: true) }
+                Task { @MainActor in self?.audioInterruption(began: began) }
                 return
             }
-            MainActor.assumeIsolated { self?.audioInterruption(began: true) }
+            MainActor.assumeIsolated { self?.audioInterruption(began: began) }
         }
     }
 
@@ -97,9 +102,10 @@ extension ReplyPlaybackController {
 
     func noteAudioSession(_ event: AudioSessionEvent) {
         switch event {
-        case .interruptionBegan: audioInterruption(began: true)
+        // A failed reactivation holds again, even after the notification's `shouldResume` released it.
+        case .interruptionBegan, .interruptionEnded(resumed: false): audioInterruption(began: true)
         case .interruptionEnded(resumed: true): audioInterruption(began: false)
-        case .interruptionEnded(resumed: false), .routeChanged: break
+        case .routeChanged: break
         }
     }
 
