@@ -82,10 +82,11 @@ func reply(_ arguments: ArraySlice<String>) async throws {
     // Only a target-only reply is paced and detached (#430). A `--request` reply stays unpaced and in the
     // foreground: its host-minted request expires two minutes after it was made, and pacing would outlast it.
     let targetOnlyAudio = options.requestID == nil && (options.pcm16 != nil || options.say != nil)
-    if let file = options.pcm16 {
-        try requireWithinAudioBound(file, sampleRate: options.sampleRate, paced: targetOnlyAudio)
-    }
     let pacingOff = ProcessInfo.processInfo.environment["HAILD_REPLY_PACING"] == "off"
+    if let file = options.pcm16 {
+        try requireWithinAudioBound(file, sampleRate: options.sampleRate, paced: targetOnlyAudio && !pacingOff,
+                                    text: options.text != nil)
+    }
     if targetOnlyAudio, pacingOff, !ReplyBackground.isDetachedJob {
         note("HAILD_REPLY_PACING=off: sending without pacing; the endpoint's per-minute limit still applies")
     }
@@ -98,11 +99,11 @@ func reply(_ arguments: ArraySlice<String>) async throws {
 /// Checked before any text is sent. A paced static file must also fit its frames into the paced sending time: at a
 /// high sample rate each 48 KiB segment is short, so 30 minutes of audio can need more frames than 100 a minute
 /// sends within the detached job's bound.
-private func requireWithinAudioBound(_ file: URL, sampleRate: Int, paced: Bool) throws {
+private func requireWithinAudioBound(_ file: URL, sampleRate: Int, paced: Bool, text: Bool) throws {
     let size = (try FileManager.default.attributesOfItem(atPath: file.path)[.size] as? NSNumber)?.intValue ?? 0
     guard ReplyStreamPacer.seconds(pcm16Bytes: size, sampleRate: sampleRate) <= ReplyStreamPacer.maxAudioSeconds
     else { throw audioBoundRefusal }
-    let frames = (size + pcmSegmentBytes - 1) / pcmSegmentBytes + 1 // and the text frame
+    let frames = (size + pcmSegmentBytes - 1) / pcmSegmentBytes + (text ? 1 : 0)
     let sendable = Int(ReplyStreamPacer.maxAudioSeconds / 60) * ReplyStreamPacer.framesPerMinute
     guard !paced || frames <= sendable else {
         throw ReplyCommandError.invalid("PCM16 reply needs \(frames) frames; at most \(sendable) can be paced")
@@ -674,6 +675,7 @@ extension ReplyBackground {
         while true {
             do { return try await ReplyClient.submit(frame, socketURL: socketURL) } catch let error {
                 guard isDetachedJob, case ReplyClientError.refused("rate limited") = error else { throw error }
+                extendBound(by: .seconds(2)) // waiting on others' traffic is not the stream's own time
                 try await Task.sleep(for: .seconds(2))
             }
         }

@@ -22,6 +22,7 @@ enum ReplyBackground {
     static let wallClockBound: Duration = .seconds(ReplyStreamPacer.maxAudioSeconds + 300)
     private static let deadline = Mutex(ContinuousClock.now)
     static func restartBound() { deadline.withLock { $0 = .now.advanced(by: wallClockBound) } }
+    static func extendBound(by wait: Duration) { deadline.withLock { $0 = $0.advanced(by: wait) } }
     private static let readyLine = Data("haild: reply streaming in the background\n".utf8)
     private static let relayLimit = 65_536
     private static let startFailure = ReplyCommandError.invalid("cannot start the background reply")

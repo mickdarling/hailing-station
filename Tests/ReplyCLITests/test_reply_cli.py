@@ -205,6 +205,32 @@ class ReplyCLITests(unittest.TestCase):
             self.assertIn("can be paced", result.stderr)
             self.assertEqual(frames, [])
 
+    def test_audio_only_pcm_at_the_paced_frame_limit_is_admitted(self):
+        # Exactly 3,000 segments and no text frame: within the 3,000-frame paced limit (Codex P2 on #466).
+        self.assert_preflight_admits(3_000 * 48 * 1_024, [], {})
+
+    def test_unpaced_pcm_skips_the_paced_frame_limit(self):
+        # With pacing off the paced frame limit does not apply; the audio bound and the endpoint's limit still do.
+        self.assert_preflight_admits(96_000 * 2 * 780, ["--text", "synthetic reply"], {"HAILD_REPLY_PACING": "off"})
+
+    def assert_preflight_admits(self, size, arguments, overrides):
+        with tempfile.TemporaryDirectory(prefix="hail-reply-preflight-") as scratch:
+            path = Path(scratch) / "long.pcm"
+            with open(path, "wb") as handle:
+                handle.truncate(size)
+            environment = os.environ.copy()
+            environment.update(overrides)
+            stopped = {"delivered": 0, "error": "reply stopped"}
+            first_audio = 1 if arguments else 0
+            respond = lambda index: {"delivered": 1} if index <= first_audio else stopped  # noqa: E731
+            with self.reply_server(respond) as (socket_path, frames):
+                result = self.run_reply(
+                    [*arguments, "--pcm16", str(path), "--sample-rate", "96000"], socket_path, environment,
+                )
+                self.assertEqual(result.returncode, 0, result.stderr)
+                self.assertNotIn("can be paced", result.stderr)
+            self.assertEqual(frames[first_audio][1]["type"], "audio")
+
     def test_interrupting_the_caller_before_ready_ends_the_job(self):
         self.assert_caller_loss_before_ready_ends_the_job(signal.SIGINT)
 
