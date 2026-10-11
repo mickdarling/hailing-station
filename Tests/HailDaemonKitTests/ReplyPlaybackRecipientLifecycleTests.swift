@@ -12,7 +12,8 @@ import Testing
         rig.clock.advance(100_000)
         rig.clock.adjustWallClock(adjustment)
         #expect(await session.acceptsHostReply(recipientText(descriptor)))
-        rig.clock.advance(20_000)
+        // Past both the first two minutes and the idle gap after the text (#467), on the monotonic clock alone.
+        rig.clock.advance(60_000)
         #expect(!(await session.acceptsHostReply(recipientAudio(descriptor, sequence: 0, final: true))))
     }
 
@@ -55,6 +56,9 @@ import Testing
         let reply = recipientDescriptor(try await rig.submit(on: session), audio: true)
         rig.clock.advance(119_999)
         #expect(await session.acceptsHostReply(recipientAudio(reply, sequence: 0)))
+        // A flowing reply stays current (#467); once it goes quiet for the idle gap, an open stream is refused.
+        rig.clock.advance(59_999)
+        #expect(await session.replyPublicationStatus(recipientText(reply)) == .ready)
         rig.clock.advance(1)
         #expect(!(await session.acceptsHostReply(recipientText(reply))))
         #expect(!(await session.acceptsHostReply(recipientAudio(reply, sequence: 1, final: true))))
