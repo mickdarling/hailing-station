@@ -59,6 +59,11 @@ public final class ReplyPlaybackController {
     var seenFrames: [UUID] = []
     var seenFrameSet: Set<UUID> = []
     var presentationStatuses: [String: String] = [:]
+    /// The head stream's idle watch (#469) and its injectable clock and scheduler (tests drive both).
+    @ObservationIgnored var idleWatch = ReplyIdleWatch()
+    @ObservationIgnored var idleNow: @MainActor () -> ContinuousClock.Instant = { .now }
+    @ObservationIgnored var idleScheduler: @MainActor (Duration, @escaping @MainActor () -> Void)
+        -> @MainActor () -> Void = ReplyPlaybackController.sleepThenFire
 
     var presentationKeysToRetain: Set<ReplyStreamKey> {
         var keys = Set(queue)
@@ -116,11 +121,15 @@ public final class ReplyPlaybackController {
         streams[key] = stream
         let presentationID = upsertPresentation(event, descriptor: descriptor)
         presentationStatuses[presentationID] = nil
-        drain()
+        drain(noting: key)
         if let pending = streams[key], !playbackOrder.contains(key) {
             presentationStatuses[presentationID] = pending.segments[pending.nextSequence] == nil
                 ? "Waiting for audio" : "Queued"
         }
+    }
+
+    private func finished(_ key: ReplyStreamKey, generation: UInt) -> @MainActor @Sendable () -> Void {
+        { [weak self] in self?.playbackFinished(key, generation: generation) }
     }
 
     func playbackFinished(_ key: ReplyStreamKey, generation: UInt) {
@@ -151,6 +160,7 @@ public final class ReplyPlaybackController {
     }
 
     func drain() {
+        watchHeadIfChanged() // before any segment of a new head is scheduled (#469)
         guard !isCaptureSuppressed, !isPaused else {
             status = isCaptureSuppressed ? "Paused while listening" : "Paused"
             return
@@ -163,14 +173,7 @@ public final class ReplyPlaybackController {
                 if activeKey == nil { activeKey = key }
             }
             let generation = playbackGeneration
-            let onPlayed: (@MainActor @Sendable () -> Void)?
-            if segment.isFinal {
-                onPlayed = { [weak self] in
-                    self?.playbackFinished(key, generation: generation)
-                }
-            } else {
-                onPlayed = nil
-            }
+            let onPlayed = segment.isFinal ? finished(key, generation: generation) : nil
             do {
                 try player.schedule(segment, onPlayed: onPlayed)
             } catch {
@@ -182,6 +185,7 @@ public final class ReplyPlaybackController {
             }
             stream.nextSequence += 1
             streams[key] = stream
+            noteScheduled(segment)
             setPresentationStatus(nil, for: key)
             status = isMuted ? "Muted" : "Playing"
             guard segment.isFinal else { continue }

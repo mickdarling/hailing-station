@@ -220,7 +220,9 @@ extension DeviceDiagnostics {
         [
             "Playback failed": "playback_failed", "Playback could not resume": "resume_failed",
             "Replay failed": "replay_failed", "Audio format is not yet playable": "format_unplayable",
-            "Conflicting audio segment refused": "conflicting_segment"
+            "Conflicting audio segment refused": "conflicting_segment",
+            // A stream whose terminal marker never came, ended after its idle timeout (#469).
+            ReplyPlaybackController.abandonedStatus: "stream_abandoned"
         ][status]
     }
 
