@@ -343,10 +343,11 @@ public final class AmbientListeningController {
     public private(set) var isOn = false
     /// True only while microphone audio is actually streaming.
     public private(set) var isListening = false {
-        didSet { if isListening != oldValue { onListeningChange?(isListening) } }
+        didSet { reportActivity() }
     }
-    /// Told whenever `isListening` changes, without a view update, so state that must hold in the background
-    /// (the kept destination authorization, #282) follows it there too.
+    /// Told whenever "listening or paused" changes, without a view update, so state that must hold in the
+    /// background (the kept destination authorization, #282) follows it there too. A pause (#445) keeps it true:
+    /// the destination must survive a call or Siri in the background for the resume to have somewhere to go.
     @ObservationIgnored public var onListeningChange: (@MainActor (Bool) -> Void)?
     /// Told the reason whenever listening stops without the user turning it off, so the app can notify (#287).
     @ObservationIgnored public var onUnexpectedStop: (@MainActor (String) -> Void)?
@@ -355,6 +356,10 @@ public final class AmbientListeningController {
     /// Ambient take-over (#366): where listening went after another device took it (not an error), or, briefly,
     /// where it came from after this device took it. Nil otherwise.
     public private(set) var handoff: AmbientHandoff?
+    /// Set while another app holds the microphone (#445): listening is still on and resumes by itself.
+    public private(set) var pausedReason: String? {
+        didSet { reportActivity() }
+    }
 
     @ObservationIgnored private let send: Send
     @ObservationIgnored private let requestPermission: @MainActor () async -> Bool
@@ -389,6 +394,9 @@ public final class AmbientListeningController {
     @ObservationIgnored private var lastRecovery: ContinuousClock.Instant?
     /// The backoff in progress; ending the session cancels it so turning off never waits on it.
     @ObservationIgnored private var recoveryWait: Task<Void, any Error>?
+    /// Resuming after another app took the microphone (#445): its retry task and interruption-ended observer.
+    @ObservationIgnored private var resumer: AmbientResumer?
+    @ObservationIgnored private var reportedActivity = false
 
     /// `notificationCenter` is where capture posts `AVAudioEngineCapture.endedBySystem`.
     public init(
@@ -436,37 +444,39 @@ public final class AmbientListeningController {
 
     public func turnOff() async { await end(session, reason: nil, cause: "user") }
 
-    private func start(_ current: UUID) async {
-        guard let binding else { return }
-        let send = send
+    /// Opens a stream for `current`. A resume after an interruption (#445) may run in the background, and a
+    /// failed one leaves listening paused for the next retry instead of ending it.
+    @discardableResult
+    private func start(_ current: UUID, resuming: Bool = false) async -> Bool {
+        guard let binding else { return false }
         await pendingRelease?.value
-        guard session == current, scene == .active else {
-            return await end(current, reason: "Stopped: Hailing Station left the foreground.", cause: "background")
+        guard session == current, resuming || scene == .active else {
+            await end(current, reason: "Stopped: Hailing Station left the foreground.", cause: "background")
+            return false
         }
         activation = current
         do {
-            let streamer = try await makeStreamer { [weak self] payload in
-                do {
-                    try await send(payload, binding)
-                } catch {
-                    await self?.recordSendFailure(error, session: current)
-                    throw error
-                }
-            }
-            guard session == current, scene == .active else {
+            let streamer = try await openStreamer(current, binding: binding)
+            streamer.opensAsResume = resuming
+            guard session == current, resuming || scene == .active else {
                 await release(current)
-                return await end(current, reason: "Stopped: Hailing Station left the foreground.", cause: "background")
+                await end(current, reason: "Stopped: Hailing Station left the foreground.", cause: "background")
+                return false
             }
-            streamer.recovery = { [weak self] error in await self?.recover(from: error, session: current) ?? false }
             try streamer.start()
             self.streamer = streamer
             isListening = true
+            pausedReason = nil
             diagnostics?.record(.ambientStart)
             observeSystemEnd(session: current)
             watch(streamer, session: current)
+            return true
         } catch {
             await release(current)
-            await end(current, reason: "Could not start listening: \(Self.describe(error))", cause: "start_failed")
+            if !resuming {
+                await end(current, reason: "Could not start listening: \(Self.describe(error))", cause: "start_failed")
+            }
+            return false
         }
     }
 
@@ -484,6 +494,9 @@ public final class AmbientListeningController {
         binding = nil
         recoveryWait?.cancel()
         recoveryWait = nil
+        resumer?.cancel()
+        resumer = nil
+        pausedReason = nil
         // Moved away (#366) is where listening went, not a failure: no alert, and "Listen here" brings it back.
         handoff = cause == "user" ? nil : movedAway.flatMap { reason == $0.status ? $0 : nil }
         movedAway = nil
@@ -504,15 +517,18 @@ extension AmbientListeningController {
         let streaming = withObservationTracking { streamer.isStreaming } onChange: { [weak self] in
             Task { @MainActor in self?.watch(streamer, session: current) }
         }
-        guard !streaming, session == current else { return }
+        // Only the current stream's end stops listening: a paused (#445) or already-replaced stream's does not.
+        guard !streaming, session == current, pausedReason == nil, self.streamer === streamer else { return }
         Task {
+            guard pausedReason == nil, self.streamer === streamer else { return }
             await end(current, reason: sendFailure ?? "Stopped: the microphone was interrupted or ended.",
                       cause: sendFailureCause?.cause ?? "capture_ended", code: sendFailureCause?.code)
         }
     }
 
-    private func recordSendFailure(_ error: any Error, session current: UUID) {
-        guard session == current, sendFailure == nil else { return }
+    /// Only the live stream's failure counts: a stream replaced by a pause (#445) still draining is ignored.
+    private func recordSendFailure(_ error: any Error, session current: UUID, from source: AmbientAudioStreamer?) {
+        guard session == current, sendFailure == nil, let source, source === streamer else { return }
         movedAway = AmbientHandoff(refusal: error)
         sendFailure = movedAway?.status ?? "Stopped: \(Self.describe(error))"
         sendFailureCause = Self.diagnosticCause(error)
@@ -535,10 +551,17 @@ extension AmbientListeningController {
     private func observeSystemEnd(session current: UUID) {
         systemEndObserver = notificationCenter.addObserver(
             forName: AVAudioEngineCapture.endedBySystem, object: nil, queue: nil
-        ) { [weak self] notification in
+        ) { [weak self] note in
+            let interrupted = note.userInfo?[AVAudioEngineCapture.endedCauseKey] as? String
+                == AVAudioEngineCapture.interruptionCause
             // What ended it (#459): an interruption, a route change by its reason, or the engine stopping.
-            let ended = notification.userInfo?[AVAudioEngineCapture.endedReasonKey] as? String
+            let ended = note.userInfo?[AVAudioEngineCapture.endedReasonKey] as? String
+            // Capture posts on the main thread: mark the pause before the ended stream's own watcher can run.
+            if interrupted, Thread.isMainThread, let controller = self {
+                MainActor.assumeIsolated { controller.markPaused(current) }
+            }
             Task { @MainActor in
+                if interrupted { return await self?.pause(current) }
                 await self?.end(current, reason: Self.interruptedReason, cause: ended ?? "system_interruption")
             }
         }
@@ -577,6 +600,10 @@ extension AmbientListeningController {
                              cause: "binding_changed")
         }
         switch scene {
+        case .active where pausedReason != nil:
+            await resume(session, trigger: "foreground")
+        case .inactive where pausedReason != nil, .background where pausedReason != nil:
+            break
         case .active where pendingStart:
             pendingStart = false
             await start(session)
@@ -625,8 +652,9 @@ extension AmbientListeningController {
 
     /// True after the backoff when the failure is transient and retries remain: the streamer then opens a new
     /// stream at sequence 0 on the same capture. False lets the failure end listening as before.
-    func recover(from error: any Error, session current: UUID) async -> Bool {
-        guard session == current, isOn, Self.isTransient(error) else { return false }
+    /// Only the live stream recovers: one a pause (#445) replaced, even mid-backoff, never renews.
+    func recover(from error: any Error, session current: UUID, streamer: AmbientAudioStreamer?) async -> Bool {
+        guard session == current, isOn, Self.isTransient(error), isLive(streamer) else { return false }
         if let lastRecovery, now() - lastRecovery >= Self.recoveryQuietPeriod { recoveries = 0 }
         guard recoveries < Self.recoveryBackoff.count else {
             sendFailure = sendFailure.map { "\($0) Gave up after \(recoveries) restarts." }
@@ -637,13 +665,18 @@ extension AmbientListeningController {
         recoveries += 1
         let wait = Task { try await sleep(delay) }
         recoveryWait = wait
-        guard (try? await wait.value) != nil, session == current, isOn else { return false }
+        guard (try? await wait.value) != nil, session == current, isOn, isLive(streamer) else { return false }
         recoveryWait = nil
         lastRecovery = now()
         sendFailure = nil
         sendFailureCause = nil
         diagnostics?.record(.ambientStart)
         return true
+    }
+
+    private func isLive(_ candidate: AmbientAudioStreamer?) -> Bool {
+        guard let candidate, pausedReason == nil else { return false }
+        return candidate === streamer
     }
 
     /// The host ended our stream but will take a new one: it idled out, its listener exited, or it refused audio
@@ -655,4 +688,140 @@ extension AmbientListeningController {
             "not_allowed: ambient stopped:", "rate_limited: ambient rate exceeded"
         ].contains { message.hasPrefix($0) }
     }
+}
+
+/// Another app took the microphone (#445): dictation, a voice memo, a call. Listening pauses instead of turning off,
+/// shows why, and resumes when the interruption ends, on returning to the foreground, or on a capped backoff for
+/// apps that never say they are done. A resume opens a fresh stream from this same connection, so the host sees no
+/// take-over.
+extension AmbientListeningController {
+    static let pausedStatus = "Paused: another app is using the mic."
+    static let resumeGaveUp = "Stopped: another app kept the microphone."
+    /// Waits between resume attempts; about five minutes in all, then listening turns off.
+    static let resumeBackoff: [Duration] = [2, 5, 10, 20, 30, 60, 60, 60, 60].map { .seconds($0) }
+
+    func openStreamer(_ current: UUID, binding: AmbientAudioBinding) async throws -> AmbientAudioStreamer {
+        let send = send
+        let source = StreamerSource()
+        let streamer = try await makeStreamer { [weak self] payload in
+            do {
+                try await send(payload, binding)
+            } catch {
+                await self?.recordSendFailure(error, session: current, from: source.streamer)
+                throw error
+            }
+        }
+        source.streamer = streamer
+        streamer.recovery = { [weak self, weak streamer] error in
+            await self?.recover(from: error, session: current, streamer: streamer) ?? false
+        }
+        return streamer
+    }
+
+    /// Reports "listening or paused" once per change (see `onListeningChange`).
+    func reportActivity() {
+        let active = isListening || pausedReason != nil
+        guard active != reportedActivity else { return }
+        reportedActivity = active
+        onListeningChange?(active)
+    }
+
+    func markPaused(_ current: UUID) {
+        guard session == current, isOn, pausedReason == nil else { return }
+        pausedReason = Self.pausedStatus
+        diagnostics?.record(.ambientStop, [.reason: .token("system_interruption")])
+    }
+
+    /// The resumer starts before the old stream drains: a backlog held by a slow host must not leave listening
+    /// paused with nothing to resume it.
+    func pause(_ current: UUID) async {
+        markPaused(current)
+        guard session == current, isOn, pausedReason != nil, resumer == nil else { return }
+        isListening = false
+        if let systemEndObserver {
+            notificationCenter.removeObserver(systemEndObserver)
+            self.systemEndObserver = nil
+        }
+        resumer = AmbientResumer(
+            center: notificationCenter, sleep: sleep, backoff: Self.resumeBackoff,
+            attempt: { [weak self] trigger in await self?.resume(current, trigger: trigger) ?? true },
+            exhausted: { [weak self] in
+                await self?.end(current, reason: Self.resumeGaveUp, cause: "system_interruption")
+            }
+        )
+        guard let streamer else { return await release(current) }
+        self.streamer = nil
+        // The outgoing stream must not spend the live stream's recoveries (#287) while it drains, nor finish a
+        // recovery it had already begun.
+        streamer.recovery = nil
+        recoveryWait?.cancel()
+        recoveryWait = nil
+        await streamer.stop()
+        // Released unless a resumed stream or a resume in flight owns the session now. Listening may have ended
+        // meanwhile (turned off, moved, gave up) with nothing else to release it; `release` checks the owner.
+        if self.streamer == nil, resumer?.attempting != true { await release(current) }
+    }
+
+    /// True once nothing is left to resume: listening is back, or it ended. A failed attempt stays paused.
+    @discardableResult
+    func resume(_ current: UUID, trigger: String) async -> Bool {
+        guard session == current, isOn, pausedReason != nil else { return true }
+        guard let resumer, !resumer.attempting else { return false }
+        resumer.attempting = true
+        defer { resumer.attempting = false }
+        sendFailure = nil
+        sendFailureCause = nil
+        movedAway = nil
+        if await start(current, resuming: true) {
+            resumer.cancel()
+            if self.resumer === resumer { self.resumer = nil }
+            return true
+        }
+        guard session == current, isOn else { return true }
+        diagnostics?.record(.captureError, [.code: .token("resume_failed")])
+        return false
+    }
+}
+
+/// One paused session's resume triggers (#445): the session's interruption-ended notification, and a backoff.
+@MainActor
+final class AmbientResumer {
+    typealias Attempt = @MainActor (String) async -> Bool
+    var attempting = false
+    private let center: NotificationCenter
+    private var token: (any NSObjectProtocol)?
+    private var retries: Task<Void, Never>?
+
+    init(
+        center: NotificationCenter, sleep: @escaping @Sendable (Duration) async throws -> Void,
+        backoff: [Duration], attempt: @escaping Attempt, exhausted: @escaping @MainActor () async -> Void
+    ) {
+        self.center = center
+        token = center.addObserver(forName: AudioCaptureEndingSignal.Names.interruption, object: nil, queue: nil) {
+            guard AudioCaptureEndingSignal($0) == .interruptionEnded else { return }
+            Task { @MainActor in _ = await attempt("interruption_ended") }
+        }
+        retries = Task { @MainActor [weak self] in
+            for delay in backoff {
+                guard (try? await sleep(delay)) != nil, !Task.isCancelled else { return }
+                if await attempt("retry") { return }
+            }
+            // An interruption-ended attempt may still be running: let it decide before giving up.
+            while self?.attempting == true, !Task.isCancelled { try? await Task.sleep(for: .milliseconds(50)) }
+            guard !Task.isCancelled else { return }
+            await exhausted()
+        }
+    }
+
+    func cancel() {
+        retries?.cancel()
+        retries = nil
+        if let token { center.removeObserver(token) }
+        token = nil
+    }
+}
+
+/// The streamer a send closure belongs to, filled in once it exists (#445).
+private final class StreamerSource: @unchecked Sendable {
+    @MainActor weak var streamer: AmbientAudioStreamer?
 }

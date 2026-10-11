@@ -241,6 +241,13 @@ struct AmbientListeningCard: View {
                 AmbientMovedAwayView(handoff: handoff) {
                     Task { await controller.turnOn(for: binding) }
                 }
+            } else if let paused = controller.pausedReason {
+                // Another app has the microphone (#445): still on, and it resumes by itself.
+                Label(paused, systemImage: "pause.circle.fill")
+                    .font(.subheadline.weight(.semibold))
+                    .foregroundStyle(.orange)
+                    .accessibilityHint("Listening resumes when the other app releases the microphone")
+                    .accessibilityIdentifier("station.ambient-paused")
             } else if let reason = controller.stopReason {
                 Text(reason)
                     .font(.footnote)
