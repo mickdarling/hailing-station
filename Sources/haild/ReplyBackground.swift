@@ -10,6 +10,10 @@ import Synchronization
 /// at the host's first refusal (stop, mute, take-over, expiry), and is bounded by `wallClockBound`. Its stdin and
 /// stdout are `/dev/null` and nothing else is inherited, so it never holds the caller's pipes open. Its stderr is a
 /// private pipe the caller relays until the job reports ready; an earlier failure is relayed with its exit status.
+///
+/// Until it is ready the job stays under the caller's cancellation: the caller forwards SIGINT, SIGTERM and SIGHUP to
+/// it, and before each frame the job checks its caller is still alive, so a caller killed outright publishes nothing
+/// more.
 enum ReplyBackground {
     static let variable = "HAILD_REPLY_BACKGROUND"
     /// The whole detached job: the 30-minute audio bound plus time to render, start and finish.
@@ -18,17 +22,38 @@ enum ReplyBackground {
     private static let relayLimit = 65_536
     private static let startFailure = ReplyCommandError.invalid("cannot start the background reply")
     private static let readied = Mutex(false)
+    private static let forwarded = [SIGINT, SIGTERM, SIGHUP]
 
-    static var isDetachedJob: Bool { ProcessInfo.processInfo.environment[variable] == "1" }
+    /// The caller's pid, which the detached job's environment carries.
+    private static var caller: pid_t? { ProcessInfo.processInfo.environment[variable].flatMap { pid_t($0) } }
+    static var isDetachedJob: Bool { caller != nil }
+
+    /// Before the job is ready, its caller must still be the one that started it.
+    static func requireCaller() throws {
+        guard let caller, !readied.withLock({ $0 }) else { return }
+        guard getppid() == caller else { throw CancellationError() }
+    }
 
     /// Starts the detached job and relays its early outcome; never returns.
     static func detach() throws -> Never {
         guard let executable = Bundle.main.executablePath else { throw ReplyCommandError.invalid("cannot find haild") }
         var ends: [Int32] = [-1, -1]
         guard pipe(&ends) == 0 else { throw startFailure }
+        let child = Mutex<pid_t?>(nil)
+        let forwarding = forwarded.map { signal -> any DispatchSourceSignal in
+            Darwin.signal(signal, SIG_IGN)
+            let source = DispatchSource.makeSignalSource(signal: signal, queue: .global())
+            source.setEventHandler {
+                if let pid = child.withLock({ $0 }) { kill(pid, SIGTERM) }
+                exit(128 + signal)
+            }
+            source.resume()
+            return source
+        }
         let pid = try spawn(executable, stderr: ends[1])
+        child.withLock { $0 = pid }
         close(ends[1])
-        let output = relay(ends[0])
+        let output = withExtendedLifetime(forwarding) { relay(ends[0]) }
         close(ends[0])
         if output.count >= readyLine.count, output.suffix(readyLine.count) == readyLine {
             FileHandle.standardError.write(output.prefix(output.count - readyLine.count))
@@ -79,17 +104,23 @@ enum ReplyBackground {
     private static func spawn(_ executable: String, stderr: Int32) throws -> pid_t {
         var actions = posix_spawn_file_actions_t(nil as OpaquePointer?)
         var attributes = posix_spawnattr_t(nil as OpaquePointer?)
+        var defaults = sigset_t()
         posix_spawn_file_actions_init(&actions)
         posix_spawnattr_init(&attributes)
         defer { posix_spawn_file_actions_destroy(&actions); posix_spawnattr_destroy(&attributes) }
+        // The caller ignores the forwarded signals while it waits; the job must not inherit that.
+        sigemptyset(&defaults)
+        forwarded.forEach { sigaddset(&defaults, $0) }
         let setup = [posix_spawn_file_actions_addopen(&actions, STDIN_FILENO, "/dev/null", O_RDONLY, 0),
                      posix_spawn_file_actions_addopen(&actions, STDOUT_FILENO, "/dev/null", O_WRONLY, 0),
                      posix_spawn_file_actions_adddup2(&actions, stderr, STDERR_FILENO),
-                     posix_spawnattr_setflags(&attributes, Int16(POSIX_SPAWN_SETSID | POSIX_SPAWN_CLOEXEC_DEFAULT))]
+                     posix_spawnattr_setsigdefault(&attributes, &defaults),
+                     posix_spawnattr_setflags(&attributes, Int16(POSIX_SPAWN_SETSID | POSIX_SPAWN_CLOEXEC_DEFAULT
+                                                                 | POSIX_SPAWN_SETSIGDEF))]
         guard setup.allSatisfy({ $0 == 0 }) else { throw startFailure }
         let arguments = [executable] + CommandLine.arguments.dropFirst()
         var environment = ProcessInfo.processInfo.environment
-        environment[variable] = "1"
+        environment[variable] = String(getpid())
         let argv = arguments.map { strdup($0) } + [nil]
         let envp = environment.map { strdup("\($0.key)=\($0.value)") } + [nil]
         defer { argv.forEach { free($0) }; envp.forEach { free($0) } }

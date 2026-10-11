@@ -4,6 +4,7 @@ import base64
 import contextlib
 import json
 import os
+import signal
 import socket
 import subprocess
 import tempfile
@@ -153,6 +154,51 @@ class ReplyCLITests(unittest.TestCase):
         self.assertEqual(result.returncode, 1)
         self.assertIn("speech reply publication failed", result.stderr)
         self.assertNotIn("background", result.stdout)
+
+    def test_interrupting_the_caller_before_ready_ends_the_job(self):
+        self.assert_caller_loss_before_ready_ends_the_job(signal.SIGINT)
+
+    def test_killing_the_caller_before_ready_publishes_nothing_more(self):
+        self.assert_caller_loss_before_ready_ends_the_job(signal.SIGKILL)
+
+    def assert_caller_loss_before_ready_ends_the_job(self, signum):
+        # The text frame is held unanswered, so the job is mid-handshake when its caller goes.
+        environment = self.speech_environment(30)
+        release = threading.Event()
+
+        def respond(index):
+            if index == 0:
+                release.wait(10)
+            return {"delivered": 1}
+
+        with self.reply_server(respond) as (path, frames):
+            caller = subprocess.Popen(
+                [str(HAILD), "reply", "tmux:test", "--host", "mac-test", "--say", "synthetic reply",
+                 "--socket", path],
+                cwd=REPO, stdout=subprocess.PIPE, stderr=subprocess.PIPE, env=environment, start_new_session=True,
+            )
+            try:
+                self.wait_for(lambda: len(frames) == 1, 10)
+                job = self.child_of(caller.pid)
+                caller.send_signal(signum)
+                caller.wait(timeout=10)
+                release.set()
+                self.wait_for(lambda: not self.alive(job), 10)
+            finally:
+                release.set()
+                if caller.poll() is None:
+                    caller.kill()
+                caller.communicate(timeout=10)
+            time.sleep(0.3)
+            self.assertEqual(len(frames), 1, [frame["type"] for _, frame in frames])
+
+    @staticmethod
+    def child_of(parent):
+        listing = subprocess.run(["ps", "-A", "-o", "pid=,ppid="], capture_output=True, text=True).stdout
+        children = [int(pid) for pid, ppid in (line.split() for line in listing.splitlines()) if int(ppid) == parent]
+        if len(children) != 1:
+            raise AssertionError(f"expected one detached job, found {children}")
+        return children[0]
 
     def speech_environment(self, seconds):
         environment = os.environ.copy()

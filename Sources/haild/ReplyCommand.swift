@@ -327,6 +327,7 @@ private let audioBoundRefusal = ReplyCommandError.invalid(
 
 /// Waits for this frame's turn under the job's pacing; the audio bound is a command refusal, not a renderer failure.
 private func admit(audioBytes: Int, sampleRate: Int, pacing: ReplyStreamPacing) async throws {
+    try ReplyBackground.requireCaller()
     do {
         try await pacing.admit(audio: ReplyStreamPacer.seconds(pcm16Bytes: audioBytes, sampleRate: sampleRate))
     } catch ReplyStreamPacerError.audioBoundExceeded {
