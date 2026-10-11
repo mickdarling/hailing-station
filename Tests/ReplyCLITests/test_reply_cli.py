@@ -382,6 +382,33 @@ class ReplyCLITests(unittest.TestCase):
                     worker.join(timeout=5)
                 self.assertFalse(errors, errors)
 
+    def test_long_request_speech_keeps_the_frame_budget_and_terminates_its_stream(self):
+        # #466 round 2: an unpaced --request reply over ~146 s must end with an accepted terminal marker, as on
+        # main, not trip the endpoint's 120-frame limit and leave the phone an unterminated stream.
+        environment = self.speech_environment(170)
+        refused = {"delivered": 0, "error": "rate limited"}
+        result, requests = self.submit_responses(
+            [{"delivered": 1}] * 120 + [refused] * 5, ["--say", "synthetic reply"], environment,
+        )
+        self.assertEqual(result.returncode, 1)
+        self.assertIn("frame budget", result.stderr)
+        frames = [json.loads(request) for request in requests]
+        self.assertEqual(len(frames), 120)
+        audio = frames[1:]
+        self.assertEqual([frame["payload"]["sequence"] for frame in audio], list(range(119)))
+        self.assertEqual([frame["payload"]["final"] for frame in audio], [False] * 118 + [True])
+
+    def test_long_request_pcm_is_refused_before_its_audio(self):
+        with tempfile.TemporaryDirectory(prefix="hail-reply-request-pcm-") as scratch:
+            path = Path(scratch) / "long.pcm"
+            path.write_bytes(bytes(24_000 * 2 * 150))
+            result, requests = self.submit_responses(
+                [{"delivered": 1}] * 5, ["--text", "synthetic reply", "--pcm16", str(path)],
+            )
+        self.assertEqual(result.returncode, 1)
+        self.assertIn("frame budget", result.stderr)
+        self.assertEqual([json.loads(request)["type"] for request in requests], ["text"])
+
     def test_stop_mid_reply_cuts_a_long_reply_off(self):
         # The host refuses a stopped reply's next frame; the CLI must stop there, not keep sending 150 s of audio.
         environment = os.environ.copy()

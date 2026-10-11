@@ -73,6 +73,10 @@ private struct PCMReplyContext {
     var socket: URL
     /// The job's pacing (#430): a long reply plays in full, under the endpoint's per-minute frame limit.
     var pacing: ReplyStreamPacing
+    /// An unpaced `--request` reply keeps main's per-job frame budget, with the terminal frame reserved, so a long
+    /// one is refused whole or ends with an accepted final marker instead of tripping the endpoint's limit mid-stream
+    /// and leaving the phone an unterminated stream (#466 round 2). Nil for a paced, detached reply.
+    var frameLimit: Int?
 }
 
 func reply(_ arguments: ArraySlice<String>) async throws {
@@ -132,7 +136,8 @@ private func streamReply(_ options: ReplyOptions, rendererRoot: URL, pacing: Rep
     try await ReplyBackground.awaitAudioTurn(socket: options.socket)
     let context = PCMReplyContext(
         sampleRate: options.sampleRate, streamID: streamID, descriptor: descriptor,
-        socket: options.socket, pacing: pacing
+        socket: options.socket, pacing: pacing,
+        frameLimit: options.requestID.map { _ in LocalReplyEndpoint.maxFramesPerMinute - (options.text == nil ? 0 : 1) }
     )
     if let file = options.pcm16 {
         let result = try await sendPCM(file, context: context)
@@ -196,6 +201,9 @@ private func sendPCMFile(
     }
     guard ReplyStreamPacer.seconds(pcm16Bytes: size, sampleRate: context.sampleRate)
             <= ReplyStreamPacer.maxAudioSeconds else { throw audioBoundRefusal }
+    if let limit = context.frameLimit, startingSequence + segments > limit - (marksFinal ? 0 : 1) {
+        throw frameBudgetRefusal
+    }
     let handle = try FileHandle(forReadingFrom: url)
     defer { try? handle.close() }
     var current = try handle.read(upToCount: segmentBytes) ?? Data()
@@ -314,7 +322,7 @@ private func publishRenderer(
         }
         guard sequence > 0 else { throw ReplyCommandError.invalid("vbsay produced no PCM audio") }
     } catch {
-        if sequence > 0 {
+        if sequence > 0, sequence < context.frameLimit ?? .max {
             _ = try? await sendFinalPCM(sequence: sequence, context: context)
         }
         throw error
@@ -350,7 +358,11 @@ private func admit(audioBytes: Int, sampleRate: Int, pacing: ReplyStreamPacing) 
     }
 }
 
+private let frameBudgetRefusal = ReplyCommandError.invalid("PCM16 reply exceeds the endpoint frame budget")
+
 private func sendStreamedPCM(_ bytes: Data, sequence: Int, context: PCMReplyContext) async throws -> Int {
+    // One frame stays reserved for the terminal marker.
+    if let limit = context.frameLimit, sequence + 1 >= limit { throw frameBudgetRefusal }
     try await admit(audioBytes: bytes.count, sampleRate: context.sampleRate, pacing: context.pacing)
     let payload = AudioPayload(
         codec: .pcm16, sampleRate: context.sampleRate, channels: 1, sequence: sequence,
