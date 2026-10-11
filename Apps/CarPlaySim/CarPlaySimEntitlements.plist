@@ -1,0 +1,9 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+	<!-- Simulator spike only (#72). Not referenced by project.yml; see docs/carplay/simulator.md. -->
+	<key>com.apple.developer.carplay-voice-based-conversation</key>
+	<true/>
+</dict>
+</plist>
