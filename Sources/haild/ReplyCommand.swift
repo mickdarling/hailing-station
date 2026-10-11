@@ -79,12 +79,32 @@ func reply(_ arguments: ArraySlice<String>) async throws {
     let options = try replyOptions(arguments)
     let rendererRoot = options.rendererOutputRoot ?? FileManager.default.temporaryDirectory
     if options.say != nil { try OwnedReplyRenderer.validateOutputRoot(rendererRoot) }
+    if let file = options.pcm16 { try requireWithinAudioBound(file, sampleRate: options.sampleRate) }
+    // Only a target-only reply is paced and detached (#430). A `--request` reply stays unpaced and in the
+    // foreground: its host-minted request expires two minutes after it was made, and pacing would outlast it.
+    let targetOnlyAudio = options.requestID == nil && (options.pcm16 != nil || options.say != nil)
+    let pacingOff = ProcessInfo.processInfo.environment["HAILD_REPLY_PACING"] == "off"
+    if targetOnlyAudio, pacingOff, !ReplyBackground.isDetachedJob {
+        note("HAILD_REPLY_PACING=off: sending without pacing; the endpoint's per-minute limit still applies")
+    }
+    let pacing = ReplyStreamPacing(paced: targetOnlyAudio && !pacingOff)
+    guard targetOnlyAudio else { return try await streamReply(options, rendererRoot: rendererRoot, pacing: pacing) }
+    guard ReplyBackground.isDetachedJob else { try ReplyBackground.detach() }
+    try await ReplyBackground.bounded { try await streamReply(options, rendererRoot: rendererRoot, pacing: pacing) }
+}
+
+private func requireWithinAudioBound(_ file: URL, sampleRate: Int) throws {
+    let size = (try FileManager.default.attributesOfItem(atPath: file.path)[.size] as? NSNumber)?.intValue ?? 0
+    guard ReplyStreamPacer.seconds(pcm16Bytes: size, sampleRate: sampleRate) <= ReplyStreamPacer.maxAudioSeconds
+    else { throw audioBoundRefusal }
+}
+
+private func streamReply(_ options: ReplyOptions, rendererRoot: URL, pacing: ReplyStreamPacing) async throws {
     let streamID = (options.pcm16 != nil || options.say != nil) ? UUID() : nil
     let descriptor = ReplyDescriptor(
         id: UUID(), hostID: options.host, targetID: options.target, audioStreamID: streamID,
         requestID: options.requestID
     )
-    let pacing = ReplyStreamPacing.fromEnvironment(ProcessInfo.processInfo.environment)
     var frames = 0, deliveries = 0
     if let text = options.text {
         let frame = Frame(
@@ -182,6 +202,7 @@ private func sendPCMFile(
             deliveries += try await submitSpeechAudio(frame, socketURL: context.socket)
         } else {
             deliveries += try await ReplyClient.submit(frame, socketURL: context.socket)
+            ReplyBackground.ready()
         }
         sequence += 1
         current = next
@@ -227,7 +248,11 @@ private func speechReplyFailure(_ error: any Error, cleanupDeferred: Bool) -> an
 }
 
 private func submitSpeechAudio(_ frame: Frame, socketURL: URL) async throws -> Int {
-    do { return try await ReplyClient.submit(frame, socketURL: socketURL) } catch {
+    do {
+        let delivered = try await ReplyClient.submit(frame, socketURL: socketURL)
+        ReplyBackground.ready() // A detached job's first accepted audio lets `haild reply` return (#430).
+        return delivered
+    } catch {
         if error is CancellationError { throw error }
         // Local refusal/lost acknowledgement remains the primary category, not a renderer cleanup
         // failure. Never forward raw endpoint/NW errors or restart the whole accepted-text command.

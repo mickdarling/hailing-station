@@ -1,12 +1,14 @@
 """Exercise the real haild CLI against a private local reply socket."""
 
 import base64
+import contextlib
 import json
 import os
 import socket
 import subprocess
 import tempfile
 import threading
+import time
 import unittest
 import uuid
 from pathlib import Path
@@ -97,6 +99,136 @@ class ReplyCLITests(unittest.TestCase):
             self.assertEqual(len(audio), 147)
             self.assertEqual(sum(len(base64.b64decode(frame["payload"]["bytes"])) for frame in audio), 7_200_000)
             self.assertTrue(audio[-1]["payload"]["final"])
+
+    def test_paced_reply_returns_at_once_and_streams_the_rest_in_the_background(self):
+        # 30 s of speech, paced: the first 20 s go at once, the rest at playback speed (#430).
+        environment = self.speech_environment(30)
+        with self.reply_server(lambda index: {"delivered": 1}) as (path, frames):
+            started = time.monotonic()
+            result = self.run_reply(["--say", "synthetic reply"], path, environment)
+            returned = time.monotonic() - started
+            self.assertEqual(result.returncode, 0, result.stderr)
+            self.assertLess(returned, 3)
+            self.assertIn("streams in the background", result.stdout)
+            self.wait_for(lambda: len(frames) == 27, 30)
+            last = frames[-1][0] - started
+        self.assertGreater(last, 5)
+        audio = [frame for _, frame in frames[1:]]
+        self.assertEqual([frame["payload"]["sequence"] for frame in audio], list(range(26)))
+        self.assertTrue(audio[-1]["payload"]["final"])
+
+    def test_request_reply_stays_unpaced_in_the_foreground(self):
+        # A host-minted request expires two minutes after it was made, so its reply is not paced past it.
+        environment = self.speech_environment(30)
+        with self.reply_server(lambda index: {"delivered": 1}) as (path, frames):
+            started = time.monotonic()
+            result = self.run_reply(
+                ["--say", "synthetic reply", "--request", str(uuid.uuid4()).upper()], path, environment,
+            )
+            self.assertEqual(result.returncode, 0, result.stderr)
+            self.assertLess(time.monotonic() - started, 3)
+            self.assertEqual(len(frames), 27)
+            self.assertIn("submitted 27 frames", result.stdout)
+
+    def test_stop_mid_stream_ends_the_background_job_and_its_renderer(self):
+        environment = self.speech_environment(150)
+        with tempfile.TemporaryDirectory(prefix="hail-reply-stop-") as scratch:
+            pidfile = Path(scratch) / "renderer.pid"
+            environment["REPLY_RENDERER_TEST_PIDFILE"] = str(pidfile)
+            stopped = {"delivered": 0, "error": "reply stopped"}
+            with self.reply_server(lambda index: {"delivered": 1} if index < 10 else stopped) as (path, frames):
+                result = self.run_reply(["--say", "synthetic reply"], path, environment)
+                self.assertEqual(result.returncode, 0, result.stderr)
+                job = int(result.stdout.rsplit("pid ", 1)[1].rstrip(")\n"))
+                renderer = int(pidfile.read_text())
+                self.wait_for(lambda: not self.alive(job) and not self.alive(renderer), 10)
+            # Ten accepted, the refused one, then at most the terminal marker: nothing of the other 140 s.
+            self.assertLessEqual(len(frames), 12)
+
+    def test_detached_reply_refused_on_its_first_audio_reports_the_failure(self):
+        environment = self.speech_environment(30)
+        refused = {"delivered": 0, "error": "reply stopped"}
+        with self.reply_server(lambda index: {"delivered": 1} if index == 0 else refused) as (path, frames):
+            result = self.run_reply(["--say", "synthetic reply"], path, environment)
+        self.assertEqual(result.returncode, 1)
+        self.assertIn("speech reply publication failed", result.stderr)
+        self.assertNotIn("background", result.stdout)
+
+    def speech_environment(self, seconds):
+        environment = os.environ.copy()
+        environment["PATH"] = str(Path(__file__).parent / "fixtures") + os.pathsep + environment["PATH"]
+        environment["REPLY_RENDERER_TEST_STDOUT_BYTES"] = str(24_000 * 2 * seconds)
+        environment.pop("HAILD_REPLY_PACING", None)
+        return environment
+
+    def run_reply(self, arguments, path, environment):
+        return subprocess.run(
+            [str(HAILD), "reply", "tmux:test", "--host", "mac-test", *arguments, "--socket", path],
+            cwd=REPO, capture_output=True, text=True, timeout=15, check=False, env=environment,
+            start_new_session=True,
+        )
+
+    @staticmethod
+    def alive(pid):
+        try:
+            os.kill(pid, 0)
+        except ProcessLookupError:
+            return False
+        try:
+            # A reaped-by-launchd zombie still answers kill(0); ps shows its state.
+            state = subprocess.run(["ps", "-o", "stat=", "-p", str(pid)], capture_output=True, text=True).stdout
+        except OSError:
+            return True
+        return bool(state.strip()) and not state.strip().startswith("Z")
+
+    def wait_for(self, condition, seconds):
+        deadline = time.monotonic() + seconds
+        while not condition():
+            self.assertLess(time.monotonic(), deadline, "condition not met in time")
+            time.sleep(0.05)
+
+    @contextlib.contextmanager
+    def reply_server(self, respond):
+        """A private reply socket answering frame N with respond(N); yields (path, [(arrival, frame)])."""
+        with tempfile.TemporaryDirectory(prefix="hail-reply-serve-") as scratch:
+            path = os.path.join(scratch, "reply.sock")
+            with socket.socket(socket.AF_UNIX, socket.SOCK_STREAM) as server:
+                server.bind(path)
+                os.chmod(path, 0o600)
+                server.listen(16)
+                server.settimeout(0.1)
+                frames, errors = [], []
+                finished = threading.Event()
+
+                def answer():
+                    try:
+                        while not finished.is_set():
+                            try:
+                                client, _ = server.accept()
+                            except socket.timeout:
+                                continue
+                            with client:
+                                client.settimeout(10)
+                                request = b""
+                                while not request.endswith(b"\n"):
+                                    chunk = client.recv(65536)
+                                    if not chunk:
+                                        raise AssertionError("CLI closed before sending a frame")
+                                    request += chunk
+                                index = len(frames)
+                                frames.append((time.monotonic(), json.loads(request)))
+                                client.sendall(json.dumps(respond(index)).encode() + b"\n")
+                    except Exception as error:
+                        errors.append(error)
+
+                worker = threading.Thread(target=answer, daemon=True)
+                worker.start()
+                try:
+                    yield path, frames
+                finally:
+                    finished.set()
+                    worker.join(timeout=5)
+                self.assertFalse(errors, errors)
 
     def test_stop_mid_reply_cuts_a_long_reply_off(self):
         # The host refuses a stopped reply's next frame; the CLI must stop there, not keep sending 150 s of audio.

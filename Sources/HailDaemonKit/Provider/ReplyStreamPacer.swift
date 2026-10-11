@@ -63,12 +63,6 @@ package actor ReplyStreamPacing {
 
     package init(paced: Bool = true) { pacer = ReplyStreamPacer(paced: paced) }
 
-    /// `HAILD_REPLY_PACING=off` sends as fast as the endpoint answers (tests and diagnostics). The endpoint's
-    /// own per-minute limit still applies, so this can only make a long reply fail sooner, never exceed it.
-    package static func fromEnvironment(_ environment: [String: String]) -> ReplyStreamPacing {
-        ReplyStreamPacing(paced: environment["HAILD_REPLY_PACING"] != "off")
-    }
-
     package func admit(audio: Double) async throws {
         let sendAt = try pacer.admit(audio: audio, at: .now)
         if sendAt > .now { try await Task.sleep(until: sendAt, clock: .continuous) }
