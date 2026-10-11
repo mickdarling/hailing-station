@@ -183,8 +183,7 @@ public enum Schema {
                 "type": .string("string"), "maxLength": .integer(Int64(ControlLimits.maxErrorMessage))
             ]),
             "events": diagnosticEvents,
-            "from": .object(["enum": .array(AmbientTakeOver.deviceKinds.map(JSONValue.string))]),
-            "muted": .object(["type": .string("boolean")])
+            "from": .object(["enum": .array(AmbientTakeOver.deviceKinds.map(JSONValue.string))])
         ]),
         "allOf": .array([
             commandRule("hello", requires: ["hello"]),

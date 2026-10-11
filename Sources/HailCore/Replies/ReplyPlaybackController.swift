@@ -43,7 +43,7 @@ public final class ReplyPlaybackController {
 
     public internal(set) var replies: [ReplyPresentation] = []
     public internal(set) var isPaused = false
-    public internal(set) var isMuted = false
+    public internal(set) var isMuted = false { didSet { pendingMuteAfter = nil } } // a change ends a waiting mute
     public internal(set) var isCaptureSuppressed = false
     public internal(set) var status = "No replies yet"
 

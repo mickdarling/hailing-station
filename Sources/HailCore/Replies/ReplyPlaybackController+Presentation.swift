@@ -74,7 +74,6 @@ extension ReplyPlaybackController {
     }
 
     public func toggleMute() {
-        pendingMuteAfter = nil // the user's own choice replaces a voice mute still waiting (#404)
         isMuted.toggle()
         player.setMuted(isMuted)
         status = isCaptureSuppressed ? "Paused while listening" : (isMuted ? "Muted" : "Playing")
