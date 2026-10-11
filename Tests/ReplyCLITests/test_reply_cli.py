@@ -441,6 +441,7 @@ class ReplyCLITests(unittest.TestCase):
             self.assertEqual(newer.returncode, 0, newer.stderr)
             self.wait_for(lambda: len([f for _, f in frames if f["type"] == "audio" and f["payload"]["final"]]) == 2,
                           20)
+            self.wait_for(lambda: not list(Path(path).parent.glob("reply-audio.stop-*")), 5)  # Codex P2 on #472
         streams = {}
         for index, (_, frame) in enumerate(frames):
             if frame["type"] == "audio":
@@ -483,6 +484,7 @@ class ReplyCLITests(unittest.TestCase):
             self.wait_for(stopped, 15)
             stopped_after = time.monotonic() - started
             self.wait_for(lambda: sum(1 for _, f in frames if f["type"] == "audio" and f["payload"]["final"]) == 2, 20)
+            self.wait_for(lambda: not list(Path(path).parent.glob("reply-audio.stop-*")), 5)
         # The older job let go within a few seconds, not after the newer reply's 40 s budget ran out.
         self.assertLess(stopped_after, 8)
         newer_audio = [f for _, f in frames if f["type"] == "audio" and f["payload"]["streamId"] != holder["stream"]]

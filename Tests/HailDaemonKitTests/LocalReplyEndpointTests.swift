@@ -581,6 +581,34 @@ import Testing
         await endpoint.stop()
     }
 
+    /// #467, Codex P1 on #472: the shared window is full right after a stream's last data frame. Its terminal marker
+    /// is still admitted, from its own bounded budget, so the stream can always be ended inside the request's gap.
+    @Test func aTerminalMarkerIsAdmittedWhenTheSharedBudgetIsFull() async throws {
+        let scratch = FileManager.default.temporaryDirectory.appendingPathComponent(
+            "hs-tb-\(UUID().uuidString.prefix(8))", isDirectory: true
+        )
+        defer { try? FileManager.default.removeItem(at: scratch) }
+        let socket = scratch.appendingPathComponent("config", isDirectory: true)
+            .appendingPathComponent(LocalReplyEndpoint.socketName)
+        let endpoint = try LocalReplyEndpoint(
+            socketURL: socket, destination: await testListener(),
+            audit: AuditLog(directory: scratch.appendingPathComponent("audit"))
+        )
+        try await endpoint.start()
+        await endpoint.exhaustAdmissionBudget()
+        let limited = LocalReplyResponse(delivered: 0, error: "rate limited")
+        #expect(try await submit(audioFrame(sequence: 7, final: false), socket: socket.path) == limited)
+        #expect(try await submit(replyFrame(), socket: socket.path) == limited)
+        // The marker passes admission (whatever the listener then answers, it is not the rate limit) ...
+        #expect(try await submit(audioFrame(sequence: 7, final: true), socket: socket.path) != limited)
+        // ... and the terminal budget is bounded too.
+        for _ in 1..<LocalReplyEndpoint.maxTerminalFramesPerMinute {
+            _ = try await submit(audioFrame(sequence: 7, final: true), socket: socket.path)
+        }
+        #expect(try await submit(audioFrame(sequence: 7, final: true), socket: socket.path) == limited)
+        await endpoint.stop()
+    }
+
     @Test func localRefusalCodesRemainBoundedAndStable() throws {
         for reason in [LocalReplyRefusal.sourceHostMismatch, .listenerNotReady, .invalidReplyPayload,
                        .replyTargetMissing, .auditFailure, .decodeFailure, .internalFailure,
@@ -693,6 +721,14 @@ private func replyFrame() -> Frame {
         timestamp: 1, target: reply.targetID, source: reply.hostID,
         payload: .text(TextPayload(text: "ready", reply: reply))
     )
+}
+
+private func audioFrame(sequence: Int, final: Bool) -> Frame {
+    let reply = ReplyDescriptor(id: UUID(), hostID: "mac-main", targetID: "tmux:reply", audioStreamID: UUID())
+    return Frame(timestamp: 1, target: reply.targetID, source: reply.hostID, payload: .audio(AudioPayload(
+        codec: .pcm16, sampleRate: 24_000, channels: 1, sequence: sequence, streamID: reply.audioStreamID,
+        isFinal: final, bytes: Data([0, 0]), reply: reply
+    )))
 }
 
 private func sendWithoutResponse(_ frame: Frame, socket: String) throws -> NWConnection {

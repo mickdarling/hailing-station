@@ -693,6 +693,7 @@ extension ReplyBackground {
         guard lock >= 0 else { throw ReplyCommandError.invalid("cannot open the reply audio lock") }
         var queued = false, superseding: URL?
         defer { restartBound() } // a queued job gets the whole bound for its own stream (Codex P1)
+        defer { if let superseding { try? FileManager.default.removeItem(at: superseding) } } // on every exit
         while flock(lock, LOCK_EX | LOCK_NB) != 0 {
             guard errno == EWOULDBLOCK || errno == EINTR else {
                 close(lock)
@@ -718,7 +719,6 @@ extension ReplyBackground {
             }
             try await Task.sleep(for: .milliseconds(250))
         }
-        if let superseding { try? FileManager.default.removeItem(at: superseding) }
         let id = UUID()
         let record = Data("\(id.uuidString) \(target)\n".utf8)
         _ = ftruncate(lock, 0)

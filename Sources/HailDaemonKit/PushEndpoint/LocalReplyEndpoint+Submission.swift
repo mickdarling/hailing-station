@@ -192,6 +192,20 @@ extension LocalReplyEndpoint {
     }
 
     static let maxLineBytes = max(PayloadLimits.defaultMaxFrameBytes, LocalDispatchRequest.maxLineBytes)
+    /// A reply's terminal audio frame ends a stream the phone otherwise keeps at the head of its playback queue
+    /// (#467). It is admitted from this budget of its own, never the shared one, so other local traffic filling the
+    /// shared window cannot leave a stream unterminated. One per stream; well above any real rate, still bounded.
+    static let maxTerminalFramesPerMinute = 30
+
+    /// Only the frame's type and `final` flag are read here; the full frame is decoded and checked as before.
+    private struct TerminalProbe: Decodable {
+        let type: String?
+        let payload: TerminalProbePayload?
+        static func isTerminalAudio(_ data: Data) -> Bool {
+            guard let probe = try? JSONDecoder().decode(Self.self, from: data) else { return false }
+            return probe.type == "audio" && probe.payload?.final == true
+        }
+    }
 
     func submit(_ data: Data, from client: LocalReplyConnection) async {
         // Only the exact `dispatch` and `ambient` kinds leave the reply path; a frame or any other shape is a reply.
@@ -202,13 +216,14 @@ extension LocalReplyEndpoint {
             return await respond(.init(delivered: 0, error: "frame too large"), to: client)
         }
         let now = clock.now
-        guard limiter.retryAfter(
-            for: "local-reply", now: now, limitPerMinute: Self.maxFramesPerMinute
-        ) == nil else {
+        let terminal = kind == nil && TerminalProbe.isTerminalAudio(data)
+        let (bucket, limit) = terminal ? ("local-reply-terminal", Self.maxTerminalFramesPerMinute)
+            : ("local-reply", Self.maxFramesPerMinute)
+        guard limiter.retryAfter(for: bucket, now: now, limitPerMinute: limit) == nil else {
             await respond(.init(delivered: 0, error: "rate limited"), to: client)
             return
         }
-        limiter.record("local-reply", at: now)
+        limiter.record(bucket, at: now)
         if isDispatch { return await submitDispatch(data, from: client) }
         if kind == LocalAmbientRequest.kind { return await submitAmbient(data, from: client) }
         await submitReply(data, from: client)
@@ -282,5 +297,14 @@ extension LocalReplyEndpoint {
         awaitingFrames.remove(id)
         submissionTasks.removeValue(forKey: id)?.cancel()
         connections.removeValue(forKey: id)?.cancel()
+    }
+}
+
+/// The `final` flag of a reply frame's payload, absent meaning false (#467 terminal budget).
+private struct TerminalProbePayload: Decodable {
+    let final: Bool
+    private enum CodingKeys: String, CodingKey { case final }
+    init(from decoder: any Decoder) throws {
+        final = try decoder.container(keyedBy: CodingKeys.self).decodeIfPresent(Bool.self, forKey: .final) ?? false
     }
 }
