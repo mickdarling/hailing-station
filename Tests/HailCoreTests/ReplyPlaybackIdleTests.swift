@@ -58,6 +58,23 @@ import Testing
         #expect(rig.status(of: long) == ReplyPlaybackController.abandonedStatus)
     }
 
+    /// #473 review: a head whose final segment is scheduled is finished, even if the player stalls far past the
+    /// estimate (an interruption or route change). It waits for the player's completion and is never abandoned.
+    @Test func aFinishedHeadWithAStalledPlayerIsNeverAbandoned() {
+        let rig = IdleRig()
+        let finished = reply(), next = reply()
+        rig.controller.ingest(audio(finished, sequence: 0, final: false, byte: 10))
+        rig.controller.ingest(audio(finished, sequence: 1, final: true, byte: 11))
+        rig.controller.ingest(audio(next, sequence: 0, final: true, byte: 99))
+        rig.advance(by: .seconds(300))
+        #expect(rig.status(of: finished) != ReplyPlaybackController.abandonedStatus)
+        #expect(rig.controller.isReplyAudioOutputBusy) // still masked for the echo guard
+        #expect(!rig.player.scheduled.contains { $0.bytes.first == 99 })
+        rig.player.completeReply()
+        #expect(rig.status(of: finished) == "Played")
+        #expect(rig.player.scheduled.last?.bytes.first == 99)
+    }
+
     @Test func anotherStreamsFramesDoNotKeepTheHeadAlive() {
         let rig = IdleRig()
         let stuck = reply(), other = reply()

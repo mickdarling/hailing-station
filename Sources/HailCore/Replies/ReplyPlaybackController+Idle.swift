@@ -78,14 +78,17 @@ extension ReplyPlaybackController {
     func armIdleWatch() {
         idleWatch.cancel?()
         idleWatch.cancel = nil
-        guard let key = queue.first, key == idleWatch.key, idleWatch.heldRemaining == nil else { return }
+        // A head whose final segment is scheduled has ended its stream: only the player's completion moves it on,
+        // however long the player stalls, so a finished reply is never relabelled or unmasked (#473 review).
+        guard let key = queue.first, key == idleWatch.key, idleWatch.heldRemaining == nil,
+              !completed.contains(key) else { return }
         let deadline = max(idleWatch.bufferedUntil, idleWatch.lastFrameAt).advanced(by: Self.streamIdleTimeout)
         let delay = max(.zero, idleNow().duration(to: deadline))
         idleWatch.cancel = idleScheduler(delay) { [weak self] in self?.idleDeadlinePassed(for: key) }
     }
 
     func idleDeadlinePassed(for key: ReplyStreamKey) {
-        guard queue.first == key, idleWatch.key == key else { return }
+        guard queue.first == key, idleWatch.key == key, !completed.contains(key) else { return }
         let deadline = max(idleWatch.bufferedUntil, idleWatch.lastFrameAt).advanced(by: Self.streamIdleTimeout)
         guard idleNow() >= deadline else { return armIdleWatch() }
         guard !isPaused, !isCaptureSuppressed else { return syncIdleHold() }
