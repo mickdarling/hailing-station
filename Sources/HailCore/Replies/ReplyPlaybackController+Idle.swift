@@ -69,7 +69,7 @@ extension ReplyPlaybackController {
     /// Follows interruptions on `center`, by name so it works wherever the controller runs. A begin (type 1) holds the
     /// watch. An end with `shouldResume` releases it: reply-only playback and the keepalive activate the session
     /// themselves, so no managed-session result may come (Codex P1 on #478). An end without it keeps the hold. When
-    /// the managed session is active its actual result (`follow`) wins, and the foreground also releases it.
+    /// the managed session resumes playback (`follow`) it releases too, and so does the foreground.
     func observeAudioInterruptions(on center: NotificationCenter) {
         _ = center.addObserver(forName: Self.foregroundNotification, object: nil, queue: nil) { [weak self] _ in
             guard Thread.isMainThread else {
@@ -102,10 +102,11 @@ extension ReplyPlaybackController {
 
     func noteAudioSession(_ event: AudioSessionEvent) {
         switch event {
-        // A failed reactivation holds again, even after the notification's `shouldResume` released it.
-        case .interruptionBegan, .interruptionEnded(resumed: false): audioInterruption(began: true)
+        case .interruptionBegan: audioInterruption(began: true)
         case .interruptionEnded(resumed: true): audioInterruption(began: false)
-        case .routeChanged: break
+        // Not resumed may only mean the managed session is not the active one: reply-only playback or the keepalive
+        // reactivates on its own, so this neither holds nor releases (Codex P1 on #478); the notification decides.
+        case .interruptionEnded(resumed: false), .routeChanged: break
         }
     }
 

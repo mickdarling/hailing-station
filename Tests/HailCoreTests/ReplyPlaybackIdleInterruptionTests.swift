@@ -27,9 +27,9 @@ import Testing
         #expect(rig.status(of: long) == ReplyPlaybackController.abandonedStatus)
     }
 
-    /// Codex P1 on #478: reply-only playback activates the session itself, so no managed-session result comes; the
-    /// notification's own end with `shouldResume` releases the hold. A failed reactivation reported later holds again.
-    @Test func anEndWithShouldResumeReleasesTheHoldUnlessTheSessionFails() {
+    /// Codex P1s on #478: reply-only playback activates the session itself, so the notification's own end with
+    /// `shouldResume` releases the hold, even when an inactive managed session reports `resumed: false`.
+    @Test func anEndWithShouldResumeReleasesTheHold() {
         let rig = IdleRig()
         let center = NotificationCenter()
         rig.controller.observeAudioInterruptions(on: center)
@@ -40,13 +40,8 @@ import Testing
         center.post(name: ReplyPlaybackController.interruptionNotification, object: nil, userInfo: [
             ReplyPlaybackController.interruptionTypeKey: UInt(0), ReplyPlaybackController.interruptionOptionKey: UInt(1)
         ])
-        rig.controller.noteAudioSession(.interruptionEnded(resumed: false))
-        rig.advance(by: .seconds(60))
-        #expect(rig.status(of: stream) != ReplyPlaybackController.abandonedStatus) // the session could not resume
-        center.post(name: ReplyPlaybackController.interruptionNotification, object: nil, userInfo: [
-            ReplyPlaybackController.interruptionTypeKey: UInt(0), ReplyPlaybackController.interruptionOptionKey: UInt(1)
-        ])
-        rig.advance(by: .seconds(22)) // reply-only: the notification alone ends the hold
+        rig.controller.noteAudioSession(.interruptionEnded(resumed: false)) // an inactive managed session
+        rig.advance(by: .seconds(22)) // its 1.25 s of audio, then the 20 s timeout
         #expect(rig.status(of: stream) == ReplyPlaybackController.abandonedStatus)
     }
 
