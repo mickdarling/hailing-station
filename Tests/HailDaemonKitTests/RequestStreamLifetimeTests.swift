@@ -77,6 +77,37 @@ import Testing
         #expect(accepted == 1_680) // frames at 0 to 2,098.75 s; the next, at 2,100 s, is past the cap
     }
 
+    /// The real `--request` path: an unleased ambient record (#230), re-read from the listing before every frame
+    /// (`unleasedBindingIsCurrent`) as the listener does, then enqueued.
+    @Test func anUnleasedAmbientRecordStreamsA170SecondReplyAndARebindStillEndsIt() async throws {
+        let rig = try await LegacyReferenceRig.make()
+        let session = await rig.session()
+        let owner = try #require(try await LegacyReferenceRig.dispatch(session, reference: UUID()))
+        #expect(try #require(await session.replyRequests[owner]).bindingLease == nil)
+        let reply = referenceDescriptor(owner, audio: true)
+        func publish(_ frame: Frame) async -> Bool {
+            guard await session.unleasedBindingIsCurrent(frame) else { return false }
+            return await session.acceptsHostReply(frame)
+        }
+        rig.clock.advance(30_000)
+        #expect(await publish(recipientText(reply)))
+        for sequence in 0..<136 {
+            #expect(await publish(recipientAudio(reply, sequence: sequence, final: sequence == 135)))
+            rig.clock.advance(Self.frame)
+        }
+        // A second stream on a fresh reference: a rebind mid-stream (150 s in) still refuses it.
+        let next = try #require(try await LegacyReferenceRig.dispatch(session, reference: UUID()))
+        let second = referenceDescriptor(next, audio: true)
+        #expect(await publish(recipientText(second)))
+        for sequence in 0..<120 {
+            #expect(await publish(recipientAudio(second, sequence: sequence)))
+            rig.clock.advance(Self.frame)
+        }
+        await rig.adapter.setTargets([AdapterTarget(name: "reply", binding: "replacement")])
+        #expect(!(await publish(recipientAudio(second, sequence: 120))))
+        #expect(await session.replyRequests[next] == nil)
+    }
+
     @Test(arguments: ["selection", "policy", "stop"])
     func revocationStillEndsAStreamMidway(change: String) async throws {
         let rig = try await RecipientTestRig.make()

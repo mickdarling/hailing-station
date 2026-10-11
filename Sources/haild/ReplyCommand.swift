@@ -3,6 +3,7 @@ import Foundation
 import HailDaemonKit
 import HailProtocol
 import Network
+import Synchronization
 
 // Parsing, static PCM submission, and the streaming vbsay adapter stay together to share reply identity.
 // swiftlint:disable file_length
@@ -73,9 +74,9 @@ private struct PCMReplyContext {
     var socket: URL
     /// The job's pacing (#430): a long reply plays in full, under the endpoint's per-minute frame limit.
     var pacing: ReplyStreamPacing
-    /// An unpaced `--request` reply keeps main's per-job frame budget, with the terminal frame reserved, so a long
-    /// one is refused whole or ends with an accepted final marker instead of tripping the endpoint's limit mid-stream
-    /// and leaving the phone an unterminated stream (#466 round 2). Nil for a paced, detached reply.
+    /// A foreground reply (`HAILD_REPLY_FOREGROUND=1`, set by the owned publisher, which supervises the CLI's own
+    /// process group) keeps main's per-job frame budget, with the terminal frame reserved: unpaced, a long one is
+    /// refused whole or ends with an accepted final marker, never cut off mid-stream. Nil for a detached reply.
     var frameLimit: Int?
 }
 
@@ -83,19 +84,20 @@ func reply(_ arguments: ArraySlice<String>) async throws {
     let options = try replyOptions(arguments)
     let rendererRoot = options.rendererOutputRoot ?? FileManager.default.temporaryDirectory
     if options.say != nil { try OwnedReplyRenderer.validateOutputRoot(rendererRoot) }
-    // Only a target-only reply is paced and detached (#430). A `--request` reply stays unpaced and in the
-    // foreground: its host-minted request expires two minutes after it was made, and pacing would outlast it.
-    let targetOnlyAudio = options.requestID == nil && (options.pcm16 != nil || options.say != nil)
+    // Every spoken reply is paced and detached (#430). A `--request` one too (#467): its request stays current
+    // while the stream flows, and `RequestKeepAlive` keeps the stream from going quiet past that.
+    let foreground = ProcessInfo.processInfo.environment["HAILD_REPLY_FOREGROUND"] == "1"
+    let audio = (options.pcm16 != nil || options.say != nil) && !foreground
     let pacingOff = ProcessInfo.processInfo.environment["HAILD_REPLY_PACING"] == "off"
     if let file = options.pcm16 {
-        try requireWithinAudioBound(file, sampleRate: options.sampleRate, paced: targetOnlyAudio && !pacingOff,
+        try requireWithinAudioBound(file, sampleRate: options.sampleRate, paced: audio && !pacingOff,
                                     text: options.text != nil)
     }
-    if targetOnlyAudio, pacingOff, !ReplyBackground.isDetachedJob {
+    if audio, pacingOff, !ReplyBackground.isDetachedJob {
         note("HAILD_REPLY_PACING=off: sending without pacing; the endpoint's per-minute limit still applies")
     }
-    let pacing = ReplyStreamPacing(paced: targetOnlyAudio && !pacingOff)
-    guard targetOnlyAudio else { return try await streamReply(options, rendererRoot: rendererRoot, pacing: pacing) }
+    let pacing = ReplyStreamPacing(paced: audio && !pacingOff)
+    guard audio else { return try await streamReply(options, rendererRoot: rendererRoot, pacing: pacing) }
     guard ReplyBackground.isDetachedJob else { try ReplyBackground.detach() }
     try await ReplyBackground.bounded { try await streamReply(options, rendererRoot: rendererRoot, pacing: pacing) }
 }
@@ -123,6 +125,7 @@ private func streamReply(_ options: ReplyOptions, rendererRoot: URL, pacing: Rep
         requestID: options.requestID
     )
     var frames = 0, deliveries = 0
+    RequestKeepAlive.begin(requestBound: options.requestID != nil)
     if let text = options.text {
         let frame = Frame(
             timestamp: replyTimestamp(), target: options.target, source: options.host,
@@ -133,11 +136,12 @@ private func streamReply(_ options: ReplyOptions, rendererRoot: URL, pacing: Rep
         frames += 1
     }
     guard let streamID else { return printSubmitted(frames: frames, deliveries: deliveries) }
-    try await ReplyBackground.awaitAudioTurn(socket: options.socket)
+    try await ReplyBackground.awaitAudioTurn(socket: options.socket, target: options.target)
     let context = PCMReplyContext(
         sampleRate: options.sampleRate, streamID: streamID, descriptor: descriptor,
         socket: options.socket, pacing: pacing,
-        frameLimit: options.requestID.map { _ in LocalReplyEndpoint.maxFramesPerMinute - (options.text == nil ? 0 : 1) }
+        frameLimit: ReplyBackground.isDetachedJob ? nil
+            : LocalReplyEndpoint.maxFramesPerMinute - (options.text == nil ? 0 : 1)
     )
     if let file = options.pcm16 {
         let result = try await sendPCM(file, context: context)
@@ -189,46 +193,57 @@ private func sendPCM(
     )
 }
 
-private func sendPCMFile(
-    _ url: URL, context: PCMReplyContext, sequence startingSequence: Int, marksFinal: Bool, renderedAudio: Bool = false
-) async throws -> (frames: Int, deliveries: Int) {
+/// A static file's shape, its audio bound and, for a foreground reply, its frame budget, before any frame of it.
+private func requireSendable(_ url: URL, context: PCMReplyContext, from start: Int, marksFinal: Bool) throws {
     let attributes = try FileManager.default.attributesOfItem(atPath: url.path)
     let size = (attributes[.size] as? NSNumber)?.intValue ?? 0
-    let segmentBytes = pcmSegmentBytes
-    let segments = (size + segmentBytes - 1) / segmentBytes
+    let segments = (size + pcmSegmentBytes - 1) / pcmSegmentBytes
     guard size > 0, size.isMultiple(of: 2), segments > 0 else {
         throw ReplyCommandError.invalid("PCM16 reply is empty or has a partial sample")
     }
     guard ReplyStreamPacer.seconds(pcm16Bytes: size, sampleRate: context.sampleRate)
             <= ReplyStreamPacer.maxAudioSeconds else { throw audioBoundRefusal }
-    if let limit = context.frameLimit, startingSequence + segments > limit - (marksFinal ? 0 : 1) {
-        throw frameBudgetRefusal
-    }
+    if let limit = context.frameLimit, start + segments > limit - (marksFinal ? 0 : 1) { throw frameBudgetRefusal }
+}
+
+private func sendPCMFile(
+    _ url: URL, context: PCMReplyContext, sequence startingSequence: Int, marksFinal: Bool, renderedAudio: Bool = false
+) async throws -> (frames: Int, deliveries: Int) {
+    try requireSendable(url, context: context, from: startingSequence, marksFinal: marksFinal)
+    let segmentBytes = pcmSegmentBytes
     let handle = try FileHandle(forReadingFrom: url)
     defer { try? handle.close() }
     var current = try handle.read(upToCount: segmentBytes) ?? Data()
     var sequence = startingSequence
     var deliveries = 0
-    while !current.isEmpty {
-        let next = try handle.read(upToCount: segmentBytes) ?? Data()
-        let payload = AudioPayload(
-            codec: .pcm16, sampleRate: context.sampleRate, channels: 1, sequence: sequence,
-            streamID: context.streamID, isFinal: marksFinal && next.isEmpty,
-            bytes: current, reply: context.descriptor
-        )
-        let frame = Frame(
-            timestamp: replyTimestamp(), target: context.descriptor.targetID, source: context.descriptor.hostID,
-            payload: .audio(payload)
-        )
-        try await admit(audioBytes: current.count, sampleRate: context.sampleRate, pacing: context.pacing)
-        if renderedAudio {
-            deliveries += try await submitSpeechAudio(frame, socketURL: context.socket)
-        } else {
-            deliveries += try await ReplyBackground.submit(frame, socketURL: context.socket)
-            ReplyBackground.ready()
+    do {
+        while !current.isEmpty {
+            let next = try handle.read(upToCount: segmentBytes) ?? Data()
+            let payload = AudioPayload(
+                codec: .pcm16, sampleRate: context.sampleRate, channels: 1, sequence: sequence,
+                streamID: context.streamID, isFinal: marksFinal && next.isEmpty,
+                bytes: current, reply: context.descriptor
+            )
+            let frame = Frame(
+                timestamp: replyTimestamp(), target: context.descriptor.targetID, source: context.descriptor.hostID,
+                payload: .audio(payload)
+            )
+            try await admit(audioBytes: current.count, sampleRate: context.sampleRate, pacing: context.pacing)
+            if renderedAudio {
+                deliveries += try await submitSpeechAudio(frame, socketURL: context.socket)
+            } else {
+                deliveries += try await ReplyBackground.submit(frame, socketURL: context.socket)
+                ReplyBackground.ready()
+            }
+            sequence += 1
+            current = next
         }
-        sequence += 1
-        current = next
+    } catch {
+        // A static reply that stops partway still ends its stream, so the phone's queue moves on (#467).
+        if marksFinal, sequence > startingSequence {
+            _ = try? await sendFinalPCM(sequence: sequence, context: context, paced: false)
+        }
+        throw error
     }
     return (sequence - startingSequence, deliveries)
 }
@@ -323,7 +338,7 @@ private func publishRenderer(
         guard sequence > 0 else { throw ReplyCommandError.invalid("vbsay produced no PCM audio") }
     } catch {
         if sequence > 0, sequence < context.frameLimit ?? .max {
-            _ = try? await sendFinalPCM(sequence: sequence, context: context)
+            _ = try? await sendFinalPCM(sequence: sequence, context: context, paced: false)
         }
         throw error
     }
@@ -351,17 +366,20 @@ private let audioBoundRefusal = ReplyCommandError.invalid(
 /// Waits for this frame's turn under the job's pacing; the audio bound is a command refusal, not a renderer failure.
 private func admit(audioBytes: Int, sampleRate: Int, pacing: ReplyStreamPacing) async throws {
     try ReplyBackground.requireCaller()
+    guard !ReplyBackground.isSuperseded else { throw supersededRefusal }
     do {
-        try await pacing.admit(audio: ReplyStreamPacer.seconds(pcm16Bytes: audioBytes, sampleRate: sampleRate))
+        try await pacing.admit(audio: ReplyStreamPacer.seconds(pcm16Bytes: audioBytes, sampleRate: sampleRate),
+                               latest: RequestKeepAlive.latest(final: false))
     } catch ReplyStreamPacerError.audioBoundExceeded {
         throw audioBoundRefusal
     }
 }
 
+private let supersededRefusal = ReplyCommandError.invalid("a newer reply to this target took over")
 private let frameBudgetRefusal = ReplyCommandError.invalid("PCM16 reply exceeds the endpoint frame budget")
 
 private func sendStreamedPCM(_ bytes: Data, sequence: Int, context: PCMReplyContext) async throws -> Int {
-    // One frame stays reserved for the terminal marker.
+    // A foreground reply keeps one frame reserved for the terminal marker.
     if let limit = context.frameLimit, sequence + 1 >= limit { throw frameBudgetRefusal }
     try await admit(audioBytes: bytes.count, sampleRate: context.sampleRate, pacing: context.pacing)
     let payload = AudioPayload(
@@ -374,8 +392,9 @@ private func sendStreamedPCM(_ bytes: Data, sequence: Int, context: PCMReplyCont
     ), socketURL: context.socket)
 }
 
-private func sendFinalPCM(sequence: Int, context: PCMReplyContext) async throws -> Int {
-    try await admit(audioBytes: 0, sampleRate: context.sampleRate, pacing: context.pacing)
+/// `paced: false` when a stream is being given up: its terminal marker goes at once, while its request is current.
+private func sendFinalPCM(sequence: Int, context: PCMReplyContext, paced: Bool = true) async throws -> Int {
+    if paced { try await admit(audioBytes: 0, sampleRate: context.sampleRate, pacing: context.pacing) }
     let final = AudioPayload(
         codec: .pcm16, sampleRate: context.sampleRate, channels: 1, sequence: sequence,
         streamID: context.streamID, isFinal: true, bytes: Data([0, 0]), reply: context.descriptor
@@ -655,21 +674,38 @@ private final class ReplyTransaction: @unchecked Sendable {
 
 // Sharing the phone and the endpoint with other detached replies.
 extension ReplyBackground {
+    /// This job's audio-turn lock and the stop file that supersedes it (#467), once it holds the turn.
+    private static let turn = Mutex<(id: UUID, stop: URL)?>(nil)
+
     /// One detached reply's audio at a time per reply socket (#430). The phone plays replies one after another, so a
     /// second reply sent alongside the first would sit almost whole in the phone's queue, and two paced jobs would
     /// share the endpoint's per-minute frames. A queued job tells its caller and waits; its text has already gone.
     /// The lock is a file beside the owner-only socket, held open for the job's life: the kernel drops it at exit.
-    static func awaitAudioTurn(socket: URL) async throws {
+    ///
+    /// A request-bound reply (#467) answers what the user just said, so it supersedes an older reply still playing
+    /// to the same target: it leaves a stop file named for that job, which ends at its next frame with its terminal
+    /// marker. It waits only while its own request stays current; past that its audio is skipped before any starts.
+    static func awaitAudioTurn(socket: URL, target: String) async throws {
         guard isDetachedJob else { return }
-        let path = socket.deletingLastPathComponent().appendingPathComponent("reply-audio.lock").path
-        let lock = open(path, O_RDWR | O_CREAT | O_CLOEXEC | O_NOFOLLOW, 0o600)
+        let directory = socket.deletingLastPathComponent()
+        let lock = open(directory.appendingPathComponent("reply-audio.lock").path,
+                        O_RDWR | O_CREAT | O_CLOEXEC | O_NOFOLLOW, 0o600)
         guard lock >= 0 else { throw ReplyCommandError.invalid("cannot open the reply audio lock") }
-        var queued = false
+        var queued = false, superseding: URL?
         defer { restartBound() } // a queued job gets the whole bound for its own stream (Codex P1)
+        defer { if let superseding { try? FileManager.default.removeItem(at: superseding) } } // on every exit
         while flock(lock, LOCK_EX | LOCK_NB) != 0 {
             guard errno == EWOULDBLOCK || errno == EINTR else {
                 close(lock)
                 throw ReplyCommandError.invalid("cannot take the reply audio lock")
+            }
+            if RequestKeepAlive.isRequestBound, superseding == nil,
+               let holder = turnHolder(lock), holder.target == target {
+                let stop = directory.appendingPathComponent("reply-audio.stop-\(holder.id.uuidString)")
+                let owned: [FileAttributeKey: Any] = [.posixPermissions: 0o600]
+                if FileManager.default.createFile(atPath: stop.path, contents: nil, attributes: owned) {
+                    superseding = stop
+                }
             }
             if !queued {
                 queued = true
@@ -677,20 +713,75 @@ extension ReplyBackground {
                 note("reply audio queued behind another reply")
                 ready()
             }
+            if let latest = RequestKeepAlive.latest(final: false), ContinuousClock.now >= latest {
+                close(lock)
+                throw ReplyCommandError.invalid("another reply is still playing; this reply's audio was skipped")
+            }
             try await Task.sleep(for: .milliseconds(250))
         }
+        let id = UUID()
+        let record = Data("\(id.uuidString) \(target)\n".utf8)
+        _ = ftruncate(lock, 0)
+        _ = record.withUnsafeBytes { pwrite(lock, $0.baseAddress, $0.count, 0) }
+        turn.withLock { $0 = (id, directory.appendingPathComponent("reply-audio.stop-\(id.uuidString)")) }
+    }
+
+    /// Whether a newer request-bound reply to the same target has asked this job to end (#467).
+    static var isSuperseded: Bool {
+        guard let stop = turn.withLock({ $0?.stop }) else { return false }
+        return FileManager.default.fileExists(atPath: stop.path)
+    }
+
+    private static func turnHolder(_ lock: Int32) -> (id: UUID, target: String)? {
+        var buffer = [UInt8](repeating: 0, count: 512)
+        let count = buffer.withUnsafeMutableBytes { pread(lock, $0.baseAddress, $0.count, 0) }
+        guard count > 0, let line = String(bytes: buffer[0..<count], encoding: .utf8)?
+            .split(separator: "\n").first else { return nil }
+        let parts = line.split(separator: " ", maxSplits: 1)
+        guard parts.count == 2, let id = UUID(uuidString: String(parts[0])) else { return nil }
+        return (id, String(parts[1]))
     }
 
     /// In a detached job, a frame the endpoint refused for its shared per-minute limit is sent again once there is
-    /// room: that refusal comes before anything is published. Every other outcome, and every foreground reply,
-    /// is unchanged.
+    /// room: that refusal comes before anything is published. A target-only job extends its bound for the wait; a
+    /// request-bound one (#467) stops resending in time to keep its request current, leaving room for the terminal
+    /// marker. Every other outcome, and every foreground reply, is unchanged.
     static func submit(_ frame: Frame, socketURL: URL) async throws -> Int {
+        let final = if case .audio(let audio) = frame.payload { audio.isFinal } else { false }
         while true {
-            do { return try await ReplyClient.submit(frame, socketURL: socketURL) } catch let error {
+            do {
+                let delivered = try await ReplyClient.submit(frame, socketURL: socketURL)
+                RequestKeepAlive.accepted()
+                return delivered
+            } catch let error {
                 guard isDetachedJob, case ReplyClientError.refused("rate limited") = error else { throw error }
-                extendBound(by: .seconds(2)) // waiting on others' traffic is not the stream's own time
+                // A superseded job stops resending its audio at once; only its terminal marker is still sent.
+                if !final, isSuperseded { throw supersededRefusal }
+                if let latest = RequestKeepAlive.latest(final: final) {
+                    guard ContinuousClock.now.advanced(by: .seconds(2)) < latest else { throw error }
+                } else {
+                    extendBound(by: .seconds(2)) // waiting on others' traffic is not the stream's own time
+                }
                 try await Task.sleep(for: .seconds(2))
             }
         }
+    }
+}
+
+/// #467: a request-bound reply keeps its host-minted request current only while its accepted frames come within the
+/// Listener's 60 s idle gap (`HostReplyRequest.streamIdleGap`). Its pacing waits and rate-limit resends stop
+/// `dataBudget` after the last accepted frame, which leaves the rest of the gap for the terminal marker.
+enum RequestKeepAlive {
+    static let dataBudget: Duration = .seconds(40)
+    static let finalBudget: Duration = .seconds(55)
+    private static let state = Mutex((bound: false, last: ContinuousClock.now))
+
+    static func begin(requestBound: Bool) { state.withLock { $0 = (requestBound, .now) } }
+    static func accepted() { state.withLock { $0.last = .now } }
+    static var isRequestBound: Bool { state.withLock { $0.bound } }
+
+    /// The latest a request-bound frame may go; nil for a target-only reply, which has no request to keep.
+    static func latest(final: Bool) -> ContinuousClock.Instant? {
+        state.withLock { $0.bound ? $0.last.advanced(by: final ? finalBudget : dataBudget) : nil }
     }
 }

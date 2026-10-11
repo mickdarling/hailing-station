@@ -333,7 +333,9 @@ extension OwnedReplyGroupJob {
                      posix_spawn_file_actions_addopen(&actions, STDERR_FILENO, "/dev/null", O_WRONLY, 0)]
         guard setup.allSatisfy({ $0 == 0 }) else { throw OwnedReplyPublisherError.startupFailed }
         var args = argv.map { strdup($0) } + [nil]
-        var entries = configuration.environment.map { strdup("\($0.key)=\($0.value)") } + [nil]
+        // The publisher supervises this exact process and its group to the end (#467): the CLI must not detach.
+        var entries = configuration.environment.filter { $0.key != "HAILD_REPLY_FOREGROUND" }
+            .map { strdup("\($0.key)=\($0.value)") } + [strdup("HAILD_REPLY_FOREGROUND=1"), nil]
         defer { args.forEach { free($0) }; entries.forEach { free($0) } }
         guard args.dropLast().allSatisfy({ $0 != nil }), entries.dropLast().allSatisfy({ $0 != nil }) else {
             throw OwnedReplyPublisherError.startupFailed
