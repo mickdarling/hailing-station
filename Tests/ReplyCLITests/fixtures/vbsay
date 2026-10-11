@@ -17,6 +17,10 @@ if "REPLY_RENDERER_TEST_RECORD" in os.environ:
     }))
 if "REPLY_RENDERER_TEST_PIDFILE" in os.environ:
     Path(os.environ["REPLY_RENDERER_TEST_PIDFILE"]).write_text(str(os.getpid()))
+if os.environ.get("REPLY_RENDERER_TEST_STALL"):
+    import time
+    time.sleep(60)  # a renderer that never writes: only a signal ends it
+    raise SystemExit(0)
 if os.environ.get("REPLY_RENDERER_TEST_NONZERO"):
     raise SystemExit(23)
 if "REPLY_RENDERER_TEST_STDOUT_BYTES" in os.environ:

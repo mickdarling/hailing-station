@@ -207,6 +207,36 @@ class ReplyCLITests(unittest.TestCase):
             time.sleep(0.3)
             self.assertEqual(len(frames), 1, [frame["type"] for _, frame in frames])
 
+    def test_interrupting_the_caller_cancels_a_stalled_renderer_and_cleans_up(self):
+        # Codex P2 on #466: the renderer writes nothing, so only cancellation (not a broken pipe) can end it.
+        environment = self.speech_environment(30)
+        environment["REPLY_RENDERER_TEST_STALL"] = "1"
+        with tempfile.TemporaryDirectory(prefix="hail-reply-stall-") as scratch:
+            root = Path(scratch) / "output"
+            root.mkdir(mode=0o700)
+            pidfile = Path(scratch) / "renderer.pid"
+            environment["REPLY_RENDERER_TEST_PIDFILE"] = str(pidfile)
+            with self.reply_server(lambda index: {"delivered": 1}) as (path, frames):
+                caller = subprocess.Popen(
+                    [str(HAILD), "reply", "tmux:test", "--host", "mac-test", "--say", "synthetic reply",
+                     "--renderer-output-root", str(root), "--socket", path],
+                    cwd=REPO, stdout=subprocess.PIPE, stderr=subprocess.PIPE, env=environment,
+                    start_new_session=True,
+                )
+                try:
+                    self.wait_for(lambda: pidfile.exists() and pidfile.read_text(), 10)
+                    job, renderer = self.child_of(caller.pid), int(pidfile.read_text())
+                    caller.send_signal(signal.SIGINT)
+                    caller.wait(timeout=10)
+                    self.wait_for(lambda: not self.alive(job) and not self.alive(renderer), 10)
+                finally:
+                    if caller.poll() is None:
+                        caller.kill()
+                    caller.communicate(timeout=10)
+            self.assertEqual(len(frames), 1)
+            # A cancelled renderer defers its owned leaf, as every abnormal outcome does; nothing else is left.
+            self.assertLessEqual(len(list(root.iterdir())), 1)
+
     @staticmethod
     def child_of(parent):
         listing = subprocess.run(["ps", "-A", "-o", "pid=,ppid="], capture_output=True, text=True).stdout

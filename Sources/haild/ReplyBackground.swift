@@ -44,7 +44,8 @@ enum ReplyBackground {
             Darwin.signal(signal, SIG_IGN)
             let source = DispatchSource.makeSignalSource(signal: signal, queue: .global())
             source.setEventHandler {
-                if let pid = child.withLock({ $0 }) { kill(pid, SIGTERM) }
+                // The job leads its own session, so its group holds the renderer too.
+                if let pid = child.withLock({ $0 }) { kill(-pid, SIGTERM) }
                 exit(128 + signal)
             }
             source.resume()
@@ -71,12 +72,38 @@ enum ReplyBackground {
     static func ready() {
         guard isDetachedJob, readied.withLock({ done in defer { done = true }; return !done }) else { return }
         _ = readyLine.withUnsafeBytes { write(STDERR_FILENO, $0.baseAddress, $0.count) }
+        releaseStandardError()
+    }
+
+    private static func releaseStandardError() {
         let null = open("/dev/null", O_WRONLY)
         if null >= 0 { dup2(null, STDERR_FILENO); close(null) }
     }
 
-    /// Runs the detached job under its wall-clock bound; cancellation stops the renderer and pacing at once.
+    /// Runs the detached job under its wall-clock bound. SIGTERM, or losing the caller before ready, cancels it
+    /// cooperatively, so the renderer is cancelled and its private output cleaned up rather than abandoned.
     static func bounded(_ job: @escaping @Sendable () async throws -> Void) async throws {
+        let task = Task { try await boundedJob(job) }
+        let cancel: @Sendable () -> Void = {
+            // Before ready, the caller's pipe may have no reader left; a final error must not die writing to it.
+            if !readied.withLock({ $0 }) { releaseStandardError() }
+            task.cancel()
+        }
+        signal(SIGTERM, SIG_IGN)
+        let terminate = DispatchSource.makeSignalSource(signal: SIGTERM, queue: .global())
+        terminate.setEventHandler(handler: cancel)
+        terminate.resume()
+        let callerExit = caller.map {
+            DispatchSource.makeProcessSource(identifier: $0, eventMask: .exit, queue: .global())
+        }
+        callerExit?.setEventHandler { if !readied.withLock({ $0 }) { cancel() } }
+        callerExit?.resume()
+        defer { terminate.cancel(); callerExit?.cancel() }
+        if let caller, getppid() != caller { cancel() } // the caller left before the watch began
+        try await task.value
+    }
+
+    private static func boundedJob(_ job: @escaping @Sendable () async throws -> Void) async throws {
         try await withThrowingTaskGroup(of: Void.self) { group in
             group.addTask { try await job() }
             group.addTask {
