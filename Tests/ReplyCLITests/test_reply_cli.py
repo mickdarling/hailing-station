@@ -4,6 +4,8 @@ import base64
 import contextlib
 import json
 import os
+import re
+import shutil
 import signal
 import socket
 import subprocess
@@ -19,9 +21,50 @@ REPO = Path(__file__).resolve().parents[2]
 HAILD = REPO / ".build" / "debug" / "haild"
 # How long a test waits for an event it proves (a terminal marker, a job ending) on a loaded CI runner.
 SLOW = 120
+# A detached reply's caller names its background job (#430, #467).
+JOB_PID = re.compile(r"\(pid (\d+)\)")
 
 
 class ReplyCLITests(unittest.TestCase):
+    def setUp(self):
+        # Every detached job a test starts is waited for (or killed) before its fake socket closes, and every
+        # test has its own TMPDIR, so no job, renderer folder or lock outlives the test that made it (#469).
+        self.jobs = []
+        scratch = tempfile.mkdtemp(prefix="hail-cli-")
+        self.addCleanup(shutil.rmtree, scratch, True)
+        previous = os.environ.get("TMPDIR")
+        os.environ["TMPDIR"] = scratch
+        self.addCleanup(self.restore_tmpdir, previous)
+        self.addCleanup(self.await_jobs, False)
+
+    @staticmethod
+    def restore_tmpdir(previous):
+        if previous is None:
+            os.environ.pop("TMPDIR", None)
+        else:
+            os.environ["TMPDIR"] = previous
+
+    def track(self, result):
+        match = JOB_PID.search(result.stdout or "")
+        if match:
+            self.jobs.append(int(match.group(1)))
+        return result
+
+    def await_jobs(self, strict=True):
+        """Waits for this test's detached jobs to end; one still running after SLOW is killed and, if strict, fails
+        the test, so a leak is seen rather than left to disturb later tests."""
+        deadline = time.monotonic() + SLOW
+        for pid in self.jobs:
+            while self.alive(pid) and time.monotonic() < deadline:
+                time.sleep(0.05)
+        leaked = [pid for pid in self.jobs if self.alive(pid)]
+        for pid in leaked:
+            with contextlib.suppress(ProcessLookupError, PermissionError):
+                os.killpg(pid, signal.SIGKILL)
+        self.jobs = []
+        if strict and leaked:
+            self.fail(f"detached reply jobs outlived their test: {leaked}")
+
     def test_usage_documents_request_identity(self):
         for arguments in [[], ["unknown-command"]]:
             with self.subTest(arguments=arguments):
@@ -261,6 +304,7 @@ class ReplyCLITests(unittest.TestCase):
             try:
                 self.wait_for(lambda: len(frames) == 1, 30)
                 job = self.child_of(caller.pid)
+                self.jobs.append(job)
                 caller.send_signal(signum)
                 caller.wait(timeout=10)
                 release.set()
@@ -292,6 +336,7 @@ class ReplyCLITests(unittest.TestCase):
                 try:
                     self.wait_for(lambda: pidfile.exists() and pidfile.read_text(), 10)
                     job, renderer = self.child_of(caller.pid), int(pidfile.read_text())
+                    self.jobs.append(job)
                     caller.send_signal(signal.SIGINT)
                     caller.wait(timeout=10)
                     self.wait_for(lambda: not self.alive(job) and not self.alive(renderer), 30)
@@ -319,11 +364,11 @@ class ReplyCLITests(unittest.TestCase):
         return environment
 
     def run_reply(self, arguments, path, environment):
-        return subprocess.run(
+        return self.track(subprocess.run(
             [str(HAILD), "reply", "tmux:test", "--host", "mac-test", *arguments, "--socket", path],
             cwd=REPO, capture_output=True, text=True, timeout=60, check=False, env=environment,
             start_new_session=True,
-        )
+        ))
 
     @staticmethod
     def alive(pid):
@@ -382,6 +427,7 @@ class ReplyCLITests(unittest.TestCase):
                 worker.start()
                 try:
                     yield path, frames
+                    self.await_jobs()
                 finally:
                     finished.set()
                     worker.join(timeout=5)
@@ -501,10 +547,16 @@ class ReplyCLITests(unittest.TestCase):
         environment = self.speech_environment(30)
         limited = {"delivered": 0, "error": "rate limited"}
 
+        seen = []
+
         def respond(index):
-            return {"delivered": 1} if index < 5 else limited
+            frame = seen[0][index][1]
+            # Since #472 the endpoint admits terminal markers from a budget of their own, never the shared one.
+            terminal = frame["type"] == "audio" and frame["payload"]["final"]
+            return {"delivered": 1} if index < 5 or terminal else limited
 
         with self.reply_server(respond) as (path, frames):
+            seen.append(frames)
             result = self.run_reply(
                 ["--say", "synthetic reply", "--request", str(uuid.uuid4()).upper()], path, environment,
             )
@@ -766,16 +818,17 @@ class ReplyCLITests(unittest.TestCase):
                 worker = threading.Thread(target=answer, daemon=True)
                 worker.start()
                 try:
-                    result = subprocess.run(
+                    result = self.track(subprocess.run(
                         [str(HAILD), "reply", "tmux:test", "--host", "mac-test", *arguments,
                          "--request", request_id, "--socket", path],
-                        cwd=REPO, capture_output=True, text=True, timeout=15, check=False, env=environment,
+                        cwd=REPO, capture_output=True, text=True, timeout=60, check=False, env=environment,
                         start_new_session=True,
-                    )
+                    ))
                     # A detached reply (#430, #467) keeps sending after its caller returns.
                     deadline = time.monotonic() + SLOW
                     while expect is not None and len(requests) < expect and time.monotonic() < deadline:
                         time.sleep(0.05)
+                    self.await_jobs()
                 finally:
                     finished.set()
                     worker.join(timeout=12)
@@ -851,12 +904,13 @@ class ReplyCLITests(unittest.TestCase):
 
                 worker = threading.Thread(target=answer, daemon=True)
                 worker.start()
-                result = subprocess.run(
+                result = self.track(subprocess.run(
                     [str(HAILD), "reply", "tmux:test", "--host", "mac-test", *arguments, "--socket", path],
-                    cwd=REPO, capture_output=True, text=True, timeout=15, check=False, env=environment,
+                    cwd=REPO, capture_output=True, text=True, timeout=60, check=False, env=environment,
                     start_new_session=True,
-                )
-                worker.join(timeout=12)
+                ))
+                worker.join(timeout=SLOW)
+                self.await_jobs()
                 self.assertFalse(worker.is_alive())
                 self.assertFalse(errors, errors)
                 self.assertEqual(result.returncode, 0, result.stderr)
