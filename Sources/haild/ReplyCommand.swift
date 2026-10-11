@@ -124,27 +124,29 @@ private func streamReply(_ options: ReplyOptions, rendererRoot: URL, pacing: Rep
             payload: .text(TextPayload(text: text, reply: descriptor))
         )
         try await admit(audioBytes: 0, sampleRate: options.sampleRate, pacing: pacing)
-        deliveries += try await ReplyClient.submit(frame, socketURL: options.socket)
+        deliveries += try await ReplyBackground.submit(frame, socketURL: options.socket)
         frames += 1
     }
-    if let file = options.pcm16, let streamID {
-        let context = PCMReplyContext(
-            sampleRate: options.sampleRate, streamID: streamID, descriptor: descriptor,
-            socket: options.socket, pacing: pacing
-        )
+    guard let streamID else { return printSubmitted(frames: frames, deliveries: deliveries) }
+    try await ReplyBackground.awaitAudioTurn(socket: options.socket)
+    let context = PCMReplyContext(
+        sampleRate: options.sampleRate, streamID: streamID, descriptor: descriptor,
+        socket: options.socket, pacing: pacing
+    )
+    if let file = options.pcm16 {
         let result = try await sendPCM(file, context: context)
         frames += result.frames
         deliveries += result.deliveries
     }
-    if let spoken = options.say, let streamID {
-        let context = PCMReplyContext(
-            sampleRate: options.sampleRate, streamID: streamID, descriptor: descriptor,
-            socket: options.socket, pacing: pacing
-        )
+    if let spoken = options.say {
         let result = try await streamVBSay(spoken, outputRoot: rendererRoot, context: context)
         frames += result.frames
         deliveries += result.deliveries
     }
+    printSubmitted(frames: frames, deliveries: deliveries)
+}
+
+private func printSubmitted(frames: Int, deliveries: Int) {
     let frameWord = frames == 1 ? "frame" : "frames"
     let deliveryWord = deliveries == 1 ? "delivery" : "deliveries"
     print("submitted \(frames) \(frameWord); \(deliveries) terminal \(deliveryWord)")
@@ -213,7 +215,7 @@ private func sendPCMFile(
         if renderedAudio {
             deliveries += try await submitSpeechAudio(frame, socketURL: context.socket)
         } else {
-            deliveries += try await ReplyClient.submit(frame, socketURL: context.socket)
+            deliveries += try await ReplyBackground.submit(frame, socketURL: context.socket)
             ReplyBackground.ready()
         }
         sequence += 1
@@ -261,7 +263,7 @@ private func speechReplyFailure(_ error: any Error, cleanupDeferred: Bool) -> an
 
 private func submitSpeechAudio(_ frame: Frame, socketURL: URL) async throws -> Int {
     do {
-        let delivered = try await ReplyClient.submit(frame, socketURL: socketURL)
+        let delivered = try await ReplyBackground.submit(frame, socketURL: socketURL)
         ReplyBackground.ready() // A detached job's first accepted audio lets `haild reply` return (#430).
         return delivered
     } catch {

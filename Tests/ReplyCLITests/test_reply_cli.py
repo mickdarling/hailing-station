@@ -155,6 +155,41 @@ class ReplyCLITests(unittest.TestCase):
         self.assertIn("speech reply publication failed", result.stderr)
         self.assertNotIn("background", result.stdout)
 
+    def test_a_second_detached_reply_queues_its_audio_behind_the_first(self):
+        # Codex P1 on #466: the phone plays replies in turn, so the second's audio waits for the first's to finish.
+        first_environment = self.speech_environment(30)
+        second_environment = self.speech_environment(5)
+        with self.reply_server(lambda index: {"delivered": 1}) as (path, frames):
+            first = self.run_reply(["--say", "first reply"], path, first_environment)
+            self.assertEqual(first.returncode, 0, first.stderr)
+            started = time.monotonic()
+            second = self.run_reply(["--say", "second reply"], path, second_environment)
+            self.assertEqual(second.returncode, 0, second.stderr)
+            self.assertLess(time.monotonic() - started, 3)
+            self.assertIn("queued behind another reply", second.stderr)
+            # 27 frames for the first (text + 26 audio), 7 for the second (text + 6 audio).
+            self.wait_for(lambda: len(frames) == 34, 40)
+        streams = {}
+        for index, (_, frame) in enumerate(frames):
+            if frame["type"] == "audio":
+                streams.setdefault(frame["payload"]["streamId"], []).append(index)
+        first_audio, second_audio = sorted(streams.values(), key=lambda indexes: indexes[0])
+        self.assertEqual((len(first_audio), len(second_audio)), (26, 6))
+        self.assertGreater(second_audio[0], first_audio[-1])
+
+    def test_a_detached_reply_resends_a_frame_refused_for_the_shared_rate(self):
+        # Codex P2 on #466: that refusal comes before anything is published, so the same frame is sent again.
+        environment = self.speech_environment(5)
+        environment["HAILD_REPLY_PACING"] = "off"
+        limited = {"delivered": 0, "error": "rate limited"}
+        with self.reply_server(lambda index: limited if index == 3 else {"delivered": 1}) as (path, frames):
+            result = self.run_reply(["--say", "synthetic reply"], path, environment)
+            self.assertEqual(result.returncode, 0, result.stderr)
+            self.wait_for(lambda: len(frames) == 8, 15)
+        self.assertEqual(frames[3][1]["id"], frames[4][1]["id"])
+        audio = [frame for _, frame in frames[1:] if frame["id"] != frames[3][1]["id"]] + [frames[4][1]]
+        self.assertEqual(sorted(frame["payload"]["sequence"] for frame in audio), list(range(6)))
+
     def test_high_rate_pcm_that_cannot_be_paced_in_time_is_refused_before_text(self):
         # 13 minutes at 96 kHz is under the 30-minute audio bound but needs ~3,050 short frames (Codex P1 on #466).
         with tempfile.TemporaryDirectory(prefix="hail-reply-high-rate-") as scratch:
