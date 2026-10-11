@@ -59,6 +59,18 @@ import Testing
         }
     }
 
+    @Test func aRequestBoundLatestCapsEveryWait() throws {
+        // #467: the rate rule would hold frame 101 for a minute; a request-bound frame goes by its `latest` instead.
+        var pacer = ReplyStreamPacer()
+        let start = ContinuousClock.now
+        for _ in 0..<ReplyStreamPacer.framesPerMinute { _ = try pacer.admit(audio: 0, at: start) }
+        let latest = start.advanced(by: .seconds(40))
+        #expect(try pacer.admit(audio: 0, at: start, latest: latest) == latest)
+        // A `latest` already past still never schedules a frame before now.
+        let later = start.advanced(by: .seconds(5))
+        #expect(try pacer.admit(audio: 0, at: later, latest: start) == later)
+    }
+
     @Test func unpacedFramesGoAtOnce() throws {
         var pacer = ReplyStreamPacer(paced: false)
         let now = ContinuousClock.now

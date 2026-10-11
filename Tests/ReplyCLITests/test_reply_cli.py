@@ -118,8 +118,8 @@ class ReplyCLITests(unittest.TestCase):
         self.assertEqual([frame["payload"]["sequence"] for frame in audio], list(range(26)))
         self.assertTrue(audio[-1]["payload"]["final"])
 
-    def test_request_reply_stays_unpaced_in_the_foreground(self):
-        # A host-minted request expires two minutes after it was made, so its reply is not paced past it.
+    def test_request_reply_is_paced_in_the_background_too(self):
+        # #467: a request now stays current while its stream flows, so a --request reply is paced and detached.
         environment = self.speech_environment(30)
         with self.reply_server(lambda index: {"delivered": 1}) as (path, frames):
             started = time.monotonic()
@@ -128,8 +128,10 @@ class ReplyCLITests(unittest.TestCase):
             )
             self.assertEqual(result.returncode, 0, result.stderr)
             self.assertLess(time.monotonic() - started, 3)
-            self.assertEqual(len(frames), 27)
-            self.assertIn("submitted 27 frames", result.stdout)
+            self.assertIn("streams in the background", result.stdout)
+            self.wait_for(lambda: len(frames) == 27, 30)
+            self.assertGreater(frames[-1][0] - started, 5)
+        self.assertTrue(frames[-1][1]["payload"]["final"])
 
     def test_stop_mid_stream_ends_the_background_job_and_its_renderer(self):
         environment = self.speech_environment(150)
@@ -382,10 +384,27 @@ class ReplyCLITests(unittest.TestCase):
                     worker.join(timeout=5)
                 self.assertFalse(errors, errors)
 
-    def test_long_request_speech_keeps_the_frame_budget_and_terminates_its_stream(self):
-        # #466 round 2: an unpaced --request reply over ~146 s must end with an accepted terminal marker, as on
-        # main, not trip the endpoint's 120-frame limit and leave the phone an unterminated stream.
+    def test_a_170_second_request_reply_plays_in_full_with_its_terminal_marker(self):
+        # #467: past main's ~146 s budget; pacing off keeps the test fast, the Listener's rule is unit-tested.
         environment = self.speech_environment(170)
+        environment["HAILD_REPLY_PACING"] = "off"
+        with self.reply_server(lambda index: {"delivered": 1}) as (path, frames):
+            result = self.run_reply(
+                ["--say", "synthetic reply", "--request", str(uuid.uuid4()).upper()], path, environment,
+            )
+            self.assertEqual(result.returncode, 0, result.stderr)
+            self.wait_for(lambda: len(frames) == 139, 20)
+        audio = [frame for _, frame in frames[1:]]
+        self.assertEqual([frame["payload"]["sequence"] for frame in audio], list(range(138)))
+        self.assertEqual([frame["payload"]["final"] for frame in audio], [False] * 137 + [True])
+        self.assertTrue(all(frame["payload"]["reply"]["request"] == frames[0][1]["payload"]["reply"]["request"]
+                            for frame in audio))
+
+    def test_a_foreground_request_reply_keeps_the_frame_budget_and_terminates_its_stream(self):
+        # The owned publisher supervises the CLI in the foreground (HAILD_REPLY_FOREGROUND=1): unpaced, it keeps
+        # main's budget, so a long reply ends with an accepted final marker rather than being cut off (#466 round 2).
+        environment = self.speech_environment(170)
+        environment["HAILD_REPLY_FOREGROUND"] = "1"
         refused = {"delivered": 0, "error": "rate limited"}
         result, requests = self.submit_responses(
             [{"delivered": 1}] * 120 + [refused] * 5, ["--say", "synthetic reply"], environment,
@@ -394,38 +413,85 @@ class ReplyCLITests(unittest.TestCase):
         self.assertIn("frame budget", result.stderr)
         frames = [json.loads(request) for request in requests]
         self.assertEqual(len(frames), 120)
-        audio = frames[1:]
-        self.assertEqual([frame["payload"]["sequence"] for frame in audio], list(range(119)))
-        self.assertEqual([frame["payload"]["final"] for frame in audio], [False] * 118 + [True])
+        self.assertEqual([frame["payload"]["final"] for frame in frames[1:]], [False] * 118 + [True])
 
-    def test_long_request_pcm_is_refused_before_its_audio(self):
+    def test_a_long_request_pcm_reply_plays_in_full(self):
         with tempfile.TemporaryDirectory(prefix="hail-reply-request-pcm-") as scratch:
             path = Path(scratch) / "long.pcm"
             path.write_bytes(bytes(24_000 * 2 * 150))
-            result, requests = self.submit_responses(
-                [{"delivered": 1}] * 5, ["--text", "synthetic reply", "--pcm16", str(path)],
-            )
-        self.assertEqual(result.returncode, 1)
-        self.assertIn("frame budget", result.stderr)
-        self.assertEqual([json.loads(request)["type"] for request in requests], ["text"])
+            environment = os.environ.copy()
+            environment["HAILD_REPLY_PACING"] = "off"
+            with self.reply_server(lambda index: {"delivered": 1}) as (socket_path, frames):
+                result = self.run_reply(
+                    ["--text", "synthetic reply", "--pcm16", str(path), "--request", str(uuid.uuid4()).upper()],
+                    socket_path, environment,
+                )
+                self.assertEqual(result.returncode, 0, result.stderr)
+                self.wait_for(lambda: len(frames) == 148, 20)
+        self.assertTrue(frames[-1][1]["payload"]["final"])
 
-    def test_stop_mid_reply_cuts_a_long_reply_off(self):
-        # The host refuses a stopped reply's next frame; the CLI must stop there, not keep sending 150 s of audio.
-        environment = os.environ.copy()
-        environment["PATH"] = str(Path(__file__).parent / "fixtures") + os.pathsep + environment["PATH"]
-        environment["REPLY_RENDERER_TEST_STDOUT_BYTES"] = str(24_000 * 2 * 150)
+    def test_a_request_reply_supersedes_an_older_reply_to_the_same_target(self):
+        # #467: the newer answer is what the user is waiting for; the older reply ends with its terminal marker.
+        with self.reply_server(lambda index: {"delivered": 1}) as (path, frames):
+            older = self.run_reply(["--say", "older reply"], path, self.speech_environment(60))
+            self.assertEqual(older.returncode, 0, older.stderr)
+            newer = self.run_reply(
+                ["--say", "newer reply", "--request", str(uuid.uuid4()).upper()], path, self.speech_environment(5),
+            )
+            self.assertEqual(newer.returncode, 0, newer.stderr)
+            self.wait_for(lambda: len([f for _, f in frames if f["type"] == "audio" and f["payload"]["final"]]) == 2,
+                          20)
+        streams = {}
+        for index, (_, frame) in enumerate(frames):
+            if frame["type"] == "audio":
+                streams.setdefault(frame["payload"]["streamId"], []).append((index, frame))
+        older_audio, newer_audio = sorted(streams.values(), key=lambda entries: entries[0][0])
+        # The older reply (60 s, 50 frames) stopped early, ending its stream; the newer one played after it, whole.
+        self.assertLess(len(older_audio), 50)
+        self.assertTrue(older_audio[-1][1]["payload"]["final"])
+        self.assertEqual(len(newer_audio), 6)
+        self.assertGreater(newer_audio[0][0], older_audio[-1][0])
+
+    def test_a_request_reply_stops_resending_in_time_to_end_its_stream(self):
+        # #467 / Codex P2 on #470: the endpoint refuses data frames as rate limited; a request-bound job resends
+        # only within its request's idle gap, then sends its terminal marker while the request is still current.
+        environment = self.speech_environment(30)
+        limited = {"delivered": 0, "error": "rate limited"}
+
+        def respond(index):
+            return {"delivered": 1} if index < 5 else limited
+
+        with self.reply_server(respond) as (path, frames):
+            result = self.run_reply(
+                ["--say", "synthetic reply", "--request", str(uuid.uuid4()).upper()], path, environment,
+            )
+            self.assertEqual(result.returncode, 0, result.stderr)
+            started = time.monotonic()
+            self.wait_for(lambda: any(f["type"] == "audio" and f["payload"]["final"] for _, f in frames), 70)
+            ended = time.monotonic() - started
+        accepted_until = frames[4][0]
+        final_at = next(at for at, f in frames if f["type"] == "audio" and f["payload"]["final"])
+        # Resends stopped about 40 s after the last accepted frame; the marker went well inside the 60 s gap.
+        self.assertLess(final_at - accepted_until, 58)
+        self.assertGreater(final_at - accepted_until, 35)
+        self.assertLess(ended, 65)
+
+    def test_stop_mid_request_reply_ends_its_job(self):
+        # The host refuses a stopped reply's next frame; a --request job stops there, not after 150 s of audio.
+        environment = self.speech_environment(150)
         environment["HAILD_REPLY_PACING"] = "off"
         stopped = {"delivered": 0, "error": "reply stopped"}
-        result, requests = self.submit_responses(
-            [{"delivered": 1}] * 10 + [stopped] * 5, ["--say", "synthetic"], environment,
-        )
-        self.assertEqual(result.returncode, 1)
-        self.assertIn("speech reply publication failed", result.stderr)
-        frames = [json.loads(request) for request in requests]
+        with self.reply_server(lambda index: {"delivered": 1} if index < 10 else stopped) as (path, frames):
+            result = self.run_reply(
+                ["--say", "synthetic", "--request", str(uuid.uuid4()).upper()], path, environment,
+            )
+            self.assertEqual(result.returncode, 0, result.stderr)
+            job = int(result.stdout.rsplit("pid ", 1)[1].rstrip(")\n"))
+            self.wait_for(lambda: not self.alive(job), 10)
         # Ten accepted, the refused one, then at most the terminal marker for the phone's player.
         self.assertLessEqual(len(frames), 12)
         if len(frames) == 12:
-            self.assertTrue(frames[-1]["payload"]["final"])
+            self.assertTrue(frames[-1][1]["payload"]["final"])
 
     def test_owned_renderer_inherits_job_group_and_uses_explicit_private_root(self):
         request_id = str(uuid.uuid4()).upper()
@@ -596,7 +662,7 @@ class ReplyCLITests(unittest.TestCase):
         pending = {"delivered": 0, "code": "requestPending", "error": "request pending"}
         result, requests = self.submit_responses(
             [pending, {"delivered": 1}, pending, {"delivered": 1}, {"delivered": 1}],
-            arguments=["--say", "synthetic diagnostic"], environment=environment,
+            arguments=["--say", "synthetic diagnostic"], environment=environment, expect=5,
         )
         self.assertEqual(result.returncode, 0, result.stderr)
         self.assertEqual(len(requests), 5)
@@ -606,7 +672,7 @@ class ReplyCLITests(unittest.TestCase):
         descriptor = frames[0]["payload"]["reply"]
         self.assertTrue(all(frame["payload"]["reply"] == descriptor for frame in frames))
         self.assertEqual([frame["payload"]["sequence"] for frame in frames[2:]], [0, 0, 1])
-        self.assertIn("submitted 3 frames; 3 terminal deliveries", result.stdout)
+        self.assertIn("streams in the background", result.stdout)
 
     def test_missing_speech_renderer_after_text_is_visible_failure(self):
         environment = os.environ.copy()
@@ -619,7 +685,7 @@ class ReplyCLITests(unittest.TestCase):
         self.assertIn("speech renderer unavailable", result.stderr)
         self.assertEqual(result.stdout, "")
 
-    def submit_responses(self, responses, arguments=None, environment=None):
+    def submit_responses(self, responses, arguments=None, environment=None, expect=None):
         arguments = arguments or ["--text", "synthetic reply"]
         request_id = str(uuid.uuid4()).upper()
         with tempfile.TemporaryDirectory(prefix="hail-reply-outcome-") as scratch:
@@ -666,6 +732,10 @@ class ReplyCLITests(unittest.TestCase):
                         cwd=REPO, capture_output=True, text=True, timeout=15, check=False, env=environment,
                         start_new_session=True,
                     )
+                    # A detached reply (#430, #467) keeps sending after its caller returns.
+                    deadline = time.monotonic() + 10
+                    while expect is not None and len(requests) < expect and time.monotonic() < deadline:
+                        time.sleep(0.05)
                 finally:
                     finished.set()
                     worker.join(timeout=12)

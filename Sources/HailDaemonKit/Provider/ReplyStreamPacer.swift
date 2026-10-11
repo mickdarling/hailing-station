@@ -30,7 +30,11 @@ package struct ReplyStreamPacer: Sendable {
 
     /// Admits one frame carrying `audio` seconds (zero for text or a terminal marker) and returns the instant
     /// it may be sent. Throws, admitting nothing, once the job's audio would pass `maxAudioSeconds`.
-    package mutating func admit(audio: Double, at now: ContinuousClock.Instant) throws -> ContinuousClock.Instant {
+    /// `latest`, when given, caps the wait (#467): a request-bound reply must not go quiet past its request's idle
+    /// gap, so its frame goes at `latest` even if that is ahead of the pace; the endpoint's own limit still applies.
+    package mutating func admit(
+        audio: Double, at now: ContinuousClock.Instant, latest: ContinuousClock.Instant? = nil
+    ) throws -> ContinuousClock.Instant {
         // A microsecond of slack: summing per-segment durations must not refuse a file exactly at the bound.
         guard audio >= 0, audioSeconds + audio <= Self.maxAudioSeconds + 1e-6 else {
             throw ReplyStreamPacerError.audioBoundExceeded
@@ -45,6 +49,7 @@ package struct ReplyStreamPacer: Sendable {
             if recent.count >= Self.framesPerMinute {
                 sendAt = max(sendAt, recent[recent.count - Self.framesPerMinute].advanced(by: .seconds(60)))
             }
+            if let latest { sendAt = max(now, min(sendAt, latest)) }
             recent.append(sendAt)
             if recent.count > Self.framesPerMinute { recent.removeFirst(recent.count - Self.framesPerMinute) }
         }
@@ -64,8 +69,8 @@ package actor ReplyStreamPacing {
 
     package init(paced: Bool = true) { pacer = ReplyStreamPacer(paced: paced) }
 
-    package func admit(audio: Double) async throws {
-        let sendAt = try pacer.admit(audio: audio, at: .now)
+    package func admit(audio: Double, latest: ContinuousClock.Instant? = nil) async throws {
+        let sendAt = try pacer.admit(audio: audio, at: .now, latest: latest)
         if sendAt > .now { try await Task.sleep(until: sendAt, clock: .continuous) }
     }
 }

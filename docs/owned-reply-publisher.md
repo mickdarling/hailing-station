@@ -15,15 +15,17 @@ are the owned Codex adapter (#153) and a Slack dot bridge (#403).
   diagnostic bridge. A reply for any other target, or for another host, is refused before a directory or
   child exists. The argv names the reply's own target, still with no shell.
 - Text must contain something other than whitespace and is limited to `OwnedReply.maxSpokenBytes` (1,200
-  bytes). A target-only `haild reply` (no `--request`) streams its speech paced by `ReplyStreamPacer` (#430): at
+  bytes). `haild reply` streams its speech paced by `ReplyStreamPacer` (#430, #467): at
   most 100 frames a minute (under the endpoint's shared 120), at most 20 s ahead of playback, and up to 30 minutes
   of audio per job, so a long answer plays in full instead of stopping at the old one-minute budget (about 146 s).
   The command returns once the text and first audio are accepted; the rest streams from a detached `haild` that
   owns the renderer and stops at the host's first refusal. Detached replies send their audio one at a time per
   reply socket, as the phone plays them, and resend a frame the endpoint refused for its shared per-minute limit
   (a refusal that comes before anything is published). The renderer's stdout is backpressured at 1 MiB. A
-  `--request` reply stays unpaced in the foreground until its request can outlive a long stream. Adapters
-  shorten text longer than the byte limit before publishing.
+  `--request` reply's request stays current while its frames keep coming (#467), so it streams the same way; its
+  waits and resends stop in time to keep that request current, a failed stream still ends with its terminal
+  marker, and it supersedes an older reply still playing to the same target. Adapters shorten text longer than
+  the byte limit before publishing.
   It may contain no control (C0/C1) characters other than newline and tab. It must also pass the inbound
   sanitizer's hidden-character rule, which refuses format and default-ignorable characters, bidi controls,
   variation-selector smuggling, Hangul fillers, the braille blank and noncharacters. That rule keeps its
