@@ -58,6 +58,36 @@ import Testing
         await store.disconnect(host.id)
     }
 
+    /// #469: an abandoned reply stream is reported as `stream_abandoned` only to a host that advertises it; an
+    /// older collecting host gets `other`, which it can decode (an unknown token would close its connection).
+    @Test(arguments: [false, true])
+    func streamAbandonedGoesOnlyToAHostThatAcceptsIt(accepts: Bool) async throws {
+        defer { defaults.removePersistentDomain(forName: suite) }
+        let host = try endpoint()
+        let socket = ScriptedSocket()
+        let connector = ScriptedConnector()
+        await connector.enqueue(.socket(socket), for: host.url)
+        let store = HostConnectionStore(connector: connector, sleep: { _ in }, jitter: { 0 })
+        let log = enabledLog()
+        store.diagnostics = log
+        let playback = ReplyPlaybackController(player: IdlePlayer())
+        log.watch(playback)
+        await store.upsert(host)
+        await store.connect(host.id)
+        try await waitUntil { try await socket.sentFrames().count == 1 }
+        let capabilities = ["ping", DiagnosticLimits.capability]
+            + (accepts ? [DiagnosticLimits.streamAbandonedCapability] : [])
+        try await socket.push(.hello(HelloInfo(versions: [ProtocolVersion.current], capabilities: capabilities,
+                                               deviceName: "Mac")))
+        try await waitUntil { await MainActor.run { store.snapshots[host.id]?.state == .ready } }
+        playback.onStreamAbandoned?()
+        try await waitUntil { try await Self.diagnostics(socket).contains { $0.name == .replyPlaybackError } }
+        let event = try #require(try await Self.diagnostics(socket).first { $0.name == .replyPlaybackError })
+        #expect(event.fields[.code] == .token(accepts ? "stream_abandoned" : "other"))
+        #expect(event.fields[.ms] == .integer(20_000))
+        await store.disconnect(host.id)
+    }
+
     @Test func aHostThatDoesNotCollectIsNeverSentAnything() async throws {
         defer { defaults.removePersistentDomain(forName: suite) }
         let host = try endpoint()

@@ -77,3 +77,14 @@ func idleAudio(_ reply: ReplyDescriptor, sequence: Int, final: Bool, byte: UInt8
                       payload: .audio(payload))
     return HostReplyEvent(endpointID: endpoint, frame: frame)
 }
+
+extension IdleRig {
+    /// Starts or ends a pause, or an audio-session interruption: it begins on `center` and ends when the session
+    /// reports playback resumed.
+    func hold(_ kind: String, _ on: Bool, on center: NotificationCenter) {
+        if kind == "pause" { return controller.togglePause() }
+        guard on else { return controller.noteAudioSession(.interruptionEnded(resumed: true)) }
+        center.post(name: ReplyPlaybackController.interruptionNotification, object: nil,
+                    userInfo: [ReplyPlaybackController.interruptionTypeKey: UInt(1)])
+    }
+}
