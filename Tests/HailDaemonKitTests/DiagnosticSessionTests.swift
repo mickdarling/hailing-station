@@ -24,7 +24,10 @@ import Testing
         let (host, adapter) = try await sessionHost()
         let log = DiagnosticLog(directory: scratch)
         let session = HostSession(host: host, authorizer: PersonalTerminalAuthorizer(diagnostics: log))
-        #expect(try await capabilities(session).contains(DiagnosticLimits.capability))
+        let advertised = try await capabilities(session)
+        #expect(advertised.contains(DiagnosticLimits.capability))
+        // It accepts the stream_abandoned code (#469), so it says so; a device sends that token only then.
+        #expect(advertised.contains(DiagnosticLimits.streamAbandonedCapability))
         let frame = sessionFrame(payload: .control(.diagnostic(events: try diagnosticEvents(2))))
         let result = await session.receive(frame)
         #expect(result == HostSessionResult(frames: []))
@@ -39,7 +42,9 @@ import Testing
         let (host, _) = try await sessionHost()
         for authorizer in [PersonalTerminalAuthorizer(), ConnectionProbeAuthorizer()] as [any HostSessionAuthorizing] {
             let session = HostSession(host: host, authorizer: authorizer)
-            #expect(try await !capabilities(session).contains(DiagnosticLimits.capability))
+            let advertised = try await capabilities(session)
+            #expect(!advertised.contains(DiagnosticLimits.capability))
+            #expect(!advertised.contains(DiagnosticLimits.streamAbandonedCapability))
             let frame = sessionFrame(payload: .control(.diagnostic(events: try diagnosticEvents(1))))
             let result = await session.receive(frame)
             guard case .error(let code, _) = try onlyControl(result) else {

@@ -54,7 +54,7 @@ public struct PersonalTerminalAuthorizer: HostSessionAuthorizing {
         self.diagnostics = diagnostics
         capabilities = ["list_targets", "ping", "select_target", "send_text", "escape", "receive_replies"]
             + (ambientAudio == nil ? [] : ["stream_audio", AmbientOverheard.capability])
-            + (diagnostics == nil ? [] : [DiagnosticLimits.capability])
+            + (diagnostics == nil ? [] : [DiagnosticLimits.capability, DiagnosticLimits.streamAbandonedCapability])
     }
 
     public func authorize(_ frame: Frame) async -> HostSessionAuthorization {
