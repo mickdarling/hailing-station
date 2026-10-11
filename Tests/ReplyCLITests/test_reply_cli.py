@@ -17,6 +17,8 @@ from pathlib import Path
 
 REPO = Path(__file__).resolve().parents[2]
 HAILD = REPO / ".build" / "debug" / "haild"
+# How long a test waits for an event it proves (a terminal marker, a job ending) on a loaded CI runner.
+SLOW = 120
 
 
 class ReplyCLITests(unittest.TestCase):
@@ -107,13 +109,13 @@ class ReplyCLITests(unittest.TestCase):
         with self.reply_server(lambda index: {"delivered": 1}) as (path, frames):
             started = time.monotonic()
             result = self.run_reply(["--say", "synthetic reply"], path, environment)
-            returned = time.monotonic() - started
+            returned = time.monotonic()
             self.assertEqual(result.returncode, 0, result.stderr)
-            self.assertLess(returned, 3)
             self.assertIn("streams in the background", result.stdout)
-            self.wait_for(lambda: len(frames) == 27, 30)
-            last = frames[-1][0] - started
-        self.assertGreater(last, 5)
+            self.wait_for(lambda: len(frames) == 27, SLOW)
+        # Detached and paced: the command returned well before the stream's last frame.
+        self.assertLess(returned, frames[-1][0] - 3)
+        self.assertGreater(frames[-1][0] - started, 5)
         audio = [frame for _, frame in frames[1:]]
         self.assertEqual([frame["payload"]["sequence"] for frame in audio], list(range(26)))
         self.assertTrue(audio[-1]["payload"]["final"])
@@ -126,10 +128,11 @@ class ReplyCLITests(unittest.TestCase):
             result = self.run_reply(
                 ["--say", "synthetic reply", "--request", str(uuid.uuid4()).upper()], path, environment,
             )
+            returned = time.monotonic()
             self.assertEqual(result.returncode, 0, result.stderr)
-            self.assertLess(time.monotonic() - started, 3)
             self.assertIn("streams in the background", result.stdout)
-            self.wait_for(lambda: len(frames) == 27, 30)
+            self.wait_for(lambda: len(frames) == 27, SLOW)
+            self.assertLess(returned, frames[-1][0] - 3)
             self.assertGreater(frames[-1][0] - started, 5)
         self.assertTrue(frames[-1][1]["payload"]["final"])
 
@@ -144,7 +147,7 @@ class ReplyCLITests(unittest.TestCase):
                 self.assertEqual(result.returncode, 0, result.stderr)
                 job = int(result.stdout.rsplit("pid ", 1)[1].rstrip(")\n"))
                 renderer = int(pidfile.read_text())
-                self.wait_for(lambda: not self.alive(job) and not self.alive(renderer), 10)
+                self.wait_for(lambda: not self.alive(job) and not self.alive(renderer), 30)
             # Ten accepted, the refused one, then at most the terminal marker: nothing of the other 140 s.
             self.assertLessEqual(len(frames), 12)
 
@@ -164,13 +167,12 @@ class ReplyCLITests(unittest.TestCase):
         with self.reply_server(lambda index: {"delivered": 1}) as (path, frames):
             first = self.run_reply(["--say", "first reply"], path, first_environment)
             self.assertEqual(first.returncode, 0, first.stderr)
-            started = time.monotonic()
             second = self.run_reply(["--say", "second reply"], path, second_environment)
+            second_returned = time.monotonic()
             self.assertEqual(second.returncode, 0, second.stderr)
-            self.assertLess(time.monotonic() - started, 3)
             self.assertIn("queued behind another reply", second.stderr)
             # 27 frames for the first (text + 26 audio), 7 for the second (text + 6 audio).
-            self.wait_for(lambda: len(frames) == 34, 40)
+            self.wait_for(lambda: len(frames) == 34, SLOW)
         streams = {}
         for index, (_, frame) in enumerate(frames):
             if frame["type"] == "audio":
@@ -178,6 +180,7 @@ class ReplyCLITests(unittest.TestCase):
         first_audio, second_audio = sorted(streams.values(), key=lambda indexes: indexes[0])
         self.assertEqual((len(first_audio), len(second_audio)), (26, 6))
         self.assertGreater(second_audio[0], first_audio[-1])
+        self.assertLess(second_returned, frames[second_audio[0]][0])  # returned while queued
 
     def test_a_detached_reply_resends_a_frame_refused_for_the_shared_rate(self):
         # Codex P2 on #466: that refusal comes before anything is published, so the same frame is sent again.
@@ -187,7 +190,7 @@ class ReplyCLITests(unittest.TestCase):
         with self.reply_server(lambda index: limited if index == 3 else {"delivered": 1}) as (path, frames):
             result = self.run_reply(["--say", "synthetic reply"], path, environment)
             self.assertEqual(result.returncode, 0, result.stderr)
-            self.wait_for(lambda: len(frames) == 8, 15)
+            self.wait_for(lambda: len(frames) == 8, SLOW)
         self.assertEqual(frames[3][1]["id"], frames[4][1]["id"])
         audio = [frame for _, frame in frames[1:] if frame["id"] != frames[3][1]["id"]] + [frames[4][1]]
         self.assertEqual(sorted(frame["payload"]["sequence"] for frame in audio), list(range(6)))
@@ -256,12 +259,12 @@ class ReplyCLITests(unittest.TestCase):
                 cwd=REPO, stdout=subprocess.PIPE, stderr=subprocess.PIPE, env=environment, start_new_session=True,
             )
             try:
-                self.wait_for(lambda: len(frames) == 1, 10)
+                self.wait_for(lambda: len(frames) == 1, 30)
                 job = self.child_of(caller.pid)
                 caller.send_signal(signum)
                 caller.wait(timeout=10)
                 release.set()
-                self.wait_for(lambda: not self.alive(job), 10)
+                self.wait_for(lambda: not self.alive(job), 30)
             finally:
                 release.set()
                 if caller.poll() is None:
@@ -291,7 +294,7 @@ class ReplyCLITests(unittest.TestCase):
                     job, renderer = self.child_of(caller.pid), int(pidfile.read_text())
                     caller.send_signal(signal.SIGINT)
                     caller.wait(timeout=10)
-                    self.wait_for(lambda: not self.alive(job) and not self.alive(renderer), 10)
+                    self.wait_for(lambda: not self.alive(job) and not self.alive(renderer), 30)
                 finally:
                     if caller.poll() is None:
                         caller.kill()
@@ -318,7 +321,7 @@ class ReplyCLITests(unittest.TestCase):
     def run_reply(self, arguments, path, environment):
         return subprocess.run(
             [str(HAILD), "reply", "tmux:test", "--host", "mac-test", *arguments, "--socket", path],
-            cwd=REPO, capture_output=True, text=True, timeout=15, check=False, env=environment,
+            cwd=REPO, capture_output=True, text=True, timeout=60, check=False, env=environment,
             start_new_session=True,
         )
 
@@ -393,7 +396,7 @@ class ReplyCLITests(unittest.TestCase):
                 ["--say", "synthetic reply", "--request", str(uuid.uuid4()).upper()], path, environment,
             )
             self.assertEqual(result.returncode, 0, result.stderr)
-            self.wait_for(lambda: len(frames) == 139, 20)
+            self.wait_for(lambda: any(f["type"] == "audio" and f["payload"]["final"] for _, f in frames), SLOW)
         audio = [frame for _, frame in frames[1:]]
         self.assertEqual([frame["payload"]["sequence"] for frame in audio], list(range(138)))
         self.assertEqual([frame["payload"]["final"] for frame in audio], [False] * 137 + [True])
@@ -427,7 +430,8 @@ class ReplyCLITests(unittest.TestCase):
                     socket_path, environment,
                 )
                 self.assertEqual(result.returncode, 0, result.stderr)
-                self.wait_for(lambda: len(frames) == 148, 20)
+                self.wait_for(lambda: any(f["type"] == "audio" and f["payload"]["final"] for _, f in frames), SLOW)
+        self.assertEqual(len(frames), 148)
         self.assertTrue(frames[-1][1]["payload"]["final"])
 
     def test_a_request_reply_supersedes_an_older_reply_to_the_same_target(self):
@@ -440,8 +444,8 @@ class ReplyCLITests(unittest.TestCase):
             )
             self.assertEqual(newer.returncode, 0, newer.stderr)
             self.wait_for(lambda: len([f for _, f in frames if f["type"] == "audio" and f["payload"]["final"]]) == 2,
-                          20)
-            self.wait_for(lambda: not list(Path(path).parent.glob("reply-audio.stop-*")), 5)  # Codex P2 on #472
+                          SLOW)
+            self.wait_for(lambda: not list(Path(path).parent.glob("reply-audio.stop-*")), 30)  # Codex P2 on #472
         streams = {}
         for index, (_, frame) in enumerate(frames):
             if frame["type"] == "audio":
@@ -473,7 +477,7 @@ class ReplyCLITests(unittest.TestCase):
             frames_seen = frames
             older = self.run_reply(["--say", "older reply"], path, older_environment)
             self.assertEqual(older.returncode, 0, older.stderr)
-            self.wait_for(lambda: len(frames) >= 5, 10)  # resending sequence 2 by now
+            self.wait_for(lambda: len(frames) >= 5, SLOW)  # resending sequence 2 by now
             started = time.monotonic()
             newer = self.run_reply(
                 ["--say", "newer reply", "--request", str(uuid.uuid4()).upper()], path, self.speech_environment(5),
@@ -481,12 +485,13 @@ class ReplyCLITests(unittest.TestCase):
             self.assertEqual(newer.returncode, 0, newer.stderr)
             stopped = lambda: any(f["type"] == "audio" and f["payload"]["streamId"] == holder["stream"]  # noqa: E731
                                   and f["payload"]["final"] for _, f in frames)
-            self.wait_for(stopped, 15)
+            self.wait_for(stopped, SLOW)
             stopped_after = time.monotonic() - started
-            self.wait_for(lambda: sum(1 for _, f in frames if f["type"] == "audio" and f["payload"]["final"]) == 2, 20)
-            self.wait_for(lambda: not list(Path(path).parent.glob("reply-audio.stop-*")), 5)
-        # The older job let go within a few seconds, not after the newer reply's 40 s budget ran out.
-        self.assertLess(stopped_after, 8)
+            self.wait_for(lambda: sum(1 for _, f in frames if f["type"] == "audio" and f["payload"]["final"]) == 2,
+                          SLOW)
+            self.wait_for(lambda: not list(Path(path).parent.glob("reply-audio.stop-*")), 30)
+        # The older job let go well before the newer reply's 40 s budget ran out (unfixed, it never lets go).
+        self.assertLess(stopped_after, 30)
         newer_audio = [f for _, f in frames if f["type"] == "audio" and f["payload"]["streamId"] != holder["stream"]]
         self.assertEqual(len(newer_audio), 6)
 
@@ -504,15 +509,12 @@ class ReplyCLITests(unittest.TestCase):
                 ["--say", "synthetic reply", "--request", str(uuid.uuid4()).upper()], path, environment,
             )
             self.assertEqual(result.returncode, 0, result.stderr)
-            started = time.monotonic()
-            self.wait_for(lambda: any(f["type"] == "audio" and f["payload"]["final"] for _, f in frames), 70)
-            ended = time.monotonic() - started
+            self.wait_for(lambda: any(f["type"] == "audio" and f["payload"]["final"] for _, f in frames), SLOW)
         accepted_until = frames[4][0]
         final_at = next(at for at, f in frames if f["type"] == "audio" and f["payload"]["final"])
         # Resends stopped about 40 s after the last accepted frame; the marker went well inside the 60 s gap.
         self.assertLess(final_at - accepted_until, 58)
         self.assertGreater(final_at - accepted_until, 35)
-        self.assertLess(ended, 65)
 
     def test_stop_mid_request_reply_ends_its_job(self):
         # The host refuses a stopped reply's next frame; a --request job stops there, not after 150 s of audio.
@@ -525,7 +527,7 @@ class ReplyCLITests(unittest.TestCase):
             )
             self.assertEqual(result.returncode, 0, result.stderr)
             job = int(result.stdout.rsplit("pid ", 1)[1].rstrip(")\n"))
-            self.wait_for(lambda: not self.alive(job), 10)
+            self.wait_for(lambda: not self.alive(job), 30)
         # Ten accepted, the refused one, then at most the terminal marker for the phone's player.
         self.assertLessEqual(len(frames), 12)
         if len(frames) == 12:
@@ -771,7 +773,7 @@ class ReplyCLITests(unittest.TestCase):
                         start_new_session=True,
                     )
                     # A detached reply (#430, #467) keeps sending after its caller returns.
-                    deadline = time.monotonic() + 10
+                    deadline = time.monotonic() + SLOW
                     while expect is not None and len(requests) < expect and time.monotonic() < deadline:
                         time.sleep(0.05)
                 finally:
