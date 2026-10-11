@@ -94,7 +94,7 @@ import Testing
         let freshContext = try #require(await rig.adapter.contexts.last)
         let fresh = recipientText(recipientDescriptor(freshContext))
         #expect(!(await session.acceptsHostReply(later)))
-        await session.providerTurnEnded(freshContext.id)
+        await session.providerTurnEnded(freshContext)
         rig.clock.advance(120_000)
         #expect(!(await session.acceptsHostReply(fresh)))
         await listener.stop(reason: "synthetic test complete")

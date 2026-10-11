@@ -172,11 +172,18 @@ extension HostSession {
     }
 
     /// The provider reported this turn finished, interrupted or failed (#430): its reply keeps `lifetime` for the final
-    /// frames, then the record is pruned and its capacity slot freed. Unknown or already-ended turns are ignored.
-    func providerTurnEnded(_ requestID: UUID) {
-        guard var request = replyRequests[requestID], request.providerTurnEndedAt == nil else { return }
-        request.providerTurnEndedAt = requestClock()
-        replyRequests[requestID] = request
+    /// frames, then the record is pruned and its capacity slot freed. An unknown, already-ended or mismatched turn is
+    /// ignored, and an expired record is pruned rather than revived by a late report.
+    func providerTurnEnded(_ context: ProviderTurnContext) {
+        guard var request = replyRequests[context.id], request.context == context,
+              request.providerTurnEndedAt == nil else { return }
+        let now = requestClock()
+        guard request.isCurrent(at: now) else {
+            replyRequests[context.id] = nil
+            return
+        }
+        request.providerTurnEndedAt = now
+        replyRequests[context.id] = request
     }
 
     func pruneReplyRequests() {
@@ -388,7 +395,7 @@ extension WebSocketListener {
     /// Forwards a provider turn's end (#430) to the session that owns its reply record, found by connection id.
     public func providerTurnEnded(_ context: ProviderTurnContext) async {
         for peer in peers.values where peer.session.connectionID == context.connectionID {
-            await peer.session.providerTurnEnded(context.id)
+            await peer.session.providerTurnEnded(context)
         }
     }
 

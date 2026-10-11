@@ -10,7 +10,7 @@ import Testing
         let session = await rig.session()
         let context = try await rig.submit(on: session)
         // An ended provider turn (#430) keeps the ordinary monotonic two-minute lifetime for its final frames.
-        await session.providerTurnEnded(context.id)
+        await session.providerTurnEnded(context)
         let descriptor = recipientDescriptor(context, audio: true)
         rig.clock.advance(100_000)
         rig.clock.adjustWallClock(adjustment)
@@ -56,7 +56,7 @@ import Testing
         let rig = try await RecipientTestRig.make()
         let session = await rig.session()
         let context = try await rig.submit(on: session)
-        await session.providerTurnEnded(context.id)
+        await session.providerTurnEnded(context)
         let reply = recipientDescriptor(context, audio: true)
         rig.clock.advance(119_999)
         #expect(await session.acceptsHostReply(recipientAudio(reply, sequence: 0)))
@@ -78,7 +78,7 @@ import Testing
         #expect(await rig.adapter.contexts.count == 64)
         #expect(await session.acceptsHostReply(recipientText(recipientDescriptor(contexts[0]))))
         // Running provider turns hold their slots (#430); ended ones free them after the final-frame grace.
-        for context in contexts { await session.providerTurnEnded(context.id) }
+        for context in contexts { await session.providerTurnEnded(context) }
         rig.clock.advance(120_000)
         _ = try await rig.submit(on: session)
         #expect(await rig.adapter.contexts.count == 65)
