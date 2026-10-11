@@ -15,9 +15,11 @@ are the owned Codex adapter (#153) and a Slack dot bridge (#403).
   diagnostic bridge. A reply for any other target, or for another host, is refused before a directory or
   child exists. The argv names the reply's own target, still with no shell.
 - Text must contain something other than whitespace and is limited to `OwnedReply.maxSpokenBytes` (1,200
-  bytes). Speech streams as PCM under the reply endpoint's 120-frame budget, about 146 s for one job and shared
-  per minute across jobs. The bound keeps one reply's speech well inside it, so an admitted reply is publishable
-  whole. Adapters shorten longer answers before publishing.
+  bytes). Speech streams as PCM paced by `ReplyStreamPacer` (#430): at most 100 frames a minute (under the
+  endpoint's shared 120), at most 20 s ahead of playback, and up to 30 minutes of audio per job, so a long answer
+  plays in full instead of stopping at the old one-minute budget (about 146 s). The renderer's stdout is
+  backpressured at 1 MiB, so a paced reply never buffers its whole length. Adapters shorten text longer than
+  the byte limit before publishing.
   It may contain no control (C0/C1) characters other than newline and tab. It must also pass the inbound
   sanitizer's hidden-character rule, which refuses format and default-ignorable characters, bidi controls,
   variation-selector smuggling, Hangul fillers, the braille blank and noncharacters. That rule keeps its

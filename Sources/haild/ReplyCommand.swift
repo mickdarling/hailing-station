@@ -71,7 +71,8 @@ private struct PCMReplyContext {
     var streamID: UUID
     var descriptor: ReplyDescriptor
     var socket: URL
-    var frameLimit: Int
+    /// The job's pacing (#430): a long reply plays in full, under the endpoint's per-minute frame limit.
+    var pacing: ReplyStreamPacing
 }
 
 func reply(_ arguments: ArraySlice<String>) async throws {
@@ -83,21 +84,21 @@ func reply(_ arguments: ArraySlice<String>) async throws {
         id: UUID(), hostID: options.host, targetID: options.target, audioStreamID: streamID,
         requestID: options.requestID
     )
-    let audioFrameLimit = LocalReplyEndpoint.maxFramesPerMinute - (options.text == nil ? 0 : 1)
-    var frames = 0
-    var deliveries = 0
+    let pacing = ReplyStreamPacing.fromEnvironment(ProcessInfo.processInfo.environment)
+    var frames = 0, deliveries = 0
     if let text = options.text {
         let frame = Frame(
             timestamp: replyTimestamp(), target: options.target, source: options.host,
             payload: .text(TextPayload(text: text, reply: descriptor))
         )
+        try await admit(audioBytes: 0, sampleRate: options.sampleRate, pacing: pacing)
         deliveries += try await ReplyClient.submit(frame, socketURL: options.socket)
         frames += 1
     }
     if let file = options.pcm16, let streamID {
         let context = PCMReplyContext(
             sampleRate: options.sampleRate, streamID: streamID, descriptor: descriptor,
-            socket: options.socket, frameLimit: audioFrameLimit
+            socket: options.socket, pacing: pacing
         )
         let result = try await sendPCM(file, context: context)
         frames += result.frames
@@ -106,7 +107,7 @@ func reply(_ arguments: ArraySlice<String>) async throws {
     if let spoken = options.say, let streamID {
         let context = PCMReplyContext(
             sampleRate: options.sampleRate, streamID: streamID, descriptor: descriptor,
-            socket: options.socket, frameLimit: audioFrameLimit
+            socket: options.socket, pacing: pacing
         )
         let result = try await streamVBSay(spoken, outputRoot: rendererRoot, context: context)
         frames += result.frames
@@ -155,11 +156,11 @@ private func sendPCMFile(
     let size = (attributes[.size] as? NSNumber)?.intValue ?? 0
     let segmentBytes = 48 * 1_024
     let segments = (size + segmentBytes - 1) / segmentBytes
-    let usableLimit = context.frameLimit - (marksFinal ? 0 : 1)
-    guard size > 0, size.isMultiple(of: 2),
-          startingSequence + segments <= usableLimit else {
-        throw ReplyCommandError.invalid("PCM16 reply exceeds the endpoint frame budget")
+    guard size > 0, size.isMultiple(of: 2), segments > 0 else {
+        throw ReplyCommandError.invalid("PCM16 reply is empty or has a partial sample")
     }
+    guard ReplyStreamPacer.seconds(pcm16Bytes: size, sampleRate: context.sampleRate)
+            <= ReplyStreamPacer.maxAudioSeconds else { throw audioBoundRefusal }
     let handle = try FileHandle(forReadingFrom: url)
     defer { try? handle.close() }
     var current = try handle.read(upToCount: segmentBytes) ?? Data()
@@ -176,6 +177,7 @@ private func sendPCMFile(
             timestamp: replyTimestamp(), target: context.descriptor.targetID, source: context.descriptor.hostID,
             payload: .audio(payload)
         )
+        try await admit(audioBytes: current.count, sampleRate: context.sampleRate, pacing: context.pacing)
         if renderedAudio {
             deliveries += try await submitSpeechAudio(frame, socketURL: context.socket)
         } else {
@@ -272,7 +274,7 @@ private func publishRenderer(
         }
         guard sequence > 0 else { throw ReplyCommandError.invalid("vbsay produced no PCM audio") }
     } catch {
-        if sequence > 0, sequence < context.frameLimit {
+        if sequence > 0 {
             _ = try? await sendFinalPCM(sequence: sequence, context: context)
         }
         throw error
@@ -281,9 +283,9 @@ private func publishRenderer(
     return (sequence + 1, deliveries)
 }
 
-/// Streamed frame sizes: a short first frame so the phone starts quickly, then larger frames so a long reply
-/// stays inside the per-minute frame budget. Each frame is generated at ~2.5x realtime, well before the one
-/// ahead of it finishes playing.
+/// Streamed frame sizes: a short first frame so the phone starts quickly, then larger frames so a long reply needs
+/// fewer of the endpoint's per-minute frames. Each frame is generated at ~2.5x realtime, well before the one ahead
+/// of it finishes playing; `ReplyStreamPacing` holds the rest back to stay a bounded lead ahead of playback.
 enum StreamedReplyFrames {
     static func bytes(sequence: Int) -> Int {
         switch sequence {
@@ -294,11 +296,21 @@ enum StreamedReplyFrames {
     }
 }
 
-private func sendStreamedPCM(_ bytes: Data, sequence: Int, context: PCMReplyContext) async throws -> Int {
-    // One frame stays reserved for the terminal marker.
-    guard sequence + 1 < context.frameLimit else {
-        throw ReplyCommandError.invalid("PCM16 reply exceeds the endpoint frame budget")
+private let audioBoundRefusal = ReplyCommandError.invalid(
+    "reply audio exceeds the \(Int(ReplyStreamPacer.maxAudioSeconds / 60))-minute bound"
+)
+
+/// Waits for this frame's turn under the job's pacing; the audio bound is a command refusal, not a renderer failure.
+private func admit(audioBytes: Int, sampleRate: Int, pacing: ReplyStreamPacing) async throws {
+    do {
+        try await pacing.admit(audio: ReplyStreamPacer.seconds(pcm16Bytes: audioBytes, sampleRate: sampleRate))
+    } catch ReplyStreamPacerError.audioBoundExceeded {
+        throw audioBoundRefusal
     }
+}
+
+private func sendStreamedPCM(_ bytes: Data, sequence: Int, context: PCMReplyContext) async throws -> Int {
+    try await admit(audioBytes: bytes.count, sampleRate: context.sampleRate, pacing: context.pacing)
     let payload = AudioPayload(
         codec: .pcm16, sampleRate: context.sampleRate, channels: 1, sequence: sequence,
         streamID: context.streamID, isFinal: false, bytes: Data(bytes), reply: context.descriptor
@@ -310,6 +322,7 @@ private func sendStreamedPCM(_ bytes: Data, sequence: Int, context: PCMReplyCont
 }
 
 private func sendFinalPCM(sequence: Int, context: PCMReplyContext) async throws -> Int {
+    try await admit(audioBytes: 0, sampleRate: context.sampleRate, pacing: context.pacing)
     let final = AudioPayload(
         codec: .pcm16, sampleRate: context.sampleRate, channels: 1, sequence: sequence,
         streamID: context.streamID, isFinal: true, bytes: Data([0, 0]), reply: context.descriptor

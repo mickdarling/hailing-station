@@ -73,6 +73,49 @@ class ReplyCLITests(unittest.TestCase):
         self.assertEqual([frame["payload"]["sequence"] for frame in frames[1:]], [0, 1, 2, 3, 4])
         self.assertEqual([frame["payload"]["final"] for frame in frames[1:]], [False] * 4 + [True])
 
+    def test_speech_longer_than_the_old_frame_budget_plays_in_full(self):
+        # 150 s of speech: the old 119-frame job budget stopped at about 146 s (#430). Pacing off keeps it fast;
+        # the pacer's timing is covered by ReplyStreamPacerTests.
+        environment = os.environ.copy()
+        environment["PATH"] = str(Path(__file__).parent / "fixtures") + os.pathsep + environment["PATH"]
+        environment["REPLY_RENDERER_TEST_STDOUT_BYTES"] = str(24_000 * 2 * 150)
+        environment["HAILD_REPLY_PACING"] = "off"
+        frames = self.submit_frames(["--say", "synthetic reply"], 123, environment)
+        audio = frames[1:]
+        self.assertEqual([frame["payload"]["sequence"] for frame in audio], list(range(122)))
+        self.assertEqual(sum(len(base64.b64decode(frame["payload"]["bytes"])) for frame in audio[:-1]), 7_200_000)
+        self.assertEqual([frame["payload"]["final"] for frame in audio], [False] * 121 + [True])
+
+    def test_static_pcm_longer_than_the_old_frame_budget_plays_in_full(self):
+        with tempfile.TemporaryDirectory(prefix="hail-reply-long-pcm-") as scratch:
+            path = Path(scratch) / "long.pcm"
+            path.write_bytes(bytes(24_000 * 2 * 150))
+            environment = os.environ.copy()
+            environment["HAILD_REPLY_PACING"] = "off"
+            frames = self.submit_frames(["--text", "synthetic reply", "--pcm16", str(path)], 148, environment)
+            audio = frames[1:]
+            self.assertEqual(len(audio), 147)
+            self.assertEqual(sum(len(base64.b64decode(frame["payload"]["bytes"])) for frame in audio), 7_200_000)
+            self.assertTrue(audio[-1]["payload"]["final"])
+
+    def test_stop_mid_reply_cuts_a_long_reply_off(self):
+        # The host refuses a stopped reply's next frame; the CLI must stop there, not keep sending 150 s of audio.
+        environment = os.environ.copy()
+        environment["PATH"] = str(Path(__file__).parent / "fixtures") + os.pathsep + environment["PATH"]
+        environment["REPLY_RENDERER_TEST_STDOUT_BYTES"] = str(24_000 * 2 * 150)
+        environment["HAILD_REPLY_PACING"] = "off"
+        stopped = {"delivered": 0, "error": "reply stopped"}
+        result, requests = self.submit_responses(
+            [{"delivered": 1}] * 10 + [stopped] * 5, ["--say", "synthetic"], environment,
+        )
+        self.assertEqual(result.returncode, 1)
+        self.assertIn("speech reply publication failed", result.stderr)
+        frames = [json.loads(request) for request in requests]
+        # Ten accepted, the refused one, then at most the terminal marker for the phone's player.
+        self.assertLessEqual(len(frames), 12)
+        if len(frames) == 12:
+            self.assertTrue(frames[-1]["payload"]["final"])
+
     def test_owned_renderer_inherits_job_group_and_uses_explicit_private_root(self):
         request_id = str(uuid.uuid4()).upper()
         with tempfile.TemporaryDirectory(prefix="hail-renderer-owned-") as scratch:
