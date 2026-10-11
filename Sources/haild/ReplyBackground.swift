@@ -25,6 +25,8 @@ enum ReplyBackground {
     static let maxExtension: Duration = .seconds(600)
     private static let deadline = Mutex((end: ContinuousClock.now, extended: Duration.zero))
     static func restartBound() { deadline.withLock { $0 = (.now.advanced(by: wallClockBound), .zero) } }
+    /// While queued for its audio turn the job's own bound is suspended; the jobs ahead of it are each bounded.
+    static func suspendBound() { deadline.withLock { $0.end = .now.advanced(by: .seconds(86_400)) } }
     static func extendBound(by wait: Duration) {
         deadline.withLock { state in
             let step = min(wait, maxExtension - state.extended)

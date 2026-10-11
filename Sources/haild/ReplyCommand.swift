@@ -661,6 +661,7 @@ extension ReplyBackground {
             }
             if !queued {
                 queued = true
+                suspendBound()
                 note("reply audio queued behind another reply")
                 ready()
             }
