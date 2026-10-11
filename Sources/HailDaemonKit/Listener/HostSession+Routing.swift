@@ -227,10 +227,12 @@ extension HostSession {
         }
         guard replyRequests.count < HostReplyRequest.capacity else { throw ProviderContractError.capacityExceeded }
         guard replyRequests[context.id] == nil else { throw HostError.denied(.notAllowed(target)) }
-        replyRequests[context.id] = HostReplyRequest(
+        var request = HostReplyRequest(
             context: context, generation: generation, createdAt: requestClock(),
             policyPermit: permit, bindingLease: lease
         )
+        request.awaitsTurnEnd = providerTurnEndsReported
+        replyRequests[context.id] = request
     }
 
     private func route(_ control: ControlPayload, version: Int) async -> HostSessionResult {

@@ -142,6 +142,9 @@ public actor HostSession {
     let hostName: String
     let now: @Sendable () -> Int64
     let requestClock: @Sendable () -> ContinuousClock.Instant
+    /// Whether something reports this session's provider turns ended (#430). Until a turn-end source is wired, a
+    /// provider-owned request keeps the ordinary lifetime so finished turns cannot hold capacity for hours.
+    let providerTurnEndsReported: Bool
     var state = State.awaitingHello
     var peerName = "terminal"
     /// What the device said it can do in its hello (#309), bounded; it gates host-sent `stop_playback`.
@@ -168,9 +171,11 @@ public actor HostSession {
         now: @escaping @Sendable () -> Int64 = {
             Int64((Date().timeIntervalSince1970 * 1_000).rounded(.down))
         },
-        requestClock: @escaping @Sendable () -> ContinuousClock.Instant = { .now }
+        requestClock: @escaping @Sendable () -> ContinuousClock.Instant = { .now },
+        providerTurnEndsReported: Bool = false
     ) {
         self.host = host
+        self.providerTurnEndsReported = providerTurnEndsReported
         self.authorizer = authorizer
         self.hostName = hostName
         self.now = now
