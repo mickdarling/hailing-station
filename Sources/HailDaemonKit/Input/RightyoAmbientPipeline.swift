@@ -70,10 +70,11 @@ public final class RightyoAmbientPipeline: Sendable {
         /// awaited, so the device has the user's own words ahead of both. Echo-dropped, withdrawn and duplicate
         /// requests never reach it. The text goes only to the speaking device; it is never logged.
         public var onHeard: (@Sendable (String) async -> Void)?
-        /// Called once per finalized turn RightyO decided not to send (#398), with its text and whether both its
-        /// transcript and its decision carried the owner role. Echo-matched turns never reach it. The text goes only to
-        /// the speaking device, within its chosen scope; it is never logged.
-        public var onOverheard: (@Sendable (String, Bool) async -> Void)?
+        /// Called once per finalized turn RightyO decided not to send (#398), with its text, whether both its
+        /// transcript and its decision carried the owner role, and (#434) a known guest's name for someone else's turn.
+        /// Echo-matched turns never reach it. Text and name go only to the speaking device, within its chosen scope;
+        /// neither is ever logged.
+        public var onOverheard: (@Sendable (String, Bool, String?) async -> Void)?
         /// Called once per admitted request that is the owner's spoken mute (true) or unmute (false) (#404), instead
         /// of typing it: it is never acknowledged, shown or delivered to the target. It must return at once.
         public var onVoiceMute: (@Sendable (Bool) -> Void)?
@@ -454,40 +455,76 @@ final class AmbientHeardRelay: Sendable {
 /// RightyO decides the turn. An `attention` that forms no request reports it once; one that names a request, or the
 /// request itself, drops it (that turn is shown as `ambient_heard`). Owner means both records carried `owner`, as the
 /// consumer's own rule. Echo-matched turns (the assistant's own reply heard back) are never reported.
+/// Named guests (#434): only on a session whose `started` advertised `speaker_names`, a non-owner transcript's
+/// `speaker_name` that `guestName` accepts is held with it and reported only if the turn is not the owner's;
+/// anything else is reported unnamed, as "someone".
 final class AmbientOverheardRelay: Sendable {
     static let maxHeld = 32
-    private struct Held { let text: String, owner: Bool }
-    private let held = Mutex<[(String, Held)]>([])
-    private let onOverheard: (@Sendable (String, Bool) async -> Void)?
+    private struct Held { let text: String, owner: Bool, name: String? }
+    private struct State {
+        var held: [(String, Held)] = []
+        var naming = false
+    }
+    private let state = Mutex(State())
+    private let onOverheard: (@Sendable (String, Bool, String?) async -> Void)?
     private let isEcho: (@Sendable (String) -> Bool)?
 
-    init(onOverheard: (@Sendable (String, Bool) async -> Void)?, isEcho: (@Sendable (String) -> Bool)?) {
+    init(onOverheard: (@Sendable (String, Bool, String?) async -> Void)?, isEcho: (@Sendable (String) -> Bool)?) {
         (self.onOverheard, self.isEcho) = (onOverheard, isEcho)
     }
 
     func observe(_ event: RightyoInputEvent) async {
         guard let onOverheard else { return }
         switch event.type {
+        case "session":
+            if event.phase == "started" { state.withLock { $0.naming = event.speakerNames != nil } }
         case "transcript":
             guard let turn = event.turn else { return }
-            held.withLock { held in
-                guard !held.contains(where: { $0.0 == turn.utteranceId }) else { return }
-                held.append((turn.utteranceId, Held(text: turn.text, owner: turn.role == "owner")))
-                if held.count > Self.maxHeld { held.removeFirst(held.count - Self.maxHeld) }
+            state.withLock { state in
+                guard !state.held.contains(where: { $0.0 == turn.utteranceId }) else { return }
+                let owner = turn.role == "owner"
+                let name = state.naming && !owner ? Self.guestName(event.speakerName) : nil
+                state.held.append((turn.utteranceId, Held(text: turn.text, owner: owner, name: name)))
+                if state.held.count > Self.maxHeld { state.held.removeFirst(state.held.count - Self.maxHeld) }
             }
         case "attention", "request":
             guard let utterance = event.utteranceId ?? event.turn?.utteranceId,
                   let turn = take(utterance), event.type == "attention", event.requestId == nil,
                   isEcho?(turn.text) != true else { return }
-            await onOverheard(turn.text, turn.owner && event.decision?.role == "owner")
+            let owner = turn.owner && event.decision?.role == "owner"
+            await onOverheard(turn.text, owner, owner ? nil : turn.name)
         default: break
         }
     }
 
+    /// A guest's display name a device may show (#434), or nil to show "someone": a string the protocol accepts
+    /// (`AmbientOverheard.name`: so a frame never fails to encode; ZWJ or ZWNJ names fall back here), with no
+    /// character the sanitizer's hidden-character rule refuses, and at least one visible letter, number,
+    /// punctuation mark or symbol, so a name of fillers, blanks or combining marks alone is never shown.
+    static func guestName(_ value: JSONValue?) -> String? {
+        guard case .string(let raw) = value, let name = AmbientOverheard.name(raw),
+              Sanitizer.firstHiddenCharacterClass(in: name) == nil,
+              name.unicodeScalars.contains(where: Self.isVisible) else { return nil }
+        return name
+    }
+
+    private static func isVisible(_ scalar: Unicode.Scalar) -> Bool {
+        guard !scalar.properties.isDefaultIgnorableCodePoint, scalar.value != 0x2800 else { return false }
+        switch scalar.properties.generalCategory {
+        case .uppercaseLetter, .lowercaseLetter, .titlecaseLetter, .modifierLetter, .otherLetter,
+             .decimalNumber, .letterNumber, .otherNumber,
+             .connectorPunctuation, .dashPunctuation, .openPunctuation, .closePunctuation, .initialPunctuation,
+             .finalPunctuation, .otherPunctuation, .mathSymbol, .currencySymbol, .modifierSymbol, .otherSymbol:
+            return true
+        default:
+            return false
+        }
+    }
+
     private func take(_ utterance: String) -> Held? {
-        held.withLock { held in
-            guard let index = held.firstIndex(where: { $0.0 == utterance }) else { return nil }
-            return held.remove(at: index).1
+        state.withLock { state in
+            guard let index = state.held.firstIndex(where: { $0.0 == utterance }) else { return nil }
+            return state.held.remove(at: index).1
         }
     }
 }

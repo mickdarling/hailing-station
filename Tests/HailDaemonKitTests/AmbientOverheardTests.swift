@@ -45,7 +45,9 @@ import Testing
     private func relay(echo: String? = nil) -> (AmbientOverheardRelay, Seen) {
         let seen = Seen()
         let relay = AmbientOverheardRelay(
-            onOverheard: { text, owner in seen.append("\(owner ? "owner" : "other"): \(text)") },
+            onOverheard: { text, owner, name in
+                seen.append("\(owner ? "owner" : name ?? "other"): \(text)")
+            },
             isEcho: { heard in heard == echo }
         )
         return (relay, seen)
