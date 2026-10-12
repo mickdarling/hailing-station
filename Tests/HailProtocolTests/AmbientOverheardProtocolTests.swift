@@ -47,6 +47,37 @@ import Testing
         }
     }
 
+    /// #434: a known guest's display name rides only on `other`, within RightyO's own display-name bound.
+    @Test(arguments: ["Ben", "Zoë", "Ben O'Neil", "李雷", String(repeating: "B", count: AmbientOverheard.maxNameScalars)])
+    func aGuestsNameRoundTripsWithSpeakerOther(_ name: String) throws {
+        try roundTrip(.ambientOverheard(targetID: "tmux:a", text: "Pass the salt.", speaker: "other", name: name))
+        let wire = #"{"command":"ambient_overheard","target":"tmux:a","text":"hi","speaker":"other","name":"\#(name)"}"#
+        let decoded = try decodeControl(wire)
+        #expect(decoded == .ambientOverheard(targetID: "tmux:a", text: "hi", speaker: "other", name: name))
+    }
+
+    @Test(arguments: [
+        #""name":"Ben","speaker":"owner""#, #""name":"","speaker":"other""#, #""name":" Ben","speaker":"other""#,
+        #""name":"Ben ","speaker":"other""#, #""name":"Ben\nSmith","speaker":"other""#,
+        #""name":"Ben\u0007","speaker":"other""#, #""name":"Ben‎","speaker":"other""#,
+        #""name":1,"speaker":"other""#, #""name":null,"speaker":"other""#,
+        #""name":"\#(String(repeating: "B", count: AmbientOverheard.maxNameScalars + 1))","speaker":"other""#
+    ])
+    func aBadOrMisplacedNameIsRefused(_ fields: String) {
+        #expect(throws: DecodingError.self) {
+            try decodeControl(#"{"command":"ambient_overheard","target":"tmux:a","text":"hi",\#(fields)}"#)
+        }
+    }
+
+    @Test func aNameIsRefusedWhenEncodingOnOwnerOrOutOfBounds() {
+        for (speaker, name) in [("owner", "Ben"), ("other", ""), ("other", "Ben\n"), ("other", " Ben")] {
+            let control = ControlPayload.ambientOverheard(targetID: "tmux:a", text: "hi", speaker: speaker, name: name)
+            #expect(throws: EncodingError.self) {
+                try FrameCoding.encode(Frame(timestamp: 1, source: "host", payload: .control(control)))
+            }
+        }
+    }
+
     @Test func overheardScopeRefusesAnythingButAKnownScope() {
         for payload in [
             #"{"command":"overheard_scope"}"#,

@@ -129,3 +129,12 @@ device one such turn, within its scope, only while it still selects `target`, an
 `ambient_overheard` (`AmbientOverheard.capability`). `text` is the heard turn, 1 to 8 KiB of UTF-8. The command
 grants no authority, and a host refuses it from a device. A host never sends the assistant's own reply heard back, and
 never logs the text.
+
+**Named guests (#434).** A turn with `"speaker": "other"` may also carry `"name": "<display name>"`: the display name
+of the enrolled guest RightyO bound that turn's voice to (`rightyo enroll --name`). It is absent when the speaker is not
+bound to an enrolled guest, so a device shows "Someone" as before; a tentative or unknown speaker is never named. A
+device that can show it advertises `ambient_overheard_names` (`AmbientOverheard.namesCapability`) as well, and a host
+sends `name` only to such a device, because an older device refuses the unknown key. `name` is 1 to 64 Unicode
+scalars (RightyO's own bound) with no control, format or line-breaking characters and no leading or trailing
+whitespace, and is never sent with `"speaker": "owner"`; the decoder refuses anything else, and the schema checks the
+type and length. Like the text, the name is shown on that one device only and never logged by the host.
