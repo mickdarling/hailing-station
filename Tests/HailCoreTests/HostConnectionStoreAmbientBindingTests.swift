@@ -86,7 +86,7 @@ import Testing
         let socket: ScriptedSocket
     }
 
-    private func select(_ target: String, on ready: ReadyStore) async throws {
+    func select(_ target: String, on ready: ReadyStore) async throws {
         let selection = Task { try await ready.store.selectTarget(host: ready.endpoint.id, targetID: target) }
         try await ready.socket.push(.pong(nonce: try await nextPing(on: ready.socket, after: target)))
         try await selection.value
@@ -107,7 +107,7 @@ import Testing
         return nil
     }
 
-    private func readyStore(capabilities: [String]) async throws -> ReadyStore {
+    func readyStore(capabilities: [String]) async throws -> ReadyStore {
         let endpoint = try endpoint()
         let socket = ScriptedSocket()
         let connector = ScriptedConnector()

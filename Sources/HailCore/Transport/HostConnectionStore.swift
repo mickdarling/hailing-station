@@ -1,4 +1,7 @@
 // swiftlint:disable file_length
+#if os(iOS)
+import AVFAudio
+#endif
 public import Foundation
 public import HailProtocol
 public import Observation
@@ -26,6 +29,11 @@ public final class HostConnectionStore {
     /// Told when a host says this device's ambient stream took listening over from another device (#366), with
     /// that device's class. The ambient card hands it to its controller.
     @ObservationIgnored public var onAmbientMovedHere: (@MainActor (HostEndpoint.Identifier, String?) -> Void)?
+    /// Hosts that said RightyO does not recognise the owner's voice on this device's input (rightyo#164), until they
+    /// say it does, the device starts a new stream, or the host is removed.
+    public private(set) var ownerVoiceUnrecognized: Set<HostEndpoint.Identifier> = []
+    /// This device's current input route kind for `ambient_input` (rightyo#164); replaceable in tests.
+    @ObservationIgnored var inputRoute: @MainActor () -> String? = { HostConnectionStore.currentInputRoute() }
 
     /// Bumped on every target selection, per host, so an ambient stream ends on any target change (#203).
     private var selectionSerials: [HostEndpoint.Identifier: UInt64] = [:]
@@ -137,15 +145,6 @@ public final class HostConnectionStore {
         )
     }
 
-    /// Sends one ambient segment to the host and target the binding names (#203). The binding is authoritative:
-    /// it must still be the current one for the connection's confirmed target, so a reconnect, an endpoint change
-    /// or any target selection since it was taken makes every further segment throw and the streamer releases
-    /// the mic.
-    public func sendAudio(_ audio: AudioPayload, to binding: AmbientAudioBinding) async throws {
-        guard ambientBinding(host: binding.hostID, targetID: binding.targetID) == binding,
-              let connection = connections[binding.hostID] else { throw HostConnectionFailure.notReady }
-        try await connection.sendAudio(audio)
-    }
     public func remove(_ id: HostEndpoint.Identifier) async {
         tokens[id] = nil
         forgetSelection(id)
@@ -153,6 +152,7 @@ public final class HostConnectionStore {
         let barrier = connection.map(drainingTransportBarrier(for:)) ?? retiredBarriers[id]
         if let barrier { retiredBarriers[id] = barrier }
         snapshots[id] = nil
+        ownerVoiceUnrecognized.remove(id)
         order.removeAll { $0 == id }
     }
     /// Active hosts are pinged; hosts already trying to recover skip their backoff and reconnect now.
@@ -202,10 +202,62 @@ extension HostConnectionStore {
             conversation.noteOverheard(
                 text, owner: speaker == "owner", name: name, endpointID: event.endpointID, targetID: targetID
             )
+        case .control(.ownerVoice(let state)):
+            if state == "unrecognized" {
+                ownerVoiceUnrecognized.insert(event.endpointID)
+            } else {
+                ownerVoiceUnrecognized.remove(event.endpointID)
+            }
         default:
             return false
         }
         return true
+    }
+}
+
+/// Ambient audio (#203), with the owner voice status and input route around a stream's start (rightyo#164).
+extension HostConnectionStore {
+    /// Sends one ambient segment to the host and target the binding names (#203). The binding is authoritative:
+    /// it must still be the current one for the connection's confirmed target, so a reconnect, an endpoint change
+    /// or any target selection since it was taken makes every further segment throw and the streamer releases
+    /// the mic.
+    public func sendAudio(_ audio: AudioPayload, to binding: AmbientAudioBinding) async throws {
+        guard ambientBinding(host: binding.hostID, targetID: binding.targetID) == binding,
+              let connection = connections[binding.hostID] else { throw HostConnectionFailure.notReady }
+        if audio.sequence == 0 { await startingStream(on: connection, host: binding.hostID) }
+        try await connection.sendAudio(audio)
+    }
+
+    /// A new ambient stream starts a new RightyO session, so an earlier "not recognised" no longer holds; and a host
+    /// that accepts it is told which kind of input this stream comes from, before its first segment. A failed route
+    /// send never stops the audio: it is only for attribution.
+    func startingStream(on connection: HostConnection, host: HostEndpoint.Identifier) async {
+        ownerVoiceUnrecognized.remove(host)
+        guard snapshots[host]?.capabilities.contains(AmbientInput.capability) == true,
+              let route = Self.sendableRoute(inputRoute()) else { return }
+        try? await connection.sendAmbientInput(route)
+    }
+
+    /// The route kinds every `ambient_input_route` host accepts: the vocabulary as first shipped (#488). The diagnostic
+    /// list it came from may grow, and an older host refuses a token it does not know, so anything else is sent as
+    /// `other`; no input at all sends nothing.
+    static let ambientInputRoutesV1: Set<String> = [
+        "none", "built_in_mic", "built_in_speaker", "built_in_receiver", "headphones", "headset_mic", "line_in",
+        "line_out", "bluetooth_a2dp", "bluetooth_hfp", "bluetooth_le", "airplay", "hdmi", "car_audio", "usb_audio",
+        "other"
+    ]
+
+    static func sendableRoute(_ route: String?) -> String? {
+        route.map { ambientInputRoutesV1.contains($0) ? $0 : "other" }
+    }
+
+    /// The current audio input's route kind, as the diagnostics name it; nil where there is no audio session.
+    static func currentInputRoute() -> String? {
+        #if os(iOS)
+        AVAudioSession.sharedInstance().currentRoute.inputs.first.map { DeviceDiagnostics.route($0.portType) }
+        #else
+        nil
+        #endif
     }
 }
 

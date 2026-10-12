@@ -141,4 +141,11 @@ extension HostConnection {
         try requireReady(capability: AmbientOverheard.capability)
         try await send(.overheardScope(scope: scope), generation: generation)
     }
+
+    /// The kind of input route ambient audio now comes from (rightyo#164), a route token, never a port name. Only to a
+    /// ready host that advertised the capability: an older host refuses the command.
+    public func sendAmbientInput(_ route: String) async throws {
+        try requireReady(capability: AmbientInput.capability)
+        try await send(.ambientInput(route: route), generation: generation)
+    }
 }
