@@ -362,6 +362,13 @@ extension HostSession {
         }
     }
 
+    /// The owner's spoken mute or unmute (#404) as a `set_reply_mute` frame, for a ready device that advertised
+    /// `reply_mute`; nil for any other, since an older device refuses an unknown command as malformed.
+    func replyMuteFrame(muted: Bool) -> Frame? {
+        guard case .ready(let version) = state, peerCapabilities.contains(ReplyMute.capability) else { return nil }
+        return response(.setReplyMute(muted: muted), version: version)
+    }
+
     /// A `dismiss` asked to stop playback (#309). Every reply mid-stream on this connection is stopped: its
     /// remaining frames are refused, so the reply CLI retires its renderer. The `stop_playback` frame is
     /// returned only for a ready device that advertised it; an older device would refuse it as malformed.

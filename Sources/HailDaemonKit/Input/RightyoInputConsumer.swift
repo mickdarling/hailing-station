@@ -1,4 +1,5 @@
 public import Foundation
+import HailProtocol
 import Synchronization
 
 // The delivery-step protocol and its direct implementation stay beside the consumer that owns their contract.
@@ -37,14 +38,67 @@ public struct RightyoDismissReceipt: Sendable, Equatable {
         self.owner = owner
     }
 }
+/// The owner's spoken mute (#404): a whole turn that is only a mute or unmute phrase, optionally after a greeting, one
+/// of the session's addressing names ("Jarvis") and "please", and with any punctuation. Anything longer, any other
+/// leading word ("press mute", "let's talk again") or a negation ("don't mute") is not one: it goes to the agent as a
+/// request. Matched on the heard words only; nothing is logged.
+/// On an anonymous (not enrolled) session any voice the mic hears can say it. That is accepted because the mute only
+/// silences reply audio on the device that heard it, and is undone by "unmute", the app's toggle or a relaunch.
+enum VoiceMute {
+    static let mutePhrases: Set<String> = ["mute", "go quiet", "text only", "mute replies"]
+    static let unmutePhrases: Set<String> = ["unmute", "you can talk again", "talk again", "unmute replies"]
+    static let greetings: Set<String> = ["hey", "ok", "okay"]
+
+    enum Command: Sendable { case mute, unmute }
+
+    /// The keyed spellings of the names RightyO advertised in `started` (`addressing`, rightyo#105), the same names
+    /// that pick the acknowledgement voice; none when it advertised none.
+    static func names(in addressing: JSONValue?) -> Set<String> {
+        #if os(macOS)
+        Set(RightyoAddressing(addressing).spellings.values.joined().map(RightyoAddressing.key))
+        #else
+        []
+        #endif
+    }
+
+    /// The command a whole turn says, given the session's keyed addressing `names`; nil for anything else.
+    static func command(in heard: String, names: Set<String>) -> Command? {
+        var words = heard.lowercased().split { !$0.isLetter && $0 != "'" }.map(String.init)
+        while words.last == "please" { words.removeLast() }
+        for candidate in candidates(words, names: names) {
+            let phrase = candidate.joined(separator: " ")
+            if mutePhrases.contains(phrase) { return .mute }
+            if unmutePhrases.contains(phrase) { return .unmute }
+        }
+        return nil
+    }
+
+    /// The turn as said, and with its leading greeting, addressing name (up to three words, as recognition may split
+    /// "Righty O") and "please" taken off in turn.
+    private static func candidates(_ words: [String], names: Set<String>) -> [ArraySlice<String>] {
+        var rest = words[...], found = [rest]
+        if let first = rest.first, greetings.contains(first) { rest = rest.dropFirst(); found.append(rest) }
+        let named = (1...3).first { width in
+            width < rest.count && names.contains(String(rest.prefix(width).joined().filter { $0 != "'" }))
+        }
+        if let named {
+            rest = rest.dropFirst(named)
+            found.append(rest)
+        }
+        if rest.first == "please" { found.append(rest.dropFirst()) }
+        return found
+    }
+}
+
 #if os(macOS)
 /// The spoken confirmation of the owner's stop (#418): a short host-recorded clip, sent like an acknowledgement to the
 /// connection that said stop, with no round trip through the agent session. Clips live in reserved folders of the
-/// acknowledgement directory: `confirm-stopped/` ("Stopped.") and `confirm-idle/` ("Nothing playing, standing by.").
-/// A later mute (#404) adds its own folder here.
+/// acknowledgement directory: `confirm-stopped/` ("Stopped.") and `confirm-idle/` ("Nothing playing, standing by."),
+/// and for the owner's spoken mute (#404) `confirm-muted/` ("Muted.") and `confirm-unmuted/` ("Unmuted.").
 enum AmbientStopConfirmation {
     static let stopped = RightyoAddressing.key("confirm-stopped"), idle = RightyoAddressing.key("confirm-idle")
-    static let reserved: Set<String> = [stopped, idle]
+    static let muted = RightyoAddressing.key("confirm-muted"), unmuted = RightyoAddressing.key("confirm-unmuted")
+    static let reserved: Set<String> = [stopped, idle, muted, unmuted]
 
     /// Why a playback stop is not confirmed, as a log token, or nil when it is: only the enrolled owner's stop, and
     /// only on a connection still there to hear it.
@@ -169,6 +223,8 @@ public actor RightyoInputConsumer {
     private var started = false, terminal = false, busy = false, activationEnabled = false, failed = false
     private var sequence = 0, emittedAt = 0
     private var speakers = "anonymous"
+    /// The keyed addressing names a voice mute may start with (#404), from the accepted `started`.
+    private var voiceNames = Set<String>()
     /// Whether `started` advertised `request_forming` (#188 item 4): then every request must carry `formed_request`,
     /// otherwise none may. Forming is allowed on anonymous sessions too (hosts pick), where any role the formed text
     /// names is uncheckable: only the JSON record behind it carries verified roles, and anonymous sessions have none.
@@ -199,6 +255,9 @@ public actor RightyoInputConsumer {
     public private(set) var lastReceipt: RightyoDispatchReceipt?
     /// What the most recent admitted `dismiss` did; cleared as each event is consumed, like `lastReceipt`.
     public private(set) var lastDismissal: RightyoDismissReceipt?
+    /// The owner's spoken mute or unmute (#404): an admitted request that is exactly a mute phrase, held back from
+    /// the target and left here, like a dismissal. Nil for any other line.
+    private(set) var lastVoiceMute: VoiceMute.Command?
     /// `streamBudgetMs` is an optional ceiling on producer stream time; the default is no ceiling (#188).
     /// `dispatcher` replaces the direct `HailHost.send` step (#188 item 1); without it, `host` delivers directly
     /// and nil `host` validates only. A dispatcher with no host still delivers (it owns its own host access).
@@ -242,6 +301,7 @@ public actor RightyoInputConsumer {
     public func consume(_ event: RightyoInputEvent) async throws -> Bool {
         lastReceipt = nil
         lastDismissal = nil
+        lastVoiceMute = nil
         do {
             guard try admit(event) else { return false }
             if event.type == "override" { return true }
@@ -251,6 +311,15 @@ public actor RightyoInputConsumer {
             // Matched on the heard turn, not the built prompt, whose envelope would bury the echo (#269).
             if let echoFilter, let heard = event.turn?.text, echoFilter(heard) {
                 echoDropped += 1
+                return false
+            }
+            // The owner's "mute" or "unmute" (#404) is carried out by the host, never typed to the agent. On an
+            // enrolled session only a turn both its transcript and its attention record call the owner's (`owners`)
+            // counts; anyone else's is a request like any other. On an anonymous one any voice counts (see
+            // `VoiceMute`): the mute is device-local and reversible.
+            if let turn = event.turn, let command = VoiceMute.command(in: turn.text, names: voiceNames),
+               speakers != "enrolled" || owners.contains(turn.utteranceId) {
+                lastVoiceMute = command
                 return false
             }
             busy = true
@@ -310,6 +379,7 @@ public actor RightyoInputConsumer {
             if let caps {
                 activationEnabled = caps.activation == "finalized-turn"
                 speakers = caps.speakers
+                voiceNames = VoiceMute.names(in: event.addressing)
                 forming = event.requestForming != nil
                 (dismissible, conversational) = (event.dismissal != nil, event.conversation != nil)
             }
@@ -320,16 +390,19 @@ public actor RightyoInputConsumer {
         seen[event.sequence] = fingerprint
         return true
     }
+    public func finish() throws {
+        guard terminal, !busy else { throw RightyoInputError.invalidLifecycle }
+        if failed { throw RightyoInputError.producerFailed }
+    }
+}
+/// Correlation against admitted records lives here so the actor body stays within the type-length limit.
+extension RightyoInputConsumer {
     private func startCapabilities(_ event: RightyoInputEvent) throws -> RightyoInputEvent.Capabilities {
         guard let caps = event.capabilities, ["finalized-turn", "disabled"].contains(caps.activation),
               !caps.partials, ["anonymous", "enrolled"].contains(caps.speakers), caps.context else {
             throw RightyoInputError.invalidEvent
         }
         return caps
-    }
-    public func finish() throws {
-        guard terminal, !busy else { throw RightyoInputError.invalidLifecycle }
-        if failed { throw RightyoInputError.producerFailed }
     }
     private func lifecycle(_ phase: String?) throws {
         switch phase {
@@ -343,9 +416,6 @@ public actor RightyoInputConsumer {
         default: throw RightyoInputError.invalidLifecycle
         }
     }
-}
-/// Correlation against admitted records lives here so the actor body stays within the type-length limit.
-extension RightyoInputConsumer {
     private func correlate(_ event: RightyoInputEvent) throws {
         switch event.type {
         case "transcript":

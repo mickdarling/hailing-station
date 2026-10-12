@@ -29,7 +29,7 @@ import Testing
     }
 
     @Test func reservedFoldersAreNeverAnAcknowledgementVoiceAndAnIdleStopFallsBackToStopped() throws {
-        #expect(AmbientStopConfirmation.reserved == ["confirmstopped", "confirmidle"])
+        #expect(AmbientStopConfirmation.reserved == ["confirmstopped", "confirmidle", "confirmmuted", "confirmunmuted"])
         let both = AmbientAckLibrary(clips: ["confirmstopped": [Self.stopped], "confirmidle": [Self.idle],
                                              "jarvis": [Self.stopped]])
         #expect(Set(both.clips.keys) == ["jarvis"])
