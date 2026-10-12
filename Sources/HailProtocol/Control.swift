@@ -129,19 +129,27 @@ public enum ControlPayload: Sendable, Equatable {
     /// Host to device (#404): mute or unmute this device's reply audio, as its own mute control does. Sent only to a
     /// device that advertises `ReplyMute.capability`. It carries nothing else and grants no authority.
     case setReplyMute(muted: Bool)
+    /// Host to device (rightyo#164): whether RightyO recognises the owner's voice on this device's input, one of
+    /// `OwnerVoice.states`. Sent only to the device whose stream it is, only when it advertises
+    /// `OwnerVoice.capability`. It grants no authority and carries no name, score or audio detail.
+    case ownerVoice(state: String)
+    /// Device to host (rightyo#164): the kind of input route this device's ambient audio now comes from, one of the
+    /// diagnostic `route` tokens (`usb_audio`, `car_audio`, ...), never a port name. Sent only to a host that
+    /// advertises `AmbientInput.capability`, so speaker-ID results can be attributed to an input chain.
+    case ambientInput(route: String)
 }
 
 extension ControlPayload: Codable {
     private enum CodingKeys: String, CodingKey {
         case command, hello, targets, targetID = "target", nonce, code, message, events, from, text, speaker, scope
-        case muted, name
+        case muted, name, state, route
     }
 
     private enum Command: String, Codable {
         case hello, listTargets = "list_targets", targets, select, subscribe, unsubscribe, escape, ping, pong, error
         case diagnostic, stopPlayback = "stop_playback", ambientMovedHere = "ambient_moved_here"
         case ambientHeard = "ambient_heard", ambientOverheard = "ambient_overheard", overheardScope = "overheard_scope"
-        case setReplyMute = "set_reply_mute"
+        case setReplyMute = "set_reply_mute", ownerVoice = "owner_voice", ambientInput = "ambient_input"
     }
 
     // A closed wire enum is clearest as one exhaustive switch.
@@ -182,7 +190,33 @@ extension ControlPayload: Codable {
         case .ambientOverheard: self = try Self.ambientOverheard(from: decoder)
         case .overheardScope: self = try Self.overheardScope(from: decoder)
         case .setReplyMute: self = try Self.setReplyMute(from: decoder)
+        case .ownerVoice: self = try Self.ownerVoice(from: decoder)
+        case .ambientInput: self = try Self.ambientInput(from: decoder)
         }
+    }
+
+    /// Strict (rightyo#164): only `command` and a `state` from `OwnerVoice.states`.
+    private static func ownerVoice(from decoder: any Decoder) throws -> ControlPayload {
+        try requireOnly(["command", "state"], "owner_voice", decoder)
+        guard let state = OwnerVoice.state(try decoder.container(keyedBy: CodingKeys.self).decode(
+            String.self, forKey: .state
+        )) else {
+            throw DecodingError.dataCorrupted(.init(codingPath: decoder.codingPath,
+                                                    debugDescription: "unknown owner_voice state"))
+        }
+        return .ownerVoice(state: state)
+    }
+
+    /// Strict (rightyo#164): only `command` and a `route` from `AmbientInput.routes`.
+    private static func ambientInput(from decoder: any Decoder) throws -> ControlPayload {
+        try requireOnly(["command", "route"], "ambient_input", decoder)
+        guard let route = AmbientInput.route(try decoder.container(keyedBy: CodingKeys.self).decode(
+            String.self, forKey: .route
+        )) else {
+            throw DecodingError.dataCorrupted(.init(codingPath: decoder.codingPath,
+                                                    debugDescription: "unknown ambient_input route"))
+        }
+        return .ambientInput(route: route)
     }
 
     /// Strict, like `stop_playback` (#366): only `command` and an optional class from the closed vocabulary.
@@ -326,6 +360,12 @@ extension ControlPayload: Codable {
         case .setReplyMute(let muted):
             try container.encode(Command.setReplyMute, forKey: .command)
             try container.encode(muted, forKey: .muted)
+        case .ownerVoice(let state):
+            try container.encode(Command.ownerVoice, forKey: .command)
+            try container.encode(try Self.closed(OwnerVoice.state(state), state, encoder), forKey: .state)
+        case .ambientInput(let route):
+            try container.encode(Command.ambientInput, forKey: .command)
+            try container.encode(try Self.closed(AmbientInput.route(route), route, encoder), forKey: .route)
         }
     }
 }
@@ -343,6 +383,34 @@ public enum PlaybackStop {
 /// The host sends `stop_playback` first when the reply now playing should end at once.
 public enum ReplyMute {
     public static let capability = "reply_mute"
+}
+
+/// Owner voice status (rightyo#164): RightyO tells the host when the enrolled owner's voice is not recognised on the
+/// current input (a new mic, a USB interface, CarPlay), so the device can say so instead of owner-only features
+/// failing silently, and when it is recognised again. The device advertises `capability` in its `hello`; a host
+/// never sends `owner_voice` to a device without it, because an older device refuses an unknown command.
+public enum OwnerVoice {
+    public static let capability = "owner_voice_status"
+    public static let states = ["recognized", "unrecognized"]
+
+    /// `value` when it is exactly one of `states`, else nil.
+    public static func state(_ value: String?) -> String? {
+        value.flatMap { value in states.first { DiagnosticLimits.sameBytes($0, value) } }
+    }
+}
+
+/// Ambient input route (rightyo#164): the device names the kind of input its ambient audio comes from, so the host can
+/// log it with each speaker-ID session and a voiceprint that fails on one input chain can be attributed. Only a
+/// route kind from the diagnostic `route` vocabulary is sent, never a port or device name. The host advertises
+/// `capability` in its `hello`; a device never sends `ambient_input` to a host without it.
+public enum AmbientInput {
+    public static let capability = "ambient_input_route"
+    public static var routes: [String] { DiagnosticField.route.tokens }
+
+    /// `value` when it is exactly one of `routes`, else nil.
+    public static func route(_ value: String?) -> String? {
+        value.flatMap { value in routes.first { DiagnosticLimits.sameBytes($0, value) } }
+    }
 }
 
 /// The user's own ambient request, shown in the thread (#318). The device advertises the capability in its `hello`;
@@ -757,6 +825,28 @@ extension Schema {
         "then": .object([
             "additionalProperties": .bool(false),
             "properties": .object(["command": .object([:]), "muted": .object(["type": .string("boolean")])])
+        ])
+    ])
+
+    /// `owner_voice` carries `command` and a known `state` and nothing else (rightyo#164).
+    static let ownerVoicePayloadRule: JSONValue = .object([
+        "if": .object(["properties": .object(["command": .object(["const": .string("owner_voice")])])]),
+        "then": .object([
+            "additionalProperties": .bool(false),
+            "properties": .object([
+                "command": .object([:]), "state": .object(["enum": .array(OwnerVoice.states.map(JSONValue.string))])
+            ])
+        ])
+    ])
+
+    /// `ambient_input` carries `command` and a known `route` and nothing else (rightyo#164).
+    static let ambientInputPayloadRule: JSONValue = .object([
+        "if": .object(["properties": .object(["command": .object(["const": .string("ambient_input")])])]),
+        "then": .object([
+            "additionalProperties": .bool(false),
+            "properties": .object([
+                "command": .object([:]), "route": .object(["enum": .array(AmbientInput.routes.map(JSONValue.string))])
+            ])
         ])
     ])
 

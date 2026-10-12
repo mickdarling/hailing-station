@@ -138,3 +138,21 @@ sends `name` only to such a device, because an older device refuses the unknown 
 scalars (RightyO's own bound) with no control, format or line-breaking characters and no leading or trailing
 whitespace, and is never sent with `"speaker": "owner"`; the decoder refuses anything else, and the schema checks the
 type and length. Like the text, the name is shown on that one device only and never logged by the host.
+
+### Owner voice status and input route (rightyo#164)
+
+A voiceprint enrolled on one input chain can fail on another (a USB mic, CarPlay), and then every owner-only feature
+(the spoken stop confirmation, voice mute, "Just me") fails silently. Two commands make that visible and attributable.
+
+`{"command": "owner_voice", "state": "unrecognized" | "recognized"}` is sent by a host to the device whose ambient
+stream it is: `unrecognized` when RightyO has heard enough speech on this input without binding the enrolled owner,
+`recognized` once it does. It is sent only to a device that advertised `owner_voice_status`
+(`OwnerVoice.capability`), because an older device refuses an unknown command. It carries no name, score or audio
+detail, and grants no authority.
+
+`{"command": "ambient_input", "route": "<route>"}` is sent by a device to a host that advertised `ambient_input_route`
+(`AmbientInput.capability`), at the start of an ambient stream and when its input route changes. `route` is one of the
+diagnostic `route` tokens (`built_in_mic`, `usb_audio`, `car_audio`, `bluetooth_hfp`, ...): a route kind, never a port
+or device name. The host logs it with the stream so a speaker-ID mismatch can be attributed to an input chain.
+
+The decoder and the schema refuse any other key or value in either command.

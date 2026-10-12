@@ -226,6 +226,14 @@ public enum Fixtures {
             id: id(208), timestamp: 1_758_200_050_500, source: "terminal",
             payload: .control(.overheardScope(scope: "owner"))
         )),
+        Example(name: "control-owner-voice", frame: Frame(
+            id: id(211), timestamp: 1_758_200_050_800, source: "host",
+            payload: .control(.ownerVoice(state: "unrecognized"))
+        )),
+        Example(name: "control-ambient-input", frame: Frame(
+            id: id(212), timestamp: 1_758_200_050_900, source: "terminal",
+            payload: .control(.ambientInput(route: "usb_audio"))
+        )),
         Example(name: "control-set-reply-mute", frame: Frame(
             id: id(209), timestamp: 1_758_200_050_600, source: "host", payload: .control(.setReplyMute(muted: true))
         )),
