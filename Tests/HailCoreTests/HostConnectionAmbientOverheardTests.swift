@@ -100,4 +100,28 @@ import Testing
         #expect(store.snapshots[endpoint.id]?.state == .ready)
         await store.disconnect(endpoint.id)
     }
+
+    /// #434: the device advertises that it can show a known guest's name, and a named turn keeps it.
+    @Test func aKnownGuestsTurnKeepsTheirName() async throws {
+        let connected = try await connect(
+            hostCapabilities: ["receive_replies", AmbientOverheard.capability]
+        )
+        let (store, socket, endpoint) = (connected.store, connected.socket, connected.endpoint)
+        guard case .control(.hello(let info))? = try await socket.sentFrames().first?.payload else {
+            Issue.record("expected the device hello first")
+            return
+        }
+        #expect(info.capabilities.contains(AmbientOverheard.namesCapability))
+        for name in ["Ben", nil] {
+            let frame = Frame(timestamp: 1, source: "host", payload: .control(.ambientOverheard(
+                targetID: "tmux:a", text: "Sounds good.", speaker: "other", name: name
+            )))
+            try await socket.push(FrameCoding.encode(frame))
+        }
+        try await waitUntil { await MainActor.run { store.conversation.entries.count == 2 } }
+        let entries = store.conversation.entries(endpointID: endpoint.id, targetID: "tmux:a")
+        #expect(entries.map(\.speaker) == [.someone, .someone])
+        #expect(entries.map(\.name) == ["Ben", nil])
+        await store.disconnect(endpoint.id)
+    }
 }

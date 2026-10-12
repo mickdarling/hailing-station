@@ -9,7 +9,8 @@ extension HostConnection {
             .hello(HelloInfo(
                 versions: VersionNegotiation.supported,
                 capabilities: ["connectivity_lab", PlaybackStop.capability, AmbientTakeOver.capability,
-                               AmbientHeard.capability, AmbientOverheard.capability, ReplyMute.capability],
+                               AmbientHeard.capability, AmbientOverheard.capability, ReplyMute.capability,
+                               AmbientOverheard.namesCapability],
                 // The device's class only (#366), so a host can say "moved to iPad"; never its name.
                 deviceName: deviceName, deviceKind: AmbientHandoff.localDeviceKind
             )),

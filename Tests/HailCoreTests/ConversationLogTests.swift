@@ -56,4 +56,13 @@ import Testing
         #expect(log.entries.count == ConversationLog.limit)
         #expect(log.entries.last?.text == "line \(ConversationLog.limit + 4)")
     }
+
+    /// #434: only someone else's overheard turn keeps a guest's name, and only a name the protocol would accept.
+    @Test func aGuestsNameIsKeptOnlyForSomeoneElsesValidTurn() {
+        let log = ConversationLog()
+        for (owner, name) in [(false, "Ben"), (true, "Ben"), (false, " Ben"), (false, nil)] as [(Bool, String?)] {
+            log.noteOverheard("Sounds good.", owner: owner, name: name, endpointID: "mac", targetID: "tmux:a")
+        }
+        #expect(log.entries.map(\.name) == ["Ben", nil, nil, nil])
+    }
 }

@@ -198,9 +198,9 @@ extension HostConnectionStore {
             onAmbientMovedHere?(event.endpointID, from)
         case .control(.ambientHeard(let targetID, let text)):
             conversation.noteSent(text, endpointID: event.endpointID, targetID: targetID)
-        case .control(.ambientOverheard(let targetID, let text, let speaker, _)):
+        case .control(.ambientOverheard(let targetID, let text, let speaker, let name)):
             conversation.noteOverheard(
-                text, owner: speaker == "owner", endpointID: event.endpointID, targetID: targetID
+                text, owner: speaker == "owner", name: name, endpointID: event.endpointID, targetID: targetID
             )
         default:
             return false

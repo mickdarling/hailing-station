@@ -82,7 +82,7 @@ struct ConversationChatView: View {
             if isYou { Spacer(minLength: 48) }
             VStack(alignment: .leading, spacing: 8) {
                 if entry.overheard {
-                    Text(entry.speaker == .you ? "You · not sent" : "Someone · not sent")
+                    Text(entry.speaker == .you ? "You · not sent" : "\(entry.name ?? "Someone") · not sent")
                         .font(.caption2.weight(.semibold))
                         .foregroundStyle(.secondary)
                         .accessibilityHidden(true) // The bubble's own label says it.
@@ -119,7 +119,7 @@ struct ConversationChatView: View {
         switch (entry.speaker, entry.overheard) {
         case (.you, false): "You said"
         case (.you, true): "You said, heard but not sent"
-        case (.someone, _): "Someone said, heard but not sent"
+        case (.someone, _): "\(entry.name ?? "Someone") said, heard but not sent"
         case (.haili, _): "Haili replied"
         }
     }

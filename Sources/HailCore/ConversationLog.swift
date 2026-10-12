@@ -15,6 +15,9 @@ public struct ConversationEntry: Identifiable, Equatable, Sendable {
     public let date: Date
     /// Heard but not sent to the target (#398): shown greyed, and hidden with the overheard setting.
     public var overheard = false
+    /// The known guest who said an overheard turn (#434), from the host's `name`; nil shows "Someone". Never the
+    /// owner's, never logged.
+    public var name: String?
 }
 
 /// The session's conversation, in the order things happened: each request as it is sent, each reply as its text
@@ -46,8 +49,11 @@ public final class ConversationLog {
         ))
     }
 
-    /// A turn the ambient stream heard but did not send (#398), as the owner's or someone else's.
-    func noteOverheard(_ text: String, owner: Bool, endpointID: HostEndpoint.Identifier, targetID: String) {
+    /// A turn the ambient stream heard but did not send (#398), as the owner's or someone else's, with a known
+    /// guest's `name` when the host bound one (#434). A name is kept only for someone else's turn.
+    func noteOverheard(
+        _ text: String, owner: Bool, name: String? = nil, endpointID: HostEndpoint.Identifier, targetID: String
+    ) {
         let trimmed = text.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !trimmed.isEmpty else { return }
         var entry = ConversationEntry(
@@ -55,6 +61,7 @@ public final class ConversationLog {
             endpointID: endpointID, targetID: targetID, date: now()
         )
         entry.overheard = true
+        entry.name = owner ? nil : AmbientOverheard.name(name)
         append(entry)
     }
 
