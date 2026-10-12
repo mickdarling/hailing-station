@@ -17,6 +17,7 @@ import Testing
     @Test(arguments: [
         "Ben\u{200D}", "\u{0645}\u{06CC}\u{200C}\u{0634}\u{0648}\u{062F}", "👨‍👩‍👧", "\u{3164}", "\u{3164}\u{3164}",
         "\u{2800}", "\u{FE0F}", "\u{0301}\u{0301}", "Ben\u{202E}", "Ben\u{00AD}", " Ben", "Ben ", "", "Ben\nSmith",
+        "You", "you", "YOU", "yOu",
         String(repeating: "B", count: AmbientOverheard.maxNameScalars + 1)
     ])
     func anythingElseFallsBackToSomeone(_ name: String) {
@@ -34,15 +35,18 @@ import Testing
         return try RightyoInputEvent.decode(Data((prefix + fields + "}").utf8))
     }
 
-    private static func started(advertising: Bool) throws -> RightyoInputEvent {
-        let names = advertising ? #""speaker_names": {"max_scalars": 64}, "# : ""
+    private static func started(advertising: Bool, names shape: String = #"{"max_scalars": 64}"#) throws
+        -> RightyoInputEvent {
+        let names = advertising ? #""speaker_names": \#(shape), "# : ""
         return try line(#"""
             "type": "session", "phase": "started", \#(names)"capabilities": {"activation": "finalized-turn",
              "partials": false, "speakers": "enrolled", "context": true}
             """#, sequence: 1)
     }
 
-    private static func turn(_ id: String, name: String?, role: String) throws -> [RightyoInputEvent] {
+    private static func turn(
+        _ id: String, name: String?, role: String, decided: String? = nil
+    ) throws -> [RightyoInputEvent] {
         let named = name.map { #""speaker_name": "\#($0)", "# } ?? ""
         return [
             try line(#"""
@@ -54,30 +58,60 @@ import Testing
             try line(#"""
                 "type": "attention", "utterance_id": "\#(id)", "speech_end_ms": 500,
                  "decision": {"label": "ignore", "recipient_kind": "other_human", "confidence": 1.0,
-                  "provider": "mock", "model": "m", "role": "\#(role)"}
+                  "provider": "mock", "model": "m", "role": "\#(decided ?? role)"}
                 """#, sequence: 3)
         ]
     }
 
+    /// One heard turn: the name RightyO gave it, its transcript role, and its decision's role when that differs.
+    private struct Said {
+        let name: String?, role: String
+        var decided: String?
+        init(_ name: String?, _ role: String, decided: String? = nil) {
+            (self.name, self.role, self.decided) = (name, role, decided)
+        }
+    }
+
     /// Who the relay reports each turn as: the owner, a guest's name, or "other".
-    private func reported(advertising: Bool, _ turns: [(name: String?, role: String)]) async throws -> [String] {
+    private func reported(
+        advertising: Bool, shape: String = #"{"max_scalars": 64}"#, _ turns: [Said]
+    ) async throws -> [String] {
         let seen = AmbientOverheardTests.Seen()
         let relay = AmbientOverheardRelay(
             onOverheard: { _, owner, name in seen.append(owner ? "owner" : name ?? "other") }, isEcho: nil
         )
-        await relay.observe(try Self.started(advertising: advertising))
+        await relay.observe(try Self.started(advertising: advertising, names: shape))
         for (index, turn) in turns.enumerated() {
-            for event in try Self.turn("u\(index)", name: turn.name, role: turn.role) { await relay.observe(event) }
+            for event in try Self.turn("u\(index)", name: turn.name, role: turn.role, decided: turn.decided) {
+                await relay.observe(event)
+            }
         }
         return seen.all
     }
 
     @Test func aBoundGuestIsNamedOnlyOnASessionThatAdvertisedNames() async throws {
-        let turns: [(name: String?, role: String)] = [
-            ("Ben", "participant"), ("Ben", "trusted"), (nil, "participant"), ("Ben", "owner"), (" Ben", "unknown")
+        let turns = [
+            Said("Ben", "participant"), Said("Ben", "trusted"), Said(nil, "participant"), Said("Ben", "owner"),
+            Said(" Ben", "unknown")
         ]
         #expect(try await reported(advertising: true, turns) == ["Ben", "Ben", "other", "owner", "other"])
         #expect(try await reported(advertising: false, turns) == ["other", "other", "other", "owner", "other"])
+    }
+
+    /// A transcript naming a guest while its decision says owner is uncertain: shown unnamed, as someone.
+    @Test func aGuestTheDecisionCallsTheOwnerIsUnnamed() async throws {
+        let turns = [Said("Ben", "participant", decided: "owner"), Said("Ben", "participant", decided: "participant")]
+        #expect(try await reported(advertising: true, turns) == ["other", "Ben"])
+    }
+
+    /// Only the documented advertisement turns naming on: an object with a positive integer `max_scalars`.
+    @Test(arguments: [
+        (#"{"max_scalars": 64}"#, true), ("false", false), ("true", false), ("{}", false), (#""yes""#, false),
+        (#"{"max_scalars": 0}"#, false), (#"{"max_scalars": "64"}"#, false), ("null", false)
+    ])
+    func onlyTheDocumentedShapeEnablesNames(_ shape: String, _ named: Bool) async throws {
+        #expect(try await reported(advertising: true, shape: shape, [Said("Ben", "participant")])
+            == [named ? "Ben" : "other"])
     }
 
     /// The tool fixture with `speaker_names` advertised and its ignored remark bound to "Ben".

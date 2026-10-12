@@ -455,8 +455,9 @@ final class AmbientHeardRelay: Sendable {
 /// RightyO decides the turn. An `attention` that forms no request reports it once; one that names a request, or the
 /// request itself, drops it (that turn is shown as `ambient_heard`). Owner means both records carried `owner`, as the
 /// consumer's own rule. Echo-matched turns (the assistant's own reply heard back) are never reported.
-/// Named guests (#434): only on a session whose `started` advertised `speaker_names`, a non-owner transcript's
-/// `speaker_name` that `guestName` accepts is held with it and reported only if the turn is not the owner's;
+/// Named guests (#434): only on a session whose `started` advertised `speaker_names` in its documented shape, a
+/// non-owner transcript's `speaker_name` that `guestName` accepts is held with it, and reported only if the turn is
+/// not the owner's and its decision does not say owner either (records that disagree are uncertain, so unnamed);
 /// anything else is reported unnamed, as "someone".
 final class AmbientOverheardRelay: Sendable {
     static let maxHeld = 32
@@ -477,7 +478,7 @@ final class AmbientOverheardRelay: Sendable {
         guard let onOverheard else { return }
         switch event.type {
         case "session":
-            if event.phase == "started" { state.withLock { $0.naming = event.speakerNames != nil } }
+            if event.phase == "started" { state.withLock { $0.naming = Self.advertisesNames(event.speakerNames) } }
         case "transcript":
             guard let turn = event.turn else { return }
             state.withLock { state in
@@ -491,20 +492,30 @@ final class AmbientOverheardRelay: Sendable {
             guard let utterance = event.utteranceId ?? event.turn?.utteranceId,
                   let turn = take(utterance), event.type == "attention", event.requestId == nil,
                   isEcho?(turn.text) != true else { return }
-            let owner = turn.owner && event.decision?.role == "owner"
-            await onOverheard(turn.text, owner, owner ? nil : turn.name)
+            let (owner, decidedOwner) = (turn.owner && event.decision?.role == "owner", event.decision?.role == "owner")
+            await onOverheard(turn.text, owner, owner || decidedOwner ? nil : turn.name)
         default: break
         }
     }
 
+    /// RightyO's documented `speaker_names` advertisement (rightyo#171): an object with a positive integer
+    /// `max_scalars`. Anything else (`false`, `{}`, a string) does not turn naming on.
+    static func advertisesNames(_ value: JSONValue?) -> Bool {
+        guard case .object(let object) = value, case .integer(let limit)? = object["max_scalars"] else { return false }
+        return limit > 0
+    }
+
     /// A guest's display name a device may show (#434), or nil to show "someone": a string the protocol accepts
     /// (`AmbientOverheard.name`: so a frame never fails to encode; ZWJ or ZWNJ names fall back here), with no
-    /// character the sanitizer's hidden-character rule refuses, and at least one visible letter, number,
-    /// punctuation mark or symbol, so a name of fillers, blanks or combining marks alone is never shown.
+    /// character the sanitizer's hidden-character rule refuses, at least one visible letter, number, punctuation
+    /// mark or symbol (so a name of fillers, blanks or combining marks alone is never shown), and never "You" in any
+    /// case, which the device keeps for the owner.
     static func guestName(_ value: JSONValue?) -> String? {
         guard case .string(let raw) = value, let name = AmbientOverheard.name(raw),
               Sanitizer.firstHiddenCharacterClass(in: name) == nil,
-              name.unicodeScalars.contains(where: Self.isVisible) else { return nil }
+              name.unicodeScalars.contains(where: Self.isVisible),
+              name.trimmingCharacters(in: .whitespacesAndNewlines).caseInsensitiveCompare("You") != .orderedSame
+        else { return nil }
         return name
     }
 
