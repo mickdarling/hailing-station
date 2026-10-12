@@ -23,15 +23,15 @@ public final class RightyoChildProcess: Sendable {
     private let timing: Timing
 
     /// Launches `<executable> listen --mode stdin --provenance <provenance> --session-id <session> --config <config>`,
-    /// spawning exactly the symlink-resolved path that `validate` checked.
+    /// spawning exactly the symlink-resolved path that `validate` checked. `env` adds only `RIGHTYO_` variables
+    /// (rightyo#172) to the minimal environment, never replacing PATH, HOME or TMPDIR.
     public init(executable: URL, config: URL, session: String, provenance: RightyoAudioProvenance = .liveMicrophone,
-                timing: Timing = .init(), replyControl: Bool = false) throws {
+                timing: Timing = .init(), replyControl: Bool = false, env: [String: String] = [:]) throws {
         let resolved = try Self.validate(executable: executable, config: config)
         try RightyoChildGroup.requireOwnedRuntime()
-        let argv = Self.arguments(session: session, config: config, provenance: provenance,
-                                  replyControl: replyControl)
-        let child = try Self.spawn(resolved, arguments: argv,
-                                   environment: Self.environment().map { "\($0.key)=\($0.value)" },
+        let argv = Self.arguments(session: session, config: config, provenance: provenance, replyControl: replyControl)
+        let environment = Self.environment().merging(env.filter { $0.key.hasPrefix("RIGHTYO_") }) { old, _ in old }
+        let child = try Self.spawn(resolved, arguments: argv, environment: environment.map { "\($0.key)=\($0.value)" },
                                    directory: config.deletingLastPathComponent().path, replyControl: replyControl)
         // No line-count cap: untaken lines are bounded by `maxQueuedBytes` alone (checked before each yield).
         let pair = AsyncThrowingStream<Data, any Error>.makeStream(bufferingPolicy: .unbounded)

@@ -491,6 +491,9 @@ public final class AmbientRightyoRouter: AmbientAudioSink, AmbientListenerWiring
         var newestStart: UUID?
         var peakQueue = 0
         var worker: Task<Void, Never>?
+        /// Each live connection's last input route kind (rightyo#164), for its next child's `RIGHTYO_INPUT_ROUTE`;
+        /// one entry per connection the listener holds, dropped in `stop(connection:)`.
+        var inputRoutes: [UUID: String] = [:]
     }
     fileprivate struct WeakListener { weak var value: WebSocketListener? }
 
@@ -572,7 +575,7 @@ public final class AmbientRightyoRouter: AmbientAudioSink, AmbientListenerWiring
 
     public func stop(connection: UUID) {
         let streams = state.withLock { state -> [UUID] in
-            state.latest[connection] = nil
+            (state.latest[connection], state.inputRoutes[connection]) = (nil, nil)
             if let active = state.active, state.runs[active.run]?.connection == connection { state.active = nil }
             return state.runs.filter { $0.value.connection == connection }.map(\.key)
         }
@@ -874,6 +877,8 @@ extension AmbientRightyoRouter {
         (settings.replyControl, settings.onAcknowledgementSkipped) = (configuration.replyControl, skipped())
         (settings.onHeard, settings.onOverheard) = transcriptRelays(on: connection, listener: listener)
         settings.onVoiceMute = voiceMuted(on: connection, listener: listener)
+        (settings.onOwnerVoice, settings.environment) = (ownerVoice(on: connection, listener: listener),
+                                                         childEnvironment(for: connection))
         return try RightyoAmbientPipeline(configuration: settings,
                                           dispatcher: AmbientListenerDispatcher(listener: listener,
                                                                                 audit: configuration.audit))
@@ -1241,15 +1246,66 @@ final class SerialTaskChain: Sendable {
 extension AmbientRightyoRouter {
     /// Route lines are written here, in order, never on the gate's actor (rightyo#164).
     private static let routeLog = DispatchQueue(label: "hail.ambient.input-route")
+    /// The route kinds RightyO accepts in `RIGHTYO_INPUT_ROUTE` (rightyo#172); anything else is passed as `other`.
+    static let rightyoInputRoutes: Set<String> = [
+        "none", "built_in_mic", "built_in_speaker", "built_in_receiver", "headphones", "headset_mic", "line_in",
+        "line_out", "bluetooth_a2dp", "bluetooth_hfp", "bluetooth_le", "airplay", "hdmi", "car_audio", "usb_audio",
+        "other"
+    ]
 
     /// A device's ambient input route kind (rightyo#164), logged as a token with its connection (the id
-    /// `ambient_started` carries too) so a speaker-ID mismatch can be attributed to an input chain and a stream. Only
-    /// enqueued: the gate's audio path never waits for the log or the status file. Passing it on to the RightyO
-    /// child waits for RightyO's side of rightyo#164.
+    /// `ambient_started` carries too) so a speaker-ID mismatch can be attributed to an input chain and a stream, and
+    /// kept for that connection's next child until it disconnects. A route that arrives after its child started is
+    /// passed on the next start or reload. Keeping it is a dictionary write; the log line is only enqueued, so the
+    /// gate's audio path never waits for the log or the status file.
     public func ambientInputRoute(_ route: String, connection: UUID) {
+        state.withLock { $0.inputRoutes[connection] = route }
         Self.routeLog.async { [weak self] in
             self?.emit("ambient_input", connection: connection, detail: "route=\(route)")
         }
+    }
+
+    /// The child's opt-ins (rightyo#172): owner-voice events always, and the connection's input route kind when the
+    /// device has named one.
+    fileprivate func childEnvironment(for connection: UUID) -> [String: String] {
+        var environment = ["RIGHTYO_OWNER_VOICE_EVENTS": "1"]
+        if let route = state.withLock({ $0.inputRoutes[connection] }) {
+            environment["RIGHTYO_INPUT_ROUTE"] = Self.rightyoInputRoutes.contains(route) ? route : "other"
+        }
+        return environment
+    }
+
+    /// RightyO's owner-voice status for `connection`'s stream (rightyo#164), shown only on that device and only if it
+    /// advertised `owner_voice_status`; logged as tokens only.
+    fileprivate func ownerVoice(on connection: UUID, listener: WebSocketListener) -> @Sendable (String) -> Void {
+        { [weak self, weak listener] state in
+            Task { [weak self] in
+                let sent = await listener?.showOwnerVoice(state, connection: connection) ?? "no_connection"
+                self?.emit("ambient_owner_voice", detail: "state=\(state) device=\(sent)")
+            }
+        }
+    }
+}
+
+extension WebSocketListener {
+    /// Sends `owner_voice` (rightyo#164) to the connection whose stream it is: `sent`, `unsupported` (it did not
+    /// advertise `owner_voice_status`), `failed` or `no_connection`.
+    func showOwnerVoice(_ state: String, connection: UUID) async -> String {
+        guard !stopped, let peer = peers.values.first(where: { $0.session.connectionID == connection }) else {
+            return "no_connection"
+        }
+        guard let frame = await peer.session.ownerVoiceFrame(state) else { return "unsupported" }
+        return await peer.post(frame) ? "sent" : "failed"
+    }
+}
+
+extension HostSession {
+    /// The owner-voice status (rightyo#164) for a ready device that advertised `owner_voice_status`; nil otherwise,
+    /// since an older device refuses an unknown command.
+    func ownerVoiceFrame(_ state: String) -> Frame? {
+        guard case .ready(let version) = self.state, peerCapabilities.contains(OwnerVoice.capability),
+              OwnerVoice.state(state) != nil else { return nil }
+        return response(.ownerVoice(state: state), version: version)
     }
 }
 

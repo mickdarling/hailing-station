@@ -600,3 +600,19 @@ ZWJ emoji sequences and ZWNJ names fall back), the sanitizer's hidden-character 
 visible letter, number, punctuation mark or symbol; anything else is reported unnamed, as "Someone". The name goes
 only to the device that heard the turn, only if it advertised `ambient_overheard_names`
 ([reply-protocol.md](reply-protocol.md#overheard-remarks-398)), and is never logged.
+
+### Owner voice status and input route (#490, rightyo#164, rightyo#172)
+
+haild opts every RightyO child in with `RIGHTYO_OWNER_VOICE_EVENTS=1`, and passes `RIGHTYO_INPUT_ROUTE=<kind>` when the
+device has named its input route with `ambient_input` (a route kind RightyO does not list goes as `other`). Only
+`RIGHTYO_`-prefixed variables are added; PATH, HOME and TMPDIR stay as before. The device sends its route before its
+stream's first segment, so it is normally known when the child starts; a route that arrives after the child started
+is passed on that connection's next start or reload, and is logged at once as `ambient_input route=<kind>`.
+
+When `started` carries `owner_voice` as an object with a numeric `threshold_s`, RightyO may emit
+`{"type": "owner_voice", "state": "unrecognized" | "recognized"}`. The consumer validates its shape (a known `state`
+and nothing a turn, decision or request carries; `owner_voice` itself only on `started`), and the owner-voice relay
+reports `unrecognized` at most once and `recognized` at most once, only after it. An unadvertised, out-of-order or
+replayed status is ignored, never refused. The status goes as `owner_voice` only to the device whose stream it is, only
+if it advertised `owner_voice_status`, and is logged as `ambient_owner_voice state=<state> device=<outcome>` (`sent`,
+`unsupported`, `failed` or `no_connection`): tokens only.
