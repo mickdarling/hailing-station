@@ -1,4 +1,5 @@
 public import Foundation
+import HailProtocol
 import Synchronization
 
 // The delivery-step protocol and its direct implementation stay beside the consumer that owns their contract.
@@ -38,21 +39,33 @@ public struct RightyoDismissReceipt: Sendable, Equatable {
     }
 }
 /// The owner's spoken mute (#404): a whole turn that is only a mute or unmute phrase, optionally after a greeting, one
-/// name word ("Jarvis") and "please", and with any punctuation. Anything longer, or a negation ("don't mute"), is not
-/// one: it goes to the agent as a request. Matched on the heard words only; nothing is logged.
+/// of the session's addressing names ("Jarvis") and "please", and with any punctuation. Anything longer, any other
+/// leading word ("press mute", "let's talk again") or a negation ("don't mute") is not one: it goes to the agent as a
+/// request. Matched on the heard words only; nothing is logged.
+/// On an anonymous (not enrolled) session any voice the mic hears can say it. That is accepted because the mute only
+/// silences reply audio on the device that heard it, and is undone by "unmute", the app's toggle or a relaunch.
 enum VoiceMute {
     static let mutePhrases: Set<String> = ["mute", "go quiet", "text only", "mute replies"]
     static let unmutePhrases: Set<String> = ["unmute", "you can talk again", "talk again", "unmute replies"]
     static let greetings: Set<String> = ["hey", "ok", "okay"]
-    static let negations: Set<String> = ["don't", "dont", "do", "not", "never", "no", "stop", "can't", "cannot"]
 
     enum Command: Sendable { case mute, unmute }
 
-    /// The command a whole turn says; nil for anything else.
-    static func command(in heard: String) -> Command? {
+    /// The keyed spellings of the names RightyO advertised in `started` (`addressing`, rightyo#105), the same names
+    /// that pick the acknowledgement voice; none when it advertised none.
+    static func names(in addressing: JSONValue?) -> Set<String> {
+        #if os(macOS)
+        Set(RightyoAddressing(addressing).spellings.values.joined().map(RightyoAddressing.key))
+        #else
+        []
+        #endif
+    }
+
+    /// The command a whole turn says, given the session's keyed addressing `names`; nil for anything else.
+    static func command(in heard: String, names: Set<String>) -> Command? {
         var words = heard.lowercased().split { !$0.isLetter && $0 != "'" }.map(String.init)
         while words.last == "please" { words.removeLast() }
-        for candidate in candidates(words) {
+        for candidate in candidates(words, names: names) {
             let phrase = candidate.joined(separator: " ")
             if mutePhrases.contains(phrase) { return .mute }
             if unmutePhrases.contains(phrase) { return .unmute }
@@ -60,12 +73,16 @@ enum VoiceMute {
         return nil
     }
 
-    /// The turn as said, and with its leading greeting, name word and "please" taken off in turn.
-    private static func candidates(_ words: [String]) -> [ArraySlice<String>] {
+    /// The turn as said, and with its leading greeting, addressing name (up to three words, as recognition may split
+    /// "Righty O") and "please" taken off in turn.
+    private static func candidates(_ words: [String], names: Set<String>) -> [ArraySlice<String>] {
         var rest = words[...], found = [rest]
         if let first = rest.first, greetings.contains(first) { rest = rest.dropFirst(); found.append(rest) }
-        if let first = rest.first, !negations.contains(first), rest.count > 1 {
-            rest = rest.dropFirst()
+        let named = (1...3).first { width in
+            width < rest.count && names.contains(String(rest.prefix(width).joined().filter { $0 != "'" }))
+        }
+        if let named {
+            rest = rest.dropFirst(named)
             found.append(rest)
         }
         if rest.first == "please" { found.append(rest.dropFirst()) }
@@ -206,6 +223,8 @@ public actor RightyoInputConsumer {
     private var started = false, terminal = false, busy = false, activationEnabled = false, failed = false
     private var sequence = 0, emittedAt = 0
     private var speakers = "anonymous"
+    /// The keyed addressing names a voice mute may start with (#404), from the accepted `started`.
+    private var voiceNames = Set<String>()
     /// Whether `started` advertised `request_forming` (#188 item 4): then every request must carry `formed_request`,
     /// otherwise none may. Forming is allowed on anonymous sessions too (hosts pick), where any role the formed text
     /// names is uncheckable: only the JSON record behind it carries verified roles, and anonymous sessions have none.
@@ -295,9 +314,11 @@ public actor RightyoInputConsumer {
                 return false
             }
             // The owner's "mute" or "unmute" (#404) is carried out by the host, never typed to the agent. On an
-            // enrolled session only the owner's turn counts; anyone else's is a request like any other.
-            if let heard = event.turn?.text, let command = VoiceMute.command(in: heard),
-               speakers != "enrolled" || event.turn?.role == "owner" {
+            // enrolled session only a turn both its transcript and its attention record call the owner's (`owners`)
+            // counts; anyone else's is a request like any other. On an anonymous one any voice counts (see
+            // `VoiceMute`): the mute is device-local and reversible.
+            if let turn = event.turn, let command = VoiceMute.command(in: turn.text, names: voiceNames),
+               speakers != "enrolled" || owners.contains(turn.utteranceId) {
                 lastVoiceMute = command
                 return false
             }
@@ -358,6 +379,7 @@ public actor RightyoInputConsumer {
             if let caps {
                 activationEnabled = caps.activation == "finalized-turn"
                 speakers = caps.speakers
+                voiceNames = VoiceMute.names(in: event.addressing)
                 forming = event.requestForming != nil
                 (dismissible, conversational) = (event.dismissal != nil, event.conversation != nil)
             }

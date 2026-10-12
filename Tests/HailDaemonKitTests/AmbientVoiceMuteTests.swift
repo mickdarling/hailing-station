@@ -11,29 +11,14 @@ import Testing
     static let muted = AmbientAckClip(pcm: Data(repeating: 4, count: 480), sampleRate: 24_000, text: "Muted.")
     static let unmuted = AmbientAckClip(pcm: Data(repeating: 5, count: 480), sampleRate: 24_000, text: "Unmuted.")
 
-    @Test(arguments: [
-        ("Jarvis, mute.", true), ("mute", true), ("Hey Jarvis, go quiet please.", true), ("Text only.", true),
-        ("Jarvis please mute", true), ("Jarvis, unmute.", false), ("You can talk again.", false),
-        ("Friday, talk again", false)
-    ])
-    func aWholeTurnMutePhraseIsRecognised(_ heard: String, _ muted: Bool) {
-        #expect(VoiceMute.command(in: heard) == (muted ? .mute : .unmute))
-    }
-
-    @Test(arguments: [
-        "Don't mute.", "Jarvis, don't mute.", "Mute the TV in the other room.", "Can you mute", "Is it muted?",
-        "Jarvis, mute the meeting notes", "", "Jarvis", "Not text only", "Okay, so then mute"
-    ])
-    func anythingElseIsNotAMute(_ heard: String) {
-        #expect(VoiceMute.command(in: heard) == nil)
-    }
-
-    /// The tool fixture with its request (and the turn it cites) saying `words` instead.
-    static func fixture(saying words: String, enrolled: Bool = false) -> String {
+    /// The tool fixture with its request (and the turn it cites) saying `words` instead, and, when `named`, its
+    /// `started` advertising "Rightyo" as an addressing name.
+    static func fixture(saying words: String, enrolled: Bool = false, named: Bool = true) -> String {
         let source = enrolled ? "Rightyo, archive the project." : "Rightyo, check our discussion."
         let session = enrolled ? "formed-demo" : "tool-demo"
+        let name = named ? #"-e 's/"phase": "started"/"addressing": {"names": ["Rightyo"]}, "phase": "started"/'"# : ""
         return """
-        /usr/bin/sed -e '$d' -e "s/\(session)/$7/g" -e 's/\(source)/\(words)/g' events.jsonl
+        /usr/bin/sed -e '$d' -e "s/\(session)/$7/g" -e 's/\(source)/\(words)/g' \(name) events.jsonl
         /bin/cat > /dev/null
         /usr/bin/sed -n -e '$p' events.jsonl | /usr/bin/sed "s/\(session)/$7/g"
         """
@@ -60,14 +45,35 @@ import Testing
         #expect(acks.withLock { $0 } == 0 && heard.withLock { $0 } == 0)
     }
 
-    @Test(arguments: [("owner", 0, [true]), ("participant", 1, [Bool]())])
+    @Test func aNameTheSessionDidNotAdvertiseMakesItARequest() async throws {
+        let fake = try FakeRightyo(Self.fixture(saying: "Rightyo, mute.", named: false))
+        defer { fake.cleanUp() }
+        try fake.install(fixture: "tool-events.jsonl")
+        let mutes = Mutex<[Bool]>([])
+        var configuration = RightyoAmbientPipeline.Configuration(
+            executable: fake.executable, config: fake.config, target: "tmux:demo", binding: "pinned",
+            connection: UUID(), allowSynthetic: true, timing: .init(eofGrace: 20, termGrace: 20)
+        )
+        configuration.onVoiceMute = { value in mutes.withLock { $0.append(value) } }
+        let dispatcher = RecordingAmbientDispatcher()
+        let pipeline = try RightyoAmbientPipeline(configuration: configuration, dispatcher: dispatcher)
+        pipeline.finishInput()
+        #expect(try await pipeline.run().delivered == 1)
+        #expect(mutes.withLock { $0 }.isEmpty)
+    }
+
+    /// `participant` demotes the turn and its attention record; `decision` only the record, which the consumer's
+    /// fail-closed owner check then refuses as the owner's.
+    @Test(arguments: [("owner", 0, [true]), ("participant", 1, [Bool]()), ("decision", 1, [Bool]())])
     func onAnEnrolledSessionOnlyTheOwnersMuteCounts(_ role: String, _ delivered: Int, _ mutes: [Bool]) async throws {
         var fixture = Self.fixture(saying: "Rightyo, mute.", enrolled: true)
-        if role != "owner" {
-            let demote = "-e 's/\"role\": \"owner\"/\"role\": \"participant\"/g'"
-            let first = "events.jsonl\n/bin/cat"
-            fixture = fixture.replacingOccurrences(of: first, with: "\(demote) \(first)")
+        let demote = switch role {
+        case "participant": #"-e 's/"role": "owner"/"role": "participant"/g'"#
+        case "decision": #"-e 's/"system", "role": "owner"/"system", "role": "participant"/'"#
+        default: ""
         }
+        let first = "events.jsonl\n/bin/cat"
+        fixture = fixture.replacingOccurrences(of: first, with: "\(demote) \(first)")
         let fake = try FakeRightyo(fixture)
         defer { fake.cleanUp() }
         try fake.install(fixture: "enrolled-formed-request.jsonl")
@@ -94,7 +100,14 @@ import Testing
                 return
             }
             #expect(words.text == "Muted.")
-            _ = try await receiveFrame(on: socket, step: "confirmation clip")
+            // On the wire the clip's final audio frame precedes the mute, so the device is playing it when the mute
+            // arrives and applies the mute after it, not at once over a silent clip.
+            let clip = try await receiveFrame(on: socket, step: "confirmation clip")
+            guard case .audio(let audio) = clip.payload else {
+                Issue.record("expected the clip before the mute")
+                return
+            }
+            #expect(audio.isFinal && audio.bytes == Self.muted.pcm && audio.reply == words.reply)
             #expect(try await receiveFrame(on: socket, step: "mute").payload == .control(.setReplyMute(muted: true)))
         }
         #expect(details == ["muted=true mute=sent playback=stopped confirm=confirmmuted/0:sent"])

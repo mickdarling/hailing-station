@@ -976,24 +976,31 @@ extension AmbientRightyoRouter {
     /// mute stops the reply now playing, plays "Muted." and only then sends `set_reply_mute`, so the device lets the
     /// confirmation finish before it goes quiet; an unmute sends it first, so "Unmuted." is heard. A device without
     /// `reply_mute` is only stopped, and confirmed as a stop. Logs tokens only.
+    /// Ordering: the mute frame is sent only once `acknowledgeAmbient` has returned, which waits for the connection to
+    /// have processed every clip frame, its final audio frame last; one connection sends in order, so the device has
+    /// the clip before the mute and treats the mute as one to apply after it. Commands from one connection run one
+    /// at a time in the order said, so a quick "mute" then "unmute" ends unmuted.
     private func voiceMuted(on connection: UUID, listener: WebSocketListener) -> @Sendable (Bool) -> Void {
-        { [weak self, weak listener] muted in
-            Task { [weak self] in
-                guard let self else { return }
-                let supported = await listener?.acceptsReplyMute(connection: connection) ?? false
-                var mute = supported ? "pending" : "unsupported"
-                if !muted, supported { mute = await listener?.setReplyMute(false, connection: connection) ?? "" }
-                let playback = muted ? await listener?.stopReplyPlayback(connection: connection) ?? "no_connection"
-                    : "none"
-                let persona = supported ? (muted ? AmbientStopConfirmation.muted : AmbientStopConfirmation.unmuted)
-                    : (muted ? AmbientStopConfirmation.stopped : nil)
-                var confirm = "none"
-                if let persona { confirm = await confirmVoiceMute(persona, on: connection, listener: listener) }
-                if muted, supported { mute = await listener?.setReplyMute(true, connection: connection) ?? "" }
-                emit("ambient_voice_mute",
-                     detail: "muted=\(muted) mute=\(mute) playback=\(playback) confirm=\(confirm)")
+        let chain = SerialTaskChain()
+        return { [weak self, weak listener] muted in
+            chain.enqueue { [weak self, weak listener] in
+                await self?.carryOutVoiceMute(muted, on: connection, listener: listener)
             }
         }
+    }
+
+    /// One voice mute or unmute, as `voiceMuted` describes; returns once its frames are sent and it is logged.
+    private func carryOutVoiceMute(_ muted: Bool, on connection: UUID, listener: WebSocketListener?) async {
+        let supported = await listener?.acceptsReplyMute(connection: connection) ?? false
+        var mute = supported ? "pending" : "unsupported"
+        if !muted, supported { mute = await listener?.setReplyMute(false, connection: connection) ?? "" }
+        let playback = muted ? await listener?.stopReplyPlayback(connection: connection) ?? "no_connection" : "none"
+        let persona = supported ? (muted ? AmbientStopConfirmation.muted : AmbientStopConfirmation.unmuted)
+            : (muted ? AmbientStopConfirmation.stopped : nil)
+        var confirm = "none"
+        if let persona { confirm = await confirmVoiceMute(persona, on: connection, listener: listener) }
+        if muted, supported { mute = await listener?.setReplyMute(true, connection: connection) ?? "" }
+        emit("ambient_voice_mute", detail: "muted=\(muted) mute=\(mute) playback=\(playback) confirm=\(confirm)")
     }
 
     /// One confirmation clip from `persona`'s reserved folder, sent like the stop confirmation; its outcome token.
@@ -1209,6 +1216,21 @@ extension AmbientRightyoRouter {
             return true
         }
         return ownershipPending ? nil : connection
+    }
+}
+
+/// Runs the work given to it one piece at a time, in the order given (#404): each piece starts only once the one
+/// before has returned. `enqueue` returns at once.
+final class SerialTaskChain: Sendable {
+    private let last = Mutex<Task<Void, Never>?>(nil)
+
+    func enqueue(_ work: @escaping @Sendable () async -> Void) {
+        last.withLock { last in
+            last = Task { [last] in
+                await last?.value
+                await work()
+            }
+        }
     }
 }
 
