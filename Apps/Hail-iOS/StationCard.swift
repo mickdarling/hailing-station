@@ -258,6 +258,9 @@ struct AmbientListeningCard: View {
                     .font(.footnote)
                     .foregroundStyle(.secondary)
             }
+            if controller.isListening, connections.ownerVoiceUnrecognized.contains(binding.hostID) {
+                OwnerVoiceUnrecognizedView()
+            }
             if controller.isListening, let handoff = controller.handoff, case .movedHere = handoff {
                 // This device took listening over (#366): a brief, calm confirmation.
                 Label(handoff.status, systemImage: "checkmark.circle.fill")
@@ -297,6 +300,24 @@ struct AmbientListeningCard: View {
         case .background: .background
         default: .inactive
         }
+    }
+}
+
+/// RightyO does not recognise the owner's voice on this input (rightyo#164): say so, instead of owner-only features
+/// failing silently, and point to enrolment on this mic. It clears by itself once the voice is recognised.
+struct OwnerVoiceUnrecognizedView: View {
+    var body: some View {
+        VStack(alignment: .leading, spacing: 4) {
+            Label("Your voice isn't recognised on this mic", systemImage: "person.crop.circle.badge.questionmark")
+                .font(.subheadline.weight(.semibold))
+                .foregroundStyle(.orange)
+            Text("Stop confirmations, voice mute and Just me need it. Enroll your voice on this input: see RightyO's "
+                + "docs/speaker-enrollment.md, \u{201C}A new microphone or input\u{201D}.")
+                .font(.footnote)
+                .foregroundStyle(.secondary)
+        }
+        .accessibilityElement(children: .combine)
+        .accessibilityIdentifier("station.ambient-owner-voice")
     }
 }
 
