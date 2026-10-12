@@ -66,6 +66,28 @@ import Testing
         await store.disconnect(endpoint.id)
     }
 
+    /// #491 review (P1): a selection that completes while the stream's route is being sent invalidates the binding,
+    /// so its first segment is refused and no audio reaches the newly selected target.
+    @Test func aSelectionDuringTheRouteSendStopsTheFirstSegment() async throws {
+        let ready = try await rig.readyStore(
+            capabilities: ["ping", "select_target", "stream_audio", AmbientInput.capability]
+        )
+        let (store, endpoint, socket) = (ready.store, ready.endpoint, ready.socket)
+        try await rig.select("tmux:a", on: ready)
+        let binding = try #require(store.ambientBinding(host: endpoint.id, targetID: "tmux:a"))
+        let rig = rig
+        store.inputRoute = {
+            try? await rig.select("tmux:b", on: ready) // completes inside the stream start's suspension
+            return "usb_audio"
+        }
+        await #expect(throws: HostConnectionFailure.notReady) {
+            try await store.sendAudio(ambientSegment(), to: binding)
+        }
+        #expect(store.ambientBinding(host: endpoint.id, targetID: "tmux:b") != nil) // the new selection held
+        #expect(try await audioFrames(socket).isEmpty)
+        await store.disconnect(endpoint.id)
+    }
+
     /// A port name, or a route kind newer than the first-shipped vocabulary, goes as `other`: never the name itself.
     @Test func aRouteOutsideTheVocabularyIsSentAsOther() async throws {
         let ready = try await rig.readyStore(

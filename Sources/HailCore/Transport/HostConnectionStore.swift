@@ -33,7 +33,7 @@ public final class HostConnectionStore {
     /// say it does, the device starts a new stream, or the host is removed.
     public private(set) var ownerVoiceUnrecognized: Set<HostEndpoint.Identifier> = []
     /// This device's current input route kind for `ambient_input` (rightyo#164); replaceable in tests.
-    @ObservationIgnored var inputRoute: @MainActor () -> String? = { HostConnectionStore.currentInputRoute() }
+    @ObservationIgnored var inputRoute: @MainActor () async -> String? = { HostConnectionStore.currentInputRoute() }
 
     /// Bumped on every target selection, per host, so an ambient stream ends on any target change (#203).
     private var selectionSerials: [HostEndpoint.Identifier: UInt64] = [:]
@@ -224,7 +224,13 @@ extension HostConnectionStore {
     public func sendAudio(_ audio: AudioPayload, to binding: AmbientAudioBinding) async throws {
         guard ambientBinding(host: binding.hostID, targetID: binding.targetID) == binding,
               let connection = connections[binding.hostID] else { throw HostConnectionFailure.notReady }
-        if audio.sequence == 0 { await startingStream(on: connection, host: binding.hostID) }
+        if audio.sequence == 0 {
+            await startingStream(on: connection, host: binding.hostID)
+            // The route send suspended: a selection or endpoint change since then owns the connection, so this
+            // binding's audio must not reach its new target (#491 review).
+            guard ambientBinding(host: binding.hostID, targetID: binding.targetID) == binding,
+                  connections[binding.hostID] === connection else { throw HostConnectionFailure.notReady }
+        }
         try await connection.sendAudio(audio)
     }
 
@@ -234,7 +240,7 @@ extension HostConnectionStore {
     func startingStream(on connection: HostConnection, host: HostEndpoint.Identifier) async {
         ownerVoiceUnrecognized.remove(host)
         guard snapshots[host]?.capabilities.contains(AmbientInput.capability) == true,
-              let route = Self.sendableRoute(inputRoute()) else { return }
+              let route = Self.sendableRoute(await inputRoute()) else { return }
         try? await connection.sendAmbientInput(route)
     }
 
