@@ -96,7 +96,10 @@ public struct RightyoInputEvent: Codable, Sendable {
     /// bound to. Both stay raw JSON so neither ever refuses the stream (a bad name only falls back to "someone"),
     /// and a name sits beside `turn`, not in it, so turn fingerprints are unchanged. Only the overheard relay reads
     /// them, through `AmbientOverheardRelay.guestName`; never logged.
-    let acknowledgement: JSONValue?, acknowledge: JSONValue?, speakerNames: JSONValue?, speakerName: JSONValue?
+    ///
+    /// Owner voice status (rightyo#164, rightyo#172): `owner_voice` on `started` (raw, presence and shape read by
+    /// `AmbientOwnerVoiceRelay`), then `owner_voice` events carrying only `state`.
+    let acknowledgement, acknowledge, speakerNames, speakerName, ownerVoice: JSONValue?
     public static func decode(_ data: Data) throws -> Self {
         guard !data.isEmpty, data.count <= 1_200_000 else { throw RightyoInputError.capacity }
         let decoder = JSONDecoder()
@@ -273,7 +276,8 @@ private struct DismissalKey: CodingKey {
 /// after a request, or returned to `ambient`. They deliver nothing and grant nothing; ids and labels only, never text.
 extension RightyoInputEvent {
     static let eventTypes: Set<String> = ["session", "transcript", "attention", "request", "override", "dismiss",
-                                          "conversation"]
+                                          "conversation", "owner_voice"]
+    static let ownerVoiceStates: Set<String> = ["unrecognized", "recognized"]
     static let conversationReasons: Set<String> = ["request", "timeout", "other_human", "closed", "dismissed"]
 
     /// A request's recipient: `system`, or `unknown` on a conversation-mode follow-up (rightyo#82). Whether the
@@ -284,10 +288,14 @@ extension RightyoInputEvent {
 
     /// `conversation` rides only on `started`; `state`, `at_ms` and `until_ms` ride only on `conversation`.
     func validateConversation(session: String) throws {
-        if conversation != nil, type != "session" || phase != "started" { throw RightyoInputError.invalidEvent }
+        if conversation != nil || ownerVoice != nil, type != "session" || phase != "started" {
+            throw RightyoInputError.invalidEvent
+        }
         guard type == "conversation" else {
-            guard state == nil, atMs == nil, untilMs == nil else { throw RightyoInputError.invalidEvent }
-            return
+            guard state == nil || type == "owner_voice", atMs == nil, untilMs == nil else {
+                throw RightyoInputError.invalidEvent
+            }
+            return try validateOwnerVoice()
         }
         guard let state, let reason, Self.conversationReasons.contains(reason),
               let speakerId, Self.identifier(speakerId), let atMs, atMs >= 0, atMs <= emittedAtMs,
@@ -307,6 +315,21 @@ extension RightyoInputEvent {
             guard reason != "request", requestId == nil, untilMs == nil,
                   (reason == "timeout") == (utteranceId == nil) else { throw RightyoInputError.invalidEvent }
         default: throw RightyoInputError.invalidEvent
+        }
+    }
+
+    /// `owner_voice` (rightyo#172) carries a known `state` and no other optional field this decoder knows; whether the
+    /// session advertised it, and the order of states, is the relay's rule.
+    func validateOwnerVoice() throws {
+        guard type == "owner_voice" else { return }
+        guard let state, Self.ownerVoiceStates.contains(state), turn == nil, decision == nil, context == nil,
+              requestId == nil, utteranceId == nil, phase == nil, capabilities == nil, atMs == nil, untilMs == nil,
+              reason == nil, speakerId == nil, role == nil, scope == nil, speechEndMs == nil, confidence == nil,
+              decisionAtMs == nil, cooldownUntilMs == nil, withdrawnRequestIds == nil, supersededRequestId == nil,
+              byUtteranceId == nil, requestForming == nil, formedRequest == nil, dismissal == nil, addressing == nil,
+              conversation == nil, acknowledgement == nil, acknowledge == nil, speakerNames == nil,
+              speakerName == nil, ownerVoice == nil else {
+            throw RightyoInputError.invalidEvent
         }
     }
 }

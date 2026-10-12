@@ -78,6 +78,12 @@ public final class RightyoAmbientPipeline: Sendable {
         /// Called once per admitted request that is the owner's spoken mute (true) or unmute (false) (#404), instead
         /// of typing it: it is never acknowledged, shown or delivered to the target. It must return at once.
         public var onVoiceMute: (@Sendable (Bool) -> Void)?
+        /// Called when RightyO says the owner's voice is `unrecognized` on this input, or `recognized` again
+        /// (rightyo#164), only on a session whose `started` advertised `owner_voice`, each state at most once and
+        /// `recognized` only after `unrecognized`. It must return at once.
+        public var onOwnerVoice: (@Sendable (String) -> Void)?
+        /// Extra variables for the child (rightyo#172), `RIGHTYO_`-prefixed only.
+        public var environment: [String: String] = [:]
 
         public init(executable: URL, config: URL, target: String, binding: String, connection: UUID,
                     allowSynthetic: Bool = false, timing: RightyoChildProcess.Timing = .init(),
@@ -106,6 +112,7 @@ public final class RightyoAmbientPipeline: Sendable {
     private let acknowledgement: AmbientAckRelay
     private let heard: AmbientHeardRelay
     private let overheard: AmbientOverheardRelay
+    private let ownerVoice: AmbientOwnerVoiceRelay
 
     /// Validates the target and the executable before launching the child; a refusal launches nothing.
     public init(configuration: Configuration, dispatcher: any RightyoAmbientDispatching) throws {
@@ -120,13 +127,15 @@ public final class RightyoAmbientPipeline: Sendable {
                                             dispatcher: step, echoFilter: configuration.isEcho)
         child = try RightyoChildProcess(executable: configuration.executable, config: configuration.config,
                                         session: session, timing: configuration.timing,
-                                        replyControl: configuration.replyControl)
+                                        replyControl: configuration.replyControl,
+                                        env: configuration.environment)
         self.session = session
         onDismiss = configuration.onDismiss
         onVoiceMute = configuration.onVoiceMute
         acknowledgement = relay
         self.heard = heard
         overheard = AmbientOverheardRelay(onOverheard: configuration.onOverheard, isEcho: configuration.isEcho)
+        ownerVoice = AmbientOwnerVoiceRelay(onOwnerVoice: configuration.onOwnerVoice)
     }
 
     /// Hands one raw mono 16 kHz s16le chunk to the child without blocking; false once input has closed or for
@@ -165,6 +174,7 @@ public final class RightyoAmbientPipeline: Sendable {
                 if try await consumer.consume(event), event.type == "request" { delivered += 1 }
                 // Only after the consumer admitted the line: an invalid one has already ended the stream.
                 await overheard.observe(event)
+                ownerVoice.observe(event)
                 // A newly admitted `dismiss` delivers nothing and leaves its receipt; a replayed one leaves none.
                 if event.type == "dismiss", let receipt = await consumer.lastDismissal { onDismiss?(receipt) }
                 // A newly admitted voice mute (#404) is handed to the host instead of being typed.
@@ -448,6 +458,54 @@ final class AmbientHeardRelay: Sendable {
     func deliver() async {
         guard let onHeard, let text = held.withLock({ held in defer { held = nil }; return held }) else { return }
         await onHeard(text)
+    }
+}
+
+/// Owner voice status (rightyo#164, rightyo#172). Only on a session whose `started` advertised `owner_voice` as an
+/// object with a numeric `threshold_s`; then `unrecognized` is reported at most once, and `recognized` at most once and
+/// only after it. Anything else (unadvertised, out of order, a replayed line) is ignored, never refused: it is status.
+/// Only the first `started` sets it up: the consumer admits an identical replay, which must not reset what was reported.
+final class AmbientOwnerVoiceRelay: Sendable {
+    private struct State {
+        var started = false
+        var advertised = false
+        var reported: String?
+    }
+    private let state = Mutex(State())
+    private let onOwnerVoice: (@Sendable (String) -> Void)?
+
+    init(onOwnerVoice: (@Sendable (String) -> Void)?) { self.onOwnerVoice = onOwnerVoice }
+
+    func observe(_ event: RightyoInputEvent) {
+        guard let onOwnerVoice else { return }
+        if event.type == "session", event.phase == "started" {
+            state.withLock { state in
+                guard !state.started else { return }
+                (state.started, state.advertised) = (true, Self.advertises(event.ownerVoice))
+            }
+            return
+        }
+        guard event.type == "owner_voice", let next = event.state else { return }
+        let report = state.withLock { state -> Bool in
+            guard state.advertised else { return false }
+            switch (state.reported, next) {
+            case (nil, "unrecognized"), ("unrecognized", "recognized"):
+                state.reported = next
+                return true
+            default:
+                return false
+            }
+        }
+        if report { onOwnerVoice(next) }
+    }
+
+    /// RightyO's documented advertisement: an object with a numeric `threshold_s`.
+    static func advertises(_ value: JSONValue?) -> Bool {
+        guard case .object(let object) = value else { return false }
+        switch object["threshold_s"] {
+        case .integer?, .number?: return true
+        default: return false
+        }
     }
 }
 
