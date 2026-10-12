@@ -90,7 +90,13 @@ public struct RightyoInputEvent: Codable, Sendable {
     /// `addressing`), then `acknowledge` rides on each `request`. Only the acknowledgement voice reads either, and
     /// neither ever refuses the stream: both stay raw JSON, so only a literal `false` skips and any other value
     /// acknowledges.
-    let acknowledgement: JSONValue?, acknowledge: JSONValue?
+    ///
+    /// Named guests (rightyo#171, #434): `speaker_names` is advertised once at `started` (presence only), then a
+    /// `transcript` may carry a top-level `speaker_name`, the display name of the enrolled non-owner its voice was
+    /// bound to. Both stay raw JSON so neither ever refuses the stream (a bad name only falls back to "someone"),
+    /// and a name sits beside `turn`, not in it, so turn fingerprints are unchanged. Only the overheard relay reads
+    /// them, through `AmbientOverheardRelay.guestName`; never logged.
+    let acknowledgement: JSONValue?, acknowledge: JSONValue?, speakerNames: JSONValue?, speakerName: JSONValue?
     public static func decode(_ data: Data) throws -> Self {
         guard !data.isEmpty, data.count <= 1_200_000 else { throw RightyoInputError.capacity }
         let decoder = JSONDecoder()

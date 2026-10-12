@@ -934,16 +934,20 @@ extension AmbientRightyoRouter {
     /// The phone's own words, sent (#318) and not sent (#398), for the stream on `connection`.
     private func transcriptRelays(
         on connection: UUID, listener: WebSocketListener
-    ) -> (@Sendable (String) async -> Void, @Sendable (String, Bool) async -> Void) {
+    ) -> (@Sendable (String) async -> Void, @Sendable (String, Bool, String?) async -> Void) {
         (heard(on: connection, listener: listener), overheard(on: connection, listener: listener))
     }
 
-    /// Shows the phone that heard a turn RightyO did not send (#398), within the scope that phone asked for. Nothing is
-    /// logged: the text is transcript content.
-    private func overheard(on connection: UUID, listener: WebSocketListener) -> @Sendable (String, Bool) async -> Void {
+    /// Shows the phone that heard a turn RightyO did not send (#398), within the scope that phone asked for, with a
+    /// known guest's name (#434) when it can show one. Nothing is logged: text and name are transcript content.
+    private func overheard(
+        on connection: UUID, listener: WebSocketListener
+    ) -> @Sendable (String, Bool, String?) async -> Void {
         let target = configuration.target
-        return { [weak listener] text, owner in
-            await listener?.showAmbientOverheard(connection: connection, target: target, text: text, owner: owner)
+        return { [weak listener] text, owner, name in
+            await listener?.showAmbientOverheard(
+                connection: connection, target: target, text: text, owner: owner, name: name
+            )
         }
     }
 

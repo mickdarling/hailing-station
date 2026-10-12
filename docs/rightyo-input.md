@@ -585,3 +585,18 @@ already ended (other than on its final segment) is skipped. A superseded child i
 stream ended normally, so a device's last utterance is not cut off. A start that still finds no slot (runs stuck dispatching) is refused as busy, as before. Shutdown lets a
 forced stop in progress finish, then stops and drains every child. A take-over also drops the old stream from
 its device's latest-stream record, so a forced-out child's failure is not reported to that device as a stop.
+
+### Named guests (#434, rightyo#171)
+
+When RightyO's `started` carries a top-level `speaker_names` object with a positive integer `max_scalars` (anything
+else, such as `false` or `{}`, leaves naming off),
+a `transcript` may carry a top-level `speaker_name` beside its `turn`: the display name of the enrolled non-owner
+RightyO bound that voice to. It sits outside the turn, so turn fingerprints and the consumer's correlation are
+unchanged, and both fields stay raw JSON, so a malformed value never refuses the stream. Only the overheard relay
+reads them. A name is kept only when the session advertised `speaker_names` and the transcript's role is not
+`owner`, and it is shown only if the turn is not reported as the owner's and its attention decision does not say
+`owner` either (disagreeing records are uncertain, so unnamed). It must not be "You" in any case, and must pass `AmbientOverheard.name` (so
+ZWJ emoji sequences and ZWNJ names fall back), the sanitizer's hidden-character rule, and contain at least one
+visible letter, number, punctuation mark or symbol; anything else is reported unnamed, as "Someone". The name goes
+only to the device that heard the turn, only if it advertised `ambient_overheard_names`
+([reply-protocol.md](reply-protocol.md#overheard-remarks-398)), and is never logged.
