@@ -295,7 +295,7 @@ class ReplyCLITests(unittest.TestCase):
                 release.wait(10)
             return {"delivered": 1}
 
-        with self.reply_server(respond) as (path, frames):
+        with self.reply_server(respond, caller_may_vanish=True) as (path, frames):
             caller = subprocess.Popen(
                 [str(HAILD), "reply", "tmux:test", "--host", "mac-test", "--say", "synthetic reply",
                  "--socket", path],
@@ -390,8 +390,11 @@ class ReplyCLITests(unittest.TestCase):
             time.sleep(0.05)
 
     @contextlib.contextmanager
-    def reply_server(self, respond):
-        """A private reply socket answering frame N with respond(N); yields (path, [(arrival, frame)])."""
+    def reply_server(self, respond, caller_may_vanish=False):
+        """A private reply socket answering frame N with respond(N); yields (path, [(arrival, frame)]).
+
+        With caller_may_vanish, a test that kills the caller on purpose lets an answer find the CLI gone: the
+        plain socket client (#479) surfaces that as EPIPE or ECONNRESET, which is then not an error."""
         with tempfile.TemporaryDirectory(prefix="hail-reply-serve-") as scratch:
             path = os.path.join(scratch, "reply.sock")
             with socket.socket(socket.AF_UNIX, socket.SOCK_STREAM) as server:
@@ -419,7 +422,11 @@ class ReplyCLITests(unittest.TestCase):
                                     request += chunk
                                 index = len(frames)
                                 frames.append((time.monotonic(), json.loads(request)))
-                                client.sendall(json.dumps(respond(index)).encode() + b"\n")
+                                try:
+                                    client.sendall(json.dumps(respond(index)).encode() + b"\n")
+                                except (BrokenPipeError, ConnectionResetError):
+                                    if not caller_may_vanish:
+                                        raise
                     except Exception as error:
                         errors.append(error)
 
