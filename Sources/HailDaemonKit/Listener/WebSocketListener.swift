@@ -1238,4 +1238,12 @@ final class SerialTaskChain: Sendable {
     }
 }
 
+extension AmbientRightyoRouter {
+    /// A device's ambient input route kind (rightyo#164), logged as a token so a speaker-ID mismatch can be attributed to
+    /// an input chain. Passing it on to the RightyO child waits for RightyO's side of rightyo#164.
+    public func ambientInputRoute(_ route: String, connection: UUID) {
+        emit("ambient_input", detail: "route=\(route)")
+    }
+}
+
 #endif

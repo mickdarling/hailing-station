@@ -29,6 +29,13 @@ enum AmbientAdmission: Sendable, Equatable {
 /// an implementation must only enqueue (bounded, drop-with-gap); it must never block or await.
 public protocol AmbientAudioSink: Sendable {
     func ambientAudio(_ event: AmbientAudioEvent)
+    /// A connection's ambient input route kind changed (rightyo#164): one of `AmbientInput.routes`, never a port or
+    /// device name, so speaker-ID results can be attributed to an input chain. Same rules as `ambientAudio`.
+    func ambientInputRoute(_ route: String, connection: UUID)
+}
+
+extension AmbientAudioSink {
+    public func ambientInputRoute(_ route: String, connection: UUID) {}
 }
 
 /// One opt-in ambient microphone stream per daemon (#203). Shape: pcm16, 16 kHz, mono, a stream id, no
@@ -85,6 +92,8 @@ public actor AmbientAudioGate {
     /// The single target an ambient stream may feed; the session's selection must also name it.
     public nonisolated let target: String
     private let sink: any AmbientAudioSink
+    /// Each live connection's last reported input route kind (rightyo#164), dropped when it disconnects.
+    private var inputRoutes: [UUID: String] = [:]
     private let clock: @Sendable () -> ContinuousClock.Instant
     private let sweepInterval: Duration?
     private var active: Stream?
@@ -121,8 +130,17 @@ public actor AmbientAudioGate {
     /// Ends `connection`'s stream, if it owns the active one (peer gone, session closed), and forgets its moves.
     public func end(connection: UUID) {
         moved.removeAll { $0.connection == connection }
+        inputRoutes[connection] = nil
         guard active?.connection == connection else { return }
         end(.peerEnded)
+    }
+
+    /// Notes `connection`'s input route kind (rightyo#164), already from the closed vocabulary. Only a change is handed
+    /// on, so a device repeating its route cannot flood the log; one entry per live connection.
+    public func noteInputRoute(_ route: String, connection: UUID) {
+        guard AmbientInput.route(route) != nil, inputRoutes[connection] != route else { return }
+        inputRoutes[connection] = route
+        sink.ambientInputRoute(route, connection: connection)
     }
 
     /// Ends the active stream once it has been silent for `idleTimeout`.

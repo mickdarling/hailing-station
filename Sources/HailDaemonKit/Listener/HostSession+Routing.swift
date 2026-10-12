@@ -249,6 +249,10 @@ extension HostSession {
             // Already a closed-vocabulary value (the decoder refuses anything else); nothing is sent back.
             overheardScope = scope
             return HostSessionResult(frames: [])
+        case .ambientInput(let route):
+            // A closed route kind (rightyo#164), never a port name; only noted for attribution, nothing sent back.
+            await authorizer.ambientAudio?.noteInputRoute(route, connection: connectionID)
+            return HostSessionResult(frames: [])
         case .hello:
             return failure(.malformed, "hello already received", close: true, version: version)
         default:
