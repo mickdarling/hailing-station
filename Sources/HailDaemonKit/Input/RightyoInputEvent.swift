@@ -318,13 +318,17 @@ extension RightyoInputEvent {
         }
     }
 
-    /// `owner_voice` (rightyo#172) carries a known `state` and nothing a turn, decision or request would; whether the
+    /// `owner_voice` (rightyo#172) carries a known `state` and no other optional field this decoder knows; whether the
     /// session advertised it, and the order of states, is the relay's rule.
     func validateOwnerVoice() throws {
         guard type == "owner_voice" else { return }
         guard let state, Self.ownerVoiceStates.contains(state), turn == nil, decision == nil, context == nil,
               requestId == nil, utteranceId == nil, phase == nil, capabilities == nil, atMs == nil, untilMs == nil,
-              reason == nil, speakerId == nil, role == nil, scope == nil, speechEndMs == nil else {
+              reason == nil, speakerId == nil, role == nil, scope == nil, speechEndMs == nil, confidence == nil,
+              decisionAtMs == nil, cooldownUntilMs == nil, withdrawnRequestIds == nil, supersededRequestId == nil,
+              byUtteranceId == nil, requestForming == nil, formedRequest == nil, dismissal == nil, addressing == nil,
+              conversation == nil, acknowledgement == nil, acknowledge == nil, speakerNames == nil,
+              speakerName == nil, ownerVoice == nil else {
             throw RightyoInputError.invalidEvent
         }
     }

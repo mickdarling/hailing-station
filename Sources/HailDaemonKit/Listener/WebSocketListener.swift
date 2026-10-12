@@ -1267,7 +1267,7 @@ extension AmbientRightyoRouter {
 
     /// The child's opt-ins (rightyo#172): owner-voice events always, and the connection's input route kind when the
     /// device has named one.
-    fileprivate func childEnvironment(for connection: UUID) -> [String: String] {
+    func childEnvironment(for connection: UUID) -> [String: String] {
         var environment = ["RIGHTYO_OWNER_VOICE_EVENTS": "1"]
         if let route = state.withLock({ $0.inputRoutes[connection] }) {
             environment["RIGHTYO_INPUT_ROUTE"] = Self.rightyoInputRoutes.contains(route) ? route : "other"
@@ -1277,11 +1277,14 @@ extension AmbientRightyoRouter {
 
     /// RightyO's owner-voice status for `connection`'s stream (rightyo#164), shown only on that device and only if it
     /// advertised `owner_voice_status`; logged as tokens only.
+    /// Sends run one at a time in the order RightyO said them, so a device never sees `recognized` before
+    /// `unrecognized`.
     fileprivate func ownerVoice(on connection: UUID, listener: WebSocketListener) -> @Sendable (String) -> Void {
-        { [weak self, weak listener] state in
-            Task { [weak self] in
+        let chain = SerialTaskChain()
+        return { [weak self, weak listener] state in
+            chain.enqueue { [weak self, weak listener] in
                 let sent = await listener?.showOwnerVoice(state, connection: connection) ?? "no_connection"
-                self?.emit("ambient_owner_voice", detail: "state=\(state) device=\(sent)")
+                self?.emit("ambient_owner_voice", connection: connection, detail: "state=\(state) device=\(sent)")
             }
         }
     }

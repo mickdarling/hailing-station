@@ -464,8 +464,10 @@ final class AmbientHeardRelay: Sendable {
 /// Owner voice status (rightyo#164, rightyo#172). Only on a session whose `started` advertised `owner_voice` as an
 /// object with a numeric `threshold_s`; then `unrecognized` is reported at most once, and `recognized` at most once and
 /// only after it. Anything else (unadvertised, out of order, a replayed line) is ignored, never refused: it is status.
+/// Only the first `started` sets it up: the consumer admits an identical replay, which must not reset what was reported.
 final class AmbientOwnerVoiceRelay: Sendable {
     private struct State {
+        var started = false
         var advertised = false
         var reported: String?
     }
@@ -477,7 +479,10 @@ final class AmbientOwnerVoiceRelay: Sendable {
     func observe(_ event: RightyoInputEvent) {
         guard let onOwnerVoice else { return }
         if event.type == "session", event.phase == "started" {
-            state.withLock { $0 = State(advertised: Self.advertises(event.ownerVoice)) }
+            state.withLock { state in
+                guard !state.started else { return }
+                (state.started, state.advertised) = (true, Self.advertises(event.ownerVoice))
+            }
             return
         }
         guard event.type == "owner_voice", let next = event.state else { return }

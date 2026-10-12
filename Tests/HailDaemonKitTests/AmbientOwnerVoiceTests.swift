@@ -36,7 +36,10 @@ import Testing
         #""type": "owner_voice", "state": "unrecognized", "utterance_id": "u""#,
         #""type": "owner_voice", "state": "unrecognized", "reason": "x""#,
         #""type": "transcript", "owner_voice": {"threshold_s": 20}"#,
-        #""type": "attention", "state": "unrecognized""#
+        #""type": "attention", "state": "unrecognized""#,
+        #""type": "owner_voice", "state": "unrecognized", "confidence": 0.5"#,
+        #""type": "owner_voice", "state": "unrecognized", "decision_at_ms": 1"#,
+        #""type": "owner_voice", "state": "unrecognized", "acknowledge": true"#
     ])
     func anythingElseIsRefused(_ fields: String) throws {
         let event = try Self.line(fields)
@@ -49,6 +52,18 @@ import Testing
         relay.observe(try Self.started(advertisement))
         for state in states { relay.observe(try Self.status(state)) }
         return seen.withLock { $0 }
+    }
+
+    /// The consumer admits an identical replay of `started` and of the status; neither may report it again.
+    @Test func aReplayedStartDoesNotResetWhatWasReported() throws {
+        let seen = Mutex<[String]>([])
+        let relay = AmbientOwnerVoiceRelay(onOwnerVoice: { state in seen.withLock { $0.append(state) } })
+        let started = try Self.started(#"{"threshold_s": 20}"#)
+        relay.observe(started)
+        relay.observe(try Self.status("unrecognized"))
+        relay.observe(started)
+        relay.observe(try Self.status("unrecognized"))
+        #expect(seen.withLock { $0 } == ["unrecognized"])
     }
 
     @Test func eachStateIsReportedOnceAndRecognizedOnlyAfterUnrecognized() throws {
@@ -65,6 +80,23 @@ import Testing
         let base = RightyoChildProcess.environment(["HOME": "/home", "PATH": "/evil"])
         #expect(base["PATH"] == "/usr/bin:/bin:/usr/sbin:/sbin")
         #expect(AmbientRightyoRouter.rightyoInputRoutes == Set(AmbientInput.routes))
+    }
+
+    /// Every live connection keeps its route for its next child, however many there are, until it disconnects.
+    @Test func eachLiveConnectionKeepsItsRouteUntilItStops() async throws {
+        let fake = try FakeRightyo(Self.fixture)
+        defer { fake.cleanUp() }
+        let env = try await ambientRig(fake, timing: .init(eofGrace: 20, termGrace: 20))
+        let connections = (0..<64).map { _ in UUID() }
+        for connection in connections { env.router.ambientInputRoute("usb_audio", connection: connection) }
+        env.router.ambientInputRoute("future_route", connection: connections[1])
+        #expect(env.router.childEnvironment(for: connections[0]) == [
+            "RIGHTYO_OWNER_VOICE_EVENTS": "1", "RIGHTYO_INPUT_ROUTE": "usb_audio"
+        ])
+        #expect(env.router.childEnvironment(for: connections[1])["RIGHTYO_INPUT_ROUTE"] == "other")
+        env.router.stop(connection: connections[0])
+        #expect(env.router.childEnvironment(for: connections[0]) == ["RIGHTYO_OWNER_VOICE_EVENTS": "1"])
+        await env.listener.stop(reason: "synthetic test complete")
     }
 
     /// A fake RightyO that advertises `owner_voice` and reports `unrecognized` only when haild opted it in and passed
