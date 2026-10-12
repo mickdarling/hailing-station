@@ -217,6 +217,11 @@ public enum Fixtures {
             id: id(207), timestamp: 1_758_200_050_400, source: "host",
             payload: .control(.ambientOverheard(targetID: "tmux:codex-hail", text: "Pass the salt.", speaker: "owner"))
         )),
+        Example(name: "control-ambient-overheard-named", frame: Frame(
+            id: id(210), timestamp: 1_758_200_050_700, source: "host",
+            payload: .control(.ambientOverheard(targetID: "tmux:codex-hail", text: "Pass the salt.", speaker: "other",
+                                                name: "Ben"))
+        )),
         Example(name: "control-overheard-scope", frame: Frame(
             id: id(208), timestamp: 1_758_200_050_500, source: "terminal",
             payload: .control(.overheardScope(scope: "owner"))

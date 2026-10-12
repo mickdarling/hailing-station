@@ -1,0 +1,1 @@
+{"_expect":"schema-pass","id":"0B0B0B0B-0000-4000-8000-0000000001A3","payload":{"command":"ambient_overheard","target":"tmux:a","text":"hi","speaker":"owner","name":"Ben"},"source":"host","ts":1,"type":"control","v":1}

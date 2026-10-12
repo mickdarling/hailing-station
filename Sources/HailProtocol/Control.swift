@@ -120,7 +120,9 @@ public enum ControlPayload: Sendable, Equatable {
     /// Host to device (#398): a turn this connection's ambient stream heard but did not send to `targetID`, by the
     /// owner or by someone else, within the scope the device asked for with `overheardScope`. Sent only to the device
     /// that heard it, only when it advertises `AmbientOverheard.capability`. It grants no authority.
-    case ambientOverheard(targetID: String, text: String, speaker: String)
+    /// `name` (#434) is the display name of the enrolled guest RightyO bound the turn to, only with speaker `other`
+    /// and only to a device that advertises `AmbientOverheard.namesCapability`; nil means "someone".
+    case ambientOverheard(targetID: String, text: String, speaker: String, name: String? = nil)
     /// Device to host (#398): which overheard turns this connection wants, one of `AmbientOverheard.scopes`. The host
     /// starts every connection at `off`. It grants no authority beyond choosing what the host may send back.
     case overheardScope(scope: String)
@@ -132,7 +134,7 @@ public enum ControlPayload: Sendable, Equatable {
 extension ControlPayload: Codable {
     private enum CodingKeys: String, CodingKey {
         case command, hello, targets, targetID = "target", nonce, code, message, events, from, text, speaker, scope
-        case muted
+        case muted, name
     }
 
     private enum Command: String, Codable {
@@ -201,9 +203,10 @@ extension ControlPayload: Codable {
         return .setReplyMute(muted: try container.decode(Bool.self, forKey: .muted))
     }
 
-    /// Strict (#398): like `ambient_heard`, plus a `speaker` from `AmbientOverheard.speakers`.
+    /// Strict (#398): like `ambient_heard`, plus a `speaker` from `AmbientOverheard.speakers`, and (#434) an optional
+    /// `name` that `AmbientOverheard.name` accepts, only with speaker `other`.
     private static func ambientOverheard(from decoder: any Decoder) throws -> ControlPayload {
-        try requireOnly(["command", "target", "text", "speaker"], "ambient_overheard", decoder)
+        try requireOnly(["command", "target", "text", "speaker", "name"], "ambient_overheard", decoder)
         let container = try decoder.container(keyedBy: CodingKeys.self)
         let text = try container.decode(String.self, forKey: .text)
         try requireRange(text.utf8.count, in: 1...PayloadLimits.maxTextBytes, "text", decoder)
@@ -213,7 +216,13 @@ extension ControlPayload: Codable {
             throw DecodingError.dataCorrupted(.init(codingPath: decoder.codingPath,
                                                     debugDescription: "unknown ambient_overheard speaker"))
         }
-        return .ambientOverheard(targetID: target, text: text, speaker: speaker)
+        // Present means a string: an explicit null is refused like any other wrong type.
+        let name = container.contains(.name) ? try container.decode(String.self, forKey: .name) : nil
+        guard name.map({ AmbientOverheard.name($0) != nil && speaker == "other" }) ?? true else {
+            throw DecodingError.dataCorrupted(.init(codingPath: decoder.codingPath,
+                                                    debugDescription: "invalid ambient_overheard name"))
+        }
+        return .ambientOverheard(targetID: target, text: text, speaker: speaker, name: name)
     }
 
     /// Strict (#398): only `command` and a `scope` from `AmbientOverheard.scopes`.
@@ -302,11 +311,15 @@ extension ControlPayload: Codable {
             try container.encode(Command.ambientHeard, forKey: .command)
             try container.encode(id, forKey: .targetID)
             try container.encode(text, forKey: .text)
-        case .ambientOverheard(let id, let text, let speaker):
+        case .ambientOverheard(let id, let text, let speaker, let name):
             try container.encode(Command.ambientOverheard, forKey: .command)
             try container.encode(id, forKey: .targetID)
             try container.encode(text, forKey: .text)
             try container.encode(try Self.closed(AmbientOverheard.speaker(speaker), speaker, encoder), forKey: .speaker)
+            if let name {
+                let valid = speaker == "other" ? AmbientOverheard.name(name) : nil
+                try container.encode(try Self.closed(valid, name, encoder), forKey: .name)
+            }
         case .overheardScope(let scope):
             try container.encode(Command.overheardScope, forKey: .command)
             try container.encode(try Self.closed(AmbientOverheard.scope(scope), scope, encoder), forKey: .scope)
@@ -346,6 +359,23 @@ public enum AmbientOverheard {
     public static let capability = "ambient_overheard"
     public static let scopes = ["off", "owner", "everyone"]
     public static let speakers = ["owner", "other"]
+    /// A device that can show a known guest's name (#434) advertises this as well; a host sends `name` only to it,
+    /// because an older device refuses the unknown key.
+    public static let namesCapability = "ambient_overheard_names"
+    /// RightyO's own display-name bound (rightyo enroll: 1 to 64 printable characters), in Unicode scalars.
+    public static let maxNameScalars = 64
+
+    /// `value` when it is a display name a device may show: 1 to `maxNameScalars` scalars, no control, format or
+    /// line-breaking characters, and no leading or trailing whitespace. Else nil.
+    public static func name(_ value: String?) -> String? {
+        guard let value, (1...maxNameScalars).contains(value.unicodeScalars.count),
+              value.trimmingCharacters(in: .whitespacesAndNewlines) == value,
+              value.unicodeScalars.allSatisfy({ scalar in
+                  ![.control, .format, .lineSeparator, .paragraphSeparator, .surrogate, .unassigned, .privateUse]
+                      .contains(scalar.properties.generalCategory)
+              }) else { return nil }
+        return value
+    }
 
     /// `value` when it is exactly one of `scopes`, else nil.
     public static func scope(_ value: String?) -> String? {
@@ -684,7 +714,7 @@ extension Schema {
         ])
     ])
 
-    /// `ambient_overheard` carries `command`, `target`, `text` and `speaker` and nothing else (#398).
+    /// `ambient_overheard` carries `command`, `target`, `text`, `speaker` and an optional `name` (#434), nothing else.
     static let ambientOverheardPayloadRule: JSONValue = .object([
         "if": .object(["properties": .object(["command": .object(["const": .string("ambient_overheard")])])]),
         "then": .object([
@@ -699,7 +729,12 @@ extension Schema {
                     "type": .string("string"), "minLength": .integer(1),
                     "maxLength": .integer(Int64(PayloadLimits.maxTextBytes))
                 ]),
-                "speaker": .object(["enum": .array(AmbientOverheard.speakers.map(JSONValue.string))])
+                "speaker": .object(["enum": .array(AmbientOverheard.speakers.map(JSONValue.string))]),
+                // The decoder is stricter: printable only, untrimmed refused, and only with speaker `other` (#434).
+                "name": .object([
+                    "type": .string("string"), "minLength": .integer(1),
+                    "maxLength": .integer(Int64(AmbientOverheard.maxNameScalars))
+                ])
             ])
         ])
     ])
