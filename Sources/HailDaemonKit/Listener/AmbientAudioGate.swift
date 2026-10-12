@@ -135,8 +135,9 @@ public actor AmbientAudioGate {
         end(.peerEnded)
     }
 
-    /// Notes `connection`'s input route kind (rightyo#164), already from the closed vocabulary. Only a change is handed
-    /// on, so a device repeating its route cannot flood the log; one entry per live connection.
+    /// Notes `connection`'s input route kind (rightyo#164), already from the closed vocabulary. Within a stream only a
+    /// change is handed on, so a device repeating its route cannot flood the log; one entry per live connection, and
+    /// none once its stream ends.
     public func noteInputRoute(_ route: String, connection: UUID) {
         guard AmbientInput.route(route) != nil, inputRoutes[connection] != route else { return }
         inputRoutes[connection] = route
@@ -182,6 +183,8 @@ public actor AmbientAudioGate {
     private func end(_ reason: AmbientStreamEndReason) {
         guard let current = active else { return }
         active = nil
+        // A stream boundary (rightyo#164): the route the next stream starts with is noted, and reaches its child, again.
+        inputRoutes[current.connection] = nil
         (overRateSince, lastOverRate) = (nil, nil)
         remember(current.id)
         sweeper?.cancel()

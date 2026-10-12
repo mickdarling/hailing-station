@@ -212,6 +212,11 @@ public actor HostSession {
                 await sink.record(events, session: connectionID, device: peerName)
                 return HostSessionResult(frames: [])
             }
+            // A closed route kind (rightyo#164), never a port name: noted for attribution and never answered either.
+            if case .control(.ambientInput(let route)) = frame.payload, let gate = authorizer.ambientAudio {
+                await gate.noteInputRoute(route, connection: connectionID)
+                return HostSessionResult(frames: [])
+            }
             return await route(admitted, version: version)
         }
     }

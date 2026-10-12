@@ -890,7 +890,7 @@ extension AmbientRightyoRouter {
         state.runs[id] = Run(stream: stream, connection: connection, pipeline: pipeline)
         state.runs[id]?.task = Task { [weak self] in
             if reload { self?.emit("ambient_reloaded", detail: nil) }
-            self?.emit("ambient_started", detail: nil)
+            self?.emit("ambient_started", connection: connection, detail: nil)
             await self?.run(pipeline, id: id, stream: stream, connection: connection)
         }
         return id
@@ -1106,8 +1106,8 @@ extension AmbientRightyoRouter {
         }
     }
 
-    fileprivate func emit(_ event: String, detail: String?) {
-        log(WebSocketListenerEvent(event: event, detail: detail))
+    fileprivate func emit(_ event: String, connection: UUID? = nil, detail: String?) {
+        log(WebSocketListenerEvent(event: event, sessionID: connection, detail: detail))
     }
 }
 
@@ -1239,10 +1239,17 @@ final class SerialTaskChain: Sendable {
 }
 
 extension AmbientRightyoRouter {
-    /// A device's ambient input route kind (rightyo#164), logged as a token so a speaker-ID mismatch can be attributed to
-    /// an input chain. Passing it on to the RightyO child waits for RightyO's side of rightyo#164.
+    /// Route lines are written here, in order, never on the gate's actor (rightyo#164).
+    private static let routeLog = DispatchQueue(label: "hail.ambient.input-route")
+
+    /// A device's ambient input route kind (rightyo#164), logged as a token with its connection (the id
+    /// `ambient_started` carries too) so a speaker-ID mismatch can be attributed to an input chain and a stream. Only
+    /// enqueued: the gate's audio path never waits for the log or the status file. Passing it on to the RightyO
+    /// child waits for RightyO's side of rightyo#164.
     public func ambientInputRoute(_ route: String, connection: UUID) {
-        emit("ambient_input", detail: "route=\(route)")
+        Self.routeLog.async { [weak self] in
+            self?.emit("ambient_input", connection: connection, detail: "route=\(route)")
+        }
     }
 }
 
