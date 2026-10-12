@@ -151,6 +151,8 @@ public final class DaemonStatusRecorder: Sendable {
         // A reload's own log lines (#405) say nothing about whether listening works, and may land just after a run's
         // failure; they never become the last event, so that failure stays visible to `haild doctor`.
         case "ambient_reloaded", "ambient_reload_refused": return false
+        // A device's input route (rightyo#164) is attribution telemetry, not a sign that listening works.
+        case "ambient_input": return false
         default: break
         }
         ambient.lastEvent = event.event

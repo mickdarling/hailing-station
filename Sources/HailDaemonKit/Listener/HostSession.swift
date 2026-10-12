@@ -42,7 +42,8 @@ public struct ConnectionProbeAuthorizer: HostSessionAuthorizing {
 /// Explicitly enabled personal-testing mode. It exposes only target selection, final text delivery,
 /// and literal Escape in addition to the probe operations; the default listener remains read-only.
 /// Ambient audio (#203) is admitted, and `stream_audio` advertised, only when a gate is supplied; so is a device's
-/// `overheard_scope` (#398), with `ambient_overheard` advertised. Device
+/// `overheard_scope` (#398), with `ambient_overheard` advertised, and its `ambient_input` route kind (rightyo#164),
+/// with `ambient_input_route` advertised. Device
 /// diagnostics (#234) are admitted, and `device_diagnostics` advertised, only when a sink is supplied.
 public struct PersonalTerminalAuthorizer: HostSessionAuthorizing {
     public let capabilities: [String]
@@ -53,7 +54,7 @@ public struct PersonalTerminalAuthorizer: HostSessionAuthorizing {
         self.ambientAudio = ambientAudio
         self.diagnostics = diagnostics
         capabilities = ["list_targets", "ping", "select_target", "send_text", "escape", "receive_replies"]
-            + (ambientAudio == nil ? [] : ["stream_audio", AmbientOverheard.capability])
+            + (ambientAudio == nil ? [] : ["stream_audio", AmbientOverheard.capability, AmbientInput.capability])
             + (diagnostics == nil ? [] : [DiagnosticLimits.capability, DiagnosticLimits.streamAbandonedCapability])
     }
 
@@ -65,7 +66,7 @@ public struct PersonalTerminalAuthorizer: HostSessionAuthorizing {
             switch control {
             case .hello, .ping, .listTargets, .select, .escape: .allow
             case .diagnostic: diagnostics == nil ? .deny : .allow
-            case .overheardScope: ambientAudio == nil ? .deny : .allow
+            case .overheardScope, .ambientInput: ambientAudio == nil ? .deny : .allow
             default: .deny
             }
         default: .deny
@@ -209,6 +210,11 @@ public actor HostSession {
             // Diagnostics (#234) are stored and never answered: no error, no selection or delivery change.
             if case .control(.diagnostic(let events)) = frame.payload, let sink = authorizer.diagnostics {
                 await sink.record(events, session: connectionID, device: peerName)
+                return HostSessionResult(frames: [])
+            }
+            // A closed route kind (rightyo#164), never a port name: noted for attribution and never answered either.
+            if case .control(.ambientInput(let route)) = frame.payload, let gate = authorizer.ambientAudio {
+                await gate.noteInputRoute(route, connection: connectionID)
                 return HostSessionResult(frames: [])
             }
             return await route(admitted, version: version)
