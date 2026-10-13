@@ -38,7 +38,8 @@ let package = Package(
 
         .target(name: "HailDaemonKit", dependencies: ["HailProtocol"], swiftSettings: strict),
         .testTarget(name: "HailDaemonKitTests", dependencies: ["HailDaemonKit"], swiftSettings: strict),
-        .executableTarget(name: "haild", dependencies: ["HailDaemonKit"], swiftSettings: strict),
+        .executableTarget(name: "haild", dependencies: ["HailDaemonKit", "HailCore"], swiftSettings: strict),
+        .testTarget(name: "HailCoachingCommandTests", dependencies: ["haild", "HailCore"], swiftSettings: strict),
         .executableTarget(
             name: "hail-protocol-gen", dependencies: ["HailProtocol", "HailProtocolFixtures"], swiftSettings: strict
         ),
