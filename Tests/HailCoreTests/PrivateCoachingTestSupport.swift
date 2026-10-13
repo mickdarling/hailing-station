@@ -56,10 +56,11 @@ final class CoachingTestHarness {
     let player = CoachingTestPlayer()
     let time = CoachingTestClock()
     var output = CoachingOutputObservation.verifiedHeadphones(UUID())
+    var onObserve: (() -> Void)?
     var admitted: [AudioCaptureBuffer] = []
     var suspensions: [CoachingSuspension] = []
     lazy var session = PrivateCoachingSession(
-        capture: capture, player: player, observeOutput: { [unowned self] in self.output },
+        capture: capture, player: player, observeOutput: { [unowned self] in self.onObserve?(); return self.output },
         hooks: .init(buffer: { [weak self] buffer, _ in self?.admitted.append(buffer) },
                      suspended: { [weak self] _, reason in self?.suspensions.append(reason) }), clock: time.clock
     )

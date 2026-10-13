@@ -86,6 +86,7 @@ public final class PrivateCoachingSession {
             // Starting an engine can itself change the actual output route.
             guard current()?.generation == lease.generation else { throw CoachingSafetyError.unsafeOutput }
             armExpiry(lease)
+            guard current() == lease else { throw CoachingSafetyError.staleQualification }
             forward = Task { @MainActor [weak self] in
                 for await buffer in source {
                     guard !Task.isCancelled, let self,
@@ -116,6 +117,7 @@ public final class PrivateCoachingSession {
         )
         qualification = renewed
         armExpiry(renewed)
+        guard current() == renewed else { throw CoachingSafetyError.staleQualification }
         return renewed
     }
 

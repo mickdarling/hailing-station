@@ -69,6 +69,28 @@ struct PrivateCoachingLifetimeTests {
         #expect(throws: CoachingSafetyError.staleQualification) { try rig.ticket() }
     }
 
+    @Test func slowOutputObservationCannotRenewAnExpiredGeneration() throws {
+        let rig = CoachingTestHarness()
+        let lease = try rig.begin()
+        rig.time.instant = lease.expiresAt.advanced(by: .milliseconds(-1))
+        rig.onObserve = { rig.time.instant = rig.time.instant.advanced(by: .milliseconds(1)) }
+        #expect(throws: CoachingSafetyError.staleQualification) { try rig.session.renew(lease) }
+        #expect(rig.session.qualification == nil && rig.suspensions == [.qualificationExpired])
+        rig.onObserve = nil
+    }
+
+    @Test func slowOutputObservationCannotForwardPastExpiry() async throws {
+        let rig = CoachingTestHarness()
+        let lease = try rig.begin()
+        rig.time.instant = lease.expiresAt.advanced(by: .milliseconds(-1))
+        rig.onObserve = { rig.time.instant = rig.time.instant.advanced(by: .milliseconds(1)) }
+        try rig.capture.yield(sineBuffer())
+        await drainCoachingTasks()
+        #expect(rig.admitted.isEmpty && rig.session.qualification == nil)
+        #expect(rig.suspensions == [.qualificationExpired])
+        rig.onObserve = nil
+    }
+
     @Test func boundedLifetimeQueueAndPayloads() throws {
         let rig = CoachingTestHarness()
         for duration in [Duration.zero, .seconds(-1), .seconds(3)] {

@@ -12,15 +12,18 @@ extension PrivateCoachingSession {
     }
 
     func current() -> CoachingQualification? {
-        guard let live = qualification else { return nil }
-        guard clock.now() < live.expiresAt else { suspend(.qualificationExpired); return nil }
-        guard pendingPlayback.values.allSatisfy({ clock.now() < $0 }) else {
-            suspend(.adviceExpired); return nil
-        }
+        guard let live = qualification, hasLiveDeadlines(live) else { return nil }
         guard observeOutput() == .verifiedHeadphones(live.outputID) else { suspend(.routeInvalidated); return nil }
         // Trusted resource callbacks may invalidate synchronously; never return a retired snapshot.
-        guard qualification == live else { return nil }
+        guard qualification == live, hasLiveDeadlines(live) else { return nil }
         return live
+    }
+
+    private func hasLiveDeadlines(_ live: CoachingQualification) -> Bool {
+        let now = clock.now()
+        guard now < live.expiresAt else { suspend(.qualificationExpired); return false }
+        guard pendingPlayback.values.allSatisfy({ now < $0 }) else { suspend(.adviceExpired); return false }
+        return true
     }
 
     func armExpiry(_ lease: CoachingQualification) {

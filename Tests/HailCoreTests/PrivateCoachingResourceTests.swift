@@ -81,6 +81,20 @@ struct PrivateCoachingResourceTests {
         rig.time.onSchedule = nil
     }
 
+    @Test func synchronousSchedulerInvalidationCannotReturnSuccessfulBeginOrRenew() throws {
+        for renewing in [false, true] {
+            let rig = CoachingTestHarness()
+            let existing = renewing ? try rig.begin() : nil
+            rig.time.onSchedule = { rig.session.invalidateRoute() }
+            #expect(throws: CoachingSafetyError.staleQualification) {
+                if let existing { try rig.session.renew(existing) } else { try rig.begin() }
+            }
+            #expect(rig.session.qualification == nil)
+            #expect(rig.capture.stopCount == 1 && rig.suspensions == [.routeInvalidated])
+            rig.time.onSchedule = nil
+        }
+    }
+
     @Test func sourceCompletionAndResumeFailureSuspend() async throws {
         let rig = CoachingTestHarness()
         try rig.begin()
