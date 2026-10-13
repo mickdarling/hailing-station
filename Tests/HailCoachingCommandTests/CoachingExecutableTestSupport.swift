@@ -53,11 +53,11 @@ import Testing
     let capture: ExecutableCoachingCapture, player: ExecutablePrivatePlayer
     let session: PrivateCoachingSession, consumer: CoachingAdviceConsumer
     init(capture: ExecutableCoachingCapture, player: ExecutablePrivatePlayer,
-         hooks: PrivateCoachingSession.Hooks) throws {
+         hooks: PrivateCoachingSession.Hooks, clock: CoachingClock = .init()) throws {
         self.capture = capture; self.player = player
         let route = UUID()
         session = PrivateCoachingSession(capture: capture, player: player,
-                                        observeOutput: { .verifiedHeadphones(route) }, hooks: hooks)
+                                        observeOutput: { .verifiedHeadphones(route) }, hooks: hooks, clock: clock)
         consumer = try CoachingAdviceConsumer(session: session, listenerID: "coach")
     }
     func begin(sessionID: UUID, destinationID: UUID, consentConfirmed: Bool) throws -> CoachingQualification {

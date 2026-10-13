@@ -28,15 +28,33 @@ import Testing
         try await rig.join()
     }
 
-    @Test func suppressedRenewalReallyExpiresTheOwnedFixture() async throws {
-        let rig = try CoachingTransportRig(tail: "") // Controlled scheduler intentionally never fires.
+    @Test(arguments: ["heartbeat", "buffer", "ticket"])
+    func delayedCallbacksCannotReviveTheExpiredOwnedFixture(effect: String) async throws {
+        // Both timer deliveries are deliberately withheld. Original-deadline effect checks must suffice.
+        let rig = try CoachingTransportRig(tail: "", deferExpiry: true)
         try rig.driver.enable(participantAwareness: true)
         let lease = try #require(rig.audio?.session.qualification)
+        let heartbeat = try #require(rig.heartbeat)
         #expect(rig.driver.status == .active)
         try await Task.sleep(until: lease.expiresAt.advanced(by: .milliseconds(100)), clock: .continuous)
+        switch effect {
+        case "heartbeat": heartbeat()
+        case "buffer": try rig.capture.send(tone: true)
+        default:
+            #expect(throws: CoachingSafetyError.staleQualification) {
+                try rig.audio?.session.ticket(requestID: UUID())
+            }
+        }
+        // Buffer delivery and owned child joining are asynchronous; property snapshots are not authority.
+        let deadline = ContinuousClock.now.advanced(by: .seconds(5))
+        while rig.driver.status != .off, ContinuousClock.now < deadline {
+            try await Task.sleep(for: .milliseconds(10))
+        }
         #expect(rig.audio?.session.qualification == nil && rig.capture.stops > 0)
-        #expect(rig.driver.status != .active && rig.player.played == 0)
-        try await rig.join()
+        #expect(rig.driver.status == .off && rig.player.played == 0)
+        #expect(rig.counts.qualifications == 1 && rig.counts.buffers == 0)
+        heartbeat() // Even duplicate old callbacks cannot mint a fresh lease after retirement.
+        #expect(rig.driver.status == .off && rig.counts.qualifications == 1)
     }
 
     @Test func renewalInsideActivityCallbackHoldsOldFinalWithoutRetiringRenewedOwner() async throws {
@@ -106,9 +124,11 @@ import Testing
     var flagsCalls = 0
     var heartbeat: (@MainActor () -> Void)?
     var original: CoachingQualification?
+    let counts = TransportCounts()
     let argumentsFile: URL
 
-    init(tail: String, renew: Bool = false, off: Bool = false, hosted: Bool = false) throws {
+    init(tail: String, renew: Bool = false, off: Bool = false, hosted: Bool = false,
+         deferExpiry: Bool = false) throws {
         let root = FileManager.default.temporaryDirectory
             .appendingPathComponent("hailing-coaching-regression-\(UUID())")
         try FileManager.default.createDirectory(at: root, withIntermediateDirectories: false,
@@ -130,9 +150,10 @@ import Testing
                 if off { driver.off() }
                 return .init(ownerMidAnswer: false, playback: false)
             })
-            transport = child; return child
+            transport = child; return CountedTransport(child: child, counts: counts)
         }, audio: { [unowned self] hooks in
-            let audio = try ExecutablePrivateAudio(capture: capture, player: player, hooks: hooks)
+            let clock = deferExpiry ? CoachingClock(schedule: { _, _ in {} }) : .init()
+            let audio = try ExecutablePrivateAudio(capture: capture, player: player, hooks: hooks, clock: clock)
             self.audio = audio; return audio
         }, speech: speech, clock: hosted ? .init() : CoachingClock(schedule: { [weak self] _, fire in
             self?.heartbeat = fire; return {}
