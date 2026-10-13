@@ -1,4 +1,5 @@
 import AVFAudio
+import CoreFoundation
 import Foundation
 import HailCore
 import HailDaemonKit
@@ -29,16 +30,22 @@ enum CoachingChildCodec {
                                    "stay_quiet_when", "delivery", "priority", "cooldown_ms"]
         guard data.count <= 7_000, identifier(listenerID),
               let profile = try JSONSerialization.jsonObject(with: data) as? [String: Any],
-              Set(profile.keys) == fields, profile["version"] as? Int == 1,
+              Set(profile.keys) == fields, integer(profile["version"]) == 1,
               profile["listener_id"] as? String == listenerID, profile["delivery"] as? String == "owner_private",
-              let priority = profile["priority"] as? Int, (-100...100).contains(priority),
-              let cooldown = profile["cooldown_ms"] as? Int, (0...60_000).contains(cooldown),
+              let priority = integer(profile["priority"]), (-100...100).contains(priority),
+              let cooldown = integer(profile["cooldown_ms"]), (0...60_000).contains(cooldown),
               ["name", "domain", "speak_when", "stay_quiet_when"].allSatisfy({ key in
                   guard let value = profile[key] as? String else { return false }
                   return !value.isEmpty && value.utf8.count <= 1_024
                       && value.utf8.allSatisfy { (32...126).contains($0) }
               }) else { throw CoachingChildError.invalidControl }
         return try wire(["version": 1, "type": "listener_profile", "action": "add", "profile": profile])
+    }
+
+    private static func integer(_ value: Any?) -> Int? {
+        guard let number = value as? NSNumber, CFGetTypeID(number) != CFBooleanGetTypeID(),
+              !["f", "d"].contains(String(cString: number.objCType)) else { return nil }
+        return number as? Int
     }
 
     static func control(_ action: String, session: UUID, fields: [String: Any] = [:]) throws -> Data {

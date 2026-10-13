@@ -132,6 +132,7 @@ import HailDaemonKit
         }
         _ = try RightyoInputEvent.decode(data) // Existing ordinary typed event envelope; no action consumer.
         sequence = next
+        if type == "owner_voice", started { return } // Typed descriptive data only; never activity or authority.
         if type == "session" {
             if object["phase"] as? String == "started", !started { started = true; return }
             if ["stopped", "cancelled", "error"].contains(object["phase"] as? String ?? ""), started {
@@ -153,8 +154,10 @@ import HailDaemonKit
         // Missing trusted evidence holds; never infer from words. Callbacks may have retired this lease.
         let activity = try CoachingChildCodec.activity(measurement, utterance: utterance, lease: lease)
         guard !closed, self.lease == lease, ContinuousClock.now < lease.expiresAt,
-              ContinuousClock.now - received < .seconds(2),
-              child?.sendCoachingControl(activity, validUntil: min(lease.expiresAt, received.advanced(by: .seconds(2))))
-                == true else { throw CoachingChildError.invalidControl }
+              ContinuousClock.now - received < .seconds(2) else { return } // Superseded operation holds.
+        guard child?.sendCoachingControl(activity,
+            validUntil: min(lease.expiresAt, received.advanced(by: .seconds(2)))) == true else {
+            throw CoachingChildError.invalidControl // Actual channel failure still retires the owner.
+        }
     }
 }
