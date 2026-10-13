@@ -28,6 +28,17 @@ import Testing
         try await rig.join()
     }
 
+    @Test func suppressedRenewalReallyExpiresTheOwnedFixture() async throws {
+        let rig = try CoachingTransportRig(tail: "") // Controlled scheduler intentionally never fires.
+        try rig.driver.enable(participantAwareness: true)
+        let lease = try #require(rig.audio?.session.qualification)
+        #expect(rig.driver.status == .active)
+        try await Task.sleep(until: lease.expiresAt.advanced(by: .milliseconds(100)), clock: .continuous)
+        #expect(rig.audio?.session.qualification == nil && rig.capture.stops > 0)
+        #expect(rig.driver.status != .active && rig.player.played == 0)
+        try await rig.join()
+    }
+
     @Test func renewalInsideActivityCallbackHoldsOldFinalWithoutRetiringRenewedOwner() async throws {
         let rig = try CoachingTransportRig(tail: CoachingTransportRig.final, renew: true)
         try await rig.run()
@@ -123,7 +134,7 @@ import Testing
         }, audio: { [unowned self] hooks in
             let audio = try ExecutablePrivateAudio(capture: capture, player: player, hooks: hooks)
             self.audio = audio; return audio
-        }, speech: speech, clock: CoachingClock(schedule: { [weak self] _, fire in
+        }, speech: speech, clock: hosted ? .init() : CoachingClock(schedule: { [weak self] _, fire in
             self?.heartbeat = fire; return {}
         }))
     }

@@ -19,3 +19,11 @@ qualified b244 synthetic launcher remains mock-only and rejects hosted/native ex
 configuration forwarding, final integrated reviews, refreshed mock composition and a later scoped human
 hosted-text/service-budget decision remain separate requirements. This unmerged source does not activate
 any provider, install or deploy anything, or establish physical privacy or advice quality.
+
+The first full parallel verifier failed the new argv fixture's active-owner assertion, although all argv
+assertions passed. That fixture suppressed the coordinator's renewal scheduler while retaining the real
+two-second audio lease; scheduling contention allowed the lease to expire. A controlled no-renewal case
+now demonstrates the same real expiry, capture retirement and zero playback beyond the original deadline.
+The argv case uses the actual renewal scheduler, preserving its active-owner and zero-playback assertions.
+Production TTL, cadence, scheduling and retirement guards are unchanged. The failed run and captures remain
+preserved; only a new complete exact-head verifier and independent reviews can qualify this integrated slice.
