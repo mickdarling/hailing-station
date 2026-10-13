@@ -5,21 +5,43 @@ import Foundation
 @MainActor final class CoachingTerminal {
     private var descriptor: Int32?
     private let flags: Int32
-    init(output: Int32 = STDERR_FILENO) throws {
-        guard isatty(output) == 1 else { throw CoachingCommandError.localControlRequired }
+    private let noSigPipe: Int32
+    convenience init(output: Int32 = STDERR_FILENO) throws {
+        try self.init(output: output, requireTerminal: true)
+    }
+    private init(output: Int32, requireTerminal: Bool) throws {
+        var details = stat()
+        let terminal = isatty(output) == 1
+        // Nonblocking flags do not bound regular-file/device writes. Final redirected feedback is
+        // best-effort only on a pipe; unsupported destinations are silent rather than blocking exit.
+        guard terminal || (!requireTerminal && fstat(output, &details) == 0
+                           && details.st_mode & S_IFMT == S_IFIFO) else {
+            throw CoachingCommandError.localControlRequired
+        }
         let fd = dup(output)
         guard fd >= 0 else { throw CoachingCommandError.localControlRequired }
         flags = fcntl(fd, F_GETFL)
-        guard flags >= 0, fcntl(fd, F_SETFL, flags | O_NONBLOCK) == 0 else {
+        noSigPipe = fcntl(fd, F_GETNOSIGPIPE)
+        guard flags >= 0, noSigPipe >= 0, fcntl(fd, F_SETNOSIGPIPE, 1) == 0,
+              fcntl(fd, F_SETFL, flags | O_NONBLOCK) == 0 else {
+            if noSigPipe >= 0 { _ = fcntl(fd, F_SETNOSIGPIPE, noSigPipe) }
             Darwin.close(fd); throw CoachingCommandError.localControlRequired
         }
         descriptor = fd
+    }
+    /// The final CLI diagnostic must not re-enter ordinary blocking stderr after owned retirement.
+    static func reportRefusal(output: Int32 = STDERR_FILENO) {
+        guard let terminal = try? CoachingTerminal(output: output, requireTerminal: false) else { return }
+        defer { terminal.close() }
+        try? terminal.write("haild: private coaching refused; use trusted local terminal controls"
+                            + " and explicit private configuration\n")
     }
     isolated deinit { close() }
     func close() {
         guard let fd = descriptor else { return }
         descriptor = nil
         _ = fcntl(fd, F_SETFL, flags) // dup shares status flags; restore the CLI's original nonblocking mode.
+        _ = fcntl(fd, F_SETNOSIGPIPE, noSigPipe)
         Darwin.close(fd)
     }
     func write(_ text: String) throws {

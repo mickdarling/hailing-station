@@ -394,7 +394,8 @@ do {
 } catch ReplyCommandError.usage {
     usage()
 } catch is CoachingCommandError {
-    fail("private coaching refused; use trusted local terminal controls and explicit private configuration", code: 64)
+    CoachingTerminal.reportRefusal()
+    exit(64)
 } catch {
     fail("\(error)")
 }

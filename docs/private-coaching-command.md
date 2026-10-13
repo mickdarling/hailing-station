@@ -25,6 +25,15 @@ is tested with authored ports and a full synthetic PTY without any drain. Origin
 restored after joining. The original probe and subsequent test diagnostics remain preserved; fresh integrated
 head reviews are still required, and the prior verdict is not an approval of this correction.
 
+A further actual CLI probe found the final coaching refusal used ordinary blocking stderr after those flags
+were restored: a full authored PTY kept invalid configuration running until the controller drained it.
+The coaching-only final diagnostic now uses the same bounded nonblocking writer and then exits 64, even
+for a full or disconnected pipe. It never echoes input and does not change other commands' error reporting.
+Other redirected destinations are silently skipped: nonblocking flags do not bound regular-file I/O.
+Actual isolated executable regressions use invalid configuration before any native factory, no terminal
+drain, and software descriptors only. The red evidence remains preserved. This is an exit/reporting fix,
+not evidence of continued private effects after retirement or physical-device qualification.
+
 Native audio/child factories execute only after explicit aware enable; the local PCM-only speech bridge only
 after admitted advice. Native service/runtime remain trusted operator prerequisites. The executable proof
 uses the same owner with generated capture, pinned authored producer, mock TTS and synthetic private player.

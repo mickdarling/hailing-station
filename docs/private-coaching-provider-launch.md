@@ -27,3 +27,11 @@ now demonstrates the same real expiry, capture retirement and zero playback beyo
 The argv case uses the actual renewal scheduler, preserving its active-owner and zero-playback assertions.
 Production TTL, cadence, scheduling and retirement guards are unchanged. The failed run and captures remain
 preserved; only a new complete exact-head verifier and independent reviews can qualify this integrated slice.
+
+A later independent run exposed a verification defect in that negative: expiry plus 100ms does not guarantee
+delivery of the asynchronous expiry callback. Controlled delayed actor schedules reproduced stale stored
+status, while actual late heartbeat, buffer and ticket effects still refused the original deadline. The
+corrected regression deliberately withholds both timer deliveries and tests those three effect boundaries,
+then waits boundedly for owned retirement. It requires exactly one original qualification, zero forwarded
+expired PCM, zero playback, and no revival from duplicate old callbacks. No production deadline or assertion
+about expired effects is weakened; both failed evidence and the independent probes remain preserved.
