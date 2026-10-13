@@ -9,17 +9,30 @@ struct CoachingConfiguration {
     let executable: URL, config: URL, profile: URL, outputRoot: URL
     let listenerID: String
     let privateOutput: UInt32, roomMicrophone: UInt32
+    let provider: RightyoCoachingProvider
+
+    init(executable: URL, config: URL, profile: URL, outputRoot: URL, listenerID: String,
+         privateOutput: UInt32, roomMicrophone: UInt32, provider: RightyoCoachingProvider = .mock) {
+        self.executable = executable; self.config = config; self.profile = profile; self.outputRoot = outputRoot
+        self.listenerID = listenerID; self.privateOutput = privateOutput; self.roomMicrophone = roomMicrophone
+        self.provider = provider
+    }
 
     static func parse(_ arguments: [String]) throws -> Self {
         let required: Set<String> = ["--rightyo", "--rightyo-config", "--listener-profile", "--listener",
                                      "--private-output", "--room-microphone", "--renderer-output-root"]
-        var fields: [String: String] = [:], rest = arguments[...]
+        let optional: Set<String> = ["--coaching-provider", "--coaching-max-requests", "--coaching-advice-catalog"]
+        var fields: [String: String] = [:], rest = arguments[...], hostedTextConsent = false
         while let flag = rest.popFirst() {
-            guard required.contains(flag), fields[flag] == nil, let value = rest.popFirst(),
+            if flag == "--coaching-allow-hosted-text" {
+                guard !hostedTextConsent else { throw CoachingCommandError.invalidConfiguration }
+                hostedTextConsent = true; continue
+            }
+            guard required.union(optional).contains(flag), fields[flag] == nil, let value = rest.popFirst(),
                   !value.isEmpty, !value.contains("\0") else { throw CoachingCommandError.invalidConfiguration }
             fields[flag] = value
         }
-        guard Set(fields.keys) == required, let listener = fields["--listener"],
+        guard required.isSubset(of: Set(fields.keys)), let listener = fields["--listener"],
               validListener(listener), let output = device(fields["--private-output"]),
               let microphone = device(fields["--room-microphone"]), output != microphone else {
             throw CoachingCommandError.invalidConfiguration
@@ -27,7 +40,27 @@ struct CoachingConfiguration {
         return try Self(executable: path(fields["--rightyo"]), config: path(fields["--rightyo-config"]),
                         profile: path(fields["--listener-profile"]),
                         outputRoot: path(fields["--renderer-output-root"]), listenerID: listener,
-                        privateOutput: output, roomMicrophone: microphone)
+                        privateOutput: output, roomMicrophone: microphone,
+                        provider: provider(fields, consent: hostedTextConsent))
+    }
+
+    private static func provider(_ fields: [String: String], consent: Bool) throws -> RightyoCoachingProvider {
+        let selected = fields["--coaching-provider"] ?? "mock"
+        let budget = fields["--coaching-max-requests"], catalog = fields["--coaching-advice-catalog"]
+        if selected == "mock", !consent, budget == nil, catalog == nil { return .mock }
+        guard selected == "jev", consent, let budget,
+              budget.utf8.allSatisfy({ (48...57).contains($0) }),
+              let requests = Int(budget), (1...100).contains(requests), catalog != nil else {
+            throw CoachingCommandError.invalidConfiguration
+        }
+        return .jev(hostedTextConsent: true, maxRequests: requests, adviceCatalog: try path(catalog))
+    }
+
+    /// Shared inert binder used by native composition and authored-only tests; it starts no runtime.
+    func childConfiguration(profile: Data, provenance: RightyoAudioProvenance,
+                            mockSuggestions: URL? = nil) -> CoachingChildTransport.Configuration {
+        .init(executable: executable, config: config, profile: profile, listenerID: listenerID,
+              provenance: provenance, mockSuggestions: mockSuggestions, provider: provider)
     }
 
     private static func validListener(_ value: String) -> Bool {

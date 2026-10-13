@@ -68,9 +68,8 @@ struct CoachingCommandAudio {
     static func native(_ configuration: CoachingConfiguration) throws -> CoachingCommand {
         let profile = try configuration.loadProfile()
         return try CoachingCommand(listener: configuration.listenerID, transport: { hooks, flags in
-            try CoachingChildTransport(.init(executable: configuration.executable, config: configuration.config,
-                profile: profile, listenerID: configuration.listenerID, provenance: .liveMicrophone,
-                mockSuggestions: nil), hooks: hooks, activityFlags: flags)
+            try CoachingChildTransport(configuration.childConfiguration(profile: profile, provenance: .liveMicrophone),
+                                       hooks: hooks, activityFlags: flags)
         }, audio: { hooks in
             let privateAudio = try ApplePrivateCoaching(privateOutputDeviceID: configuration.privateOutput,
                 roomMicrophoneDeviceID: configuration.roomMicrophone,

@@ -51,6 +51,9 @@ func usage() -> Never {
            haild coaching --rightyo <absolute-path> --rightyo-config <absolute-path>
       --listener-profile <private-absolute-path> --listener <id> --private-output <local-device-id>
       --room-microphone <distinct-local-device-id> --renderer-output-root <private-absolute-directory>
+      [--coaching-provider mock|jev]
+      (jev also requires --coaching-allow-hosted-text --coaching-max-requests <1..100>
+       --coaching-advice-catalog <absolute-authored-catalog>; never implies hosted ASR consent)
       (foreground terminal only; starts OFF; separate participant-aware keyboard opt-in required)
            haild doctor      (checks the running daemon against this haild; exits 1 with a fix per failure)
            haild audit verify|tail|today
