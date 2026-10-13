@@ -12,6 +12,7 @@ public final class ApplePrivateCoaching {
     private let monitor: CoachingOutputMonitor
     private let session: PrivateCoachingSession
     private let consumer: CoachingAdviceConsumer
+    private let renderer: CoachingEngineRenderer?
 
     #if os(iOS)
     public convenience init(listenerID: String, hooks: PrivateCoachingSession.Hooks) throws {
@@ -26,6 +27,7 @@ public final class ApplePrivateCoaching {
     init(capture: any AudioCapturing, player: any CoachingAudioPlaying, monitor: CoachingOutputMonitor,
          listenerID: String, hooks: PrivateCoachingSession.Hooks, clock: CoachingClock = .init()) throws {
         self.monitor = monitor
+        renderer = player as? CoachingEngineRenderer
         session = PrivateCoachingSession(capture: capture, player: player,
                                         observeOutput: { monitor.observe() }, hooks: hooks, clock: clock)
         consumer = try CoachingAdviceConsumer(session: session, listenerID: listenerID)
@@ -58,11 +60,19 @@ public final class ApplePrivateCoaching {
 
     public func admit(_ data: Data) throws -> AdmittedCoachingAdvice { try consumer.admit(data) }
     public func schedule(_ payload: AudioPayload, for advice: AdmittedCoachingAdvice) throws {
-        try consumer.schedule(payload, for: advice)
+        try authorized(advice) { try consumer.schedule(payload, for: advice) }
     }
-    public func resume(_ advice: AdmittedCoachingAdvice) throws { try consumer.resume(advice) }
+    public func resume(_ advice: AdmittedCoachingAdvice) throws {
+        try authorized(advice) { try consumer.resume(advice) }
+    }
     public func setMuted(_ muted: Bool, for advice: AdmittedCoachingAdvice) throws {
-        try consumer.setMuted(muted, for: advice)
+        try authorized(advice) { try consumer.setMuted(muted, for: advice) }
+    }
+
+    private func authorized(_ advice: AdmittedCoachingAdvice, perform: () throws -> Void) throws {
+        guard let renderer else { try perform(); return } // Injected trusted players retain the core contract.
+        try renderer.withAuthorization({ [session] in (try? session.validate(advice.ticket)) != nil },
+                                       perform: perform)
     }
 
     /// Owner must call on connection/permission/participant-awareness loss, before any route rebuilding.

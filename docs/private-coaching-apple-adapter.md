@@ -36,6 +36,14 @@ instead of resuming. Queue replacement validates all payloads before changing pl
 AVAudioPlayerNode production implementation, with synthetic operation seams for tests—not an audio fake
 presented as hardware proof.
 
+The renderer is default-denied. The owning composition supplies a synchronous original-ticket gate around
+schedule/resume/mute. After route observation and conversion, each queue/play/resume/mute effect rechecks
+that exact ticket's scope and authoritative deadline, not a later renewed lease. The scoped gate is retired
+on return/throw; mute denial propagates through the owning throwing API despite the player protocol's void
+mute seam. `AppleCoachingEffectDeadlineTests` advances time inside renderer observations without firing
+actor timers; the previous source fails all three effect cases. Renderer tests cover lost authority after
+queueing and lost engine readiness inside the gate. These are software checks, not hardware-atomic guarantees.
+
 ## Concrete AirPods blocker and physical limits
 
 The inspected public iOS port API exposes transport type, descriptive name, UID, channel/data-source and

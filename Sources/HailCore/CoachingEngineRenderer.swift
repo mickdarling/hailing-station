@@ -35,10 +35,26 @@ struct CoachingRenderOperations {
 final class CoachingEngineRenderer: CoachingAudioPlaying {
     private let operations: CoachingRenderOperations
     private let observe: () -> CoachingOutputObservation
+    private var authorizes: () -> Bool = { false }
 
     init(operations: CoachingRenderOperations, observe: @escaping () -> CoachingOutputObservation) {
         self.operations = operations
         self.observe = observe
+    }
+
+    /// Local owner supplies an original-ticket gate for one synchronous operation. Default is denied.
+    func withAuthorization(_ gate: @escaping () -> Bool, perform: () throws -> Void) throws {
+        let previous = authorizes
+        var denied = false
+        authorizes = {
+            let allowed = gate()
+            if !allowed { denied = true }
+            return allowed
+        }
+        defer { authorizes = previous }
+        try perform()
+        // Mute's player protocol cannot throw; propagate its denial at the owning API boundary.
+        if denied { throw CoachingSafetyError.staleQualification }
     }
 
     func schedule(_ payload: AudioPayload, onPlayed: (@MainActor @Sendable () -> Void)?) throws {
@@ -77,6 +93,8 @@ final class CoachingEngineRenderer: CoachingAudioPlaying {
             cancel()
             throw CoachingSafetyError.unsafeOutput
         }
+        guard authorizes() else { cancel(); throw CoachingSafetyError.staleQualification }
+        guard operations.ready() else { cancel(); throw CoachingSafetyError.unsafeOutput }
         return token
     }
 

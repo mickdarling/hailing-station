@@ -15,7 +15,11 @@ final class AppleCoachingRig {
     var captureBuffers = 0
     var nonzeroCapture = false
     var suspensions: [CoachingSuspension] = []
-    lazy var monitor = CoachingOutputMonitor(snapshot: { [weak self] in self?.outputs ?? [] },
+    var onSnapshot: (() -> Void)?
+    lazy var monitor = CoachingOutputMonitor(snapshot: { [weak self] in
+        self?.onSnapshot?()
+        return self?.outputs ?? []
+    },
                                             center: center, names: [event])
 
     func make(capture supplied: (any AudioCapturing)? = nil) throws -> ApplePrivateCoaching {

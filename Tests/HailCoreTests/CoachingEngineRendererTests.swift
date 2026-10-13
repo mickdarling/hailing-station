@@ -27,11 +27,40 @@ final class CoachingRenderRig {
 }
 
 @Suite @MainActor struct CoachingEngineRendererTests {
+    @Test func noUnscopedAuthorityAndAuthorizationIsRetiredAfterReturn() throws {
+        let rig = CoachingRenderRig()
+        #expect(throws: CoachingSafetyError.staleQualification) { try rig.renderer.resume() }
+        try rig.renderer.withAuthorization({ true }, perform: { try rig.renderer.resume() })
+        #expect(throws: CoachingSafetyError.staleQualification) { try rig.renderer.resume() }
+        #expect(rig.plays == 1)
+    }
+
+    @Test func authorityLossDuringQueueingVetoesPlayAndEngineLossInsideGateVetoesEnqueue() {
+        let rig = CoachingRenderRig()
+        var allowed = true
+        rig.afterSchedule = { allowed = false }
+        #expect(throws: CoachingSafetyError.staleQualification) {
+            try rig.renderer.withAuthorization({ allowed }, perform: {
+                try rig.renderer.schedule(coachingPCM, onPlayed: nil)
+            })
+        }
+        #expect(rig.frames == [2] && rig.plays == 0 && rig.stops > 0)
+        rig.frames.removeAll()
+        #expect(throws: CoachingSafetyError.unsafeOutput) {
+            try rig.renderer.withAuthorization({ rig.running = false; return true }, perform: {
+                try rig.renderer.schedule(coachingPCM, onPlayed: nil)
+            })
+        }
+        #expect(rig.frames.isEmpty && rig.plays == 0)
+    }
+
     @Test func rendersBoundedPCMOnTheAlreadyRunningOwnerWithoutStartupOperation() throws {
         let rig = CoachingRenderRig()
-        try rig.renderer.schedule(coachingPCM, onPlayed: nil)
-        try rig.renderer.resume()
-        rig.renderer.setMuted(false)
+        try rig.renderer.withAuthorization({ true }, perform: {
+            try rig.renderer.schedule(coachingPCM, onPlayed: nil)
+            try rig.renderer.resume()
+            rig.renderer.setMuted(false)
+        })
         #expect(rig.frames == [2] && rig.plays == 2 && rig.mutes == [false])
     }
 
@@ -53,7 +82,9 @@ final class CoachingRenderRig {
         let rig = CoachingRenderRig()
         rig.afterSchedule = { rig.output = .unqualified }
         #expect(throws: CoachingSafetyError.unsafeOutput) {
-            try rig.renderer.schedule(coachingPCM, onPlayed: nil)
+            try rig.renderer.withAuthorization({ true }, perform: {
+                try rig.renderer.schedule(coachingPCM, onPlayed: nil)
+            })
         }
         #expect(rig.frames == [2] && rig.plays == 0 && rig.stops > 0)
     }
@@ -63,7 +94,9 @@ final class CoachingRenderRig {
         let invalid = AudioPayload(codec: .pcm16, sampleRate: 48_000, channels: 1,
                                    sequence: 0, isFinal: true, bytes: Data([1, 0]))
         #expect(throws: CoachingSafetyError.invalidAudio) {
-            try rig.renderer.replaceQueue(with: [coachingPCM, invalid], onPlayed: nil)
+            try rig.renderer.withAuthorization({ true }, perform: {
+                try rig.renderer.replaceQueue(with: [coachingPCM, invalid], onPlayed: nil)
+            })
         }
         #expect(throws: CoachingSafetyError.queueFull) {
             try rig.renderer.replaceQueue(with: Array(repeating: coachingPCM, count: 33), onPlayed: nil)
