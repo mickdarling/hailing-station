@@ -14,14 +14,14 @@ final class FakeEngineOperations {
 
     var operations: AudioEngineOperations {
         AudioEngineOperations(
-            installTap: { [unowned self] _, tap in self.tap = tap },
-            removeTap: { [unowned self] _ in tap = nil },
-            start: { [unowned self] _ in
+            installTap: { [self] _, tap in self.tap = tap },
+            removeTap: { [self] _ in tap = nil },
+            start: { [self] _ in
                 running = true
                 duringStart?()
             },
-            stop: { [unowned self] _ in running = false },
-            isRunning: { [unowned self] _ in running }
+            stop: { [self] _ in running = false },
+            isRunning: { [self] _ in running }
         )
     }
 
