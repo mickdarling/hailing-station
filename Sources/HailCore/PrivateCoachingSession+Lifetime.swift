@@ -1,6 +1,24 @@
 import Foundation
 
 extension PrivateCoachingSession {
+    func forwardSource(_ source: AsyncStream<AudioCaptureBuffer>, generation: UUID) {
+        forward = Task { @MainActor [weak self] in
+            for await buffer in source {
+                guard !Task.isCancelled, let self else { break }
+                guard let live = self.current() else {
+                    // A same-generation renewal can supersede this observation synchronously.
+                    // Drop only this unqualified buffer, not the still-owned source subscription.
+                    guard self.qualification?.generation == generation else { break }
+                    continue
+                }
+                guard live.generation == generation else { break }
+                self.hooks.buffer(buffer, live)
+            }
+            guard let self, self.qualification?.generation == generation else { return }
+            self.suspend(.captureEnded)
+        }
+    }
+
     func validate(_ ticket: CoachingAdviceTicket) throws {
         guard !transitioning, let live = current(), sameScope(ticket.qualification, live) else {
             throw CoachingSafetyError.staleQualification

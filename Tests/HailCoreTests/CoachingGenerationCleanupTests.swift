@@ -3,6 +3,31 @@ import Testing
 @testable import HailCore
 
 /// #269: an old operation has no cleanup authority over a replacement generation.
+@Suite @MainActor struct CoachingGenerationForwardingTests {
+    @Test(arguments: [false, true])
+    func renewalDuringBufferObservationKeepsForwardingSubsequentBuffers(cancel: Bool) async throws {
+        let rig = CoachingTestHarness()
+        let old = try rig.begin()
+        var renewed: CoachingQualification?
+        rig.onObserve = {
+            rig.onObserve = nil
+            do { renewed = try rig.session.renew(old) } catch { Issue.record(error) }
+        }
+        try rig.capture.yield(sineBuffer())
+        await drainCoachingTasks()
+        #expect(renewed != nil && rig.session.current() == renewed)
+        #expect(rig.capture.stopCount == 0 && rig.suspensions.isEmpty && rig.admitted.isEmpty)
+        try rig.capture.yield(sineBuffer())
+        await drainCoachingTasks()
+        #expect(rig.admitted.count == 1 && rig.capture.stopCount == 0)
+        if cancel { rig.session.forward?.cancel() } else { rig.capture.stop() } // Finish the authored stream.
+        await drainCoachingTasks()
+        #expect(rig.session.qualification == nil && rig.suspensions == [.captureEnded])
+        #expect(rig.capture.stopCount == (cancel ? 1 : 2))
+        rig.session.stop()
+    }
+}
+
 @Suite @MainActor struct CoachingGenerationCleanupTests {
     @Test(arguments: [Duration.zero, .milliseconds(1)])
     func finalRenewalClockCannotReviveExpiredGeneration(past: Duration) throws {

@@ -87,15 +87,7 @@ public final class PrivateCoachingSession {
             guard current()?.generation == lease.generation else { throw CoachingSafetyError.unsafeOutput }
             armExpiry(lease)
             guard current() == lease else { throw CoachingSafetyError.staleQualification }
-            forward = Task { @MainActor [weak self] in
-                for await buffer in source {
-                    guard !Task.isCancelled, let self,
-                          let live = self.current(), live.generation == lease.generation else { break }
-                    self.hooks.buffer(buffer, live)
-                }
-                guard let self, self.qualification?.generation == lease.generation else { return }
-                self.suspend(.captureEnded)
-            }
+            forwardSource(source, generation: lease.generation)
             return lease
         } catch {
             suspend(.captureFailed, ifGeneration: lease.generation)
