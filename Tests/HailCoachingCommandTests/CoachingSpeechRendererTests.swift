@@ -35,7 +35,7 @@ import Testing
             if payload.isFinal { #expect(source.cleanups == [false]) }
             output.append(payload)
         }
-        #expect(output.map(\.sequence) == [1, 2] && output.map(\.isFinal) == [false, true])
+        #expect(output.map(\.sequence) == [0, 1] && output.map(\.isFinal) == [false, true])
         #expect(output.reduce(Data()) { $0 + $1.bytes } == Data([17, 0, 18, 0, 19, 0]))
         #expect(output.allSatisfy { $0.sampleRate == 24_000 && $0.channels == 1 && $0.codec == .pcm16 })
         #expect(source.finishes == 1 && source.cancelled == 0)
@@ -99,7 +99,9 @@ import Testing
     @Test func invalidTextNeverConstructsSource() async throws {
         var starts = 0
         let renderer = CoachingSpeechRenderer { _ in starts += 1; return AuthoredSpeechSource() }
-        for text in ["", "authored\ncontrol", String(repeating: "a", count: 281)] {
+        for text in ["", "   ", "authored\ncontrol", "hidden\u{200b}format", "non\u{00a0}breaking",
+                     "line\u{2028}separator", String(repeating: "a", count: 281),
+                     Array(repeating: "a", count: 46).joined(separator: " ")] {
             await #expect(throws: ForegroundCoachingError.invalidSpeech) {
                 try await renderer.render(text) { _ in }
             }
