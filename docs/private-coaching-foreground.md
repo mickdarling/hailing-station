@@ -27,7 +27,7 @@ is correlated to finalized SpeechEvents, never guessed from words. The agreed ac
 `{schema_version:1,type:"coaching_activity",session_id,generation_id,utterance_id,pause_ms,
 owner_mid_answer,playback}`: canonical UUID session/generation, existing bounded Turn identifier
 (1..96 ASCII characters), integer pause 0..60000 and strict booleans. One pending final/activity;
-receipt freshness <=2000ms AND original qualification expiry; missing/stale activity holds advice.
+receipt freshness <2000ms AND original qualification expiry; missing/stale activity holds advice.
 Profiles retain the existing exact `listener_profile` envelope with `version:1`, not a parallel schema.
 
 Synthetic executable startup uses existing `listen --mode stdin --provenance synthetic --coaching
@@ -54,3 +54,14 @@ Native source composition will use ApplePrivateCoaching's separate fixed room-in
 bindings; no test here may execute its live factory or query/select/activate devices. No audio/transcript
 archive is added. Hardware, paid inference, install/signing, public push/PR/main merge and deployment
 remain outside the authorized software work.
+
+## Lifecycle review correction
+
+Independent full Round1 reviews rejected a71e3de13f523e5ed618f3e35a3970b84c43fee7 despite its green
+verification. Callback-capable advice admission could allocate overlapping render jobs; queued render
+startup ignored cancellation; old completion-time cancellation could overwrite a newer job's timer.
+The corrected source reserves admission before callbacks, revalidates task startup, and holds the join
+slot through detached old timer cancellation. Three red-before regressions reproduced the defects;
+another regression ensures noncooperative rendering cannot retain the owner and prevent deinit cleanup.
+Old failed logs/probes are preserved. Fresh exact-head full independent review is required; this note is
+not an approving verdict or an executable end-to-end claim.
