@@ -48,6 +48,10 @@ func usage() -> Never {
            haild status [--json]
            haild ambient reload|status [--socket <path>]
       (reload restarts the active ambient stream's RightyO child; never starts listening)
+           haild coaching --rightyo <absolute-path> --rightyo-config <absolute-path>
+      --listener-profile <private-absolute-path> --listener <id> --private-output <local-device-id>
+      --room-microphone <distinct-local-device-id> --renderer-output-root <private-absolute-directory>
+      (foreground terminal only; starts OFF; separate participant-aware keyboard opt-in required)
            haild doctor      (checks the running daemon against this haild; exits 1 with a fix per failure)
            haild audit verify|tail|today
            haild diagnostics tail [--device <name>] [--since <90s|15m|2h|1d|ISO-8601>] [--limit <n>] [--json]
@@ -333,6 +337,7 @@ do {
     case "doctor" where arguments.count == 1: doctor()
     case "reply": try await reply(arguments.dropFirst())
     case "ambient": try await ambient(arguments.dropFirst())
+    case "coaching": try await CoachingCommand.run(Array(arguments.dropFirst()))
     case "rightyo": try await rightyo(arguments.dropFirst())
     case "audit": try audit(arguments.dropFirst())
     case "diagnostics": try diagnostics(arguments.dropFirst())
@@ -385,6 +390,8 @@ do {
     fail("device diagnostics refused: \(error); the log directory must be yours and closed to others")
 } catch ReplyCommandError.usage {
     usage()
+} catch is CoachingCommandError {
+    fail("private coaching refused; use trusted local terminal controls and explicit private configuration", code: 64)
 } catch {
     fail("\(error)")
 }

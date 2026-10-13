@@ -10,9 +10,9 @@ import Testing
                    "Requires an explicitly supplied pinned authored-only executable"))
     func sameForegroundOwnerRunsActualPCMFinalActivityAdviceAndPrivateMockPCMOverTime() async throws {
         guard let executable else { return } // Optional executable lane: absence is NOT end-to-end proof.
-        let rig = try ExecutableCoachingRig(executable: executable)
+        let rig = try ExecutableCoachingRig(executable: executable, commandControls: true)
         #expect(rig.transports.isEmpty && rig.driver.status == .off)
-        try rig.driver.enable(participantAwareness: true)
+        try rig.enable()
         try await rig.capture.utterance()
         try await rig.waitFor { rig.player.played == 1 }
         let child = try #require(rig.transports.first)
@@ -36,8 +36,8 @@ import Testing
         guard let executable else { return }
         for flags in [nil, CoachingActivityFlags(ownerMidAnswer: true, playback: false),
                       CoachingActivityFlags(ownerMidAnswer: false, playback: true)] {
-            let rig = try ExecutableCoachingRig(executable: executable); rig.flags = flags
-            try rig.driver.enable(participantAwareness: true)
+            let rig = try ExecutableCoachingRig(executable: executable, commandControls: true); rig.flags = flags
+            try rig.enable()
             try await rig.capture.utterance()
             try await rig.waitFor { rig.transports.first?.finalCount == 1 }
             try await rig.capture.silence(seconds: 1)
@@ -51,8 +51,9 @@ import Testing
     func offOrOriginalDeadlineCancelsDelayedMockSpeechAndRejectsLatePCM() async throws {
         guard let executable else { return }
         for immediateOff in [true, false] {
-            let rig = try ExecutableCoachingRig(executable: executable); rig.speech.delayed = true
-            try rig.driver.enable(participantAwareness: true)
+            let rig = try ExecutableCoachingRig(executable: executable, commandControls: true)
+            rig.speech.delayed = true
+            try rig.enable()
             try await rig.capture.utterance()
             try await rig.waitFor { rig.speech.calls == 1 }
             if immediateOff { rig.driver.off() } else {

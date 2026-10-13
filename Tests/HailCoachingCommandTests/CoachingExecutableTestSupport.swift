@@ -95,11 +95,12 @@ import Testing
     var flags: CoachingActivityFlags? = .init(ownerMidAnswer: false, playback: false)
     var transports: [CoachingChildTransport] = []
     var audio: ExecutablePrivateAudio?
+    var command: CoachingCommand?
     var driver: ForegroundCoaching {
         guard let owner else { preconditionFailure("Authored fixture initialization incomplete") }; return owner
     }
     private var owner: ForegroundCoaching?
-    init(executable: String) throws {
+    init(executable: String, commandControls: Bool = false) throws {
         root = FileManager.default.temporaryDirectory.appendingPathComponent("hailing-coaching-executable-\(UUID())")
         try FileManager.default.createDirectory(at: root, withIntermediateDirectories: false,
                                                attributes: [.posixPermissions: 0o700])
@@ -116,20 +117,43 @@ import Testing
             "delivery": "owner_private", "priority": 0, "cooldown_ms": 0])
         configuration = .init(executable: URL(fileURLWithPath: executable), config: config, profile: profile,
                               listenerID: "coach", provenance: .synthetic, mockSuggestions: mock)
-        owner = try ForegroundCoaching(listenerID: "coach", transport: { [unowned self] hooks in
-            let transport = try CoachingChildTransport(configuration, hooks: hooks, activityFlags: { [weak self] in
-                self?.flags
-            })
+        let makeTransport: (ForegroundCoaching.ChildHooks, @escaping () -> CoachingActivityFlags?)
+            throws -> any ForegroundCoachingTransport = { [unowned self] hooks, flags in
+            let transport = try CoachingChildTransport(configuration, hooks: hooks, activityFlags: flags)
             transports.append(transport); return transport
-        }, audio: { [unowned self] hooks in
+        }
+        let makeAudio: (PrivateCoachingSession.Hooks) throws -> ExecutablePrivateAudio = { [unowned self] hooks in
             let owned = try ExecutablePrivateAudio(capture: capture, player: player, hooks: hooks)
             audio = owned; return owned
-        }, speech: speech)
+        }
+        if commandControls {
+            let command = try CoachingCommand(
+                listener: "coach", transport: makeTransport, audio: { [unowned self] hooks in
+                let owned = try makeAudio(hooks)
+                return CoachingCommandAudio(owner: owned, playback: { [weak self] in
+                    guard let flags = self?.flags else { return .unavailable }
+                    return flags.playback ? .pending : .idle
+                })
+            }, speech: speech)
+            self.command = command; owner = command.owner
+        } else {
+            owner = try ForegroundCoaching(listenerID: "coach", transport: { [weak self] hooks in
+                try makeTransport(hooks, { self?.flags })
+            }, audio: makeAudio, speech: speech)
+        }
     }
     func waitFor(_ predicate: () -> Bool, seconds: Int = 4) async throws {
         let deadline = ContinuousClock.now.advanced(by: .seconds(seconds))
         while !predicate(), ContinuousClock.now < deadline { try await Task.sleep(for: .milliseconds(10)) }
         #expect(predicate())
     }
-    func off() async throws { driver.off(); try await waitFor { driver.status == .off } }
+    func enable() throws {
+        if let command {
+            _ = try command.control("enable aware")
+            if flags?.ownerMidAnswer == false { _ = try command.control("owner idle") }
+        } else { try driver.enable(participantAwareness: true) }
+    }
+    func off() async throws {
+        if let command { await command.join() } else { driver.off(); try await waitFor { driver.status == .off } }
+    }
 }
