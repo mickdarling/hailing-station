@@ -18,6 +18,8 @@ import CoreAudio
 
 extension CoachingOutputMonitor: CoachingOutputMonitoring {}
 
+public enum CoachingPlaybackObservation: Sendable, Equatable { case unavailable, idle, pending }
+
 /// Unactivated production composition, separate from ordinary ambient capture and reply masking.
 /// iOS uses its actual current output, a dedicated raw capture engine and a non-activating player on that engine.
 /// iOS denies Bluetooth/AirPods. Native Mac uses separately verified fixed HAL bindings; no UI/daemon enables it.
@@ -86,6 +88,16 @@ public final class ApplePrivateCoaching {
     }
     public func resume(_ advice: AdmittedCoachingAdvice) throws {
         try authorized(advice) { try consumer.resume(advice) }
+    }
+
+    /// Conservative trusted activity evidence: queued/paused/muted PCM counts as playback until completed.
+    /// Unavailable is unknown/off, never idle. Observes the owned queue; grants no qualification or route.
+    public func privatePlaybackObservation() -> CoachingPlaybackObservation {
+        guard !session.transitioning, let live = session.current() else { return .unavailable }
+        let now = session.clock.now()
+        guard !session.transitioning, session.qualification == live, session.hasLiveDeadlines(live, at: now),
+              monitor.retains(live.outputID) else { return .unavailable }
+        return session.pendingPlayback.isEmpty ? .idle : .pending
     }
     public func setMuted(_ muted: Bool, for advice: AdmittedCoachingAdvice) throws {
         try authorized(advice) { try consumer.setMuted(muted, for: advice) }
