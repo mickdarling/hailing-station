@@ -59,7 +59,9 @@ struct CoachingConfiguration {
             guard data.count + count <= 7_000 else { throw CoachingCommandError.invalidConfiguration }
             data.append(contentsOf: buffer.prefix(count))
         }
-        _ = try CoachingChildCodec.profile(data, listenerID: listenerID)
+        do { _ = try CoachingChildCodec.profile(data, listenerID: listenerID) } catch {
+            throw CoachingCommandError.invalidConfiguration // Never propagate private profile parser diagnostics.
+        }
         return data
     }
 }

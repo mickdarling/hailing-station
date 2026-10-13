@@ -36,7 +36,7 @@ import Testing
                 try Data(text.replacingOccurrences(
                     of: "private-coach", with: "another-coach").utf8).write(to: fixture.path)
             }
-            #expect(throws: (any Error).self) { try fixture.configuration.loadProfile() }
+            #expect(throws: CoachingCommandError.invalidConfiguration) { try fixture.configuration.loadProfile() }
         }
     }
 
