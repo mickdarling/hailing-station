@@ -11,6 +11,28 @@ import HailProtocol
     func cleanup(cancel: Bool) async throws
 }
 
+protocol CoachingRendererJoining: Sendable {
+    func requireSuccessfulExit() async throws
+    func retire(cancel: Bool)
+    func waitForCleanup() async throws
+    func waitForCancellationSignals() async
+}
+extension OwnedReplyRenderer: CoachingRendererJoining {}
+
+enum CoachingRendererCleanup {
+    static func join(_ renderer: any CoachingRendererJoining, cancel: Bool) async throws {
+        renderer.retire(cancel: cancel)
+        // Deferred artifact retirement and signal submission are NOT an exact-child join.
+        // This existing boundary waits for owned exit even when its eventual outcome is cancellation/error.
+        _ = try? await renderer.requireSuccessfulExit()
+        do { try await renderer.waitForCleanup() } catch {
+            await renderer.waitForCancellationSignals()
+            throw error
+        }
+        await renderer.waitForCancellationSignals()
+    }
+}
+
 /// Existing renderer only; no reply publication, player, socket or route selection.
 @MainActor private final class LocalCoachingSpeechSource: CoachingSpeechSource {
     private let renderer: OwnedReplyRenderer
@@ -23,15 +45,7 @@ import HailProtocol
     func finish() async throws { try await renderer.requireSuccessfulExit() }
     func cancel() { renderer.cancel() }
     func cleanup(cancel: Bool) async throws {
-        renderer.retire(cancel: cancel)
-        // Even abnormal cleanup waits for owned reaping; failed artifacts remain intentionally preserved.
-        do {
-            try await renderer.waitForCleanup()
-        } catch {
-            await renderer.waitForCancellationSignals()
-            throw error
-        }
-        await renderer.waitForCancellationSignals()
+        try await CoachingRendererCleanup.join(renderer, cancel: cancel)
     }
 }
 

@@ -16,10 +16,15 @@ or incomplete PCM. The last nonempty chunk is finalized only after successful re
 Every chunk passes the coordinator's immutable original advice gate; no asynchronous downstream route is chosen.
 
 Cancellation retires only this source and retains the slot until cleanup returns. OwnedReplyRenderer fences
-signals/reaping against exact child ownership and waits for cleanup even on abnormal outcomes. Historical failed
+signals/reaping against exact child ownership. The adapter explicitly awaits requireSuccessfulExit even after
+abnormal retirement: waitForCleanup can report deferred artifacts before exit and cancellation signals do not
+prove reaping. Cancellation/error from the exit boundary is an outcome after joining, not permission to skip it.
+Historical failed
 renderer artifacts remain preserved; abnormal cleanup or ownership loss is an error, not successful final speech.
 Kernel reaping is not promised within a fixed deadline. The foreground owner remains retiring until return,
-so a noncooperative source cannot create overlapping successor work. No bypass of runtime/signal hooks is added.
+so a noncooperative source cannot create overlapping successor work. This joins only the exact owned child,
+not arbitrary descendant quiescence; the existing trusted nonescaping renderer remains a precondition.
+No bypass of runtime/signal hooks is added.
 
 Full verification and independent exact-head review remain pending. This adapter does not complete command wiring,
 actual executable proof, speech-quality qualification or physical headphone privacy proof. It remains unmerged,
