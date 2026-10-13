@@ -23,9 +23,16 @@ struct MacCoachingInputEvidence: Equatable, Sendable {
               let streams = inputs(device), !streams.isEmpty, streams.count <= 32,
               Set(streams).count == streams.count, streams.allSatisfy({ stream in
                   stream != kAudioObjectUnknown && reader.scalar(stream, kAudioStreamPropertyDirection) == 1
-                      && reader.scalar(stream, kAudioStreamPropertyTerminalType) == kAudioStreamTerminalTypeMicrophone
+                      && isMicrophone(reader.scalar(stream, kAudioStreamPropertyTerminalType), transport: transport)
               }), reader.scalar(device, kAudioDevicePropertyDeviceIsAlive) == 1 else { return nil }
         return Self(deviceID: device, uid: uid, streams: streams)
+    }
+
+    private static func isMicrophone(_ terminal: UInt32?, transport: UInt32) -> Bool {
+        // USB Audio Terminal Types 1.0, table 2-2: 0x0201 is the generic microphone.
+        // This is independent terminal evidence, not a USB transport/name-only grant.
+        terminal == kAudioStreamTerminalTypeMicrophone
+            || (transport == kAudioDeviceTransportTypeUSB && terminal == 0x0201)
     }
 
     private static func liveInputs(_ device: UInt32) -> [UInt32]? {
