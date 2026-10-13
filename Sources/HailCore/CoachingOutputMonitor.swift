@@ -66,7 +66,7 @@ public final class CoachingOutputMonitor {
         let revision = state.value.withLock { $0.revision }
         let outputs = snapshot()
         guard outputs.count == 1, outputs[0].kind == .wiredHeadphones, !outputs[0].uid.isEmpty else {
-            disarm()
+            disarm(ifRevision: revision)
             throw CoachingSafetyError.unsafeOutput
         }
         let armed = state.value.withLock { value in
@@ -84,7 +84,7 @@ public final class CoachingOutputMonitor {
         guard captured.armed else { return .unqualified }
         let outputs = snapshot()
         guard outputs.count == 1, outputs[0].kind == .wiredHeadphones, outputs[0].uid == captured.uid else {
-            disarm()
+            disarm(ifRevision: captured.revision)
             return .unqualified
         }
         guard state.value.withLock({ $0.armed && $0.revision == captured.revision }) else { return .unqualified }
@@ -92,6 +92,15 @@ public final class CoachingOutputMonitor {
     }
 
     func disarm() { _ = state.value.withLock { $0.retire() } }
+
+    func retains(_ token: UUID) -> Bool { state.value.withLock { $0.armed && $0.revision == token } }
+
+    private func disarm(ifRevision revision: UUID) {
+        state.value.withLock { value in
+            guard value.revision == revision else { return }
+            _ = value.retire()
+        }
+    }
 
     private static func liveSnapshot() -> [CoachingObservedPort] {
         #if os(iOS)

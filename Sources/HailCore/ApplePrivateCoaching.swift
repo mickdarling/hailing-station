@@ -41,12 +41,17 @@ public final class ApplePrivateCoaching {
     public func begin(sessionID: UUID, destinationID: UUID, consentConfirmed: Bool) throws -> CoachingQualification {
         stop()
         guard consentConfirmed else { throw CoachingSafetyError.consentRequired }
+        var startedGeneration: UUID?
         do {
             try monitor.arm()
             let lease = try session.begin(sessionID: sessionID, destinationID: destinationID, consentConfirmed: true)
+            startedGeneration = lease.generation
             try consumer.register(lease)
             return lease
-        } catch { stop(); throw error }
+        } catch {
+            if session.qualification?.generation == startedGeneration { stop() }
+            throw error
+        }
     }
 
     @discardableResult
@@ -55,7 +60,10 @@ public final class ApplePrivateCoaching {
             let fresh = try session.renew(lease)
             try consumer.register(fresh)
             return fresh
-        } catch { stop(); throw error }
+        } catch {
+            if session.qualification?.generation == lease.generation { stop() }
+            throw error
+        }
     }
 
     public func admit(_ data: Data) throws -> AdmittedCoachingAdvice { try consumer.admit(data) }
@@ -72,10 +80,23 @@ public final class ApplePrivateCoaching {
     private func authorized(_ advice: AdmittedCoachingAdvice, perform: () throws -> Void) throws {
         guard let renderer else { try perform(); return } // Injected trusted players retain the core contract.
         try renderer.withAuthorization({ [session] in (try? session.validate(advice.ticket)) != nil },
-                                       perform: perform, onFailure: { [monitor, consumer] in
+                                       perform: perform, owns: { [session] in
+            session.qualification?.generation == advice.ticket.qualification.generation
+        }, finalGate: { [weak self] in self?.effectsAllowed(advice.ticket) == true },
+        onFailure: { [monitor, consumer, session] in
+            guard session.qualification?.generation == advice.ticket.qualification.generation else { return }
             monitor.disarm()
             consumer.invalidate()
         })
+    }
+
+    /// Final authority after renderer readiness. No callback-capable route observation follows this check.
+    private func effectsAllowed(_ ticket: CoachingAdviceTicket) -> Bool {
+        guard !session.transitioning, let live = session.qualification,
+              session.sameScope(ticket.qualification, live) else { return false }
+        let now = session.clock.now()
+        return !session.transitioning && session.qualification == live && session.hasLiveDeadlines(live, at: now)
+            && now < ticket.qualification.expiresAt && monitor.retains(live.outputID)
     }
 
     /// Owner must call on connection/permission/participant-awareness loss, before any route rebuilding.

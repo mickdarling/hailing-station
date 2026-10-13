@@ -6,6 +6,19 @@ import Testing
     private let event = Notification.Name("SyntheticCoachingRouteEvent")
     private let wired = CoachingObservedPort(uid: "synthetic-wired-output", kind: .wiredHeadphones)
 
+    @Test func invalidOldArmSnapshotCannotDisarmNewRevision() throws {
+        var reenter: (() -> Void)?
+        let monitor = CoachingOutputMonitor(snapshot: {
+            guard let callback = reenter else { return [self.wired] }
+            reenter = nil
+            callback()
+            return [] // Invalid snapshot belongs only to the outer arm.
+        }, center: NotificationCenter(), names: [])
+        reenter = { do { try monitor.arm() } catch { Issue.record(error) } }
+        #expect(throws: CoachingSafetyError.unsafeOutput) { try monitor.arm() }
+        #expect(monitor.observe() != .unqualified)
+    }
+
     @Test func disabledAndBluetoothAreUnqualifiedRegardlessOfTransport() throws {
         for kind in AudioOutputKind.allCases {
             let monitor = CoachingOutputMonitor(snapshot: { [.init(uid: "authored-output", kind: kind)] },

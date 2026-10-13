@@ -37,6 +37,8 @@ final class CoachingEngineRenderer: CoachingAudioPlaying {
     private let observe: () -> CoachingOutputObservation
     private var authorizes: () -> Bool = { false }
     private var readinessFailure: CoachingSafetyError?
+    private var ownsLifetime: () -> Bool = { false }
+    private var finalAuthorization: () -> Bool = { false }
 
     init(operations: CoachingRenderOperations, observe: @escaping () -> CoachingOutputObservation) {
         self.operations = operations
@@ -45,17 +47,27 @@ final class CoachingEngineRenderer: CoachingAudioPlaying {
 
     /// Local owner supplies an original-ticket gate for one synchronous operation. Default is denied.
     func withAuthorization(_ gate: @escaping () -> Bool, perform: () throws -> Void,
+                           owns: @escaping () -> Bool = { true }, finalGate: @escaping () -> Bool = { true },
                            onFailure: () -> Void = {}) throws {
         let previous = authorizes
+        let previousOwner = ownsLifetime
+        let previousFinal = finalAuthorization
         let previousFailure = readinessFailure
         readinessFailure = nil
+        ownsLifetime = owns
+        finalAuthorization = finalGate
         var denied = false
         authorizes = {
             let allowed = gate()
             if !allowed { denied = true }
             return allowed
         }
-        defer { authorizes = previous; readinessFailure = previousFailure }
+        defer {
+            authorizes = previous
+            ownsLifetime = previousOwner
+            finalAuthorization = previousFinal
+            readinessFailure = previousFailure
+        }
         try perform()
         // Mute's player protocol cannot throw; propagate its denial at the owning API boundary.
         if let failure = readinessFailure { onFailure(); throw failure }
@@ -67,7 +79,7 @@ final class CoachingEngineRenderer: CoachingAudioPlaying {
         let buffer = try convert(payload)
         guard try ready() == token else { throw CoachingSafetyError.unsafeOutput }
         operations.schedule(buffer, onPlayed)
-        guard try ready() == token else { cancel(); throw CoachingSafetyError.unsafeOutput }
+        guard try ready() == token else { cancelIfOwned(); throw CoachingSafetyError.unsafeOutput }
         operations.control(.play)
     }
 
@@ -77,7 +89,7 @@ final class CoachingEngineRenderer: CoachingAudioPlaying {
     func setMuted(_ muted: Bool) {
         do { _ = try ready() } catch {
             readinessFailure = error as? CoachingSafetyError ?? .unsafeOutput
-            cancel()
+            cancelIfOwned()
             return
         }
         operations.control(.muted(muted))
@@ -90,22 +102,28 @@ final class CoachingEngineRenderer: CoachingAudioPlaying {
         guard try ready() == token else { throw CoachingSafetyError.unsafeOutput }
         cancel()
         for (index, buffer) in buffers.enumerated() {
-            guard try ready() == token else { cancel(); throw CoachingSafetyError.unsafeOutput }
+            guard try ready() == token else { cancelIfOwned(); throw CoachingSafetyError.unsafeOutput }
             operations.schedule(buffer, index == buffers.count - 1 ? onPlayed : nil)
         }
-        guard try ready() == token else { cancel(); throw CoachingSafetyError.unsafeOutput }
+        guard try ready() == token else { cancelIfOwned(); throw CoachingSafetyError.unsafeOutput }
         operations.control(.play)
     }
 
     private func ready() throws -> UUID {
         guard operations.ready(), case .verifiedHeadphones(let token) = observe() else {
-            cancel()
+            cancelIfOwned()
             throw CoachingSafetyError.unsafeOutput
         }
-        guard authorizes() else { cancel(); throw CoachingSafetyError.staleQualification }
-        guard operations.ready() else { cancel(); throw CoachingSafetyError.unsafeOutput }
+        guard authorizes() else { cancelIfOwned(); throw CoachingSafetyError.staleQualification }
+        guard operations.ready() else { cancelIfOwned(); throw CoachingSafetyError.unsafeOutput }
+        guard ownsLifetime(), finalAuthorization() else {
+            cancelIfOwned()
+            throw CoachingSafetyError.staleQualification
+        }
         return token
     }
+
+    private func cancelIfOwned() { if ownsLifetime() { cancel() } }
 
     private func convert(_ payload: AudioPayload) throws -> AVAudioPCMBuffer {
         guard payload.codec == .pcm16, payload.sampleRate == 24_000, payload.channels == 1,

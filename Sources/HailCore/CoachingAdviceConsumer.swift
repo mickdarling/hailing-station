@@ -33,6 +33,10 @@ public final class CoachingAdviceConsumer {
         guard session.current() == lease else { throw CoachingWireError.unknownQualification }
         if generation != lease.generation { clear(); generation = lease.generation }
         prune()
+        // Pruning reads a callback-capable clock; do not publish an old lease into a replacement ledger.
+        guard session.current() == lease, generation == lease.generation else {
+            throw CoachingWireError.unknownQualification
+        }
         if let original = qualifications[lease.qualificationID] {
             guard original == lease else { throw CoachingWireError.unknownQualification }
             return
