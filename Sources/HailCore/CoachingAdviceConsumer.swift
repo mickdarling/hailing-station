@@ -44,7 +44,7 @@ public final class CoachingAdviceConsumer {
     public func admit(_ data: Data) throws -> AdmittedCoachingAdvice {
         let wire = try CoachingWireAdvice.decode(data)
         guard let live = session.current(), live.generation == generation else {
-            clear(); throw CoachingWireError.staleAdvice
+            clearIfRetired(); throw CoachingWireError.staleAdvice
         }
         prune()
         guard let qualificationID = UUID(uuidString: wire.qualificationID),
@@ -91,7 +91,7 @@ public final class CoachingAdviceConsumer {
 
     private func validate(_ advice: AdmittedCoachingAdvice) throws {
         guard let live = session.current(), live.generation == generation else {
-            clear(); throw CoachingWireError.staleAdvice
+            clearIfRetired(); throw CoachingWireError.staleAdvice
         }
         prune()
         guard advice.consumerID == consumerID, admitted[advice.ticket.requestID] == advice.ticket,
@@ -110,6 +110,12 @@ public final class CoachingAdviceConsumer {
     private func validateRequest(_ requestID: UUID) throws {
         guard !requests.contains(requestID) else { throw CoachingWireError.replay }
         guard requests.count < Self.requestLimit else { try exhaust() }
+    }
+
+    private func clearIfRetired() {
+        // A changed snapshot can return nil after callback renewal/registration of a still-live generation.
+        // Preserve that current ledger, including one registered reentrantly for a fresh generation.
+        if session.qualification?.generation != generation { clear() }
     }
 
     private func clear() {
