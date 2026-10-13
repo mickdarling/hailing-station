@@ -3,6 +3,35 @@ import Darwin
 public import Foundation
 import Synchronization
 
+/// Coaching-only delivery fence. Ordinary child EOF continues to deliver its buffered terminal lines.
+final class RightyoOutputRevocation: Sendable {
+    private let state = Mutex(false)
+    func revoke() { state.withLock { $0 = true } }
+    func check() throws {
+        if state.withLock({ $0 }) { throw RightyoChildError.transportLost }
+    }
+}
+
+/// The existing byte-bounded stdout reader with a coaching-only fence before and after suspension.
+public struct RightyoChildOutput: AsyncSequence, Sendable {
+    let base: RightyoChildLines
+    let revocation: RightyoOutputRevocation?
+    public struct AsyncIterator: AsyncIteratorProtocol {
+        var base: RightyoChildLines.AsyncIterator
+        let revocation: RightyoOutputRevocation?
+        public mutating func next() async throws -> Data? {
+            try revocation?.check()
+            let line = try await base.next()
+            try revocation?.check()
+            return line
+        }
+    }
+    public func makeAsyncIterator() -> AsyncIterator {
+        AsyncIterator(base: base.makeAsyncIterator(), revocation: revocation)
+    }
+    func revokeCoaching() { revocation?.revoke() }
+}
+
 /// Explicit foreground capability, absent from ordinary ambient/reply child startup.
 public struct RightyoCoachingLaunch: Sendable {
     public let mockSuggestions: URL?

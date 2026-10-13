@@ -23,3 +23,20 @@ archive, action dispatcher or ordinary reply publication in this prerequisite.
 Tests use synthetic local pipes and the existing owned FakeRightyo harness. The actual Rightyo
 executable/coordinator/command integration and independent full exact-head review remain required.
 No live device query, audio, provider inference, public change, installation or deployment is proof here.
+
+This slice preserves history and integrates the corrected foreground coordinator at
+8bc59c08644db987a3d3d16a8ba97869ad5d7545, independently approved by two full Round3 reviews.
+The child-control diff requires its own completed exact-head review and full verification; coordinator
+approvals do not approve this fd/process change or establish executable end-to-end operation.
+
+Independent full child-control Round1 rejected 8256e72a9f5c5dc7146a7e73c8b299a7ddb74897:
+the inherited PCM writer could write after a POLLOUT wake without rechecking abandonment. A red-before
+filled-pipe regression reproduced old queued bytes after coaching control failure returned. Each
+nonblocking write now shares the abandonment/close ownership lock; graceful ordinary EOF still drains
+queued PCM. Historical diagnostics are preserved. Fresh exact-head full review remains required.
+
+The same review also reproduced buffered advice delivered after stream failure: finishing an
+AsyncThrowingStream preserves buffered values. Coaching output now has a separate shared revocation
+fence checked before and after each suspended delivery. Control failure, explicit abandonment and
+owned group loss revoke it; ordinary graceful EOF still delivers buffered terminal output. A red-before
+buffered-output regression failed before this correction. No old diagnostics were removed.
