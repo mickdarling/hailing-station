@@ -10,18 +10,17 @@ public final class RightyoChildProcess: Sendable {
     /// Untaken stdout lines are byte bounded, not count bounded; excess ends with `backlog`.
     public static let maxQueuedBytes = 4_000_000
     /// stdout split on newlines (empty lines skipped). Ends at EOF, or throws a `RightyoChildError`.
-    public let lines: RightyoChildLines
+    public let lines: RightyoChildOutput
     public let processIdentifier: Int32
     let input: RightyoStdinWriter
     let control: RightyoControlWriter
     let coachingControl: RightyoCoachingControlWriter?
+    private let outputRevocation: RightyoOutputRevocation?
     /// Owned group (#297): one queue observes exit/signals/reaps, preventing PID reuse.
     private let group: RightyoChildGroup
     private let stderrBytes = RightyoByteCount()
     private let timing: Timing
-
-    /// Exact symlink-resolved validated executable, listen/stdin fixed argv. RIGHTYO_ env additions only (#172);
-    /// PATH/HOME/TMPDIR cannot be replaced. Coaching requires its separate explicit capability.
+    /// Fixed validated executable/argv/environment; only RIGHTYO_ additions (#172). Coaching is explicitly opt-in.
     public init(executable: URL, config: URL, session: String, provenance: RightyoAudioProvenance = .liveMicrophone,
                 timing: Timing = .init(), replyControl: Bool = false, env: [String: String] = [:],
                 coaching: RightyoCoachingLaunch? = nil) throws {
@@ -37,21 +36,24 @@ public final class RightyoChildProcess: Sendable {
                                    directory: config.deletingLastPathComponent().path, replyControl: hasControl)
         let pair = AsyncThrowingStream<Data, any Error>.makeStream(bufferingPolicy: .unbounded)
         let queued = RightyoByteCount()
-        lines = RightyoChildLines(stream: pair.stream, queued: queued)
+        let revocation = coaching == nil ? nil : RightyoOutputRevocation()
+        outputRevocation = revocation
+        lines = RightyoChildOutput(base: RightyoChildLines(stream: pair.stream, queued: queued),
+                                   revocation: revocation)
         // The leader's exit ends the stream even if a descendant that left the group still holds stdout (#297).
         let continuation = pair.continuation, ended = RightyoByteCount()
         continuation.onTermination = { _ in ended.withLock { $0 = 1 } }
         group = RightyoChildGroup(leader: child.pid, termGrace: timing.termGrace) {
             guard ended.withLock({ $0 }) == 0 else { return false }
+            revocation?.revoke()
             continuation.finish(throwing: RightyoChildError.transportLost)
             return true
         }
         input = RightyoStdinWriter(input: child.input, exit: group.exit, timing: timing)
         control = RightyoControlWriter(coaching == nil ? child.control : nil)
         coachingControl = coaching == nil ? nil
-            : Self.coachingWriter(child.control, input: input, continuation: continuation)
+            : Self.coachingWriter(child.control, input: input, continuation: continuation, revocation: revocation)
         (processIdentifier, self.timing) = (child.pid, timing)
-        // Workers hold only their own boxes, never self: releasing the child runs owned cleanup.
         Thread.detachNewThread { RightyoChildLines.read(child.output, into: pair.continuation, queued: queued) }
         Thread.detachNewThread { [stderrBytes] in
             Self.drainErrors(child.errors) { count in stderrBytes.withLock { $0 += count } }
@@ -60,6 +62,7 @@ public final class RightyoChildProcess: Sendable {
 
     /// Drop abandons stdin and kills only the owned group, which still reaps.
     deinit {
+        outputRevocation?.revoke()
         input.close(abandon: true)
         coachingControl?.close()
         group.signal(SIGKILL)
@@ -71,16 +74,8 @@ public final class RightyoChildProcess: Sendable {
         return counters
     }
     public var exitStatus: RightyoChildExit? { group.exit.value }
-    /// Nonblocking PCM queue: refuses closed input, empty/odd chunks or chunks above the backlog bound.
-    @discardableResult public func write(_ pcm: Data) -> Bool { input.write(pcm) }
-
-    /// EOF for the child once already-queued audio is written, and the end of its control input. Idempotent.
-    public func closeInput() { input.close(abandon: false); control.close(); coachingControl?.close() }
-
-    /// Close stdin, wait `eofGrace`, SIGTERM the group, wait `termGrace`, SIGKILL the group; returns once the rest
-    /// of the group has been ended too (see `RightyoChildGroup`) and the child is reaped. Bounded: at most
-    /// `eofGrace + 3 * termGrace + 1` seconds (10 s with the defaults); past that it returns the exit seen so far,
-    /// or SIGKILL, and the group cleans up on its own. Explicit graces (#366) replace the child's timing.
+    /// EOF, owned SIGTERM/SIGKILL and reap. Bounded by `eofGrace + 3 * termGrace + 1` (10s by default).
+    /// If not settled, returns the observed exit or SIGKILL; the owned supervisor continues cleanup (#366).
     @discardableResult public func stop(eofGrace: TimeInterval? = nil, termGrace: TimeInterval? = nil) async
         -> RightyoChildExit {
         let (eofGrace, termGrace) = (eofGrace ?? timing.eofGrace, termGrace ?? timing.termGrace); closeInput()
@@ -104,13 +99,11 @@ final class RightyoStdinWriter: Sendable {
     private let exit: RightyoExitLatch
     private let timing: RightyoChildProcess.Timing
     private let writer = DispatchQueue(label: "hailing.rightyo-child.stdin")
-
     init(input: Int32, exit: RightyoExitLatch, timing: RightyoChildProcess.Timing) {
         (self.input, self.exit, self.timing) = (input, exit, timing)
     }
 
     var counters: RightyoChildProcess.Counters { state.withLock { $0.counters } }
-
     func write(_ pcm: Data) -> Bool {
         guard !pcm.isEmpty, pcm.count.isMultiple(of: 2), pcm.count <= timing.backlogBytes else { return false }
         let (accepted, start) = state.withLock { state -> (Bool, Bool) in
@@ -140,7 +133,6 @@ final class RightyoStdinWriter: Sendable {
         state.counters.droppedChunks += 1
         state.counters.droppedBytes += dropped
     }
-
     private func drain() {
         while let (chunk, at) = next() {
             guard push(chunk, at: at) else {
@@ -170,17 +162,14 @@ final class RightyoStdinWriter: Sendable {
         }
     }
 
-    /// Non-blocking writes with `F_SETNOSIGPIPE`: a dead child is EPIPE, never a signal. A chunk waiting on a full
-    /// pipe ages like a queued one: past `backlogAge` its unsent rest (from a sample boundary) is dropped.
+    /// Every nonblocking write shares abandonment ownership; waiting chunks retain their original age.
     private func push(_ chunk: Data, at: UInt64) -> Bool {
         var offset = 0
         while offset < chunk.count {
-            let count = chunk.withUnsafeBytes {
-                Darwin.write(input, $0.baseAddress?.advanced(by: offset), chunk.count - offset)
-            }
+            let result = writeOwned(chunk, offset: offset)
+            guard let count = result else { return false }
             if count > 0 {
                 offset += count
-                state.withLock { $0.counters.writtenBytes += count }
             } else if count < 0, errno == EINTR { continue } else {
                 guard count < 0, errno == EAGAIN, exit.value == nil, !state.withLock({ $0.abandoned }) else {
                     return false
@@ -195,6 +184,17 @@ final class RightyoStdinWriter: Sendable {
             }
         }
         return true
+    }
+
+    private func writeOwned(_ chunk: Data, offset: Int) -> Int? {
+        state.withLock { current in
+            guard !current.abandoned, !current.closed else { return nil }
+            let count = chunk.withUnsafeBytes {
+                Darwin.write(input, $0.baseAddress?.advanced(by: offset), chunk.count - offset)
+            }
+            if count > 0 { current.counters.writtenBytes += count }
+            return count
+        }
     }
 }
 #endif
