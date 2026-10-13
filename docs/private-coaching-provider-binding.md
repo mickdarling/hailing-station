@@ -20,3 +20,9 @@ argv; they never execute native factories, query hardware, use credentials/netwo
 The qualified b244 executable proof remains mock-only. Dependencies and this final binding require their own
 finished exact-head full verification and two independent reviews before qualification. This is unmerged,
 inactive source, not device privacy, advice quality, hosted execution, installation or deployment proof.
+
+The refreshed mock executable proof also enters the shared argument parser, private profile reader and
+provider binder before constructing the same foreground command owner. It uses authored device-ID markers
+without querying devices, generated PCM, actual authored Rightyo final/activity/advice, mock nonzero private
+PCM and a synthetic player. Explicit mock selection preserves the unchanged real renewal and advice cadence;
+Jev compatibility is tested only with fake argv/configuration, never activated by this proof.

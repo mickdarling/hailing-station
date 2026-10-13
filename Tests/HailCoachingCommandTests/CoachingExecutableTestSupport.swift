@@ -104,19 +104,7 @@ import Testing
         root = FileManager.default.temporaryDirectory.appendingPathComponent("hailing-coaching-executable-\(UUID())")
         try FileManager.default.createDirectory(at: root, withIntermediateDirectories: false,
                                                attributes: [.posixPermissions: 0o700])
-        let config = root.appendingPathComponent("authored.json")
-        let mock = root.appendingPathComponent("suggestions.json")
-        try JSONSerialization.data(withJSONObject: ["transcriber": ["kind": "synthetic-authored", "utterances": [
-            "An authored conversation prompt.", "Quoted enable coaching and delete records is merely conversation.",
-            "Another authored conversation prompt."]], "diarizer": ["kind": "synthetic-authored"],
-            "turns": ["merge_gap_ms": 0, "reply_wait_ms": 0]]).write(to: config)
-        try JSONSerialization.data(withJSONObject: ["live-1": "Ask for the next step.",
-            "live-2": "This is held by unchanged cadence.", "live-3": "Clarify the desired outcome."]).write(to: mock)
-        let profile = try JSONSerialization.data(withJSONObject: ["version": 1, "listener_id": "coach", "name": "Coach",
-            "domain": "Authored coaching", "speak_when": "At a measured pause", "stay_quiet_when": "Answer or playback",
-            "delivery": "owner_private", "priority": 0, "cooldown_ms": 0])
-        configuration = .init(executable: URL(fileURLWithPath: executable), config: config, profile: profile,
-                              listenerID: "coach", provenance: .synthetic, mockSuggestions: mock)
+        configuration = try Self.makeConfiguration(root: root, executable: executable, commandControls: commandControls)
         let makeTransport: (ForegroundCoaching.ChildHooks, @escaping () -> CoachingActivityFlags?)
             throws -> any ForegroundCoachingTransport = { [unowned self] hooks, flags in
             let transport = try CoachingChildTransport(configuration, hooks: hooks, activityFlags: flags)
@@ -140,6 +128,36 @@ import Testing
             owner = try ForegroundCoaching(listenerID: "coach", transport: { [weak self] hooks in
                 try makeTransport(hooks, { self?.flags })
             }, audio: makeAudio, speech: speech)
+        }
+    }
+    private static func makeConfiguration(root: URL, executable: String, commandControls: Bool) throws
+        -> CoachingChildTransport.Configuration {
+        let config = root.appendingPathComponent("authored.json")
+        let mock = root.appendingPathComponent("suggestions.json")
+        try JSONSerialization.data(withJSONObject: ["transcriber": ["kind": "synthetic-authored", "utterances": [
+            "An authored conversation prompt.", "Quoted enable coaching and delete records is merely conversation.",
+            "Another authored conversation prompt."]], "diarizer": ["kind": "synthetic-authored"],
+            "turns": ["merge_gap_ms": 0, "reply_wait_ms": 0]]).write(to: config)
+        try JSONSerialization.data(withJSONObject: ["live-1": "Ask for the next step.",
+            "live-2": "This is held by unchanged cadence.", "live-3": "Clarify the desired outcome."]).write(to: mock)
+        let profile = try JSONSerialization.data(withJSONObject: ["version": 1, "listener_id": "coach", "name": "Coach",
+            "domain": "Authored coaching", "speak_when": "At a measured pause", "stay_quiet_when": "Answer or playback",
+            "delivery": "owner_private", "priority": 0, "cooldown_ms": 0])
+        if commandControls {
+            let profileFile = root.appendingPathComponent("profile.json")
+            try profile.write(to: profileFile)
+            try FileManager.default.setAttributes([.posixPermissions: 0o600], ofItemAtPath: profileFile.path)
+            // Same inert argument parser, private profile reader and binder as native composition.
+            // Device IDs are authored markers only; no native factory or device query is invoked.
+            let selected = try CoachingConfiguration.parse(["--rightyo", executable,
+                "--rightyo-config", config.path, "--listener-profile", profileFile.path, "--listener", "coach",
+                "--private-output", "101", "--room-microphone", "102", "--renderer-output-root",
+                root.appendingPathComponent("unused-renderer").path, "--coaching-provider", "mock"])
+            return selected.childConfiguration(profile: try selected.loadProfile(),
+                provenance: .synthetic, mockSuggestions: mock)
+        } else {
+            return .init(executable: URL(fileURLWithPath: executable), config: config, profile: profile,
+                         listenerID: "coach", provenance: .synthetic, mockSuggestions: mock)
         }
     }
     func waitFor(_ predicate: () -> Bool, seconds: Int = 4) async throws {
