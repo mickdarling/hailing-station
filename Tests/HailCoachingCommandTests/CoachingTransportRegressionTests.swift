@@ -1,9 +1,22 @@
 import Foundation
 import HailCore
+import HailDaemonKit
 import Testing
 @testable import haild
 
 @Suite(.serialized) @MainActor struct CoachingTransportRegressionTests {
+    @Test func explicitHostedTextProviderOptionsReachOnlyExistingOwnedChildArgv() async throws {
+        let rig = try CoachingTransportRig(tail: "", hosted: true)
+        try await rig.run()
+        let arguments = try String(contentsOf: rig.argumentsFile, encoding: .utf8)
+            .split(separator: "\n").map(String.init)
+        #expect(arguments.contains("--coaching-provider") && arguments.contains("jev"))
+        #expect(arguments.contains("--coaching-allow-hosted-text") && arguments.contains("--coaching-max-requests"))
+        #expect(arguments.contains("20") && arguments.contains("--coaching-advice-catalog"))
+        #expect(!arguments.contains("--allow-hosted") && !arguments.contains("--use-jev"))
+        #expect(rig.driver.status == .active && rig.player.played == 0)
+        try await rig.join()
+    }
     @Test func supportedDescriptiveVoiceNeverGrantsActivityOrRetiresOwner() async throws {
         let rig = try CoachingTransportRig(tail: """
         printf '{"schema_version":1,"type":"owner_voice","session_id":"%s",\
@@ -12,6 +25,17 @@ import Testing
         try await rig.run()
         #expect(rig.driver.status == .active && rig.capture.stops == 0)
         #expect(rig.flagsCalls == 0 && rig.transport?.finalCount == 0 && rig.player.played == 0)
+        try await rig.join()
+    }
+
+    @Test func suppressedRenewalReallyExpiresTheOwnedFixture() async throws {
+        let rig = try CoachingTransportRig(tail: "") // Controlled scheduler intentionally never fires.
+        try rig.driver.enable(participantAwareness: true)
+        let lease = try #require(rig.audio?.session.qualification)
+        #expect(rig.driver.status == .active)
+        try await Task.sleep(until: lease.expiresAt.advanced(by: .milliseconds(100)), clock: .continuous)
+        #expect(rig.audio?.session.qualification == nil && rig.capture.stops > 0)
+        #expect(rig.driver.status != .active && rig.player.played == 0)
         try await rig.join()
     }
 
@@ -82,31 +106,23 @@ import Testing
     var flagsCalls = 0
     var heartbeat: (@MainActor () -> Void)?
     var original: CoachingQualification?
+    let argumentsFile: URL
 
-    init(tail: String, renew: Bool = false, off: Bool = false) throws {
+    init(tail: String, renew: Bool = false, off: Bool = false, hosted: Bool = false) throws {
         let root = FileManager.default.temporaryDirectory
             .appendingPathComponent("hailing-coaching-regression-\(UUID())")
         try FileManager.default.createDirectory(at: root, withIntermediateDirectories: false,
                                                attributes: [.posixPermissions: 0o700])
         let executable = root.appendingPathComponent("authored-child"), config = root.appendingPathComponent("config")
-        let script = """
-        #!/bin/sh
-        session=''
-        while [ "$#" -gt 0 ]; do
-          if [ "$1" = '--session-id' ]; then shift; session="$1"; fi
-          shift
-        done
-        printf '{"schema_version":1,"type":"session","phase":"started","session_id":"%s",\
-        "sequence":1,"emitted_at_ms":0}\\n' "$session"
-        /bin/sleep 0.3
-        \(tail)
-        exec /bin/sleep 60
-        """
-        try Data(script.utf8).write(to: executable)
+        argumentsFile = root.appendingPathComponent("arguments")
+        let catalog = root.appendingPathComponent("catalog")
+        try Data("{\"step\":\"Ask for the next step.\"}".utf8).write(to: catalog)
+        try Data(Self.script(record: argumentsFile, tail: tail).utf8).write(to: executable)
         try FileManager.default.setAttributes([.posixPermissions: 0o700], ofItemAtPath: executable.path)
         try Data("{}".utf8).write(to: config)
         let configuration = CoachingChildTransport.Configuration(executable: executable, config: config,
-            profile: Data(Self.profile.utf8), listenerID: "coach", provenance: .synthetic, mockSuggestions: nil)
+            profile: Data(Self.profile.utf8), listenerID: "coach", provenance: .synthetic, mockSuggestions: nil,
+            provider: hosted ? .jev(hostedTextConsent: true, maxRequests: 20, adviceCatalog: catalog) : .mock)
         owner = try ForegroundCoaching(listenerID: "coach", transport: { [unowned self] hooks in
             let child = try CoachingChildTransport(configuration, hooks: hooks, activityFlags: { [unowned self] in
                 flagsCalls += 1
@@ -118,9 +134,25 @@ import Testing
         }, audio: { [unowned self] hooks in
             let audio = try ExecutablePrivateAudio(capture: capture, player: player, hooks: hooks)
             self.audio = audio; return audio
-        }, speech: speech, clock: CoachingClock(schedule: { [weak self] _, fire in
+        }, speech: speech, clock: hosted ? .init() : CoachingClock(schedule: { [weak self] _, fire in
             self?.heartbeat = fire; return {}
         }))
+    }
+    private static func script(record: URL, tail: String) -> String {
+        """
+        #!/bin/sh
+        printf '%s\\n' "$@" > '\(record.path)'
+        session=''
+        while [ "$#" -gt 0 ]; do
+          if [ "$1" = '--session-id' ]; then shift; session="$1"; fi
+          shift
+        done
+        printf '{"schema_version":1,"type":"session","phase":"started","session_id":"%s",\
+        "sequence":1,"emitted_at_ms":0}\\n' "$session"
+        /bin/sleep 0.3
+        \(tail)
+        exec /bin/sleep 60
+        """
     }
     func run() async throws {
         try driver.enable(participantAwareness: true)

@@ -33,12 +33,31 @@ public struct RightyoChildOutput: AsyncSequence, Sendable {
 }
 
 /// Explicit foreground capability, absent from ordinary ambient/reply child startup.
+public enum RightyoCoachingProvider: Sendable {
+    case mock
+    case jev(hostedTextConsent: Bool, maxRequests: Int, adviceCatalog: URL)
+}
+
 public struct RightyoCoachingLaunch: Sendable {
     public let mockSuggestions: URL?
-    public init(mockSuggestions: URL? = nil) { self.mockSuggestions = mockSuggestions }
+    public let provider: RightyoCoachingProvider
+    public init(mockSuggestions: URL? = nil, provider: RightyoCoachingProvider = .mock) {
+        self.mockSuggestions = mockSuggestions; self.provider = provider
+    }
     func arguments(session: String, provenance: RightyoAudioProvenance) throws -> [String] {
         guard let id = UUID(uuidString: session), id.uuidString.lowercased() == session,
               session != "00000000-0000-0000-0000-000000000000" else { throw RightyoChildError.unsafeConfig }
+        if case let .jev(consent, budget, catalog) = provider {
+            var info = stat()
+            guard consent, (1...100).contains(budget), mockSuggestions == nil,
+                  catalog.isFileURL, catalog.path.hasPrefix("/"), !catalog.path.contains("\0"),
+                  stat(catalog.path, &info) == 0, info.st_mode & S_IFMT == S_IFREG,
+                  (1...8_192).contains(info.st_size), access(catalog.path, R_OK) == 0 else {
+                throw RightyoChildError.unsafeConfig
+            }
+            return ["--coaching", "--coaching-provider", "jev", "--coaching-allow-hosted-text",
+                    "--coaching-max-requests", String(budget), "--coaching-advice-catalog", catalog.path]
+        }
         guard let mockSuggestions else { return ["--coaching"] }
         var info = stat()
         guard provenance == .synthetic, mockSuggestions.isFileURL, mockSuggestions.path.hasPrefix("/"),
