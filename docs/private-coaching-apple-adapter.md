@@ -12,6 +12,11 @@ Only an explicit consent-confirmed `begin` may start capture. Buffer and suspens
 existing downstream seams; the suspension hook must cancel its provider/render work and clear context.
 No app or daemon constructs or enables the composition by default; no cross-process controls are wired here.
 
+The separately reviewed capture-run identity prerequisite fences old stream termination callbacks before
+immediate reuse. `AppleCoachingProductionCaptureTests` exercises two immediate `begin` calls through the
+actual capture/composition with injected engine operations, then forwards a synthetic microphone buffer and
+schedules advice on the replacement lifetime. No live engine operations run in that regression.
+
 The monitor reads `AVAudioSession.sharedInstance().currentRoute.outputs`, not an input selection or requested
 route. Only one actual `.headphones` port with a nonempty UID qualifies as wired headphones. The transient
 UID never leaves the monitor; downstream correlation receives a new opaque token per arm. Empty, mixed,
