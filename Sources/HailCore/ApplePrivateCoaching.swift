@@ -131,7 +131,7 @@ extension ApplePrivateCoaching {
         guard let evidence = MacCoachingDeviceEvidence.read(privateOutputDeviceID) else {
             throw CoachingSafetyError.unsafeOutput
         }
-        let binding = try MacCoachingOutputBinding(deviceID: privateOutputDeviceID,
+        let binding = try Self.bindPrivateOutput(evidence,
             read: { MacCoachingDeviceEvidence.read(privateOutputDeviceID) },
             operations: .live(engine: outputEngine))
         let owner = try MacCoachingAudioOwner.live(inputEngine: inputEngine, outputEngine: outputEngine,
@@ -139,6 +139,15 @@ extension ApplePrivateCoaching {
         let monitor = try MacCoachingOutputMonitor.live(owner: owner, output: evidence)
         let player = CoachingEngineRenderer(operations: .live(engine: outputEngine), observe: { monitor.observe() })
         try self.init(capture: owner, player: player, monitor: monitor, listenerID: listenerID, hooks: hooks)
+    }
+
+    static func bindPrivateOutput(_ evidence: MacCoachingDeviceEvidence,
+                                  read: @escaping () -> MacCoachingDeviceEvidence?,
+                                  operations: MacCoachingBindingOperations) throws -> MacCoachingOutputBinding {
+        try MacCoachingOutputBinding(deviceID: evidence.deviceID, read: {
+            guard read() == evidence else { return nil }
+            return evidence // The exact listener snapshot is also the binding's permanent authority.
+        }, operations: operations)
     }
 }
 #endif

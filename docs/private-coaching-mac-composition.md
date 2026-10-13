@@ -50,6 +50,11 @@ resource-start call retains cleanup responsibility until it returns, while new s
 startup/cleanup so late old work cannot attach to a successor. A fresh explicit start remains possible after
 the cancelled start has joined and completed cleanup. These are synthetic seam-level schedules, not measured
 AVAudioEngine hardware callback behavior.
+Composition Round 2 independently rejected a constructor evidence mismatch: the binding could accept
+a newer output stream list while the monitor installed listeners for the first list. Red-before tests
+reproduced accepting changed stream/UID evidence and setting the unit. Binding reads now require exact
+equality to the first listener snapshot before unit setting and at every later observation. Any mismatch
+denies construction or permanently retires the binding; it never silently switches listener authority.
 
 ## Still requires separately authorized physical qualification
 
