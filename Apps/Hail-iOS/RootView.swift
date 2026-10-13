@@ -48,6 +48,7 @@ struct RootView: View {
         NavigationStack {
             content
         }
+        .carPlayVoiceState(listening: connections.ambientStreaming, speaking: playback.isReplyAudioOutputBusy)
         .onChange(of: scenePhase) { _, phase in
             scenePhaseRevision &+= 1
             selectionRevision &+= 1
