@@ -65,3 +65,9 @@ slot through detached old timer cancellation. Three red-before regressions repro
 another regression ensures noncooperative rendering cannot retain the owner and prevent deinit cleanup.
 Old failed logs/probes are preserved. Fresh exact-head full independent review is required; this note is
 not an approving verdict or an executable end-to-end claim.
+
+Full Round2 rejected 1ef6b719a6ccbf520fbd8c11b168e19947ea1898 for heartbeat redelivery during
+callback-capable renewal and queued provider startup after the original admitted advice deadline.
+Red-before tests reproduced both. Timer ownership is now consumed before renewal; provider startup
+checks immutable original advice expiry and current scope after the final clock observation, even
+when the expiry callback has not run. Both previous verdicts and their diagnostics remain historical.

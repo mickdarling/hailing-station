@@ -3,6 +3,37 @@ import Testing
 @testable import HailCore
 
 @Suite @MainActor struct ForegroundCoachingAdmissionRaceTests {
+    @Test(arguments: [99, 100, 101])
+    func originalAdviceDeadlineFencesQueuedProviderStartup(milliseconds: Int) async throws {
+        let rig = try ForegroundRig()
+        try rig.driver.enable(participantAwareness: true)
+        let child = try #require(rig.children.first), lease = try #require(child.leases.last)
+        child.hooks.advice(try coachingWireData(lease, ttl: 100))
+        rig.time.now = rig.time.now.advanced(by: .milliseconds(milliseconds)) // No timer delivery.
+        await drainCoachingTasks()
+        #expect(rig.speech.texts.count == (milliseconds < 100 ? 1 : 0))
+        #expect(rig.owners[0].player.scheduled.count == (milliseconds < 100 ? 1 : 0))
+        rig.driver.off(); await drainCoachingTasks()
+    }
+
+    @Test func renewalCancellationCannotRedeliverCurrentHeartbeatOrDuplicatePublication() async throws {
+        let rig = try ForegroundRig()
+        try rig.driver.enable(participantAwareness: true)
+        let child = try #require(rig.children.first)
+        let fire = try #require(rig.time.alarms.values.first {
+            $0.at == rig.time.now.advanced(by: .seconds(1))
+        }).fire
+        rig.time.onCancel = {
+            rig.time.onCancel = nil
+            fire()
+        }
+        rig.time.advance(.seconds(1))
+        #expect(rig.driver.status == .active && child.leases.count == 2)
+        fire() // An already delivered timer cannot publish another qualification.
+        #expect(rig.driver.status == .active && child.leases.count == 2)
+        rig.driver.off(); await drainCoachingTasks()
+    }
+
     @Test func reentrantAdmissionCannotAllocateSecondRendererOrReleaseOldJoinSlot() async throws {
         let rig = try ForegroundRig()
         var releases: [CheckedContinuation<Void, Never>] = []
