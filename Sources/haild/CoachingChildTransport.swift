@@ -2,14 +2,22 @@ import Foundation
 import HailCore
 import HailDaemonKit
 
+struct CoachingChildConfiguration {
+    let executable: URL, config: URL, profile: Data
+    let listenerID: String
+    let provenance: RightyoAudioProvenance
+    let mockSuggestions: URL?
+    let provider: RightyoCoachingProvider
+    init(executable: URL, config: URL, profile: Data, listenerID: String,
+         provenance: RightyoAudioProvenance, mockSuggestions: URL?, provider: RightyoCoachingProvider = .mock) {
+        self.executable = executable; self.config = config; self.profile = profile; self.listenerID = listenerID
+        self.provenance = provenance; self.mockSuggestions = mockSuggestions; self.provider = provider
+    }
+}
+
 /// Foreground-only raw-PCM adapter. No HailHost, registry, action consumer, socket or network is constructed.
 @MainActor final class CoachingChildTransport: ForegroundCoachingTransport {
-    struct Configuration {
-        let executable: URL, config: URL, profile: Data
-        let listenerID: String
-        let provenance: RightyoAudioProvenance
-        let mockSuggestions: URL?
-    }
+    typealias Configuration = CoachingChildConfiguration
     private let configuration: Configuration
     private let profile: Data
     private let hooks: ForegroundCoaching.ChildHooks
@@ -44,7 +52,8 @@ import HailDaemonKit
                 guard child == nil, self.session == nil, listener == configuration.listenerID else { return false }
                 let child = try RightyoChildProcess(executable: configuration.executable, config: configuration.config,
                     session: session.uuidString.lowercased(), provenance: configuration.provenance,
-                    coaching: RightyoCoachingLaunch(mockSuggestions: configuration.mockSuggestions))
+                    coaching: RightyoCoachingLaunch(mockSuggestions: configuration.mockSuggestions,
+                                                   provider: configuration.provider))
                 self.child = child; self.session = session
                 read(child)
                 let enable = try CoachingChildCodec.control("enable", session: session, fields: [
