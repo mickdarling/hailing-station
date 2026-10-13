@@ -32,3 +32,12 @@ a later advice cycle is tested. Missing activity, owner answer/playback, off and
 during delayed mock TTS are negative paths. Synthetic diagnostic scratch is preserved; no private data
 or audio/transcript archive is introduced. Execution and independent review remain pending until
 exact producer/host heads and actual logs establish them. This is not speech quality or device proof.
+
+Full independent Round1 reviews rejected fc951c187d2f4045b792afb2abc444e96c3f1ab4 despite passing
+synthetic executable evidence: supported typed owner_voice descriptions incorrectly retired coaching,
+and renewal during a trusted activity callback retired the newly renewed owner. Red-before tests using
+the actual owned child/public foreground coordinator reproduced both. Valid descriptive events now
+remain non-authoritative; callback-superseded activity is held without changing current authority.
+Actual control-channel write failure still retires the owner. Profile integer fields reject booleans
+and floating scalars during inert validation. Fresh full exact-head reviews and verification are required;
+old approvals or green runtime tests do not qualify this correction.
