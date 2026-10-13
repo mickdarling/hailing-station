@@ -20,6 +20,19 @@ import Testing
             #expect(throws: CoachingCommandError.invalidConfiguration) { try invalid.loadProfile() }
         }
     }
+    @Test func extendedSharingACLIsRefusedEvenWithOwnerOnlyModeBits() throws {
+        let fixture = try Fixture()
+        try FileManager.default.setAttributes([.posixPermissions: 0o755], ofItemAtPath: fixture.root.path)
+        let permission = Process()
+        permission.executableURL = URL(fileURLWithPath: "/bin/chmod")
+        permission.arguments = ["+a", "everyone allow read", fixture.path.path]
+        try permission.run(); permission.waitUntilExit()
+        guard permission.terminationStatus == 0 else { throw CoachingCommandError.invalidConfiguration }
+        var details = stat()
+        #expect(stat(fixture.path.path, &details) == 0 && details.st_mode & 0o777 == 0o600)
+        #expect(throws: CoachingCommandError.invalidConfiguration) { try fixture.configuration.loadProfile() }
+        // Authored shared diagnostic fixture remains preserved; no real user profile is touched.
+    }
     @Test func symlinkFIFOSharedEmptyOversizedAndMalformedProfilesAreRefused() throws {
         for invalid in ["symlink", "fifo", "shared", "empty", "oversized", "malformed", "wrong-listener"] {
             let fixture = try Fixture()

@@ -52,7 +52,8 @@ struct CoachingConfiguration {
         defer { close(fd) }
         var details = stat()
         guard fstat(fd, &details) == 0, details.st_mode & S_IFMT == S_IFREG, details.st_uid == getuid(),
-              details.st_mode & 0o077 == 0, details.st_size > 0, details.st_size <= 7_000 else {
+              details.st_mode & 0o077 == 0, details.st_size > 0, details.st_size <= 7_000,
+              Self.hasNoExtendedACL(fd) else {
             throw CoachingCommandError.invalidConfiguration
         }
         var data = Data(), buffer = [UInt8](repeating: 0, count: 7_001)
@@ -68,5 +69,14 @@ struct CoachingConfiguration {
             throw CoachingCommandError.invalidConfiguration // Never propagate private profile parser diagnostics.
         }
         return data
+    }
+
+    /// Mode bits alone do not establish owner privacy on macOS. Query the same opened descriptor;
+    /// any extended entry or inspection failure is refused, including conservative deny-only ACLs.
+    private static func hasNoExtendedACL(_ descriptor: Int32) -> Bool {
+        guard let access = acl_get_fd_np(descriptor, ACL_TYPE_EXTENDED) else { return errno == ENOENT }
+        defer { acl_free(UnsafeMutableRawPointer(access)) }
+        var entry: acl_entry_t?
+        return acl_get_entry(access, Int32(ACL_FIRST_ENTRY.rawValue), &entry) == -1 && errno == EINVAL
     }
 }
