@@ -55,7 +55,10 @@ public final class ApplePrivateCoaching {
             let fresh = try session.renew(lease)
             try consumer.register(fresh)
             return fresh
-        } catch { stop(); throw error }
+        } catch {
+            if session.qualification?.generation == lease.generation { stop() }
+            throw error
+        }
     }
 
     public func admit(_ data: Data) throws -> AdmittedCoachingAdvice { try consumer.admit(data) }
@@ -72,7 +75,10 @@ public final class ApplePrivateCoaching {
     private func authorized(_ advice: AdmittedCoachingAdvice, perform: () throws -> Void) throws {
         guard let renderer else { try perform(); return } // Injected trusted players retain the core contract.
         try renderer.withAuthorization({ [session] in (try? session.validate(advice.ticket)) != nil },
-                                       perform: perform, onFailure: { [monitor, consumer] in
+                                       perform: perform, owns: { [session] in
+            session.qualification?.generation == advice.ticket.qualification.generation
+        }, onFailure: { [monitor, consumer, session] in
+            guard session.qualification?.generation == advice.ticket.qualification.generation else { return }
             monitor.disarm()
             consumer.invalidate()
         })

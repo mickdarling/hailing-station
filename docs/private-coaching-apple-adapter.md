@@ -46,6 +46,11 @@ queueing and lost engine readiness inside the gate. These are software checks, n
 Every void-mute readiness failure is also recorded, including engine/route denial before its ticket gate runs.
 The owner disarms/invalidate-clears that lifetime before surfacing the error; repeated cleanup is idempotent.
 The route-loss-inside-unmute regression fails on the prior source and asserts prompt capture/context retirement.
+The separately reviewed generation-cleanup prerequisite preserves a successor created synchronously inside
+an old route or clock observation. Renderer denial cleanup and failed renewal are likewise scoped to their
+originating generation: old work cannot disarm a new monitor, cancel its queued advice or stop its capture.
+Replacement regressions exercise core, renderer and final-gate observations across schedule/resume/mute,
+plus failed renewal after an explicitly begun successor. The old operations fail; fresh advice remains usable.
 
 ## Concrete AirPods blocker and physical limits
 
