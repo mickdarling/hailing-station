@@ -43,6 +43,9 @@ on return/throw; mute denial propagates through the owning throwing API despite 
 mute seam. `AppleCoachingEffectDeadlineTests` advances time inside renderer observations without firing
 actor timers; the previous source fails all three effect cases. Renderer tests cover lost authority after
 queueing and lost engine readiness inside the gate. These are software checks, not hardware-atomic guarantees.
+Every void-mute readiness failure is also recorded, including engine/route denial before its ticket gate runs.
+The owner disarms/invalidate-clears that lifetime before surfacing the error; repeated cleanup is idempotent.
+The route-loss-inside-unmute regression fails on the prior source and asserts prompt capture/context retirement.
 
 ## Concrete AirPods blocker and physical limits
 

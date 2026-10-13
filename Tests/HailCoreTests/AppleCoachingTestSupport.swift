@@ -16,6 +16,7 @@ final class AppleCoachingRig {
     var nonzeroCapture = false
     var suspensions: [CoachingSuspension] = []
     var onSnapshot: (() -> Void)?
+    var rendererReady = true
     lazy var monitor = CoachingOutputMonitor(snapshot: { [weak self] in
         self?.onSnapshot?()
         return self?.outputs ?? []
@@ -26,7 +27,7 @@ final class AppleCoachingRig {
         let source = supplied ?? capture
         let player = CoachingEngineRenderer(operations: .init(ready: { [weak self] in
             guard let self else { return false }
-            return self.capture.startCount > self.capture.stopCount
+            return self.rendererReady && self.capture.startCount > self.capture.stopCount
         }, schedule: { [weak self] buffer, _ in self?.frameCounts.append(buffer.frameLength) },
            control: { [weak self] command in
             if case .play = command { self?.plays += 1 }
