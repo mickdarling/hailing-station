@@ -11,12 +11,13 @@ import HailProtocol
     var now = ContinuousClock.now
     var alarms: [UUID: Alarm] = [:]
     var onSchedule: (() -> Void)?
+    var onCancel: (() -> Void)?
     var clock: CoachingClock {
         CoachingClock(now: { self.now }, schedule: { delay, fire in
             let id = UUID()
             self.alarms[id] = Alarm(at: self.now.advanced(by: delay), fire: fire)
             self.onSchedule?()
-            return { self.alarms[id]?.cancelled = true }
+            return { self.alarms[id]?.cancelled = true; self.onCancel?() }
         })
     }
     func advance(_ by: Duration) {
@@ -31,6 +32,7 @@ import HailProtocol
     let player = CoachingTestPlayer()
     let session: PrivateCoachingSession
     let consumer: CoachingAdviceConsumer
+    var onAdmit: (() -> Void)?
     init(hooks: PrivateCoachingSession.Hooks, clock: CoachingClock) throws {
         session = PrivateCoachingSession(capture: capture, player: player,
             observeOutput: { .verifiedHeadphones(Self.outputID) }, hooks: hooks, clock: clock)
@@ -48,7 +50,11 @@ import HailProtocol
         try consumer.register(fresh)
         return fresh
     }
-    func admit(_ data: Data) throws -> AdmittedCoachingAdvice { try consumer.admit(data) }
+    func admit(_ data: Data) throws -> AdmittedCoachingAdvice {
+        let advice = try consumer.admit(data)
+        onAdmit?()
+        return advice
+    }
     func schedule(_ payload: AudioPayload, for advice: AdmittedCoachingAdvice) throws {
         try consumer.schedule(payload, for: advice)
     }
@@ -100,6 +106,7 @@ import HailProtocol
         return owner
     }
     private var owner: ForegroundCoaching?
+    func releaseDriver() { owner = nil }
     init() throws {
         owner = try ForegroundCoaching(listenerID: "private-coach", transport: { [unowned self] hooks in
             let child = ForegroundTestChild(hooks)

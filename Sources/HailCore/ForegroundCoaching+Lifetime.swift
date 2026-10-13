@@ -19,11 +19,19 @@ extension ForegroundCoaching {
     }
 
     func armHeartbeat(_ id: UUID) {
-        cancelHeartbeat?()
         let revision = UUID()
         heartbeatRevision = revision
+        let oldCancel = cancelHeartbeat
+        cancelHeartbeat = nil
+        oldCancel?()
+        guard live(id), heartbeatRevision == revision else { return }
         let cancel = clock.schedule(.seconds(1)) { [weak self] in
             guard let self, self.heartbeatRevision == revision else { return }
+            // Consume timer authority before renewal/cancellation can synchronously redeliver it.
+            self.heartbeatRevision = UUID()
+            let firedCancel = self.cancelHeartbeat
+            self.cancelHeartbeat = nil
+            firedCancel?()
             self.heartbeat(id)
         }
         guard epoch == id, status == .active, heartbeatRevision == revision else { cancel(); return }
@@ -45,12 +53,16 @@ extension ForegroundCoaching {
 
     func receive(_ data: Data, epoch id: UUID) {
         guard live(id), !rendering, let audio else { return }
+        // Admission observes callback-capable clocks/routes. Reserve ownership BEFORE entering it.
+        rendering = true
+        let revision = UUID()
+        renderRevision = revision
         do {
             let advice = try audio.admit(data)
-            guard live(id) else { off(epoch: id); return }
-            rendering = true; sequence = 0; speechBytes = 0; speechFinal = false
-            let revision = UUID()
-            renderRevision = revision
+            guard live(id), renderRevision == revision else {
+                rendering = false; off(epoch: id); finishRetirement(); return
+            }
+            sequence = 0; speechBytes = 0; speechFinal = false
             let now = clock.now()
             guard live(id), now < advice.ticket.qualification.expiresAt else {
                 rendering = false; off(epoch: id); finishRetirement(); return
@@ -64,6 +76,10 @@ extension ForegroundCoaching {
             }
             cancelRenderExpiry = cancel
             renderTask = Task { [weak self, speech] in
+                guard !Task.isCancelled, self?.renderMayStart(advice, epoch: id, revision: revision) == true else {
+                    self?.renderFinished(id, revision: revision, succeeded: false)
+                    return
+                }
                 var succeeded = false
                 do {
                     try await speech.render(advice.text) { [weak self] payload in
@@ -74,7 +90,20 @@ extension ForegroundCoaching {
                 } catch { /* Content-free failure: never log advice or provider output. */ }
                 self?.renderFinished(id, revision: revision, succeeded: succeeded)
             }
-        } catch { off(epoch: id) }
+        } catch { rendering = false; off(epoch: id); finishRetirement() }
+    }
+
+    func renderMayStart(_ advice: AdmittedCoachingAdvice, epoch id: UUID, revision: UUID) -> Bool {
+        guard live(id), rendering, renderRevision == revision, let lease, let deadline else { return false }
+        let now = clock.now()
+        // No callback follows the final clock read: both current authority and ORIGINAL work deadline.
+        return epoch == id && status == .active && rendering && renderRevision == revision
+            && self.lease == lease && self.deadline == deadline
+            && lease.sessionID == advice.ticket.qualification.sessionID
+            && lease.generation == advice.ticket.qualification.generation
+            && lease.destinationID == advice.ticket.qualification.destinationID
+            && lease.outputID == advice.ticket.qualification.outputID
+            && now < lease.expiresAt && now < deadline && now < advice.ticket.qualification.expiresAt
     }
 
     func emit(_ payload: AudioPayload, advice: AdmittedCoachingAdvice,
@@ -95,10 +124,14 @@ extension ForegroundCoaching {
         guard epoch == id else { return }
         // Retirement invalidates effects but the same job still owns its join slot.
         guard status == .retiring || renderRevision == revision else { return }
-        renderTask = nil; rendering = false
+        let completed = succeeded && speechFinal && live(id)
+        renderTask = nil
         renderRevision = UUID()
-        cancelRenderExpiry?(); cancelRenderExpiry = nil
-        if status == .active, !succeeded || !speechFinal || !live(id) { off(epoch: id) }
+        let oldCancel = cancelRenderExpiry
+        cancelRenderExpiry = nil
+        oldCancel?() // Hold the admission/join slot throughout callback-capable cancellation.
+        rendering = false
+        if status == .active, !completed || !live(id) { off(epoch: id) }
         finishRetirement()
     }
 

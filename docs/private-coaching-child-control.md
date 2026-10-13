@@ -23,3 +23,8 @@ archive, action dispatcher or ordinary reply publication in this prerequisite.
 Tests use synthetic local pipes and the existing owned FakeRightyo harness. The actual Rightyo
 executable/coordinator/command integration and independent full exact-head review remain required.
 No live device query, audio, provider inference, public change, installation or deployment is proof here.
+
+This slice preserves history and integrates the corrected foreground coordinator at
+8bc59c08644db987a3d3d16a8ba97869ad5d7545, independently approved by two full Round3 reviews.
+The child-control diff requires its own completed exact-head review and full verification; coordinator
+approvals do not approve this fd/process change or establish executable end-to-end operation.
