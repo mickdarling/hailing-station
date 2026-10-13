@@ -8,11 +8,12 @@ import Testing
     var chunks: [Data] = []
     var cancelled = 0, cleanups: [Bool] = [], finishes = 0
     var duringConsume: (() -> Void)?
+    var afterChunk: (() -> Void)?
     var cleanupWait: CheckedContinuation<Void, Never>?
     var delayCleanup = false, failFinish = false, failCleanup = false
     func consume(_ receive: (Data) throws -> Void) async throws {
         duringConsume?()
-        for chunk in chunks { try receive(chunk) }
+        for chunk in chunks { try receive(chunk); afterChunk?() }
     }
     func finish() async throws {
         finishes += 1
@@ -35,10 +36,45 @@ import Testing
             if payload.isFinal { #expect(source.cleanups == [false]) }
             output.append(payload)
         }
-        #expect(output.map(\.sequence) == [0, 1] && output.map(\.isFinal) == [false, true])
+        #expect(output.map(\.sequence) == [0, 1, 2] && output.map(\.isFinal) == [false, false, true])
         #expect(output.reduce(Data()) { $0 + $1.bytes } == Data([17, 0, 18, 0, 19, 0]))
         #expect(output.allSatisfy { $0.sampleRate == 24_000 && $0.channels == 1 && $0.codec == .pcm16 })
         #expect(source.finishes == 1 && source.cancelled == 0)
+    }
+
+    @Test func firstUsablePCMDoesNotWaitForAnotherReadOrSourceExit() async throws {
+        let source = AuthoredSpeechSource(); source.chunks = [Data(repeating: 17, count: 9_600)]
+        var output: [AudioPayload] = []
+        source.afterChunk = {
+            #expect(output.count == 1 && output.first?.isFinal == false)
+            #expect(source.finishes == 0 && source.cleanups.isEmpty)
+        }
+        let renderer = CoachingSpeechRenderer(source: { _ in source })
+        try await renderer.render("authored short phrase") { output.append($0) }
+        #expect(output.last?.isFinal == true && source.cleanups == [false])
+        #expect(output.reduce(Data()) { $0 + $1.bytes } == source.chunks[0])
+    }
+
+    @Test func firstReadRevocationOrFailedExitCannotFinalizeEarlyPCM() async throws {
+        for revoke in [false, true] {
+            let source = AuthoredSpeechSource(); source.chunks = [Data([17, 0, 18, 0])]
+            source.failFinish = !revoke
+            let renderer = CoachingSpeechRenderer(source: { _ in source })
+            var output: [AudioPayload] = []
+            do {
+                try await renderer.render("authored") { payload in
+                    output.append(payload)
+                    if revoke { renderer.cancel() }
+                }
+                Issue.record("Revoked or failed source completed")
+            } catch {
+                if revoke { #expect(error is CancellationError) } else {
+                    #expect(error as? ForegroundCoachingError == .invalidSpeech)
+                }
+            }
+            #expect(output.count == 1 && output[0].sequence == 0 && !output[0].isFinal)
+            #expect(source.cancelled > 0 && source.cleanups.last == true)
+        }
     }
 
     @Test func cancellationDuringFactoryCannotEmitAndJoinsCleanupBeforeReentry() async throws {
@@ -113,7 +149,7 @@ import Testing
         let source = AuthoredSpeechSource(); source.chunks = [Data(repeating: 17, count: 96_000)]
         let renderer = CoachingSpeechRenderer(source: { _ in source }); var output: [AudioPayload] = []
         try await renderer.render("authored") { output.append($0) }
-        #expect(output.count == 2 && output.allSatisfy { $0.bytes.count == 48_000 })
+        #expect(output.map { $0.bytes.count } == [48_000, 47_998, 2])
         source.chunks = Array(repeating: Data([17, 0]), count: 34)
         await #expect(throws: ForegroundCoachingError.invalidSpeech) {
             try await renderer.render("authored") { _ in }
