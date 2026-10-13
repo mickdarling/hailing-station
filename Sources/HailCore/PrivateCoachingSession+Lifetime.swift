@@ -2,8 +2,13 @@ import Foundation
 
 extension PrivateCoachingSession {
     func validate(_ ticket: CoachingAdviceTicket) throws {
-        guard !transitioning, let live = current(), sameScope(ticket.qualification, live),
-              clock.now() < ticket.qualification.expiresAt else { throw CoachingSafetyError.staleQualification }
+        guard !transitioning, let live = current(), sameScope(ticket.qualification, live) else {
+            throw CoachingSafetyError.staleQualification
+        }
+        let now = clock.now()
+        guard !transitioning, qualification == live, now < ticket.qualification.expiresAt else {
+            throw CoachingSafetyError.staleQualification
+        }
     }
 
     func sameScope(_ lhs: CoachingQualification, _ rhs: CoachingQualification) -> Bool {

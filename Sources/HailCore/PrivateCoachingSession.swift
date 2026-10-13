@@ -111,9 +111,11 @@ public final class PrivateCoachingSession {
         guard !transitioning, let live = current(), lease == live else {
             throw CoachingSafetyError.staleQualification
         }
+        let now = clock.now()
+        guard !transitioning, qualification == live else { throw CoachingSafetyError.staleQualification }
         let renewed = CoachingQualification(
             sessionID: live.sessionID, generation: live.generation, destinationID: live.destinationID,
-            qualificationID: UUID(), expiresAt: clock.now().advanced(by: lifetime), outputID: live.outputID
+            qualificationID: UUID(), expiresAt: now.advanced(by: lifetime), outputID: live.outputID
         )
         qualification = renewed
         armExpiry(renewed)

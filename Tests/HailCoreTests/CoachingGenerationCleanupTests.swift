@@ -4,6 +4,54 @@ import Testing
 
 /// #269: an old operation has no cleanup authority over a replacement generation.
 @Suite @MainActor struct CoachingGenerationCleanupTests {
+    @Test(arguments: 0..<3, [false, true])
+    func finalClockReadCannotControlOrOverwriteReplacement(action: Int, sameGeneration: Bool) throws {
+        let rig = CoachingTestHarness()
+        let old = try rig.begin()
+        let ticket = try rig.ticket()
+        var reads = 0
+        var fresh: CoachingQualification?
+        rig.time.onNow = {
+            reads += 1
+            guard reads == 3 else { return }
+            rig.time.onNow = nil
+            do { fresh = try sameGeneration ? rig.session.renew(old) : rig.begin() } catch { Issue.record(error) }
+        }
+        #expect(throws: CoachingSafetyError.staleQualification) {
+            switch action {
+            case 0: try rig.session.resume(ticket: ticket)
+            case 1: try rig.session.setMuted(false, ticket: ticket)
+            default: _ = try rig.session.renew(old)
+            }
+        }
+        #expect(fresh != nil && rig.session.current() == fresh)
+        #expect(rig.player.resumed == 0 && rig.player.mutes.isEmpty)
+        rig.session.stop()
+    }
+
+    @Test func registrationCannotPublishOldLeaseAfterPruneReplacesGeneration() throws {
+        let rig = CoachingTestHarness()
+        let consumer = try coachingConsumer(rig)
+        let old = try rig.begin()
+        var reads = 0
+        var fresh: CoachingQualification?
+        rig.time.onNow = {
+            reads += 1
+            guard reads == 3 else { return }
+            rig.time.onNow = nil
+            do {
+                let lease = try rig.begin()
+                try consumer.register(lease)
+                fresh = lease
+            } catch { Issue.record(error) }
+        }
+        #expect(throws: CoachingWireError.unknownQualification) { try consumer.register(old) }
+        let lease = try #require(fresh)
+        #expect(rig.session.current() == lease)
+        _ = try consumer.admit(coachingWireData(lease))
+        consumer.stop()
+    }
+
     @Test func replacementDuringOutputObservationSurvivesOldRouteMismatch() throws {
         let rig = CoachingTestHarness()
         let old = try rig.begin()
