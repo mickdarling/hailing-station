@@ -98,7 +98,7 @@ public final class PrivateCoachingSession {
             }
             return lease
         } catch {
-            suspend(.captureFailed)
+            suspend(.captureFailed, ifGeneration: lease.generation)
             throw error
         }
     }
@@ -144,7 +144,7 @@ public final class PrivateCoachingSession {
             self.pendingPlayback[chunkID] = nil // Check authoritative time BEFORE erasing the original deadline.
             self.armExpiry(live)
         }) } catch {
-            suspend(.playbackFailed)
+            suspend(.playbackFailed, ifGeneration: ticket.qualification.generation)
             throw error
         }
     }
@@ -152,7 +152,7 @@ public final class PrivateCoachingSession {
     public func resume(ticket: CoachingAdviceTicket) throws {
         try validate(ticket)
         do { try player.resume() } catch {
-            suspend(.playbackFailed)
+            suspend(.playbackFailed, ifGeneration: ticket.qualification.generation)
             throw error
         }
     }

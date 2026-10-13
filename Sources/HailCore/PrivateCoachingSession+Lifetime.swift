@@ -13,7 +13,10 @@ extension PrivateCoachingSession {
 
     func current() -> CoachingQualification? {
         guard let live = qualification, hasLiveDeadlines(live) else { return nil }
-        guard observeOutput() == .verifiedHeadphones(live.outputID) else { suspend(.routeInvalidated); return nil }
+        let observed = observeOutput()
+        // Observation can synchronously replace/renew ownership. An old snapshot cannot retire its successor.
+        guard qualification == live else { return nil }
+        guard observed == .verifiedHeadphones(live.outputID) else { suspend(.routeInvalidated); return nil }
         // Trusted resource callbacks may invalidate synchronously; never return a retired snapshot.
         guard qualification == live, hasLiveDeadlines(live) else { return nil }
         return live
@@ -21,6 +24,7 @@ extension PrivateCoachingSession {
 
     private func hasLiveDeadlines(_ live: CoachingQualification) -> Bool {
         let now = clock.now()
+        guard qualification == live else { return false }
         guard now < live.expiresAt else { suspend(.qualificationExpired); return false }
         guard pendingPlayback.values.allSatisfy({ now < $0 }) else { suspend(.adviceExpired); return false }
         return true
@@ -42,8 +46,9 @@ extension PrivateCoachingSession {
         if qualification == lease, expiryRevision == revision { cancelExpiry = cancel } else { cancel() }
     }
 
-    func suspend(_ reason: CoachingSuspension) {
+    func suspend(_ reason: CoachingSuspension, ifGeneration generation: UUID? = nil) {
         guard let old = qualification else { return }
+        guard generation == nil || old.generation == generation else { return }
         let wasTransitioning = transitioning
         transitioning = true
         defer { transitioning = wasTransitioning }
