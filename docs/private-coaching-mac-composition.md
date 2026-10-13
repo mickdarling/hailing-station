@@ -44,6 +44,12 @@ remain unchanged; the final-readiness reporting assertion distinguishes the actu
 If a property notification arrives at final renderer readiness, schedule/resume can report `playbackFailed`
 before the queued route cleanup runs; mute's nonthrowing protocol reports `routeInvalidated` through the
 adapter denial hook. Both retire the owned capture/queue and clear context before any denied effect.
+Composition Round 1 independently rejected the final running-observation ownership gap and late startup
+cleanup loss. Red-before tests reproduced both. Ownership now follows every final running read. A cancelled
+resource-start call retains cleanup responsibility until it returns, while new starts are refused during
+startup/cleanup so late old work cannot attach to a successor. A fresh explicit start remains possible after
+the cancelled start has joined and completed cleanup. These are synthetic seam-level schedules, not measured
+AVAudioEngine hardware callback behavior.
 
 ## Still requires separately authorized physical qualification
 

@@ -3,6 +3,10 @@ public import HailProtocol
 #if os(iOS)
 import AVFAudio
 #endif
+#if os(macOS)
+import AVFAudio
+import CoreAudio
+#endif
 
 @MainActor protocol CoachingOutputMonitoring: AnyObject {
     var onInvalidated: (() -> Void)? { get set }
@@ -113,3 +117,28 @@ public final class ApplePrivateCoaching {
     public func invalidate() { monitor.disarm(); consumer.invalidate() }
     public func stop() { monitor.disarm(); consumer.stop() }
 }
+
+#if os(macOS)
+extension ApplePrivateCoaching {
+    /// Local operator IDs, not a remote requested route. No IO starts until consent-confirmed begin.
+    /// AirPods are conditional on independent OS headphone terminal evidence plus actual fixed HAL readback.
+    public convenience init(privateOutputDeviceID: UInt32, roomMicrophoneDeviceID: UInt32,
+                            listenerID: String, hooks: PrivateCoachingSession.Hooks) throws {
+        guard privateOutputDeviceID != kAudioObjectUnknown, roomMicrophoneDeviceID != kAudioObjectUnknown,
+              privateOutputDeviceID != roomMicrophoneDeviceID else { throw CoachingSafetyError.unsafeOutput }
+        let outputEngine = AVAudioEngine()
+        let inputEngine = AVAudioEngine()
+        guard let evidence = MacCoachingDeviceEvidence.read(privateOutputDeviceID) else {
+            throw CoachingSafetyError.unsafeOutput
+        }
+        let binding = try MacCoachingOutputBinding(deviceID: privateOutputDeviceID,
+            read: { MacCoachingDeviceEvidence.read(privateOutputDeviceID) },
+            operations: .live(engine: outputEngine))
+        let owner = try MacCoachingAudioOwner.live(inputEngine: inputEngine, outputEngine: outputEngine,
+                                                  microphoneID: roomMicrophoneDeviceID, outputBinding: binding)
+        let monitor = try MacCoachingOutputMonitor.live(owner: owner, output: evidence)
+        let player = CoachingEngineRenderer(operations: .live(engine: outputEngine), observe: { monitor.observe() })
+        try self.init(capture: owner, player: player, monitor: monitor, listenerID: listenerID, hooks: hooks)
+    }
+}
+#endif

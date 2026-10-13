@@ -62,6 +62,10 @@ struct MacCoachingInputEvidence: Equatable, Sendable {
     private let output: MacCoachingEngineLifetime
     private let bound: () -> Bool
     private var ownedRevision: UUID?
+    private var startupInFlight = false
+    private var resourceStartInFlight = false
+    private var lateStartCleanup = false
+    private var cleanupInFlight = false
 
     init(input: MacCoachingInputEvidence, capture: any AudioCapturing,
          output: MacCoachingEngineLifetime, bound: @escaping () -> Bool) {
@@ -74,27 +78,50 @@ struct MacCoachingInputEvidence: Equatable, Sendable {
     isolated deinit { stop() }
 
     func start() throws -> AsyncStream<AudioCaptureBuffer> {
-        guard ownedRevision == nil, !output.running(), bound(),
-              !output.running(), ownedRevision == nil else { throw CoachingSafetyError.unsafeOutput }
+        guard !startupInFlight, !cleanupInFlight, ownedRevision == nil, !output.running(), bound(),
+              !output.running(), ownedRevision == nil, !startupInFlight, !cleanupInFlight else {
+            throw CoachingSafetyError.unsafeOutput
+        }
         let revision = UUID()
+        startupInFlight = true
+        defer { startupInFlight = false; lateStartCleanup = false }
         ownedRevision = revision // A partially failed start owns both cleanups.
         do {
-            try output.start()
+            try startingResource(output.start)
             guard ownedRevision == revision, output.running(), bound(),
-                  ownedRevision == revision, output.running() else { throw CoachingSafetyError.unsafeOutput }
-            let stream = try capture.start()
+                  ownedRevision == revision, output.running(), ownedRevision == revision else {
+                throw CoachingSafetyError.unsafeOutput
+            }
+            let stream = try startingResource(capture.start)
             guard ownedRevision == revision, output.running(), bound(),
-                  ownedRevision == revision, output.running() else { throw CoachingSafetyError.unsafeOutput }
+                  ownedRevision == revision, output.running(), ownedRevision == revision else {
+                throw CoachingSafetyError.unsafeOutput
+            }
             return stream
         } catch {
-            if ownedRevision == revision { stop() }
+            if ownedRevision == revision { stop() } else if ownedRevision == nil, lateStartCleanup {
+                cleanupResources() // Cancelled start still owns effects completed after its first cleanup.
+            }
             throw error
         }
     }
 
     func stop() {
         guard ownedRevision != nil else { return }
+        if resourceStartInFlight { lateStartCleanup = true }
         ownedRevision = nil
+        cleanupResources()
+    }
+
+    private func startingResource<Value>(_ operation: () throws -> Value) rethrows -> Value {
+        resourceStartInFlight = true
+        defer { resourceStartInFlight = false }
+        return try operation()
+    }
+
+    private func cleanupResources() {
+        cleanupInFlight = true
+        defer { cleanupInFlight = false }
         capture.stop()
         output.stop()
     }
@@ -158,26 +185,4 @@ struct MacCoachingInputEvidence: Equatable, Sendable {
     }
 }
 
-extension ApplePrivateCoaching {
-    /// Local operator IDs, not a remote requested route. No IO starts until consent-confirmed begin.
-    /// AirPods are conditional on independent OS headphone terminal evidence plus actual fixed HAL readback.
-    public convenience init(privateOutputDeviceID: UInt32, roomMicrophoneDeviceID: UInt32,
-                            listenerID: String, hooks: PrivateCoachingSession.Hooks) throws {
-        guard privateOutputDeviceID != kAudioObjectUnknown, roomMicrophoneDeviceID != kAudioObjectUnknown,
-              privateOutputDeviceID != roomMicrophoneDeviceID else { throw CoachingSafetyError.unsafeOutput }
-        let outputEngine = AVAudioEngine()
-        let inputEngine = AVAudioEngine()
-        guard let evidence = MacCoachingDeviceEvidence.read(privateOutputDeviceID) else {
-            throw CoachingSafetyError.unsafeOutput
-        }
-        let binding = try MacCoachingOutputBinding(deviceID: privateOutputDeviceID,
-            read: { MacCoachingDeviceEvidence.read(privateOutputDeviceID) },
-            operations: .live(engine: outputEngine))
-        let owner = try MacCoachingAudioOwner.live(inputEngine: inputEngine, outputEngine: outputEngine,
-                                                  microphoneID: roomMicrophoneDeviceID, outputBinding: binding)
-        let monitor = try MacCoachingOutputMonitor.live(owner: owner, output: evidence)
-        let player = CoachingEngineRenderer(operations: .live(engine: outputEngine), observe: { monitor.observe() })
-        try self.init(capture: owner, player: player, monitor: monitor, listenerID: listenerID, hooks: hooks)
-    }
-}
 #endif
