@@ -3,37 +3,38 @@ import Darwin
 public import Foundation
 import Synchronization
 
-/// One `rightyo listen --mode stdin` child (#203): raw mono 16 kHz s16le in, JSONL out. Fixed argv, no shell,
-/// minimal environment, working directory = the config's directory. Audio and stdout lines are never logged;
-/// stderr is drained and only its byte count kept.
+/// Rightyo stdin child (#203): raw mono16k s16le in, JSONL out; fixed argv, no shell, minimal environment.
+/// Working directory = config parent. Audio/stdout never logged; stderr discarded with byte count only.
 public final class RightyoChildProcess: Sendable {
     public static let maxLineBytes = 1_200_000
-    /// Lines read but not yet taken are bounded by total bytes only (no line count); past this the stream ends
-    /// with `backlog`.
+    /// Untaken stdout lines are byte bounded, not count bounded; excess ends with `backlog`.
     public static let maxQueuedBytes = 4_000_000
     /// stdout split on newlines (empty lines skipped). Ends at EOF, or throws a `RightyoChildError`.
     public let lines: RightyoChildLines
     public let processIdentifier: Int32
-    private let input: RightyoStdinWriter
+    let input: RightyoStdinWriter
     let control: RightyoControlWriter
-    /// The child leads its own process group (#297): it observes the exit, signals the group and reaps the leader
-    /// on one queue, so a signal can never reach a reused pid.
+    let coachingControl: RightyoCoachingControlWriter?
+    /// Owned group (#297): one queue observes exit/signals/reaps, preventing PID reuse.
     private let group: RightyoChildGroup
     private let stderrBytes = RightyoByteCount()
     private let timing: Timing
 
-    /// Launches `<executable> listen --mode stdin --provenance <provenance> --session-id <session> --config <config>`,
-    /// spawning exactly the symlink-resolved path that `validate` checked. `env` adds only `RIGHTYO_` variables
-    /// (rightyo#172) to the minimal environment, never replacing PATH, HOME or TMPDIR.
+    /// Exact symlink-resolved validated executable, listen/stdin fixed argv. RIGHTYO_ env additions only (#172);
+    /// PATH/HOME/TMPDIR cannot be replaced. Coaching requires its separate explicit capability.
     public init(executable: URL, config: URL, session: String, provenance: RightyoAudioProvenance = .liveMicrophone,
-                timing: Timing = .init(), replyControl: Bool = false, env: [String: String] = [:]) throws {
+                timing: Timing = .init(), replyControl: Bool = false, env: [String: String] = [:],
+                coaching: RightyoCoachingLaunch? = nil) throws {
+        guard coaching == nil || !replyControl else { throw RightyoChildError.unsafeConfig }
+        let extra = try coaching?.arguments(session: session, provenance: provenance) ?? []
+        let hasControl = replyControl || coaching != nil
         let resolved = try Self.validate(executable: executable, config: config)
         try RightyoChildGroup.requireOwnedRuntime()
-        let argv = Self.arguments(session: session, config: config, provenance: provenance, replyControl: replyControl)
+        let argv = Self.arguments(session: session, config: config, provenance: provenance,
+                                  replyControl: hasControl) + extra
         let environment = Self.environment().merging(env.filter { $0.key.hasPrefix("RIGHTYO_") }) { old, _ in old }
         let child = try Self.spawn(resolved, arguments: argv, environment: environment.map { "\($0.key)=\($0.value)" },
-                                   directory: config.deletingLastPathComponent().path, replyControl: replyControl)
-        // No line-count cap: untaken lines are bounded by `maxQueuedBytes` alone (checked before each yield).
+                                   directory: config.deletingLastPathComponent().path, replyControl: hasControl)
         let pair = AsyncThrowingStream<Data, any Error>.makeStream(bufferingPolicy: .unbounded)
         let queued = RightyoByteCount()
         lines = RightyoChildLines(stream: pair.stream, queued: queued)
@@ -46,19 +47,21 @@ public final class RightyoChildProcess: Sendable {
             return true
         }
         input = RightyoStdinWriter(input: child.input, exit: group.exit, timing: timing)
-        control = RightyoControlWriter(child.control)
+        control = RightyoControlWriter(coaching == nil ? child.control : nil)
+        coachingControl = coaching == nil ? nil
+            : Self.coachingWriter(child.control, input: input, continuation: continuation)
         (processIdentifier, self.timing) = (child.pid, timing)
-        // No background thread or queue retains `self` (stdin writer, stdout reader, stderr drain, group, exit
-        // waiters each hold only their own box), so dropping the last reference runs `deinit` and kills the child.
+        // Workers hold only their own boxes, never self: releasing the child runs owned cleanup.
         Thread.detachNewThread { RightyoChildLines.read(child.output, into: pair.continuation, queued: queued) }
         Thread.detachNewThread { [stderrBytes] in
             Self.drainErrors(child.errors) { count in stderrBytes.withLock { $0 += count } }
         }
     }
 
-    /// Dropped without `stop()`: stdin abandoned and SIGKILL to the whole group at once; the group still reaps.
+    /// Drop abandons stdin and kills only the owned group, which still reaps.
     deinit {
         input.close(abandon: true)
+        coachingControl?.close()
         group.signal(SIGKILL)
     }
 
@@ -68,13 +71,11 @@ public final class RightyoChildProcess: Sendable {
         return counters
     }
     public var exitStatus: RightyoChildExit? { group.exit.value }
-
-    /// Queues one audio chunk and returns at once; never blocks on the child. False when input is closed or the
-    /// chunk is empty, odd-length (not whole samples) or larger than the backlog.
+    /// Nonblocking PCM queue: refuses closed input, empty/odd chunks or chunks above the backlog bound.
     @discardableResult public func write(_ pcm: Data) -> Bool { input.write(pcm) }
 
     /// EOF for the child once already-queued audio is written, and the end of its control input. Idempotent.
-    public func closeInput() { input.close(abandon: false); control.close() }
+    public func closeInput() { input.close(abandon: false); control.close(); coachingControl?.close() }
 
     /// Close stdin, wait `eofGrace`, SIGTERM the group, wait `termGrace`, SIGKILL the group; returns once the rest
     /// of the group has been ended too (see `RightyoChildGroup`) and the child is reaped. Bounded: at most
@@ -92,8 +93,7 @@ public final class RightyoChildProcess: Sendable {
     }
 }
 
-/// The child's stdin (#203): a bounded queue drained on its own serial queue with non-blocking writes. It holds
-/// only the fd, its own state and the exit latch, never the child, so a stalled child cannot keep its owner alive.
+/// Bounded nonblocking stdin queue (#203); workers hold fd/state/exit only, never retain the child.
 final class RightyoStdinWriter: Sendable {
     private struct State {
         var queue = RightyoChunkQueue(), queued = 0, counters = RightyoChildProcess.Counters()

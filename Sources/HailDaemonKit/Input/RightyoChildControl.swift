@@ -1,6 +1,6 @@
 #if os(macOS)
 import Darwin
-import Foundation
+public import Foundation
 import Synchronization
 
 /// What the host reports about the assistant's spoken reply (rightyo#124).
@@ -44,5 +44,26 @@ extension RightyoChildProcess {
     /// Reports the assistant's spoken reply to the child (rightyo#124) without blocking; false when the child was
     /// started without `replyControl`, its control input is closed, or the pipe is full (the report is dropped).
     @discardableResult public func reportReply(_ phase: RightyoReplyPhase) -> Bool { control.report(phase) }
+
+    /// Trusted coaching controls only: one ASCII JSON object without newline. The receiver validates
+    /// the exact envelope. Queue admission is not receipt; original host advice deadlines still apply.
+    @discardableResult public func sendCoachingControl(_ data: Data, validUntil: ContinuousClock.Instant) -> Bool {
+        coachingControl?.send(data, validUntil: validUntil) ?? false
+    }
+
+    /// Immediate coaching revocation, not ordinary graceful stdin EOF: discard queued old PCM.
+    public func abandonCoachingInput() {
+        guard coachingControl != nil else { return }
+        input.close(abandon: true); coachingControl?.close()
+    }
+
+    static func coachingWriter(_ descriptor: Int32?, input: RightyoStdinWriter,
+                               continuation: AsyncThrowingStream<Data, any Error>.Continuation)
+        -> RightyoCoachingControlWriter {
+        RightyoCoachingControlWriter(descriptor) {
+            input.close(abandon: true)
+            continuation.finish(throwing: RightyoChildError.transportLost)
+        }
+    }
 }
 #endif
