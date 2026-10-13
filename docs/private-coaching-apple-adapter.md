@@ -55,6 +55,10 @@ Arm and observation failure retire only their captured monitor revision, includi
 qualifying wired UID. Failed begin cleanup owns only its started generation (or an empty lifetime before start),
 not a successor created during arm or registration. Round5 source fails the new monitor/startup regressions;
 their evidence remains preserved separately from later passing runs.
+The renderer's last readiness callback is followed by a final owner gate that checks current scope, original
+and outstanding deadlines, and the armed route token without re-entering route observation. Replacement or
+exact expiry at that final readiness boundary cannot authorize an old resume/unmute. Round6 source fails
+the six-case final-readiness regression with nine issues; the corrected source preserves replacement advice.
 
 ## Concrete AirPods blocker and physical limits
 

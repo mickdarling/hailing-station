@@ -11,11 +11,13 @@ final class AppleCoachingRig {
     var outputs = [CoachingObservedPort(uid: "synthetic-wired", kind: .wiredHeadphones)]
     var frameCounts: [UInt32] = []
     var plays = 0
+    var mutes: [Bool] = []
     var cancellations = 0
     var captureBuffers = 0
     var nonzeroCapture = false
     var suspensions: [CoachingSuspension] = []
     var onSnapshot: (() -> Void)?
+    var onReady: (() -> Void)?
     var rendererReady = true
     lazy var monitor = CoachingOutputMonitor(snapshot: { [weak self] in
         self?.onSnapshot?()
@@ -27,10 +29,12 @@ final class AppleCoachingRig {
         let source = supplied ?? capture
         let player = CoachingEngineRenderer(operations: .init(ready: { [weak self] in
             guard let self else { return false }
+            self.onReady?()
             return self.rendererReady && self.capture.startCount > self.capture.stopCount
         }, schedule: { [weak self] buffer, _ in self?.frameCounts.append(buffer.frameLength) },
            control: { [weak self] command in
             if case .play = command { self?.plays += 1 }
+            if case .muted(let value) = command { self?.mutes.append(value) }
             if case .stop = command { self?.cancellations += 1 }
         }), observe: { [monitor] in monitor.observe() })
         return try ApplePrivateCoaching(capture: source, player: player, monitor: monitor,

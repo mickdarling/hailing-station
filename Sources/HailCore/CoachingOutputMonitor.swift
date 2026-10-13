@@ -93,6 +93,8 @@ public final class CoachingOutputMonitor {
 
     func disarm() { _ = state.value.withLock { $0.retire() } }
 
+    func retains(_ token: UUID) -> Bool { state.value.withLock { $0.armed && $0.revision == token } }
+
     private func disarm(ifRevision revision: UUID) {
         state.value.withLock { value in
             guard value.revision == revision else { return }

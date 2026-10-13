@@ -38,6 +38,7 @@ final class CoachingEngineRenderer: CoachingAudioPlaying {
     private var authorizes: () -> Bool = { false }
     private var readinessFailure: CoachingSafetyError?
     private var ownsLifetime: () -> Bool = { false }
+    private var finalAuthorization: () -> Bool = { false }
 
     init(operations: CoachingRenderOperations, observe: @escaping () -> CoachingOutputObservation) {
         self.operations = operations
@@ -46,19 +47,27 @@ final class CoachingEngineRenderer: CoachingAudioPlaying {
 
     /// Local owner supplies an original-ticket gate for one synchronous operation. Default is denied.
     func withAuthorization(_ gate: @escaping () -> Bool, perform: () throws -> Void,
-                           owns: @escaping () -> Bool = { true }, onFailure: () -> Void = {}) throws {
+                           owns: @escaping () -> Bool = { true }, finalGate: @escaping () -> Bool = { true },
+                           onFailure: () -> Void = {}) throws {
         let previous = authorizes
         let previousOwner = ownsLifetime
+        let previousFinal = finalAuthorization
         let previousFailure = readinessFailure
         readinessFailure = nil
         ownsLifetime = owns
+        finalAuthorization = finalGate
         var denied = false
         authorizes = {
             let allowed = gate()
             if !allowed { denied = true }
             return allowed
         }
-        defer { authorizes = previous; ownsLifetime = previousOwner; readinessFailure = previousFailure }
+        defer {
+            authorizes = previous
+            ownsLifetime = previousOwner
+            finalAuthorization = previousFinal
+            readinessFailure = previousFailure
+        }
         try perform()
         // Mute's player protocol cannot throw; propagate its denial at the owning API boundary.
         if let failure = readinessFailure { onFailure(); throw failure }
@@ -107,6 +116,10 @@ final class CoachingEngineRenderer: CoachingAudioPlaying {
         }
         guard authorizes() else { cancelIfOwned(); throw CoachingSafetyError.staleQualification }
         guard operations.ready() else { cancelIfOwned(); throw CoachingSafetyError.unsafeOutput }
+        guard ownsLifetime(), finalAuthorization() else {
+            cancelIfOwned()
+            throw CoachingSafetyError.staleQualification
+        }
         return token
     }
 

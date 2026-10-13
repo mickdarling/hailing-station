@@ -82,11 +82,21 @@ public final class ApplePrivateCoaching {
         try renderer.withAuthorization({ [session] in (try? session.validate(advice.ticket)) != nil },
                                        perform: perform, owns: { [session] in
             session.qualification?.generation == advice.ticket.qualification.generation
-        }, onFailure: { [monitor, consumer, session] in
+        }, finalGate: { [weak self] in self?.effectsAllowed(advice.ticket) == true },
+        onFailure: { [monitor, consumer, session] in
             guard session.qualification?.generation == advice.ticket.qualification.generation else { return }
             monitor.disarm()
             consumer.invalidate()
         })
+    }
+
+    /// Final authority after renderer readiness. No callback-capable route observation follows this check.
+    private func effectsAllowed(_ ticket: CoachingAdviceTicket) -> Bool {
+        guard !session.transitioning, let live = session.qualification,
+              session.sameScope(ticket.qualification, live) else { return false }
+        let now = session.clock.now()
+        return !session.transitioning && session.qualification == live && session.hasLiveDeadlines(live, at: now)
+            && now < ticket.qualification.expiresAt && monitor.retains(live.outputID)
     }
 
     /// Owner must call on connection/permission/participant-awareness loss, before any route rebuilding.
