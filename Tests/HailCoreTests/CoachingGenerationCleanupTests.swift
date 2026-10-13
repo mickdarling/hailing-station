@@ -4,6 +4,49 @@ import Testing
 
 /// #269: an old operation has no cleanup authority over a replacement generation.
 @Suite @MainActor struct CoachingGenerationCleanupTests {
+    @Test(arguments: [Duration.zero, .milliseconds(1)])
+    func finalRenewalClockCannotReviveExpiredGeneration(past: Duration) throws {
+        let rig = CoachingTestHarness()
+        let old = try rig.begin()
+        rig.time.instant = old.expiresAt.advanced(by: .milliseconds(-1))
+        var reads = 0
+        rig.time.onNow = {
+            reads += 1
+            if reads == 3 { rig.time.instant = old.expiresAt.advanced(by: past) }
+        }
+        #expect(throws: CoachingSafetyError.staleQualification) { try rig.session.renew(old) }
+        rig.time.onNow = nil
+        #expect(rig.session.qualification == nil && rig.capture.stopCount == 1)
+        #expect(rig.suspensions == [.qualificationExpired])
+    }
+
+    @Test(arguments: [false, true])
+    func finalValidationHonorsShorterCurrentLeaseAndOutstandingDeadlines(pending: Bool) throws {
+        let rig = CoachingTestHarness()
+        let old = try rig.begin()
+        let ticket = try rig.ticket()
+        let deadline: ContinuousClock.Instant
+        if pending {
+            try rig.session.schedule(coachingPCM, ticket: ticket)
+            rig.time.instant = rig.time.instant.advanced(by: .milliseconds(1))
+            _ = try rig.session.renew(old)
+            deadline = old.expiresAt
+        } else {
+            let fresh = try rig.session.renew(old, lifetime: .milliseconds(10))
+            deadline = fresh.expiresAt
+        }
+        rig.time.instant = deadline.advanced(by: .milliseconds(-1))
+        var reads = 0
+        rig.time.onNow = {
+            reads += 1
+            if reads == 3 { rig.time.instant = deadline }
+        }
+        #expect(throws: CoachingSafetyError.staleQualification) { try rig.session.resume(ticket: ticket) }
+        rig.time.onNow = nil
+        #expect(rig.session.qualification == nil && rig.capture.stopCount == 1 && rig.player.resumed == 0)
+        #expect(rig.suspensions == [pending ? .adviceExpired : .qualificationExpired])
+    }
+
     @Test(arguments: 0..<3, [false, true])
     func finalClockReadCannotControlOrOverwriteReplacement(action: Int, sameGeneration: Bool) throws {
         let rig = CoachingTestHarness()

@@ -112,7 +112,9 @@ public final class PrivateCoachingSession {
             throw CoachingSafetyError.staleQualification
         }
         let now = clock.now()
-        guard !transitioning, qualification == live else { throw CoachingSafetyError.staleQualification }
+        guard !transitioning, qualification == live, hasLiveDeadlines(live, at: now) else {
+            throw CoachingSafetyError.staleQualification
+        }
         let renewed = CoachingQualification(
             sessionID: live.sessionID, generation: live.generation, destinationID: live.destinationID,
             qualificationID: UUID(), expiresAt: now.advanced(by: lifetime), outputID: live.outputID

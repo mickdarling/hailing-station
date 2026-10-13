@@ -6,7 +6,8 @@ extension PrivateCoachingSession {
             throw CoachingSafetyError.staleQualification
         }
         let now = clock.now()
-        guard !transitioning, qualification == live, now < ticket.qualification.expiresAt else {
+        guard !transitioning, qualification == live, hasLiveDeadlines(live, at: now),
+              now < ticket.qualification.expiresAt else {
             throw CoachingSafetyError.staleQualification
         }
     }
@@ -28,7 +29,10 @@ extension PrivateCoachingSession {
     }
 
     private func hasLiveDeadlines(_ live: CoachingQualification) -> Bool {
-        let now = clock.now()
+        hasLiveDeadlines(live, at: clock.now())
+    }
+
+    func hasLiveDeadlines(_ live: CoachingQualification, at now: ContinuousClock.Instant) -> Bool {
         guard qualification == live else { return false }
         guard now < live.expiresAt else { suspend(.qualificationExpired); return false }
         guard pendingPlayback.values.allSatisfy({ now < $0 }) else { suspend(.adviceExpired); return false }
