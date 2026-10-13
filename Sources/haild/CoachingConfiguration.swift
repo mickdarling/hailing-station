@@ -20,7 +20,7 @@ struct CoachingConfiguration {
             fields[flag] = value
         }
         guard Set(fields.keys) == required, let listener = fields["--listener"],
-              CoachingChildCodec.identifier(listener), let output = device(fields["--private-output"]),
+              validListener(listener), let output = device(fields["--private-output"]),
               let microphone = device(fields["--room-microphone"]), output != microphone else {
             throw CoachingCommandError.invalidConfiguration
         }
@@ -28,6 +28,10 @@ struct CoachingConfiguration {
                         profile: path(fields["--listener-profile"]),
                         outputRoot: path(fields["--renderer-output-root"]), listenerID: listener,
                         privateOutput: output, roomMicrophone: microphone)
+    }
+
+    private static func validListener(_ value: String) -> Bool {
+        CoachingChildCodec.identifier(value) && value.utf8.contains { $0 != 32 }
     }
 
     private static func device(_ value: String?) -> UInt32? {
@@ -42,6 +46,7 @@ struct CoachingConfiguration {
 
     /// Private local profile, no symlink/FIFO/unbounded read. Errors never echo paths or profile contents.
     func loadProfile() throws -> Data {
+        guard Self.validListener(listenerID) else { throw CoachingCommandError.invalidConfiguration }
         let fd = open(profile.path, O_RDONLY | O_NOFOLLOW | O_NONBLOCK)
         guard fd >= 0 else { throw CoachingCommandError.invalidConfiguration }
         defer { close(fd) }

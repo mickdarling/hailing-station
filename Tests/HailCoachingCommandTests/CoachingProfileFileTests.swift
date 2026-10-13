@@ -8,6 +8,18 @@ import Testing
         let fixture = try Fixture()
         #expect(try fixture.configuration.loadProfile() == fixture.data)
     }
+    @Test func whitespaceOnlyMatchingListenerAndProfileAreRefusedBeforeComposition() throws {
+        for listener in [" ", "   "] {
+            let fixture = try Fixture()
+            let text = try #require(String(data: fixture.data, encoding: .utf8))
+            try Data(text.replacingOccurrences(of: "private-coach", with: listener).utf8).write(to: fixture.path)
+            let invalid = CoachingConfiguration(executable: fixture.configuration.executable,
+                config: fixture.configuration.config, profile: fixture.path,
+                outputRoot: fixture.configuration.outputRoot, listenerID: listener,
+                privateOutput: 101, roomMicrophone: 102)
+            #expect(throws: CoachingCommandError.invalidConfiguration) { try invalid.loadProfile() }
+        }
+    }
     @Test func symlinkFIFOSharedEmptyOversizedAndMalformedProfilesAreRefused() throws {
         for invalid in ["symlink", "fifo", "shared", "empty", "oversized", "malformed", "wrong-listener"] {
             let fixture = try Fixture()

@@ -24,5 +24,9 @@ import Testing
         }
         var relative = arguments; relative[1] = "rightyo"
         #expect(throws: CoachingCommandError.invalidConfiguration) { try CoachingConfiguration.parse(relative) }
+        for listener in [" ", "   "] {
+            var input = arguments; input[7] = listener
+            #expect(throws: CoachingCommandError.invalidConfiguration) { try CoachingConfiguration.parse(input) }
+        }
     }
 }
