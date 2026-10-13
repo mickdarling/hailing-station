@@ -4,12 +4,22 @@ public import HailProtocol
 import AVFAudio
 #endif
 
+@MainActor protocol CoachingOutputMonitoring: AnyObject {
+    var onInvalidated: (() -> Void)? { get set }
+    func arm() throws
+    func observe() -> CoachingOutputObservation
+    func disarm()
+    func retains(_ token: UUID) -> Bool
+}
+
+extension CoachingOutputMonitor: CoachingOutputMonitoring {}
+
 /// Unactivated production composition, separate from ordinary ambient capture and reply masking.
 /// iOS uses its actual current output, a dedicated raw capture engine and a non-activating player on that engine.
-/// Bluetooth/AirPods and native macOS are unsupported; no UI/daemon enables this object by default.
+/// iOS denies Bluetooth/AirPods. Native Mac uses separately verified fixed HAL bindings; no UI/daemon enables it.
 @MainActor
 public final class ApplePrivateCoaching {
-    private let monitor: CoachingOutputMonitor
+    private let monitor: any CoachingOutputMonitoring
     private let session: PrivateCoachingSession
     private let consumer: CoachingAdviceConsumer
     private let renderer: CoachingEngineRenderer?
@@ -24,7 +34,7 @@ public final class ApplePrivateCoaching {
     }
     #endif
 
-    init(capture: any AudioCapturing, player: any CoachingAudioPlaying, monitor: CoachingOutputMonitor,
+    init(capture: any AudioCapturing, player: any CoachingAudioPlaying, monitor: any CoachingOutputMonitoring,
          listenerID: String, hooks: PrivateCoachingSession.Hooks, clock: CoachingClock = .init()) throws {
         self.monitor = monitor
         renderer = player as? CoachingEngineRenderer
@@ -36,7 +46,7 @@ public final class ApplePrivateCoaching {
 
     isolated deinit { monitor.disarm(); consumer.stop() }
 
-    /// Explicit opt-in and awareness precede capture. Unknown/Bluetooth output fails before microphone start.
+    /// Explicit opt-in and awareness precede capture. Unqualified output fails before microphone start.
     @discardableResult
     public func begin(sessionID: UUID, destinationID: UUID, consentConfirmed: Bool) throws -> CoachingQualification {
         stop()
