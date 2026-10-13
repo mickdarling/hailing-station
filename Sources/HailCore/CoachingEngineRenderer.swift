@@ -36,6 +36,7 @@ final class CoachingEngineRenderer: CoachingAudioPlaying {
     private let operations: CoachingRenderOperations
     private let observe: () -> CoachingOutputObservation
     private var authorizes: () -> Bool = { false }
+    private var readinessFailure: CoachingSafetyError?
 
     init(operations: CoachingRenderOperations, observe: @escaping () -> CoachingOutputObservation) {
         self.operations = operations
@@ -43,18 +44,22 @@ final class CoachingEngineRenderer: CoachingAudioPlaying {
     }
 
     /// Local owner supplies an original-ticket gate for one synchronous operation. Default is denied.
-    func withAuthorization(_ gate: @escaping () -> Bool, perform: () throws -> Void) throws {
+    func withAuthorization(_ gate: @escaping () -> Bool, perform: () throws -> Void,
+                           onFailure: () -> Void = {}) throws {
         let previous = authorizes
+        let previousFailure = readinessFailure
+        readinessFailure = nil
         var denied = false
         authorizes = {
             let allowed = gate()
             if !allowed { denied = true }
             return allowed
         }
-        defer { authorizes = previous }
+        defer { authorizes = previous; readinessFailure = previousFailure }
         try perform()
         // Mute's player protocol cannot throw; propagate its denial at the owning API boundary.
-        if denied { throw CoachingSafetyError.staleQualification }
+        if let failure = readinessFailure { onFailure(); throw failure }
+        if denied { onFailure(); throw CoachingSafetyError.staleQualification }
     }
 
     func schedule(_ payload: AudioPayload, onPlayed: (@MainActor @Sendable () -> Void)?) throws {
@@ -70,7 +75,11 @@ final class CoachingEngineRenderer: CoachingAudioPlaying {
     func pause() { operations.control(.pause) }
     func cancel() { operations.control(.stop) }
     func setMuted(_ muted: Bool) {
-        guard (try? ready()) != nil else { cancel(); return }
+        do { _ = try ready() } catch {
+            readinessFailure = error as? CoachingSafetyError ?? .unsafeOutput
+            cancel()
+            return
+        }
         operations.control(.muted(muted))
     }
 

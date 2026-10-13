@@ -72,7 +72,10 @@ public final class ApplePrivateCoaching {
     private func authorized(_ advice: AdmittedCoachingAdvice, perform: () throws -> Void) throws {
         guard let renderer else { try perform(); return } // Injected trusted players retain the core contract.
         try renderer.withAuthorization({ [session] in (try? session.validate(advice.ticket)) != nil },
-                                       perform: perform)
+                                       perform: perform, onFailure: { [monitor, consumer] in
+            monitor.disarm()
+            consumer.invalidate()
+        })
     }
 
     /// Owner must call on connection/permission/participant-awareness loss, before any route rebuilding.
