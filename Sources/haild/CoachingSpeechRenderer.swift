@@ -34,11 +34,13 @@ enum CoachingRendererCleanup {
 }
 
 /// Existing renderer only; no reply publication, player, socket or route selection.
-@MainActor private final class LocalCoachingSpeechSource: CoachingSpeechSource {
+@MainActor final class LocalCoachingSpeechSource: CoachingSpeechSource {
     private let renderer: OwnedReplyRenderer
     init(text: String, outputRoot: URL, environment: [String: String]) throws {
-        renderer = try OwnedReplyRenderer(text: text, outputRoot: outputRoot, environment: environment)
+        renderer = try OwnedReplyRenderer.startForJoinedRetirement(
+            text: text, outputRoot: outputRoot, environment: environment)
     }
+    init(renderer: OwnedReplyRenderer) { self.renderer = renderer }
     func consume(_ receive: (Data) throws -> Void) async throws {
         for try await data in renderer.audio { try receive(data) }
     }
@@ -74,7 +76,8 @@ enum CoachingRendererCleanup {
 
     func render(_ text: String, emit: @escaping @MainActor (AudioPayload) throws -> Void) async throws {
         guard current == nil else { throw ForegroundCoachingError.busy }
-        guard !text.isEmpty, text.unicodeScalars.count <= 280, text.utf8.allSatisfy({ (32...126).contains($0) }),
+        guard !text.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty,
+              text.unicodeScalars.count <= 280, text.unicodeScalars.allSatisfy(Self.printable),
               text.split(whereSeparator: { $0.isWhitespace }).count <= 45 else {
             throw ForegroundCoachingError.invalidSpeech
         }
@@ -97,6 +100,14 @@ enum CoachingRendererCleanup {
             // Do not release the slot while a noncooperative source still owns its child or cleanup.
             try await job.source?.cleanup(cancel: true)
             throw error
+        }
+    }
+
+    private static func printable(_ scalar: Unicode.Scalar) -> Bool {
+        switch scalar.properties.generalCategory {
+        case .control, .format, .surrogate, .lineSeparator, .paragraphSeparator, .unassigned: false
+        case .spaceSeparator: scalar.value == 32
+        default: true
         }
     }
 
@@ -123,9 +134,10 @@ enum CoachingRendererCleanup {
     private func deliver(_ data: Data, final: Bool, job: Job, emit: (AudioPayload) throws -> Void) throws {
         try check(job)
         guard job.sequence < 32 else { throw ForegroundCoachingError.invalidSpeech }
-        job.sequence += 1
+        let sequence = job.sequence
+        job.sequence += 1 // Reserve before callback entry; the public foreground gate starts at zero.
         try emit(AudioPayload(codec: .pcm16, sampleRate: 24_000, channels: 1,
-                              sequence: job.sequence, isFinal: final, bytes: data))
+                              sequence: sequence, isFinal: final, bytes: data))
         try check(job) // The private gate may synchronously retire this owner.
     }
 }

@@ -20,7 +20,7 @@ struct CoachingConfiguration {
             fields[flag] = value
         }
         guard Set(fields.keys) == required, let listener = fields["--listener"],
-              CoachingChildCodec.identifier(listener), let output = device(fields["--private-output"]),
+              validListener(listener), let output = device(fields["--private-output"]),
               let microphone = device(fields["--room-microphone"]), output != microphone else {
             throw CoachingCommandError.invalidConfiguration
         }
@@ -28,6 +28,10 @@ struct CoachingConfiguration {
                         profile: path(fields["--listener-profile"]),
                         outputRoot: path(fields["--renderer-output-root"]), listenerID: listener,
                         privateOutput: output, roomMicrophone: microphone)
+    }
+
+    private static func validListener(_ value: String) -> Bool {
+        CoachingChildCodec.identifier(value) && value.utf8.contains { $0 != 32 }
     }
 
     private static func device(_ value: String?) -> UInt32? {
@@ -42,12 +46,14 @@ struct CoachingConfiguration {
 
     /// Private local profile, no symlink/FIFO/unbounded read. Errors never echo paths or profile contents.
     func loadProfile() throws -> Data {
+        guard Self.validListener(listenerID) else { throw CoachingCommandError.invalidConfiguration }
         let fd = open(profile.path, O_RDONLY | O_NOFOLLOW | O_NONBLOCK)
         guard fd >= 0 else { throw CoachingCommandError.invalidConfiguration }
         defer { close(fd) }
         var details = stat()
         guard fstat(fd, &details) == 0, details.st_mode & S_IFMT == S_IFREG, details.st_uid == getuid(),
-              details.st_mode & 0o077 == 0, details.st_size > 0, details.st_size <= 7_000 else {
+              details.st_mode & 0o077 == 0, details.st_size > 0, details.st_size <= 7_000,
+              Self.hasNoExtendedACL(fd) else {
             throw CoachingCommandError.invalidConfiguration
         }
         var data = Data(), buffer = [UInt8](repeating: 0, count: 7_001)
@@ -59,7 +65,18 @@ struct CoachingConfiguration {
             guard data.count + count <= 7_000 else { throw CoachingCommandError.invalidConfiguration }
             data.append(contentsOf: buffer.prefix(count))
         }
-        _ = try CoachingChildCodec.profile(data, listenerID: listenerID)
+        do { _ = try CoachingChildCodec.profile(data, listenerID: listenerID) } catch {
+            throw CoachingCommandError.invalidConfiguration // Never propagate private profile parser diagnostics.
+        }
         return data
+    }
+
+    /// Mode bits alone do not establish owner privacy on macOS. Query the same opened descriptor;
+    /// any extended entry or inspection failure is refused, including conservative deny-only ACLs.
+    private static func hasNoExtendedACL(_ descriptor: Int32) -> Bool {
+        guard let access = acl_get_fd_np(descriptor, ACL_TYPE_EXTENDED) else { return errno == ENOENT }
+        defer { acl_free(UnsafeMutableRawPointer(access)) }
+        var entry: acl_entry_t?
+        return acl_get_entry(access, Int32(ACL_FIRST_ENTRY.rawValue), &entry) == -1 && errno == EINVAL
     }
 }

@@ -8,6 +8,31 @@ import Testing
         let fixture = try Fixture()
         #expect(try fixture.configuration.loadProfile() == fixture.data)
     }
+    @Test func whitespaceOnlyMatchingListenerAndProfileAreRefusedBeforeComposition() throws {
+        for listener in [" ", "   "] {
+            let fixture = try Fixture()
+            let text = try #require(String(data: fixture.data, encoding: .utf8))
+            try Data(text.replacingOccurrences(of: "private-coach", with: listener).utf8).write(to: fixture.path)
+            let invalid = CoachingConfiguration(executable: fixture.configuration.executable,
+                config: fixture.configuration.config, profile: fixture.path,
+                outputRoot: fixture.configuration.outputRoot, listenerID: listener,
+                privateOutput: 101, roomMicrophone: 102)
+            #expect(throws: CoachingCommandError.invalidConfiguration) { try invalid.loadProfile() }
+        }
+    }
+    @Test func extendedSharingACLIsRefusedEvenWithOwnerOnlyModeBits() throws {
+        let fixture = try Fixture()
+        try FileManager.default.setAttributes([.posixPermissions: 0o755], ofItemAtPath: fixture.root.path)
+        let permission = Process()
+        permission.executableURL = URL(fileURLWithPath: "/bin/chmod")
+        permission.arguments = ["+a", "everyone allow read", fixture.path.path]
+        try permission.run(); permission.waitUntilExit()
+        guard permission.terminationStatus == 0 else { throw CoachingCommandError.invalidConfiguration }
+        var details = stat()
+        #expect(stat(fixture.path.path, &details) == 0 && details.st_mode & 0o777 == 0o600)
+        #expect(throws: CoachingCommandError.invalidConfiguration) { try fixture.configuration.loadProfile() }
+        // Authored shared diagnostic fixture remains preserved; no real user profile is touched.
+    }
     @Test func symlinkFIFOSharedEmptyOversizedAndMalformedProfilesAreRefused() throws {
         for invalid in ["symlink", "fifo", "shared", "empty", "oversized", "malformed", "wrong-listener"] {
             let fixture = try Fixture()
@@ -36,7 +61,7 @@ import Testing
                 try Data(text.replacingOccurrences(
                     of: "private-coach", with: "another-coach").utf8).write(to: fixture.path)
             }
-            #expect(throws: (any Error).self) { try fixture.configuration.loadProfile() }
+            #expect(throws: CoachingCommandError.invalidConfiguration) { try fixture.configuration.loadProfile() }
         }
     }
 
