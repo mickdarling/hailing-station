@@ -51,6 +51,10 @@ an old route or clock observation. Renderer denial cleanup and failed renewal ar
 originating generation: old work cannot disarm a new monitor, cancel its queued advice or stop its capture.
 Replacement regressions exercise core, renderer and final-gate observations across schedule/resume/mute,
 plus failed renewal after an explicitly begun successor. The old operations fail; fresh advice remains usable.
+Arm and observation failure retire only their captured monitor revision, including a successor on a different
+qualifying wired UID. Failed begin cleanup owns only its started generation (or an empty lifetime before start),
+not a successor created during arm or registration. Round5 source fails the new monitor/startup regressions;
+their evidence remains preserved separately from later passing runs.
 
 ## Concrete AirPods blocker and physical limits
 

@@ -41,12 +41,17 @@ public final class ApplePrivateCoaching {
     public func begin(sessionID: UUID, destinationID: UUID, consentConfirmed: Bool) throws -> CoachingQualification {
         stop()
         guard consentConfirmed else { throw CoachingSafetyError.consentRequired }
+        var startedGeneration: UUID?
         do {
             try monitor.arm()
             let lease = try session.begin(sessionID: sessionID, destinationID: destinationID, consentConfirmed: true)
+            startedGeneration = lease.generation
             try consumer.register(lease)
             return lease
-        } catch { stop(); throw error }
+        } catch {
+            if session.qualification?.generation == startedGeneration { stop() }
+            throw error
+        }
     }
 
     @discardableResult

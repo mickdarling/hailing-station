@@ -4,6 +4,34 @@ import Testing
 
 /// #269: old work cannot stop or cancel a replacement created inside its output observation.
 @Suite @MainActor struct AppleCoachingReplacementTests {
+    @Test(arguments: [1, 5, 6])
+    func failedOuterBeginCannotStopSuccessorCreatedDuringArmOrRegistration(trigger: Int) throws {
+        let rig = AppleCoachingRig()
+        let adapter = try rig.make()
+        var freshAdvice: AdmittedCoachingAdvice?
+        var observations = 0
+        rig.onSnapshot = {
+            observations += 1
+            guard observations == trigger else { return }
+            rig.onSnapshot = nil
+            do {
+                let fresh = try adapter.begin(sessionID: UUID(), destinationID: UUID(), consentConfirmed: true)
+                let advice = try adapter.admit(coachingWireData(fresh))
+                try adapter.schedule(coachingPCM, for: advice)
+                freshAdvice = advice
+            } catch { Issue.record(error) }
+        }
+        #expect(throws: (any Error).self) {
+            try adapter.begin(sessionID: UUID(), destinationID: UUID(), consentConfirmed: true)
+        }
+        #expect(rig.capture.startCount == (trigger == 1 ? 1 : 2))
+        #expect(rig.capture.stopCount == (trigger == 1 ? 0 : 1))
+        #expect(rig.suspensions == (trigger == 1 ? [] : [.stopped]))
+        try adapter.resume(try #require(freshAdvice))
+        #expect(rig.plays == 2)
+        adapter.stop()
+    }
+
     @Test func failedOldRenewalCannotStopReplacementFromObservation() throws {
         let rig = AppleCoachingRig()
         let adapter = try rig.make()
@@ -25,7 +53,8 @@ import Testing
         adapter.stop()
     }
 
-    @Test func replacementDuringCoreRendererAndGateObservationPreservesFreshAdvice() throws {
+    @Test(arguments: [false, true])
+    func replacementDuringCoreRendererAndGateObservationPreservesFreshAdvice(differentOutput: Bool) throws {
         for action in 0..<3 {
             for boundary in 0..<3 {
                 let rig = AppleCoachingRig()
@@ -42,6 +71,9 @@ import Testing
                     guard observations == trigger else { return }
                     rig.onSnapshot = nil
                     do {
+                        if differentOutput {
+                            rig.outputs = [.init(uid: "authored-replacement-output", kind: .wiredHeadphones)]
+                        }
                         let fresh = try adapter.begin(sessionID: UUID(), destinationID: UUID(), consentConfirmed: true)
                         let advice = try adapter.admit(coachingWireData(fresh))
                         try adapter.schedule(coachingPCM, for: advice)
