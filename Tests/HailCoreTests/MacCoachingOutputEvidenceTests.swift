@@ -18,6 +18,7 @@ import Testing
     var running = false
     var sets: [UInt32] = []
     var afterRead: (() -> Void)?
+    var afterDeviceRead: (() -> Void)?
     var reader: MacCoachingDeviceReader {
         .init(scalar: { [self] object, selector in
             switch selector {
@@ -38,12 +39,52 @@ import Testing
     func bind() throws -> MacCoachingOutputBinding {
         try MacCoachingOutputBinding(deviceID: device, read: { self.evidence() }, operations: .init(
             running: { self.running }, setDevice: { self.sets.append($0); self.bound = $0 },
-            currentDevice: { self.bound }
+            currentDevice: { let value = self.bound; self.afterDeviceRead?(); return value }
         ))
     }
 }
 
 @Suite @MainActor struct MacCoachingOutputEvidenceTests {
+    @Test(arguments: [0, 1, 2])
+    func explicitRetirementDuringObservationVetoesThatSameObservation(boundary: Int) throws {
+        let rig = MacCoachingEvidenceRig()
+        let binding = try rig.bind()
+        var deviceReads = 0
+        rig.afterDeviceRead = {
+            deviceReads += 1
+            if (boundary == 0 && deviceReads == 1) || (boundary == 2 && deviceReads == 2) {
+                binding.retire()
+            }
+        }
+        rig.afterRead = { if boundary == 1 { binding.retire() } }
+        #expect(!binding.isStillBound())
+        #expect(!binding.isStillBound() && rig.sets == [20])
+    }
+
+    @Test func ownerStartingDuringEvidenceReadPreventsDeviceWrite() {
+        let rig = MacCoachingEvidenceRig()
+        rig.afterRead = { rig.running = true }
+        #expect(throws: CoachingSafetyError.unsafeOutput) { try rig.bind() }
+        #expect(rig.sets.isEmpty)
+    }
+
+    @Test(arguments: [false, true])
+    func ownerStartingDuringFinalObservationPreventsPublication(atDeviceRead: Bool) {
+        let rig = MacCoachingEvidenceRig()
+        var evidenceReads = 0
+        var deviceReads = 0
+        rig.afterRead = {
+            evidenceReads += 1
+            if !atDeviceRead && evidenceReads == 2 { rig.running = true }
+        }
+        rig.afterDeviceRead = {
+            deviceReads += 1
+            if atDeviceRead && deviceReads == 2 { rig.running = true }
+        }
+        #expect(throws: CoachingSafetyError.unsafeOutput) { try rig.bind() }
+        #expect(rig.sets == [20])
+    }
+
     @Test func everyOutputStreamMustBeHeadphones() {
         let rig = MacCoachingEvidenceRig()
         rig.streams = [21, 22]

@@ -35,6 +35,11 @@ Installed macOS SDK AudioHardwareBase.h and AudioUnitProperties.h document the s
 `MacCoachingOutputEvidenceTests` uses authored property/binding operations, not real device identities or
 audio streams. It covers transport-only denial, malformed/unknown/mixed classification, binding readback,
 running-owner refusal, UID replacement, changes during observation, retirement and no revival/rebind.
+Round 1 independent review found same-call retirement and unstarted-owner observation gaps. Authored
+regressions reproduced both before correction. The binding now rechecks retirement after its final device
+observation, refuses a device write when metadata reading starts the owner, and refuses successful
+publication when the final binding observation starts it. Tests cover retirement at each of the three
+observation boundaries and startup during initial metadata, final metadata and final device readback.
 Physical acceptance remains deferred: operator-selected AirPods metadata on the intended Mac, room mic
 continuity during private advice, route loss/default-output changes, and queued/late advice under unplug,
 sleep, interruption and reconnect. Those checks require separate scoped live authorization; none ran here.

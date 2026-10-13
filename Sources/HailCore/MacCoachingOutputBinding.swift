@@ -45,20 +45,23 @@ final class MacCoachingOutputBinding {
 
     init(deviceID: UInt32, read: @escaping () -> MacCoachingDeviceEvidence?,
          operations: MacCoachingBindingOperations) throws {
-        guard !operations.running(), let evidence = read(), evidence.deviceID == deviceID else {
+        guard !operations.running(), let evidence = read(), evidence.deviceID == deviceID,
+              !operations.running() else {
             throw CoachingSafetyError.unsafeOutput
         }
         original = evidence
         self.read = read
         self.operations = operations
         try operations.setDevice(deviceID)
-        guard !operations.running(), isStillBound() else { throw CoachingSafetyError.unsafeOutput }
+        guard !operations.running(), isStillBound(), !operations.running(), !retired else {
+            throw CoachingSafetyError.unsafeOutput
+        }
     }
 
     /// Rechecks the *observed* unit device and all output terminal metadata; never rebinds or revives on failure.
     func isStillBound() -> Bool {
         guard !retired, operations.currentDevice() == original.deviceID, read() == original,
-              operations.currentDevice() == original.deviceID else { retired = true; return false }
+              operations.currentDevice() == original.deviceID, !retired else { retired = true; return false }
         return true
     }
 
