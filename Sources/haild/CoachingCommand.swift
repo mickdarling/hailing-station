@@ -86,19 +86,27 @@ struct CoachingCommandAudio {
         }
         let configuration = try CoachingConfiguration.parse(arguments)
         let command = try native(configuration)
+        let terminal = try CoachingTerminal()
         let keyboard = try CoachingKeyboard(ended: { command.off() })
-        var failure: (any Error)?
-        FileHandle.standardError.write(Data("""
-        Private coaching is OFF. Local controls only:
-        enable aware | owner idle | owner answering | status | off | awareness lost | permission lost | quit
-        Enable confirms participant awareness; private output and separate room microphone must qualify.
+        try await interact(command, keyboard: keyboard, terminal: terminal)
+    }
 
-        """.utf8))
+    /// Shared run loop for native composition and authored-only control/feedback regressions.
+    static func interact(_ command: CoachingCommand, keyboard: CoachingKeyboard,
+                         terminal: CoachingTerminal) async throws {
+        defer { terminal.close() }
+        var failure: (any Error)?
         do {
+            try terminal.write("""
+            Private coaching is OFF. Local controls only:
+            enable aware | owner idle | owner answering | status | off | awareness lost | permission lost | quit
+            Enable confirms participant awareness; private output and separate room microphone must qualify.
+
+            """)
             for try await line in keyboard.lines {
                 guard !keyboard.closed else { break } // EOF/overflow cannot replay buffered enable controls.
                 guard try command.control(line) else { break }
-                FileHandle.standardError.write(Data("coaching: \(command.owner.status)\n".utf8))
+                try terminal.write("coaching: \(command.owner.status)\n")
             }
         } catch { failure = CoachingCommandError.invalidControl }
         keyboard.close()

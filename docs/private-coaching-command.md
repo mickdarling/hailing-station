@@ -16,6 +16,15 @@ The listener profile is an immutable validated startup snapshot; changing a prof
 a fresh command, never a silent reload or transcript instruction. Fifteen-minute run and original advice
 deadlines, route/fixed-binding fences, caps and owned child/renderer cancellation remain unchanged.
 
+Full Round1 rejected the .142 command head for synchronous actor-bound terminal status output: an eligible
+synthetic PTY filled to backpressure blocked the exact status write for 0.523 seconds until an independent
+drain, preventing ready EOF retirement meanwhile. The corrected feedback descriptor is nonblocking, accepts
+only bounded content-free ASCII messages, and queues nothing. Partial writes, backpressure and errors retire
+the same owner and join before exit; even the initial instructions use this path. The shared actual run loop
+is tested with authored ports and a full synthetic PTY without any drain. Original nonblocking status mode is
+restored after joining. The original probe and subsequent test diagnostics remain preserved; fresh integrated
+head reviews are still required, and the prior verdict is not an approval of this correction.
+
 Native audio/child factories execute only after explicit aware enable; the local PCM-only speech bridge only
 after admitted advice. Native service/runtime remain trusted operator prerequisites. The executable proof
 uses the same owner with generated capture, pinned authored producer, mock TTS and synthetic private player.

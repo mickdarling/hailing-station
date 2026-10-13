@@ -1,6 +1,43 @@
 import Darwin
 import Foundation
 
+/// Exclusive owner-local feedback. Backpressure is an error, never an actor-blocking wait or queued effect.
+@MainActor final class CoachingTerminal {
+    private var descriptor: Int32?
+    private let flags: Int32
+    init(output: Int32 = STDERR_FILENO) throws {
+        guard isatty(output) == 1 else { throw CoachingCommandError.localControlRequired }
+        let fd = dup(output)
+        guard fd >= 0 else { throw CoachingCommandError.localControlRequired }
+        flags = fcntl(fd, F_GETFL)
+        guard flags >= 0, fcntl(fd, F_SETFL, flags | O_NONBLOCK) == 0 else {
+            Darwin.close(fd); throw CoachingCommandError.localControlRequired
+        }
+        descriptor = fd
+    }
+    isolated deinit { close() }
+    func close() {
+        guard let fd = descriptor else { return }
+        descriptor = nil
+        _ = fcntl(fd, F_SETFL, flags) // dup shares status flags; restore the CLI's original nonblocking mode.
+        Darwin.close(fd)
+    }
+    func write(_ text: String) throws {
+        let bytes = Data(text.utf8)
+        guard let fd = descriptor, !bytes.isEmpty, bytes.count <= 512,
+              bytes.allSatisfy({ $0 == 10 || (32...126).contains($0) }) else {
+            throw CoachingCommandError.invalidControl
+        }
+        for _ in 0..<2 {
+            let count = bytes.withUnsafeBytes { Darwin.write(fd, $0.baseAddress, $0.count) }
+            if count == bytes.count { return }
+            if count < 0, errno == EINTR { continue }
+            break // Partial/EAGAIN/error cannot delay authority retirement or retain queued feedback.
+        }
+        throw CoachingCommandError.invalidControl
+    }
+}
+
 /// Bounded exclusive terminal control reader. Never blocks the foreground renewal/audio actor.
 @MainActor final class CoachingKeyboard {
     let lines: AsyncThrowingStream<String, any Error>
