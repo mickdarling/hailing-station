@@ -53,14 +53,18 @@ public final class CoachingAdviceConsumer {
               wire.generationID == lease.generation.uuidString.lowercased(),
               wire.destinationID == lease.destinationID.uuidString.lowercased(), wire.listenerID == listenerID,
               let requestID = UUID(uuidString: wire.requestID) else { throw CoachingWireError.wrongScope }
-        guard !requests.contains(requestID) else { throw CoachingWireError.replay }
-        guard requests.count < Self.requestLimit else { try exhaust() }
+        try validateRequest(requestID)
         let deadline = min(lease.expiresAt, session.clock.now().advanced(by: .milliseconds(wire.validForMs)))
         let ticket = CoachingAdviceTicket(qualification: CoachingQualification(
             sessionID: lease.sessionID, generation: lease.generation, destinationID: lease.destinationID,
             qualificationID: lease.qualificationID, expiresAt: deadline, outputID: lease.outputID
         ), requestID: requestID)
         try session.validate(ticket)
+        // Output observation may synchronously reenter admission. Commit only against the resulting ledger.
+        guard generation == lease.generation, qualifications[qualificationID] == lease else {
+            throw CoachingWireError.staleAdvice
+        }
+        try validateRequest(requestID)
         requests.insert(requestID) // Never pruned inside a generation: expiry cannot make a request replayable.
         admitted[requestID] = ticket
         return AdmittedCoachingAdvice(text: wire.text, ticket: ticket, consumerID: consumerID)
@@ -101,6 +105,11 @@ public final class CoachingAdviceConsumer {
         let now = session.clock.now()
         qualifications = qualifications.filter { now < $0.value.expiresAt }
         admitted = admitted.filter { now < $0.value.qualification.expiresAt }
+    }
+
+    private func validateRequest(_ requestID: UUID) throws {
+        guard !requests.contains(requestID) else { throw CoachingWireError.replay }
+        guard requests.count < Self.requestLimit else { try exhaust() }
     }
 
     private func clear() {

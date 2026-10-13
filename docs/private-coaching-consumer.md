@@ -32,6 +32,9 @@ not a transcript archive, but external immutable advice strings are not forensic
 `CoachingWireAdviceTests`, `CoachingAdviceConsumerTests` and `CoachingConsumerResourceTests` cover strict
 decode, wrong scope, original expiry across renewal, duplicate requests, ledger limits, route vetoes and
 delayed playback. The five-line authored fixture in `fixtures/coaching-wire-v1.jsonl` is not execution proof.
+`CoachingAdmissionReentryTests` proves that final callback-capable output observation cannot return two
+admissions for one producer request or consume more than the last available ledger slot. Final ledger
+checks run after that observation, with no callback between those checks and insertion.
 
 `CoachingProducerReplayTests` is an explicit optional cross-repository probe. Set
 `HAIL_COACHING_REPLAY_JSONL` to output from RightyO's actual `coach-replay` executable, then run
