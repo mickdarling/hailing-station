@@ -54,15 +54,31 @@ struct PrivateCoachingResourceTests {
         let capture = CoachingStartProbe()
         let player = CoachingTestPlayer()
         let outputID = UUID()
+        var discarded = false
         var session: PrivateCoachingSession? = PrivateCoachingSession(
             capture: capture, player: player, observeOutput: { .verifiedHeadphones(outputID) },
-            hooks: .init(buffer: { _, _ in }, suspended: { _, _ in }), clock: CoachingTestClock().clock
+            hooks: .init(buffer: { _, _ in }, suspended: { _, reason in discarded = reason == .stopped }),
+            clock: CoachingTestClock().clock
         )
         try session?.begin(sessionID: UUID(), destinationID: UUID(), consentConfirmed: true)
         weak let released = session
         session = nil
         #expect(released == nil)
         #expect(capture.stops == 1 && player.cancelled == 1)
+        #expect(discarded) // Downstream provider/context clearing is part of fallback teardown too.
+    }
+
+    @Test func synchronousSchedulerInvalidationCannotEnqueueAfterCancellation() throws {
+        let rig = CoachingTestHarness()
+        try rig.begin()
+        let ticket = try rig.ticket()
+        rig.time.onSchedule = { rig.session.invalidateRoute() }
+        #expect(throws: CoachingSafetyError.staleQualification) {
+            try rig.session.schedule(coachingPCM, ticket: ticket)
+        }
+        #expect(rig.session.qualification == nil && rig.player.scheduled.isEmpty)
+        #expect(rig.player.cancelled == 1 && rig.capture.stopCount == 1)
+        rig.time.onSchedule = nil
     }
 
     @Test func sourceCompletionAndResumeFailureSuspend() async throws {

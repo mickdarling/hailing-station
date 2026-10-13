@@ -34,9 +34,11 @@ final class CoachingTestPlayer: CoachingAudioPlaying {
 final class CoachingTestClock {
     var instant = ContinuousClock.now
     var callbacks: [@MainActor () -> Void] = []
+    var onSchedule: (() -> Void)?
     var clock: CoachingClock {
         CoachingClock(now: { self.instant }, schedule: { _, fire in
             self.callbacks.append(fire)
+            self.onSchedule?()
             return {} // Intentionally deliver stale callbacks to prove revision fences.
         })
     }
@@ -58,8 +60,8 @@ final class CoachingTestHarness {
     var suspensions: [CoachingSuspension] = []
     lazy var session = PrivateCoachingSession(
         capture: capture, player: player, observeOutput: { [unowned self] in self.output },
-        hooks: .init(buffer: { [unowned self] buffer, _ in self.admitted.append(buffer) },
-                     suspended: { [unowned self] _, reason in self.suspensions.append(reason) }), clock: time.clock
+        hooks: .init(buffer: { [weak self] buffer, _ in self?.admitted.append(buffer) },
+                     suspended: { [weak self] _, reason in self?.suspensions.append(reason) }), clock: time.clock
     )
     @discardableResult func begin() throws -> CoachingQualification {
         try session.begin(sessionID: UUID(), destinationID: UUID(), consentConfirmed: true)

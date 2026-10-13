@@ -24,15 +24,19 @@ extension PrivateCoachingSession {
     }
 
     func armExpiry(_ lease: CoachingQualification) {
-        cancelExpiry?()
+        let previous = cancelExpiry
+        cancelExpiry = nil
+        previous?()
+        guard qualification == lease else { return }
         let deadline = min(lease.expiresAt, pendingPlayback.values.min() ?? lease.expiresAt)
         let revision = UUID()
         expiryRevision = revision
-        cancelExpiry = clock.schedule(clock.now().duration(to: deadline)) { [weak self] in
+        let cancel = clock.schedule(clock.now().duration(to: deadline)) { [weak self] in
             guard let self, self.expiryRevision == revision, let live = self.qualification else { return }
             // Early scheduler callbacks cannot accidentally expire a still-live lease.
             if self.current() != nil { self.armExpiry(live) }
         }
+        if qualification == lease, expiryRevision == revision { cancelExpiry = cancel } else { cancel() }
     }
 
     func suspend(_ reason: CoachingSuspension) {

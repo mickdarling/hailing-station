@@ -57,6 +57,18 @@ struct PrivateCoachingLifetimeTests {
         rig.session.stop()
     }
 
+    @Test func delayedCompletionCannotEraseAnExpiredOriginalDeadline() throws {
+        let rig = CoachingTestHarness()
+        let lease = try rig.begin()
+        try rig.session.schedule(coachingPCM, ticket: rig.ticket())
+        rig.time.advance(.seconds(1))
+        try rig.session.renew(lease)
+        rig.time.instant = rig.time.instant.advanced(by: .seconds(1)) // Delay timer delivery, not authoritative time.
+        rig.player.completions.forEach { $0() }
+        #expect(rig.session.qualification == nil && rig.suspensions == [.adviceExpired])
+        #expect(throws: CoachingSafetyError.staleQualification) { try rig.ticket() }
+    }
+
     @Test func boundedLifetimeQueueAndPayloads() throws {
         let rig = CoachingTestHarness()
         for duration in [Duration.zero, .seconds(-1), .seconds(3)] {

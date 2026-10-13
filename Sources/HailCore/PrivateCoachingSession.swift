@@ -49,10 +49,14 @@ public final class PrivateCoachingSession {
     }
 
     isolated deinit {
+        let old = qualification
+        qualification = nil
+        transitioning = true
         cancelExpiry?()
         forward?.cancel()
         player.cancel()
         if captureStarted { capture.stop() }
+        if let old { hooks.suspended(old, .stopped) }
     }
 
     /// Explicit opt-in AND participant-awareness/consent are required. The caller supplies opaque local IDs.
@@ -132,9 +136,10 @@ public final class PrivateCoachingSession {
         let chunkID = UUID()
         pendingPlayback[chunkID] = ticket.qualification.expiresAt
         if let live = qualification { armExpiry(live) }
+        try validate(ticket) // Scheduler/cancellation hooks may synchronously invalidate the lifetime.
         do { try player.schedule(payload, onPlayed: { [weak self] in
-            guard let self, self.pendingPlayback.removeValue(forKey: chunkID) != nil,
-                  let live = self.qualification else { return }
+            guard let self, self.pendingPlayback[chunkID] != nil, let live = self.current() else { return }
+            self.pendingPlayback[chunkID] = nil // Check authoritative time BEFORE erasing the original deadline.
             self.armExpiry(live)
         }) } catch {
             suspend(.playbackFailed)
