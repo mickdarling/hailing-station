@@ -10,7 +10,7 @@ import Testing
     /// A new install that dies at once ends the stream as any failed child does, and its failure, not the reload,
     /// is the last ambient event `haild doctor` reads.
     @Test func aNewChildThatFailsAtOnceLeavesItsFailureLast() async throws {
-        let fake = try FakeRightyo("exec /bin/sleep 60")
+        let fake = try FakeRightyo("printf ready > original-started\nexec /bin/sleep 60")
         defer { fake.cleanUp() }
         let order = Mutex<[String]>([])
         let env = try await ambientRig(fake, timing: .init(eofGrace: 0.2, termGrace: 0.2)) { event in
@@ -22,6 +22,10 @@ import Testing
         defer { pair.close() }
         try await recipientSocketSend(audio(UUID(), 0), on: pair.sockets[0])
         try await pair.barrier()
+        // A host pong does not prove that the child has opened the original behavior script.
+        let started = await eventually { (try? fake.recorded("original-started")) == "ready" }
+        if !started { await env.listener.stop(reason: "authored child did not start") }
+        try #require(started)
         try rewriteFake(fake, "exit 0")
         #expect(await env.router.reload() == .reloaded)
         #expect(try await ambientError(on: pair.sockets[0]).hasPrefix("ambient stopped: "))
