@@ -37,7 +37,7 @@ struct DestinationBrowser: View {
                 }
             }
             .navigationTitle("Choose a destination")
-            .navigationBarTitleDisplayMode(.inline)
+            .stationInlineTitle()
             .toolbar {
                 ToolbarItem(placement: .confirmationAction) {
                     Button("Done") { dismiss() }

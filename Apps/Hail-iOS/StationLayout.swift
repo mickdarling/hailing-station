@@ -24,18 +24,18 @@ extension RootView {
                     adaptiveContent(fit)
                 }
                 .frame(maxWidth: fit.fitsOneScreen ? 1_400 : 1_120)
-                .padding(.horizontal, horizontalSizeClass == .regular ? 28 : 16)
+                .padding(.horizontal, (StationPlatform.isDesktop || horizontalSizeClass == .regular) ? 28 : 16)
                 .padding(.vertical, fit.fitsOneScreen ? 12 : 16)
                 .frame(maxWidth: .infinity)
                 .frame(height: fit.height, alignment: .top)
                 .environment(\.dynamicTypeSize, stationTypeSize(fit))
             }
             .scrollBounceBehavior(.basedOnSize)
-            .scrollDismissesKeyboard(.interactively)
+            .stationDismissKeyboardOnScroll()
         }
         // The station header names the app; a "Conversation" bar above it only costs height (#288).
-        .toolbar(.hidden, for: .navigationBar)
-        .background(Color(uiColor: .systemGroupedBackground))
+        .stationHeaderOnly()
+        .background(StationPlatform.background)
         .safeAreaInset(edge: .bottom, spacing: 0) {
             StationBuildFooter()
         }
@@ -48,7 +48,7 @@ extension RootView {
     /// Only an iPad with room for the conversation and side columns fits one screen. A large iPhone in landscape
     /// is regular width too, and a short Stage Manager window may be too low; both keep scrolling.
     func stationFit(in size: CGSize) -> StationFit {
-        let fits = UIDevice.current.userInterfaceIdiom == .pad && horizontalSizeClass == .regular
+        let fits = StationPlatform.supportsWideLayout && (StationPlatform.isDesktop || horizontalSizeClass == .regular)
             && !dynamicTypeSize.isAccessibilitySize && size.height >= 600
         return StationFit(fitsOneScreen: fits, isWide: fits && size.width >= 1_150, height: fits ? size.height : nil)
     }
@@ -65,7 +65,7 @@ extension RootView {
     /// Conversation first; then listening and the current reply; then audio route, tools and diagnostics. Stacked
     /// on iPhone, two columns on an iPad in portrait, three in landscape.
     func adaptiveContent(_ fit: StationFit) -> some View {
-        let regular = horizontalSizeClass == .regular
+        let regular = (StationPlatform.isDesktop || horizontalSizeClass == .regular)
         let layout = regular
             ? AnyLayout(HStackLayout(alignment: .top, spacing: 18))
             : AnyLayout(VStackLayout(spacing: 18))
@@ -82,11 +82,14 @@ extension RootView {
                         .layoutPriority(1)
                 }
                 conversationSurface
+                    #if os(macOS)
+                    .disabled(coachingController.state != .off)
+                    #endif
             }
             .frame(maxWidth: .infinity, maxHeight: fit.fitsOneScreen ? .infinity : nil, alignment: .top)
             side {
                 VStack(spacing: 18) {
-                    ambientListeningSurface
+                    listeningSurfaces
                     if fit.isWide { chatSurface }
                 }
                 .frame(maxWidth: regular ? (fit.isWide ? 420 : 360) : .infinity, alignment: .top)
@@ -103,6 +106,16 @@ extension RootView {
                 .frame(maxWidth: regular ? (fit.isWide ? 280 : 360) : .infinity, alignment: .top)
             }
         }
+    }
+
+    @ViewBuilder
+    private var listeningSurfaces: some View {
+        #if os(macOS)
+        MacCoachingCard(playback: playback)
+        ambientListeningSurface.disabled(coachingController.state != .off)
+        #else
+        ambientListeningSurface
+        #endif
     }
 
     /// The chat for the confirmed destination. Without one, the latest reply keeps its own card so its playback
