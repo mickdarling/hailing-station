@@ -31,7 +31,12 @@ import Testing
         )
         try session.begin(sessionID: UUID(), destinationID: UUID(), consentConfirmed: true)
         let ticket = try session.ticket(requestID: UUID())
-        player.onEffect = { session.stop() }
+        player.onEffect = {
+            session.stop()
+            #expect(throws: CoachingSafetyError.transitionInProgress) {
+                try session.begin(sessionID: UUID(), destinationID: UUID(), consentConfirmed: true)
+            }
+        }
         #expect(throws: CoachingSafetyError.staleQualification) {
             if operation == 0 { try session.schedule(coachingPCM, ticket: ticket) }
             if operation == 1 { try session.resume(ticket: ticket) }

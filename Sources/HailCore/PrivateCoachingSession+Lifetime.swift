@@ -58,6 +58,8 @@ extension PrivateCoachingSession {
 
     func performPlayerEffect(_ ticket: CoachingAdviceTicket, operation: () throws -> Void) throws {
         try validate(ticket)
+        playerEffectsInFlight += 1
+        defer { playerEffectsInFlight -= 1 }
         do {
             try operation()
             try validate(ticket)

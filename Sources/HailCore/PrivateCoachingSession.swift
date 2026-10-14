@@ -19,6 +19,7 @@ public final class PrivateCoachingSession {
     var captureStarted = false
     var captureStarting = false
     var startupRevision = UUID()
+    var playerEffectsInFlight = 0
     var transitioning = false
     var pendingPlayback: [UUID: ContinuousClock.Instant] = [:]
 
@@ -68,7 +69,9 @@ public final class PrivateCoachingSession {
         sessionID: UUID, destinationID: UUID, consentConfirmed: Bool,
         lifetime: Duration = maximumLifetime
     ) throws -> CoachingQualification {
-        guard !transitioning else { throw CoachingSafetyError.transitionInProgress }
+        guard !transitioning, qualification != nil || playerEffectsInFlight == 0 else {
+            throw CoachingSafetyError.transitionInProgress
+        }
         transitioning = true
         defer { transitioning = false }
         let revision = UUID()
