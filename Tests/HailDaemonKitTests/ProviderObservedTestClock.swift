@@ -32,10 +32,14 @@ final class ObservedCounter: Sendable {
 actor ObservedGate {
     nonisolated let arrivals = ObservedCounter()
     private var continuation: CheckedContinuation<Void, Never>?
+    private var permanentlyReleased = false
     func pause() async {
+        if permanentlyReleased { arrivals.increment(); return }
         await withCheckedContinuation { continuation = $0; arrivals.increment() }
     }
     func release() { continuation?.resume(); continuation = nil }
+    /// Failure cleanup must also release a write that reaches this gate after the cleanup call.
+    func releaseAll() { permanentlyReleased = true; release() }
 }
 
 actor ObservedPoll {
