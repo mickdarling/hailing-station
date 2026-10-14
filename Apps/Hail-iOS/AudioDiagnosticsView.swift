@@ -71,8 +71,13 @@ struct AudioDiagnosticsView: View {
                 }
             }
             Section("Preference") {
+                #if os(macOS)
+                Text("Uses the Mac's system-default microphone and output. Private coaching chooses its own devices.")
+                    .font(.caption)
+                #else
                 Text("USB, wired headset, then built-in microphone. Bluetooth HFP is disabled.")
                     .font(.caption)
+                #endif
             }
         }
         .navigationTitle("Audio session")
@@ -93,6 +98,7 @@ private extension AudioDiagnosticsView {
         .frame(maxWidth: .infinity, alignment: .leading)
     }
 }
+#if os(iOS)
 struct AudioOutputRoutePicker: UIViewRepresentable {
     func makeUIView(context: Context) -> AVRoutePickerView {
         let picker = AVRoutePickerView()
@@ -106,3 +112,10 @@ struct AudioOutputRoutePicker: UIViewRepresentable {
 
     func updateUIView(_ view: AVRoutePickerView, context: Context) {}
 }
+
+#else
+struct AudioOutputRoutePicker: NSViewRepresentable {
+    func makeNSView(context: Context) -> AVRoutePickerView { AVRoutePickerView() }
+    func updateNSView(_ view: AVRoutePickerView, context: Context) {}
+}
+#endif
