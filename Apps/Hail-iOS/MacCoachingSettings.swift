@@ -1,6 +1,7 @@
 #if os(macOS)
 import Darwin
 import Foundation
+import HailCore
 
 /// Owner-local setup only; profile parsing and all audio/provider qualification stay in the shared runtime.
 struct MacCoachingSettings: Decodable {
@@ -11,7 +12,26 @@ struct MacCoachingSettings: Decodable {
     let listener: String
     let adviceCatalog: String?
     let maxRequests: Int?
+    let hostedTextConsent: Bool
     let speechEnvironment: [String: String]?
+
+    private enum CodingKeys: String, CodingKey {
+        case rightyo, config, profile, rendererOutputRoot, listener, adviceCatalog, maxRequests
+        case speechEnvironment, hostedTextConsent
+    }
+
+    init(from decoder: any Decoder) throws {
+        let values = try decoder.container(keyedBy: CodingKeys.self)
+        rightyo = try values.decode(String.self, forKey: .rightyo)
+        config = try values.decode(String.self, forKey: .config)
+        profile = try values.decode(String.self, forKey: .profile)
+        rendererOutputRoot = try values.decode(String.self, forKey: .rendererOutputRoot)
+        listener = try values.decode(String.self, forKey: .listener)
+        adviceCatalog = try values.decodeIfPresent(String.self, forKey: .adviceCatalog)
+        maxRequests = try values.decodeIfPresent(Int.self, forKey: .maxRequests)
+        speechEnvironment = try values.decodeIfPresent([String: String].self, forKey: .speechEnvironment)
+        hostedTextConsent = try values.decodeIfPresent(Bool.self, forKey: .hostedTextConsent) ?? false
+    }
 
     static var rendererEnvironment: [String: String] {
         let allowed: Set<String> = ["PATH", "VBSAY_PROFILE", "VBSAY_NOFALLBACK", "VBSAY_API_BASE", "VBSTREAMD_URL"]
@@ -50,14 +70,12 @@ struct MacCoachingSettings: Decodable {
         return acl_get_entry(access, Int32(ACL_FIRST_ENTRY.rawValue), &entry) == -1 && errno == EINVAL
     }
 
-    func arguments(microphone: UInt32, output: UInt32) -> [String] {
+    func arguments(microphone: UInt32, output: UInt32) throws -> [String] {
         var arguments = ["--rightyo", rightyo, "--rightyo-config", config, "--listener-profile", profile,
             "--renderer-output-root", rendererOutputRoot, "--listener", listener,
             "--room-microphone", String(microphone), "--private-output", String(output)]
-        if let adviceCatalog, let maxRequests {
-            arguments += ["--coaching-provider", "jev", "--coaching-allow-hosted-text",
-                          "--coaching-max-requests", String(maxRequests), "--coaching-advice-catalog", adviceCatalog]
-        }
+        arguments += try CoachingHostedProviderArguments.make(catalog: adviceCatalog, maxRequests: maxRequests,
+                                                               consent: hostedTextConsent)
         return arguments
     }
 }
