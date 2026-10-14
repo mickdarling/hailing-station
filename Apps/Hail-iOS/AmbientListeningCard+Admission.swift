@@ -13,11 +13,16 @@ extension AmbientListeningCard {
                 guard captureReservation == token else { exclusion.release(token); return }
                 let activation = startup
                 controller.onRetirementCompleted = {
-                    Task { await activation?.value; releaseReservation(token) }
+                    Task {
+                        await activation?.value
+                        await controller.waitForRetirement()
+                        releaseReservation(token)
+                    }
                 }
                 await controller.turnOn(for: binding)
                 if !controller.isOn {
-                    controller.onRetirementCompleted = nil
+                    await controller.waitForRetirement()
+                    if captureReservation == token { controller.onRetirementCompleted = nil }
                     releaseReservation(token)
                 }
             }
@@ -25,7 +30,12 @@ extension AmbientListeningCard {
             let token = captureReservation, pending = startup
             captureReservation = nil
             startup = nil
-            Task { await controller.turnOff(); await pending?.value; releaseReservation(token) }
+            Task {
+                await controller.turnOff()
+                await pending?.value
+                await controller.waitForRetirement()
+                releaseReservation(token)
+            }
         }
         #else
         Task { on ? await controller.turnOn(for: binding) : await controller.turnOff() }
@@ -37,7 +47,11 @@ extension AmbientListeningCard {
         let token = captureReservation, pending = startup
         Task {
             await controller.update(binding: current, scene: scene)
-            if !controller.isOn { await pending?.value; releaseReservation(token) }
+            if !controller.isOn {
+                await pending?.value
+                await controller.waitForRetirement()
+                releaseReservation(token)
+            }
         }
         #else
         Task { await controller.update(binding: current, scene: scene) }
@@ -49,7 +63,12 @@ extension AmbientListeningCard {
         let token = captureReservation, pending = startup
         captureReservation = nil
         startup = nil
-        Task { await controller.destinationLost(); await pending?.value; releaseReservation(token) }
+        Task {
+            await controller.destinationLost()
+            await pending?.value
+            await controller.waitForRetirement()
+            releaseReservation(token)
+        }
         #else
         Task { await controller.destinationLost() }
         #endif
