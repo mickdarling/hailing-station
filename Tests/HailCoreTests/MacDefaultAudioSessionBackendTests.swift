@@ -6,6 +6,13 @@ import Testing
 @Suite("Mac default route adapter")
 @MainActor
 struct MacDefaultAudioSessionBackendTests {
+    @Test func reusedDeviceNumberDoesNotPreserveAChoiceOfAnotherDevice() {
+        let original = MacCoachingDevice(id: 7, name: "Authored input", uid: "authored.original")
+        let replacement = MacCoachingDevice(id: 7, name: "Authored input", uid: "authored.replacement")
+        #expect(original != replacement)
+        #expect(![replacement].contains(original))
+    }
+
     @Test func metadataCannotClaimBluetoothHandsFreeOrUnknownWired() {
         for transport in [kAudioDeviceTransportTypeBluetooth, kAudioDeviceTransportTypeBluetoothLE,
                           kAudioDeviceTransportTypeAggregate, kAudioDeviceTransportTypeVirtual,
