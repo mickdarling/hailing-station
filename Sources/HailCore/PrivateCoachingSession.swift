@@ -70,7 +70,7 @@ public final class PrivateCoachingSession {
         lifetime: Duration = maximumLifetime
     ) throws -> CoachingQualification {
         let replacementIsFenced = player is any CoachingGenerationFencedPlaying
-        guard !transitioning, qualification != nil || playerEffectsInFlight == 0 || replacementIsFenced else {
+        guard !transitioning, playerEffectsInFlight == 0 || replacementIsFenced else {
             throw CoachingSafetyError.transitionInProgress
         }
         transitioning = true
