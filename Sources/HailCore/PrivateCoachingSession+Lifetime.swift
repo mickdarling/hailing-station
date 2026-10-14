@@ -66,6 +66,9 @@ extension PrivateCoachingSession {
                 suspend(.playbackFailed, ifGeneration: ticket.qualification.generation)
             } else if qualification == nil {
                 // Stop may precede a late effect, but an old operation cannot cancel a replacement's player.
+                let wasTransitioning = transitioning
+                transitioning = true
+                defer { transitioning = wasTransitioning }
                 player.cancel()
             }
             throw error
