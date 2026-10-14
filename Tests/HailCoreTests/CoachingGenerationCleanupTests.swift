@@ -153,7 +153,9 @@ import Testing
 
     @Test func oldRendererThrowCannotRetireReplacementWithQueuedAdvice() throws {
         for scheduling in [false, true] {
-            let rig = CoachingTestHarness()
+            let player = CoachingGuardedTestPlayer()
+            let rig = CoachingTestHarness(player: player)
+            player.currentGeneration = { [weak session = rig.session] in session?.qualification?.generation }
             _ = try rig.begin()
             let ticket = try rig.ticket()
             var fresh: CoachingQualification?
