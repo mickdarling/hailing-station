@@ -3,7 +3,9 @@ import AVFAudio
 import HailCore
 import Speech
 import SwiftUI
+#if os(iOS)
 import UIKit
+#endif
 import UserNotifications
 
 extension View {
@@ -16,6 +18,9 @@ extension View {
 struct CaptureSafeLabsView: View {
     let audioSession: any AudioSessionDiagnosticsProviding
     let playback: ReplyPlaybackController
+    var mayBeginCapture: @MainActor () -> Bool = { true }
+    var captureRequested: @MainActor (UUID) -> Void = { _ in }
+    var captureReleased: @MainActor (UUID) -> Void = { _ in }
 
     var body: some View {
         List {
@@ -26,17 +31,24 @@ struct CaptureSafeLabsView: View {
                         globalReplyAudioSpeaking: playback.isReplyAudioOutputBusy,
                         controlledReplyPlaybackStatus: playback.statusForControls,
                         replyFailureStatuses: playback.terminalReplyFailureStatuses,
-                        onCaptureWillBegin: { CapturePlaybackSuppression.begin($0, using: playback) },
+                        onCaptureWillBegin: {
+                            captureRequested($0)
+                            CapturePlaybackSuppression.begin($0, using: playback)
+                        },
                         onCaptureDidEnd: {
+                            captureReleased($0)
                             CapturePlaybackSuppression.end($0, using: playback, resuming: $1)
                         },
                         onCaptureTeardownCompleted: {
+                            captureReleased($0)
                             CapturePlaybackSuppression.markCleanupComplete($0, using: playback)
                         }
                     )
                 }
             }
+            #if os(iOS)
             NavigationLink("Routing spike") { RoutingSpikeView() }
+            #endif
         }
         .navigationTitle("Labs")
     }
@@ -119,11 +131,7 @@ extension TranscriptionLabView {
 
 /// TCC invokes these callbacks on arbitrary queues, so this bridge must not inherit the view's MainActor.
 private func requestHailPermissions() async -> Bool {
-    let microphone = await withCheckedContinuation(isolation: nil) { continuation in
-        AVAudioApplication.requestRecordPermission { @Sendable granted in
-            continuation.resume(returning: granted)
-        }
-    }
+    let microphone = await StationPlatform.requestMicrophone()
     guard microphone else { return false }
 
     return await withCheckedContinuation(isolation: nil) { continuation in
@@ -169,9 +177,14 @@ struct AmbientListeningCard: View {
     let playback: ReplyPlaybackController
     let echoGuard: AmbientReplyEchoGuard
     let connections: HostConnectionStore
-    @State private var controller: AmbientListeningController
+    @State var controller: AmbientListeningController
     @AppStorage("ambient.masksDuringReplies") private var masksDuringReplies = false
-    @Environment(\.scenePhase) private var scenePhase
+    @Environment(\.scenePhase) var scenePhase
+    #if os(macOS)
+    @Environment(CoachingCaptureExclusion.self) var exclusion
+    @State var captureReservation: UUID?
+    @State var startup: Task<Void, Never>?
+    #endif
 
     init(
         binding: AmbientAudioBinding, hostName: String,
@@ -188,7 +201,7 @@ struct AmbientListeningCard: View {
             makeStreamer: { send in
                 try await audioSession.activate()
                 // Headphones keep their A2DP route only without voice processing (#343).
-                let capture = try echoGuard.ambientCapture(mode: AmbientCaptureModeResolver.currentMode())
+                let capture = try echoGuard.ambientCapture(mode: StationPlatform.captureMode)
                 return AmbientAudioStreamer(capture: capture, send: send)
             },
             releaseSession: { await audioSession.deactivate() },
@@ -294,7 +307,7 @@ struct AmbientListeningCard: View {
         .onChange(of: masksDuringReplies) { _, masks in echoGuard.masksDuringReplies = masks }
     }
 
-    private var scene: AmbientScene {
+    var scene: AmbientScene {
         switch scenePhase {
         case .active: .active
         case .background: .background
@@ -396,7 +409,7 @@ enum AmbientStopNotifier {
     }
 
     static func post(_ reason: String) {
-        guard UIApplication.shared.applicationState != .active else { return }
+        guard !StationPlatform.isActive else { return }
         let content = UNMutableNotificationContent()
         content.title = "Hailing Station stopped listening"
         content.body = reason
@@ -445,11 +458,7 @@ struct DiagnosticsLoggingCard: View {
 
 /// TCC invokes the callback on an arbitrary queue, so this bridge must not inherit the view's MainActor.
 private func requestMicrophonePermission() async -> Bool {
-    await withCheckedContinuation(isolation: nil) { continuation in
-        AVAudioApplication.requestRecordPermission { @Sendable granted in
-            continuation.resume(returning: granted)
-        }
-    }
+    await StationPlatform.requestMicrophone()
 }
 
 @MainActor
