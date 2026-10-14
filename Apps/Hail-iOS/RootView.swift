@@ -1,11 +1,18 @@
 import HailCore
 import HailProtocol
 import SwiftUI
+#if os(macOS)
+import HailCoaching
+#endif
 
 /// Shared station state for the adaptive iPhone and iPad interface.
 struct RootView: View {
     private static let savedHostsKey = "hailing-station.host-endpoints.v1"
     let selectionStore: any DestinationSelectionStoring
+    #if os(macOS)
+    @Environment(LocalCoachingController.self) var coachingController
+    @Environment(CoachingCaptureExclusion.self) var captureExclusion
+    #endif
     @State var connections = HostConnectionStore()
     @State var audioSession: ManagedAudioSession
     @State var audioRoutes: AudioRouteModel
@@ -13,7 +20,11 @@ struct RootView: View {
     /// Shared by reply playback and ambient capture (#227): the player raises it before audio can be heard.
     @State var echoGuard: AmbientReplyEchoGuard
     /// Keeps the station running in the background while connected without ambient listening (#352).
+    #if os(iOS)
     @State var keepalive = BackgroundKeepalive(renderer: SilentAudioKeepalive())
+    #else
+    @State var keepalive = BackgroundKeepalive(renderer: DesktopKeepalive())
+    #endif
     /// The "Diagnostics logging" log (#234): off by default; records and sends nothing until turned on.
     @State var diagnostics = DeviceDiagnostics()
     @State var selectedHostID: HostEndpoint.Identifier?
@@ -32,13 +43,19 @@ struct RootView: View {
     @Environment(\.dynamicTypeSize) var dynamicTypeSize
 
     @MainActor
-    init(selectionStore: any DestinationSelectionStoring = UserDefaultsDestinationSelectionStore()) {
+    init(selectionStore: any DestinationSelectionStoring = UserDefaultsDestinationSelectionStore(),
+         playback: ReplyPlaybackController? = nil, echoGuard: AmbientReplyEchoGuard? = nil) {
+        #if os(macOS)
+        let session = ManagedAudioSession(backend: MacDefaultAudioSessionBackend(),
+            preferences: AudioInputPreferences(order: [.usb, .wired, .builtIn, .other]))
+        #else
         let session = ManagedAudioSession(backend: AVAudioSessionBackend())
+        #endif
         self.selectionStore = selectionStore
         _audioSession = State(initialValue: session)
         _audioRoutes = State(initialValue: AudioRouteModel(controller: session))
-        let echoGuard = AmbientReplyEchoGuard()
-        let playback = ReplyPlaybackController(player: echoGuard.guarding(PCM16AudioPlayer()))
+        let echoGuard = echoGuard ?? AmbientReplyEchoGuard()
+        let playback = playback ?? ReplyPlaybackController(player: echoGuard.guarding(PCM16AudioPlayer()))
         echoGuard.follow(playback)
         _echoGuard = State(initialValue: echoGuard)
         _playback = State(initialValue: playback)
@@ -152,12 +169,20 @@ struct LabsView: View {
                     TranscriptionLabView(audioSession: audioSession)
                 }
             }
+            #if os(iOS)
             NavigationLink("Routing spike") { RoutingSpikeView() }
+            #endif
         }
         .navigationTitle("Labs")
     }
 }
 
 #Preview {
+    #if os(macOS)
+    let audio = DesktopStationAudio()
+    RootView(playback: audio.playback, echoGuard: audio.echoGuard)
+        .environment(audio.coaching).environment(audio.exclusion)
+    #else
     RootView()
+    #endif
 }
