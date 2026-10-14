@@ -163,5 +163,6 @@ func recipientSocketReceive(on socket: URLSessionWebSocketTask) async throws -> 
 func recipientSocketBarrier(on socket: URLSessionWebSocketTask) async throws {
     let nonce = UUID().uuidString
     try await recipientSocketSend(sessionFrame(payload: .control(.ping(nonce: nonce))), on: socket)
-    try #require(await recipientSocketReceive(on: socket).payload == .control(.pong(nonce: nonce)))
+    let received = try await recipientSocketReceive(on: socket).payload
+    try #require(received == .control(.pong(nonce: nonce)))
 }
