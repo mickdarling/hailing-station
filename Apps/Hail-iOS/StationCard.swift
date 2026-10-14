@@ -28,6 +28,7 @@ struct CaptureSafeLabsView: View {
                 if #available(iOS 26.0, *) {
                     TranscriptionLabView(
                         audioSession: audioSession,
+                        mayBeginCapture: mayBeginCapture,
                         globalReplyAudioSpeaking: playback.isReplyAudioOutputBusy,
                         controlledReplyPlaybackStatus: playback.statusForControls,
                         replyFailureStatuses: playback.terminalReplyFailureStatuses,
@@ -67,7 +68,7 @@ extension TranscriptionLabView {
     @MainActor
     func prepareCaptureAuthorization() async -> Bool {
         status = "Requesting microphone and speech access…"
-        guard await requestHailPermissions() else {
+        guard mayBeginCapture(), await requestHailPermissions() else {
             status = "Microphone and speech recognition permissions are required."
             releaseCaptureExclusivityAfterWork()
             return false
@@ -218,7 +219,7 @@ struct AmbientListeningCard: View {
         VStack(alignment: .leading, spacing: 10) {
             Toggle(isOn: Binding(get: { controller.isOn }, set: { on in
                 if on { AmbientStopNotifier.requestAuthorization() }
-                Task { on ? await controller.turnOn(for: binding) : await controller.turnOff() }
+                requestListening(on)
             })) {
                 Label("Ambient listening", systemImage: "ear")
                     .font(.headline)
@@ -252,7 +253,7 @@ struct AmbientListeningCard: View {
             } else if let handoff = controller.handoff, case .movedAway = handoff {
                 // Another device took listening over (#366): where it went, not an error, and one tap back.
                 AmbientMovedAwayView(handoff: handoff) {
-                    Task { await controller.turnOn(for: binding) }
+                    requestListening(true)
                 }
             } else if let paused = controller.pausedReason {
                 // Another app has the microphone (#445): still on, and it resumes by itself.
@@ -290,10 +291,10 @@ struct AmbientListeningCard: View {
         .frame(maxWidth: .infinity, alignment: .leading)
         .background(.regularMaterial, in: RoundedRectangle(cornerRadius: 20, style: .continuous))
         .onChange(of: binding) { _, current in
-            Task { await controller.update(binding: current, scene: scene) }
+            updateListening(current)
         }
         .onChange(of: scenePhase) { _, _ in
-            Task { await controller.update(binding: binding, scene: scene) }
+            updateListening(binding)
         }
         .onAppear {
             connections.onAmbientMovedHere = { [controller] host, from in controller.movedHere(from: from, host: host) }
@@ -301,7 +302,7 @@ struct AmbientListeningCard: View {
         .onDisappear {
             connections.ambientStreaming = false
             connections.onAmbientMovedHere = nil
-            Task { await controller.destinationLost() }
+            closeListening()
         }
         .onAppear { echoGuard.masksDuringReplies = masksDuringReplies }
         .onChange(of: masksDuringReplies) { _, masks in echoGuard.masksDuringReplies = masks }

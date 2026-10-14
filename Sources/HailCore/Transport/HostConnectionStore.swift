@@ -392,6 +392,8 @@ public enum AmbientScene: Sendable { case active, inactive, background }
 @MainActor
 @Observable
 public final class AmbientListeningController {
+    /// Reports completed resource retirement, including unexpected stops (#266).
+    public var onRetirementCompleted: (@MainActor () -> Void)?
     public typealias Send = @Sendable (AudioPayload, AmbientAudioBinding) async throws -> Void
     /// Activates the audio session and builds a streamer around `send`; the controller starts it.
     public typealias MakeStreamer = @MainActor (@escaping AmbientAudioStreamer.Send) async throws
@@ -563,10 +565,14 @@ public final class AmbientListeningController {
             notificationCenter.removeObserver(systemEndObserver)
             self.systemEndObserver = nil
         }
-        guard let streamer else { return }
-        self.streamer = nil
-        await streamer.stop()
-        await release(current)
+        if let streamer {
+            self.streamer = nil
+            await streamer.stop()
+            await release(current)
+        }
+        let completed = onRetirementCompleted
+        onRetirementCompleted = nil
+        completed?()
     }
 }
 
