@@ -1,3 +1,4 @@
+#if os(iOS)
 import SwiftUI
 
 /// Spike #22 screen. Buttons in the order the spike runs them; the log is the evidence.
@@ -34,3 +35,5 @@ struct RoutingSpikeView: View {
 #Preview {
     NavigationStack { RoutingSpikeView() }
 }
+
+#endif
