@@ -69,7 +69,8 @@ public final class PrivateCoachingSession {
         sessionID: UUID, destinationID: UUID, consentConfirmed: Bool,
         lifetime: Duration = maximumLifetime
     ) throws -> CoachingQualification {
-        guard !transitioning, qualification != nil || playerEffectsInFlight == 0 else {
+        let replacementIsFenced = player is any CoachingGenerationFencedPlaying
+        guard !transitioning, qualification != nil || playerEffectsInFlight == 0 || replacementIsFenced else {
             throw CoachingSafetyError.transitionInProgress
         }
         transitioning = true
