@@ -81,6 +81,8 @@ public final class AVAudioEngineCapture: AudioCapturing {
     private let routeInputChanged: AudioCaptureEndingSignal.RouteInputChange
     private let routeOverrideWindow: AppRouteOverrideWindow
     private var continuation: AsyncStream<AudioCaptureBuffer>.Continuation?
+    private var prepared: (stream: AsyncStream<AudioCaptureBuffer>,
+                           continuation: AsyncStream<AudioCaptureBuffer>.Continuation)?
     private var runID: UUID?
     private var hasTap = false
     private var observer: AudioCaptureEndingObserver?
@@ -119,10 +121,21 @@ public final class AVAudioEngineCapture: AudioCapturing {
         self.sleep = sleep
     }
 
+    /// Configure a stopped engine's tap before a fixed-route owner arms its monitor. No IO starts.
+    func prepareTap() throws {
+        guard !operations.isRunning(engine), continuation == nil, prepared == nil, !hasTap else {
+            throw AudioCaptureError.alreadyRunning
+        }
+        let pair = AsyncStream<AudioCaptureBuffer>.makeStream(bufferingPolicy: .unbounded)
+        prepared = pair
+        installTap(pair.continuation)
+    }
+
     public func start() throws -> AsyncStream<AudioCaptureBuffer> {
         guard !operations.isRunning(engine), continuation == nil else { throw AudioCaptureError.alreadyRunning }
 
-        let pair = AsyncStream<AudioCaptureBuffer>.makeStream(bufferingPolicy: .unbounded)
+        let pair = prepared ?? AsyncStream<AudioCaptureBuffer>.makeStream(bufferingPolicy: .unbounded)
+        prepared = nil
         let streamContinuation = pair.continuation
         let id = UUID()
         runID = id
@@ -134,7 +147,7 @@ public final class AVAudioEngineCapture: AudioCapturing {
             }
         }
 
-        installTap(streamContinuation)
+        if !hasTap { installTap(streamContinuation) }
         // Observe before starting, so a call or route change that lands while the engine starts is not lost. Its
         // signal is handled on the main actor after `start` returns, against the engine's state at that point.
         observer = AudioCaptureEndingObserver(
@@ -165,6 +178,8 @@ public final class AVAudioEngineCapture: AudioCapturing {
         operations.stop(engine)
         continuation?.finish()
         continuation = nil
+        prepared?.continuation.finish()
+        prepared = nil
     }
 
     /// Only the observer of the current run may end it; a late signal from an earlier run is ignored.
