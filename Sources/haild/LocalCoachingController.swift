@@ -24,6 +24,8 @@ public final class LocalCoachingController {
     @ObservationIgnored private var command: (any LocalCoachingControlling)?
     @ObservationIgnored private let makeCommand: ([String]) throws -> any LocalCoachingControlling
     @ObservationIgnored private var watch: Task<Void, Never>?
+    @ObservationIgnored private var shutdownTask: Task<Void, Never>?
+    @ObservationIgnored private var shuttingDown = false
 
     public init(rendererEnvironment: [String: String]? = nil) {
         makeCommand = { try CoachingCommand.native(CoachingConfiguration.parse($0),
@@ -38,7 +40,9 @@ public final class LocalCoachingController {
 
     /// Called only by an explicit local Start control after participant awareness is confirmed.
     public func start(arguments: [String], participantAwareness: Bool) throws {
-        guard state == .off, command == nil, participantAwareness else { throw CoachingCommandError.invalidControl }
+        guard !shuttingDown, state == .off, command == nil, participantAwareness else {
+            throw CoachingCommandError.invalidControl
+        }
         do {
             let configured = try makeCommand(arguments)
             command = configured
@@ -83,6 +87,21 @@ public final class LocalCoachingController {
         command = nil
         revision = nil
         state = .off
+    }
+
+    /// Normal app Quit revokes effects synchronously, permanently denies restart, then joins retirement.
+    /// The returned task is owned by the application termination delegate, not a disappearing view.
+    public func shutdown() -> Task<Void, Never> {
+        if let shutdownTask { return shutdownTask }
+        shuttingDown = true
+        let expected = revision
+        let task = Task { await self.stop(expectedRevision: expected) }
+        shutdownTask = task // Publish ownership before callback-capable revocation.
+        if command != nil { state = .stopping }
+        watch?.cancel()
+        watch = nil
+        command?.off()
+        return task
     }
 
     public static func runCLI(_ arguments: [String]) async throws {
