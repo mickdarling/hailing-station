@@ -82,8 +82,26 @@ import Testing
         #expect(await rig.adapter.delivered.isEmpty)
     }
 
-    @Test(arguments: [1, 2]) func stopCancelsCaptureBeforeJoiningNoncooperativeWrites(lines: Int) async throws {
+    @Test(.frozenGuardBudget, arguments: [1, 2])
+    func stopCancelsCaptureBeforeJoiningNoncooperativeWrites(lines: Int) async throws {
         try await observedStoppedWrite(lines: lines)
+    }
+
+    @Test func expiredGuardBudgetCompletesWithoutDispatch() async throws {
+        let rig = try await ObservedRig.make()
+        await rig.adapter.setEmission([])
+        try await GuardBudgetClock.$current.withValue(.expiring()) {
+            try await rig.host.withObservedSession(target: ObservedRig.target,
+                                                  configuration: rig.configuration()) { session in
+                let outcome = try await session.submit("invented first\ninvented second", utteranceID: UUID())
+                guard case .needsConfirmation = outcome else {
+                    Issue.record("expired guard budget did not refuse the two-line input")
+                    return
+                }
+                #expect(await rig.adapter.delivered.isEmpty)
+                #expect(rig.adapter.dispatch.arrivals.count < 1)
+            }
+        }
     }
 
     @Test func earlyScopeReturnStillJoinsItsAdmittedInput() async throws {
