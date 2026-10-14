@@ -16,6 +16,7 @@ struct SelectedReplyPlaybackObservation: Equatable {
 /// Audio-first capture surface shared by compact and regular-width station layouts.
 struct TranscriptionLabView: View {
     let audioSession: any AudioSessionDiagnosticsProviding
+    let mayBeginCapture: @MainActor () -> Bool
     let destinationLabel: String?
     let destinationID: ConversationDestinationID?
     let replyIDs: Set<String>
@@ -64,6 +65,7 @@ struct TranscriptionLabView: View {
 
     init(
         audioSession: any AudioSessionDiagnosticsProviding,
+        mayBeginCapture: @escaping @MainActor () -> Bool = { true },
         capture: any AudioCapturing = AVAudioEngineCapture(),
         transcriber: (any Transcriber)? = nil,
         destinationLabel: String? = nil,
@@ -81,6 +83,7 @@ struct TranscriptionLabView: View {
         onEscape: (@MainActor () async throws -> Void)? = nil
     ) {
         self.audioSession = audioSession
+        self.mayBeginCapture = mayBeginCapture
         self.destinationLabel = destinationLabel
         self.destinationID = destinationID
         self.replyIDs = replyIDs
@@ -175,7 +178,7 @@ extension TranscriptionLabView {
     }
 
     private static func defaultTranscriber() -> any Transcriber {
-        if #available(iOS 26.0, *) { return SpeechAnalyzerTranscriber() }
+        if #available(iOS 26.0, macOS 26.0, *) { return SpeechAnalyzerTranscriber() }
         return SFSpeechRecognizerTranscriber()
     }
 }

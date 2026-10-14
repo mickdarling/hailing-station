@@ -1,3 +1,4 @@
+#if os(iOS)
 import AVFoundation
 import Observation
 import UIKit
@@ -122,3 +123,5 @@ final class RoutingProbe {
         print("probe \(line)")
     }
 }
+
+#endif
