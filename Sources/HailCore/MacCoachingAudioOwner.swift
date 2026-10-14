@@ -3,12 +3,10 @@ import AudioToolbox
 import AVFAudio
 import CoreAudio
 import Foundation
-
 struct MacCoachingInputEvidence: Equatable, Sendable {
     let deviceID: UInt32
     let uid: String
     let streams: [UInt32]
-
     @MainActor static func read(
         _ device: UInt32, reader: MacCoachingDeviceReader = .live,
         inputs: @MainActor (UInt32) -> [UInt32]? = liveInputs
@@ -27,14 +25,12 @@ struct MacCoachingInputEvidence: Equatable, Sendable {
               }), reader.scalar(device, kAudioDevicePropertyDeviceIsAlive) == 1 else { return nil }
         return Self(deviceID: device, uid: uid, streams: streams)
     }
-
     private static func isMicrophone(_ terminal: UInt32?, transport: UInt32) -> Bool {
         // USB Audio Terminal Types 1.0, table 2-2: 0x0201 is the generic microphone.
         // This is independent terminal evidence, not a USB transport/name-only grant.
         terminal == kAudioStreamTerminalTypeMicrophone
             || (transport == kAudioDeviceTransportTypeUSB && terminal == 0x0201)
     }
-
     private static func liveInputs(_ device: UInt32) -> [UInt32]? {
         var property = AudioObjectPropertyAddress(mSelector: kAudioDevicePropertyStreams,
             mScope: kAudioObjectPropertyScopeInput, mElement: kAudioObjectPropertyElementMain)
@@ -56,7 +52,6 @@ struct MacCoachingInputEvidence: Equatable, Sendable {
     var start: () throws -> Void
     var stop: () -> Void
     var running: () -> Bool
-
     static func live(_ engine: AVAudioEngine) -> Self {
         Self(start: { engine.prepare(); try engine.start() }, stop: { engine.stop() }, running: { engine.isRunning })
     }
@@ -134,7 +129,6 @@ struct MacCoachingInputEvidence: Equatable, Sendable {
     }
 
     func isStillBound() -> Bool { bound() }
-
     static func live(inputEngine: AVAudioEngine, outputEngine: AVAudioEngine,
                      microphoneID: UInt32, outputBinding: MacCoachingOutputBinding) throws -> Self {
         guard !inputEngine.isRunning, let original = MacCoachingInputEvidence.read(microphoneID) else {
@@ -142,7 +136,17 @@ struct MacCoachingInputEvidence: Equatable, Sendable {
         }
         let bound = try bindInput(original, read: { MacCoachingInputEvidence.read(microphoneID) },
             operations: inputBinding(inputEngine), output: { outputBinding.isStillBound() })
-        return Self(input: original, capture: AVAudioEngineCapture(engine: inputEngine),
+        var captureOperations = AudioEngineOperations.live
+        captureOperations.installTap = { engine, tap in
+            let input = engine.inputNode
+            // Fixed-device selection can leave the previous client format cached. The hardware
+            // input cannot convert; configure the unconnected tap bus before arming the monitor.
+            input.installTap(onBus: 0, bufferSize: 4_096, format: input.inputFormat(forBus: 0), block: tap)
+        }
+        let capture = AVAudioEngineCapture(engine: inputEngine,
+            notificationCenter: .default, operations: captureOperations)
+        try capture.prepareTap()
+        return Self(input: original, capture: capture,
                     output: .live(outputEngine), bound: bound)
     }
 
