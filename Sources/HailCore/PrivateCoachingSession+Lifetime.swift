@@ -1,6 +1,32 @@
 import Foundation
 
 extension PrivateCoachingSession {
+    func requireStartup(_ revision: UUID) throws {
+        guard startupRevision == revision else { throw CoachingSafetyError.staleQualification }
+    }
+
+    func startupLease(
+        sessionID: UUID, destinationID: UUID, lifetime: Duration, revision: UUID
+    ) throws -> CoachingQualification {
+        let observed = observeOutput()
+        try requireStartup(revision)
+        guard case .verifiedHeadphones(let outputID) = observed else { throw CoachingSafetyError.unsafeOutput }
+        let now = clock.now()
+        try requireStartup(revision)
+        return CoachingQualification(sessionID: sessionID, generation: UUID(), destinationID: destinationID,
+            qualificationID: UUID(), expiresAt: now.advanced(by: lifetime), outputID: outputID)
+    }
+
+    func startOwnedCapture() throws -> AsyncStream<AudioCaptureBuffer> {
+        captureStarted = true // A partially failed start still owns cleanup until it returns.
+        captureStarting = true
+        defer {
+            captureStarting = false
+            if qualification == nil, captureStarted { captureStarted = false; capture.stop() }
+        }
+        return try capture.start()
+    }
+
     func forwardSource(_ source: AsyncStream<AudioCaptureBuffer>, generation: UUID) {
         forward = Task { @MainActor [weak self] in
             for await buffer in source {
@@ -27,6 +53,27 @@ extension PrivateCoachingSession {
         guard !transitioning, qualification == live, hasLiveDeadlines(live, at: now),
               now < ticket.qualification.expiresAt else {
             throw CoachingSafetyError.staleQualification
+        }
+    }
+
+    func performPlayerEffect(_ ticket: CoachingAdviceTicket, operation: () throws -> Void) throws {
+        try validate(ticket)
+        playerEffectsInFlight += 1
+        defer { playerEffectsInFlight -= 1 }
+        do {
+            try operation()
+            try validate(ticket)
+        } catch {
+            if qualification?.generation == ticket.qualification.generation {
+                suspend(.playbackFailed, ifGeneration: ticket.qualification.generation)
+            } else if qualification == nil {
+                // Stop may precede a late effect, but an old operation cannot cancel a replacement's player.
+                let wasTransitioning = transitioning
+                transitioning = true
+                defer { transitioning = wasTransitioning }
+                player.cancel()
+            }
+            throw error
         }
     }
 
@@ -73,9 +120,12 @@ extension PrivateCoachingSession {
         if qualification == lease, expiryRevision == revision { cancelExpiry = cancel } else { cancel() }
     }
 
-    func suspend(_ reason: CoachingSuspension, ifGeneration generation: UUID? = nil) {
+    func suspend(
+        _ reason: CoachingSuspension, ifGeneration generation: UUID? = nil, invalidatesStartup: Bool = true
+    ) {
+        guard generation == nil || qualification?.generation == generation else { return }
+        if invalidatesStartup { startupRevision = UUID() }
         guard let old = qualification else { return }
-        guard generation == nil || old.generation == generation else { return }
         let wasTransitioning = transitioning
         transitioning = true
         defer { transitioning = wasTransitioning }
@@ -87,7 +137,10 @@ extension PrivateCoachingSession {
         forward = nil
         pendingPlayback.removeAll()
         player.cancel()
-        if captureStarted { captureStarted = false; capture.stop() }
+        if captureStarted {
+            if !captureStarting { captureStarted = false }
+            capture.stop()
+        }
         hooks.suspended(old, reason)
     }
 }

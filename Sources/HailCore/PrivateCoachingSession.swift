@@ -17,6 +17,9 @@ public final class PrivateCoachingSession {
     var cancelExpiry: (@MainActor () -> Void)?
     var expiryRevision = UUID()
     var captureStarted = false
+    var captureStarting = false
+    var startupRevision = UUID()
+    var playerEffectsInFlight = 0
     var transitioning = false
     var pendingPlayback: [UUID: ContinuousClock.Instant] = [:]
 
@@ -66,23 +69,24 @@ public final class PrivateCoachingSession {
         sessionID: UUID, destinationID: UUID, consentConfirmed: Bool,
         lifetime: Duration = maximumLifetime
     ) throws -> CoachingQualification {
-        guard !transitioning else { throw CoachingSafetyError.transitionInProgress }
+        let replacementIsFenced = player is any CoachingGenerationFencedPlaying
+        guard !transitioning, playerEffectsInFlight == 0 || replacementIsFenced else {
+            throw CoachingSafetyError.transitionInProgress
+        }
         transitioning = true
         defer { transitioning = false }
-        suspend(.stopped)
+        let revision = UUID()
+        startupRevision = revision
+        suspend(.stopped, invalidatesStartup: false)
+        try requireStartup(revision)
         guard consentConfirmed else { throw CoachingSafetyError.consentRequired }
         guard lifetime > .zero, lifetime <= Self.maximumLifetime else { throw CoachingSafetyError.invalidLifetime }
-        guard case .verifiedHeadphones(let outputID) = observeOutput() else {
-            throw CoachingSafetyError.unsafeOutput
-        }
-        let lease = CoachingQualification(
-            sessionID: sessionID, generation: UUID(), destinationID: destinationID,
-            qualificationID: UUID(), expiresAt: clock.now().advanced(by: lifetime), outputID: outputID
-        )
+        let lease = try startupLease(sessionID: sessionID, destinationID: destinationID,
+                                     lifetime: lifetime, revision: revision)
         qualification = lease
         do {
-            captureStarted = true // A partially failed start still owns cleanup.
-            let source = try capture.start()
+            let source = try startOwnedCapture()
+            try requireStartup(revision)
             // Starting an engine can itself change the actual output route.
             guard current()?.generation == lease.generation else { throw CoachingSafetyError.unsafeOutput }
             armExpiry(lease)
@@ -134,28 +138,19 @@ public final class PrivateCoachingSession {
         let chunkID = UUID()
         pendingPlayback[chunkID] = ticket.qualification.expiresAt
         if let live = qualification { armExpiry(live) }
-        try validate(ticket) // Scheduler/cancellation hooks may synchronously invalidate the lifetime.
-        do { try player.schedule(payload, onPlayed: { [weak self] in
+        try performPlayerEffect(ticket) { try player.schedule(payload, onPlayed: { [weak self] in
             guard let self, self.pendingPlayback[chunkID] != nil, let live = self.current() else { return }
             self.pendingPlayback[chunkID] = nil // Check authoritative time BEFORE erasing the original deadline.
             self.armExpiry(live)
-        }) } catch {
-            suspend(.playbackFailed, ifGeneration: ticket.qualification.generation)
-            throw error
-        }
+        }) }
     }
 
     public func resume(ticket: CoachingAdviceTicket) throws {
-        try validate(ticket)
-        do { try player.resume() } catch {
-            suspend(.playbackFailed, ifGeneration: ticket.qualification.generation)
-            throw error
-        }
+        try performPlayerEffect(ticket) { try player.resume() }
     }
 
     public func setMuted(_ muted: Bool, ticket: CoachingAdviceTicket) throws {
-        try validate(ticket)
-        player.setMuted(muted)
+        try performPlayerEffect(ticket) { player.setMuted(muted) }
     }
 
     /// Any route notification invalidates, even if a later snapshot looks private again. Call before async rebuild.

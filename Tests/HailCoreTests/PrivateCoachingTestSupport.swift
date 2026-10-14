@@ -5,7 +5,7 @@ import Testing
 @testable import HailCore
 
 @MainActor
-final class CoachingTestPlayer: CoachingAudioPlaying {
+class CoachingTestPlayer: CoachingAudioPlaying {
     var scheduled: [AudioPayload] = []
     var completions: [@MainActor @Sendable () -> Void] = []
     var cancelled = 0
@@ -33,6 +33,28 @@ final class CoachingTestPlayer: CoachingAudioPlaying {
     }
 }
 
+/// Model the renderer's original-generation gate when exercising legal replacement during authorization.
+@MainActor final class CoachingGuardedTestPlayer: CoachingTestPlayer, CoachingGenerationFencedPlaying {
+    var currentGeneration: () -> UUID? = { nil }
+    override func schedule(_ payload: AudioPayload, onPlayed: (@MainActor @Sendable () -> Void)?) throws {
+        let generation = currentGeneration()
+        try onEffect?()
+        guard generation != nil, currentGeneration() == generation else {
+            throw CoachingSafetyError.staleQualification
+        }
+        scheduled.append(payload)
+        if let onPlayed { completions.append(onPlayed) }
+    }
+    override func resume() throws {
+        let generation = currentGeneration()
+        try onEffect?()
+        guard generation != nil, currentGeneration() == generation else {
+            throw CoachingSafetyError.staleQualification
+        }
+        resumed += 1
+    }
+}
+
 @MainActor
 final class CoachingTestClock {
     var instant = ContinuousClock.now
@@ -57,12 +79,13 @@ final class CoachingTestClock {
 @MainActor
 final class CoachingTestHarness {
     let capture = FakeAudioCapture()
-    let player = CoachingTestPlayer()
+    let player: CoachingTestPlayer
     let time = CoachingTestClock()
     var output = CoachingOutputObservation.verifiedHeadphones(UUID())
     var onObserve: (() -> Void)?
     var admitted: [AudioCaptureBuffer] = []
     var suspensions: [CoachingSuspension] = []
+    init(player: CoachingTestPlayer = CoachingTestPlayer()) { self.player = player }
     lazy var session = PrivateCoachingSession(
         capture: capture, player: player, observeOutput: { [unowned self] in self.onObserve?(); return self.output },
         hooks: .init(buffer: { [weak self] buffer, _ in self?.admitted.append(buffer) },
