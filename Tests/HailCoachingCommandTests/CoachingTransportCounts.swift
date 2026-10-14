@@ -1,5 +1,6 @@
 import HailCore
 @testable import haild
+@testable import HailCoaching
 
 /// Count effects at the actual owned-child boundary, not from stored qualification/status snapshots.
 @MainActor final class TransportCounts {

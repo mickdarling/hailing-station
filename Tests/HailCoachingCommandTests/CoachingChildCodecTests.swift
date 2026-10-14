@@ -3,6 +3,7 @@ import Foundation
 import HailCore
 import Testing
 @testable import haild
+@testable import HailCoaching
 
 @Suite @MainActor struct CoachingChildCodecTests {
     @Test func measuredPauseRequiresFreshActualPCMAndIndependentOwnerPlaybackFlags() throws {

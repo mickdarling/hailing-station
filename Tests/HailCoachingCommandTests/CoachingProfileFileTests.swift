@@ -2,6 +2,7 @@ import Darwin
 import Foundation
 import Testing
 @testable import haild
+@testable import HailCoaching
 
 @Suite struct CoachingProfileFileTests {
     @Test func privateBoundedRegularProfileLoadsWithoutRuntimeActivation() throws {
