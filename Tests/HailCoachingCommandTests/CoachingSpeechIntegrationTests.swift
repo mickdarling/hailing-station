@@ -30,12 +30,16 @@ import Testing
             let speech = CoachingSpeechRenderer { _ in source }
             let capture = ExecutableCoachingCapture(), player = ExecutablePrivatePlayer()
             var audio: ExecutablePrivateAudio?, transport: ComposedSpeechTransport?
+            // This authored composition checks text/PCM delivery and joined cleanup, not elapsed-time expiry.
+            let instant = ContinuousClock.now
+            let clock = CoachingClock(now: { instant }, schedule: { _, _ in {} })
             let owner = try ForegroundCoaching(listenerID: "coach", transport: { hooks in
                 let child = ComposedSpeechTransport(hooks); transport = child; return child
             }, audio: { hooks in
-                let privateAudio = try ExecutablePrivateAudio(capture: capture, player: player, hooks: hooks)
+                let privateAudio = try ExecutablePrivateAudio(
+                    capture: capture, player: player, hooks: hooks, clock: clock)
                 audio = privateAudio; return privateAudio
-            }, speech: speech)
+            }, speech: speech, clock: clock)
             try owner.enable(participantAwareness: true)
             let lease = try #require(audio?.session.qualification)
             let raw = try JSONSerialization.data(withJSONObject: ["schema_version": 1, "type": "coaching_advice",
@@ -51,14 +55,23 @@ import Testing
             #expect(encoded.allSatisfy { $0 < 128 })
             _ = try CoachingWireAdvice.decode(encoded)
             transport?.hooks.advice(encoded)
-            for _ in 0..<100 where player.played == 0 && owner.status != .off {
+            let delivered = ContinuousClock.now.advanced(by: .seconds(5))
+            while player.played == 0 || source.cleanups.isEmpty,
+                  owner.status != .off, ContinuousClock.now < delivered {
                 try await Task.sleep(for: .milliseconds(10))
             }
             #expect(player.played == 1 && player.nonzeroBytes == 1 && owner.status == .active)
             #expect(source.cleanups == [false])
-            owner.off()
-            for _ in 0..<100 where owner.status != .off { try await Task.sleep(for: .milliseconds(10)) }
+            try await retire(owner)
             #expect(owner.status == .off && transport?.stopped == true)
+        }
+    }
+
+    private func retire(_ owner: ForegroundCoaching) async throws {
+        owner.off()
+        let retired = ContinuousClock.now.advanced(by: .seconds(5))
+        while owner.status != .off, ContinuousClock.now < retired {
+            try await Task.sleep(for: .milliseconds(10))
         }
     }
 }
