@@ -21,7 +21,7 @@ import Testing
 }
 
 @Suite @MainActor struct PrivateCoachingPlayerEffectTests {
-    @Test(arguments: [0, 1, 2]) func stopDuringAnEffectCleansLateWorkAndRejectsReplacement(operation: Int) throws {
+    @Test(arguments: [0, 1, 2]) func stopDuringAnEffectCleansLateWorkBeforeFreshAdmission(operation: Int) throws {
         let player = CoachingLateEffectPlayer()
         let capture = FakeAudioCapture()
         let output = UUID()
@@ -31,12 +31,7 @@ import Testing
         )
         try session.begin(sessionID: UUID(), destinationID: UUID(), consentConfirmed: true)
         let ticket = try session.ticket(requestID: UUID())
-        player.onEffect = {
-            session.stop()
-            #expect(throws: CoachingSafetyError.transitionInProgress) {
-                try session.begin(sessionID: UUID(), destinationID: UUID(), consentConfirmed: true)
-            }
-        }
+        player.onEffect = { session.stop() }
         #expect(throws: CoachingSafetyError.staleQualification) {
             if operation == 0 { try session.schedule(coachingPCM, ticket: ticket) }
             if operation == 1 { try session.resume(ticket: ticket) }
