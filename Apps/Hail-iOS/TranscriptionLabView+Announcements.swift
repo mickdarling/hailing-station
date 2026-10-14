@@ -1,6 +1,8 @@
 import HailCore
 import SwiftUI
+#if os(iOS)
 import UIKit
+#endif
 
 private let terminalPlaybackFailures: Set<String> = [
     "Playback could not resume", "Audio format is not yet playable",
@@ -24,7 +26,7 @@ extension TranscriptionLabView {
     @MainActor
     func announceStatusIfNeeded(_ current: String) {
         // Keep the result while inactive; only the actual announcement waits for a safe audio path (#86).
-        guard UIAccessibility.isVoiceOverRunning else { return }
+        guard StationPlatform.voiceOverRunning else { return }
         deferredStatusAnnouncement = current
         announceDeferredStatusIfNeeded()
     }
@@ -41,7 +43,7 @@ extension TranscriptionLabView {
 
     @MainActor
     private func flushDeferredStatusIfNeeded() {
-        guard scenePhase == .active, UIAccessibility.isVoiceOverRunning,
+        guard scenePhase == .active, StationPlatform.voiceOverRunning,
               !ownsCaptureSuppression, !isReplySpeaking else { return }
         let currentStatus = deferredStatusAnnouncement == status ? deferredStatusAnnouncement : nil
         let currentReply = deferredReplyAnnouncement == replyPlaybackStatus
@@ -78,14 +80,14 @@ extension TranscriptionLabView {
         }
         if let replayNotice { announcement.append(replayNotice) }
         guard !announcement.isEmpty else { return }
-        UIAccessibility.post(notification: .announcement, argument: announcement.joined(separator: ". "))
+        StationPlatform.announce(announcement.joined(separator: ". "))
     }
 
     var isReplySpeaking: Bool { globalReplyAudioSpeaking }
 
     @MainActor
     func announceReplyStatusIfNeeded(_ current: String?) {
-        guard UIAccessibility.isVoiceOverRunning else { return }
+        guard StationPlatform.voiceOverRunning else { return }
         if current == "Replaying" { deferredReplayNotice = nil }
         if let current, [
                 "Paused", "Muted", "Played", "Playback failed", "Replay failed",
@@ -104,7 +106,7 @@ extension TranscriptionLabView {
 
     @MainActor
     func announceControlledReplyFailureIfNeeded(_ current: String?) {
-        guard UIAccessibility.isVoiceOverRunning,
+        guard StationPlatform.voiceOverRunning,
               let current, current != replyPlaybackStatus else { return }
         if current == "Replaying" { deferredReplayNotice = nil; return }
         if let notice = replayRefusalNotices[current] {
@@ -119,7 +121,7 @@ extension TranscriptionLabView {
 
     @MainActor
     func announceNewReplyFailures(previous: [String: String], current: [String: String]) {
-        guard UIAccessibility.isVoiceOverRunning else { return }
+        guard StationPlatform.voiceOverRunning else { return }
         for (id, failure) in current where previous[id] != failure {
             deferredReplyFailures[id] = failure
         }
