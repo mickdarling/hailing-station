@@ -66,4 +66,28 @@ import Testing
         #expect(player.queued.isEmpty && !player.active && session.qualification == nil)
         player.onEffect = {}
     }
+
+    @Test(arguments: [0, 1, 2]) func rawPlayerCannotReplaceDuringALiveEffect(operation: Int) throws {
+        let player = CoachingLateEffectPlayer()
+        let capture = FakeAudioCapture()
+        let output = UUID()
+        let session = PrivateCoachingSession(
+            capture: capture, player: player, observeOutput: { .verifiedHeadphones(output) },
+            hooks: .init(buffer: { _, _ in }, suspended: { _, _ in }), clock: CoachingTestClock().clock
+        )
+        let live = try session.begin(sessionID: UUID(), destinationID: UUID(), consentConfirmed: true)
+        let ticket = try session.ticket(requestID: UUID())
+        player.onEffect = {
+            #expect(throws: CoachingSafetyError.transitionInProgress) {
+                try session.begin(sessionID: UUID(), destinationID: UUID(), consentConfirmed: true)
+            }
+        }
+        if operation == 0 { try session.schedule(coachingPCM, ticket: ticket) }
+        if operation == 1 { try session.resume(ticket: ticket) }
+        if operation == 2 { try session.setMuted(false, ticket: ticket) }
+        #expect(session.qualification == live && capture.startCount == 1 && capture.stopCount == 0)
+        #expect(player.cancelled == 0)
+        player.onEffect = {}
+        session.stop()
+    }
 }
