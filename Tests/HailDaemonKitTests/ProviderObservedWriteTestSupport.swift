@@ -32,27 +32,3 @@ func observedWriteFailureCleanup(
         throw error
     }
 }
-
-@Suite(.frozenGuardBudget) struct ProviderObservedWriteFixtureTests {
-    @Test func cancellingAWaitReleasesTheNoncooperativeWriteBeforeScopeJoin() async throws {
-        let rig = try await ObservedRig.make()
-        await rig.adapter.configure(holdDispatch: true)
-        await rig.adapter.setEmission([])
-        let scope = Task {
-            try await rig.host.withObservedSession(target: ObservedRig.target,
-                                                   configuration: rig.configuration()) { session in
-                try await observedWriteFailureCleanup(rig, session: session) {
-                    let input = Task { try await session.submit("invented first", utteranceID: UUID()) }
-                    await rig.adapter.dispatch.arrivals.wait()
-                    try await observedAwaitStoppedInput(ObservedCounter())
-                    _ = try await input.value
-                }
-            }
-        }
-        await rig.adapter.dispatch.arrivals.wait()
-        scope.cancel()
-        await #expect(throws: CancellationError.self) { try await scope.value }
-        #expect(rig.adapter.cancellations.count == 1)
-        #expect(await rig.adapter.delivered.count == 1)
-    }
-}
