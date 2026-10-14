@@ -7,6 +7,7 @@ extension RootView {
         if let destination {
             TranscriptionLabView(
                 audioSession: audioRoutes,
+                mayBeginCapture: captureMayBegin,
                 destinationLabel: destination.label,
                 destinationID: ConversationDestinationID(
                     endpointID: destination.hostID, targetID: destination.target.id
@@ -19,12 +20,18 @@ extension RootView {
                 globalReplyAudioSpeaking: playback.isReplyAudioOutputBusy,
                 controlledReplyPlaybackStatus: playback.statusForControls,
                 replyFailureStatuses: playback.terminalReplyFailureStatuses,
-                onCaptureWillBegin: { tapToTalk(started: true); CapturePlaybackSuppression.begin($0, using: playback) },
+                onCaptureWillBegin: { token in
+                    captureRequested(token)
+                    tapToTalk(started: true)
+                    CapturePlaybackSuppression.begin(token, using: playback)
+                },
                 onCaptureDidEnd: {
                     tapToTalk(started: false)
+                    captureReleased($0)
                     CapturePlaybackSuppression.end($0, using: playback, resuming: $1)
                 },
                 onCaptureTeardownCompleted: {
+                    captureReleased($0)
                     CapturePlaybackSuppression.markCleanupComplete($0, using: playback)
                 },
                 onFinalized: { text in
@@ -108,7 +115,9 @@ extension RootView {
                 .frame(maxWidth: .infinity)
         }
         NavigationLink {
-            CaptureSafeLabsView(audioSession: audioRoutes, playback: playback)
+            CaptureSafeLabsView(audioSession: audioRoutes, playback: playback,
+                                mayBeginCapture: captureMayBegin,
+                                captureRequested: captureRequested, captureReleased: captureReleased)
         } label: {
             Label("Labs", systemImage: "wrench.and.screwdriver")
                 .frame(maxWidth: .infinity)
