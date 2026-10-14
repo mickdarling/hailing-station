@@ -28,7 +28,7 @@ final class DesktopStationAudio {
     }
 }
 
-/// AppKit keeps the process alive until the coaching owner's existing bounded retirement completes.
+/// AppKit keeps the process alive until the coaching owner's retirement completes.
 @MainActor
 final class DesktopStationAppDelegate: NSObject, NSApplicationDelegate {
     let audio = DesktopStationAudio()
