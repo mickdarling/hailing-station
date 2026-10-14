@@ -1,6 +1,7 @@
 import Foundation
 import Testing
 @testable import haild
+@testable import HailCoaching
 
 @Suite struct CoachingConfigurationTests {
     private var arguments: [String] {

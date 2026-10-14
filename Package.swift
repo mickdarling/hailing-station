@@ -17,6 +17,7 @@ let package = Package(
         // Host daemon library (#10) and its executable.
         .library(name: "HailDaemonKit", targets: ["HailDaemonKit"]),
         .executable(name: "haild", targets: ["haild"]),
+        .library(name: "HailCoaching", targets: ["HailCoaching"]),
         // Canonical example frames plus the checked-in JSON copies as a resource bundle. Test targets and the
         // generator depend on it; the app and haild do not ship it (#2, #28).
         .library(name: "HailProtocolFixtures", targets: ["HailProtocolFixtures"]),
@@ -38,8 +39,12 @@ let package = Package(
 
         .target(name: "HailDaemonKit", dependencies: ["HailProtocol"], swiftSettings: strict),
         .testTarget(name: "HailDaemonKitTests", dependencies: ["HailDaemonKit"], swiftSettings: strict),
-        .executableTarget(name: "haild", dependencies: ["HailDaemonKit", "HailCore"], swiftSettings: strict),
-        .testTarget(name: "HailCoachingCommandTests", dependencies: ["haild", "HailCore"], swiftSettings: strict),
+        .target(name: "HailCoaching", dependencies: ["HailDaemonKit", "HailCore"], path: "Sources/haild",
+                exclude: ["AuditCommand.swift", "ReplyBackground.swift", "main.swift", "ReplyCommand.swift", "DoctorCommand.swift", "DiagnosticsCommand.swift", "AmbientCommand.swift"],
+                sources: ["CoachingChildCodec.swift", "CoachingChildTransport.swift", "CoachingCommand.swift", "CoachingConfiguration.swift", "CoachingKeyboard.swift", "CoachingSpeechRenderer.swift", "LocalCoachingController.swift"], swiftSettings: strict),
+        .executableTarget(name: "haild", dependencies: ["HailDaemonKit", "HailCore", "HailCoaching"],
+                          exclude: ["CoachingChildCodec.swift", "CoachingChildTransport.swift", "CoachingCommand.swift", "CoachingConfiguration.swift", "CoachingKeyboard.swift", "CoachingSpeechRenderer.swift", "LocalCoachingController.swift"], swiftSettings: strict),
+        .testTarget(name: "HailCoachingCommandTests", dependencies: ["haild", "HailCore", "HailCoaching"], swiftSettings: strict),
         .executableTarget(
             name: "hail-protocol-gen", dependencies: ["HailProtocol", "HailProtocolFixtures"], swiftSettings: strict
         ),

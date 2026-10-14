@@ -3,6 +3,7 @@ import HailCore
 import HailProtocol
 import Testing
 @testable import haild
+@testable import HailCoaching
 
 @MainActor private final class ComposedSpeechSource: CoachingSpeechSource {
     var cleanups: [Bool] = []

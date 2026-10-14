@@ -2,6 +2,7 @@ import Foundation
 import HailCore
 import Testing
 @testable import haild
+@testable import HailCoaching
 
 @Suite(.serialized, .timeLimit(.minutes(2))) @MainActor struct CoachingExecutableTests {
     private var executable: String? { ProcessInfo.processInfo.environment["HAIL_COACHING_EXECUTABLE"] }
