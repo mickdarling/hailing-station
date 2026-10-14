@@ -68,9 +68,12 @@ extension TranscriptionLabView {
     @MainActor
     func prepareCaptureAuthorization() async -> Bool {
         status = "Requesting microphone and speech access…"
-        guard mayBeginCapture(), await requestHailPermissions() else {
-            status = "Microphone and speech recognition permissions are required."
-            releaseCaptureExclusivityAfterWork()
+        let admitted = await CapturePermissionAdmission.request(
+            mayBegin: mayBeginCapture, reserve: { beginCaptureExclusivity() },
+            permissions: { await requestHailPermissions() }, release: { releaseCaptureExclusivityAfterWork() }
+        )
+        guard admitted else {
+            status = Task.isCancelled ? "Ready" : "Microphone and speech recognition permissions are required."
             return false
         }
         return true

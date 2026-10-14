@@ -3,9 +3,8 @@ import Speech
 extension TranscriptionLabView {
     @MainActor
     func begin() async {
-        guard !isRecording, !isStarting, !isFinalizing, !isInterrupting,
+        guard mayBeginCapture(), !isRecording, !isStarting, !isFinalizing, !isInterrupting,
               finishTask == nil, interruptTask == nil, pendingSendID == nil else { return }
-        beginCaptureExclusivity()
         isStarting = true
         hasReceivedAudio = false
         finalText = ""

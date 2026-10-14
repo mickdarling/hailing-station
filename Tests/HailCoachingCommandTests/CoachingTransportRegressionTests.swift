@@ -60,11 +60,21 @@ import Testing
 
     @Test func renewalInsideActivityCallbackHoldsOldFinalWithoutRetiringRenewedOwner() async throws {
         let rig = try CoachingTransportRig(tail: CoachingTransportRig.final, renew: true)
-        try await rig.run()
-        #expect(rig.flagsCalls == 1 && rig.transport?.finalCount == 1)
-        #expect(rig.driver.status == .active && rig.capture.stops == 0 && rig.player.played == 0)
-        #expect(rig.audio?.session.qualification != rig.original)
-        try await rig.join()
+        var failure: (any Error)?
+        do {
+            try await rig.run()
+            let original = try #require(rig.original) // Receipt stays bounded by the original live lease.
+            while rig.transport?.finalCount == 0, ContinuousClock.now < original.expiresAt {
+                let next = min(original.expiresAt, ContinuousClock.now.advanced(by: .milliseconds(10)))
+                try await Task.sleep(until: next, clock: .continuous)
+            }
+            #expect(rig.flagsCalls == 1 && rig.transport?.finalCount == 1)
+            #expect(rig.driver.status == .active && rig.capture.stops == 0 && rig.player.played == 0)
+            #expect(rig.audio?.session.qualification != rig.original)
+        } catch { failure = error }
+        let cleanup = Task { try await rig.join() } // Independent cancellation; join the same owned fixture.
+        try await cleanup.value
+        if let failure { throw failure }
     }
 
     @Test func callbackOffCannotPublishActivityOrPlayback() async throws {
