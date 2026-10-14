@@ -392,6 +392,8 @@ public enum AmbientScene: Sendable { case active, inactive, background }
 @MainActor
 @Observable
 public final class AmbientListeningController {
+    /// Reports completed resource retirement, including unexpected stops (#266).
+    public var onRetirementCompleted: (@MainActor () -> Void)?
     public typealias Send = @Sendable (AudioPayload, AmbientAudioBinding) async throws -> Void
     /// Activates the audio session and builds a streamer around `send`; the controller starts it.
     public typealias MakeStreamer = @MainActor (@escaping AmbientAudioStreamer.Send) async throws
@@ -442,6 +444,8 @@ public final class AmbientListeningController {
     @ObservationIgnored private var activation: UUID?
     /// The release in flight, if any; a new activation waits for it so the two never interleave.
     @ObservationIgnored private var pendingRelease: Task<Void, Never>?
+    /// Each session retains all work until retirement finishes, even after `streamer` or `isOn` is cleared.
+    @ObservationIgnored private var retirements: [UUID: AmbientListeningRetirement] = [:]
     @ObservationIgnored private let notificationCenter: NotificationCenter
     /// Watches for capture ended by the system, so the toggle drops before queued audio finishes draining.
     @ObservationIgnored private var systemEndObserver: (any NSObjectProtocol)?
@@ -478,6 +482,10 @@ public final class AmbientListeningController {
     public func turnOn(for binding: AmbientAudioBinding) async {
         guard !isOn, scene == .active else { return }
         let current = UUID()
+        let retirement = AmbientListeningRetirement()
+        retirements[current] = retirement
+        retirement.begin()
+        defer { retirement.finish() }
         session = current
         isOn = true
         stopReason = nil
@@ -501,12 +509,23 @@ public final class AmbientListeningController {
     }
 
     public func turnOff() async { await end(session, reason: nil, cause: "user") }
+}
+
+extension AmbientListeningController {
+    /// Joins stopped sessions' startup, paused streams and final cleanup before releasing capture admission.
+    /// A logically off toggle alone does not establish that these resources have finished retiring.
+    public func waitForRetirement() async {
+        let retiring = retirements.values.filter(\.isRetiring)
+        for retirement in retiring { await retirement.wait() }
+    }
 
     /// Opens a stream for `current`. A resume after an interruption (#445) may run in the background, and a
     /// failed one leaves listening paused for the next retry instead of ending it.
     @discardableResult
     private func start(_ current: UUID, resuming: Bool = false) async -> Bool {
-        guard let binding else { return false }
+        guard let binding, let retirement = retirements[current], !retirement.isRetiring else { return false }
+        retirement.begin()
+        defer { retirement.finish() }
         await pendingRelease?.value
         guard session == current, resuming || scene == .active else {
             await end(current, reason: "Stopped: Hailing Station left the foreground.", cause: "background")
@@ -540,6 +559,15 @@ public final class AmbientListeningController {
 
     private func end(_ current: UUID, reason: String?, cause: String, code: String? = nil) async {
         guard session == current, isOn else { return }
+        guard let retirement = retirements[current] else { return }
+        retirement.begin()
+        defer { retirement.finish() }
+        let completed = onRetirementCompleted
+        onRetirementCompleted = nil
+        retirement.retire { [weak self] in
+            self?.retirements[current] = nil
+            completed?()
+        }
         var fields: [DiagnosticField: DiagnosticValue] = [.reason: .token(cause)]
         if let code { fields[.code] = .token(code) }
         diagnostics?.record(.ambientStop, fields)
@@ -563,10 +591,11 @@ public final class AmbientListeningController {
             notificationCenter.removeObserver(systemEndObserver)
             self.systemEndObserver = nil
         }
-        guard let streamer else { return }
-        self.streamer = nil
-        await streamer.stop()
-        await release(current)
+        if let streamer {
+            self.streamer = nil
+            await streamer.stop()
+            await release(current)
+        }
     }
 }
 
@@ -795,6 +824,9 @@ extension AmbientListeningController {
     func pause(_ current: UUID) async {
         markPaused(current)
         guard session == current, isOn, pausedReason != nil, resumer == nil else { return }
+        guard let retirement = retirements[current] else { return }
+        retirement.begin()
+        defer { retirement.finish() }
         isListening = false
         if let systemEndObserver {
             notificationCenter.removeObserver(systemEndObserver)
@@ -825,6 +857,9 @@ extension AmbientListeningController {
     func resume(_ current: UUID, trigger: String) async -> Bool {
         guard session == current, isOn, pausedReason != nil else { return true }
         guard let resumer, !resumer.attempting else { return false }
+        guard let retirement = retirements[current] else { return true }
+        retirement.begin()
+        defer { retirement.finish() }
         resumer.attempting = true
         defer { resumer.attempting = false }
         sendFailure = nil
