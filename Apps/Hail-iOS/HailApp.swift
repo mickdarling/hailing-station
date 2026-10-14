@@ -7,7 +7,8 @@ import HailCore
 @main
 struct HailApp: App {
     #if os(macOS)
-    @State private var stationAudio = DesktopStationAudio()
+    @NSApplicationDelegateAdaptor(DesktopStationAppDelegate.self) private var applicationDelegate
+    private var stationAudio: DesktopStationAudio { applicationDelegate.audio }
     #endif
 
     var body: some Scene {
