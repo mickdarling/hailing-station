@@ -30,7 +30,11 @@ import Testing
         rig.playback = .idle
         #expect(rig.flags?()?.ownerMidAnswer == true)
         try rig.capture.send(tone: true)
-        for _ in 0..<4 { await Task.yield() }
+        // Yield count is not evidence that the capture consumer delivered this buffer.
+        let deliveryDeadline = ContinuousClock.now.advanced(by: .seconds(5))
+        while rig.transport.writes == 0, ContinuousClock.now < deliveryDeadline {
+            try await Task.sleep(for: .milliseconds(10))
+        }
         #expect(rig.transport.writes == 1)
         await rig.command.join()
         #expect(rig.capture.stops == 1 && rig.transport.stops == 1)
@@ -67,12 +71,15 @@ import Testing
             guard let controller else { preconditionFailure("Authored fixture incomplete") }; return controller
         }
         init() throws {
+            // This suite checks local controls and delivery, not real-time lease expiry.
+            let instant = ContinuousClock.now
+            let clock = CoachingClock(now: { instant }, schedule: { _, _ in {} })
             controller = try CoachingCommand(listener: "coach", transport: { [unowned self] _, flags in
                 created += 1; self.flags = flags; return transport
             }, audio: { [unowned self] hooks in
-                let owner = try ExecutablePrivateAudio(capture: capture, player: player, hooks: hooks)
+                let owner = try ExecutablePrivateAudio(capture: capture, player: player, hooks: hooks, clock: clock)
                 return CoachingCommandAudio(owner: owner, playback: { [unowned self] in playback })
-            }, speech: speech)
+            }, speech: speech, clock: clock)
         }
     }
 }

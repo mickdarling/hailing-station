@@ -31,6 +31,7 @@ TIMING_SUITES=(
   OwnedReply OwnedStdioChild CodexStdio ProviderObservedSession ProviderInputCoordinator LocalReplyEndpoint
   TmuxDeliveryCommit AmbientWiring RightyoInput RightyoChildProcess SFSpeechRecognizerTranscriber
   TmuxPrePaste TmuxStaleInput TmuxCursorInput TmuxSubmitConfirmation
+  CoachingTransportRegression
 )
 TIMING_PATTERN="($(IFS='|'; echo "${TIMING_SUITES[*]}"))"
 
