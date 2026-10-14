@@ -87,18 +87,10 @@ public final class PrivateCoachingSession {
             guard current()?.generation == lease.generation else { throw CoachingSafetyError.unsafeOutput }
             armExpiry(lease)
             guard current() == lease else { throw CoachingSafetyError.staleQualification }
-            forward = Task { @MainActor [weak self] in
-                for await buffer in source {
-                    guard !Task.isCancelled, let self,
-                          let live = self.current(), live.generation == lease.generation else { break }
-                    self.hooks.buffer(buffer, live)
-                }
-                guard let self, self.qualification?.generation == lease.generation else { return }
-                self.suspend(.captureEnded)
-            }
+            forwardSource(source, generation: lease.generation)
             return lease
         } catch {
-            suspend(.captureFailed)
+            suspend(.captureFailed, ifGeneration: lease.generation)
             throw error
         }
     }
@@ -111,9 +103,13 @@ public final class PrivateCoachingSession {
         guard !transitioning, let live = current(), lease == live else {
             throw CoachingSafetyError.staleQualification
         }
+        let now = clock.now()
+        guard !transitioning, qualification == live, hasLiveDeadlines(live, at: now) else {
+            throw CoachingSafetyError.staleQualification
+        }
         let renewed = CoachingQualification(
             sessionID: live.sessionID, generation: live.generation, destinationID: live.destinationID,
-            qualificationID: UUID(), expiresAt: clock.now().advanced(by: lifetime), outputID: live.outputID
+            qualificationID: UUID(), expiresAt: now.advanced(by: lifetime), outputID: live.outputID
         )
         qualification = renewed
         armExpiry(renewed)
@@ -144,7 +140,7 @@ public final class PrivateCoachingSession {
             self.pendingPlayback[chunkID] = nil // Check authoritative time BEFORE erasing the original deadline.
             self.armExpiry(live)
         }) } catch {
-            suspend(.playbackFailed)
+            suspend(.playbackFailed, ifGeneration: ticket.qualification.generation)
             throw error
         }
     }
@@ -152,7 +148,7 @@ public final class PrivateCoachingSession {
     public func resume(ticket: CoachingAdviceTicket) throws {
         try validate(ticket)
         do { try player.resume() } catch {
-            suspend(.playbackFailed)
+            suspend(.playbackFailed, ifGeneration: ticket.qualification.generation)
             throw error
         }
     }

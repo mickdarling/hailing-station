@@ -13,7 +13,9 @@ final class CoachingTestPlayer: CoachingAudioPlaying {
     var mutes: [Bool] = []
     var fails = false
     var onCancel: (() -> Void)?
+    var onEffect: (() throws -> Void)?
     func schedule(_ payload: AudioPayload, onPlayed: (@MainActor @Sendable () -> Void)?) throws {
+        try onEffect?()
         if fails { throw CoachingSafetyError.invalidAudio }
         scheduled.append(payload)
         if let onPlayed { completions.append(onPlayed) }
@@ -21,6 +23,7 @@ final class CoachingTestPlayer: CoachingAudioPlaying {
     func cancel() { cancelled += 1; onCancel?() }
     func pause() {}
     func resume() throws {
+        try onEffect?()
         if fails { throw CoachingSafetyError.invalidAudio }
         resumed += 1
     }
@@ -35,8 +38,9 @@ final class CoachingTestClock {
     var instant = ContinuousClock.now
     var callbacks: [@MainActor () -> Void] = []
     var onSchedule: (() -> Void)?
+    var onNow: (() -> Void)?
     var clock: CoachingClock {
-        CoachingClock(now: { self.instant }, schedule: { _, fire in
+        CoachingClock(now: { self.onNow?(); return self.instant }, schedule: { _, fire in
             self.callbacks.append(fire)
             self.onSchedule?()
             return {} // Intentionally deliver stale callbacks to prove revision fences.
