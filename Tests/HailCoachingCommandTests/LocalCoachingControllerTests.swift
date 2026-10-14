@@ -66,6 +66,42 @@ struct LocalCoachingControllerTests {
         await controller.stop()
     }
 
+    @Test func quitRevokesBeforeReturningAndJoinsBeforeCompletion() async throws {
+        let fake = WindowCommandFake()
+        fake.suspendJoin = true
+        let controller = LocalCoachingController(makeCommand: { _ in fake })
+        try controller.start(arguments: [], participantAwareness: true)
+        let retirement = controller.shutdown()
+        #expect(fake.offCalls == 1)
+        #expect(controller.state == .stopping)
+        #expect(throws: CoachingCommandError.self) { try controller.start(arguments: [], participantAwareness: true) }
+        var completed = false
+        let completion = Task { await retirement.value; completed = true }
+        let deadline = ContinuousClock.now + .seconds(5)
+        while fake.joins.isEmpty, ContinuousClock.now < deadline { await Task.yield() }
+        guard !fake.joins.isEmpty else {
+            fake.suspendJoin = false
+            await completion.value
+            Issue.record("Quit did not reach owned retirement")
+            return
+        }
+        _ = controller.shutdown() // Repeated Quit shares the pending retirement.
+        #expect(fake.joins.count == 1)
+        #expect(!completed)
+        fake.releaseJoin(0)
+        await completion.value
+        #expect(completed && controller.state == .off)
+        #expect(throws: CoachingCommandError.self) { try controller.start(arguments: [], participantAwareness: true) }
+    }
+
+    @Test func quittingAnInertOwnerNeverConstructsACommand() async {
+        var constructions = 0
+        let controller = LocalCoachingController(makeCommand: { _ in constructions += 1; return WindowCommandFake() })
+        await controller.shutdown().value
+        #expect(constructions == 0 && controller.state == .off)
+        #expect(throws: CoachingCommandError.self) { try controller.start(arguments: [], participantAwareness: true) }
+    }
+
     @Test func queuedOldStopCannotStopTheNextSession() async throws {
         let first = WindowCommandFake(), second = WindowCommandFake()
         var constructions = 0
