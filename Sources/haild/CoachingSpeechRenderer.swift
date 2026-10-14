@@ -122,12 +122,14 @@ enum CoachingRendererCleanup {
             throw ForegroundCoachingError.invalidSpeech
         }
         job.bytes += data.count
-        var bytes = job.tail + data; job.tail = Data()
+        var bytes = job.pending + job.tail + data; job.pending = Data(); job.tail = Data()
         if !bytes.count.isMultiple(of: 2) { job.tail = Data(bytes.suffix(1)); bytes.removeLast() }
+        // Retain only the final sample for successful-exit finalization. Complete PCM before it
+        // is usable immediately; a short single-read phrase must not wait for EOF and child cleanup.
+        if !bytes.isEmpty { job.pending = Data(bytes.suffix(2)); bytes.removeLast(2) }
         while !bytes.isEmpty {
             let chunk = Data(bytes.prefix(48_000)); bytes.removeFirst(chunk.count)
-            if !job.pending.isEmpty { try deliver(job.pending, final: false, job: job, emit: emit) }
-            job.pending = chunk
+            try deliver(chunk, final: false, job: job, emit: emit)
         }
     }
 
