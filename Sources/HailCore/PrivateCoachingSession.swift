@@ -17,6 +17,8 @@ public final class PrivateCoachingSession {
     var cancelExpiry: (@MainActor () -> Void)?
     var expiryRevision = UUID()
     var captureStarted = false
+    var captureStarting = false
+    var startupRevision = UUID()
     var transitioning = false
     var pendingPlayback: [UUID: ContinuousClock.Instant] = [:]
 
@@ -69,20 +71,18 @@ public final class PrivateCoachingSession {
         guard !transitioning else { throw CoachingSafetyError.transitionInProgress }
         transitioning = true
         defer { transitioning = false }
-        suspend(.stopped)
+        let revision = UUID()
+        startupRevision = revision
+        suspend(.stopped, invalidatesStartup: false)
+        try requireStartup(revision)
         guard consentConfirmed else { throw CoachingSafetyError.consentRequired }
         guard lifetime > .zero, lifetime <= Self.maximumLifetime else { throw CoachingSafetyError.invalidLifetime }
-        guard case .verifiedHeadphones(let outputID) = observeOutput() else {
-            throw CoachingSafetyError.unsafeOutput
-        }
-        let lease = CoachingQualification(
-            sessionID: sessionID, generation: UUID(), destinationID: destinationID,
-            qualificationID: UUID(), expiresAt: clock.now().advanced(by: lifetime), outputID: outputID
-        )
+        let lease = try startupLease(sessionID: sessionID, destinationID: destinationID,
+                                     lifetime: lifetime, revision: revision)
         qualification = lease
         do {
-            captureStarted = true // A partially failed start still owns cleanup.
-            let source = try capture.start()
+            let source = try startOwnedCapture()
+            try requireStartup(revision)
             // Starting an engine can itself change the actual output route.
             guard current()?.generation == lease.generation else { throw CoachingSafetyError.unsafeOutput }
             armExpiry(lease)
