@@ -9,8 +9,9 @@ cleanup. Its retirement callback is captured before cleanup suspends and fires o
 owned operations finish. A newer session keeps its own callback. Existing session-generation guards still
 decide which activation may release the audio session; a fast core off/on retains the existing behavior.
 
-The Mac card's explicit Stop, close, binding/scene update and startup-failure release paths join the captured
-startup and stopped sessions' completion barriers. A logically off toggle is insufficient evidence of cleanup.
+The Mac card's explicit Stop, close, binding/scene update and startup-failure release paths must join the
+captured startup and stopped sessions' completion barriers. The prerequisite adds the core barrier; the
+following Mac admission slice supplies those joins. A logically off toggle is insufficient evidence of cleanup.
 Canceling a caller does not release admission while the underlying resource operation remains in flight.
 
 `AmbientRetirementJoinTests` and `AmbientRetirementOwnershipTests` use only authored permission, factory,
