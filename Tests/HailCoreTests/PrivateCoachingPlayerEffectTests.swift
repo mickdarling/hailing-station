@@ -21,7 +21,7 @@ import Testing
 }
 
 @Suite @MainActor struct PrivateCoachingPlayerEffectTests {
-    @Test(arguments: [0, 1, 2]) func stopDuringAnEffectCleansLateWorkAndRejectsReplacement(operation: Int) throws {
+    @Test(arguments: [0, 1, 2]) func stopDuringAnEffectCleansLateWorkBeforeFreshAdmission(operation: Int) throws {
         let player = CoachingLateEffectPlayer()
         let capture = FakeAudioCapture()
         let output = UUID()
