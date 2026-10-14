@@ -13,6 +13,11 @@ public enum CoachingOutputObservation: Sendable, Equatable {
 @MainActor
 public protocol CoachingAudioPlaying: ReplyAudioPlaying {}
 
+/// Trusted renderers recheck the originating ticket after readiness callbacks and before each native effect.
+/// They can preserve a replacement during read-only authorization without committing the old operation.
+@MainActor
+protocol CoachingGenerationFencedPlaying: CoachingAudioPlaying {}
+
 /// Host/terminal control correlation, not an authorization token for tools or actions (#225, #269).
 public struct CoachingQualification: Sendable, Equatable {
     public let sessionID: UUID
