@@ -134,28 +134,19 @@ public final class PrivateCoachingSession {
         let chunkID = UUID()
         pendingPlayback[chunkID] = ticket.qualification.expiresAt
         if let live = qualification { armExpiry(live) }
-        try validate(ticket) // Scheduler/cancellation hooks may synchronously invalidate the lifetime.
-        do { try player.schedule(payload, onPlayed: { [weak self] in
+        try performPlayerEffect(ticket) { try player.schedule(payload, onPlayed: { [weak self] in
             guard let self, self.pendingPlayback[chunkID] != nil, let live = self.current() else { return }
             self.pendingPlayback[chunkID] = nil // Check authoritative time BEFORE erasing the original deadline.
             self.armExpiry(live)
-        }) } catch {
-            suspend(.playbackFailed, ifGeneration: ticket.qualification.generation)
-            throw error
-        }
+        }) }
     }
 
     public func resume(ticket: CoachingAdviceTicket) throws {
-        try validate(ticket)
-        do { try player.resume() } catch {
-            suspend(.playbackFailed, ifGeneration: ticket.qualification.generation)
-            throw error
-        }
+        try performPlayerEffect(ticket) { try player.resume() }
     }
 
     public func setMuted(_ muted: Bool, ticket: CoachingAdviceTicket) throws {
-        try validate(ticket)
-        player.setMuted(muted)
+        try performPlayerEffect(ticket) { player.setMuted(muted) }
     }
 
     /// Any route notification invalidates, even if a later snapshot looks private again. Call before async rebuild.
