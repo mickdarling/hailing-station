@@ -45,14 +45,31 @@ extension PrivateCoachingSession {
         }
     }
 
-    func validate(_ ticket: CoachingAdviceTicket) throws {
-        guard !transitioning, let live = current(), sameScope(ticket.qualification, live) else {
+    func validate(_ ticket: CoachingAdviceTicket, duringEffect: Bool = false) throws {
+        guard !transitioning || duringEffect, let live = current(), sameScope(ticket.qualification, live) else {
             throw CoachingSafetyError.staleQualification
         }
         let now = clock.now()
-        guard !transitioning, qualification == live, hasLiveDeadlines(live, at: now),
+        guard !transitioning || duringEffect, qualification == live, hasLiveDeadlines(live, at: now),
               now < ticket.qualification.expiresAt else {
             throw CoachingSafetyError.staleQualification
+        }
+    }
+
+    func performPlayerEffect(_ ticket: CoachingAdviceTicket, operation: () throws -> Void) throws {
+        try validate(ticket)
+        transitioning = true // A reentrant replacement cannot share an in-flight old player's cleanup.
+        defer { transitioning = false }
+        do {
+            try operation()
+            try validate(ticket, duringEffect: true)
+        } catch {
+            if qualification?.generation == ticket.qualification.generation {
+                suspend(.playbackFailed, ifGeneration: ticket.qualification.generation)
+            } else {
+                player.cancel() // Stop may have run before the operation finished its late resource effect.
+            }
+            throw error
         }
     }
 
