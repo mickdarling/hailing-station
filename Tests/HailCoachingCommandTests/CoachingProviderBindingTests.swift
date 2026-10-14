@@ -117,8 +117,13 @@ private extension Array where Element == String {
             let executable = root.appendingPathComponent("authored-child")
             let config = root.appendingPathComponent("config")
             let profile = root.appendingPathComponent("profile")
-            try Data("#!/bin/sh\nprintf '%s\\n' \"$@\" > '\(record.path)'\nexec /bin/sleep 60\n".utf8)
-                .write(to: executable)
+            let script = """
+            #!/bin/sh
+            printf '%s\\n' "$@" > '\(record.path).incomplete'
+            /bin/mv '\(record.path).incomplete' '\(record.path)'
+            exec /bin/sleep 60
+            """
+            try Data(script.utf8).write(to: executable)
             try FileManager.default.setAttributes([.posixPermissions: 0o700], ofItemAtPath: executable.path)
             try Data("{}".utf8).write(to: config)
             if !missingCatalog { try Data("{\"step\":\"Ask for the next step.\"}".utf8).write(to: catalog) }
