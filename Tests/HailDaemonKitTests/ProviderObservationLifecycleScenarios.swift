@@ -117,14 +117,19 @@ func observedStoppedWrite(lines: Int) async throws {
     try await rig.host.withObservedSession(target: ObservedRig.target,
                                                  configuration: rig.configuration()) { session in
         let text = lines == 1 ? "invented first" : "invented first\ninvented second"
-        let input = Task { try await session.submit(text, utteranceID: UUID()) }
-        await rig.adapter.dispatch.arrivals.wait()
+        let completed = ObservedCounter()
+        let input = Task {
+            defer { completed.increment() }
+            return try await session.submit(text, utteranceID: UUID())
+        }
+        try await observedAwaitDispatch(rig, session: session, input: input, completed: completed)
         let proposed = try #require(await rig.adapter.delivered.first)
         await session.stop()
         #expect(rig.adapter.cancellations.count == 1)
         #expect(await session.status == .stopped)
         #expect(await session.state(for: proposed.id) == nil)
         await rig.adapter.dispatch.release()
+        try await observedAwaitStoppedInput(rig, session: session, completed: completed)
         if lines == 1 {
             #expect(try rig.sent(try await input.value) == proposed)
             #expect(await session.state(for: proposed.id) == .sent)
