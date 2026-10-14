@@ -43,3 +43,6 @@ Tests/InstalledAppHarness/HailingStationInstalledAppTests.xcodeproj/
 *.entitlements
 .swiftpm/
 __pycache__/
+
+# Generated from the native target in project.yml.
+Apps/Hail-macOS/Info.plist
