@@ -32,7 +32,7 @@ struct CoachingRenderOperations {
 /// Dedicated node on the capture owner's engine. Never starts an engine, activates/configures AVAudioSession,
 /// chooses an output or moves onto a fallback engine. An unsupported route cancels, not restarts, playback.
 @MainActor
-final class CoachingEngineRenderer: CoachingAudioPlaying {
+final class CoachingEngineRenderer: CoachingGenerationFencedPlaying {
     private let operations: CoachingRenderOperations
     private let observe: () -> CoachingOutputObservation
     private var authorizes: () -> Bool = { false }
