@@ -5,6 +5,7 @@ options:
   bundleIdPrefix: com.mickdarling
   deploymentTarget:
     iOS: "18.0"
+    macOS: "15.0"
   createIntermediateGroups: true
 settings:
   base:
@@ -12,7 +13,7 @@ settings:
     SWIFT_STRICT_CONCURRENCY: complete
     SWIFT_UPCOMING_FEATURE_EXISTENTIAL_ANY: YES
     SWIFT_TREAT_WARNINGS_AS_ERRORS: YES
-    MARKETING_VERSION: "0.1.172"
+    MARKETING_VERSION: "0.1.173"
     CURRENT_PROJECT_VERSION: "1"
     CODE_SIGN_STYLE: Automatic
     # 10-character Apple Team ID for device builds. Empty = simulator and CI only (#32).
@@ -50,6 +51,27 @@ targets:
     entitlements:
       path: Apps/Hail-iOS/Hail.entitlements
       properties: {}
+  Hail-macOS:
+    type: application
+    platform: macOS
+    sources:
+      - Apps/Hail-iOS
+    settings:
+      base:
+        ASSETCATALOG_COMPILER_APPICON_NAME: AppIcon
+        TARGETED_DEVICE_FAMILY: ""
+        PRODUCT_BUNDLE_IDENTIFIER: com.mickdarling.Hail-macOS
+    dependencies:
+      - package: Hail
+        products: [HailCore, HailProtocol, HailCoaching]
+    info:
+      path: Apps/Hail-macOS/Info.plist
+      properties:
+        CFBundleDisplayName: Hailing Station
+        CFBundleShortVersionString: $(MARKETING_VERSION)
+        CFBundleVersion: $(CURRENT_PROJECT_VERSION)
+        NSMicrophoneUsageDescription: Hailing Station captures speech for the destination you choose.
+        NSSpeechRecognitionUsageDescription: Hailing Station transcribes speech on this Mac.
   Hail-iOSUITests:
     type: bundle.ui-testing
     platform: iOS
@@ -73,3 +95,9 @@ schemes:
       config: Debug
       targets:
         - Hail-iOSUITests
+  Hail-macOS:
+    build:
+      targets:
+        Hail-macOS: all
+    run:
+      config: Debug

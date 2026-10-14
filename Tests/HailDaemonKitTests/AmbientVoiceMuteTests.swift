@@ -93,7 +93,9 @@ import Testing
     @Test func aCapableDeviceIsStoppedThenHearsMutedThenIsMuted() async throws {
         let caps = [PlaybackStop.capability, ReplyMute.capability]
         let details = try await run(saying: "Rightyo, mute.", capabilities: caps) { socket in
-            #expect(try await receiveFrame(on: socket, step: "stop").payload == .control(.stopPlayback))
+            let first = try await receiveFrame(on: socket, step: "stop")
+            let stopped = first.payload == .control(.stopPlayback)
+            #expect(stopped, "first frame: \(AmbientVoiceMuteDiagnostic.frame(first.payload))")
             let text = try await receiveFrame(on: socket, step: "confirmation words")
             guard case .text(let words) = text.payload else {
                 Issue.record("expected the confirmation")
@@ -156,6 +158,7 @@ extension AmbientVoiceMuteTests {
         defer { fake.cleanUp() }
         try fake.install(fixture: "tool-events.jsonl")
         let details = Mutex<[String]>([])
+        let diagnostic = AmbientVoiceMuteDiagnostic()
         let library = AmbientAckLibrary(clips: [
             "confirmstopped": [AmbientStopConfirmationTests.stopped], "confirmmuted": [Self.muted],
             "confirmunmuted": [Self.unmuted]
@@ -163,6 +166,7 @@ extension AmbientVoiceMuteTests {
         let env = try await ambientRig(
             fake, timing: .init(eofGrace: 20, termGrace: 20), acknowledgements: library,
             onEvent: { event in
+                diagnostic.record(event)
                 if event.event == "ambient_voice_mute" { details.withLock { $0.append(event.detail ?? "") } }
             }
         )
@@ -180,7 +184,7 @@ extension AmbientVoiceMuteTests {
         try await recipientSocketBarrier(on: socket)
         let stream = UUID()
         try await recipientSocketSend(audio(stream, 0), on: socket)
-        #expect(await eventually { details.withLock { !$0.isEmpty } })
+        #expect(await eventually { details.withLock { !$0.isEmpty } }, "ambient stages: \(diagnostic.summary)")
         try await check(socket)
         try await recipientSocketSend(audio(stream, 1, final: true), on: socket)
         await env.router.settle()
