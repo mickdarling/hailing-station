@@ -3,6 +3,7 @@ import Foundation
 import HailCore
 import Testing
 @testable import haild
+@testable import HailCoaching
 
 @Suite(.serialized, .timeLimit(.minutes(1))) @MainActor struct CoachingTerminalTests {
     @Test func fullSyntheticTerminalRefusesFeedbackWithoutWaitingForDrain() throws {

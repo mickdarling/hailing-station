@@ -3,6 +3,7 @@ import HailCore
 import HailDaemonKit
 import Testing
 @testable import haild
+@testable import HailCoaching
 
 /// Parsing/binding only: no native factory, device, model, credential or service calls.
 @Suite struct CoachingProviderBindingTests {

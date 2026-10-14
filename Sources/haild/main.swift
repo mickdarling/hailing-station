@@ -1,3 +1,4 @@
+import HailCoaching
 import Darwin
 import Foundation
 import HailDaemonKit
@@ -340,7 +341,7 @@ do {
     case "doctor" where arguments.count == 1: doctor()
     case "reply": try await reply(arguments.dropFirst())
     case "ambient": try await ambient(arguments.dropFirst())
-    case "coaching": try await CoachingCommand.run(Array(arguments.dropFirst()))
+    case "coaching": try await LocalCoachingController.runCLI(Array(arguments.dropFirst()))
     case "rightyo": try await rightyo(arguments.dropFirst())
     case "audit": try audit(arguments.dropFirst())
     case "diagnostics": try diagnostics(arguments.dropFirst())
@@ -393,8 +394,8 @@ do {
     fail("device diagnostics refused: \(error); the log directory must be yours and closed to others")
 } catch ReplyCommandError.usage {
     usage()
-} catch is CoachingCommandError {
-    CoachingTerminal.reportRefusal()
+} catch is LocalCoachingController.CLIRefusal {
+    LocalCoachingController.reportCLIRefusal()
     exit(64)
 } catch {
     fail("\(error)")

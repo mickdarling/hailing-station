@@ -5,6 +5,7 @@ import HailDaemonKit
 import HailProtocol
 import Testing
 @testable import haild
+@testable import HailCoaching
 
 /// Authored inputs only; no device enumeration/AVAudioEngine/live factory is used by this fixture.
 @MainActor final class ExecutableCoachingCapture: AudioCapturing {

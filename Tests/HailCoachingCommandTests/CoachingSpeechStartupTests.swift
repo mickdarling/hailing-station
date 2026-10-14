@@ -3,6 +3,7 @@ import HailCore
 import Testing
 @testable import HailDaemonKit
 @testable import haild
+@testable import HailCoaching
 
 /// Only an authored private executable on the injected PATH, never the installed vbsay or live factory.
 @Suite(.serialized, .timeLimit(.minutes(1))) @MainActor struct CoachingSpeechStartupTests {

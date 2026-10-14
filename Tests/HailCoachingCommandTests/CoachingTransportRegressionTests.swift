@@ -3,6 +3,7 @@ import HailCore
 import HailDaemonKit
 import Testing
 @testable import haild
+@testable import HailCoaching
 
 @Suite(.serialized) @MainActor struct CoachingTransportRegressionTests {
     @Test func explicitHostedTextProviderOptionsReachOnlyExistingOwnedChildArgv() async throws {

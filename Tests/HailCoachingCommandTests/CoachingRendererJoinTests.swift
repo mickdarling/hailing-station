@@ -2,6 +2,7 @@ import Foundation
 import Synchronization
 import Testing
 @testable import haild
+@testable import HailCoaching
 
 /// Models the real renderer's early deferred-artifact error while exact child exit is still pending.
 private final class DelayedRendererJoin: CoachingRendererJoining {

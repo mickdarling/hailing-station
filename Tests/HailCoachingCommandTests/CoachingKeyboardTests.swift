@@ -2,6 +2,7 @@ import Darwin
 import Foundation
 import Testing
 @testable import haild
+@testable import HailCoaching
 
 @Suite(.serialized) @MainActor struct CoachingKeyboardTests {
     @Test func syntheticPipeControlsAreBoundedAndReaderDoesNotBlockActor() async throws {
