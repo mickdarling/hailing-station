@@ -64,8 +64,9 @@ struct CoachingCommandAudio {
         }
     }
 
-    /// Native factory is compiled, not exercised by synthetic tests. No factory runs before keyboard opt-in.
-    static func native(_ configuration: CoachingConfiguration) throws -> CoachingCommand {
+    /// Native factory is compiled, not exercised by synthetic tests. No factory runs before explicit local opt-in.
+    static func native(_ configuration: CoachingConfiguration,
+                       rendererEnvironment: [String: String]? = nil) throws -> CoachingCommand {
         let profile = try configuration.loadProfile()
         return try CoachingCommand(listener: configuration.listenerID, transport: { hooks, flags in
             try CoachingChildTransport(configuration.childConfiguration(profile: profile, provenance: .liveMicrophone),
@@ -76,7 +77,8 @@ struct CoachingCommandAudio {
                 listenerID: configuration.listenerID, hooks: hooks)
             return CoachingCommandAudio(owner: privateAudio, playback: { privateAudio.privatePlaybackObservation() })
         }, speech: CoachingSpeechRenderer.local(outputRoot: configuration.outputRoot,
-                                                environment: ProcessInfo.processInfo.environment))
+                                                environment: rendererEnvironment
+                                                    ?? ProcessInfo.processInfo.environment))
     }
 
     @MainActor static func run(_ arguments: [String]) async throws {
