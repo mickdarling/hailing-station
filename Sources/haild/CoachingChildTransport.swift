@@ -1,6 +1,9 @@
 import Foundation
 import HailCore
 import HailDaemonKit
+import OSLog
+
+private let coachingProgressLog = Logger(subsystem: "com.mickdarling.Hail", category: "coaching-progress")
 
 struct CoachingChildConfiguration {
     let executable: URL, config: URL, profile: Data
@@ -30,6 +33,7 @@ struct CoachingChildConfiguration {
     private var session: UUID?
     private var closed = false, started = false
     private var sequence = 0
+    private var progressReported = false
     private var finals: Set<String> = []
     var finalCount: Int { finals.count }
     private(set) var adviceCount = 0
@@ -99,7 +103,14 @@ struct CoachingChildConfiguration {
     }
     func stop() async {
         close()
-        if let child { await child.stop() }
+        if let child {
+            await child.stop()
+            if !progressReported {
+                progressReported = true
+                reportCoachingProgress(child.counters, voiceBuffers: activity.voiceBuffers,
+                                       finals: finals.count, advice: adviceCount)
+            }
+        }
         await reader?.value
         reader = nil; child = nil
     }
@@ -169,4 +180,16 @@ struct CoachingChildConfiguration {
             throw CoachingChildError.invalidControl // Actual channel failure still retires the owner.
         }
     }
+}
+
+private func reportCoachingProgress(_ counters: RightyoChildProcess.Counters,
+                                    voiceBuffers: Int, finals: Int, advice: Int) {
+    coachingProgressLog.notice("""
+        Coaching stopped: PCM bytes \(counters.writtenBytes, privacy: .public), \
+        speech-level buffers \(voiceBuffers, privacy: .public), \
+        transcript finals \(finals, privacy: .public), \
+        advice events \(advice, privacy: .public), \
+        dropped chunks \(counters.droppedChunks, privacy: .public), \
+        discarded stderr bytes \(counters.stderrBytes, privacy: .public)
+        """)
 }

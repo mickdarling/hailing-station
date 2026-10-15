@@ -137,6 +137,7 @@ struct CoachingActivityFlags { let ownerMidAnswer: Bool, playback: Bool }
 
 /// Measured pause from the same actual converted capture stream, never text or speaker attribution.
 @MainActor final class CoachingCaptureActivity {
+    private(set) var voiceBuffers = 0
     private var lastVoice: ContinuousClock.Instant?
     private var lastCapture: ContinuousClock.Instant?
     func observe(_ data: Data, at now: ContinuousClock.Instant = .now) {
@@ -145,7 +146,7 @@ struct CoachingActivityFlags { let ownerMidAnswer: Bool, playback: Bool }
         let bytes = Array(data)
         for index in stride(from: 0, to: bytes.count, by: 2) {
             let sample = Int16(bitPattern: UInt16(bytes[index]) | UInt16(bytes[index + 1]) << 8)
-            if abs(Int(sample)) >= 1_000 { lastVoice = now; return }
+            if abs(Int(sample)) >= 1_000 { voiceBuffers += 1; lastVoice = now; return }
         }
     }
     func measure(_ flags: CoachingActivityFlags, at now: ContinuousClock.Instant = .now)
