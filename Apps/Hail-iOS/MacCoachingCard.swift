@@ -66,7 +66,12 @@ struct MacCoachingCard: View {
         } label: {
             Label("Private coaching", systemImage: "ear.badge.waveform")
         }
-        .task { refresh() }
+        .task {
+            while !Task.isCancelled {
+                if controller.state == .off { refresh() }
+                do { try await Task.sleep(for: .seconds(2)) } catch { return }
+            }
+        }
         .onDisappear {
             let token = captureOwner
             requestStop(token)
@@ -89,10 +94,13 @@ struct MacCoachingCard: View {
     }
 
     private func refresh() {
-        microphones = MacCoachingDeviceInventory.microphones()
-        outputs = MacCoachingDeviceInventory.privateOutputs()
-        if !microphones.contains(where: { $0.id == microphone }) { microphone = 0 }
-        if !outputs.contains(where: { $0.id == output }) { output = 0 }
+        let freshMicrophones = MacCoachingDeviceInventory.microphones()
+        let freshOutputs = MacCoachingDeviceInventory.privateOutputs()
+        microphone = MacCoachingDeviceInventory.retainedSelection(microphone,
+            previous: microphones, current: freshMicrophones)
+        output = MacCoachingDeviceInventory.retainedSelection(output, previous: outputs, current: freshOutputs)
+        microphones = freshMicrophones
+        outputs = freshOutputs
     }
 
     private func start() {
