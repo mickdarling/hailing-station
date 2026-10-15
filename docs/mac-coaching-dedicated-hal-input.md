@@ -1,16 +1,17 @@
 # Dedicated native Mac coaching microphone input
 
 Part of #524. This slice adds a separately owned AUHAL input adapter. It is not yet wired into the
-Mac composition; the integration and cleanup-fault UI are a separate required slice before live retry. The unit enables input on bus1, disables output on bus0, reads both flags
-back while stopped, and accepts only the selected independently qualified physical microphone ID.
-It retains the existing repeated exact HAL readback/physical metadata checks and paired private-output
-binding. It never creates an input aggregate, changes defaults, accepts an aggregate alias or restarts.
+Mac composition; the integration and cleanup-fault UI are a separate required slice before live retry. The unit enables input on bus1, disables output on bus0 and reads both flags back while stopped.
+Its internal fixed-device binding seam does not itself qualify a microphone or private output. The
+integration must apply existing independent physical-microphone evidence, repeated exact HAL readback
+and paired private-output checks before begin, and incorporate callback health into each observation.
+The adapter never creates an input aggregate, changes defaults or automatically restarts.
 
 The hardware input format supplies rate/channel count for an unprocessed Float32 client format.
 Only explicit qualified begin calls AudioOutputUnitStart. Native callback frames are bounded to8,192
 and at most250ms; each delivered snapshot owns a copy. The eight-buffer queue ends permanently on
-overflow, bad extent, failed render or revocation. Its health participates in every output-observation
-check, so queued buffers cannot continue granting a live coaching route after callback failure.
+overflow, bad extent, failed render or revocation. The integration must include its health in every
+output-observation check so callback failure revokes qualification before queued buffers can forward.
 Stop revokes delivery before native stop/uninitialize/dispose. The unit owns its callback context
 before callback installation, including partial setup failures. Successful final disposal releases that
 ownership. Failed disposal quarantines the native unit, driver and retired context until process exit,
