@@ -68,7 +68,7 @@ struct MacCoachingBindingOperations {
                                        0, &value, &size) == noErr, size == MemoryLayout<UInt32>.size else { return nil }
             if expectedDevice != 0, value != expectedDevice {
                 outputBindingLog.notice(
-                    "Input HAL readback: requested \(expectedDevice, privacy: .public), actual \(value, privacy: .public)")
+                    "Input HAL mismatch: want \(expectedDevice, privacy: .public), actual \(value, privacy: .public)")
             }
             return value
         })
