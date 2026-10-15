@@ -14,3 +14,5 @@ Authored regressions inject failure at every startup stage and verify exact owne
 private error redaction, failure persistence and fresh-run clearing. These do not establish physical
 microphone, headphone or provider behavior. Installed-app proof and the actual startup diagnosis are
 recorded separately in #524. Conference/system audio remains #525.
+
+The first current-generation asynchronous provider-end or audio-suspension reason is also retained as a fixed enum. Explicit Stop does not become an error, late callbacks cannot overwrite the first cause or a fresh run, and messages distinguish provider exit from route/capture/expiry/playback loss without guessing the underlying physical notification.
