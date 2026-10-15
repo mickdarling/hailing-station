@@ -6,6 +6,12 @@ import HailProtocol
 /// supplies trusted adapters and independently validated profiles; child output is advice data only.
 @MainActor
 public final class ForegroundCoaching {
+    /// Diagnostic stage only: never contains provider output or grants startup authority.
+    public enum StartupStage: Sendable, Equatable {
+        case providerSetup, providerStart, deviceSetup, audioStart, providerQualification, activation
+    }
+
+    public private(set) var startupFailure: StartupStage?
     public struct ChildHooks {
         public let advice: (Data) -> Void
         public let ended: () -> Void
@@ -54,39 +60,52 @@ public final class ForegroundCoaching {
         guard status == .off, !startupInFlight else { throw ForegroundCoachingError.busy }
         guard participantAwareness else { throw ForegroundCoachingError.awarenessRequired }
         epoch = UUID()
+        startupFailure = nil
         let id = epoch, sessionID = UUID(), destinationID = UUID()
         status = .starting; startupInFlight = true
         defer { startupInFlight = false; finishRetirement() }
-        do {
-            let child = try makeTransport(ChildHooks(
-                advice: { [weak self] in self?.receive($0, epoch: id) },
-                ended: { [weak self] in self?.off(epoch: id) }
-            ))
-            guard starting(id) else { retire(child); throw ForegroundCoachingError.startupLost }
-            transport = child
-            guard child.send(.enable(sessionID: sessionID, destinationID: destinationID, listenerID: listenerID)),
-                  starting(id) else { throw ForegroundCoachingError.transportFailed }
-            let owner = try makeAudio(PrivateCoachingSession.Hooks(
-                buffer: { [weak self] in self?.forward($0, lease: $1, epoch: id) },
-                suspended: { [weak self] _, _ in self?.off(epoch: id) }
-            ))
-            guard starting(id) else { owner.stop(); throw ForegroundCoachingError.startupLost }
-            audio = owner
-            let qualified = try owner.begin(sessionID: sessionID, destinationID: destinationID, consentConfirmed: true)
-            guard starting(id) else { throw ForegroundCoachingError.startupLost }
-            lease = qualified
-            guard child.send(.qualify(qualified)), starting(id) else {
-                throw ForegroundCoachingError.transportFailed
-            }
-            let now = clock.now()
-            guard starting(id), lease == qualified, now < qualified.expiresAt else {
-                throw ForegroundCoachingError.startupLost
-            }
-            deadline = now.advanced(by: .seconds(900)) // Heartbeats cannot extend this run budget.
-            status = .active
-            armHeartbeat(id)
-            guard live(id) else { throw ForegroundCoachingError.startupLost }
-        } catch { off(epoch: id); throw error }
+        var stage = StartupStage.providerSetup
+        do { try start(id, sessionID: sessionID, destinationID: destinationID, stage: &stage) } catch {
+            if epoch == id { startupFailure = stage }
+            off(epoch: id)
+            throw error
+        }
+    }
+
+    private func start(_ id: UUID, sessionID: UUID, destinationID: UUID, stage: inout StartupStage) throws {
+        let child = try makeTransport(ChildHooks(
+            advice: { [weak self] in self?.receive($0, epoch: id) },
+            ended: { [weak self] in self?.off(epoch: id) }
+        ))
+        guard starting(id) else { retire(child); throw ForegroundCoachingError.startupLost }
+        transport = child
+        stage = .providerStart
+        guard child.send(.enable(sessionID: sessionID, destinationID: destinationID, listenerID: listenerID)),
+              starting(id) else { throw ForegroundCoachingError.transportFailed }
+        stage = .deviceSetup
+        let owner = try makeAudio(PrivateCoachingSession.Hooks(
+            buffer: { [weak self] in self?.forward($0, lease: $1, epoch: id) },
+            suspended: { [weak self] _, _ in self?.off(epoch: id) }
+        ))
+        guard starting(id) else { owner.stop(); throw ForegroundCoachingError.startupLost }
+        audio = owner
+        stage = .audioStart
+        let qualified = try owner.begin(sessionID: sessionID, destinationID: destinationID, consentConfirmed: true)
+        guard starting(id) else { throw ForegroundCoachingError.startupLost }
+        lease = qualified
+        stage = .providerQualification
+        guard child.send(.qualify(qualified)), starting(id) else {
+            throw ForegroundCoachingError.transportFailed
+        }
+        stage = .activation
+        let now = clock.now()
+        guard starting(id), lease == qualified, now < qualified.expiresAt else {
+            throw ForegroundCoachingError.startupLost
+        }
+        deadline = now.advanced(by: .seconds(900)) // Heartbeats cannot extend this run budget.
+        status = .active
+        armHeartbeat(id)
+        guard live(id) else { throw ForegroundCoachingError.startupLost }
     }
 
     /// Disable, participant-awareness loss, profile mutation and permission loss share immediate retirement.
