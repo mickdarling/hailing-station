@@ -81,6 +81,7 @@ struct AudioDiagnosticsView: View {
             }
         }
         .navigationTitle("Audio session")
+        .stationToolBackNavigation()
         .task { await model.refresh() }
         .onDisappear { Task { await model.deactivate() } }
     }

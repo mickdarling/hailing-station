@@ -99,6 +99,15 @@ enum StationPlatform {
 }
 
 extension View {
+    /// macOS station destinations need an explicit return control (#523).
+    @ViewBuilder func stationToolBackNavigation() -> some View {
+        #if os(macOS)
+        modifier(StationToolBackNavigation())
+        #else
+        self
+        #endif
+    }
+
     @ViewBuilder func stationInlineTitle() -> some View {
         #if os(iOS)
         navigationBarTitleDisplayMode(.inline)
@@ -131,3 +140,27 @@ extension View {
         #endif
     }
 }
+
+#if os(macOS)
+private struct StationToolBackNavigation: ViewModifier {
+    @Environment(\.dismiss) private var dismiss
+
+    func body(content: Content) -> some View {
+        content.safeAreaInset(edge: .top, spacing: 0) {
+            HStack {
+                Button(action: { dismiss() }) {
+                    Label("Back", systemImage: "chevron.left")
+                }
+                .buttonStyle(.bordered)
+                .keyboardShortcut("[", modifiers: .command)
+                .accessibilityLabel("Back to Hailing Station")
+                .accessibilityIdentifier("station.tool-back")
+                Spacer()
+            }
+            .padding(.horizontal)
+            .padding(.vertical, 8)
+            .background(.bar)
+        }
+    }
+}
+#endif

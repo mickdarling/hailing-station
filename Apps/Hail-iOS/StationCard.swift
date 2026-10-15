@@ -52,6 +52,7 @@ struct CaptureSafeLabsView: View {
             #endif
         }
         .navigationTitle("Labs")
+        .stationToolBackNavigation()
     }
 }
 
