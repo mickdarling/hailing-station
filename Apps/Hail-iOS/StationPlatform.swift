@@ -146,19 +146,21 @@ private struct StationToolBackNavigation: ViewModifier {
     @Environment(\.dismiss) private var dismiss
 
     func body(content: Content) -> some View {
-        content.safeAreaInset(edge: .top, spacing: 0) {
-            HStack {
-                Button("Back", systemImage: "chevron.left") { dismiss() }
-                .buttonStyle(.bordered)
-                .keyboardShortcut("[", modifiers: .command)
-                .accessibilityLabel("Back to Hailing Station")
-                .accessibilityIdentifier("station.tool-back")
-                Spacer()
+        content
+            .navigationBarBackButtonHidden()
+            .safeAreaInset(edge: .top, spacing: 0) {
+                HStack {
+                    Button("Back", systemImage: "chevron.left") { dismiss() }
+                        .buttonStyle(.bordered)
+                        .keyboardShortcut("[", modifiers: .command)
+                        .accessibilityLabel("Back to Hailing Station")
+                        .accessibilityIdentifier("station.tool-back")
+                    Spacer()
+                }
+                .padding(.horizontal)
+                .padding(.vertical, 8)
+                .background(.bar)
             }
-            .padding(.horizontal)
-            .padding(.vertical, 8)
-            .background(.bar)
-        }
     }
 }
 #endif
