@@ -159,3 +159,29 @@ extension RootView {
         diagnostics.setEnabled(false)
     }
 }
+
+/// The native macOS GroupBox crashes control-helper inspection (#527). Keep each child accessible.
+struct StationPanel<Label: View, Content: View>: View {
+    let content: Content
+    let label: Label
+
+    init(@ViewBuilder content: () -> Content, @ViewBuilder label: () -> Label) {
+        self.content = content()
+        self.label = label()
+    }
+
+    var body: some View {
+        #if os(macOS)
+        VStack(alignment: .leading, spacing: 12) {
+            label.font(.headline).accessibilityAddTraits(.isHeader)
+            content
+        }
+        .frame(maxWidth: .infinity, alignment: .leading)
+        .padding(12)
+        .background(.regularMaterial, in: RoundedRectangle(cornerRadius: 12))
+        .accessibilityElement(children: .contain)
+        #else
+        GroupBox { content } label: { label }
+        #endif
+    }
+}
