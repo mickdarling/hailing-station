@@ -6,6 +6,7 @@ public import Observation
 protocol LocalCoachingControlling: AnyObject {
     var status: ForegroundCoachingStatus { get }
     var startupFailure: ForegroundCoaching.StartupStage? { get }
+    var retirementReason: ForegroundCoaching.RetirementReason? { get }
     func control(_ line: String) throws -> Bool
     func off()
     func join() async
@@ -13,11 +14,13 @@ protocol LocalCoachingControlling: AnyObject {
 
 extension LocalCoachingControlling {
     var startupFailure: ForegroundCoaching.StartupStage? { nil }
+    var retirementReason: ForegroundCoaching.RetirementReason? { nil }
 }
 
 extension CoachingCommand: LocalCoachingControlling {
     var status: ForegroundCoachingStatus { owner.status }
     var startupFailure: ForegroundCoaching.StartupStage? { owner.startupFailure }
+    var retirementReason: ForegroundCoaching.RetirementReason? { owner.retirementReason }
 }
 
 /// The window and CLI share the same private coaching composition (#266); no Terminal process is launched.
@@ -26,7 +29,7 @@ public final class LocalCoachingController {
     public struct CLIRefusal: Error {}
     public enum State: Sendable, Equatable { case off, active, stopping, refused }
     public enum Failure: Sendable, Equatable {
-        case setup, start(ForegroundCoaching.StartupStage?), ended
+        case setup, start(ForegroundCoaching.StartupStage?), ended(ForegroundCoaching.RetirementReason?)
 
         public var message: String {
             switch self {
@@ -44,7 +47,23 @@ public final class LocalCoachingController {
                 "Local transcription could not accept the audio session. Check its service and start again."
             case .start(.activation), .start(nil):
                 "Coaching startup was interrupted. Refresh devices and start again."
-            case .ended:
+            case .ended(let reason): Self.retirementMessage(reason)
+            }
+        }
+
+        private static func retirementMessage(_ reason: ForegroundCoaching.RetirementReason?) -> String {
+            switch reason {
+            case .providerEnded:
+                "Local transcription stopped unexpectedly. Check its local service and start again."
+            case .audioStopped(.routeInvalidated):
+                "Coaching stopped because its audio route was invalidated. Refresh devices and choose them again."
+            case .audioStopped(.captureEnded), .audioStopped(.captureFailed):
+                "The microphone stopped delivering audio. Check microphone access and the selected device."
+            case .audioStopped(.qualificationExpired), .audioStopped(.adviceExpired):
+                "Coaching stopped because its audio session expired. Start a fresh session."
+            case .audioStopped(.playbackFailed):
+                "Private coaching playback failed. Check the selected headphones and start again."
+            case .audioStopped(.stopped), nil:
                 "Coaching stopped. Check the selected devices and local transcription service, then start again."
             }
         }
@@ -89,7 +108,7 @@ public final class LocalCoachingController {
                     do { try await Task.sleep(for: .milliseconds(250)) } catch { break }
                 }
                 guard !Task.isCancelled else { return }
-                self?.lastFailure = .ended
+                self?.lastFailure = .ended(configured.retirementReason)
                 self?.command = nil
                 self?.revision = nil
                 self?.watch = nil

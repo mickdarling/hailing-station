@@ -8,6 +8,7 @@ private final class WindowCommandFake: LocalCoachingControlling {
     var controls: [String] = []
     var failStart = false
     var startupFailure: ForegroundCoaching.StartupStage?
+    var retirementReason: ForegroundCoaching.RetirementReason?
     var offCalls = 0
     var joins: [CheckedContinuation<Void, Never>] = []
     var suspendJoin = false
@@ -28,6 +29,22 @@ private final class WindowCommandFake: LocalCoachingControlling {
 @Suite("Window coaching ownership", .serialized, .timeLimit(.minutes(1)))
 @MainActor
 struct LocalCoachingControllerTests {
+    @Test func unexpectedEndKeepsTheOwnersSafeReason() async throws {
+        let fake = WindowCommandFake()
+        let controller = LocalCoachingController(makeCommand: { _ in fake })
+        try controller.start(arguments: [], participantAwareness: true)
+        fake.retirementReason = .providerEnded
+        fake.status = .off
+        let deadline = ContinuousClock.now + .seconds(5)
+        while controller.state != .off, ContinuousClock.now < deadline { await Task.yield() }
+        #expect(controller.state == .off && controller.lastFailure == .ended(.providerEnded))
+        #expect(controller.lastFailure?.message.hasPrefix("Local transcription stopped") == true)
+        await controller.stop()
+        #expect(controller.lastFailure == .ended(.providerEnded))
+    }
+}
+
+extension LocalCoachingControllerTests {
     @Test func safeStageSurvivesRetirementAndClearsOnFreshStart() async throws {
         let fake = WindowCommandFake()
         fake.failStart = true

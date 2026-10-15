@@ -12,6 +12,10 @@ public final class ForegroundCoaching {
     }
 
     public private(set) var startupFailure: StartupStage?
+    public enum RetirementReason: Sendable, Equatable {
+        case providerEnded, audioStopped(CoachingSuspension)
+    }
+    public private(set) var retirementReason: RetirementReason?
     public struct ChildHooks {
         public let advice: (Data) -> Void
         public let ended: () -> Void
@@ -61,6 +65,7 @@ public final class ForegroundCoaching {
         guard participantAwareness else { throw ForegroundCoachingError.awarenessRequired }
         epoch = UUID()
         startupFailure = nil
+        retirementReason = nil
         let id = epoch, sessionID = UUID(), destinationID = UUID()
         status = .starting; startupInFlight = true
         defer { startupInFlight = false; finishRetirement() }
@@ -75,7 +80,7 @@ public final class ForegroundCoaching {
     private func start(_ id: UUID, sessionID: UUID, destinationID: UUID, stage: inout StartupStage) throws {
         let child = try makeTransport(ChildHooks(
             advice: { [weak self] in self?.receive($0, epoch: id) },
-            ended: { [weak self] in self?.off(epoch: id) }
+            ended: { [weak self] in self?.retired(.providerEnded, epoch: id) }
         ))
         guard starting(id) else { retire(child); throw ForegroundCoachingError.startupLost }
         transport = child
@@ -85,7 +90,7 @@ public final class ForegroundCoaching {
         stage = .deviceSetup
         let owner = try makeAudio(PrivateCoachingSession.Hooks(
             buffer: { [weak self] in self?.forward($0, lease: $1, epoch: id) },
-            suspended: { [weak self] _, _ in self?.off(epoch: id) }
+            suspended: { [weak self] _, reason in self?.retired(.audioStopped(reason), epoch: id) }
         ))
         guard starting(id) else { owner.stop(); throw ForegroundCoachingError.startupLost }
         audio = owner
@@ -106,6 +111,12 @@ public final class ForegroundCoaching {
         status = .active
         armHeartbeat(id)
         guard live(id) else { throw ForegroundCoachingError.startupLost }
+    }
+
+    private func retired(_ reason: RetirementReason, epoch id: UUID) {
+        guard epoch == id, status == .active || status == .starting else { return }
+        retirementReason = reason
+        off(epoch: id)
     }
 
     /// Disable, participant-awareness loss, profile mutation and permission loss share immediate retirement.

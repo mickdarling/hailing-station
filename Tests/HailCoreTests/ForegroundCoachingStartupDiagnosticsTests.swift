@@ -41,6 +41,30 @@ import Testing
 }
 
 @Suite @MainActor struct CoachingStartupDiagnosticsTests {
+    @Test func firstRetirementCauseSurvivesLateOldCallbacksAndClearsOnRestart() async throws {
+        let rig = try ForegroundRig()
+        try rig.driver.enable(participantAwareness: true)
+        let old = try #require(rig.children.last)
+        rig.owners[0].session.invalidateRoute()
+        old.hooks.ended()
+        await drainCoachingTasks()
+        #expect(rig.driver.retirementReason == .audioStopped(.routeInvalidated))
+        try rig.driver.enable(participantAwareness: true)
+        old.hooks.ended()
+        #expect(rig.driver.retirementReason == nil && rig.driver.status == .active)
+        rig.children[1].hooks.ended()
+        await drainCoachingTasks()
+        #expect(rig.driver.retirementReason == .providerEnded && rig.driver.status == .off)
+    }
+
+    @Test func explicitStopDoesNotBecomeAnAudioFailure() async throws {
+        let rig = try ForegroundRig()
+        try rig.driver.enable(participantAwareness: true)
+        rig.driver.off()
+        await drainCoachingTasks()
+        #expect(rig.driver.status == .off && rig.driver.retirementReason == nil)
+    }
+
     @Test(arguments: [ForegroundCoaching.StartupStage.providerSetup, .providerStart, .deviceSetup,
                       .audioStart, .providerQualification, .activation])
     func actualStageIsRetainedAfterOwnedCleanup(stage: ForegroundCoaching.StartupStage) async throws {
