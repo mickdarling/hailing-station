@@ -128,7 +128,8 @@ struct MacCoachingInputEvidence: Equatable, Sendable {
             throw CoachingSafetyError.unsafeOutput
         }
         let bound = try bindInput(original, read: { MacCoachingInputEvidence.read(microphoneID) },
-            operations: inputBinding(inputEngine), output: { outputBinding.isStillBound() })
+            operations: MacCoachingBindingOperations.input(engine: inputEngine),
+            output: { outputBinding.isStillBound() })
         var captureOperations = AudioEngineOperations.live
         captureOperations.installTap = { engine, tap in
             let input = engine.inputNode
@@ -146,7 +147,12 @@ struct MacCoachingInputEvidence: Equatable, Sendable {
     static func bindInput(_ original: MacCoachingInputEvidence,
                           read: @escaping () -> MacCoachingInputEvidence?, operations: MacCoachingBindingOperations,
                           output: @escaping () -> Bool) throws -> (() -> Bool) {
-        guard !operations.running(), read() == original, !operations.running() else {
+        let evidence: () -> MacCoachingInputEvidence? = {
+            let current = read()
+            if current != original { inputBindingLog.notice("Physical microphone evidence changed") }
+            return current
+        }
+        guard !operations.running(), evidence() == original, !operations.running() else {
             throw CoachingSafetyError.unsafeOutput
         }
         do { try operations.setDevice(original.deviceID) } catch {
@@ -155,11 +161,13 @@ struct MacCoachingInputEvidence: Equatable, Sendable {
         }
         var retired = false
         let bound: () -> Bool = {
-            guard !retired, operations.currentDevice() == original.deviceID, read() == original,
+            guard !retired, operations.currentDevice() == original.deviceID, evidence() == original,
                   operations.currentDevice() == original.deviceID, output(), !retired else {
                 let firstFailure = !retired
                 retired = true
-                if firstFailure { inputBindingLog.notice("Input binding no longer matches selected device") }
+                if firstFailure {
+                    inputBindingLog.notice("Input or paired output binding no longer matches selected devices")
+                }
                 return false
             }
             return true
@@ -168,29 +176,6 @@ struct MacCoachingInputEvidence: Equatable, Sendable {
             throw CoachingSafetyError.unsafeOutput
         }
         return bound
-    }
-
-    private static func inputBinding(_ engine: AVAudioEngine) throws -> MacCoachingBindingOperations {
-        guard let unit = engine.inputNode.audioUnit else { throw CoachingSafetyError.unsafeOutput }
-        var description = AudioComponentDescription()
-        guard AudioComponentGetDescription(AudioComponentInstanceGetComponent(unit), &description) == noErr,
-              description.componentType == kAudioUnitType_Output,
-              description.componentSubType == kAudioUnitSubType_HALOutput else {
-            throw CoachingSafetyError.unsafeOutput
-        }
-        return .init(running: { engine.isRunning }, setDevice: { device in
-            var value = device
-            guard AudioUnitSetProperty(unit, kAudioOutputUnitProperty_CurrentDevice, kAudioUnitScope_Global,
-                                       0, &value, UInt32(MemoryLayout<UInt32>.size)) == noErr else {
-                throw CoachingSafetyError.unsafeOutput
-            }
-        }, currentDevice: {
-            var value: UInt32 = 0
-            var size = UInt32(MemoryLayout<UInt32>.size)
-            guard AudioUnitGetProperty(unit, kAudioOutputUnitProperty_CurrentDevice, kAudioUnitScope_Global,
-                                       0, &value, &size) == noErr, size == MemoryLayout<UInt32>.size else { return nil }
-            return value
-        })
     }
 }
 

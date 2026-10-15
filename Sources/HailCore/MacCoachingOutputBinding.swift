@@ -45,6 +45,34 @@ struct MacCoachingBindingOperations {
             return value
         })
     }
+    static func input(engine: AVAudioEngine) throws -> MacCoachingBindingOperations {
+        guard let unit = engine.inputNode.audioUnit else { throw CoachingSafetyError.unsafeOutput }
+        var description = AudioComponentDescription()
+        guard AudioComponentGetDescription(AudioComponentInstanceGetComponent(unit), &description) == noErr,
+              description.componentType == kAudioUnitType_Output,
+              description.componentSubType == kAudioUnitSubType_HALOutput else {
+            throw CoachingSafetyError.unsafeOutput
+        }
+        var expectedDevice: UInt32 = 0
+        return .init(running: { engine.isRunning }, setDevice: { device in
+            expectedDevice = device
+            var value = device
+            guard AudioUnitSetProperty(unit, kAudioOutputUnitProperty_CurrentDevice, kAudioUnitScope_Global,
+                                       0, &value, UInt32(MemoryLayout<UInt32>.size)) == noErr else {
+                throw CoachingSafetyError.unsafeOutput
+            }
+        }, currentDevice: {
+            var value: UInt32 = 0
+            var size = UInt32(MemoryLayout<UInt32>.size)
+            guard AudioUnitGetProperty(unit, kAudioOutputUnitProperty_CurrentDevice, kAudioUnitScope_Global,
+                                       0, &value, &size) == noErr, size == MemoryLayout<UInt32>.size else { return nil }
+            if expectedDevice != 0, value != expectedDevice {
+                outputBindingLog.notice(
+                    "Input HAL readback: requested \(expectedDevice, privacy: .public), actual \(value, privacy: .public)")
+            }
+            return value
+        })
+    }
 }
 
 /// Fixed, exclusive owner binding prerequisite; not a coaching qualification or completed renderer/lifetime.
