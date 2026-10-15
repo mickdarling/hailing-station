@@ -79,7 +79,7 @@ private let coachingHALInputCallback: AURenderCallback = { context, flags, time,
     private var retired = false
 
     init() throws { hardware = try MacCoachingHALInputUnit() }
-    isolated deinit { stop(); hardware.dispose() }
+    isolated deinit { stop(); hardware.close() }
     var healthy: Bool { !retired && (delivery?.healthy ?? true) }
     var binding: MacCoachingBindingOperations { hardware.binding }
 
@@ -93,8 +93,9 @@ private let coachingHALInputCallback: AURenderCallback = { context, flags, time,
         self.delivery = delivery
         do {
             try hardware.prepare(format: format, callback: AURenderCallbackStruct(
-                inputProc: coachingHALInputCallback, inputProcRefCon: Unmanaged.passUnretained(delivery).toOpaque()))
-        } catch { delivery.retire(); hardware.dispose(); retired = true; throw error }
+                inputProc: coachingHALInputCallback, inputProcRefCon: Unmanaged.passUnretained(delivery).toOpaque()),
+                context: delivery)
+        } catch { delivery.retire(); hardware.close(); retired = true; throw error }
     }
 
     func start() throws -> AsyncStream<AudioCaptureBuffer> {
@@ -111,7 +112,7 @@ private let coachingHALInputCallback: AURenderCallback = { context, flags, time,
     func stop() {
         retired = true
         delivery?.retire() // Revoke callback admission before joining hardware stop.
-        hardware.stop()
+        hardware.close()
         started = false
     }
 }

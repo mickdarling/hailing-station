@@ -1,52 +1,49 @@
 #if os(macOS)
 import AudioToolbox
 import AVFAudio
-import Foundation
+import OSLog
 
-/// A dedicated AUHAL, without AVAudioEngine's default-device aggregate/property-listener graph.
+private let inputLifetimeLog = Logger(subsystem: "com.mickdarling.Hail", category: "coaching-route")
+
+/// Dedicated input-only AUHAL. Successful disposal closes ownership; failed disposal quarantines it.
 @MainActor final class MacCoachingHALInputUnit {
     let unit: AudioUnit
+    private let driver: MacCoachingHALInputDriver
+    private let cleanup: MacCoachingInputCleanup
+    private enum Lifetime { case open, closing, closed, quarantined }
+    private var lifetime = Lifetime.open
+    private var context: MacCoachingHALInputDelivery?
     private var prepared = false
     private var started = false
-    private var disposed = false
 
-    init() throws {
-        var description = AudioComponentDescription(componentType: kAudioUnitType_Output,
-            componentSubType: kAudioUnitSubType_HALOutput, componentManufacturer: kAudioUnitManufacturer_Apple,
-            componentFlags: 0, componentFlagsMask: 0)
-        guard let component = AudioComponentFindNext(nil, &description) else {
-            throw CoachingSafetyError.unsafeOutput
-        }
-        var instance: AudioUnit?
-        guard AudioComponentInstanceNew(component, &instance) == noErr, let instance else {
-            throw CoachingSafetyError.unsafeOutput
-        }
-        unit = instance
+    init(driver: MacCoachingHALInputDriver = .live, cleanup: MacCoachingInputCleanup = .shared) throws {
+        guard !cleanup.requiresAppRestart else { throw CoachingSafetyError.unsafeOutput }
+        self.driver = driver; self.cleanup = cleanup
+        unit = try driver.create()
         do {
-            try set(kAudioOutputUnitProperty_EnableIO, scope: kAudioUnitScope_Input, bus: 1, value: UInt32(1))
-            try set(kAudioOutputUnitProperty_EnableIO, scope: kAudioUnitScope_Output, bus: 0, value: UInt32(0))
-            let input: UInt32? = get(kAudioOutputUnitProperty_EnableIO, scope: kAudioUnitScope_Input, bus: 1)
-            let output: UInt32? = get(kAudioOutputUnitProperty_EnableIO, scope: kAudioUnitScope_Output, bus: 0)
-            guard input == 1, output == 0, running() == 0 else { throw CoachingSafetyError.unsafeOutput }
-        } catch { dispose(); throw error }
+            guard driver.setScalar(unit, kAudioOutputUnitProperty_EnableIO, kAudioUnitScope_Input, 1, 1) == noErr,
+                  driver.setScalar(unit, kAudioOutputUnitProperty_EnableIO, kAudioUnitScope_Output, 0, 0) == noErr,
+                  driver.scalar(unit, kAudioOutputUnitProperty_EnableIO, kAudioUnitScope_Input, 1) == 1,
+                  driver.scalar(unit, kAudioOutputUnitProperty_EnableIO, kAudioUnitScope_Output, 0) == 0,
+                  running() == 0 else { throw CoachingSafetyError.unsafeOutput }
+        } catch { close(); throw error }
     }
-
-    isolated deinit { dispose() }
+    isolated deinit { close() }
 
     var binding: MacCoachingBindingOperations {
         .init(running: { self.started || self.running() != 0 }, setDevice: { device in
-            guard !self.disposed, !self.prepared, !self.started else { throw CoachingSafetyError.unsafeOutput }
-            try self.set(kAudioOutputUnitProperty_CurrentDevice, scope: kAudioUnitScope_Global, bus: 0, value: device)
+            guard self.lifetime == .open, !self.prepared, !self.started,
+                  self.driver.setScalar(self.unit, kAudioOutputUnitProperty_CurrentDevice,
+                    kAudioUnitScope_Global, 0, device) == noErr else { throw CoachingSafetyError.unsafeOutput }
         }, currentDevice: {
-            guard !self.disposed, !self.started || self.running() == 1 else { return nil }
-            return self.get(kAudioOutputUnitProperty_CurrentDevice, scope: kAudioUnitScope_Global, bus: 0)
+            guard self.lifetime == .open, !self.started || self.running() == 1 else { return nil }
+            return self.driver.scalar(self.unit, kAudioOutputUnitProperty_CurrentDevice, kAudioUnitScope_Global, 0)
         })
     }
 
     func inputFormat() throws -> AVAudioFormat {
-        guard !disposed, !prepared, !started,
-              let hardware: AudioStreamBasicDescription = get(kAudioUnitProperty_StreamFormat,
-                  scope: kAudioUnitScope_Input, bus: 1), hardware.mSampleRate.isFinite,
+        guard lifetime == .open, !prepared, !started,
+              let hardware = driver.format(unit), hardware.mSampleRate.isFinite,
               (16_000...192_000).contains(hardware.mSampleRate), (1...2).contains(hardware.mChannelsPerFrame),
               let format = AVAudioFormat(standardFormatWithSampleRate: hardware.mSampleRate,
                                          channels: hardware.mChannelsPerFrame) else {
@@ -55,62 +52,47 @@ import Foundation
         return format
     }
 
-    func prepare(format: AVAudioFormat, callback: AURenderCallbackStruct) throws {
-        guard !disposed, !prepared, !started else { throw CoachingSafetyError.unsafeOutput }
-        try set(kAudioUnitProperty_StreamFormat, scope: kAudioUnitScope_Output, bus: 1,
-                value: format.streamDescription.pointee)
-        try set(kAudioUnitProperty_MaximumFramesPerSlice, scope: kAudioUnitScope_Global, bus: 0, value: UInt32(8_192))
-        try set(kAudioOutputUnitProperty_SetInputCallback, scope: kAudioUnitScope_Global, bus: 0, value: callback)
-        guard AudioUnitInitialize(unit) == noErr else { throw CoachingSafetyError.unsafeOutput }
+    func prepare(format: AVAudioFormat, callback: AURenderCallbackStruct,
+                 context: MacCoachingHALInputDelivery) throws {
+        guard lifetime == .open, !prepared, !started else { throw CoachingSafetyError.unsafeOutput }
+        self.context = context // Retain before native code can store or invoke the callback.
+        guard driver.prepare(unit, format, callback) == noErr, driver.initialize(unit) == noErr else {
+            close(); throw CoachingSafetyError.unsafeOutput
+        }
         prepared = true
     }
 
     func start() throws {
-        guard !disposed, prepared, !started, running() == 0 else { throw CoachingSafetyError.unsafeOutput }
-        started = true // Partial startup owns cleanup too.
-        guard AudioOutputUnitStart(unit) == noErr, running() == 1 else {
-            stop(); throw CoachingSafetyError.unsafeOutput
+        guard lifetime == .open, prepared, !started, running() == 0 else { throw CoachingSafetyError.unsafeOutput }
+        started = true
+        guard driver.start(unit) == noErr, running() == 1 else { close(); throw CoachingSafetyError.unsafeOutput }
+    }
+
+    @discardableResult func close() -> Bool {
+        guard lifetime == .open else { return lifetime == .closed }
+        lifetime = .closing // Retire native authority before any callback-capable teardown operation.
+        context?.retire()
+        let stopped = driver.stop(unit), uninitialized = driver.uninitialize(unit)
+        let disposed = driver.dispose(unit)
+        if disposed == noErr {
+            lifetime = .closed; started = false; context = nil
+            if stopped != noErr || uninitialized != noErr {
+                inputLifetimeLog.notice("Microphone teardown recovered through successful disposal")
+            }
+            return true
         }
-    }
-
-    func stop() {
-        guard !disposed else { return }
-        started = false
-        AudioOutputUnitStop(unit)
-    }
-
-    func dispose() {
-        guard !disposed else { return }
-        stop()
-        disposed = true
-        AudioUnitUninitialize(unit)
-        AudioComponentInstanceDispose(unit)
+        lifetime = .quarantined // Never claim disposed, release callback ownership or retry an uncertain unit.
+        cleanup.hold(unit, driver: driver, context: context)
+        context = nil // The process-lifetime quarantine now owns the native capability and callback context.
+        inputLifetimeLog.error("Microphone disposal unconfirmed; retained until app exit")
+        return false
     }
 
     private func running() -> UInt32? {
-        guard !disposed, let value: UInt32 = get(kAudioOutputUnitProperty_IsRunning,
-            scope: kAudioUnitScope_Global, bus: 0), value <= 1 else { return nil }
+        guard lifetime == .open,
+              let value = driver.scalar(unit, kAudioOutputUnitProperty_IsRunning, kAudioUnitScope_Global, 0),
+              value <= 1 else { return nil }
         return value
-    }
-
-    private func get<Value>(_ property: AudioUnitPropertyID, scope: AudioUnitScope,
-                            bus: AudioUnitElement) -> Value? {
-        let storage = UnsafeMutableRawPointer.allocate(byteCount: MemoryLayout<Value>.size,
-                                                       alignment: MemoryLayout<Value>.alignment)
-        defer { storage.deallocate() }
-        var size = UInt32(MemoryLayout<Value>.size)
-        guard AudioUnitGetProperty(unit, property, scope, bus, storage, &size) == noErr,
-              size == MemoryLayout<Value>.size else { return nil }
-        return storage.load(as: Value.self)
-    }
-
-    private func set<Value>(_ property: AudioUnitPropertyID, scope: AudioUnitScope,
-                            bus: AudioUnitElement, value: Value) throws {
-        var value = value
-        let status = withUnsafePointer(to: &value) {
-            AudioUnitSetProperty(unit, property, scope, bus, $0, UInt32(MemoryLayout<Value>.size))
-        }
-        guard status == noErr else { throw CoachingSafetyError.unsafeOutput }
     }
 }
 #endif

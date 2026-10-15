@@ -139,13 +139,14 @@ extension ApplePrivateCoaching {
         guard privateOutputDeviceID != kAudioObjectUnknown, roomMicrophoneDeviceID != kAudioObjectUnknown,
               privateOutputDeviceID != roomMicrophoneDeviceID else { throw CoachingSafetyError.unsafeOutput }
         let outputEngine = AVAudioEngine()
+        let inputEngine = AVAudioEngine()
         guard let evidence = MacCoachingDeviceEvidence.read(privateOutputDeviceID) else {
             throw CoachingSafetyError.unsafeOutput
         }
         let binding = try Self.bindPrivateOutput(evidence,
             read: { MacCoachingDeviceEvidence.read(privateOutputDeviceID) },
             operations: .live(engine: outputEngine))
-        let owner = try MacCoachingAudioOwner.live(outputEngine: outputEngine,
+        let owner = try MacCoachingAudioOwner.live(inputEngine: inputEngine, outputEngine: outputEngine,
                                                   microphoneID: roomMicrophoneDeviceID, outputBinding: binding)
         let monitor = try MacCoachingOutputMonitor.live(owner: owner, output: evidence)
         let player = CoachingEngineRenderer(operations: .live(engine: outputEngine), observe: { monitor.observe() })
