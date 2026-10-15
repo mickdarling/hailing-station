@@ -66,7 +66,12 @@ struct MacCoachingCard: View {
         } label: {
             Label("Private coaching", systemImage: "ear.badge.waveform")
         }
-        .task { refresh() }
+        .task {
+            while !Task.isCancelled {
+                if controller.state == .off { refresh() }
+                do { try await Task.sleep(for: .seconds(2)) } catch { return }
+            }
+        }
         .onDisappear {
             let token = captureOwner
             requestStop(token)
