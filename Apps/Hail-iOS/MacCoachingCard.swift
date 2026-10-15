@@ -59,7 +59,10 @@ struct MacCoachingCard: View {
                 .buttonStyle(.bordered)
                 Text("Local transcription. Private headphone cues. Spoken goal editing is not connected yet.")
                     .font(.footnote).foregroundStyle(.secondary)
-                if let feedback { Text(feedback).font(.footnote).foregroundStyle(.orange) }
+                if let feedback = feedback ?? controller.lastFailure?.message {
+                    Text(feedback).font(.footnote).foregroundStyle(.orange)
+                        .accessibilityIdentifier("station.coaching-failure")
+                }
             }
         } label: {
             Label("Private coaching", systemImage: "ear.badge.waveform")
@@ -103,6 +106,7 @@ struct MacCoachingCard: View {
         feedback = nil
         ownerListening = false
         var attempt: UUID?
+        var controllerAttempted = false
         do {
             guard let selectedMic = microphones.first(where: { $0.id == microphone }),
                   let selectedOutput = outputs.first(where: { $0.id == output }),
@@ -124,10 +128,13 @@ struct MacCoachingCard: View {
             attempt = token
             captureOwner = token
             CapturePlaybackSuppression.begin(token, using: playback)
-            try controller.start(arguments: settings.arguments(microphone: microphone, output: output),
+            let arguments = try settings.arguments(microphone: microphone, output: output)
+            controllerAttempted = true
+            try controller.start(arguments: arguments,
                                  participantAwareness: awareness)
         } catch {
-            feedback = "Coaching could not start. Check the local setup and selected devices."
+            feedback = controllerAttempted ? controller.lastFailure?.message
+                : "Local coaching setup could not load. Check its configuration and hosted-text approval."
             if let token = attempt { requestStop(token) }
         }
     }

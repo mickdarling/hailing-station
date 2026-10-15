@@ -7,6 +7,7 @@ private final class WindowCommandFake: LocalCoachingControlling {
     var status = ForegroundCoachingStatus.off
     var controls: [String] = []
     var failStart = false
+    var startupFailure: ForegroundCoaching.StartupStage?
     var offCalls = 0
     var joins: [CheckedContinuation<Void, Never>] = []
     var suspendJoin = false
@@ -27,6 +28,35 @@ private final class WindowCommandFake: LocalCoachingControlling {
 @Suite("Window coaching ownership", .serialized, .timeLimit(.minutes(1)))
 @MainActor
 struct LocalCoachingControllerTests {
+    @Test func safeStageSurvivesRetirementAndClearsOnFreshStart() async throws {
+        let fake = WindowCommandFake()
+        fake.failStart = true
+        fake.startupFailure = .deviceSetup
+        let controller = LocalCoachingController(makeCommand: { _ in fake })
+        #expect(throws: CoachingCommandError.self) { try controller.start(arguments: [], participantAwareness: true) }
+        #expect(controller.lastFailure == .start(.deviceSetup))
+        await controller.stop()
+        #expect(controller.state == .off && controller.lastFailure == .start(.deviceSetup))
+        fake.failStart = false
+        fake.startupFailure = nil
+        try controller.start(arguments: [], participantAwareness: true)
+        #expect(controller.lastFailure == nil)
+        await controller.stop()
+        #expect(controller.lastFailure == nil)
+    }
+
+    @Test func privateSetupErrorIsNeverIncludedInFailureMessage() async {
+        struct PrivateError: Error, CustomStringConvertible {
+            var description: String { "PRIVATE_PROFILE_ENDPOINT_CREDENTIAL" }
+        }
+        let controller = LocalCoachingController(makeCommand: { _ in throw PrivateError() })
+        #expect(throws: CoachingCommandError.self) { try controller.start(arguments: [], participantAwareness: true) }
+        #expect(controller.lastFailure == .setup)
+        #expect(controller.lastFailure?.message.contains("PRIVATE") == false)
+        await controller.stop()
+        #expect(controller.state == .off && controller.lastFailure == .setup)
+    }
+
     @Test func constructionAndMissingAwarenessAreInert() throws {
         var constructions = 0
         let fake = WindowCommandFake()
