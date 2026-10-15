@@ -3,6 +3,8 @@ import AudioToolbox
 import AVFAudio
 import CoreAudio
 import Foundation
+import OSLog
+private let inputBindingLog = Logger(subsystem: "com.mickdarling.Hail", category: "coaching-route")
 struct MacCoachingInputEvidence: Equatable, Sendable {
     let deviceID: UInt32
     let uid: String
@@ -47,16 +49,6 @@ struct MacCoachingInputEvidence: Equatable, Sendable {
         return status == noErr && size == expected ? values : nil
     }
 }
-
-@MainActor struct MacCoachingEngineLifetime {
-    var start: () throws -> Void
-    var stop: () -> Void
-    var running: () -> Bool
-    static func live(_ engine: AVAudioEngine) -> Self {
-        Self(start: { engine.prepare(); try engine.start() }, stop: { engine.stop() }, running: { engine.isRunning })
-    }
-}
-
 /// Owns separate fixed-output and raw room-microphone engines. Only explicit core begin invokes start.
 @MainActor final class MacCoachingAudioOwner: AudioCapturing {
     let input: MacCoachingInputEvidence
@@ -68,7 +60,6 @@ struct MacCoachingInputEvidence: Equatable, Sendable {
     private var resourceStartInFlight = false
     private var lateStartCleanup = false
     private var cleanupInFlight = false
-
     init(input: MacCoachingInputEvidence, capture: any AudioCapturing,
          output: MacCoachingEngineLifetime, bound: @escaping () -> Bool) {
         self.input = input
@@ -76,9 +67,7 @@ struct MacCoachingInputEvidence: Equatable, Sendable {
         self.output = output
         self.bound = bound
     }
-
     isolated deinit { stop() }
-
     func start() throws -> AsyncStream<AudioCaptureBuffer> {
         guard !startupInFlight, !cleanupInFlight, ownedRevision == nil, !output.running(), bound(),
               !output.running(), ownedRevision == nil, !startupInFlight, !cleanupInFlight else {
@@ -89,12 +78,16 @@ struct MacCoachingInputEvidence: Equatable, Sendable {
         defer { startupInFlight = false; lateStartCleanup = false }
         ownedRevision = revision // A partially failed start owns both cleanups.
         do {
+            inputBindingLog.notice("Starting private output engine")
             try startingResource(output.start)
+            inputBindingLog.notice("Private output engine start returned")
             guard ownedRevision == revision, output.running(), bound(),
                   ownedRevision == revision, output.running(), ownedRevision == revision else {
                 throw CoachingSafetyError.unsafeOutput
             }
+            inputBindingLog.notice("Starting microphone engine")
             let stream = try startingResource(capture.start)
+            inputBindingLog.notice("Microphone engine start returned")
             guard ownedRevision == revision, output.running(), bound(),
                   ownedRevision == revision, output.running(), ownedRevision == revision else {
                 throw CoachingSafetyError.unsafeOutput
@@ -135,7 +128,8 @@ struct MacCoachingInputEvidence: Equatable, Sendable {
             throw CoachingSafetyError.unsafeOutput
         }
         let bound = try bindInput(original, read: { MacCoachingInputEvidence.read(microphoneID) },
-            operations: inputBinding(inputEngine), output: { outputBinding.isStillBound() })
+            operations: MacCoachingBindingOperations.input(engine: inputEngine),
+            output: { outputBinding.isStillBound() })
         var captureOperations = AudioEngineOperations.live
         captureOperations.installTap = { engine, tap in
             let input = engine.inputNode
@@ -153,15 +147,27 @@ struct MacCoachingInputEvidence: Equatable, Sendable {
     static func bindInput(_ original: MacCoachingInputEvidence,
                           read: @escaping () -> MacCoachingInputEvidence?, operations: MacCoachingBindingOperations,
                           output: @escaping () -> Bool) throws -> (() -> Bool) {
-        guard !operations.running(), read() == original, !operations.running() else {
+        let evidence: () -> MacCoachingInputEvidence? = {
+            let current = read()
+            if current != original { inputBindingLog.notice("Physical microphone evidence changed") }
+            return current
+        }
+        guard !operations.running(), evidence() == original, !operations.running() else {
             throw CoachingSafetyError.unsafeOutput
         }
-        try operations.setDevice(original.deviceID)
+        do { try operations.setDevice(original.deviceID) } catch {
+            inputBindingLog.notice("Input setDevice refused")
+            throw error
+        }
         var retired = false
         let bound: () -> Bool = {
-            guard !retired, operations.currentDevice() == original.deviceID, read() == original,
+            guard !retired, operations.currentDevice() == original.deviceID, evidence() == original,
                   operations.currentDevice() == original.deviceID, output(), !retired else {
+                let firstFailure = !retired
                 retired = true
+                if firstFailure {
+                    inputBindingLog.notice("Input or paired output binding no longer matches selected devices")
+                }
                 return false
             }
             return true
@@ -170,29 +176,6 @@ struct MacCoachingInputEvidence: Equatable, Sendable {
             throw CoachingSafetyError.unsafeOutput
         }
         return bound
-    }
-
-    private static func inputBinding(_ engine: AVAudioEngine) throws -> MacCoachingBindingOperations {
-        guard let unit = engine.inputNode.audioUnit else { throw CoachingSafetyError.unsafeOutput }
-        var description = AudioComponentDescription()
-        guard AudioComponentGetDescription(AudioComponentInstanceGetComponent(unit), &description) == noErr,
-              description.componentType == kAudioUnitType_Output,
-              description.componentSubType == kAudioUnitSubType_HALOutput else {
-            throw CoachingSafetyError.unsafeOutput
-        }
-        return .init(running: { engine.isRunning }, setDevice: { device in
-            var value = device
-            guard AudioUnitSetProperty(unit, kAudioOutputUnitProperty_CurrentDevice, kAudioUnitScope_Global,
-                                       0, &value, UInt32(MemoryLayout<UInt32>.size)) == noErr else {
-                throw CoachingSafetyError.unsafeOutput
-            }
-        }, currentDevice: {
-            var value: UInt32 = 0
-            var size = UInt32(MemoryLayout<UInt32>.size)
-            guard AudioUnitGetProperty(unit, kAudioOutputUnitProperty_CurrentDevice, kAudioUnitScope_Global,
-                                       0, &value, &size) == noErr, size == MemoryLayout<UInt32>.size else { return nil }
-            return value
-        })
     }
 }
 
