@@ -60,6 +60,7 @@ struct MacCoachingInputEvidence: Equatable, Sendable {
     private var resourceStartInFlight = false
     private var lateStartCleanup = false
     private var cleanupInFlight = false
+    private var resourcesCleaned = false
     init(input: MacCoachingInputEvidence, capture: any AudioCapturing,
          output: MacCoachingEngineLifetime, bound: @escaping () -> Bool) {
         self.input = input
@@ -67,7 +68,9 @@ struct MacCoachingInputEvidence: Equatable, Sendable {
         self.output = output
         self.bound = bound
     }
-    isolated deinit { stop() }
+    isolated deinit {
+        if !resourcesCleaned { cleanupResources() } // Prepared taps also need cleanup before first start.
+    }
     func start() throws -> AsyncStream<AudioCaptureBuffer> {
         guard !startupInFlight, !cleanupInFlight, ownedRevision == nil, !output.running(), bound(),
               !output.running(), ownedRevision == nil, !startupInFlight, !cleanupInFlight else {
@@ -77,6 +80,7 @@ struct MacCoachingInputEvidence: Equatable, Sendable {
         startupInFlight = true
         defer { startupInFlight = false; lateStartCleanup = false }
         ownedRevision = revision // A partially failed start owns both cleanups.
+        resourcesCleaned = false
         do {
             inputBindingLog.notice("Starting private output engine")
             try startingResource(output.start)
@@ -116,7 +120,7 @@ struct MacCoachingInputEvidence: Equatable, Sendable {
 
     private func cleanupResources() {
         cleanupInFlight = true
-        defer { cleanupInFlight = false }
+        defer { cleanupInFlight = false; resourcesCleaned = true }
         capture.stop()
         output.stop()
     }
