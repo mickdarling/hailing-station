@@ -103,8 +103,7 @@ struct CoachingChildConfiguration {
     }
     func stop() async {
         close()
-        if let child {
-            await child.stop()
+        if let child { await child.stop()
             if !progressReported {
                 progressReported = true
                 reportCoachingProgress(child.counters, voiceBuffers: activity.voiceBuffers,
