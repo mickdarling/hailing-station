@@ -86,7 +86,7 @@ extension RootView {
         }
     }
     var stationTools: some View {
-        GroupBox {
+        StationPanel {
             ViewThatFits(in: .horizontal) {
                 HStack(spacing: 10) { toolLinks }
                 VStack(spacing: 10) { toolLinks }

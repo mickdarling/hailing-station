@@ -19,7 +19,7 @@ struct MacCoachingCard: View {
     @State private var feedback: String?
 
     var body: some View {
-        GroupBox {
+        StationPanel {
             VStack(alignment: .leading, spacing: 12) {
                 Text(status).font(.headline).accessibilityIdentifier("station.coaching-status")
                 Picker("Room microphone", selection: $microphone) {

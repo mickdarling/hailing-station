@@ -8,7 +8,7 @@ struct ReplyPlaybackView: View {
     private var displayedReply: ReplyPresentation { playback.presentationForControls ?? reply }
 
     var body: some View {
-        GroupBox {
+        StationPanel {
             VStack(alignment: .leading, spacing: 12) {
                 // A long reply scrolls inside the card, so the one-screen iPad station never overflows (#288).
                 ViewThatFits(in: .vertical) {
