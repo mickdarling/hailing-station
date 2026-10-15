@@ -148,9 +148,7 @@ private struct StationToolBackNavigation: ViewModifier {
     func body(content: Content) -> some View {
         content.safeAreaInset(edge: .top, spacing: 0) {
             HStack {
-                Button(action: { dismiss() }) {
-                    Label("Back", systemImage: "chevron.left")
-                }
+                Button("Back", systemImage: "chevron.left") { dismiss() }
                 .buttonStyle(.bordered)
                 .keyboardShortcut("[", modifiers: .command)
                 .accessibilityLabel("Back to Hailing Station")
