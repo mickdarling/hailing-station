@@ -34,7 +34,7 @@ struct MacCoachingSettings: Decodable {
     }
 
     static var rendererEnvironment: [String: String] {
-        let allowed: Set<String> = ["PATH", "VBSAY_PROFILE", "VBSAY_NOFALLBACK", "VBSAY_API_BASE", "VBSTREAMD_URL"]
+        let allowed: Set<String> = ["PATH", "VBSAY_PROFILE", "VBSAY_NOFALLBACK", "VOICEBOX_URL", "VBSTREAM_URL"]
         let configured = (try? load().speechEnvironment) ?? [:]
         let filtered = configured.filter { allowed.contains($0.key) }
         return ProcessInfo.processInfo.environment.merging(filtered) { _, new in new }
