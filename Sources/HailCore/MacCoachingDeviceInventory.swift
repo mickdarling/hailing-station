@@ -19,6 +19,13 @@ public enum MacCoachingDeviceInventory {
         devices().filter { MacCoachingDeviceEvidence.read($0.id)?.uid == $0.uid }
     }
 
+    /// A refreshed runtime ID must still identify the exact device the operator selected.
+    public static func retainedSelection(_ id: UInt32, previous: [MacCoachingDevice],
+                                         current: [MacCoachingDevice]) -> UInt32 {
+        guard let selected = previous.first(where: { $0.id == id }), current.contains(selected) else { return 0 }
+        return selected.id
+    }
+
     private static func devices() -> [MacCoachingDevice] {
         var property = AudioObjectPropertyAddress(mSelector: kAudioHardwarePropertyDevices,
             mScope: kAudioObjectPropertyScopeGlobal, mElement: kAudioObjectPropertyElementMain)

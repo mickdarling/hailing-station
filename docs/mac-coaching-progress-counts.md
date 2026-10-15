@@ -18,3 +18,5 @@ Physical signal/transcription/advice/playback qualification remains a bounded lo
 While coaching is Off, its Mac device inventory now refreshes every two seconds and stops polling when
 the view disappears. Live selections are held during active/stopping sessions. This prevents a stale
 headphone picker after Bluetooth device IDs change; it does not relax native output qualification.
+Refresh preserves a selected runtime ID only while its complete prior device identity still matches.
+A missing/reconnected device, renamed identity or reused ID clears the selection for explicit choice.
