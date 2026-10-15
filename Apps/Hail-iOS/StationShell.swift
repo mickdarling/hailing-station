@@ -80,7 +80,7 @@ struct AudioRouteSummaryView: View {
     @Bindable var model: AudioRouteModel
 
     var body: some View {
-        GroupBox {
+        StationPanel {
             VStack(alignment: .leading, spacing: 12) {
                 ViewThatFits(in: .horizontal) {
                     HStack(spacing: 12) { routeControls }
