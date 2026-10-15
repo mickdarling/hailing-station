@@ -45,6 +45,7 @@ struct ConnectivityLabView: View {
             }
         }
         .navigationTitle("Mac Setup")
+        .stationToolBackNavigation()
     }
 
     private func hostRow(_ host: HostConnectionSnapshot) -> some View {
