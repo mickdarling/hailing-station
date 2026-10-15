@@ -8,11 +8,11 @@ names/UIDs, profile data, endpoints, transcripts, PCM, advice or credentials are
 
 The first binding mismatch still retires permanently; subsequent reads do not repeat its log. Route
 events are recorded only when the latch was armed, after synchronous retirement and before queued cleanup.
-No extra hardware observation or authority check is introduced. The small unchanged output-engine lifetime
+A failed input readback additionally queries the observed device transport for a fixed aggregate/nonaggregate label. This diagnostic query does not grant authority. Fixed labels bracket both owned engine starts to identify which boundary precedes refusal. The small unchanged output-engine lifetime
 helper moves beside the output binding to keep the input owner's file within the review-size limit.
 
 Existing native binding/monitor/composition/lifecycle tests exercise the unchanged boundaries. Logs diagnose
 an observed software event; they do not establish physical causation or permit capture, fallback, rebinding,
 permission changes or playback. Physical startup remains a separately bounded local test under #524.
 
-The input-unit adapter now lives beside the output-unit adapter. This is the same stopped HAL binding and the same sequence of reads; mismatched readback logs the requested and observed numeric IDs without re-querying hardware. The broader input binding message correctly includes failure of its paired output check.
+The input-unit adapter now lives beside the output-unit adapter. This is the same stopped HAL binding and the same sequence of reads; mismatched readback logs the requested and observed numeric IDs from the existing readback; the failure-only transport query emits no numeric metadata. The broader input binding message correctly includes failure of its paired output check.

@@ -2,6 +2,7 @@
 import AudioToolbox
 import AVFAudio
 import Foundation
+import CoreAudio
 import OSLog
 
 private let outputBindingLog = Logger(subsystem: "com.mickdarling.Hail", category: "coaching-route")
@@ -67,6 +68,12 @@ struct MacCoachingBindingOperations {
             guard AudioUnitGetProperty(unit, kAudioOutputUnitProperty_CurrentDevice, kAudioUnitScope_Global,
                                        0, &value, &size) == noErr, size == MemoryLayout<UInt32>.size else { return nil }
             if expectedDevice != 0, value != expectedDevice {
+                let transport = MacCoachingDeviceReader.live.scalar(value, kAudioDevicePropertyTransportType)
+                if transport == kAudioDeviceTransportTypeAggregate {
+                    outputBindingLog.notice("Mismatched input HAL device is an aggregate")
+                } else {
+                    outputBindingLog.notice("Mismatched input HAL device is not a verified aggregate")
+                }
                 outputBindingLog.notice(
                     "Input HAL mismatch: want \(expectedDevice, privacy: .public), actual \(value, privacy: .public)")
             }

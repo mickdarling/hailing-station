@@ -49,7 +49,6 @@ struct MacCoachingInputEvidence: Equatable, Sendable {
         return status == noErr && size == expected ? values : nil
     }
 }
-
 /// Owns separate fixed-output and raw room-microphone engines. Only explicit core begin invokes start.
 @MainActor final class MacCoachingAudioOwner: AudioCapturing {
     let input: MacCoachingInputEvidence
@@ -61,7 +60,6 @@ struct MacCoachingInputEvidence: Equatable, Sendable {
     private var resourceStartInFlight = false
     private var lateStartCleanup = false
     private var cleanupInFlight = false
-
     init(input: MacCoachingInputEvidence, capture: any AudioCapturing,
          output: MacCoachingEngineLifetime, bound: @escaping () -> Bool) {
         self.input = input
@@ -69,9 +67,7 @@ struct MacCoachingInputEvidence: Equatable, Sendable {
         self.output = output
         self.bound = bound
     }
-
     isolated deinit { stop() }
-
     func start() throws -> AsyncStream<AudioCaptureBuffer> {
         guard !startupInFlight, !cleanupInFlight, ownedRevision == nil, !output.running(), bound(),
               !output.running(), ownedRevision == nil, !startupInFlight, !cleanupInFlight else {
@@ -82,12 +78,16 @@ struct MacCoachingInputEvidence: Equatable, Sendable {
         defer { startupInFlight = false; lateStartCleanup = false }
         ownedRevision = revision // A partially failed start owns both cleanups.
         do {
+            inputBindingLog.notice("Starting private output engine")
             try startingResource(output.start)
+            inputBindingLog.notice("Private output engine start returned")
             guard ownedRevision == revision, output.running(), bound(),
                   ownedRevision == revision, output.running(), ownedRevision == revision else {
                 throw CoachingSafetyError.unsafeOutput
             }
+            inputBindingLog.notice("Starting microphone engine")
             let stream = try startingResource(capture.start)
+            inputBindingLog.notice("Microphone engine start returned")
             guard ownedRevision == revision, output.running(), bound(),
                   ownedRevision == revision, output.running(), ownedRevision == revision else {
                 throw CoachingSafetyError.unsafeOutput
