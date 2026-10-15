@@ -2,6 +2,18 @@
 import AudioToolbox
 import AVFAudio
 import Foundation
+import OSLog
+
+private let outputBindingLog = Logger(subsystem: "com.mickdarling.Hail", category: "coaching-route")
+
+@MainActor struct MacCoachingEngineLifetime {
+    var start: () throws -> Void
+    var stop: () -> Void
+    var running: () -> Bool
+    static func live(_ engine: AVAudioEngine) -> Self {
+        Self(start: { engine.prepare(); try engine.start() }, stop: { engine.stop() }, running: { engine.isRunning })
+    }
+}
 
 @MainActor
 struct MacCoachingBindingOperations {
@@ -16,6 +28,7 @@ struct MacCoachingBindingOperations {
         guard AudioComponentGetDescription(component, &description) == noErr,
               description.componentType == kAudioUnitType_Output,
               description.componentSubType == kAudioUnitSubType_HALOutput else {
+            outputBindingLog.notice("Output unit is not a fixed HAL output")
             throw CoachingSafetyError.unsafeOutput // Never use a system/default-output unit that follows fallback.
         }
         return Self(running: { engine.isRunning }, setDevice: { device in
@@ -52,7 +65,10 @@ final class MacCoachingOutputBinding {
         original = evidence
         self.read = read
         self.operations = operations
-        try operations.setDevice(deviceID)
+        do { try operations.setDevice(deviceID) } catch {
+            outputBindingLog.notice("Output setDevice refused")
+            throw error
+        }
         guard !operations.running(), isStillBound(), !operations.running(), !retired else {
             throw CoachingSafetyError.unsafeOutput
         }
@@ -61,7 +77,12 @@ final class MacCoachingOutputBinding {
     /// Rechecks the *observed* unit device and all output terminal metadata; never rebinds or revives on failure.
     func isStillBound() -> Bool {
         guard !retired, operations.currentDevice() == original.deviceID, read() == original,
-              operations.currentDevice() == original.deviceID, !retired else { retired = true; return false }
+              operations.currentDevice() == original.deviceID, !retired else {
+            let firstFailure = !retired
+            retired = true
+            if firstFailure { outputBindingLog.notice("Output binding no longer matches selected device") }
+            return false
+        }
         return true
     }
 

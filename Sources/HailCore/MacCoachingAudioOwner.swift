@@ -3,6 +3,8 @@ import AudioToolbox
 import AVFAudio
 import CoreAudio
 import Foundation
+import OSLog
+private let inputBindingLog = Logger(subsystem: "com.mickdarling.Hail", category: "coaching-route")
 struct MacCoachingInputEvidence: Equatable, Sendable {
     let deviceID: UInt32
     let uid: String
@@ -45,15 +47,6 @@ struct MacCoachingInputEvidence: Equatable, Sendable {
             return AudioObjectGetPropertyData(device, &property, 0, nil, &size, base)
         }
         return status == noErr && size == expected ? values : nil
-    }
-}
-
-@MainActor struct MacCoachingEngineLifetime {
-    var start: () throws -> Void
-    var stop: () -> Void
-    var running: () -> Bool
-    static func live(_ engine: AVAudioEngine) -> Self {
-        Self(start: { engine.prepare(); try engine.start() }, stop: { engine.stop() }, running: { engine.isRunning })
     }
 }
 
@@ -156,12 +149,17 @@ struct MacCoachingInputEvidence: Equatable, Sendable {
         guard !operations.running(), read() == original, !operations.running() else {
             throw CoachingSafetyError.unsafeOutput
         }
-        try operations.setDevice(original.deviceID)
+        do { try operations.setDevice(original.deviceID) } catch {
+            inputBindingLog.notice("Input setDevice refused")
+            throw error
+        }
         var retired = false
         let bound: () -> Bool = {
             guard !retired, operations.currentDevice() == original.deviceID, read() == original,
                   operations.currentDevice() == original.deviceID, output(), !retired else {
+                let firstFailure = !retired
                 retired = true
+                if firstFailure { inputBindingLog.notice("Input binding no longer matches selected device") }
                 return false
             }
             return true

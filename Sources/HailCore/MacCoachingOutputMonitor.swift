@@ -2,6 +2,7 @@
 import AppKit
 import CoreAudio
 import Foundation
+import OSLog
 import Synchronization
 
 @MainActor struct MacCoachingPropertyRegistration {
@@ -46,22 +47,32 @@ private final class MacCoachingLatch: Sendable {
          workspaceCenter: NotificationCenter? = nil) throws {
         self.bound = bound
         self.center = center
-        let handler: @Sendable () -> Void = { [weak self, state] in
-            let revision = state.value.withLock { $0.retire() }
+        let log = Logger(subsystem: "com.mickdarling.Hail", category: "coaching-route")
+        let handler: @Sendable (String) -> Void = { [weak self, state] cause in
+            let (revision, armed) = state.value.withLock { value in
+                let armed = value.armed
+                return (value.retire(), armed)
+            }
+            if armed { log.notice("Route event: \(cause, privacy: .public)") }
             Task { @MainActor [weak self] in
                 guard let self, self.state.value.withLock({ !$0.armed && $0.revision == revision }) else { return }
                 self.onInvalidated?()
             }
         }
         do {
-            for registration in registrations { removals.append(try registration.install(handler)) }
+            for registration in registrations {
+                removals.append(try registration.install { handler("device-property") })
+            }
             for name in names {
-                observers.append(center.addObserver(forName: name, object: nil, queue: nil) { _ in handler() })
+                observers.append(center.addObserver(forName: name, object: nil, queue: nil) { _ in
+                    handler("audio-engine-configuration")
+                })
             }
             if let workspaceCenter {
                 for name in [NSWorkspace.willSleepNotification, NSWorkspace.sessionDidResignActiveNotification] {
+                    let cause = name == NSWorkspace.willSleepNotification ? "workspace-sleep" : "workspace-inactive"
                     let observer = workspaceCenter.addObserver(
-                        forName: name, object: nil, queue: nil) { _ in handler() }
+                        forName: name, object: nil, queue: nil) { _ in handler(cause) }
                     removals.append { workspaceCenter.removeObserver(observer) }
                 }
             }
