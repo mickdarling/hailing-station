@@ -42,7 +42,8 @@ private final class MacCoachingLatch: Sendable {
     var onInvalidated: (() -> Void)?
 
     init(bound: @escaping () -> Bool, registrations: [MacCoachingPropertyRegistration],
-         center: NotificationCenter, names: [Notification.Name]) throws {
+         center: NotificationCenter, names: [Notification.Name] = [.AVAudioEngineConfigurationChange],
+         workspaceCenter: NotificationCenter? = nil) throws {
         self.bound = bound
         self.center = center
         let handler: @Sendable () -> Void = { [weak self, state] in
@@ -56,6 +57,13 @@ private final class MacCoachingLatch: Sendable {
             for registration in registrations { removals.append(try registration.install(handler)) }
             for name in names {
                 observers.append(center.addObserver(forName: name, object: nil, queue: nil) { _ in handler() })
+            }
+            if let workspaceCenter {
+                for name in [NSWorkspace.willSleepNotification, NSWorkspace.sessionDidResignActiveNotification] {
+                    let observer = workspaceCenter.addObserver(
+                        forName: name, object: nil, queue: nil) { _ in handler() }
+                    removals.append { workspaceCenter.removeObserver(observer) }
+                }
             }
             guard bound() else { throw CoachingSafetyError.unsafeOutput }
         } catch {
@@ -125,23 +133,10 @@ private final class MacCoachingLatch: Sendable {
         // Output default changes are not selection; retire conservatively while retaining fixed HAL bindings.
         registrations.append(.live(object: UInt32(kAudioObjectSystemObject),
                                    selector: kAudioHardwarePropertyDefaultOutputDevice))
-        let monitor = try Self(bound: { owner.isStillBound() }, registrations: registrations,
-            center: .default, names: [.AVAudioEngineConfigurationChange, NSApplication.didResignActiveNotification])
-        let state = monitor.state
-        for name in [NSWorkspace.willSleepNotification, NSWorkspace.sessionDidResignActiveNotification] {
-            let handler = NSWorkspace.shared.notificationCenter.addObserver(
-                forName: name, object: nil, queue: nil
-            ) { [weak monitor, state] _ in
-                let revision = state.value.withLock { $0.retire() }
-                Task { @MainActor [weak monitor] in
-                    guard let monitor,
-                          monitor.state.value.withLock({ !$0.armed && $0.revision == revision }) else { return }
-                    monitor.onInvalidated?()
-                }
-            }
-            monitor.removals.append { NSWorkspace.shared.notificationCenter.removeObserver(handler) }
-        }
-        return monitor
+        // A desktop coach must keep listening while the meeting app has focus. Sleep/logout and
+        // audio/device changes still revoke it; ordinary application focus is not an audio route.
+        return try Self(bound: { owner.isStillBound() }, registrations: registrations,
+            center: .default, workspaceCenter: NSWorkspace.shared.notificationCenter)
     }
 }
 #endif
