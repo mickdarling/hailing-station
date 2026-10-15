@@ -15,7 +15,6 @@ struct MacCoachingCard: View {
     @State private var output: UInt32 = 0
     @State private var awareness = false
     @State private var ownerListening = false
-    @Environment(\.scenePhase) private var scenePhase
     @State private var feedback: String?
 
     var body: some View {
@@ -71,12 +70,6 @@ struct MacCoachingCard: View {
         .onDisappear {
             let token = captureOwner
             requestStop(token)
-        }
-        .onChange(of: scenePhase) { _, phase in
-            if phase != .active {
-                let token = captureOwner
-                requestStop(token)
-            }
         }
         .onChange(of: controller.state) { _, state in
             if state == .off {
