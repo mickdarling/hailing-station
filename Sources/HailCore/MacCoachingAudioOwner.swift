@@ -49,7 +49,7 @@ struct MacCoachingInputEvidence: Equatable, Sendable {
         return status == noErr && size == expected ? values : nil
     }
 }
-/// Owns separate fixed-output and raw room-microphone engines. Only explicit core begin invokes start.
+/// Owns fixed private output and a dedicated raw room-microphone HAL unit. Only explicit core begin starts IO.
 @MainActor final class MacCoachingAudioOwner: AudioCapturing {
     let input: MacCoachingInputEvidence
     private let capture: any AudioCapturing
@@ -122,26 +122,17 @@ struct MacCoachingInputEvidence: Equatable, Sendable {
     }
 
     func isStillBound() -> Bool { bound() }
-    static func live(inputEngine: AVAudioEngine, outputEngine: AVAudioEngine,
-                     microphoneID: UInt32, outputBinding: MacCoachingOutputBinding) throws -> Self {
-        guard !inputEngine.isRunning, let original = MacCoachingInputEvidence.read(microphoneID) else {
+    static func live(outputEngine: AVAudioEngine, microphoneID: UInt32,
+                     outputBinding: MacCoachingOutputBinding) throws -> Self {
+        guard let original = MacCoachingInputEvidence.read(microphoneID) else {
             throw CoachingSafetyError.unsafeOutput
         }
+        let capture = try MacCoachingHALInputCapture()
         let bound = try bindInput(original, read: { MacCoachingInputEvidence.read(microphoneID) },
-            operations: MacCoachingBindingOperations.input(engine: inputEngine),
-            output: { outputBinding.isStillBound() })
-        var captureOperations = AudioEngineOperations.live
-        captureOperations.installTap = { engine, tap in
-            let input = engine.inputNode
-            // Fixed-device selection can leave the previous client format cached. The hardware
-            // input cannot convert; configure the unconnected tap bus before arming the monitor.
-            input.installTap(onBus: 0, bufferSize: 4_096, format: input.inputFormat(forBus: 0), block: tap)
-        }
-        let capture = AVAudioEngineCapture(engine: inputEngine,
-            notificationCenter: .default, operations: captureOperations)
-        try capture.prepareTap()
-        return Self(input: original, capture: capture,
-                    output: .live(outputEngine), bound: bound)
+            operations: capture.binding, output: { outputBinding.isStillBound() && capture.healthy })
+        try capture.prepare()
+        guard bound() else { throw CoachingSafetyError.unsafeOutput }
+        return Self(input: original, capture: capture, output: .live(outputEngine), bound: bound)
     }
 
     static func bindInput(_ original: MacCoachingInputEvidence,
