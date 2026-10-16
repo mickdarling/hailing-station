@@ -42,7 +42,9 @@ import Testing
         played += 1; onPlayed?()
     }
     func replaceQueue(with payloads: [AudioPayload], onPlayed: (@MainActor @Sendable () -> Void)?) throws {
-        for payload in payloads { try schedule(payload, onPlayed: onPlayed) }
+        for (index, payload) in payloads.enumerated() {
+            try schedule(payload, onPlayed: index == payloads.count - 1 ? onPlayed : nil)
+        }
     }
     func resume() throws {}
     func pause() {}

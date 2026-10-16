@@ -1,5 +1,8 @@
 # Private coaching wire consumer — local stacked slice
 
+Current #538 contract: [complete-phrase admission and speech completion](coaching-speech-completion-budget.md)
+supersedes the historical streaming/96k-byte/original-deadline playback behavior below.
+
 Part of #269, #268 and #225. This follows the unactivated [qualification core](private-coaching-route.md).
 It adds no UI, daemon flag, transport, platform output classifier, renderer, deployment or capture activation.
 It does not change ordinary playback or grant action/tool authority.

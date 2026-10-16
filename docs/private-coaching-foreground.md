@@ -1,5 +1,8 @@
 # Foreground private coaching contract (source-only, #269 / #268 / #225)
 
+Current #538 contract: [complete-phrase admission and speech completion](coaching-speech-completion-budget.md)
+supersedes the historical streaming/96k-byte/original-deadline playback behavior below.
+
 This isolated integration is not shipped, activated or physically validated. The qualified native
 audio baseline is ae4ff2b796c59b439700dca79d8e84dc83c19c50; Rightyo's producer baseline is
 be13f29745244c43bd24492c6c12966e64ad0aa3. Neither linking nor initialization enables capture.

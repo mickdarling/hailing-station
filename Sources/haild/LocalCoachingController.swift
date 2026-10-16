@@ -7,6 +7,7 @@ protocol LocalCoachingControlling: AnyObject {
     var status: ForegroundCoachingStatus { get }
     var startupFailure: ForegroundCoaching.StartupStage? { get }
     var retirementReason: ForegroundCoaching.RetirementReason? { get }
+    var speechFailure: CoachingSpeechFailure? { get }
     func control(_ line: String) throws -> Bool
     func off()
     func join() async
@@ -15,12 +16,14 @@ protocol LocalCoachingControlling: AnyObject {
 extension LocalCoachingControlling {
     var startupFailure: ForegroundCoaching.StartupStage? { nil }
     var retirementReason: ForegroundCoaching.RetirementReason? { nil }
+    var speechFailure: CoachingSpeechFailure? { nil }
 }
 
 extension CoachingCommand: LocalCoachingControlling {
     var status: ForegroundCoachingStatus { owner.status }
     var startupFailure: ForegroundCoaching.StartupStage? { owner.startupFailure }
     var retirementReason: ForegroundCoaching.RetirementReason? { owner.retirementReason }
+    var speechFailure: CoachingSpeechFailure? { owner.speechFailure }
 }
 
 /// The window and CLI share the same private coaching composition (#266); no Terminal process is launched.
@@ -30,6 +33,7 @@ public final class LocalCoachingController {
     public enum State: Sendable, Equatable { case off, active, stopping, refused }
     public enum Failure: Sendable, Equatable {
         case setup, start(ForegroundCoaching.StartupStage?), ended(ForegroundCoaching.RetirementReason?)
+        case cue(CoachingSpeechFailure)
 
         public var message: String {
             switch self {
@@ -48,6 +52,9 @@ public final class LocalCoachingController {
             case .start(.activation), .start(nil):
                 "Coaching startup was interrupted. Refresh devices and start again."
             case .ended(let reason): Self.retirementMessage(reason)
+            case .cue(.durationExceeded): "A coaching cue was too long to play in time. Still listening."
+            case .cue(.renderTimedOut): "A coaching cue took too long to prepare. Still listening."
+            case .cue(.invalidPCM): "A coaching cue could not be prepared. Still listening."
             }
         }
 
@@ -105,6 +112,7 @@ public final class LocalCoachingController {
             watch = Task { [weak self] in
                 while !Task.isCancelled, configured.status != .off {
                     if configured.status == .retiring { self?.state = .stopping }
+                    self?.lastFailure = configured.speechFailure.map(Failure.cue)
                     do { try await Task.sleep(for: .milliseconds(250)) } catch { break }
                 }
                 guard !Task.isCancelled else { return }
@@ -142,6 +150,7 @@ public final class LocalCoachingController {
         command = nil
         revision = nil
         state = .off
+        if case .cue? = lastFailure { lastFailure = nil }
     }
 
     /// Normal app Quit revokes effects synchronously, permanently denies restart, then joins retirement.

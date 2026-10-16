@@ -1,5 +1,8 @@
 # Coaching speech first-chunk delivery
 
+Current #538 contract: [complete-phrase admission and speech completion](coaching-speech-completion-budget.md)
+supersedes the historical streaming/96k-byte/original-deadline playback behavior below.
+
 Part of #268 and #269. The existing PCM-only coaching renderer now emits complete samples from the
 first usable read without waiting for a second read, EOF, or renderer cleanup. It retains only the final
 sample for the successful-exit final chunk, preserving byte order and the rule that a failed or cancelled
