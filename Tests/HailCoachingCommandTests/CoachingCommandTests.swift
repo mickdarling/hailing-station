@@ -27,7 +27,9 @@ import Testing
         #expect(rig.flags?()?.playback == true)
         rig.playback = .unavailable
         #expect(rig.flags?() == nil)
+        let cancellations = rig.player.cancellations
         #expect(try rig.command.control("owner answering"))
+        #expect(rig.player.cancellations == cancellations + 1 && rig.capture.stops == 0)
         rig.playback = .idle
         #expect(rig.flags?()?.ownerMidAnswer == true)
         try rig.capture.send(tone: true)

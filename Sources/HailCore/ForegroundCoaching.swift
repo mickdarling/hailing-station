@@ -19,6 +19,11 @@ public final class ForegroundCoaching {
     public struct ChildHooks {
         public let advice: (Data) -> Void
         public let ended: () -> Void
+        public let contextChanged: () -> Void
+        public init(advice: @escaping (Data) -> Void, ended: @escaping () -> Void,
+                    contextChanged: @escaping () -> Void = {}) {
+            self.advice = advice; self.ended = ended; self.contextChanged = contextChanged
+        }
     }
     public typealias TransportFactory = (ChildHooks) throws -> any ForegroundCoachingTransport
     public typealias AudioFactory = (PrivateCoachingSession.Hooks) throws -> any ForegroundCoachingAudio
@@ -40,6 +45,7 @@ public final class ForegroundCoaching {
     var startupInFlight = false
     var retiringJobs = 0
     var rendering = false
+    var renderInterrupted = false
     var sequence = 0
     var speechBytes = 0
     var speechFinal = false
@@ -80,7 +86,8 @@ public final class ForegroundCoaching {
     private func start(_ id: UUID, sessionID: UUID, destinationID: UUID, stage: inout StartupStage) throws {
         let child = try makeTransport(ChildHooks(
             advice: { [weak self] in self?.receive($0, epoch: id) },
-            ended: { [weak self] in self?.retired(.providerEnded, epoch: id) }
+            ended: { [weak self] in self?.retired(.providerEnded, epoch: id) },
+            contextChanged: { [weak self] in self?.contextChanged(epoch: id) }
         ))
         guard starting(id) else { retire(child); throw ForegroundCoachingError.startupLost }
         transport = child
@@ -121,5 +128,6 @@ public final class ForegroundCoaching {
 
     /// Disable, participant-awareness loss, profile mutation and permission loss share immediate retirement.
     /// No implicit renewal/restart or retained conversation state survives this boundary.
+    public func interruptSpeech() { contextChanged(epoch: epoch) }
     public func off() { off(epoch: epoch) }
 }

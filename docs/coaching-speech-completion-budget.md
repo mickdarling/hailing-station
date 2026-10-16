@@ -34,3 +34,18 @@ late/double/foreign promotion, cue revocation/replay and interruption during adm
 or promotion. The native player effect revision additionally clears work that commits
 after cue cancellation returns, while holding successor admission until it unwinds
 (`PrivateCoachingPlayerEffectTests.cueCancellationFencesLateWorkWithoutClosingCapture`).
+
+Cue revocation now reaches the existing coordinator from converted microphone voice,
+a validated newer transcript final, and the trusted local owner-answering control.
+The transport holds advice after new voice until a subsequent validated final, and
+holds it while owner activity is busy/unknown. It does not infer identity from speech.
+Cancelling a cue keeps capture and its qualified generation open; the renderer slot
+remains occupied until its old job joins. Delayed chunks fail the interrupted-job gate,
+and callbacks from an older run cannot cancel a successor. Actual route/capture/Stop
+retirement still closes the entire owned run. Speech completion promotion remains
+inactive until the following renderer/foreground integration stage.
+
+`ForegroundCoachingCueRevocationTests` covers delayed uncooperative rendering, pending
+playback, admission callbacks and successor safety. The real owned-child transport
+fixture checks converted voice and validated-final callbacks; command tests check
+immediate cue cancellation when the trusted owner-answering control is applied.

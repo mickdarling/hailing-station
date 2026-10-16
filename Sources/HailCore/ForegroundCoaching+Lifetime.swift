@@ -54,13 +54,13 @@ extension ForegroundCoaching {
     func receive(_ data: Data, epoch id: UUID) {
         guard live(id), !rendering, let audio else { return }
         // Admission observes callback-capable clocks/routes. Reserve ownership BEFORE entering it.
-        rendering = true
+        rendering = true; renderInterrupted = false
         let revision = UUID()
         renderRevision = revision
         do {
             let advice = try audio.admit(data)
-            guard live(id), renderRevision == revision else {
-                rendering = false; off(epoch: id); finishRetirement(); return
+            guard live(id), renderRevision == revision, !renderInterrupted else {
+                renderFinished(id, revision: revision, succeeded: false); return
             }
             sequence = 0; speechBytes = 0; speechFinal = false
             let now = clock.now()
@@ -90,11 +90,24 @@ extension ForegroundCoaching {
                 } catch { /* Content-free failure: never log advice or provider output. */ }
                 self?.renderFinished(id, revision: revision, succeeded: succeeded)
             }
-        } catch { rendering = false; off(epoch: id); finishRetirement() }
+        } catch {
+            if !renderInterrupted { off(epoch: id) }; renderFinished(id, revision: revision, succeeded: false)
+        }
+    }
+
+    func contextChanged(epoch id: UUID) {
+        guard epoch == id, status == .active else { return }
+        if rendering {
+            renderInterrupted = true
+            let cancel = cancelRenderExpiry; cancelRenderExpiry = nil
+            renderTask?.cancel(); speech.cancel(); cancel?()
+        }
+        audio?.interruptSpeech()
     }
 
     func renderMayStart(_ advice: AdmittedCoachingAdvice, epoch id: UUID, revision: UUID) -> Bool {
-        guard live(id), rendering, renderRevision == revision, let lease, let deadline else { return false }
+        guard live(id), rendering, !renderInterrupted, renderRevision == revision,
+              let lease, let deadline else { return false }
         let now = clock.now()
         // No callback follows the final clock read: both current authority and ORIGINAL work deadline.
         return epoch == id && status == .active && rendering && renderRevision == revision
@@ -108,7 +121,8 @@ extension ForegroundCoaching {
 
     func emit(_ payload: AudioPayload, advice: AdmittedCoachingAdvice,
               epoch id: UUID, revision: UUID) throws {
-        guard live(id), rendering, renderRevision == revision, !speechFinal, payload.sequence == sequence,
+        guard live(id), rendering, !renderInterrupted, renderRevision == revision, !speechFinal,
+              payload.sequence == sequence,
               sequence < 32, payload.bytes.count <= 96_000 - speechBytes, let audio else {
             throw ForegroundCoachingError.invalidSpeech
         }
@@ -130,8 +144,9 @@ extension ForegroundCoaching {
         let oldCancel = cancelRenderExpiry
         cancelRenderExpiry = nil
         oldCancel?() // Hold the admission/join slot throughout callback-capable cancellation.
-        rendering = false
-        if status == .active, !completed || !live(id) { off(epoch: id) }
+        let interrupted = renderInterrupted
+        rendering = false; renderInterrupted = false
+        if status == .active, (!completed && !interrupted) || !live(id) { off(epoch: id) }
         finishRetirement()
     }
 
