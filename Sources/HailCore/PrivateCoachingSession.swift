@@ -20,6 +20,8 @@ public final class PrivateCoachingSession {
     var captureStarting = false
     var startupRevision = UUID()
     var playerEffectsInFlight = 0
+    var speechRevision = UUID()
+    var speechCancellationInFlight = false
     var transitioning = false
     var pendingPlayback: [UUID: ContinuousClock.Instant] = [:]
 
@@ -123,7 +125,7 @@ public final class PrivateCoachingSession {
 
     public func ticket(requestID: UUID) throws -> CoachingAdviceTicket {
         guard !transitioning, let live = current() else { throw CoachingSafetyError.staleQualification }
-        return CoachingAdviceTicket(qualification: live, requestID: requestID)
+        return CoachingAdviceTicket(qualification: live, requestID: requestID, speechRevision: speechRevision)
     }
 
     /// Every chunk is checked immediately before it reaches the player; queued audio is cancelled on invalidation.
@@ -136,7 +138,7 @@ public final class PrivateCoachingSession {
         }
         guard pendingPlayback.count < 32 else { throw CoachingSafetyError.queueFull }
         let chunkID = UUID()
-        pendingPlayback[chunkID] = ticket.qualification.expiresAt
+        pendingPlayback[chunkID] = ticket.expiresAt
         if let live = qualification { armExpiry(live) }
         try performPlayerEffect(ticket) { try player.schedule(payload, onPlayed: { [weak self] in
             guard let self, self.pendingPlayback[chunkID] != nil, let live = self.current() else { return }
@@ -151,6 +153,17 @@ public final class PrivateCoachingSession {
 
     public func setMuted(_ muted: Bool, ticket: CoachingAdviceTicket) throws {
         try performPlayerEffect(ticket) { player.setMuted(muted) }
+    }
+
+    /// Cancel only speech. The consumer must revoke its advice ledger before entering this native effect.
+    func cancelSpeech() {
+        guard !transitioning, current() != nil else { return }
+        speechRevision = UUID()
+        speechCancellationInFlight = true
+        transitioning = true
+        pendingPlayback.removeAll()
+        player.cancel()
+        finishSpeechCancellation()
     }
 
     /// Any route notification invalidates, even if a later snapshot looks private again. Call before async rebuild.

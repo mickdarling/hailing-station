@@ -32,6 +32,35 @@ public struct CoachingQualification: Sendable, Equatable {
 public struct CoachingAdviceTicket: Sendable, Equatable {
     public let qualification: CoachingQualification
     public let requestID: UUID
+    let speechExpiresAt: ContinuousClock.Instant?
+    let speechRevision: UUID?
+    public var expiresAt: ContinuousClock.Instant { speechExpiresAt ?? qualification.expiresAt }
+
+    init(qualification: CoachingQualification, requestID: UUID,
+         speechExpiresAt: ContinuousClock.Instant? = nil, speechRevision: UUID? = nil) {
+        self.qualification = qualification; self.requestID = requestID
+        self.speechExpiresAt = speechExpiresAt; self.speechRevision = speechRevision
+    }
+
+    /// Host-only, once, while the original admission deadline is still fresh. Never a wire grant.
+    func permittingSpeech(at now: ContinuousClock.Instant) throws -> Self {
+        guard speechRevision != nil, speechExpiresAt == nil, now < qualification.expiresAt else {
+            throw CoachingSafetyError.staleQualification
+        }
+        return Self(qualification: qualification, requestID: requestID,
+                    speechExpiresAt: now.advanced(by: CoachingSpeechBudget.completion), speechRevision: speechRevision)
+    }
+}
+
+/// One complete phrase: bounded synthesis/cleanup, then at most twelve seconds of PCM.
+public enum CoachingSpeechBudget {
+    public static let render = Duration.seconds(4)
+    public static let completion = Duration.seconds(18)
+    public static let pcmBytes = 576_000 // 12s, mono 24kHz PCM16; remaining time is scheduling margin.
+}
+
+public enum CoachingSpeechFailure: Error, Sendable, Equatable {
+    case invalidPCM, durationExceeded, renderTimedOut
 }
 
 public enum CoachingSuspension: Sendable, Equatable {

@@ -46,24 +46,32 @@ extension PrivateCoachingSession {
     }
 
     func validate(_ ticket: CoachingAdviceTicket) throws {
-        guard !transitioning, let live = current(), sameScope(ticket.qualification, live) else {
+        guard !transitioning, ticket.speechRevision == nil || ticket.speechRevision == speechRevision,
+              let live = current(), sameScope(ticket.qualification, live) else {
             throw CoachingSafetyError.staleQualification
         }
         let now = clock.now()
-        guard !transitioning, qualification == live, hasLiveDeadlines(live, at: now),
-              now < ticket.qualification.expiresAt else {
+        guard !transitioning, ticket.speechRevision == nil || ticket.speechRevision == speechRevision,
+              qualification == live, hasLiveDeadlines(live, at: now),
+              now < ticket.expiresAt else {
             throw CoachingSafetyError.staleQualification
         }
     }
 
     func performPlayerEffect(_ ticket: CoachingAdviceTicket, operation: () throws -> Void) throws {
         try validate(ticket)
+        let revision = speechRevision
         playerEffectsInFlight += 1
-        defer { playerEffectsInFlight -= 1 }
+        defer { playerEffectsInFlight -= 1; finishSpeechCancellation() }
         do {
             try operation()
+            guard speechRevision == revision else { throw CoachingSafetyError.staleQualification }
             try validate(ticket)
         } catch {
+            if speechRevision != revision {
+                if qualification?.generation == ticket.qualification.generation { player.cancel() }
+                throw CoachingSafetyError.staleQualification
+            }
             if qualification?.generation == ticket.qualification.generation {
                 suspend(.playbackFailed, ifGeneration: ticket.qualification.generation)
             } else if qualification == nil {
@@ -75,6 +83,13 @@ extension PrivateCoachingSession {
             }
             throw error
         }
+    }
+
+    func finishSpeechCancellation() {
+        guard speechCancellationInFlight, playerEffectsInFlight == 0 else { return }
+        speechCancellationInFlight = false
+        transitioning = false
+        if let live = qualification { armExpiry(live) }
     }
 
     func sameScope(_ lhs: CoachingQualification, _ rhs: CoachingQualification) -> Bool {
