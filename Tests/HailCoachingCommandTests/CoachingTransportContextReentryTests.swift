@@ -4,7 +4,8 @@ import HailCore
 import Testing
 @testable import HailCoaching
 
-@Suite(.serialized) @MainActor struct CoachingTransportContextReentryTests {
+// Match verify.sh's existing CoachingTransportRegression serial lane: this uses a real child and wall-clock lease.
+@Suite(.serialized) @MainActor struct CoachingTransportRegressionReentryTests {
     @Test func activityCallbackWritingNewVoiceCannotForwardPreviouslyEligibleAdvice() async throws {
         let tail = CoachingTransportRig.final + "\n" + """
         printf '{"schema_version":1,"type":"coaching_advice"}\\n'
