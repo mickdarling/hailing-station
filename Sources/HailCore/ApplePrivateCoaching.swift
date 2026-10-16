@@ -87,6 +87,10 @@ public final class ApplePrivateCoaching {
         try consumer.prepareSpeech(advice)
     }
     public func interruptSpeech() { consumer.interruptSpeech() }
+    public func playCompletePhrase(_ payloads: [AudioPayload], for advice: AdmittedCoachingAdvice) throws {
+        let duration = try PrivateCoachingSession.phraseDuration(payloads)
+        try authorized(advice, remaining: duration) { try consumer.playCompletePhrase(payloads, for: advice) }
+    }
     public func schedule(_ payload: AudioPayload, for advice: AdmittedCoachingAdvice) throws {
         try authorized(advice) { try consumer.schedule(payload, for: advice) }
     }
@@ -107,27 +111,42 @@ public final class ApplePrivateCoaching {
         try authorized(advice) { try consumer.setMuted(muted, for: advice) }
     }
 
-    private func authorized(_ advice: AdmittedCoachingAdvice, perform: () throws -> Void) throws {
+    private func authorized(_ advice: AdmittedCoachingAdvice, remaining: Duration = .zero,
+                            perform: () throws -> Void) throws {
         guard let renderer else { try perform(); return } // Injected trusted players retain the core contract.
-        try renderer.withAuthorization({ [session] in (try? session.validate(advice.ticket)) != nil },
+        var budgetExpired = false
+        do { try renderer.withAuthorization({ [session] in (try? session.validate(advice.ticket)) != nil },
                                        perform: perform, owns: { [session] in
             session.qualification?.generation == advice.ticket.qualification.generation
-        }, finalGate: { [weak self] in self?.effectsAllowed(advice.ticket) == true },
+        }, finalGate: { [weak self, consumer] in
+            self?.effectsAllowed(advice.ticket, remaining: remaining, budgetExpired: &budgetExpired) == true
+                && consumer.retains(advice)
+        },
         onFailure: { [monitor, consumer, session] in
             guard session.qualification?.generation == advice.ticket.qualification.generation else { return }
             monitor.disarm()
             consumer.invalidate()
-        })
+        }) } catch {
+            if budgetExpired { throw CoachingSpeechFailure.durationExceeded }
+            throw error
+        }
     }
 
     /// Final authority after renderer readiness. No callback-capable route observation follows this check.
-    private func effectsAllowed(_ ticket: CoachingAdviceTicket) -> Bool {
+    private func effectsAllowed(_ ticket: CoachingAdviceTicket, remaining: Duration,
+                                budgetExpired: inout Bool) -> Bool {
         guard !session.transitioning, let live = session.qualification,
               session.sameScope(ticket.qualification, live) else { return false }
         let now = session.clock.now()
-        return !session.transitioning && session.qualification == live && session.hasLiveDeadlines(live, at: now)
-            && (ticket.speechRevision == nil || ticket.speechRevision == session.speechRevision)
-            && now < ticket.expiresAt && monitor.retains(live.outputID)
+        guard !session.transitioning, session.qualification == live, session.hasLiveDeadlines(live, at: now),
+              ticket.speechRevision == nil || ticket.speechRevision == session.speechRevision,
+              now < ticket.expiresAt, monitor.retains(live.outputID) else { return false }
+        guard now.advanced(by: remaining) < ticket.expiresAt else {
+            budgetExpired = true
+            consumer.interruptSpeech() // Revoke before the native veto; keep capture while the entered effect unwinds.
+            return false
+        }
+        return true
     }
 
     /// Owner must call on connection/permission/participant-awareness loss, before any route rebuilding.
