@@ -55,23 +55,24 @@ enum CoachingRendererCleanup {
 @MainActor final class CoachingSpeechRenderer: ForegroundCoachingSpeech {
     private final class Job {
         var source: (any CoachingSpeechSource)?
-        var cancelled = false
-        var bytes = 0, sequence = 0
-        var tail = Data(), pending = Data()
+        var cancelled = false, timedOut = false
+        var bytes = Data()
+        var deadline = ContinuousClock.Instant.now
     }
     private let makeSource: (String) throws -> any CoachingSpeechSource
+    private let clock: CoachingClock
     private var current: Job?
 
-    init(source: @escaping (String) throws -> any CoachingSpeechSource) { makeSource = source }
+    init(clock: CoachingClock = .init(), source: @escaping (String) throws -> any CoachingSpeechSource) {
+        self.clock = clock; makeSource = source
+    }
 
-    /// Inert factory. Construction/validation/spawn occur only when the explicitly enabled owner renders.
     static func local(outputRoot: URL, environment: [String: String]) -> CoachingSpeechRenderer {
         CoachingSpeechRenderer { text in
             try LocalCoachingSpeechSource(text: text, outputRoot: outputRoot, environment: environment)
         }
     }
     isolated deinit { current?.source?.cancel() }
-
     func cancel() { current?.cancelled = true; current?.source?.cancel() }
 
     func render(_ text: String, emit: @escaping @MainActor (AudioPayload) throws -> Void) async throws {
@@ -83,23 +84,32 @@ enum CoachingRendererCleanup {
         }
         try Task.checkCancellation()
         let job = Job(); current = job
-        defer { if current === job { current = nil } }
+        job.deadline = clock.now().advanced(by: CoachingSpeechBudget.render)
+        let cancelTimeout = clock.schedule(CoachingSpeechBudget.render) { [weak self, weak job] in
+            guard let self, let job, self.current === job else { return }
+            job.timedOut = true; job.source?.cancel()
+        }
+        defer { if current === job { current = nil }; cancelTimeout() }
         do {
+            try check(job)
             let source = try makeSource(text); job.source = source
             try check(job)
-            try await source.consume { data in try accept(data, job: job, emit: emit) }
+            try await source.consume { data in try accept(data, job: job) }
             try check(job)
-            guard job.tail.isEmpty, !job.pending.isEmpty else { throw ForegroundCoachingError.invalidSpeech }
+            guard !job.bytes.isEmpty, job.bytes.count.isMultiple(of: 2) else {
+                throw CoachingSpeechFailure.invalidPCM
+            }
             try await source.finish()
             try check(job)
             try await source.cleanup(cancel: false)
             try check(job)
-            try deliver(job.pending, final: true, job: job, emit: emit)
+            try deliver(job, emit: emit)
         } catch {
+            let initiating: any Error = job.timedOut ? CoachingSpeechFailure.renderTimedOut : error
             job.cancelled = true; job.source?.cancel()
-            // Do not release the slot while a noncooperative source still owns its child or cleanup.
-            try await job.source?.cleanup(cancel: true)
-            throw error
+            // Join even on failure, retaining the initiating fixed failure if artifact cleanup also fails.
+            do { try await job.source?.cleanup(cancel: true) } catch { /* Child join remains owned above. */ }
+            throw initiating
         }
     }
 
@@ -112,34 +122,32 @@ enum CoachingRendererCleanup {
     }
 
     private func check(_ job: Job) throws {
+        if job.timedOut { throw CoachingSpeechFailure.renderTimedOut }
         try Task.checkCancellation()
         guard current === job, !job.cancelled else { throw CancellationError() }
+        let now = clock.now()
+        guard current === job, !job.cancelled else { throw CancellationError() }
+        guard now < job.deadline else { throw CoachingSpeechFailure.renderTimedOut }
     }
 
-    private func accept(_ data: Data, job: Job, emit: (AudioPayload) throws -> Void) throws {
+    private func accept(_ data: Data, job: Job) throws {
         try check(job)
-        guard !data.isEmpty, data.count <= 96_000 - job.bytes else {
-            throw ForegroundCoachingError.invalidSpeech
+        guard !data.isEmpty else { throw CoachingSpeechFailure.invalidPCM }
+        guard data.count <= CoachingSpeechBudget.pcmBytes - job.bytes.count else {
+            throw CoachingSpeechFailure.durationExceeded
         }
-        job.bytes += data.count
-        var bytes = job.pending + job.tail + data; job.pending = Data(); job.tail = Data()
-        if !bytes.count.isMultiple(of: 2) { job.tail = Data(bytes.suffix(1)); bytes.removeLast() }
-        // Retain only the final sample for successful-exit finalization. Complete PCM before it
-        // is usable immediately; a short single-read phrase must not wait for EOF and child cleanup.
-        if !bytes.isEmpty { job.pending = Data(bytes.suffix(2)); bytes.removeLast(2) }
-        while !bytes.isEmpty {
-            let chunk = Data(bytes.prefix(48_000)); bytes.removeFirst(chunk.count)
-            try deliver(chunk, final: false, job: job, emit: emit)
-        }
+        job.bytes.append(data)
     }
 
-    private func deliver(_ data: Data, final: Bool, job: Job, emit: (AudioPayload) throws -> Void) throws {
-        try check(job)
-        guard job.sequence < 32 else { throw ForegroundCoachingError.invalidSpeech }
-        let sequence = job.sequence
-        job.sequence += 1 // Reserve before callback entry; the public foreground gate starts at zero.
-        try emit(AudioPayload(codec: .pcm16, sampleRate: 24_000, channels: 1,
-                              sequence: sequence, isFinal: final, bytes: data))
-        try check(job) // The private gate may synchronously retire this owner.
+    private func deliver(_ job: Job, emit: (AudioPayload) throws -> Void) throws {
+        var remaining = job.bytes, sequence = 0
+        while !remaining.isEmpty {
+            try check(job)
+            let chunk = Data(remaining.prefix(48_000)); remaining.removeFirst(chunk.count)
+            try emit(AudioPayload(codec: .pcm16, sampleRate: 24_000, channels: 1,
+                                  sequence: sequence, isFinal: remaining.isEmpty, bytes: chunk))
+            sequence += 1
+            try check(job)
+        }
     }
 }
