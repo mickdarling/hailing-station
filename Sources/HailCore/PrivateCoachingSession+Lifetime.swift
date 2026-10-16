@@ -46,11 +46,13 @@ extension PrivateCoachingSession {
     }
 
     func validate(_ ticket: CoachingAdviceTicket) throws {
-        guard !transitioning, let live = current(), sameScope(ticket.qualification, live) else {
+        guard !transitioning, ticket.speechRevision == nil || ticket.speechRevision == speechRevision,
+              let live = current(), sameScope(ticket.qualification, live) else {
             throw CoachingSafetyError.staleQualification
         }
         let now = clock.now()
-        guard !transitioning, qualification == live, hasLiveDeadlines(live, at: now),
+        guard !transitioning, ticket.speechRevision == nil || ticket.speechRevision == speechRevision,
+              qualification == live, hasLiveDeadlines(live, at: now),
               now < ticket.expiresAt else {
             throw CoachingSafetyError.staleQualification
         }

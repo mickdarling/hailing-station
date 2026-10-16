@@ -125,7 +125,7 @@ public final class PrivateCoachingSession {
 
     public func ticket(requestID: UUID) throws -> CoachingAdviceTicket {
         guard !transitioning, let live = current() else { throw CoachingSafetyError.staleQualification }
-        return CoachingAdviceTicket(qualification: live, requestID: requestID)
+        return CoachingAdviceTicket(qualification: live, requestID: requestID, speechRevision: speechRevision)
     }
 
     /// Every chunk is checked immediately before it reaches the player; queued audio is cancelled on invalidation.

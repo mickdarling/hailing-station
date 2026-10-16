@@ -122,6 +122,7 @@ public final class ApplePrivateCoaching {
               session.sameScope(ticket.qualification, live) else { return false }
         let now = session.clock.now()
         return !session.transitioning && session.qualification == live && session.hasLiveDeadlines(live, at: now)
+            && (ticket.speechRevision == nil || ticket.speechRevision == session.speechRevision)
             && now < ticket.expiresAt && monitor.retains(live.outputID)
     }
 
