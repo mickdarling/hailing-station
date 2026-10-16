@@ -44,7 +44,7 @@ struct CoachingCommandAudio {
         case "enable aware":
             activity.ownerAnswering = true // Every new run needs a separate trusted idle observation.
             try owner.enable(participantAwareness: true)
-        case "owner answering": activity.ownerAnswering = true
+        case "owner answering": activity.ownerAnswering = true; owner.interruptSpeech()
         case "owner idle":
             guard owner.status == .active else { throw CoachingCommandError.invalidControl }
             activity.ownerAnswering = false

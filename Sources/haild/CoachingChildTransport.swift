@@ -2,9 +2,7 @@ import Foundation
 import HailCore
 import HailDaemonKit
 import OSLog
-
 private let coachingProgressLog = Logger(subsystem: "com.mickdarling.Hail", category: "coaching-progress")
-
 struct CoachingChildConfiguration {
     let executable: URL, config: URL, profile: Data
     let listenerID: String
@@ -17,7 +15,6 @@ struct CoachingChildConfiguration {
         self.provenance = provenance; self.mockSuggestions = mockSuggestions; self.provider = provider
     }
 }
-
 /// Foreground-only raw-PCM adapter. No HailHost, registry, action consumer, socket or network is constructed.
 @MainActor final class CoachingChildTransport: ForegroundCoachingTransport {
     typealias Configuration = CoachingChildConfiguration
@@ -33,11 +30,11 @@ struct CoachingChildConfiguration {
     private var session: UUID?
     private var closed = false, started = false
     private var sequence = 0
-    private var progressReported = false
+    private var progressReported = false, awaitingFinal = false
+    private var contextRevision = UUID()
     private var finals: Set<String> = []
     var finalCount: Int { finals.count }
     private(set) var adviceCount = 0
-
     init(_ configuration: Configuration, hooks: ForegroundCoaching.ChildHooks,
          activityFlags: @escaping () -> CoachingActivityFlags?) throws {
         self.configuration = configuration; self.hooks = hooks; self.activityFlags = activityFlags
@@ -47,7 +44,6 @@ struct CoachingChildConfiguration {
         reader?.cancel()
         if let child { child.abandonCoachingInput(); Task { await child.stop() } }
     }
-
     func send(_ control: ForegroundCoachingControl) -> Bool {
         guard !closed else { return false }
         do {
@@ -86,18 +82,20 @@ struct CoachingChildConfiguration {
             }
         } catch { close(); return false }
     }
-
     func write(_ buffer: AudioCaptureBuffer) -> Bool {
         guard !closed, let child, let lease, ContinuousClock.now < lease.expiresAt,
               child.counters.droppedChunks == 0 else { return false }
         do {
             let data = try encoder.encode(buffer)
+            let voices = activity.voiceBuffers
             activity.observe(data)
+            if activity.voiceBuffers != voices {
+                contextRevision = UUID(); awaitingFinal = true; hooks.contextChanged()
+            }
             return !closed && self.lease == lease && ContinuousClock.now < lease.expiresAt
                 && (data.isEmpty || child.write(data)) && child.counters.droppedChunks == 0
         } catch { return false }
     }
-
     func close() {
         closed = true; lease = nil; reader?.cancel(); child?.abandonCoachingInput()
     }
@@ -113,7 +111,6 @@ struct CoachingChildConfiguration {
         await reader?.value
         reader = nil; child = nil
     }
-
     private func read(_ child: RightyoChildProcess) {
         reader = Task { [weak self] in
             do {
@@ -125,21 +122,30 @@ struct CoachingChildConfiguration {
             self?.ended()
         }
     }
-
     private func ended() {
         guard !closed else { return }
         close(); hooks.ended()
     }
-
-    private func consume(_ data: Data) throws {
+}
+private extension CoachingChildTransport {
+    var canDeliverAdvice: Bool {
+        let revision = contextRevision, original = lease
+        let flags = activityFlags()
+        return !closed && !awaitingFinal && contextRevision == revision && lease == original
+            && flags?.ownerMidAnswer == false && original.map { ContinuousClock.now < $0.expiresAt } == true
+    }
+    func advice(_ data: Data) throws {
+        guard started else { throw CoachingChildError.invalidOutput }
+        adviceCount += 1
+        if canDeliverAdvice { hooks.advice(data) }
+    }
+    func consume(_ data: Data) throws {
         guard !closed, data.count <= 32_768,
               let object = try JSONSerialization.jsonObject(with: data) as? [String: Any],
               object["schema_version"] as? Int == 1, let type = object["type"] as? String else {
             throw CoachingChildError.invalidOutput
         }
-        if type == "coaching_advice" { guard started else { throw CoachingChildError.invalidOutput }
-            adviceCount += 1
-            hooks.advice(data); return }
+        if type == "coaching_advice" { try advice(data); return }
         if type == "coaching_state" {
             if ["suspended", "disabled"].contains(object["state"] as? String ?? ""),
                object["reason"] as? String != "initial" { ended() }
@@ -160,14 +166,14 @@ struct CoachingChildConfiguration {
         }
         try final(object, type: type)
     }
-
-    private func final(_ object: [String: Any], type: String) throws {
+    func final(_ object: [String: Any], type: String) throws {
         guard type == "transcript", started, finals.count < 1_000,
               let session,
               let lease, ContinuousClock.now < lease.expiresAt else { throw CoachingChildError.invalidOutput }
         let utterance = try CoachingChildCodec.finalID(object, session: session.uuidString.lowercased(),
                                                        provenance: configuration.provenance)
         guard finals.insert(utterance).inserted else { throw CoachingChildError.invalidOutput }
+        contextRevision = UUID(); awaitingFinal = false; hooks.contextChanged()
         let received = ContinuousClock.now
         guard let flags = activityFlags(), let measurement = activity.measure(flags) else { return }
         // Missing trusted evidence holds; never infer from words. Callbacks may have retired this lease.
@@ -180,7 +186,6 @@ struct CoachingChildConfiguration {
         }
     }
 }
-
 private func reportCoachingProgress(_ counters: RightyoChildProcess.Counters,
                                     voiceBuffers: Int, finals: Int, advice: Int) {
     coachingProgressLog.notice("""
