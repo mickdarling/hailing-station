@@ -58,12 +58,18 @@ extension PrivateCoachingSession {
 
     func performPlayerEffect(_ ticket: CoachingAdviceTicket, operation: () throws -> Void) throws {
         try validate(ticket)
+        let revision = speechRevision
         playerEffectsInFlight += 1
-        defer { playerEffectsInFlight -= 1 }
+        defer { playerEffectsInFlight -= 1; finishSpeechCancellation() }
         do {
             try operation()
+            guard speechRevision == revision else { throw CoachingSafetyError.staleQualification }
             try validate(ticket)
         } catch {
+            if speechRevision != revision {
+                if qualification?.generation == ticket.qualification.generation { player.cancel() }
+                throw CoachingSafetyError.staleQualification
+            }
             if qualification?.generation == ticket.qualification.generation {
                 suspend(.playbackFailed, ifGeneration: ticket.qualification.generation)
             } else if qualification == nil {
@@ -75,6 +81,13 @@ extension PrivateCoachingSession {
             }
             throw error
         }
+    }
+
+    func finishSpeechCancellation() {
+        guard speechCancellationInFlight, playerEffectsInFlight == 0 else { return }
+        speechCancellationInFlight = false
+        transitioning = false
+        if let live = qualification { armExpiry(live) }
     }
 
     func sameScope(_ lhs: CoachingQualification, _ rhs: CoachingQualification) -> Bool {

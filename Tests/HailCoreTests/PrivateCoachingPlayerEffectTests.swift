@@ -51,6 +51,34 @@ import Testing
         session.stop()
     }
 
+    @Test(arguments: [0, 1, 2])
+    func cueCancellationFencesLateWorkWithoutClosingCapture(operation: Int) throws {
+        let player = CoachingLateEffectPlayer(), capture = FakeAudioCapture()
+        let output = UUID()
+        let session = PrivateCoachingSession(
+            capture: capture, player: player, observeOutput: { .verifiedHeadphones(output) },
+            hooks: .init(buffer: { _, _ in }, suspended: { _, _ in }), clock: CoachingTestClock().clock)
+        let live = try session.begin(sessionID: UUID(), destinationID: UUID(), consentConfirmed: true)
+        let ticket = try session.ticket(requestID: UUID())
+        player.onEffect = {
+            session.cancelSpeech()
+            #expect(throws: CoachingSafetyError.transitionInProgress) {
+                try session.begin(sessionID: UUID(), destinationID: UUID(), consentConfirmed: true)
+            }
+        }
+        #expect(throws: CoachingSafetyError.staleQualification) {
+            if operation == 0 { try session.schedule(coachingPCM, ticket: ticket) }
+            if operation == 1 { try session.resume(ticket: ticket) }
+            if operation == 2 { try session.setMuted(false, ticket: ticket) }
+        }
+        #expect(player.queued.isEmpty && !player.active && player.cancelled == 2)
+        #expect(session.pendingPlayback.isEmpty && session.qualification == live && capture.stopCount == 0)
+        player.onEffect = {}
+        try session.schedule(coachingPCM, ticket: session.ticket(requestID: UUID()))
+        #expect(player.queued == [coachingPCM] && player.active && capture.startCount == 1)
+        session.stop()
+    }
+
     @Test func expiryDuringSchedulingCannotLeaveLateAudioQueued() throws {
         let player = CoachingLateEffectPlayer()
         let time = CoachingTestClock()

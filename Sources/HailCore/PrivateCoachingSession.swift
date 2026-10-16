@@ -20,6 +20,8 @@ public final class PrivateCoachingSession {
     var captureStarting = false
     var startupRevision = UUID()
     var playerEffectsInFlight = 0
+    var speechRevision = UUID()
+    var speechCancellationInFlight = false
     var transitioning = false
     var pendingPlayback: [UUID: ContinuousClock.Instant] = [:]
 
@@ -155,12 +157,13 @@ public final class PrivateCoachingSession {
 
     /// Cancel only speech. The consumer must revoke its advice ledger before entering this native effect.
     func cancelSpeech() {
-        guard !transitioning, let live = current() else { return }
+        guard !transitioning, current() != nil else { return }
+        speechRevision = UUID()
+        speechCancellationInFlight = true
         transitioning = true
         pendingPlayback.removeAll()
         player.cancel()
-        transitioning = false
-        if qualification == live { armExpiry(live) }
+        finishSpeechCancellation()
     }
 
     /// Any route notification invalidates, even if a later snapshot looks private again. Call before async rebuild.
