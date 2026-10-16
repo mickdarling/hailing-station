@@ -20,3 +20,17 @@ These are authored routes/players/clocks, not live microphone or acoustic proof.
 Dependent changes must connect consumer-ledger promotion and revocation, revoke speech on
 new microphone activity/finals, then activate complete-phrase renderer validation. Until
 those changes are reviewed and composed, this plumbing is inert in the application.
+
+The consumer now exposes an explicit `prepareSpeech` host step, still unused by the
+foreground coordinator in this stage. It validates its exact owned fresh admission,
+promotes once, and retains only the original qualification needed by that bounded
+admission. Old handles and foreign consumers cannot reuse the promoted request.
+`interruptSpeech` revokes admitted handles before player cancellation, fences admissions
+which were inside callbacks, preserves request replay protection and keeps capture open.
+The foreground audio port and existing Apple composition delegate these operations.
+
+`CoachingSpeechConsumerTests` covers cross-renewal scheduling, immutable completion,
+late/double/foreign promotion, cue revocation/replay and interruption during admission
+or promotion. The native player effect revision additionally clears work that commits
+after cue cancellation returns, while holding successor admission until it unwinds
+(`PrivateCoachingPlayerEffectTests.cueCancellationFencesLateWorkWithoutClosingCapture`).
