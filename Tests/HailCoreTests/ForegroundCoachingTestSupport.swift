@@ -59,6 +59,9 @@ import HailProtocol
         try consumer.prepareSpeech(advice)
     }
     func interruptSpeech() { consumer.interruptSpeech() }
+    func playCompletePhrase(_ payloads: [AudioPayload], for advice: AdmittedCoachingAdvice) throws {
+        try consumer.playCompletePhrase(payloads, for: advice)
+    }
     func schedule(_ payload: AudioPayload, for advice: AdmittedCoachingAdvice) throws {
         try consumer.schedule(payload, for: advice)
     }

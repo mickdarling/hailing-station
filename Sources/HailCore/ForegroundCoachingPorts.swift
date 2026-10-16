@@ -25,6 +25,7 @@ public enum ForegroundCoachingControl: Sendable {
     func admit(_ data: Data) throws -> AdmittedCoachingAdvice
     func prepareSpeech(_ advice: AdmittedCoachingAdvice) throws -> AdmittedCoachingAdvice
     func interruptSpeech()
+    func playCompletePhrase(_ payloads: [AudioPayload], for advice: AdmittedCoachingAdvice) throws
     func schedule(_ payload: AudioPayload, for advice: AdmittedCoachingAdvice) throws
     func resume(_ advice: AdmittedCoachingAdvice) throws
     func stop()

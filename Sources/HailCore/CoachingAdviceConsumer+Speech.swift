@@ -1,4 +1,5 @@
 import Foundation
+public import HailProtocol
 
 @MainActor
 extension CoachingAdviceConsumer {
@@ -18,6 +19,11 @@ extension CoachingAdviceConsumer {
         return AdmittedCoachingAdvice(text: advice.text, ticket: ticket, consumerID: consumerID)
     }
 
+    public func playCompletePhrase(_ payloads: [AudioPayload], for advice: AdmittedCoachingAdvice) throws {
+        try validate(advice)
+        try session.playCompletePhrase(payloads, ticket: advice.ticket)
+    }
+
     /// Revoke the ledger before callback-capable player cancellation; keep replay fencing and capture.
     public func interruptSpeech() {
         guard !interruptingSpeech else { return }
@@ -26,5 +32,40 @@ extension CoachingAdviceConsumer {
         speechRevision = UUID()
         admitted.removeAll()
         session.cancelSpeech()
+    }
+}
+
+@MainActor
+extension PrivateCoachingSession {
+    static func phraseDuration(_ payloads: [AudioPayload]) throws -> Duration {
+        guard !payloads.isEmpty, payloads.count <= 32 else { throw CoachingSafetyError.invalidAudio }
+        var bytes = 0
+        for (index, payload) in payloads.enumerated() {
+            guard payload.codec == .pcm16, payload.channels == 1, payload.sampleRate == 24_000,
+                  payload.sequence == index, payload.isFinal == (index == payloads.count - 1),
+                  !payload.bytes.isEmpty, payload.bytes.count <= 48_000,
+                  payload.bytes.count.isMultiple(of: 2) else { throw CoachingSafetyError.invalidAudio }
+            guard payload.bytes.count <= CoachingSpeechBudget.pcmBytes - bytes else {
+                throw CoachingSpeechFailure.durationExceeded
+            }
+            bytes += payload.bytes.count
+        }
+        return .milliseconds((bytes * 1_000 + 47_999) / 48_000)
+    }
+
+    func playCompletePhrase(_ payloads: [AudioPayload], ticket: CoachingAdviceTicket) throws {
+        try validate(ticket)
+        _ = try Self.phraseDuration(payloads)
+        guard pendingPlayback.count < 32 else { throw CoachingSafetyError.queueFull }
+        let phraseID = UUID()
+        pendingPlayback[phraseID] = ticket.expiresAt
+        if let live = qualification { armExpiry(live) }
+        try performPlayerEffect(ticket) {
+            try player.replaceQueue(with: payloads, onPlayed: { [weak self] in
+                guard let self, self.pendingPlayback[phraseID] != nil, let live = self.current() else { return }
+                self.pendingPlayback[phraseID] = nil
+                self.armExpiry(live)
+            })
+        }
     }
 }

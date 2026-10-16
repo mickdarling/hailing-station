@@ -37,6 +37,9 @@ import Testing
         try base.prepareSpeech(advice)
     }
     func interruptSpeech() { base.interruptSpeech() }
+    func playCompletePhrase(_ payloads: [AudioPayload], for advice: AdmittedCoachingAdvice) throws {
+        try base.playCompletePhrase(payloads, for: advice)
+    }
     func schedule(_ payload: AudioPayload, for advice: AdmittedCoachingAdvice) throws {
         try base.schedule(payload, for: advice)
     }
