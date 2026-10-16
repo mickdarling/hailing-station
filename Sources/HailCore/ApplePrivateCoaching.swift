@@ -122,7 +122,7 @@ public final class ApplePrivateCoaching {
               session.sameScope(ticket.qualification, live) else { return false }
         let now = session.clock.now()
         return !session.transitioning && session.qualification == live && session.hasLiveDeadlines(live, at: now)
-            && now < ticket.qualification.expiresAt && monitor.retains(live.outputID)
+            && now < ticket.expiresAt && monitor.retains(live.outputID)
     }
 
     /// Owner must call on connection/permission/participant-awareness loss, before any route rebuilding.

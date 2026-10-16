@@ -136,7 +136,7 @@ public final class PrivateCoachingSession {
         }
         guard pendingPlayback.count < 32 else { throw CoachingSafetyError.queueFull }
         let chunkID = UUID()
-        pendingPlayback[chunkID] = ticket.qualification.expiresAt
+        pendingPlayback[chunkID] = ticket.expiresAt
         if let live = qualification { armExpiry(live) }
         try performPlayerEffect(ticket) { try player.schedule(payload, onPlayed: { [weak self] in
             guard let self, self.pendingPlayback[chunkID] != nil, let live = self.current() else { return }
@@ -151,6 +151,16 @@ public final class PrivateCoachingSession {
 
     public func setMuted(_ muted: Bool, ticket: CoachingAdviceTicket) throws {
         try performPlayerEffect(ticket) { player.setMuted(muted) }
+    }
+
+    /// Cancel only speech. The consumer must revoke its advice ledger before entering this native effect.
+    func cancelSpeech() {
+        guard !transitioning, let live = current() else { return }
+        transitioning = true
+        pendingPlayback.removeAll()
+        player.cancel()
+        transitioning = false
+        if qualification == live { armExpiry(live) }
     }
 
     /// Any route notification invalidates, even if a later snapshot looks private again. Call before async rebuild.

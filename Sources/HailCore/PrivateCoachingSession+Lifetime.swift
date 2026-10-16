@@ -51,7 +51,7 @@ extension PrivateCoachingSession {
         }
         let now = clock.now()
         guard !transitioning, qualification == live, hasLiveDeadlines(live, at: now),
-              now < ticket.qualification.expiresAt else {
+              now < ticket.expiresAt else {
             throw CoachingSafetyError.staleQualification
         }
     }
