@@ -12,6 +12,7 @@ public final class ForegroundCoaching {
     }
 
     public private(set) var startupFailure: StartupStage?
+    public internal(set) var speechFailure: CoachingSpeechFailure?
     public enum RetirementReason: Sendable, Equatable {
         case providerEnded, audioStopped(CoachingSuspension)
     }
@@ -48,6 +49,7 @@ public final class ForegroundCoaching {
     var renderInterrupted = false
     var sequence = 0
     var speechBytes = 0
+    var speechPayloads: [AudioPayload] = []
     var speechFinal = false
     var heartbeatRevision = UUID()
     var renderRevision = UUID()

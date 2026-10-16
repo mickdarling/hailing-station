@@ -24,7 +24,7 @@ import Testing
             #expect(child.buffers == 1)
             child.hooks.advice(try coachingWireData(lease))
             await drainCoachingTasks()
-            #expect(owner.player.scheduled == [coachingPCM] && owner.player.resumed == 1)
+            #expect(owner.player.scheduled == [coachingPCM] && owner.player.resumed == 0)
             #expect(coachingPCM.bytes.contains { $0 != 0 })
             rig.driver.off()
             await drainCoachingTasks()
@@ -47,7 +47,7 @@ import Testing
         rig.driver.off(); await drainCoachingTasks()
     }
 
-    @Test func originalAdviceDeadlineWinsOverHeartbeatWhileTTSIsDelayed() async throws {
+    @Test func fixedSpeechCompletionDeadlineWinsOverHeartbeatWhileTTSIsDelayed() async throws {
         let rig = try ForegroundRig()
         var release: CheckedContinuation<Void, Never>?
         rig.speech.handler = { emit in
@@ -61,6 +61,9 @@ import Testing
         rig.time.advance(.seconds(1))
         #expect(child.leases.count == 2 && child.leases[1].generation == lease.generation)
         rig.time.advance(.milliseconds(600)); await drainCoachingTasks()
+        #expect(rig.driver.status == .active && rig.owners[0].player.scheduled.isEmpty)
+        for _ in 0..<16 { rig.time.advance(.seconds(1)) }
+        rig.time.advance(.milliseconds(400)); await drainCoachingTasks()
         #expect(rig.driver.status == .retiring)
         #expect(throws: ForegroundCoachingError.busy) { try rig.driver.enable(participantAwareness: true) }
         release?.resume(); await drainCoachingTasks()

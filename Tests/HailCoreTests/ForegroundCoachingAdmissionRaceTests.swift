@@ -3,16 +3,17 @@ import Testing
 @testable import HailCore
 
 @Suite @MainActor struct ForegroundCoachingAdmissionRaceTests {
-    @Test(arguments: [99, 100, 101])
-    func originalAdviceDeadlineFencesQueuedProviderStartup(milliseconds: Int) async throws {
+    @Test(arguments: [17_998, 18_000, 18_001])
+    func fixedSpeechCompletionDeadlineFencesQueuedProviderStartup(milliseconds: Int) async throws {
         let rig = try ForegroundRig()
         try rig.driver.enable(participantAwareness: true)
         let child = try #require(rig.children.first), lease = try #require(child.leases.last)
         child.hooks.advice(try coachingWireData(lease, ttl: 100))
-        rig.time.now = rig.time.now.advanced(by: .milliseconds(milliseconds)) // No timer delivery.
+        for _ in 0..<17 { rig.time.advance(.seconds(1)) } // Renew route without running queued TTS yet.
+        rig.time.now = rig.time.now.advanced(by: .milliseconds(milliseconds - 17_000)) // Delay expiry callback.
         await drainCoachingTasks()
-        #expect(rig.speech.texts.count == (milliseconds < 100 ? 1 : 0))
-        #expect(rig.owners[0].player.scheduled.count == (milliseconds < 100 ? 1 : 0))
+        #expect(rig.speech.texts.count == (milliseconds < 18_000 ? 1 : 0))
+        #expect(rig.owners[0].player.scheduled.count == (milliseconds < 18_000 ? 1 : 0))
         rig.driver.off(); await drainCoachingTasks()
     }
 

@@ -8,7 +8,7 @@ import Testing
         for missingFinal in [true, false] {
             let rig = try ForegroundRig()
             rig.speech.handler = { emit in
-                for index in 0..<(missingFinal ? 1 : 3) {
+                for index in 0..<(missingFinal ? 1 : 13) {
                     try emit(AudioPayload(codec: .pcm16, sampleRate: 24_000, channels: 1,
                         sequence: index, isFinal: false, bytes: Data(repeating: 1, count: 48_000)))
                 }
@@ -17,7 +17,7 @@ import Testing
             let child = try #require(rig.children.first), lease = try #require(child.leases.last)
             child.hooks.advice(try coachingWireData(lease)); await drainCoachingTasks()
             #expect(rig.driver.status == .off)
-            #expect(rig.owners[0].player.scheduled.count == (missingFinal ? 1 : 2))
+            #expect(rig.owners[0].player.scheduled.isEmpty)
             #expect(rig.owners[0].session.qualification == nil)
         }
     }

@@ -7,7 +7,8 @@ import Testing
 
 @MainActor private final class ComposedSpeechSource: CoachingSpeechSource {
     var cleanups: [Bool] = []
-    func consume(_ receive: (Data) throws -> Void) async throws { try receive(Data([17, 0])) }
+    var data = Data([17, 0])
+    func consume(_ receive: (Data) throws -> Void) async throws { try receive(data) }
     func finish() async throws {}
     func cancel() {}
     func cleanup(cancel: Bool) async throws { cleanups.append(cancel) }
@@ -26,8 +27,8 @@ import Testing
 /// The public foreground owner, real private consumer and authored player, not a permissive emit callback.
 @Suite(.serialized, .timeLimit(.minutes(1))) @MainActor struct CoachingSpeechIntegrationTests {
     @Test func admittedASCIIAndEscapedPrintableUnicodeReachPrivatePlayback() async throws {
-        for text in ["authored suggestion", "Clarify café priorities."] {
-            let source = ComposedSpeechSource()
+        for (text, size) in [("authored longer suggestion", 134_144), ("Clarify café priorities.", 2)] {
+            let source = ComposedSpeechSource(); if size > 2 { source.data = Data(repeating: 17, count: size) }
             let speech = CoachingSpeechRenderer { _ in source }
             let capture = ExecutableCoachingCapture(), player = ExecutablePrivatePlayer()
             var audio: ExecutablePrivateAudio?, transport: ComposedSpeechTransport?
@@ -61,7 +62,8 @@ import Testing
                   owner.status != .off, ContinuousClock.now < delivered {
                 try await Task.sleep(for: .milliseconds(10))
             }
-            #expect(player.played == 1 && player.nonzeroBytes == 1 && owner.status == .active)
+            #expect(player.played == (size + 47_999) / 48_000)
+            #expect(player.nonzeroBytes == (size > 2 ? size : 1) && owner.status == .active)
             #expect(source.cleanups == [false])
             try await retire(owner)
             #expect(owner.status == .off && transport?.stopped == true)

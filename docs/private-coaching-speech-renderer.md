@@ -1,5 +1,8 @@
 # Private coaching speech renderer — inactive source (#269 / #268 / #225)
 
+Current #538 contract: [complete-phrase admission and speech completion](coaching-speech-completion-budget.md)
+supersedes the historical streaming/96k-byte/original-deadline playback behavior below.
+
 The narrow haild adapter reuses OwnedReplyRenderer's existing PCM stdout capability. It neither publishes
 ordinary replies nor constructs playback, a socket, a target dispatcher or a route. Its local factory is inert;
 only an explicitly enabled foreground owner can request rendering. Tests replace the source or use an authored

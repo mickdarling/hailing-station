@@ -1,51 +1,53 @@
-# Bounded speech completion (#538)
+# Complete coaching phrases with bounded completion (#538)
 
-Advice still enters through its original, at-most-two-second wire/qualification deadline.
-The initial core plumbing adds a separate host-only, single-promotion completion deadline.
-It does not yet promote received advice or change foreground/render behavior.
+Advice must still arrive through its original, at-most-two-second wire/qualification
+deadline. The existing consumer can promote an owned, still-fresh admission exactly
+once into a local eighteen-second speech-completion permit. Wire/model output cannot
+supply or renew that permit. Its immutable ticket retains the original admission
+qualification and request. Heartbeats must continue proving the current private route,
+output and generation; they never extend a speech deadline. Replay fencing survives
+cue cancellation and expiry.
 
-The completion policy reserves four seconds for complete synthesis and owned cleanup,
-twelve seconds of mono24kHz PCM16 (576,000bytes), and two seconds of scheduling margin.
-A promoted ticket retains its original qualification and request identifiers. Its fixed
-completion deadline is not renewed by device heartbeats. Every effect still requires a
-live current private-route generation, including after the original admission expiry.
-Queued audio uses the ticket's effect deadline; route loss, Stop and capture failure still
-cancel it. Ordinary, unpromoted tickets retain their original deadline exactly.
+The existing Jarvis renderer gets four seconds for synthesis and owned cleanup. It
+buffers and validates one complete phrase, bounded to576,000bytes (twelve seconds of
+mono24kHz PCM16), before emitting contiguous48k chunks. The foreground coordinator
+also stages and validates the complete phrase after renderer return, then verifies that
+its measured PCM duration fits the remaining completion time before the first player
+effect. The existing batch player queues all buffers before play, and the Apple final
+native gate repeats whole-duration fit after readiness/queueing callbacks. A budget
+veto revokes and clears the unplayed cue while retaining capture. Failed, oversized, odd/empty, incomplete and late phrases cannot publish partial
+speech. Text remains bounded to280characters/45words; exceeding the audio/time budget
+withholds that cue rather than truncating it. The remaining two seconds are scheduling
+margin, not an extension of provider admission.
 
-`CoachingSpeechCompletionTicketTests` covers late/double promotion, unchanged original
-correlation, long speech under current renewals, the immutable eighteen-second limit,
-queued expiry, route loss/Stop and cue-only queue cancellation without closing capture.
-These are authored routes/players/clocks, not live microphone or acoustic proof.
+Duration/renderer-time budget failures retain a fixed `speechFailure` and withhold only
+the cue; capture stays open for a later opportunity. Unexpected malformed renderer or
+transport output still retires the run. Cleanup is awaited even on failure, while the
+initiating failure is retained if artifact retirement also reports an error. A source
+which does not settle cancellation retains its one owned slot; no successor can overlap
+it. This is bounded resource ownership, not a promise of finite kernel reaping time.
 
-Dependent changes must connect consumer-ledger promotion and revocation, revoke speech on
-new microphone activity/finals, then activate complete-phrase renderer validation. Until
-those changes are reviewed and composed, this plumbing is inert in the application.
+Converted new microphone voice, a validated newer transcript final and the trusted
+owner-answering control revoke queued/rendering advice. The transport withholds advice
+after new voice until a validated final and while owner activity is busy/unknown. It
+never invents speaker identity. The consumer revokes handles before player cancellation;
+a cue/effect revision fences already-entered schedule/resume/unmute effects and holds
+successor admission until they unwind. New cues supersede pending speech. Capture keeps
+its current generation; route loss, capture failure, Stop, Quit and awareness loss still
+retire the full run. An old run's callbacks cannot revoke a successor.
 
-The consumer now exposes an explicit `prepareSpeech` host step, still unused by the
-foreground coordinator in this stage. It validates its exact owned fresh admission,
-promotes once, and retains only the original qualification needed by that bounded
-admission. Old handles and foreign consumers cannot reuse the promoted request.
-`interruptSpeech` revokes admitted handles before player cancellation, fences admissions
-which were inside callbacks, preserves request replay protection and keeps capture open.
-The foreground audio port and existing Apple composition delegate these operations.
+`CoachingSpeechCompletionTicketTests` and `CoachingSpeechConsumerTests` cover freshness,
+one-time promotion, immutable completion, replay, renewal and revocation/reentry.
+`PrivateCoachingPlayerEffectTests.cueCancellationFencesLateWorkWithoutClosingCapture`
+reproduced the late-effect race before its fix. `ForegroundCoachingCueRevocationTests`
+checks delayed uncooperative rendering, pending playback and admission callbacks.
+`ForegroundCoachingSpeechBudgetTests` checks >2s complete speech after admission expiry,
+playback-fit rejection before effects and next-cue recovery. `CoachingSpeechRendererTests`
+checks >2s/12s PCM, overflow, timeout, ordering, cancellation, failure preservation and
+joined cleanup. The existing real foreground/consumer/renderer composition fixture now
+includes134,144bytes of authored PCM, over two seconds at its declared format.
 
-`CoachingSpeechConsumerTests` covers cross-renewal scheduling, immutable completion,
-late/double/foreign promotion, cue revocation/replay and interruption during admission
-or promotion. The native player effect revision additionally clears work that commits
-after cue cancellation returns, while holding successor admission until it unwinds
-(`PrivateCoachingPlayerEffectTests.cueCancellationFencesLateWorkWithoutClosingCapture`).
-
-Cue revocation now reaches the existing coordinator from converted microphone voice,
-a validated newer transcript final, and the trusted local owner-answering control.
-The transport holds advice after new voice until a subsequent validated final, and
-holds it while owner activity is busy/unknown. It does not infer identity from speech.
-Cancelling a cue keeps capture and its qualified generation open; the renderer slot
-remains occupied until its old job joins. Delayed chunks fail the interrupted-job gate,
-and callbacks from an older run cannot cancel a successor. Actual route/capture/Stop
-retirement still closes the entire owned run. Speech completion promotion remains
-inactive until the following renderer/foreground integration stage.
-
-`ForegroundCoachingCueRevocationTests` covers delayed uncooperative rendering, pending
-playback, admission callbacks and successor safety. The real owned-child transport
-fixture checks converted voice and validated-final callbacks; command tests check
-immediate cue cancellation when the trusted owner-answering control is applied.
+These tests use authored clocks, routes, players and PCM. Real configured Jarvis rendering,
+actual public-speaker completion, Superwhisper behavior and AirPods loudness must be
+reported separately. No replacement microphone/renderer, system default or permission
+change is part of this repair.

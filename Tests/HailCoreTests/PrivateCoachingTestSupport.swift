@@ -29,7 +29,9 @@ class CoachingTestPlayer: CoachingAudioPlaying {
     }
     func setMuted(_ muted: Bool) { mutes.append(muted) }
     func replaceQueue(with payloads: [AudioPayload], onPlayed: (@MainActor @Sendable () -> Void)?) throws {
-        for payload in payloads { try schedule(payload, onPlayed: onPlayed) }
+        for (index, payload) in payloads.enumerated() {
+            try schedule(payload, onPlayed: index == payloads.count - 1 ? onPlayed : nil)
+        }
     }
 }
 
