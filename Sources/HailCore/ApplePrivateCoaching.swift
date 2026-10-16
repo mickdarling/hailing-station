@@ -83,6 +83,10 @@ public final class ApplePrivateCoaching {
     }
 
     public func admit(_ data: Data) throws -> AdmittedCoachingAdvice { try consumer.admit(data) }
+    public func prepareSpeech(_ advice: AdmittedCoachingAdvice) throws -> AdmittedCoachingAdvice {
+        try consumer.prepareSpeech(advice)
+    }
+    public func interruptSpeech() { consumer.interruptSpeech() }
     public func schedule(_ payload: AudioPayload, for advice: AdmittedCoachingAdvice) throws {
         try authorized(advice) { try consumer.schedule(payload, for: advice) }
     }

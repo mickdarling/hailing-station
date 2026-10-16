@@ -70,6 +70,10 @@ import Testing
         let fresh = try session.renew(lease); try consumer.register(fresh); return fresh
     }
     func admit(_ data: Data) throws -> AdmittedCoachingAdvice { try consumer.admit(data) }
+    func prepareSpeech(_ advice: AdmittedCoachingAdvice) throws -> AdmittedCoachingAdvice {
+        try consumer.prepareSpeech(advice)
+    }
+    func interruptSpeech() { consumer.interruptSpeech() }
     func schedule(_ payload: AudioPayload, for advice: AdmittedCoachingAdvice) throws {
         try consumer.schedule(payload, for: advice)
     }

@@ -55,6 +55,10 @@ import HailProtocol
         onAdmit?()
         return advice
     }
+    func prepareSpeech(_ advice: AdmittedCoachingAdvice) throws -> AdmittedCoachingAdvice {
+        try consumer.prepareSpeech(advice)
+    }
+    func interruptSpeech() { consumer.interruptSpeech() }
     func schedule(_ payload: AudioPayload, for advice: AdmittedCoachingAdvice) throws {
         try consumer.schedule(payload, for: advice)
     }

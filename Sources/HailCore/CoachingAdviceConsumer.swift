@@ -14,13 +14,15 @@ public struct AdmittedCoachingAdvice: Sendable {
 public final class CoachingAdviceConsumer {
     public static let qualificationLimit = 16
     public static let requestLimit = 128
-    private let session: PrivateCoachingSession
+    let session: PrivateCoachingSession
     private let listenerID: String
-    private let consumerID = UUID()
-    private var generation: UUID?
+    let consumerID = UUID()
+    var generation: UUID?
     private var qualifications: [UUID: CoachingQualification] = [:]
     private var requests: Set<UUID> = []
-    private var admitted: [UUID: CoachingAdviceTicket] = [:]
+    var admitted: [UUID: CoachingAdviceTicket] = [:]
+    var speechRevision = UUID()
+    var interruptingSpeech = false
 
     public init(session: PrivateCoachingSession, listenerID: String) throws {
         guard CoachingWireAdvice.identifier(listenerID) else { throw CoachingWireError.invalidMessage }
@@ -46,6 +48,8 @@ public final class CoachingAdviceConsumer {
     }
 
     public func admit(_ data: Data) throws -> AdmittedCoachingAdvice {
+        guard !interruptingSpeech else { throw CoachingWireError.staleAdvice }
+        let revision = speechRevision
         let wire = try CoachingWireAdvice.decode(data)
         guard let live = session.current(), live.generation == generation else {
             clearIfRetired(); throw CoachingWireError.staleAdvice
@@ -62,10 +66,11 @@ public final class CoachingAdviceConsumer {
         let ticket = CoachingAdviceTicket(qualification: CoachingQualification(
             sessionID: lease.sessionID, generation: lease.generation, destinationID: lease.destinationID,
             qualificationID: lease.qualificationID, expiresAt: deadline, outputID: lease.outputID
-        ), requestID: requestID)
+        ), requestID: requestID, speechRevision: session.speechRevision)
         try session.validate(ticket)
         // Output observation may synchronously reenter admission. Commit only against the resulting ledger.
-        guard generation == lease.generation, qualifications[qualificationID] == lease else {
+        guard !interruptingSpeech, speechRevision == revision,
+              generation == lease.generation, qualifications[qualificationID] == lease else {
             throw CoachingWireError.staleAdvice
         }
         try validateRequest(requestID)
@@ -93,22 +98,30 @@ public final class CoachingAdviceConsumer {
     public func invalidate() { clear(); session.invalidateRoute() }
     public func stop() { clear(); session.stop() }
 
-    private func validate(_ advice: AdmittedCoachingAdvice) throws {
+    func validate(_ advice: AdmittedCoachingAdvice) throws {
+        guard !interruptingSpeech else { throw CoachingWireError.staleAdvice }
+        let revision = speechRevision
         guard let live = session.current(), live.generation == generation else {
             clearIfRetired(); throw CoachingWireError.staleAdvice
         }
         prune()
-        guard advice.consumerID == consumerID, admitted[advice.ticket.requestID] == advice.ticket,
-              qualifications[advice.ticket.qualification.qualificationID] != nil else {
-            throw CoachingWireError.staleAdvice
-        }
+        guard retains(advice) else { throw CoachingWireError.staleAdvice }
         try session.validate(advice.ticket)
+        guard revision == speechRevision, retains(advice) else { throw CoachingWireError.staleAdvice }
+    }
+
+    func retains(_ advice: AdmittedCoachingAdvice) -> Bool {
+        !interruptingSpeech && advice.consumerID == consumerID
+            && generation == advice.ticket.qualification.generation
+            && admitted[advice.ticket.requestID] == advice.ticket
+            && qualifications[advice.ticket.qualification.qualificationID] != nil
     }
 
     private func prune() {
         let now = session.clock.now()
-        qualifications = qualifications.filter { now < $0.value.expiresAt }
-        admitted = admitted.filter { now < $0.value.qualification.expiresAt }
+        admitted = admitted.filter { now < $0.value.expiresAt }
+        let retained = Set(admitted.values.map { $0.qualification.qualificationID })
+        qualifications = qualifications.filter { now < $0.value.expiresAt || retained.contains($0.key) }
     }
 
     private func validateRequest(_ requestID: UUID) throws {
@@ -123,6 +136,7 @@ public final class CoachingAdviceConsumer {
     }
 
     private func clear() {
+        speechRevision = UUID()
         generation = nil
         qualifications.removeAll()
         requests.removeAll()

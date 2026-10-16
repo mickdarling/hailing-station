@@ -33,6 +33,10 @@ import Testing
     }
     func renew(_ lease: CoachingQualification) throws -> CoachingQualification { try base.renew(lease) }
     func admit(_ data: Data) throws -> AdmittedCoachingAdvice { try base.admit(data) }
+    func prepareSpeech(_ advice: AdmittedCoachingAdvice) throws -> AdmittedCoachingAdvice {
+        try base.prepareSpeech(advice)
+    }
+    func interruptSpeech() { base.interruptSpeech() }
     func schedule(_ payload: AudioPayload, for advice: AdmittedCoachingAdvice) throws {
         try base.schedule(payload, for: advice)
     }

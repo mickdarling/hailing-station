@@ -23,6 +23,8 @@ public enum ForegroundCoachingControl: Sendable {
     func begin(sessionID: UUID, destinationID: UUID, consentConfirmed: Bool) throws -> CoachingQualification
     func renew(_ lease: CoachingQualification) throws -> CoachingQualification
     func admit(_ data: Data) throws -> AdmittedCoachingAdvice
+    func prepareSpeech(_ advice: AdmittedCoachingAdvice) throws -> AdmittedCoachingAdvice
+    func interruptSpeech()
     func schedule(_ payload: AudioPayload, for advice: AdmittedCoachingAdvice) throws
     func resume(_ advice: AdmittedCoachingAdvice) throws
     func stop()
