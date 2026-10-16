@@ -51,6 +51,8 @@ struct MacCoachingInputEvidence: Equatable, Sendable {
 }
 /// Owns separate fixed-output and raw room-microphone engines. Only explicit core begin invokes start.
 @MainActor final class MacCoachingAudioOwner: AudioCapturing {
+    static let privateCaptureStallPolicy = AVAudioEngineCapture.StallPolicy(
+        limit: .seconds(5), check: .seconds(1), maxRestarts: 0)
     let input: MacCoachingInputEvidence
     private let capture: any AudioCapturing
     private let output: MacCoachingEngineLifetime
@@ -142,7 +144,7 @@ struct MacCoachingInputEvidence: Equatable, Sendable {
             input.installTap(onBus: 0, bufferSize: 4_096, format: input.inputFormat(forBus: 0), block: tap)
         }
         let capture = AVAudioEngineCapture(engine: inputEngine,
-            notificationCenter: .default, operations: captureOperations)
+            notificationCenter: .default, operations: captureOperations, stallPolicy: privateCaptureStallPolicy)
         try capture.prepareTap()
         return Self(input: original, capture: capture,
                     output: .live(outputEngine), bound: bound)

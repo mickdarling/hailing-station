@@ -1,5 +1,6 @@
 #if os(macOS)
 import AppKit
+import AVFAudio
 import CoreAudio
 import Foundation
 import OSLog
@@ -7,6 +8,14 @@ import Synchronization
 
 @MainActor struct MacCoachingPropertyRegistration {
     var install: (@escaping @Sendable () -> Void) throws -> (@MainActor () -> Void)
+
+    static func engine(_ engine: AVAudioEngine, center: NotificationCenter) -> Self {
+        Self(install: { handler in
+            let observer = center.addObserver(forName: .AVAudioEngineConfigurationChange,
+                                              object: engine, queue: nil) { _ in handler() }
+            return { center.removeObserver(observer) }
+        })
+    }
 
     static func live(object: UInt32, selector: UInt32,
                      scope: UInt32 = kAudioObjectPropertyScopeGlobal) -> Self {
@@ -61,7 +70,7 @@ private final class MacCoachingLatch: Sendable {
         }
         do {
             for registration in registrations {
-                removals.append(try registration.install { handler("device-property") })
+                removals.append(try registration.install { handler("owned-resource") })
             }
             for name in names {
                 observers.append(center.addObserver(forName: name, object: nil, queue: nil) { _ in
@@ -125,7 +134,9 @@ private final class MacCoachingLatch: Sendable {
         }
     }
 
-    static func live(owner: MacCoachingAudioOwner, output: MacCoachingDeviceEvidence) throws -> Self {
+    static func live(owner: MacCoachingAudioOwner, output: MacCoachingDeviceEvidence,
+                     engines: [AVAudioEngine]) throws -> Self {
+        guard engines.count == 2, engines[0] !== engines[1] else { throw CoachingSafetyError.unsafeOutput }
         var registrations: [MacCoachingPropertyRegistration] = []
         for device in [output.deviceID, owner.input.deviceID] {
             for selector in [kAudioDevicePropertyDeviceIsAlive, kAudioObjectPropertyClass,
@@ -146,8 +157,9 @@ private final class MacCoachingLatch: Sendable {
                                    selector: kAudioHardwarePropertyDefaultOutputDevice))
         // A desktop coach must keep listening while the meeting app has focus. Sleep/logout and
         // audio/device changes still revoke it; ordinary application focus is not an audio route.
+        registrations += engines.map { .engine($0, center: .default) }
         return try Self(bound: { owner.isStillBound() }, registrations: registrations,
-            center: .default, workspaceCenter: NSWorkspace.shared.notificationCenter)
+            center: .default, names: [], workspaceCenter: NSWorkspace.shared.notificationCenter)
     }
 }
 #endif

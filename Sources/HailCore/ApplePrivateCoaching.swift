@@ -172,7 +172,8 @@ extension ApplePrivateCoaching {
             operations: .live(engine: outputEngine))
         let owner = try MacCoachingAudioOwner.live(inputEngine: inputEngine, outputEngine: outputEngine,
                                                   microphoneID: roomMicrophoneDeviceID, outputBinding: binding)
-        let monitor = try MacCoachingOutputMonitor.live(owner: owner, output: evidence)
+        let monitor = try MacCoachingOutputMonitor.live(owner: owner, output: evidence,
+                                                       engines: [inputEngine, outputEngine])
         let player = CoachingEngineRenderer(operations: .live(engine: outputEngine), observe: { monitor.observe() })
         try self.init(capture: owner, player: player, monitor: monitor, listenerID: listenerID, hooks: hooks)
     }
