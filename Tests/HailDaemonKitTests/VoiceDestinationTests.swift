@@ -25,7 +25,8 @@ import Testing
 
     @Test(arguments: [
         "Jarvis, add to Slack: ship it", "Jarvis, add to Notes", "Jarvis, add to Notes:  ", "Can you add to notes milk",
-        "Siri, add to notes milk", "Please add to notes milk", "Jarvis, what's in my notes?", "Add notes milk"
+        "Siri, add to notes milk", "Please add to notes milk", "Jarvis, what's in my notes?", "Add notes milk",
+        "Jarvis, add to notes.md a section on retries", "put this in notes/todo.txt"
     ])
     func anythingElseIsNotANote(_ heard: String) throws {
         #expect(try Self.destinations().command(in: heard, names: Self.names) == nil)
@@ -82,6 +83,30 @@ import Testing
         let (hung, two) = try runner("exec /bin/sleep 30", timeout: .seconds(1))
         defer { try? FileManager.default.removeItem(at: two) }
         #expect(await hung.run("Hail to Notes", text: "x") == "timeout")
+        // One that ignores SIGTERM is killed after the grace, so the run still ends.
+        let (stubborn, three) = try runner("trap '' TERM; /bin/sleep 30", timeout: .seconds(1))
+        defer { try? FileManager.default.removeItem(at: three) }
+        #expect(await stubborn.run("Hail to Notes", text: "x") == "timeout")
+    }
+
+    @Test func aCancelledRunStopsTheShortcut() async throws {
+        let (runner, directory) = try runner("echo $$ > pid.txt; exec /bin/sleep 30")
+        defer { try? FileManager.default.removeItem(at: directory) }
+        let run = Task { await runner.run("Hail to Notes", text: "x") }
+        let pidFile = directory.appendingPathComponent("pid.txt")
+        #expect(await eventually { FileManager.default.fileExists(atPath: pidFile.path) })
+        run.cancel()
+        #expect(await run.value == "cancelled")
+        let pid = try #require(Int32(String(contentsOf: pidFile, encoding: .utf8).trimmingCharacters(in: .newlines)))
+        #expect(await eventually { kill(pid, 0) != 0 })
+    }
+
+    @Test func theLongestNameWinsAndNamesMustBeDistinct() throws {
+        let both = try VoiceDestinations(["notes": .init(shortcut: "A"), "notes app": .init(shortcut: "B")])
+        #expect(both.command(in: "add to notes app: x", names: [])?.shortcut == "B")
+        #expect(throws: VoiceDestinations.LoadError.invalidName) {
+            try VoiceDestinations(["Notes": .init(shortcut: "A"), "notes": .init(shortcut: "B")])
+        }
     }
 
     /// Only the enrolled owner's note is held back; on an anonymous session it is a request like any other.

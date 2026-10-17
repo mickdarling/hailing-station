@@ -1,5 +1,6 @@
 #if os(macOS)
 public import Foundation
+import Synchronization
 
 /// The owner's spoken note to a named destination (#552, slice 1): "Jarvis, add to Notes: buy oat milk" runs the
 /// Apple Shortcut the owner allowlisted for "notes", with the dictated words as its input. Only names in the owner's
@@ -29,7 +30,9 @@ public struct VoiceDestinations: Sendable, Equatable {
         var keyed: [String: Destination] = [:]
         for (name, destination) in destinations {
             let key = RightyoAddressing.key(name)
-            guard !key.isEmpty, name.split(separator: " ").count <= 3 else { throw LoadError.invalidName }
+            guard !key.isEmpty, name.split(separator: " ").count <= 3, keyed[key] == nil else {
+                throw LoadError.invalidName
+            }
             let shortcut = destination.shortcut
             // From the owner's own file, but still argv: never empty, an option, overlong or carrying controls.
             guard !shortcut.isEmpty, shortcut.count <= 100, !shortcut.hasPrefix("-"),
@@ -60,7 +63,8 @@ public struct VoiceDestinations: Sendable, Equatable {
 
     /// The note a whole turn dictates, given the session's keyed addressing `names`; nil for anything else. After
     /// an optional greeting and name: "add to <dest>" or "put (this|that)? in|into <dest>", then the words, kept as
-    /// said (case and punctuation), with any leading ":", "," or "-" taken off.
+    /// said (case and punctuation), with any leading ":", "," or "-" taken off. The destination must end at a space,
+    /// one of those marks or the end, so "add to notes.md ..." stays a request to the agent. Longest name first.
     func command(in heard: String, names: Set<String>) -> Command? {
         let words = Self.words(heard)
         var index = 0
@@ -69,11 +73,13 @@ public struct VoiceDestinations: Sendable, Equatable {
             index + width < words.count && names.contains(words[index..<index + width].map(\.key).joined())
         }) { index += width }
         guard let rest = Self.lead(words, from: index) else { return nil }
-        for width in 1...3 where rest + width < words.count {
+        for width in stride(from: 3, through: 1, by: -1) where rest + width < words.count {
             let key = words[rest..<rest + width].map(\.key).joined()
             guard let destination = destinations[key] else { continue }
-            let text = heard[words[rest + width - 1].range.upperBound...]
-                .trimmingCharacters(in: CharacterSet(charactersIn: ":,-").union(.whitespacesAndNewlines))
+            let end = words[rest + width - 1].range.upperBound
+            guard end == heard.endIndex || heard[end].isWhitespace || ":,-".contains(heard[end]) else { return nil }
+            let text = heard[end...].drop { $0.isWhitespace || ":,-".contains($0) }
+                .trimmingCharacters(in: .whitespacesAndNewlines)
             guard !text.isEmpty, text.count <= Self.maxText else { return nil }
             return Command(destination: key, shortcut: destination.shortcut, text: text)
         }
@@ -131,14 +137,25 @@ struct ShortcutRunner: Sendable {
         let exited = AsyncStream<Int32>.makeStream()
         process.terminationHandler = { exited.continuation.yield($0.terminationStatus) }
         do { try process.run() } catch { return "launch_failed" }
+        let timedOut = Mutex(false)
+        // SIGTERM at the timeout, then SIGKILL if it is ignored, so the wait below always ends.
         let timer = Task {
             try? await Task.sleep(for: timeout)
-            if !Task.isCancelled, process.isRunning { process.terminate() }
+            guard !Task.isCancelled, process.isRunning else { return }
+            timedOut.withLock { $0 = true }
+            process.terminate()
+            try? await Task.sleep(for: .seconds(2))
+            if process.isRunning { kill(process.processIdentifier, SIGKILL) }
         }
         defer { timer.cancel() }
         var statuses = exited.stream.makeAsyncIterator()
-        let status = await statuses.next() ?? -1
-        if process.terminationReason == .uncaughtSignal { return "timeout" }
+        guard let status = await statuses.next() else {
+            // The caller was cancelled: the Shortcut is stopped, never left running on a removed input.
+            if process.isRunning { kill(process.processIdentifier, SIGKILL) }
+            return "cancelled"
+        }
+        if timedOut.withLock({ $0 }) { return "timeout" }
+        if process.terminationReason == .uncaughtSignal { return "signal_\(status)" }
         return status == 0 ? "saved" : "exit_\(status)"
     }
 }
