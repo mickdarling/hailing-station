@@ -75,10 +75,19 @@ class CoachingCLITests(unittest.TestCase):
                     os.close(writer)
 
     def test_available_refusal_is_constant_and_other_command_errors_are_unchanged(self):
+        reader, writer = os.pipe()
+        try:
+            fcntl.fcntl(writer, fcntl.F_SETFL, fcntl.fcntl(writer, fcntl.F_GETFL) | os.O_NONBLOCK)
+            self.run_refusal(writer)
+            self.assertEqual(os.read(reader, 512).decode(), REFUSAL)
+        finally:
+            os.close(reader)
+            os.close(writer)
+        # Blocking redirected descriptors are unsupported rather than globally changing shared flags.
         result = subprocess.run([str(HAILD), "coaching", "--authored-invalid-option"], cwd=REPO,
                                 stdin=subprocess.DEVNULL, capture_output=True, text=True, timeout=5)
         self.assertEqual(result.returncode, 64)
-        self.assertEqual(result.stderr, REFUSAL)
+        self.assertEqual(result.stderr, "")
         self.assertEqual(result.stdout, "")
         ordinary = subprocess.run([str(HAILD), "unknown-authored-command"], cwd=REPO,
                                   capture_output=True, text=True, timeout=5)

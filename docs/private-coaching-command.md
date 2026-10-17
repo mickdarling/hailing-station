@@ -47,3 +47,10 @@ production advice-provider readiness or physical proof. No live/device/service/p
 installation/signing/deployment or recording/archive action is authorized by this change.
 
 Independent full exact-head reviews, full verification and command-level synthetic tests remain pending.
+
+Fresh native review found that a duplicated terminal descriptor shared its nonblocking status with the
+launching shell. Feedback now reopens and verifies the same terminal device with its own nonblocking
+description. Redirected refusal feedback accepts only already nonblocking pipes; blocking redirected
+stderr is silent with the same refusal exit status rather than changing another writer's flags.
+An admission-time HUP/error check also rejects buffered enable after the writer has closed, including
+when the consumer was already waiting. Authored PTY/pipe tests cover these orderings without native audio.

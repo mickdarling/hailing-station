@@ -33,6 +33,22 @@ import Testing
             #expect(effects == 0)
         }
     }
+    @Test func waitingConsumerCannotApplyEnableAfterWriterAlreadyClosed() async throws {
+        let fixture = try PipeFixture(), ended = EndCount()
+        let keyboard = try CoachingKeyboard(input: fixture.input, observeSignals: false, ended: { ended.value += 1 })
+        let entered = AsyncStream<Void>.makeStream()
+        let consuming = Task { @MainActor in
+            entered.continuation.yield(()); entered.continuation.finish()
+            var effects = 0
+            for try await _ in keyboard.lines where keyboard.permitsControl() { effects += 1 }
+            return effects
+        }
+        var iterator = entered.stream.makeAsyncIterator()
+        _ = await iterator.next()
+        try fixture.send("enable aware\n"); fixture.finish()
+        #expect(try await consuming.value == 0)
+        #expect(keyboard.closed && ended.value == 1)
+    }
     @Test func oversizedNonASCIIPartialAndExplicitCloseFailClosed() async throws {
         for input in [String(repeating: "x", count: 97), "authored\u{01}", "partial-without-newline"] {
             let fixture = try PipeFixture(), ended = EndCount()

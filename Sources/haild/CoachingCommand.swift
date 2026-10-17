@@ -105,7 +105,7 @@ struct CoachingCommandAudio {
 
             """)
             for try await line in keyboard.lines {
-                guard !keyboard.closed else { break } // EOF/overflow cannot replay buffered enable controls.
+                guard keyboard.permitsControl() else { break } // Recheck terminal loss before buffered authority.
                 guard try command.control(line) else { break }
                 try terminal.write("coaching: \(command.owner.status)\n")
             }

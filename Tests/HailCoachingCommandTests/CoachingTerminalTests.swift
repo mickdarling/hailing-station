@@ -8,6 +8,7 @@ import Testing
     @Test func fullSyntheticTerminalRefusesFeedbackWithoutWaitingForDrain() throws {
         let fixture = try PTYFixture(), flags = fcntl(fixture.output, F_GETFL)
         let terminal = try CoachingTerminal(output: fixture.output)
+        #expect(fcntl(fixture.output, F_GETFL) & O_NONBLOCK == flags & O_NONBLOCK)
         try fixture.fill()
         let began = ContinuousClock.now
         #expect(throws: CoachingCommandError.invalidControl) { try terminal.write("coaching: active\n") }
@@ -73,6 +74,9 @@ import Testing
         }
         deinit { Darwin.close(input); Darwin.close(output) }
         func fill() throws {
+            let flags = fcntl(output, F_GETFL)
+            _ = fcntl(output, F_SETFL, flags | O_NONBLOCK)
+            defer { _ = fcntl(output, F_SETFL, flags) }
             let bytes = Data(repeating: 120, count: 8_192)
             for _ in 0..<128 {
                 let count = bytes.withUnsafeBytes { Darwin.write(output, $0.baseAddress, $0.count) }
