@@ -101,5 +101,30 @@ private final class CoachingControlFailures: Sendable {
         #expect(!child.sendCoachingControl(Data("{}".utf8), validUntil: .now.advanced(by: .seconds(1))))
         _ = await child.stop()
     }
+
+    @Test func idlePeerClosureRevokesWithoutAnotherSend() throws {
+        let connection = try channel()
+        defer { connection.writer.close() }
+        close(connection.readEnd)
+        let deadline = ContinuousClock.now.advanced(by: .milliseconds(250))
+        while connection.failures.total == 0, ContinuousClock.now < deadline { usleep(1_000) }
+        #expect(connection.failures.total == 1)
+        #expect(!connection.writer.send(Data("{}".utf8), validUntil: .now.advanced(by: .seconds(1))))
+        #expect(connection.failures.total == 1)
+    }
+
+    @Test func idleWatcherDoesNotRetainItsWriterOrFailAfterExplicitClose() throws {
+        var ends: [Int32] = [-1, -1]
+        try #require(pipe(&ends) == 0)
+        let failures = CoachingControlFailures()
+        var writer: RightyoCoachingControlWriter? = .init(ends[1]) { failures.increment() }
+        weak let weakWriter = writer
+        writer?.close()
+        writer = nil
+        #expect(weakWriter == nil)
+        close(ends[0])
+        usleep(60_000) // A queued idle probe must remain harmless after owned close/deinit.
+        #expect(failures.total == 0)
+    }
 }
 #endif

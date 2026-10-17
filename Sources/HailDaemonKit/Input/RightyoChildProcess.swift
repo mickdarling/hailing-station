@@ -38,8 +38,6 @@ public final class RightyoChildProcess: Sendable {
         let queued = RightyoByteCount()
         let revocation = coaching == nil ? nil : RightyoOutputRevocation()
         outputRevocation = revocation
-        lines = RightyoChildOutput(base: RightyoChildLines(stream: pair.stream, queued: queued),
-                                   revocation: revocation)
         // The leader's exit ends the stream even if a descendant that left the group still holds stdout (#297).
         let continuation = pair.continuation, ended = RightyoByteCount()
         continuation.onTermination = { _ in ended.withLock { $0 = 1 } }
@@ -53,6 +51,8 @@ public final class RightyoChildProcess: Sendable {
         control = RightyoControlWriter(coaching == nil ? child.control : nil)
         coachingControl = coaching == nil ? nil
             : Self.coachingWriter(child.control, input: input, continuation: continuation, revocation: revocation)
+        lines = RightyoChildOutput(base: RightyoChildLines(stream: pair.stream, queued: queued),
+                                   revocation: revocation, control: coachingControl)
         (processIdentifier, self.timing) = (child.pid, timing)
         Thread.detachNewThread { RightyoChildLines.read(child.output, into: pair.continuation, queued: queued) }
         Thread.detachNewThread { [stderrBytes] in

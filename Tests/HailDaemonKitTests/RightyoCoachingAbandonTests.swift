@@ -5,6 +5,29 @@ import Testing
 @testable import HailDaemonKit
 
 @Suite(.serialized, .timeLimit(.minutes(1))) struct RightyoCoachingAbandonTests {
+    @Test func closedControlPeerCannotDeliverItsBufferedStdout() async throws {
+        let fake = try FakeRightyo("""
+        IFS= read -r control <&3
+        exec 3<&-
+        printf closed > closed-control
+        printf 'authored-stale-output\\n'
+        exec /bin/sleep 60
+        """)
+        defer { fake.cleanUp() }
+        let child = try RightyoChildProcess(executable: FakeRightyo.shared, config: fake.config,
+            session: UUID().uuidString.lowercased(), provenance: .synthetic, coaching: .init())
+        do {
+            #expect(child.sendCoachingControl(Data("{}".utf8), validUntil: .now.advanced(by: .seconds(1))))
+            try #require(await eventually { (try? fake.recorded("closed-control")) == "closed" })
+            var iterator = child.lines.makeAsyncIterator()
+            do {
+                _ = try await iterator.next()
+                Issue.record("Output from a child with a closed control peer was delivered")
+            } catch { #expect(error as? RightyoChildError == .transportLost) }
+        } catch { _ = await child.stop(); throw error }
+        _ = await child.stop()
+    }
+
     @Test func revokedSuspendedDeliveryRefusesLaterOutput() async throws {
         let stream = AsyncThrowingStream<Data, any Error>.makeStream()
         let revocation = RightyoOutputRevocation(), queued = RightyoByteCount()
