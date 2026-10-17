@@ -81,6 +81,11 @@ public final class RightyoAmbientPipeline: Sendable {
         /// Called once per admitted request that is the owner's spoken media mode on (true) or off (#551), handled
         /// like `onVoiceMute`. It must return at once.
         public var onVoiceMedia: (@Sendable (Bool) -> Void)?
+        /// The owner's allowlisted note destinations (#552); nil is off. A note to one is handed to
+        /// `onVoiceDestination` with its destination key, Shortcut and words instead of being typed. It must return
+        /// at once; the words go only to the Shortcut, never to logs.
+        public var destinations: VoiceDestinations?
+        public var onVoiceDestination: (@Sendable (_ destination: String, _ shortcut: String, _ text: String) -> Void)?
         /// Called when RightyO says the owner's voice is `unrecognized` on this input, or `recognized` again
         /// (rightyo#164), only on a session whose `started` advertised `owner_voice`, each state at most once and
         /// `recognized` only after `unrecognized`. It must return at once.
@@ -113,6 +118,7 @@ public final class RightyoAmbientPipeline: Sendable {
     private let onDismiss: (@Sendable (RightyoDismissReceipt) -> Void)?
     private let onVoiceMute: (@Sendable (Bool) -> Void)?
     private let onVoiceMedia: (@Sendable (Bool) -> Void)?
+    private let onVoiceDestination: (@Sendable (String, String, String) -> Void)?
     private let acknowledgement: AmbientAckRelay
     private let heard: AmbientHeardRelay
     private let overheard: AmbientOverheardRelay
@@ -129,7 +135,8 @@ public final class RightyoAmbientPipeline: Sendable {
         consumer = try RightyoInputConsumer(host: nil, target: configuration.target, binding: configuration.binding,
                                             session: session, allowSynthetic: configuration.allowSynthetic,
                                             dispatcher: step, echoFilter: configuration.isEcho,
-                                            mediaCommands: configuration.replyControl)
+                                            mediaCommands: configuration.replyControl,
+                                            destinations: configuration.destinations)
         child = try RightyoChildProcess(executable: configuration.executable, config: configuration.config,
                                         session: session, timing: configuration.timing,
                                         replyControl: configuration.replyControl,
@@ -137,6 +144,7 @@ public final class RightyoAmbientPipeline: Sendable {
         self.session = session
         onDismiss = configuration.onDismiss
         (onVoiceMute, onVoiceMedia) = (configuration.onVoiceMute, configuration.onVoiceMedia)
+        onVoiceDestination = configuration.onVoiceDestination
         acknowledgement = relay
         self.heard = heard
         overheard = AmbientOverheardRelay(onOverheard: configuration.onOverheard, isEcho: configuration.isEcho)
@@ -192,6 +200,9 @@ public final class RightyoAmbientPipeline: Sendable {
                 }
                 if event.type == "request", let command = await consumer.lastVoiceMedia {
                     onVoiceMedia?(command == .on)
+                }
+                if event.type == "request", let note = await consumer.lastVoiceDestination {
+                    onVoiceDestination?(note.destination, note.shortcut, note.text)
                 }
             }
             try await consumer.finish()
