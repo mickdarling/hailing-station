@@ -51,3 +51,9 @@ AsyncThrowingStream preserves buffered values. Coaching output now has a separat
 fence checked before and after each suspended delivery. Control failure, explicit abandonment and
 owned group loss revoke it; ordinary graceful EOF still delivers buffered terminal output. A red-before
 buffered-output regression failed before this correction. No old diagnostics were removed.
+
+Local EOF polls the still-owned control descriptor under its close lock before granting graceful
+output semantics. A peer loss already present at that boundary revokes instead, even if the idle
+watcher has not run. RightyoCoachingGracefulRaceTests withholds the actual writer queue, closes the
+peer first, and asserts that buffered output remains refused after local close and group completion.
+The regression fails before the synchronous close probe; healthy graceful EOF controls remain covered.
