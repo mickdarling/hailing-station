@@ -5,10 +5,16 @@ import Synchronization
 
 /// Coaching failure/abandonment revokes output; explicit graceful EOF preserves buffered terminal lines.
 final class RightyoOutputRevocation: Sendable {
-    private struct State { var revoked = false, graceful = false }
+    private struct State { var revoked = false, graceful = false; var exit: RightyoExitLatch? }
     private let state = Mutex(State())
     func revoke() { state.withLock { $0.revoked = true } }
-    func noteGracefulInputClosure() { state.withLock { $0.graceful = true } }
+    func observe(_ exit: RightyoExitLatch) { state.withLock { $0.exit = exit } }
+    func noteGracefulInputClosure() {
+        state.withLock {
+            guard !$0.graceful else { return }
+            if $0.exit?.value != nil { $0.revoked = true } else { $0.graceful = true }
+        }
+    }
     @discardableResult func ownedGroupEnded() -> Bool {
         state.withLock { if !$0.graceful { $0.revoked = true }; return $0.revoked }
     }
@@ -115,6 +121,7 @@ extension RightyoChildProcess {
     static func observeCoachingExit(_ exit: RightyoExitLatch, revocation: RightyoOutputRevocation?,
                                     continuation: AsyncThrowingStream<Data, any Error>.Continuation) {
         guard let revocation else { return }
+        revocation.observe(exit)
         Task {
             _ = await exit.wait(timeout: nil)
             if revocation.ownedGroupEnded() { continuation.finish(throwing: RightyoChildError.transportLost) }
