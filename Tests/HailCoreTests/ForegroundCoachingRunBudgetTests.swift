@@ -3,6 +3,33 @@ import Testing
 @testable import HailCore
 
 @Suite @MainActor struct ForegroundCoachingRunBudgetTests {
+    @Test func postCaptureQualificationDelayCannotExtendTheRunBudget() async throws {
+        let rig = try ForegroundRig()
+        let origin = rig.time.now
+        rig.onChild = { child in
+            child.onSend = {
+                guard child.leases.count == 1 else { return }
+                child.onSend = nil
+                rig.time.now = rig.time.now.advanced(by: .milliseconds(500))
+            }
+        }
+        try rig.driver.enable(participantAwareness: true)
+        #expect(rig.driver.deadline == origin.advanced(by: .seconds(900)))
+        let epoch = rig.driver.epoch
+        for tick in 1...899 {
+            rig.time.now = origin.advanced(by: .milliseconds(500)).advanced(by: .seconds(tick))
+            rig.driver.heartbeat(epoch)
+        }
+        try #require(rig.driver.status == .active)
+        let owner = try #require(rig.owners.first)
+        rig.time.now = origin.advanced(by: .seconds(900))
+        try owner.capture.yield(sineBuffer())
+        await drainCoachingTasks()
+        #expect(rig.driver.status == .off && owner.capture.stopCount == 1)
+        rig.driver.off()
+        await drainCoachingTasks()
+    }
+
     @Test(arguments: [-1, 0, 1], ["buffer", "advice"])
     func delayedHeartbeatCannotKeepCapturePastTheRunBudget(offset: Int, action: String) async throws {
         let rig = try ForegroundRig()

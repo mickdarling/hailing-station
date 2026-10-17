@@ -72,6 +72,10 @@ public final class ForegroundCoaching {
             ))
             guard starting(id) else { owner.stop(); throw ForegroundCoachingError.startupLost }
             audio = owner
+            let startedAt = clock.now()
+            guard starting(id) else { throw ForegroundCoachingError.startupLost }
+            let runDeadline = startedAt.advanced(by: .seconds(900))
+            deadline = runDeadline // Record before begin can activate capture; startup cannot extend it.
             let qualified = try owner.begin(sessionID: sessionID, destinationID: destinationID, consentConfirmed: true)
             guard starting(id) else { throw ForegroundCoachingError.startupLost }
             lease = qualified
@@ -79,10 +83,10 @@ public final class ForegroundCoaching {
                 throw ForegroundCoachingError.transportFailed
             }
             let now = clock.now()
-            guard starting(id), lease == qualified, now < qualified.expiresAt else {
+            guard starting(id), lease == qualified, deadline == runDeadline,
+                  now < qualified.expiresAt, now < runDeadline else {
                 throw ForegroundCoachingError.startupLost
             }
-            deadline = now.advanced(by: .seconds(900)) // Heartbeats cannot extend this run budget.
             status = .active
             armHeartbeat(id)
             guard live(id) else { throw ForegroundCoachingError.startupLost }
