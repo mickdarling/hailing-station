@@ -21,6 +21,11 @@ weakly captured watcher. Authored idle-close and closed-peer/buffered-stdout cas
 source; the watcher-release control verifies that explicit close cannot report a later channel failure.
 
 Coaching revocation abandons queued PCM immediately; ordinary graceful PCM EOF remains unchanged.
+Explicit graceful coaching EOF also preserves already-buffered terminal output, including owned-group
+stream completion. Local graceful close and peer/write failure are distinguished under the descriptor
+lock; a rejected send after local EOF cannot convert that EOF into a failure. Explicit revocation or
+abandonment before or after graceful close always wins. The existing output fence/sequence is located
+beside child control; no second stream, producer or capture backend is introduced.
 The foreground adapter must consume stream failure as off, cancel capture/TTS/private playback,
 and join its owned child through the existing group supervisor. No hook bypass or unrelated PID
 signalling is added. stderr remains discarded with only a byte count. There is no transcript/audio

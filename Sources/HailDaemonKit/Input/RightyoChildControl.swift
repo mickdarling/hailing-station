@@ -3,6 +3,46 @@ import Darwin
 public import Foundation
 import Synchronization
 
+/// Coaching failure/abandonment revokes output; explicit graceful EOF preserves buffered terminal lines.
+final class RightyoOutputRevocation: Sendable {
+    private struct State { var revoked = false, graceful = false }
+    private let state = Mutex(State())
+    func revoke() { state.withLock { $0.revoked = true } }
+    func noteGracefulInputClosure() { state.withLock { $0.graceful = true } }
+    func ownedGroupEnded() { state.withLock { if !$0.graceful { $0.revoked = true } } }
+    func check() throws {
+        if state.withLock({ $0.revoked }) { throw RightyoChildError.transportLost }
+    }
+}
+
+/// The existing byte-bounded stdout reader with a coaching-only fence before and after suspension.
+public struct RightyoChildOutput: AsyncSequence, Sendable {
+    let base: RightyoChildLines
+    let revocation: RightyoOutputRevocation?
+    let control: RightyoCoachingControlWriter?
+    init(base: RightyoChildLines, revocation: RightyoOutputRevocation?,
+         control: RightyoCoachingControlWriter? = nil) {
+        self.base = base; self.revocation = revocation; self.control = control
+    }
+    public struct AsyncIterator: AsyncIteratorProtocol {
+        var base: RightyoChildLines.AsyncIterator
+        let revocation: RightyoOutputRevocation?
+        let control: RightyoCoachingControlWriter?
+        public mutating func next() async throws -> Data? {
+            try revocation?.check()
+            guard control?.peerAvailable() != false else { throw RightyoChildError.transportLost }
+            let line = try await base.next()
+            try revocation?.check()
+            guard control?.peerAvailable() != false else { throw RightyoChildError.transportLost }
+            return line
+        }
+    }
+    public func makeAsyncIterator() -> AsyncIterator {
+        AsyncIterator(base: base.makeAsyncIterator(), revocation: revocation, control: control)
+    }
+    func revokeCoaching() { revocation?.revoke() }
+}
+
 /// What the host reports about the assistant's spoken reply (rightyo#124).
 public enum RightyoReplyPhase: String, Sendable { case started, ended }
 
@@ -27,7 +67,7 @@ extension RightyoChildProcess {
     @discardableResult public func write(_ pcm: Data) -> Bool { input.write(pcm) }
 
     /// Graceful EOF after already-queued PCM; does not revoke buffered terminal output. Idempotent.
-    public func closeInput() { input.close(abandon: false); control.close(); coachingControl?.close() }
+    public func closeInput() { control.close(); coachingControl?.close(); input.close(abandon: false) }
 
     /// Close-on-exec on both ends of a fresh pipe, and its child end moved above every `dup2` target (0-3), so no
     /// `dup2` source is ever a target too: the actions' order cannot matter, and no `dup2` is same-fd (a no-op
@@ -68,7 +108,7 @@ extension RightyoChildProcess {
                                continuation: AsyncThrowingStream<Data, any Error>.Continuation,
                                revocation: RightyoOutputRevocation? = nil)
         -> RightyoCoachingControlWriter {
-        RightyoCoachingControlWriter(descriptor) {
+        RightyoCoachingControlWriter(descriptor, revocation: revocation) {
             revocation?.revoke()
             input.close(abandon: true)
             continuation.finish(throwing: RightyoChildError.transportLost)

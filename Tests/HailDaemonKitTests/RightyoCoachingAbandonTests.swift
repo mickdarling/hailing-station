@@ -5,6 +5,54 @@ import Testing
 @testable import HailDaemonKit
 
 @Suite(.serialized, .timeLimit(.minutes(1))) struct RightyoCoachingAbandonTests {
+    @Test(arguments: ["none", "before", "after"])
+    func gracefulOwnedExitPreservesBuffersButNeverErasesRevocation(abandon: String) async throws {
+        var pcm: [Int32] = [-1, -1], control = pcm
+        try #require(pipe(&pcm) == 0 && pipe(&control) == 0)
+        defer { close(pcm[0]); close(control[0]) }
+        let input = RightyoStdinWriter(input: pcm[1], exit: RightyoExitLatch(), timing: .init())
+        let stream = AsyncThrowingStream<Data, any Error>.makeStream(), queued = RightyoByteCount()
+        let revocation = RightyoOutputRevocation(), terminal = Data("authored-terminal".utf8)
+        let writer = RightyoChildProcess.coachingWriter(control[1], input: input, continuation: stream.continuation,
+                                                       revocation: revocation)
+        defer { writer.close(); input.close(abandon: true) }
+        queued.withLock { $0 += terminal.count }; stream.continuation.yield(terminal)
+        if abandon == "before" { revocation.revoke() }
+        writer.close()
+        if abandon == "after" { revocation.revoke() }
+        revocation.ownedGroupEnded()
+        stream.continuation.finish(throwing: RightyoChildError.transportLost)
+        let lines = RightyoChildOutput(base: .init(stream: stream.stream, queued: queued),
+                                       revocation: revocation, control: writer)
+        var iterator = lines.makeAsyncIterator()
+        if abandon == "none" { #expect(try await iterator.next() == terminal) }
+        do { _ = try await iterator.next()
+            Issue.record("Retired stream did not refuse after its allowed buffer")
+        } catch { #expect(error as? RightyoChildError == .transportLost) }
+    }
+
+    @Test func gracefulCoachingEOFStillDeliversBufferedAndTerminalOutput() async throws {
+        let fake = try FakeRightyo("""
+        printf 'authored-buffered\\n'
+        /bin/cat >/dev/null
+        printf 'authored-terminal\\n'
+        exec /bin/sleep 60
+        """)
+        defer { fake.cleanUp() }
+        let child = try RightyoChildProcess(executable: FakeRightyo.shared, config: fake.config,
+            session: UUID().uuidString.lowercased(), provenance: .synthetic, coaching: .init())
+        do {
+            try #require(await eventually { child.lines.base.queued.withLock { $0 > 0 } })
+            child.closeInput(); child.closeInput()
+            #expect(!child.write(Data([1, 0])))
+            #expect(!child.sendCoachingControl(Data("{}".utf8), validUntil: .now.advanced(by: .seconds(1))))
+            var iterator = child.lines.makeAsyncIterator()
+            #expect(try await iterator.next() == Data("authored-buffered".utf8))
+            #expect(try await iterator.next() == Data("authored-terminal".utf8))
+        } catch { _ = await child.stop(); throw error }
+        _ = await child.stop()
+    }
+
     @Test func closedControlPeerCannotDeliverItsBufferedStdout() async throws {
         let fake = try FakeRightyo("""
         IFS= read -r control <&3

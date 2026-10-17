@@ -3,43 +3,6 @@ import Darwin
 public import Foundation
 import Synchronization
 
-/// Coaching-only delivery fence. Ordinary child EOF continues to deliver its buffered terminal lines.
-final class RightyoOutputRevocation: Sendable {
-    private let state = Mutex(false)
-    func revoke() { state.withLock { $0 = true } }
-    func check() throws {
-        if state.withLock({ $0 }) { throw RightyoChildError.transportLost }
-    }
-}
-
-/// The existing byte-bounded stdout reader with a coaching-only fence before and after suspension.
-public struct RightyoChildOutput: AsyncSequence, Sendable {
-    let base: RightyoChildLines
-    let revocation: RightyoOutputRevocation?
-    let control: RightyoCoachingControlWriter?
-    init(base: RightyoChildLines, revocation: RightyoOutputRevocation?,
-         control: RightyoCoachingControlWriter? = nil) {
-        self.base = base; self.revocation = revocation; self.control = control
-    }
-    public struct AsyncIterator: AsyncIteratorProtocol {
-        var base: RightyoChildLines.AsyncIterator
-        let revocation: RightyoOutputRevocation?
-        let control: RightyoCoachingControlWriter?
-        public mutating func next() async throws -> Data? {
-            try revocation?.check()
-            guard control?.peerAvailable() != false else { throw RightyoChildError.transportLost }
-            let line = try await base.next()
-            try revocation?.check()
-            guard control?.peerAvailable() != false else { throw RightyoChildError.transportLost }
-            return line
-        }
-    }
-    public func makeAsyncIterator() -> AsyncIterator {
-        AsyncIterator(base: base.makeAsyncIterator(), revocation: revocation, control: control)
-    }
-    func revokeCoaching() { revocation?.revoke() }
-}
-
 /// Explicit foreground capability, absent from ordinary ambient/reply child startup.
 public enum RightyoCoachingProvider: Sendable {
     case mock
@@ -86,14 +49,16 @@ final class RightyoCoachingControlWriter: Sendable {
         var descriptor: Int32?
         var lines: [Line] = []
         var bytes = 0, records = 0
-        var draining = false, failed = false
+        var draining = false, failed = false, locallyClosed = false
     }
     private let state: Mutex<State>
     private let queue = DispatchQueue(label: "hailing.rightyo.coaching-control")
     private let watcher: any DispatchSourceTimer
+    private let revocation: RightyoOutputRevocation?
     private let failed: @Sendable () -> Void
-    init(_ descriptor: Int32?, failed: @escaping @Sendable () -> Void) {
-        state = Mutex(State(descriptor: descriptor)); self.failed = failed
+    init(_ descriptor: Int32?, revocation: RightyoOutputRevocation? = nil,
+         failed: @escaping @Sendable () -> Void) {
+        state = Mutex(State(descriptor: descriptor)); self.failed = failed; self.revocation = revocation
         watcher = DispatchSource.makeTimerSource(queue: queue)
         watcher.schedule(deadline: .now(), repeating: .milliseconds(25), leeway: .milliseconds(5))
         watcher.setEventHandler { [weak self] in _ = self?.peerAvailable() }
@@ -121,42 +86,49 @@ final class RightyoCoachingControlWriter: Sendable {
     func close() {
         watcher.cancel()
         state.withLock { current in
-            if let fd = current.descriptor { Darwin.close(fd) }
+            guard let fd = current.descriptor else { return }
+            current.locallyClosed = true
+            revocation?.noteGracefulInputClosure()
+            Darwin.close(fd)
             current.descriptor = nil; current.lines.removeAll(); current.bytes = 0
         }
     }
 
     /// Poll and close share descriptor ownership; a queued old probe cannot inspect a reused fd.
     func peerAvailable() -> Bool {
-        let available = state.withLock { current in
-            guard let fd = current.descriptor, !current.failed else { return false }
+        let result = state.withLock { current -> (Bool, Bool) in
+            guard !current.failed else { return (false, false) }
+            guard let fd = current.descriptor else { return (current.locallyClosed, false) }
             var peer = pollfd(fd: fd, events: Int16(POLLERR | POLLHUP), revents: 0)
-            return poll(&peer, 1, 0) >= 0 && peer.revents & Int16(POLLERR | POLLHUP | POLLNVAL) == 0
+            if poll(&peer, 1, 0) >= 0 && peer.revents & Int16(POLLERR | POLLHUP | POLLNVAL) == 0 {
+                return (true, false)
+            }
+            return (false, revoke(&current))
         }
-        if !available { fail() }
-        return available
+        if result.1 { watcher.cancel(); failed() }
+        return result.0
     }
 
     private func fail() {
         watcher.cancel()
-        let notify = state.withLock { current in
-            let first = !current.failed && current.descriptor != nil
-            current.failed = true
-            if let fd = current.descriptor { Darwin.close(fd) }
-            current.descriptor = nil; current.lines.removeAll(); current.bytes = 0
-            return first
-        }
+        let notify = state.withLock { revoke(&$0) }
         if notify { failed() }
     }
+    private func revoke(_ current: inout State) -> Bool {
+        guard let fd = current.descriptor else { return false }
+        current.failed = true; revocation?.revoke(); Darwin.close(fd)
+        current.descriptor = nil; current.lines.removeAll(); current.bytes = 0
+        return true
+    }
 
-    private enum Progress { case more, waiting, done, failure }
+    private enum Progress { case more, waiting, done, failure(Bool) }
     private func step() -> Progress {
         state.withLock { current in
             guard let fd = current.descriptor, !current.lines.isEmpty else {
                 current.draining = false; return .done
             }
             var line = current.lines[0]
-            guard ContinuousClock.now < line.deadline else { return .failure }
+            guard ContinuousClock.now < line.deadline else { return .failure(revoke(&current)) }
             let count = line.data.withUnsafeBytes {
                 Darwin.write(fd, $0.baseAddress?.advanced(by: line.offset), line.data.count - line.offset)
             }
@@ -168,7 +140,7 @@ final class RightyoCoachingControlWriter: Sendable {
                 return .more
             }
             if count < 0, errno == EINTR { return .more }
-            return count < 0 && errno == EAGAIN ? .waiting : .failure
+            return count < 0 && errno == EAGAIN ? .waiting : .failure(revoke(&current))
         }
     }
 
@@ -177,7 +149,7 @@ final class RightyoCoachingControlWriter: Sendable {
             switch step() {
             case .more: continue
             case .done: return
-            case .failure: fail(); return
+            case .failure(let notify): watcher.cancel(); if notify { failed() }; return
             case .waiting: queue.asyncAfter(deadline: .now() + .milliseconds(5)) { self.drain() }; return
             }
         }
