@@ -75,7 +75,7 @@ enum VoiceMute {
 
     /// The turn as said, and with its leading greeting, addressing name (up to three words, as recognition may split
     /// "Righty O") and "please" taken off in turn.
-    private static func candidates(_ words: [String], names: Set<String>) -> [ArraySlice<String>] {
+    static func candidates(_ words: [String], names: Set<String>) -> [ArraySlice<String>] {
         var rest = words[...], found = [rest]
         if let first = rest.first, greetings.contains(first) { rest = rest.dropFirst(); found.append(rest) }
         let named = (1...3).first { width in
@@ -90,15 +90,46 @@ enum VoiceMute {
     }
 }
 
+/// The owner's spoken media mode (#551): a whole turn that is only an on or off phrase, trimmed as `VoiceMute` trims.
+/// While it is on, RightyO attends only to the owner's voice naming the assistant (rightyo#195), so the off phrase
+/// needs the name ("Jarvis, done watching"). Matched on the heard words only; nothing is logged.
+enum VoiceMedia {
+    enum Command: Sendable { case on, off }
+
+    static let onPhrases: Set<String> = [
+        "media mode", "media mode on", "watching tv", "i'm watching tv", "i'm going to watch tv",
+        "i'm watching a movie", "i'm watching a video", "putting a video on"
+    ]
+    static let offPhrases: Set<String> = [
+        "media mode off", "end media mode", "done watching", "i'm done watching", "tv's off", "the tv's off"
+    ]
+
+    /// The command a whole turn says, given the session's keyed addressing `names`; nil for anything else.
+    static func command(in heard: String, names: Set<String>) -> Command? {
+        var words = heard.lowercased().split { !$0.isLetter && $0 != "'" }.map(String.init)
+        while words.last == "please" { words.removeLast() }
+        for candidate in VoiceMute.candidates(words, names: names) {
+            let phrase = candidate.joined(separator: " ")
+            if onPhrases.contains(phrase) { return .on }
+            if offPhrases.contains(phrase) { return .off }
+        }
+        return nil
+    }
+}
+
 #if os(macOS)
 /// The spoken confirmation of the owner's stop (#418): a short host-recorded clip, sent like an acknowledgement to the
 /// connection that said stop, with no round trip through the agent session. Clips live in reserved folders of the
 /// acknowledgement directory: `confirm-stopped/` ("Stopped.") and `confirm-idle/` ("Nothing playing, standing by."),
-/// and for the owner's spoken mute (#404) `confirm-muted/` ("Muted.") and `confirm-unmuted/` ("Unmuted.").
+/// for the owner's spoken mute (#404) `confirm-muted/` ("Muted.") and `confirm-unmuted/` ("Unmuted."), and for media
+/// mode (#551) `confirm-media-on/` and `confirm-media-off/`.
 enum AmbientStopConfirmation {
     static let stopped = RightyoAddressing.key("confirm-stopped"), idle = RightyoAddressing.key("confirm-idle")
     static let muted = RightyoAddressing.key("confirm-muted"), unmuted = RightyoAddressing.key("confirm-unmuted")
-    static let reserved: Set<String> = [stopped, idle, muted, unmuted]
+    /// Media mode (#551): "Media mode on." and "Media mode off."
+    static let mediaOn = RightyoAddressing.key("confirm-media-on")
+    static let mediaOff = RightyoAddressing.key("confirm-media-off")
+    static let reserved: Set<String> = [stopped, idle, muted, unmuted, mediaOn, mediaOff]
 
     /// Why a playback stop is not confirmed, as a log token, or nil when it is: only the enrolled owner's stop, and
     /// only on a connection still there to hear it.
@@ -258,6 +289,8 @@ public actor RightyoInputConsumer {
     /// The owner's spoken mute or unmute (#404): an admitted request that is exactly a mute phrase, held back from
     /// the target and left here, like a dismissal. Nil for any other line.
     private(set) var lastVoiceMute: VoiceMute.Command?
+    /// The owner's spoken media mode (#551), held back like `lastVoiceMute`. Nil for any other line.
+    private(set) var lastVoiceMedia: VoiceMedia.Command?
     /// `streamBudgetMs` is an optional ceiling on producer stream time; the default is no ceiling (#188).
     /// `dispatcher` replaces the direct `HailHost.send` step (#188 item 1); without it, `host` delivers directly
     /// and nil `host` validates only. A dispatcher with no host still delivers (it owns its own host access).
@@ -296,12 +329,24 @@ public actor RightyoInputConsumer {
                                                  patterns: DangerousPatternGuard.defaults)
         guard hits.isEmpty else { throw RightyoTargetError.guarded(hits) }
     }
+    /// Leaves a spoken mute (#404) or media mode (#551) in `lastVoiceMute` or `lastVoiceMedia`; true when `heard` was
+    /// one. Media mode follows the mute's rule: it only changes what this host's RightyO attends to.
+    private func holdsVoiceCommand(_ heard: String) -> Bool {
+        if let command = VoiceMute.command(in: heard, names: voiceNames) {
+            lastVoiceMute = command
+        } else if let command = VoiceMedia.command(in: heard, names: voiceNames) {
+            lastVoiceMedia = command
+        }
+        return lastVoiceMute != nil || lastVoiceMedia != nil
+    }
+
     /// True means handled: guarded delivery, or validation only when initialized with no host. An admitted `dismiss`
     /// delivers nothing and returns false; `lastDismissal` then says what it did.
     public func consume(_ event: RightyoInputEvent) async throws -> Bool {
         lastReceipt = nil
         lastDismissal = nil
         lastVoiceMute = nil
+        lastVoiceMedia = nil
         do {
             guard try admit(event) else { return false }
             if event.type == "override" { return true }
@@ -317,9 +362,8 @@ public actor RightyoInputConsumer {
             // enrolled session only a turn both its transcript and its attention record call the owner's (`owners`)
             // counts; anyone else's is a request like any other. On an anonymous one any voice counts (see
             // `VoiceMute`): the mute is device-local and reversible.
-            if let turn = event.turn, let command = VoiceMute.command(in: turn.text, names: voiceNames),
-               speakers != "enrolled" || owners.contains(turn.utteranceId) {
-                lastVoiceMute = command
+            if let turn = event.turn, speakers != "enrolled" || owners.contains(turn.utteranceId),
+               holdsVoiceCommand(turn.text) {
                 return false
             }
             busy = true

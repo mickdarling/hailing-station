@@ -413,6 +413,8 @@ extension HostSession {
 #if os(macOS)
 import Synchronization
 
+// Behaviour lives in extensions; only stored state (configuration and `State`) is over the limit (#551).
+// swiftlint:disable type_body_length
 /// Ambient listening wiring (#203): the sink of the daemon's one `AmbientAudioGate`. A started stream spawns
 /// one `RightyoAmbientPipeline` for its connection; segments are handed to the child without blocking; an ended
 /// stream closes the child's input and stops it (EOF, then SIGTERM, then SIGKILL). Admitted requests are
@@ -441,6 +443,8 @@ public final class AmbientRightyoRouter: AmbientAudioSink, AmbientListenerWiring
         public var acknowledgements: AmbientAckLibrary?
         /// Reply control (rightyo#124): each child gets `--control-fd`, and `replyPlayback` feeds it. Off by default.
         public var replyControl = false
+        /// How long the owner's spoken media mode (#551) lasts before it turns itself off.
+        public var mediaTimeout: TimeInterval = AmbientRightyoRouter.defaultMediaTimeout
 
         public init(executable: URL, config: URL, target: String, binding: String, allowSynthetic: Bool = false,
                     timing: RightyoChildProcess.Timing = .init(),
@@ -494,6 +498,9 @@ public final class AmbientRightyoRouter: AmbientAudioSink, AmbientListenerWiring
         /// Each live connection's last input route kind (rightyo#164), for its next child's `RIGHTYO_INPUT_ROUTE`;
         /// one entry per connection the listener holds, dropped in `stop(connection:)`.
         var inputRoutes: [UUID: String] = [:]
+        /// Connections whose owner turned media mode on (#551), each with the token of its timeout; dropped when it
+        /// ends, times out or the connection stops. Every child started for the connection meanwhile is told at once.
+        var media: [UUID: UUID] = [:]
     }
     fileprivate struct WeakListener { weak var value: WebSocketListener? }
 
@@ -575,7 +582,7 @@ public final class AmbientRightyoRouter: AmbientAudioSink, AmbientListenerWiring
 
     public func stop(connection: UUID) {
         let streams = state.withLock { state -> [UUID] in
-            (state.latest[connection], state.inputRoutes[connection]) = (nil, nil)
+            (state.latest[connection], state.inputRoutes[connection], state.media[connection]) = (nil, nil, nil)
             if let active = state.active, state.runs[active.run]?.connection == connection { state.active = nil }
             return state.runs.filter { $0.value.connection == connection }.map(\.key)
         }
@@ -630,6 +637,7 @@ public final class AmbientRightyoRouter: AmbientAudioSink, AmbientListenerWiring
         for task in state.withLock({ $0.runs.values.compactMap(\.task) }) { await task.value }
     }
 }
+// swiftlint:enable type_body_length
 
 extension AmbientRightyoRouter {
     /// Keyed by its own id, not its stream's: a reload (#405) gives one stream a second run.
@@ -877,11 +885,11 @@ extension AmbientRightyoRouter {
         (settings.replyControl, settings.onAcknowledgementSkipped) = (configuration.replyControl, skipped())
         (settings.onHeard, settings.onOverheard) = transcriptRelays(on: connection, listener: listener)
         settings.onVoiceMute = voiceMuted(on: connection, listener: listener)
+        settings.onVoiceMedia = voiceMedia(on: connection, listener: listener)
         (settings.onOwnerVoice, settings.environment) = (ownerVoice(on: connection, listener: listener),
                                                          childEnvironment(for: connection))
-        return try RightyoAmbientPipeline(configuration: settings,
-                                          dispatcher: AmbientListenerDispatcher(listener: listener,
-                                                                                audit: configuration.audit))
+        let dispatcher = AmbientListenerDispatcher(listener: listener, audit: configuration.audit)
+        return try carryMedia(RightyoAmbientPipeline(configuration: settings, dispatcher: dispatcher), to: connection)
     }
 
     /// Registers a run for `pipeline` under the caller's lock and returns its id. The task is created under the lock,
@@ -1225,6 +1233,52 @@ extension AmbientRightyoRouter {
             return true
         }
         return ownershipPending ? nil : connection
+    }
+}
+
+/// Media mode (#551), kept apart from the router's body for the type-length limit.
+extension AmbientRightyoRouter {
+    /// Three hours: a film or a few episodes, and media mode never outlasts an evening unnoticed.
+    public static let defaultMediaTimeout: TimeInterval = 3 * 3600
+
+    /// A new or reloaded child starts with media mode off; one still on for `connection` carries over to it.
+    fileprivate func carryMedia(_ pipeline: RightyoAmbientPipeline, to connection: UUID) -> RightyoAmbientPipeline {
+        if state.withLock({ $0.media[connection] != nil }) { pipeline.reportMedia(true) }
+        return pipeline
+    }
+
+    /// The owner's spoken media mode (#551): set for every child of `connection` at once, then confirmed with a
+    /// `confirm-media-on/` or `confirm-media-off/` clip when there is one, in the order said. Logs tokens only.
+    fileprivate func voiceMedia(on connection: UUID, listener: WebSocketListener) -> @Sendable (Bool) -> Void {
+        let chain = SerialTaskChain()
+        return { [weak self, weak listener] on in
+            self?.setMedia(on, connection: connection, reason: "voice")
+            chain.enqueue { [weak self, weak listener] in
+                let persona = on ? AmbientStopConfirmation.mediaOn : AmbientStopConfirmation.mediaOff
+                let confirm = await self?.confirmVoiceMute(persona, on: connection, listener: listener) ?? "none"
+                self?.emit("ambient_media_confirmed", connection: connection, detail: "on=\(on) confirm=\(confirm)")
+            }
+        }
+    }
+
+    /// Turns media mode on or off for `connection` and tells its children now. On (re)arms the timeout; `expected`,
+    /// when given, makes this an expiry that applies only while that timeout is still the current one.
+    fileprivate func setMedia(_ on: Bool, connection: UUID, reason: String, expected: UUID? = nil) {
+        let token = UUID()
+        let pipelines = state.withLock { state -> [RightyoAmbientPipeline]? in
+            if let expected, state.media[connection] != expected { return nil }
+            state.media[connection] = on ? token : nil
+            return state.runs.values.filter { $0.connection == connection }.map(\.pipeline)
+        }
+        guard let pipelines else { return }
+        let reported = pipelines.map { $0.reportMedia(on) }.filter { $0 }.count
+        emit("ambient_media", connection: connection, detail: "on=\(on) reason=\(reason) reported=\(reported)")
+        guard on else { return }
+        let timeout = configuration.mediaTimeout
+        Task { [weak self] in
+            try? await Task.sleep(for: .seconds(timeout))
+            self?.setMedia(false, connection: connection, reason: "timeout", expected: token)
+        }
     }
 }
 

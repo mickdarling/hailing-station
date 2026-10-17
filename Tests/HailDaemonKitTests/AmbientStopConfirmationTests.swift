@@ -29,7 +29,7 @@ import Testing
     }
 
     @Test func reservedFoldersAreNeverAnAcknowledgementVoiceAndAnIdleStopFallsBackToStopped() throws {
-        #expect(AmbientStopConfirmation.reserved == ["confirmstopped", "confirmidle", "confirmmuted", "confirmunmuted"])
+        #expect(AmbientStopConfirmation.reserved == Self.reserved)
         let both = AmbientAckLibrary(clips: ["confirmstopped": [Self.stopped], "confirmidle": [Self.idle],
                                              "jarvis": [Self.stopped]])
         #expect(Set(both.clips.keys) == ["jarvis"])
@@ -179,5 +179,11 @@ import Testing
         try await recipientSocketBarrier(on: socket)
         return (session, socket)
     }
+}
+
+extension AmbientStopConfirmationTests {
+    /// Stop (#418), mute (#404) and media mode (#551).
+    static let reserved: Set<String> = ["confirmstopped", "confirmidle", "confirmmuted", "confirmunmuted",
+                                        "confirmmediaon", "confirmmediaoff"]
 }
 #endif
