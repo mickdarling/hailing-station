@@ -31,15 +31,16 @@ extension ReplyPlaybackController {
     }
 
     /// The same change as the mute control, so the indicator and status follow.
-    private func setMuted(_ muted: Bool) {
+    func setMuted(_ muted: Bool) {
         if muted != isMuted { toggleMute() }
     }
 
-    /// The host's `stop_playback` (#309): silence the player at once and drop that host's queued replies.
+    /// The host's `stop_playback` (#309): silence the player at once and drop that host's queued replies, or every
+    /// host's when `endpointID` is nil (the headset's pause, `+Headset`).
     /// The player is shared, so whatever it was playing or holding stops too, whichever host sent it. Every
     /// stopped reply is marked complete, so its later frames are ignored instead of starting it again.
-    func stopPlayback(from endpointID: HostEndpoint.Identifier) {
-        let stopped = Set(playbackOrder).union(queue.filter { $0.endpointID == endpointID })
+    func stopPlayback(from endpointID: HostEndpoint.Identifier?) {
+        let stopped = Set(playbackOrder).union(queue.filter { endpointID == nil || $0.endpointID == endpointID })
         guard !stopped.isEmpty else { return }
         player.cancel()
         playbackGeneration &+= 1
