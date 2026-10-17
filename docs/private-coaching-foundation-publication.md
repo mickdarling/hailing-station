@@ -12,15 +12,23 @@ owning files/tests/docs; historical intermediate versions are not separate deliv
 
 Existing foundation #514, #516, #518 and #549 cover lifetime, wire/consumer, renderer/monitor and
 capture-run identity. #553 adds fixed Mac output evidence/binding; #557 adds Apple/native ownership.
-The remaining bounded branches publish foreground lifetime, child control, codec/transport/configuration,
-joined speech, explicit command/keyboard, test-only entry/cleanup fences and verifier lane registration.
+The bounded #561–#566 branches publish foreground lifetime, child control, codec/transport/configuration,
+joined speech, explicit command/keyboard and test-only entry/cleanup fences. This follow-through carries
+verifier registration and the late #557/#561 corrections with original commit references; later bounded
+follow-through units carry #562/#563/#565 corrections without rewriting earlier published histories.
 Every source unit stays within the authoritative four-production-file limit.
 
-A complete-tree comparison against the corrected anchor must account for these deliberate differences:
+A complete-tree comparison for this follow-through against the corrected anchor accounts for:
 
-- ApplePrivateCoaching renewal failure cleanup tracks the exact lease rather than only its generation.
-  The stale-call and output-observer schedules fail before the correction; newer advice/capture remain
-  usable afterward. Its owning regression and adapter documentation accompany the source correction.
+- ApplePrivateCoaching Begin-registration and renewal cleanup track the exact lease rather than only
+  its generation. Authored same-generation renewal/reentry cases fail before correction and preserve
+  newer capture/advice afterward. Tests also establish that partial-start nil cleanup and the core's
+  suspended-hook transition fence already work. The test-only suspension hook and owning regressions
+  are deliberate fixture additions, without a new public production accessor or capture backend.
+- ForegroundCoaching retires the current run when an effect observes its original run/lease deadline.
+  Timer delivery is deliberately withheld at the 900-second boundary while the short capture lease
+  remains valid; exact-boundary and later cases fail before correction, while earlier controls work.
+  A changed lease or epoch cannot give an old operation cleanup authority over a successor.
 - This source publication preserves the foundation prerequisite's existing marketing version 0.1.111,
   rather than copying the aggregate's historical 0.1.158. It is not a new installed build.
 - This provenance document is additional documentation.
@@ -40,8 +48,9 @@ No skipped case establishes a producer-to-playback round trip.
 The original aggregate, #509–#513 and downstream Mac branches retain their histories. Publishing this
 replacement foundation does not automatically reconnect those downstream branches. Their source join,
 any resulting new review, maintainer merge and later delivery are separate work; no install, active
-validator change or deployment follows from this provenance record. The renewal correction must be
-carried into the eventual integration before a replacement build is delivered.
+validator change or deployment follows from this provenance record. All late corrections must be
+included in the eventual verified integration before a replacement build is delivered. Source content
+coverage does not replace current-head independent reviews, required second keys or actual hosted CI.
 
 Useful private coaching (#266/#524), actual Superwhisper coexistence, speaker double-talk/barge-in
 and conferencing/system audio (#525) still require their own acceptance evidence. The user-confirmed
