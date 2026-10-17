@@ -293,6 +293,9 @@ public actor RightyoInputConsumer {
     private(set) var lastVoiceMedia: VoiceMedia.Command?
     /// Whether media phrases are commands (#551): only when the child has a control descriptor to carry them.
     private let mediaCommands: Bool
+    /// The owner's note to an allowlisted destination (#552), held back like `lastVoiceMute`; nil for any other line.
+    private(set) var lastVoiceDestination: VoiceDestinations.Command?
+    private let destinations: VoiceDestinations?
     /// `streamBudgetMs` is an optional ceiling on producer stream time; the default is no ceiling (#188).
     /// `dispatcher` replaces the direct `HailHost.send` step (#188 item 1); without it, `host` delivers directly
     /// and nil `host` validates only. A dispatcher with no host still delivers (it owns its own host access).
@@ -301,13 +304,13 @@ public actor RightyoInputConsumer {
     public init(host: HailHost?, target: String, binding: String, session: String,
                 allowSynthetic: Bool = false, streamBudgetMs: Int? = nil,
                 dispatcher: (any RightyoDispatching)? = nil, echoFilter: (@Sendable (String) -> Bool)? = nil,
-                mediaCommands: Bool = false) throws {
+                mediaCommands: Bool = false, destinations: VoiceDestinations? = nil) throws {
         guard !binding.isEmpty, RightyoInputEvent.identifier(session), streamBudgetMs.map({ $0 >= 0 }) ?? true else {
             throw RightyoInputError.unavailableBinding
         }
         try Self.validateTarget(target)
         self.dispatcher = dispatcher ?? host.map { RightyoHostDispatcher(host: $0) }
-        (self.echoFilter, self.mediaCommands) = (echoFilter, mediaCommands)
+        (self.echoFilter, self.mediaCommands, self.destinations) = (echoFilter, mediaCommands, destinations)
         self.allowSynthetic = allowSynthetic
         self.target = target
         self.binding = binding
@@ -338,7 +341,7 @@ public actor RightyoInputConsumer {
         lastReceipt = nil
         lastDismissal = nil
         lastVoiceMute = nil
-        lastVoiceMedia = nil
+        (lastVoiceMedia, lastVoiceDestination) = (nil, nil)
         do {
             guard try admit(event) else { return false }
             if event.type == "override" { return true }
@@ -354,10 +357,7 @@ public actor RightyoInputConsumer {
             // enrolled session only a turn both its transcript and its attention record call the owner's (`owners`)
             // counts; anyone else's is a request like any other. On an anonymous one any voice counts (see
             // `VoiceMute`): the mute is device-local and reversible.
-            if let turn = event.turn, speakers != "enrolled" || owners.contains(turn.utteranceId),
-               holdsVoiceCommand(turn.text) {
-                return false
-            }
+            if let turn = event.turn, holdsVoiceCommand(turn) { return false }
             busy = true
             defer { busy = false }
             do {
@@ -433,10 +433,19 @@ public actor RightyoInputConsumer {
 }
 
 extension RightyoInputConsumer {
-    /// Leaves a spoken mute (#404) or media mode (#551) in `lastVoiceMute` or `lastVoiceMedia`; true when `heard` was
+    /// Leaves a spoken mute (#404) or media mode (#551) in `lastVoiceMute` or `lastVoiceMedia`; true when `turn` was
     /// one. Media mode follows the mute's rule: it only changes what this host's RightyO attends to. Without
-    /// `mediaCommands` (no control descriptor to carry it) a media phrase is a request like any other.
-    private func holdsVoiceCommand(_ heard: String) -> Bool {
+    /// `mediaCommands` (no control descriptor to carry it) a media phrase is a request like any other. A note to a
+    /// destination (#552) writes the owner's data, so it needs an enrolled session and the owner's turn; it is left
+    /// in `lastVoiceDestination`.
+    private func holdsVoiceCommand(_ turn: RightyoInputEvent.Turn) -> Bool {
+        let owner = owners.contains(turn.utteranceId)
+        if speakers == "enrolled", owner, let note = destinations?.command(in: turn.text, names: voiceNames) {
+            lastVoiceDestination = note
+            return true
+        }
+        guard speakers != "enrolled" || owner else { return false }
+        let heard = turn.text
         if let command = VoiceMute.command(in: heard, names: voiceNames) {
             lastVoiceMute = command
         } else if mediaCommands, let command = VoiceMedia.command(in: heard, names: voiceNames) {
