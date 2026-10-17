@@ -22,13 +22,16 @@ A complete-tree comparison for this follow-through against the corrected anchor 
 
 - ApplePrivateCoaching Begin-registration and renewal cleanup track the exact lease rather than only
   its generation. Authored same-generation renewal/reentry cases fail before correction and preserve
-  newer capture/advice afterward. Tests also establish that partial-start nil cleanup and the core's
+  newer capture/advice afterward. Monitor cleanup also handles nil-core retirement after ledger exhaustion
+  or clock expiry. Lifecycle revisions fence reentrant Stop/Begin from monitor disarm, startup, explicit
+  retirement and renderer-denial cleanup; an old operation cannot overwrite a successor. Tests also establish that partial-start nil cleanup and the core's
   suspended-hook transition fence already work. The test-only suspension hook and owning regressions
   are deliberate fixture additions, without a new public production accessor or capture backend.
 - ForegroundCoaching retires the current run when an effect observes its original run/lease deadline.
   Timer delivery is deliberately withheld at the 900-second boundary while the short capture lease
   remains valid; exact-boundary and later cases fail before correction, while earlier controls work.
-  A changed lease or epoch cannot give an old operation cleanup authority over a successor.
+  A changed lease or epoch cannot give an old operation cleanup authority over a successor. The run
+  deadline is sampled before capture startup; a 500ms qualification-send delay cannot extend that budget.
 - This source publication preserves the foundation prerequisite's existing marketing version 0.1.111,
   rather than copying the aggregate's historical 0.1.158. It is not a new installed build.
 - This provenance document is additional documentation.
