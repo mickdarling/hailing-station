@@ -70,10 +70,9 @@ public final class ForegroundCoaching {
                 buffer: { [weak self] in self?.forward($0, lease: $1, epoch: id) },
                 suspended: { [weak self] _, _ in self?.off(epoch: id) }
             ))
+            let startedAt = clock.now()
             guard starting(id) else { owner.stop(); throw ForegroundCoachingError.startupLost }
             audio = owner
-            let startedAt = clock.now()
-            guard starting(id) else { throw ForegroundCoachingError.startupLost }
             let runDeadline = startedAt.advanced(by: .seconds(900))
             deadline = runDeadline // Record before begin can activate capture; startup cannot extend it.
             let qualified = try owner.begin(sessionID: sessionID, destinationID: destinationID, consentConfirmed: true)
