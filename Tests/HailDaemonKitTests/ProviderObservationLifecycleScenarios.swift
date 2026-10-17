@@ -116,26 +116,33 @@ func observedStoppedWrite(lines: Int) async throws {
     await rig.adapter.setEmission([])
     try await rig.host.withObservedSession(target: ObservedRig.target,
                                                  configuration: rig.configuration()) { session in
-        let text = lines == 1 ? "invented first" : "invented first\ninvented second"
-        let input = Task { try await session.submit(text, utteranceID: UUID()) }
-        await rig.adapter.dispatch.arrivals.wait()
-        let proposed = try #require(await rig.adapter.delivered.first)
-        await session.stop()
-        #expect(rig.adapter.cancellations.count == 1)
-        #expect(await session.status == .stopped)
-        #expect(await session.state(for: proposed.id) == nil)
-        await rig.adapter.dispatch.release()
-        if lines == 1 {
-            #expect(try rig.sent(try await input.value) == proposed)
-            #expect(await session.state(for: proposed.id) == .sent)
-        } else {
-            await #expect(throws: HostError.partial(delivered: ["invented first"], reason: "delivery cancelled")) {
-                try await input.value
+        try await observedWriteFailureCleanup(rig, session: session) {
+            let text = lines == 1 ? "invented first" : "invented first\ninvented second"
+            let completed = ObservedCounter()
+            let input = Task {
+                defer { completed.increment() }
+                return try await session.submit(text, utteranceID: UUID())
             }
+            try await observedAwaitDispatch(rig, input: input, completed: completed)
+            let proposed = try #require(await rig.adapter.delivered.first)
+            await session.stop()
+            #expect(rig.adapter.cancellations.count == 1)
+            #expect(await session.status == .stopped)
             #expect(await session.state(for: proposed.id) == nil)
+            await rig.adapter.dispatch.release()
+            try await observedAwaitStoppedInput(completed)
+            if lines == 1 {
+                #expect(try rig.sent(try await input.value) == proposed)
+                #expect(await session.state(for: proposed.id) == .sent)
+            } else {
+                await #expect(throws: HostError.partial(delivered: ["invented first"], reason: "delivery cancelled")) {
+                    try await input.value
+                }
+                #expect(await session.state(for: proposed.id) == nil)
+            }
+            #expect(await rig.adapter.delivered.count == 1)
+            #expect(try await session.next() == nil)
         }
-        #expect(await rig.adapter.delivered.count == 1)
-        #expect(try await session.next() == nil)
     }
     #expect(rig.adapter.cancellations.count == 1)
 }
