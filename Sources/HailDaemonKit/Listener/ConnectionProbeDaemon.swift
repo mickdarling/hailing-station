@@ -177,6 +177,19 @@ extension ConnectionProbeDaemon {
     }
 
     #if os(macOS)
+    /// A note input (#552) left behind when a haild exited during its Shortcut: removed at the next start, once older
+    /// than any run could still be reading it. Owner-only files in the per-user temporary folder.
+    private static func sweepNoteInputs() {
+        let folder = FileManager.default.temporaryDirectory
+        let names = (try? FileManager.default.contentsOfDirectory(atPath: folder.path)) ?? []
+        for name in names where name.hasPrefix("hail-note-") && name.hasSuffix(".txt") {
+            let file = folder.appendingPathComponent(name)
+            let modified = (try? FileManager.default.attributesOfItem(atPath: file.path))?[.modificationDate] as? Date
+            guard let modified, modified < Date(timeIntervalSinceNow: -300) else { continue }
+            try? FileManager.default.removeItem(at: file)
+        }
+    }
+
     /// Startup validation (#203): the executable and config pass the child's own checks, and the target is
     /// listed, alive and bound. The binding is pinned for the daemon's lifetime, as `haild rightyo` pins it.
     static func ambientRouter(
@@ -202,10 +215,11 @@ extension ConnectionProbeDaemon {
         )
         // Spoken notes (#552): a malformed file leaves them off and says so, rather than refusing to start.
         if let file = options.destinations {
+            sweepNoteInputs()
             do {
                 configuration.destinations = try VoiceDestinations.load(file)
-                log(.init(event: "ambient_destinations",
-                          detail: "count=\(configuration.destinations?.destinations.count ?? 0)"))
+                let count = configuration.destinations.map { "count=\($0.destinations.count)" } ?? "missing"
+                log(.init(event: "ambient_destinations", detail: count))
             } catch {
                 log(.init(event: "ambient_destinations", detail: "error=\(error)"))
             }

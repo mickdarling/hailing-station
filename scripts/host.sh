@@ -38,11 +38,14 @@ usage: scripts/host.sh <install|plist|restart|deploy|status> [options]
 host.json: {"bind": "127.0.0.1", "port": 8765, "hostID": "optional", "singleTerminalReplyFallback": true,
             "deviceDiagnostics": false,
             "ambient": {"rightyo": "/abs/path", "config": "/abs/path", "target": "tmux:name",
-                        "ackClips": "/abs/optional-clip-folder", "replyControl": false}}
+                        "ackClips": "/abs/optional-clip-folder", "replyControl": false,
+                        "destinations": "/abs/optional-destinations.json"}}
 Ambient listening requires "singleTerminalReplyFallback": true. "ackClips" (optional) holds <persona>/*.wav
 acknowledgement clips played on each admitted request; missing clips leave acknowledgements off.
 "replyControl" (optional, needs "deviceDiagnostics": true and a RightyO with --control-fd) sends the phone's
 reply playback start and end to RightyO, which times conversation follow-ups from the end of the spoken reply.
+"destinations" (optional) allowlists the Shortcuts the enrolled owner's spoken notes may run (#552); it is read at
+start, so a new or changed file needs a restart.
 USAGE
 }
 

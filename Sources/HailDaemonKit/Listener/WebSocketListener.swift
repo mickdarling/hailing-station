@@ -1279,8 +1279,9 @@ extension AmbientRightyoRouter {
     }
 
     /// The owner's note to an allowlisted destination (#552): its Shortcut runs, and only once it saved does the
-    /// device that said it hear a `confirm-saved/` clip; a failure plays `confirm-not-saved/`. One at a time per
-    /// connection, in the order said. Logs the destination key, outcome, byte count and clip token; never the words.
+    /// device that said it hear a `confirm-saved/` clip; a failure plays `confirm-not-saved/`. One at a time per run
+    /// (as the mute's chain), in the order said. A note still running when haild exits leaves its input file, which
+    /// the next start sweeps. Logs the destination key, outcome, byte count and clip token; never the words.
     fileprivate func voiceNote(
         on connection: UUID, listener: WebSocketListener
     ) -> @Sendable (String, String, String) -> Void {

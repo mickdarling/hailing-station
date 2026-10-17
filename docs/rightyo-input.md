@@ -638,12 +638,15 @@ The app control and the "Media mode" indicator on the ambient card are a later s
 The owner can say "Jarvis, add to Notes: buy oat milk" or "Jarvis, put this in Notes …" as a whole turn on an enrolled session. `haild` then runs the Apple Shortcut the owner allowlisted for that destination, with the words, as said, as its input. The note is never typed to the agent.
 
 - **Destinations** come from `--ambient-destinations <file>` (`"destinations"` in `host.json`'s `ambient` block), for example `{"Notes": {"shortcut": "Hail to Notes"}}`.
-  - A missing file leaves spoken notes off.
+  - The file is read when haild starts. A new or changed file takes effect after `scripts/host.sh restart`.
+  - A missing file leaves spoken notes off (`ambient_destinations missing`).
   - A malformed file is logged (`ambient_destinations error=…`) and also leaves them off. It never stops the daemon.
+  - The file decides which Shortcut a spoken name runs, so it is trusted only as the RightyO executable is. After symlinks it must be a regular file of at most 64 KB, owned by you or root, and not group- or world-writable. The same goes for every directory above it. Otherwise it is `error=unsafe` and off.
+  - The Shortcut runs with a fixed `PATH` plus `HOME` and `TMPDIR`, never the rest of haild's environment.
   - Only names in the file are reachable. Arbitrary Shortcuts can't be run by name.
   - Every destination only saves. Anything that sends waits for #89.
 - **Who:** only the enrolled owner's turn counts. On an anonymous session, or for anyone else, the phrase goes to the agent as before. A destination name followed by `.` or `/` ("notes.md") also stays a request.
-- **Run:** `/usr/bin/shortcuts run <shortcut> --input-path <file>`, with no shell. The words go only into a `0600` temporary file, which is removed afterwards. It times out after 30 s (SIGTERM, then SIGKILL).
+- **Run:** `/usr/bin/shortcuts run <shortcut> --input-path <file>`, with no shell. The words go only into a `0600` temporary file, which is removed afterwards. It times out after 30 s (SIGTERM, then SIGKILL). If haild exits during a run, the file is left behind and is removed at the next start once it is five minutes old.
 - **Confirmation:** only after the Shortcut exits does the device hear a clip from `confirm-saved/` ("Saved."), or from `confirm-not-saved/` when it failed.
 - **Log:** `ambient_voice_note destination=… outcome=… bytes=… confirm=…`, with tokens and a byte count only, never the words.
 
