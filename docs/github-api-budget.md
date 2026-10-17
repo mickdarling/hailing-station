@@ -32,14 +32,15 @@ It prints one line per resource with the remaining budget and the local reset ti
 
 ## Timed pollers
 
-Hailing Station itself has **no timed GitHub pollers**. `haild` and the apps make no GitHub calls. Every workflow in `.github/workflows/` runs on pull request events, not on a schedule.
+Hailing Station itself has **no timed GitHub pollers**. `haild` and the apps make no GitHub calls. Every workflow in `.github/workflows/` runs on pull request or push events, not on a schedule.
 
 The same account's budget is also spent by these, as of 2026-10-17:
 
 | Poller | Interval | Backoff |
 | --- | --- | --- |
 | Agent CI watches (`gh pr checks --watch`, `gh run watch`) | 10 s and 3 s by default, for as long as the run lasts | None: they fail on the first error. Use `--interval 60`. |
-| Project Atlas scan (`com.mickdarling.project-atlas-scan` LaunchAgent) | Once a day at 07:00 | Not checked; runs with `--no-github` to skip GitHub |
-| RightyO review gate (`rightyo` `.github/workflows/ai-review.yml`) | Event-driven: pull request events and manual rechecks, no schedule | Not applicable |
+| Project Atlas scan (`com.mickdarling.project-atlas-scan` LaunchAgent) | Once a day at 07:00: REST `user`, `user/orgs` and `user/emails`, then paged GraphQL for each owner | None: it skips the rest of the GitHub harvest on the first error. `scan.js --no-github` skips GitHub entirely. |
+
+The RightyO review gate (`rightyo` `.github/workflows/ai-review.yml`) is not on this list. It runs on pull request, issue comment, workflow-run and manual-dispatch events with the Actions `GITHUB_TOKEN`, which has its own limit and does not spend the account budget.
 
 Add a row here when a new timed job calls GitHub. Give it a conditional request (ETag) or webhook where one exists, back off on 403 and 429 using `Retry-After` or `x-ratelimit-reset`, and log its call rate.
