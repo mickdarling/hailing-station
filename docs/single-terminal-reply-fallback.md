@@ -48,7 +48,7 @@ requester's answer to another phone.
    `noRecipient`. With two or more, the connection whose ambient stream feeds the active RightyO child receives it
    when it is one of them (#230, logged `reply_routed path=ambient_owner`); otherwise `notUniqueRecipient`. Both
    refusals are the existing codes, logged and returned over the local reply socket the same way; neither permits
-   retry. Ambient-owner routing is validated synthetically (`AmbientOwnerReplyRoutingTests`), not yet by device
+   retry. Ambient-owner routing is validated synthetically (`AmbientWiringOwnerReplyRoutingTests`), not yet by device
    hearing.
 4. A correlated refusal of a known request (duplicate frame ID, wrong audio sequence, pinned descriptor
    mismatch) stays `noRecipient`; the fallback never second-guesses it, because the frame carries a
