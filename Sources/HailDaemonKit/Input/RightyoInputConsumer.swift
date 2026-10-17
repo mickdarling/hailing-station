@@ -291,6 +291,8 @@ public actor RightyoInputConsumer {
     private(set) var lastVoiceMute: VoiceMute.Command?
     /// The owner's spoken media mode (#551), held back like `lastVoiceMute`. Nil for any other line.
     private(set) var lastVoiceMedia: VoiceMedia.Command?
+    /// Whether media phrases are commands (#551): only when the child has a control descriptor to carry them.
+    private let mediaCommands: Bool
     /// `streamBudgetMs` is an optional ceiling on producer stream time; the default is no ceiling (#188).
     /// `dispatcher` replaces the direct `HailHost.send` step (#188 item 1); without it, `host` delivers directly
     /// and nil `host` validates only. A dispatcher with no host still delivers (it owns its own host access).
@@ -298,13 +300,14 @@ public actor RightyoInputConsumer {
     /// guarded id at startup rather than delivering it.
     public init(host: HailHost?, target: String, binding: String, session: String,
                 allowSynthetic: Bool = false, streamBudgetMs: Int? = nil,
-                dispatcher: (any RightyoDispatching)? = nil, echoFilter: (@Sendable (String) -> Bool)? = nil) throws {
+                dispatcher: (any RightyoDispatching)? = nil, echoFilter: (@Sendable (String) -> Bool)? = nil,
+                mediaCommands: Bool = false) throws {
         guard !binding.isEmpty, RightyoInputEvent.identifier(session), streamBudgetMs.map({ $0 >= 0 }) ?? true else {
             throw RightyoInputError.unavailableBinding
         }
         try Self.validateTarget(target)
         self.dispatcher = dispatcher ?? host.map { RightyoHostDispatcher(host: $0) }
-        self.echoFilter = echoFilter
+        (self.echoFilter, self.mediaCommands) = (echoFilter, mediaCommands)
         self.allowSynthetic = allowSynthetic
         self.target = target
         self.binding = binding
@@ -329,17 +332,6 @@ public actor RightyoInputConsumer {
                                                  patterns: DangerousPatternGuard.defaults)
         guard hits.isEmpty else { throw RightyoTargetError.guarded(hits) }
     }
-    /// Leaves a spoken mute (#404) or media mode (#551) in `lastVoiceMute` or `lastVoiceMedia`; true when `heard` was
-    /// one. Media mode follows the mute's rule: it only changes what this host's RightyO attends to.
-    private func holdsVoiceCommand(_ heard: String) -> Bool {
-        if let command = VoiceMute.command(in: heard, names: voiceNames) {
-            lastVoiceMute = command
-        } else if let command = VoiceMedia.command(in: heard, names: voiceNames) {
-            lastVoiceMedia = command
-        }
-        return lastVoiceMute != nil || lastVoiceMedia != nil
-    }
-
     /// True means handled: guarded delivery, or validation only when initialized with no host. An admitted `dismiss`
     /// delivers nothing and returns false; `lastDismissal` then says what it did.
     public func consume(_ event: RightyoInputEvent) async throws -> Bool {
@@ -437,6 +429,20 @@ public actor RightyoInputConsumer {
     public func finish() throws {
         guard terminal, !busy else { throw RightyoInputError.invalidLifecycle }
         if failed { throw RightyoInputError.producerFailed }
+    }
+}
+
+extension RightyoInputConsumer {
+    /// Leaves a spoken mute (#404) or media mode (#551) in `lastVoiceMute` or `lastVoiceMedia`; true when `heard` was
+    /// one. Media mode follows the mute's rule: it only changes what this host's RightyO attends to. Without
+    /// `mediaCommands` (no control descriptor to carry it) a media phrase is a request like any other.
+    private func holdsVoiceCommand(_ heard: String) -> Bool {
+        if let command = VoiceMute.command(in: heard, names: voiceNames) {
+            lastVoiceMute = command
+        } else if mediaCommands, let command = VoiceMedia.command(in: heard, names: voiceNames) {
+            lastVoiceMedia = command
+        }
+        return lastVoiceMute != nil || lastVoiceMedia != nil
     }
 }
 /// Correlation against admitted records lives here so the actor body stays within the type-length limit.

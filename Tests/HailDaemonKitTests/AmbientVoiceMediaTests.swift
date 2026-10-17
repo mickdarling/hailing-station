@@ -39,7 +39,8 @@ import Testing
         #expect(try fake.recorded("control.txt") == "{\"media\":true}\n{\"reply\":\"started\"}\n{\"media\":false}\n")
     }
 
-    @Test func aSpokenMediaCommandIsHandedToTheHostNotTyped() async throws {
+    /// Only with reply control, whose descriptor carries the mode to RightyO; without it the phrase is a request.
+    @Test(arguments: [true, false]) func aSpokenMediaCommandIsHandedToTheHostNotTyped(_ control: Bool) async throws {
         let fake = try FakeRightyo(AmbientVoiceMuteTests.fixture(saying: "Rightyo, media mode."))
         defer { fake.cleanUp() }
         try fake.install(fixture: "tool-events.jsonl")
@@ -50,11 +51,12 @@ import Testing
         )
         configuration.onVoiceMedia = { on in seen.withLock { $0.append(on) } }
         configuration.onVoiceMute = { _ in mutes.withLock { $0 += 1 } }
+        configuration.replyControl = control
         let dispatcher = RecordingAmbientDispatcher()
         let pipeline = try RightyoAmbientPipeline(configuration: configuration, dispatcher: dispatcher)
         pipeline.finishInput()
-        #expect(try await pipeline.run().delivered == 0)
-        #expect(seen.withLock { $0 } == [true] && mutes.withLock { $0 } == 0)
+        #expect(try await pipeline.run().delivered == (control ? 0 : 1))
+        #expect(seen.withLock { $0 } == (control ? [true] : []) && mutes.withLock { $0 } == 0)
     }
 
     /// End to end through the listener: the phrase turns media mode on in the stream's child and is confirmed on the
@@ -99,6 +101,43 @@ import Testing
         await env.listener.stop(reason: "synthetic test complete")
         #expect(details.withLock { $0 } == ["on=true reason=voice reported=1", "on=false reason=timeout reported=1"])
         #expect(try fake.recorded("control.txt") == "{\"media\":true}\n{\"media\":false}\n")
+    }
+
+    /// A child reloaded while media mode is on is told at registration, before anything it hears is decided.
+    @Test func aReloadedChildIsToldMediaModeIsOn() async throws {
+        let fake = try FakeRightyo("/bin/cat <&3 >> control.txt &\n"
+            + AmbientVoiceMuteTests.fixture(saying: "Rightyo, media mode."))
+        defer { fake.cleanUp() }
+        try fake.install(fixture: "tool-events.jsonl")
+        let details = Mutex<[String]>([])
+        let env = try await ambientRig(
+            fake, timing: .init(eofGrace: 20, termGrace: 20), replyControl: true,
+            onEvent: { event in
+                if event.event == "ambient_media" { details.withLock { $0.append(event.detail ?? "") } }
+            }
+        )
+        let (session, socket) = try recipientSocket(port: env.port)
+        defer {
+            socket.cancel(with: .normalClosure, reason: nil)
+            session.invalidateAndCancel()
+        }
+        try await recipientSocketSend(sessionFrame(payload: .control(.hello(HelloInfo(
+            versions: [1], capabilities: [], deviceName: "test"
+        )))), on: socket)
+        _ = try await recipientSocketReceive(on: socket)
+        try await recipientSocketSend(sessionFrame(payload: .control(.select(targetID: RecipientTestRig.target))),
+                                      on: socket)
+        try await recipientSocketBarrier(on: socket)
+        let stream = UUID()
+        try await recipientSocketSend(audio(stream, 0), on: socket)
+        #expect(await eventually { details.withLock { $0.count == 1 } })
+        #expect(await env.router.reload() == .reloaded)
+        // The old child's line, the new child's carried line, then the new child's own replayed phrase.
+        let three = String(repeating: "{\"media\":true}\n", count: 3)
+        #expect(await eventually { (try? fake.recorded("control.txt")) == three })
+        try await recipientSocketSend(audio(stream, 1, final: true), on: socket)
+        await env.router.settle()
+        await env.listener.stop(reason: "synthetic test complete")
     }
 }
 #endif

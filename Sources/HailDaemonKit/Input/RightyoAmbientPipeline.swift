@@ -128,7 +128,8 @@ public final class RightyoAmbientPipeline: Sendable {
                                               acknowledge: { relay.fire() }, heard: { await heard.deliver() })
         consumer = try RightyoInputConsumer(host: nil, target: configuration.target, binding: configuration.binding,
                                             session: session, allowSynthetic: configuration.allowSynthetic,
-                                            dispatcher: step, echoFilter: configuration.isEcho)
+                                            dispatcher: step, echoFilter: configuration.isEcho,
+                                            mediaCommands: configuration.replyControl)
         child = try RightyoChildProcess(executable: configuration.executable, config: configuration.config,
                                         session: session, timing: configuration.timing,
                                         replyControl: configuration.replyControl,
