@@ -2,6 +2,10 @@
 
 Read README.md, CONTRIBUTING.md, and the relevant issue/design documents before implementation. Issues are the work records; changes use issue-linked PRs. Preserve the Apple-first, audio-first, provider-neutral architecture and distinguish proposed behavior from shipped or physically validated behavior. Never commit private endpoints, identities, transcripts, recordings, credentials, signing material, or generated build products.
 
+## GitHub API budget
+
+Every session on the host shares one GitHub account budget. Read `docs/github-api-budget.md` before searching or watching CI: one combined search per question, check the budget once on a rate-limit error, never retry in a loop.
+
 ## PR-shape: mandatory preflight and error handling
 
 Read `scripts/pr-shape.py` and `.github/pull_request_template.md` **before creating any PR**, not only after CI fails. The checker is authoritative; do not rely on a remembered format. See CONTRIBUTING.md for the maintainer workflow.
