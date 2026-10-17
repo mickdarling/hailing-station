@@ -52,13 +52,15 @@ final class RightyoCoachingControlWriter: Sendable {
         var draining = false, failed = false, locallyClosed = false
     }
     private let state: Mutex<State>
-    private let queue = DispatchQueue(label: "hailing.rightyo.coaching-control")
+    private let queue: DispatchQueue
     private let watcher: any DispatchSourceTimer
     private let revocation: RightyoOutputRevocation?
     private let failed: @Sendable () -> Void
     init(_ descriptor: Int32?, revocation: RightyoOutputRevocation? = nil,
+         queue: DispatchQueue = DispatchQueue(label: "hailing.rightyo.coaching-control"),
          failed: @escaping @Sendable () -> Void) {
         state = Mutex(State(descriptor: descriptor)); self.failed = failed; self.revocation = revocation
+        self.queue = queue
         watcher = DispatchSource.makeTimerSource(queue: queue)
         watcher.schedule(deadline: .now(), repeating: .milliseconds(25), leeway: .milliseconds(5))
         watcher.setEventHandler { [weak self] in _ = self?.peerAvailable() }
@@ -85,13 +87,19 @@ final class RightyoCoachingControlWriter: Sendable {
 
     func close() {
         watcher.cancel()
-        state.withLock { current in
-            guard let fd = current.descriptor else { return }
+        let notify = state.withLock { current -> Bool in
+            guard let fd = current.descriptor else { return false }
+            var peer = pollfd(fd: fd, events: Int16(POLLERR | POLLHUP), revents: 0)
+            guard poll(&peer, 1, 0) >= 0, peer.revents & Int16(POLLERR | POLLHUP | POLLNVAL) == 0 else {
+                return revoke(&current)
+            }
             current.locallyClosed = true
             revocation?.noteGracefulInputClosure()
             Darwin.close(fd)
             current.descriptor = nil; current.lines.removeAll(); current.bytes = 0
+            return false
         }
+        if notify { failed() }
     }
 
     /// Poll and close share descriptor ownership; a queued old probe cannot inspect a reused fd.
