@@ -127,8 +127,8 @@ host-identity item in #230 is separate work.
 - The app's "disconnect from this Mac" control, and deselecting the reply target when ambient listening is
   turned off.
 
-Verification is synthetic only (`AmbientReplyReferenceTests`, `AmbientReplyReferenceRoutingTests`,
-`AmbientReplyReferenceScopeTests`, `AmbientWiringReplyReferenceTests`). It is not device hearing, and nothing here changes the running daemon or
+Verification is synthetic only (`AmbientWiringReplyBlockTests`, `AmbientWiringReplyReferenceRoutingTests`,
+`AmbientWiringReplyReferenceScopeTests`, `AmbientWiringReplyReferenceTests`). It is not device hearing, and nothing here changes the running daemon or
 installed builds until deployed.
 
 ## Unified reply routing: the last input device (#370)
@@ -189,7 +189,7 @@ child had already admitted; that dispatch is the previous device's input and mak
 until the new device speaks.
 
 Verification is synthetic only (`LastInputReplyRoutingTests`, `LastInputRecordTests`, and the updated
-`SingleTerminalReplyFallbackTests`, `AmbientReplyReferenceRoutingTests`, `AmbientWiringReplyReferenceTests`):
+`SingleTerminalReplyFallbackTests`, `AmbientWiringReplyReferenceRoutingTests`, `AmbientWiringReplyReferenceTests`):
 loopback devices and a fake tmux-kind adapter, not device hearing. Nothing here changes the running daemon or
 installed builds until deployed.
 

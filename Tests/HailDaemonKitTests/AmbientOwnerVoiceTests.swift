@@ -7,7 +7,7 @@ import Testing
 
 /// rightyo#164 / rightyo#172: RightyO says when the owner's voice is not recognised on this input; haild opts the child
 /// in, passes the device's route kind, and shows the status only on the device whose stream it is. Synthetic only.
-@Suite(.serialized, .timeLimit(.minutes(1))) struct AmbientOwnerVoiceTests {
+@Suite(.serialized, .timeLimit(.minutes(1))) struct AmbientWiringOwnerVoiceTests {
     private static func line(_ fields: String, sequence: Int = 2) throws -> RightyoInputEvent {
         let prefix = #"{"schema_version": 1, "session_id": "s", "sequence": \#(sequence), "emitted_at_ms": 0, "#
         return try RightyoInputEvent.decode(Data((prefix + fields + "}").utf8))
@@ -119,27 +119,37 @@ import Testing
         let fake = try FakeRightyo(Self.fixture)
         defer { fake.cleanUp() }
         try fake.install(fixture: "tool-events.jsonl")
-        let logged = Mutex<[String]>([])
+        let logged = Mutex<[String]>([]), diagnosis = Mutex<[String]>([])
         let env = try await ambientRig(fake, timing: .init(eofGrace: 20, termGrace: 20), onEvent: { event in
+            if ["ambient_refused", "ambient_ended", "ambient_input_closed"].contains(event.event) {
+                diagnosis.withLock { if $0.count < 16 { $0.append("\(event.event): \(event.detail ?? "")") } }
+            }
             if event.event == "ambient_owner_voice" { logged.withLock { $0.append(event.detail ?? "") } }
         })
-        let pair = try await FallbackSocketPair.connect(
-            port: env.port, selecting: [RecipientTestRig.target],
-            capabilities: ["probe"] + (capable ? [OwnerVoice.capability] : [])
-        )
-        defer { pair.close() }
-        let socket = pair.sockets[0]
-        try await recipientSocketSend(sessionFrame(payload: .control(.ambientInput(route: "usb_audio"))), on: socket)
-        let stream = UUID()
-        try await recipientSocketSend(audio(stream, 0), on: socket)
-        try await recipientSocketSend(audio(stream, 1, final: true), on: socket)
-        #expect(await eventually { logged.withLock { !$0.isEmpty } })
-        #expect(logged.withLock { $0 } == ["state=unrecognized device=\(capable ? "sent" : "unsupported")"])
-        if capable {
-            #expect(try await receiveFrame(on: socket, step: "owner voice").payload
-                == .control(.ownerVoice(state: "unrecognized")))
+        do {
+            let pair = try await FallbackSocketPair.connect(
+                port: env.port, selecting: [RecipientTestRig.target],
+                capabilities: ["probe"] + (capable ? [OwnerVoice.capability] : [])
+            )
+            defer { pair.close() }
+            let socket = pair.sockets[0]
+            try await recipientSocketSend(
+                sessionFrame(payload: .control(.ambientInput(route: "usb_audio"))), on: socket)
+            let stream = UUID()
+            try await recipientSocketSend(audio(stream, 0), on: socket)
+            try await recipientSocketSend(audio(stream, 1, final: true), on: socket)
+            try #require(await eventually { logged.withLock { !$0.isEmpty } },
+                         "No owner-voice outcome (capable=\(capable)); lifecycle: \(diagnosis.withLock { $0 })")
+            #expect(logged.withLock { $0 } == ["state=unrecognized device=\(capable ? "sent" : "unsupported")"])
+            if capable {
+                let received = try await receiveFrame(on: socket, step: "owner voice").payload
+                #expect(received == .control(.ownerVoice(state: "unrecognized")), "capable=\(capable)")
+            }
+            await env.router.settle()
+        } catch {
+            await env.listener.stop(reason: "synthetic test failure")
+            throw error
         }
-        await env.router.settle()
         await env.listener.stop(reason: "synthetic test complete")
     }
 }

@@ -7,7 +7,7 @@ import Testing
 
 /// Overheard remarks (#398): turns RightyO heard but did not send reach only the device that heard them, only within
 /// the scope it asked for, before that stream's later requests, and never as the assistant's own echo.
-@Suite(.serialized, .timeLimit(.minutes(1))) struct AmbientOverheardTests {
+@Suite(.serialized, .timeLimit(.minutes(1))) struct AmbientWiringOverheardTests {
     static let capable = ["probe", AmbientHeard.capability, AmbientOverheard.capability]
     static let clip = AmbientAckClip(pcm: Data(repeating: 1, count: 480), sampleRate: 24_000, text: "On it.")
 
@@ -90,7 +90,7 @@ import Testing
     /// request's own words; with the default `off`, nothing overheard is sent.
     @Test(arguments: [true, false])
     func thePhoneGetsOverheardTurnsOnlyWithinItsScope(everyone: Bool) async throws {
-        let fake = try FakeRightyo(AmbientAcknowledgementTests.fixtureWithNames)
+        let fake = try FakeRightyo(AmbientWiringAcknowledgementTests.fixtureWithNames)
         defer { fake.cleanUp() }
         try fake.install(fixture: "tool-events.jsonl")
         let acknowledged = Mutex(false)
