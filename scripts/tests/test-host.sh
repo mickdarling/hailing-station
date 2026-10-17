@@ -163,6 +163,11 @@ bad_config "ack clips without ambient" \
 bad_config "relative ack clips path" \
   '{"bind": "127.0.0.1", "port": 8765, "singleTerminalReplyFallback": true,
     "ambient": {"rightyo": "/bin/sh", "config": "/etc/hosts", "target": "tmux:t", "ackClips": "clips"}}'
+bad_config "destinations without ambient" \
+  '{"bind": "127.0.0.1", "port": 8765, "singleTerminalReplyFallback": true, "ambient": {"destinations": "/d.json"}}'
+bad_config "relative destinations path" \
+  '{"bind": "127.0.0.1", "port": 8765, "singleTerminalReplyFallback": true,
+    "ambient": {"rightyo": "/bin/sh", "config": "/etc/hosts", "target": "tmux:t", "destinations": "d.json"}}'
 bad_config "reply control without ambient" \
   '{"bind": "127.0.0.1", "port": 8765, "singleTerminalReplyFallback": true, "deviceDiagnostics": true,
     "ambient": {"replyControl": true}}'
@@ -176,7 +181,7 @@ bad_config "target that is a flag" \
 # A full config becomes exactly these daemon arguments, with the host ID in the environment.
 printf '%s\n' "{\"bind\": \"127.0.0.1\", \"port\": 8765, \"hostID\": \"studio.local\",
   \"singleTerminalReplyFallback\": true, \"deviceDiagnostics\": true, ${ambient%\}}, \"ackClips\": \"/clips\",
-  \"replyControl\": true}}" \
+  \"destinations\": \"/d.json\", \"replyControl\": true}}" \
   > "$HAIL_CONFIG_DIR/host.json"
 "$host" plist > "$scratch/agent.plist"
 plutil -lint -s "$scratch/agent.plist" >/dev/null
@@ -186,7 +191,7 @@ for (( i = 0; i < count; i++ )); do arguments+=("$(plutil -extract "ProgramArgum
 expected=("$(release_dir one)/haild" run --bind 127.0.0.1 --port 8765 --personal-terminal
   --single-terminal-reply-fallback --device-diagnostics
   --ambient-rightyo /bin/sh --ambient-rightyo-config /etc/hosts --ambient-target tmux:t --ambient-ack-clips /clips
-  --ambient-reply-control)
+  --ambient-destinations /d.json --ambient-reply-control)
 [[ "${arguments[*]}" == "${expected[*]}" ]] || fail "unexpected arguments: ${arguments[*]}"
 [[ "$(plutil -extract EnvironmentVariables.HAIL_HOST_ID raw -o - "$scratch/agent.plist")" == studio.local ]] \
   || fail "host ID not in the environment"

@@ -32,6 +32,15 @@ import Testing
         #expect(options.ambient?.ackClips == URL(fileURLWithPath: "/Users/me/.config/hail/ack-clips"))
     }
 
+    @Test func theDestinationsFileRidesWithTheAmbientFlags() throws {
+        let options = try ConnectionProbeDaemon.options(
+            Self.base + Self.personal + Self.ambient + ["--ambient-destinations", "/Users/me/.config/hail/d.json"]
+        )
+        #expect(options.ambient?.destinations == URL(fileURLWithPath: "/Users/me/.config/hail/d.json"))
+        #expect(try ConnectionProbeDaemon.options(Self.base + Self.personal + Self.ambient).ambient?.destinations
+                == nil)
+    }
+
     @Test func replyControlNeedsAmbientAndDeviceDiagnostics() throws {
         let control = ["--ambient-reply-control"], diagnostics = ["--device-diagnostics"]
         let on = try ConnectionProbeDaemon.options(Self.base + Self.personal + diagnostics + Self.ambient + control)
@@ -69,6 +78,10 @@ import Testing
         refused.append(head + ambient + ["--ambient-ack-clips", "clips"])
         refused.append(head + ambient + ["--ambient-ack-clips"])
         refused.append(head + ambient + ["--ambient-ack-clips", "/a", "--ambient-ack-clips", "/b"])
+        // Note destinations (#552): the same rules.
+        refused.append(head + ["--ambient-destinations", "/d.json"])
+        refused.append(head + ambient + ["--ambient-destinations", "d.json"])
+        refused.append(head + ambient + ["--ambient-destinations", "/a", "--ambient-destinations", "/b"])
         return refused
     }()
 

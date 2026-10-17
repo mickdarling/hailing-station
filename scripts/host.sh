@@ -38,11 +38,14 @@ usage: scripts/host.sh <install|plist|restart|deploy|status> [options]
 host.json: {"bind": "127.0.0.1", "port": 8765, "hostID": "optional", "singleTerminalReplyFallback": true,
             "deviceDiagnostics": false,
             "ambient": {"rightyo": "/abs/path", "config": "/abs/path", "target": "tmux:name",
-                        "ackClips": "/abs/optional-clip-folder", "replyControl": false}}
+                        "ackClips": "/abs/optional-clip-folder", "replyControl": false,
+                        "destinations": "/abs/optional-destinations.json"}}
 Ambient listening requires "singleTerminalReplyFallback": true. "ackClips" (optional) holds <persona>/*.wav
 acknowledgement clips played on each admitted request; missing clips leave acknowledgements off.
 "replyControl" (optional, needs "deviceDiagnostics": true and a RightyO with --control-fd) sends the phone's
 reply playback start and end to RightyO, which times conversation follow-ups from the end of the spoken reply.
+"destinations" (optional) allowlists the Shortcuts the enrolled owner's spoken notes may run (#552); it is read at
+start, so a new or changed file needs a restart.
 USAGE
 }
 
@@ -126,8 +129,9 @@ load_daemon_arguments() {
   read_string ambient.config; rightyo_config="$VALUE"
   read_string ambient.target; target="$VALUE"
   read_string ambient.ackClips; ack_clips="$VALUE"
-  if [[ -n "$ack_clips" && -z "$rightyo$rightyo_config$target" ]]; then
-    fail "ambient \"ackClips\" needs the other ambient settings"
+  read_string ambient.destinations; destinations="$VALUE"
+  if [[ -n "$ack_clips$destinations" && -z "$rightyo$rightyo_config$target" ]]; then
+    fail "ambient \"ackClips\" and \"destinations\" need the other ambient settings"
   fi
   if [[ -n "$rightyo$rightyo_config$target" ]]; then
     [[ "$rightyo" == /* && "$rightyo_config" == /* && -n "$target" ]] \
@@ -144,6 +148,11 @@ load_daemon_arguments() {
       # Missing clips only turn acknowledgements off in the daemon; a relative path is refused here.
       [[ "$ack_clips" == /* ]] || fail "ambient \"ackClips\" must be an absolute path"
       DAEMON_ARGS+=(--ambient-ack-clips "$ack_clips")
+    fi
+    if [[ -n "$destinations" ]]; then
+      # Spoken notes (#552): a missing file leaves them off in the daemon; a relative path is refused here.
+      [[ "$destinations" == /* ]] || fail "ambient \"destinations\" must be an absolute path"
+      DAEMON_ARGS+=(--ambient-destinations "$destinations")
     fi
     if read_flag ambient.replyControl; then
       [[ "$diagnostics" == true ]] || fail "ambient \"replyControl\" needs \"deviceDiagnostics\": true"
