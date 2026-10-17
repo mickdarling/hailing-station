@@ -59,7 +59,7 @@ import Testing
 
     @Test func renewalInsideActivityCallbackHoldsOldFinalWithoutRetiringRenewedOwner() async throws {
         let rig = try CoachingTransportRig(tail: CoachingTransportRig.final, renew: true)
-        try await rig.run()
+        try await rig.run(until: { rig.flagsCalls == 1 })
         #expect(rig.flagsCalls == 1 && rig.transport?.finalCount == 1)
         #expect(rig.driver.status == .active && rig.capture.stops == 0 && rig.player.played == 0)
         #expect(rig.audio?.session.qualification != rig.original)
@@ -68,7 +68,7 @@ import Testing
 
     @Test func callbackOffCannotPublishActivityOrPlayback() async throws {
         let rig = try CoachingTransportRig(tail: CoachingTransportRig.final, off: true)
-        try await rig.run()
+        try await rig.run(until: { rig.flagsCalls == 1 && rig.driver.status != .active })
         #expect(rig.flagsCalls == 1 && rig.driver.status != .active && rig.player.played == 0)
         try await rig.join()
     }
@@ -77,13 +77,12 @@ import Testing
         let action = """
         printf '{"schema_version":1,"type":"request","session_id":"%s","sequence":2,"emitted_at_ms":0}\\n' "$session"
         """
-        for tail in [action, CoachingTransportRig.final.replacingOccurrences(of: "\"sequence\":2",
-                                                                             with: "\"sequence\":9"),
-                     CoachingTransportRig.final + "\n" + CoachingTransportRig.final.replacingOccurrences(
-                        of: "\"sequence\":2", with: "\"sequence\":3")] {
+        for (name, tail) in [("action", action), ("wrong-sequence", CoachingTransportRig.final.replacingOccurrences(
+            of: "\"sequence\":2", with: "\"sequence\":9")), ("duplicate-final", CoachingTransportRig.final + "\n"
+                + CoachingTransportRig.final.replacingOccurrences(of: "\"sequence\":2", with: "\"sequence\":3"))] {
             let rig = try CoachingTransportRig(tail: tail)
-            try await rig.run()
-            #expect(rig.driver.status != .active && rig.player.played == 0)
+            try await rig.run(until: { rig.driver.status != .active })
+            #expect(rig.driver.status != .active && rig.player.played == 0, "Malformed tail: \(name)")
             try await rig.join()
         }
     }
@@ -175,10 +174,15 @@ import Testing
         exec /bin/sleep 60
         """
     }
-    func run() async throws {
+    func run(until observed: (() -> Bool)? = nil) async throws {
         try driver.enable(participantAwareness: true)
         original = audio?.session.qualification
+        let deadline = try #require(original).expiresAt // Renewal or expiry must never supply the expected effect.
         for index in 0..<8 { try capture.send(tone: index == 0); try await Task.sleep(for: .milliseconds(100)) }
+        if let observed {
+            while !observed(), ContinuousClock.now < deadline { try await Task.sleep(for: .milliseconds(10)) }
+            #expect(observed() && ContinuousClock.now < deadline, "Child effect must precede original lease expiry")
+        }
     }
     func join() async throws {
         driver.off()
