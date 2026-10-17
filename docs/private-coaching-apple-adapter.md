@@ -50,6 +50,13 @@ Renewal failure cleanup owns the exact input lease, then the exact returned leas
 registration. A stale renewal or an observation that publishes a newer lease in the same generation
 must fail without stopping that newer capture/ledger. AppleCoachingRenewalOwnershipTests reproduces
 both schedules; fresh advice remains usable, and explicit Stop still retires capture once.
+Ledger exhaustion or clock expiry may already have retired the core before renewal throws. The
+same still-owned wrapper then disarms its monitor even with no remaining qualification, while a
+newer non-nil lease remains protected. Authored exhaustion and delayed-clock cases cover this path.
+The wrapper claims a lifecycle revision before pre-Begin cleanup and checks it after monitor disarm.
+A disarm callback may issue a newer Stop or Begin; stale startup/cleanup cannot overwrite it. The
+same fence covers explicit Stop, invalidation and renderer-denial cleanup. Busy nested Begin is
+refused before claiming a revision, preserving the core's existing suspended-hook transition fence.
 The route-loss-inside-unmute regression fails on the prior source and asserts prompt capture/context retirement.
 The separately reviewed generation-cleanup prerequisite preserves a successor created synchronously inside
 an old route or clock observation. Renderer denial cleanup is scoped to its originating generation;
