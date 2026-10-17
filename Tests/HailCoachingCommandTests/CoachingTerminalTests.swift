@@ -42,6 +42,36 @@ import Testing
         #expect(keyboard.closed && command.owner.status == .off && capture.stops == 1 && child.stops == 1)
     }
 
+    @Test func readableCanonicalEOFCannotGrantAuthorityAfterTheCompleteLine() throws {
+        let fixture = try PTYFixture(), bytes = Data("enable aware\n\u{04}".utf8)
+        try #require(bytes.withUnsafeBytes { Darwin.write(fixture.input, $0.baseAddress, $0.count) } == bytes.count)
+        var ready = pollfd(fd: fixture.output, events: Int16(POLLIN), revents: 0)
+        try #require(poll(&ready, 1, 0) == 1)
+        var line = [UInt8](repeating: 0, count: 128)
+        try #require(line.withUnsafeMutableBytes { Darwin.read(fixture.output, $0.baseAddress, $0.count) } == 13)
+        let keyboard = try CoachingKeyboard(input: fixture.output, observeSignals: false, ended: {})
+        defer { keyboard.close() }
+        #expect(!keyboard.permitsControl() && keyboard.closed)
+    }
+
+    @Test func canonicalEOFRefusesEnableWithAnAlreadyWaitingConsumer() async throws {
+        let fixture = try PTYFixture()
+        let keyboard = try CoachingKeyboard(input: fixture.output, observeSignals: false, ended: {})
+        let entered = AsyncStream<Void>.makeStream()
+        let consuming = Task { @MainActor in
+            entered.continuation.yield(()); entered.continuation.finish()
+            var effects = 0
+            for try await _ in keyboard.lines where keyboard.permitsControl() { effects += 1 }
+            return effects
+        }
+        var iterator = entered.stream.makeAsyncIterator()
+        _ = await iterator.next()
+        let bytes = Data("enable aware\n\u{04}".utf8)
+        try #require(bytes.withUnsafeBytes { Darwin.write(fixture.input, $0.baseAddress, $0.count) } == bytes.count)
+        #expect(try await consuming.value == 0)
+        #expect(keyboard.closed)
+    }
+
     @Test func boundedSuccessfulFeedbackAndNonTerminalRefusal() throws {
         let fixture = try PTYFixture(), terminal = try CoachingTerminal(output: fixture.output)
         try terminal.write("coaching: off\n")
