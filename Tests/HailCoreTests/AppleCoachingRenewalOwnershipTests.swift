@@ -4,6 +4,28 @@ import Testing
 
 /// #269 / PR #557: stale wrapper cleanup must not revoke a newer lease in the same generation.
 @Suite @MainActor struct AppleCoachingRenewalOwnershipTests {
+    @Test func ledgerExhaustionDisarmsTheMonitorAfterCoreRetirement() throws {
+        let rig = AppleCoachingRig()
+        let adapter = try rig.make()
+        var lease = try adapter.begin(sessionID: UUID(), destinationID: UUID(), consentConfirmed: true)
+        for _ in 1..<CoachingAdviceConsumer.qualificationLimit { lease = try adapter.renew(lease) }
+        #expect(throws: CoachingWireError.ledgerFull) { try adapter.renew(lease) }
+        #expect(rig.capture.stopCount == 1 && rig.monitor.observe() == .unqualified)
+    }
+
+    @Test func renewalClockExpiryDisarmsTheAlreadyStoppedCore() throws {
+        let rig = AppleCoachingRig()
+        let adapter = try rig.make()
+        let lease = try adapter.begin(sessionID: UUID(), destinationID: UUID(), consentConfirmed: true)
+        rig.time.onNow = {
+            rig.time.onNow = nil
+            rig.time.instant = lease.expiresAt
+        }
+        #expect(throws: CoachingSafetyError.staleQualification) { try adapter.renew(lease) }
+        #expect(rig.capture.stopCount == 1 && rig.suspensions == [.qualificationExpired])
+        #expect(rig.monitor.observe() == .unqualified)
+    }
+
     @Test(arguments: [false, true])
     func failedOldRenewalPreservesNewerLeaseAndCapture(reenterObservation: Bool) throws {
         let rig = AppleCoachingRig()

@@ -29,6 +29,7 @@ public final class ApplePrivateCoaching {
     private let session: PrivateCoachingSession
     private let consumer: CoachingAdviceConsumer
     private let renderer: CoachingEngineRenderer?
+    private var lifecycleRevision = UUID()
 
     #if os(iOS)
     public convenience init(listenerID: String, hooks: PrivateCoachingSession.Hooks) throws {
@@ -55,23 +56,30 @@ public final class ApplePrivateCoaching {
     /// Explicit opt-in and awareness precede capture. Unqualified output fails before microphone start.
     @discardableResult
     public func begin(sessionID: UUID, destinationID: UUID, consentConfirmed: Bool) throws -> CoachingQualification {
-        stop()
+        guard !session.transitioning else { throw CoachingSafetyError.transitionInProgress }
+        let revision = UUID()
+        lifecycleRevision = revision
+        retire(revision, invalidating: false)
+        guard lifecycleRevision == revision else { throw CoachingSafetyError.staleQualification }
         guard consentConfirmed else { throw CoachingSafetyError.consentRequired }
         var startedLease: CoachingQualification?
         do {
             try monitor.arm()
+            guard lifecycleRevision == revision else { throw CoachingSafetyError.staleQualification }
             let lease = try session.begin(sessionID: sessionID, destinationID: destinationID, consentConfirmed: true)
             startedLease = lease
             try consumer.register(lease)
+            guard lifecycleRevision == revision else { throw CoachingSafetyError.staleQualification }
             return lease
         } catch {
-            if session.qualification == startedLease { stop() }
+            if lifecycleRevision == revision, session.qualification == startedLease { stop() }
             throw error
         }
     }
 
     @discardableResult
     public func renew(_ lease: CoachingQualification) throws -> CoachingQualification {
+        let revision = lifecycleRevision
         var ownedLease = lease
         do {
             let fresh = try session.renew(lease)
@@ -80,7 +88,9 @@ public final class ApplePrivateCoaching {
             return fresh
         } catch {
             // Observation/registration can publish a newer lease within this same generation.
-            if session.qualification == ownedLease { stop() }
+            if lifecycleRevision == revision, session.qualification == nil || session.qualification == ownedLease {
+                stop()
+            }
             throw error
         }
     }
@@ -112,10 +122,9 @@ public final class ApplePrivateCoaching {
                                        perform: perform, owns: { [session] in
             session.qualification?.generation == advice.ticket.qualification.generation
         }, finalGate: { [weak self] in self?.effectsAllowed(advice.ticket) == true },
-        onFailure: { [monitor, consumer, session] in
+        onFailure: { [weak self, session] in
             guard session.qualification?.generation == advice.ticket.qualification.generation else { return }
-            monitor.disarm()
-            consumer.invalidate()
+            self?.invalidate()
         })
     }
 
@@ -129,8 +138,19 @@ public final class ApplePrivateCoaching {
     }
 
     /// Owner must call on connection/permission/participant-awareness loss, before any route rebuilding.
-    public func invalidate() { monitor.disarm(); consumer.invalidate() }
-    public func stop() { monitor.disarm(); consumer.stop() }
+    public func invalidate() {
+        let revision = UUID(); lifecycleRevision = revision
+        retire(revision, invalidating: true)
+    }
+    public func stop() {
+        let revision = UUID(); lifecycleRevision = revision
+        retire(revision, invalidating: false)
+    }
+    private func retire(_ revision: UUID, invalidating: Bool) {
+        monitor.disarm()
+        guard lifecycleRevision == revision else { return }
+        if invalidating { consumer.invalidate() } else { consumer.stop() }
+    }
 }
 
 #if os(macOS)
