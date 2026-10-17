@@ -16,18 +16,26 @@ final class RightyoOutputRevocation: Sendable {
 public struct RightyoChildOutput: AsyncSequence, Sendable {
     let base: RightyoChildLines
     let revocation: RightyoOutputRevocation?
+    let control: RightyoCoachingControlWriter?
+    init(base: RightyoChildLines, revocation: RightyoOutputRevocation?,
+         control: RightyoCoachingControlWriter? = nil) {
+        self.base = base; self.revocation = revocation; self.control = control
+    }
     public struct AsyncIterator: AsyncIteratorProtocol {
         var base: RightyoChildLines.AsyncIterator
         let revocation: RightyoOutputRevocation?
+        let control: RightyoCoachingControlWriter?
         public mutating func next() async throws -> Data? {
             try revocation?.check()
+            guard control?.peerAvailable() != false else { throw RightyoChildError.transportLost }
             let line = try await base.next()
             try revocation?.check()
+            guard control?.peerAvailable() != false else { throw RightyoChildError.transportLost }
             return line
         }
     }
     public func makeAsyncIterator() -> AsyncIterator {
-        AsyncIterator(base: base.makeAsyncIterator(), revocation: revocation)
+        AsyncIterator(base: base.makeAsyncIterator(), revocation: revocation, control: control)
     }
     func revokeCoaching() { revocation?.revoke() }
 }
@@ -82,9 +90,14 @@ final class RightyoCoachingControlWriter: Sendable {
     }
     private let state: Mutex<State>
     private let queue = DispatchQueue(label: "hailing.rightyo.coaching-control")
+    private let watcher: any DispatchSourceTimer
     private let failed: @Sendable () -> Void
     init(_ descriptor: Int32?, failed: @escaping @Sendable () -> Void) {
         state = Mutex(State(descriptor: descriptor)); self.failed = failed
+        watcher = DispatchSource.makeTimerSource(queue: queue)
+        watcher.schedule(deadline: .now(), repeating: .milliseconds(25), leeway: .milliseconds(5))
+        watcher.setEventHandler { [weak self] in _ = self?.peerAvailable() }
+        watcher.resume()
     }
     deinit { close() }
 
@@ -106,13 +119,26 @@ final class RightyoCoachingControlWriter: Sendable {
     }
 
     func close() {
+        watcher.cancel()
         state.withLock { current in
             if let fd = current.descriptor { Darwin.close(fd) }
             current.descriptor = nil; current.lines.removeAll(); current.bytes = 0
         }
     }
 
+    /// Poll and close share descriptor ownership; a queued old probe cannot inspect a reused fd.
+    func peerAvailable() -> Bool {
+        let available = state.withLock { current in
+            guard let fd = current.descriptor, !current.failed else { return false }
+            var peer = pollfd(fd: fd, events: Int16(POLLERR | POLLHUP), revents: 0)
+            return poll(&peer, 1, 0) >= 0 && peer.revents & Int16(POLLERR | POLLHUP | POLLNVAL) == 0
+        }
+        if !available { fail() }
+        return available
+    }
+
     private func fail() {
+        watcher.cancel()
         let notify = state.withLock { current in
             let first = !current.failed && current.descriptor != nil
             current.failed = true

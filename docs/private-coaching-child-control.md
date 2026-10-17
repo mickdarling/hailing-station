@@ -14,6 +14,12 @@ The exact control/profile/activity schema remains validated by Rightyo's coachin
 Queue admission is not receipt or authorization. The host's original private advice ticket remains
 authoritative after any queue delay. Only trusted local host controls can call this API.
 
+An idle writer checks its owned pipe for POLLHUP/POLLERR/POLLNVAL every 25ms; output admission also
+checks that pipe synchronously before and after suspension. Probe and close share the descriptor lock,
+so a queued old probe cannot inspect a reused descriptor. Closing or dropping the writer cancels the
+weakly captured watcher. Authored idle-close and closed-peer/buffered-stdout cases fail on the prior
+source; the watcher-release control verifies that explicit close cannot report a later channel failure.
+
 Coaching revocation abandons queued PCM immediately; ordinary graceful PCM EOF remains unchanged.
 The foreground adapter must consume stream failure as off, cancel capture/TTS/private playback,
 and join its owned child through the existing group supervisor. No hook bypass or unrelated PID
