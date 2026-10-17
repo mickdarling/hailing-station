@@ -12,6 +12,11 @@ observation must be known. Descriptive producer voice/roles/text never supply au
 `off`, awareness/permission loss, invalid input, terminal EOF and interrupt/termination signals retire the
 same foreground owner; quit/exit joins owned retirement. Bounded asynchronous terminal reading never blocks
 the one-second renewal/audio actor. Buffered enable commands cannot revive authority after terminal loss.
+Close and deinitialization cancel signal observers and restore their complete prior dispositions;
+a later interrupt/termination follows that original process policy while retirement joins. Authored
+tests inspect this test process's handler, flags and mask without delivering a signal. Off clears the
+playback observer, and native playback observation weakly references its audio owner, so an ended run
+does not retain a HAL/engine graph or overlap the next native allocation merely through observation.
 The listener profile is an immutable validated startup snapshot; changing a profile requires off/quit and
 a fresh command, never a silent reload or transcript instruction. Fifteen-minute run and original advice
 deadlines, route/fixed-binding fences, caps and owned child/renderer cancellation remain unchanged.

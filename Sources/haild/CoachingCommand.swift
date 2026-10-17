@@ -55,7 +55,7 @@ struct CoachingCommandAudio {
         return true
     }
 
-    func off() { activity.ownerAnswering = true; owner.off() }
+    func off() { activity.ownerAnswering = true; activity.playback = nil; owner.off() }
     func join() async {
         off()
         while owner.status != .off {
@@ -74,7 +74,9 @@ struct CoachingCommandAudio {
             let privateAudio = try ApplePrivateCoaching(privateOutputDeviceID: configuration.privateOutput,
                 roomMicrophoneDeviceID: configuration.roomMicrophone,
                 listenerID: configuration.listenerID, hooks: hooks)
-            return CoachingCommandAudio(owner: privateAudio, playback: { privateAudio.privatePlaybackObservation() })
+            return CoachingCommandAudio(owner: privateAudio, playback: { [weak privateAudio] in
+                privateAudio?.privatePlaybackObservation() ?? .unavailable
+            })
         }, speech: CoachingSpeechRenderer.local(outputRoot: configuration.outputRoot,
                                                 environment: ProcessInfo.processInfo.environment))
     }
