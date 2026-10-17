@@ -42,7 +42,7 @@ routed in this order:
 4. **Ambient owner (#230).** When two or more devices select the target, the one whose ambient stream feeds the
    active RightyO child (the device the user is listening on) receives it, if it is among those selecting devices.
    Otherwise `notUniqueRecipient`. The owner is only ever chosen from the already-admitted selectors, never added.
-   Validated with synthetic loopback sockets (`AmbientOwnerReplyRoutingTests`); not yet proven by device hearing.
+   Validated with synthetic loopback sockets (`AmbientWiringOwnerReplyRoutingTests`); not yet proven by device hearing.
 
 Steps 2 to 4 run only on a host started with `--single-terminal-reply-fallback`, which `scripts/host.sh` passes
 when `host.json` sets `singleTerminalReplyFallback`. Every frame of one request-less reply goes to the device that

@@ -7,7 +7,7 @@ import Testing
 
 /// Named guests (#434): an overheard turn by an enrolled guest RightyO bound (rightyo#171) carries their display name
 /// to a device that can show it; anything uncertain, invalid or the owner's stays unnamed. Synthetic only.
-@Suite(.serialized, .timeLimit(.minutes(1))) struct AmbientNamedGuestTests {
+@Suite(.serialized, .timeLimit(.minutes(1))) struct AmbientWiringNamedGuestTests {
     @Test(arguments: ["Ben", "Zoë", "李雷", "Ben O'Neil", "José-María", "R2-D2", "Ben 🎸"])
     func aPrintableNameIsShown(_ name: String) {
         #expect(AmbientOverheardRelay.guestName(.string(name)) == name)
@@ -76,7 +76,7 @@ import Testing
     private func reported(
         advertising: Bool, shape: String = #"{"max_scalars": 64}"#, _ turns: [Said]
     ) async throws -> [String] {
-        let seen = AmbientOverheardTests.Seen()
+        let seen = AmbientWiringOverheardTests.Seen()
         let relay = AmbientOverheardRelay(
             onOverheard: { _, owner, name in seen.append(owner ? "owner" : name ?? "other") }, isEcho: nil
         )
@@ -132,7 +132,7 @@ import Testing
         defer { fake.cleanUp() }
         try fake.install(fixture: "tool-events.jsonl")
         let env = try await ambientRig(fake, timing: .init(eofGrace: 20, termGrace: 20))
-        let capabilities = AmbientOverheardTests.capable + (canShow ? [AmbientOverheard.namesCapability] : [])
+        let capabilities = AmbientWiringOverheardTests.capable + (canShow ? [AmbientOverheard.namesCapability] : [])
         let pair = try await FallbackSocketPair.connect(
             port: env.port, selecting: [RecipientTestRig.target], capabilities: capabilities
         )

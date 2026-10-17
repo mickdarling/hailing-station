@@ -7,7 +7,7 @@ import Testing
 
 /// The owner's spoken stop is confirmed out loud (#418): a host clip, after the stop, on the connection that said
 /// stop, through the acknowledgement path. Synthetic only; not device hearing.
-@Suite(.serialized, .timeLimit(.minutes(1))) struct AmbientStopConfirmationTests {
+@Suite(.serialized, .timeLimit(.minutes(1))) struct AmbientWiringStopConfirmationTests {
     static let stopped = AmbientAckClip(pcm: Data(repeating: 2, count: 480), sampleRate: 24_000, text: "Stopped.")
     static let idle = AmbientAckClip(pcm: Data(repeating: 3, count: 480), sampleRate: 24_000,
                                      text: "Nothing playing, standing by.")
@@ -47,9 +47,9 @@ import Testing
         defer { try? FileManager.default.removeItem(at: root) }
         let users = ["a1", "a2", "a3", "a4", "p1", "p2", "p3", "p4"]
         for folder in users + ["confirm-stopped", "confirm-idle"] {
-            let directory = root.appendingPathComponent(folder)
-            try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
-            try AmbientAcknowledgementTests.wav(samples: 240).write(to: directory.appendingPathComponent("clip.wav"))
+            let url = root.appendingPathComponent(folder)
+            try FileManager.default.createDirectory(at: url, withIntermediateDirectories: true)
+            try AmbientWiringAcknowledgementTests.wav(samples: 240).write(to: url.appendingPathComponent("clip.wav"))
         }
         let library = AmbientAckLibrary(directory: root)
         #expect(Set(library.clips.keys) == Set(users))

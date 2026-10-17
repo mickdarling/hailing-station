@@ -7,7 +7,7 @@ import Testing
 
 /// rightyo#164: a device names the kind of input its ambient audio comes from, and the host logs it as a token so a
 /// speaker-ID mismatch can be attributed to an input chain. Synthetic only.
-@Suite(.serialized, .timeLimit(.minutes(1))) struct AmbientInputRouteTests {
+@Suite(.serialized, .timeLimit(.minutes(1))) struct AmbientWiringInputRouteTests {
     final class RouteSink: AmbientAudioSink {
         let routes = Mutex<[String]>([])
         func ambientAudio(_ event: AmbientAudioEvent) {}
@@ -65,7 +65,7 @@ import Testing
 
     /// The route line is only enqueued: the gate's call returns while the log is still blocked.
     @Test func theGateNeverWaitsForTheRouteLine() async throws {
-        let fake = try FakeRightyo(AmbientAcknowledgementTests.fixtureWithNames)
+        let fake = try FakeRightyo(AmbientWiringAcknowledgementTests.fixtureWithNames)
         defer { fake.cleanUp() }
         let release = DispatchSemaphore(value: 0), logged = Mutex(false)
         let env = try await ambientRig(fake, timing: .init(eofGrace: 20, termGrace: 20), onEvent: { event in
@@ -85,7 +85,7 @@ import Testing
     /// Through the real listener: the host advertises `ambient_input_route` with ambient listening on, admits the
     /// device's route, answers nothing, and logs `ambient_input route=<kind>` once per change.
     @Test func theListenerAdvertisesAdmitsAndLogsTheRoute() async throws {
-        let fake = try FakeRightyo(AmbientAcknowledgementTests.fixtureWithNames)
+        let fake = try FakeRightyo(AmbientWiringAcknowledgementTests.fixtureWithNames)
         defer { fake.cleanUp() }
         try fake.install(fixture: "tool-events.jsonl")
         let logged = Mutex<[String]>([]), connections = Mutex<Set<UUID?>>([])

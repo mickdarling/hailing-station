@@ -36,7 +36,7 @@ import Testing
     }
 
     static func event(_ fields: String) throws -> RightyoInputEvent {
-        try AmbientAcknowledgementTests.event(fields)
+        try AmbientWiringAcknowledgementTests.event(fields)
     }
 
     /// A request line; `extra` is spliced in as top-level fields (`acknowledge`, a decision).

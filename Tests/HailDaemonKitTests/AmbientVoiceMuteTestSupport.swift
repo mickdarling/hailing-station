@@ -17,7 +17,7 @@ extension AmbientWiringVoiceMuteTests {
         try fake.install(fixture: "tool-events.jsonl")
         let details = Mutex<[String]>([]), diagnosis = Mutex<[String]>([])
         let library = AmbientAckLibrary(clips: [
-            "confirmstopped": [AmbientStopConfirmationTests.stopped], "confirmmuted": [Self.muted],
+            "confirmstopped": [AmbientWiringStopConfirmationTests.stopped], "confirmmuted": [Self.muted],
             "confirmunmuted": [Self.unmuted]
         ])
         let env = try await ambientRig(
