@@ -4,28 +4,37 @@ import Foundation
 /// Exclusive owner-local feedback. Backpressure is an error, never an actor-blocking wait or queued effect.
 @MainActor final class CoachingTerminal {
     private var descriptor: Int32?
-    private let flags: Int32
-    private let noSigPipe: Int32
     convenience init(output: Int32 = STDERR_FILENO) throws {
         try self.init(output: output, requireTerminal: true)
     }
     private init(output: Int32, requireTerminal: Bool) throws {
-        var details = stat()
-        let terminal = isatty(output) == 1
-        // Nonblocking flags do not bound regular-file/device writes. Final redirected feedback is
-        // best-effort only on a pipe; unsupported destinations are silent rather than blocking exit.
-        guard terminal || (!requireTerminal && fstat(output, &details) == 0
-                           && details.st_mode & S_IFMT == S_IFIFO) else {
-            throw CoachingCommandError.localControlRequired
+        var original = stat()
+        guard fstat(output, &original) == 0 else { throw CoachingCommandError.localControlRequired }
+        let fd: Int32
+        if isatty(output) == 1 {
+            var path = [CChar](repeating: 0, count: Int(PATH_MAX))
+            guard ttyname_r(output, &path, path.count) == 0 else {
+                throw CoachingCommandError.localControlRequired
+            }
+            fd = path.withUnsafeBufferPointer {
+                guard let base = $0.baseAddress else { return -1 }
+                return Darwin.open(base, O_WRONLY | O_NONBLOCK | O_NOCTTY)
+            }
+            var opened = stat()
+            guard fd >= 0, fstat(fd, &opened) == 0, opened.st_dev == original.st_dev,
+                  opened.st_ino == original.st_ino, opened.st_rdev == original.st_rdev else {
+                if fd >= 0 { Darwin.close(fd) }; throw CoachingCommandError.localControlRequired
+            }
+        } else {
+            // A dup shares file-status flags. Only an already nonblocking pipe is safe for redirected feedback.
+            guard !requireTerminal, original.st_mode & S_IFMT == S_IFIFO,
+                  fcntl(output, F_GETFL) & O_NONBLOCK != 0 else {
+                throw CoachingCommandError.localControlRequired
+            }
+            fd = dup(output)
         }
-        let fd = dup(output)
-        guard fd >= 0 else { throw CoachingCommandError.localControlRequired }
-        flags = fcntl(fd, F_GETFL)
-        noSigPipe = fcntl(fd, F_GETNOSIGPIPE)
-        guard flags >= 0, noSigPipe >= 0, fcntl(fd, F_SETNOSIGPIPE, 1) == 0,
-              fcntl(fd, F_SETFL, flags | O_NONBLOCK) == 0 else {
-            if noSigPipe >= 0 { _ = fcntl(fd, F_SETNOSIGPIPE, noSigPipe) }
-            Darwin.close(fd); throw CoachingCommandError.localControlRequired
+        guard fd >= 0, fcntl(fd, F_SETFD, FD_CLOEXEC) == 0, fcntl(fd, F_SETNOSIGPIPE, 1) == 0 else {
+            if fd >= 0 { Darwin.close(fd) }; throw CoachingCommandError.localControlRequired
         }
         descriptor = fd
     }
@@ -40,8 +49,6 @@ import Foundation
     func close() {
         guard let fd = descriptor else { return }
         descriptor = nil
-        _ = fcntl(fd, F_SETFL, flags) // dup shares status flags; restore the CLI's original nonblocking mode.
-        _ = fcntl(fd, F_SETNOSIGPIPE, noSigPipe)
         Darwin.close(fd)
     }
     func write(_ text: String) throws {
@@ -65,6 +72,7 @@ import Foundation
     let lines: AsyncThrowingStream<String, any Error>
     private let continuation: AsyncThrowingStream<String, any Error>.Continuation
     private let source: any DispatchSourceRead
+    private let descriptor: Int32
     private var signals: [any DispatchSourceSignal] = []
     private var priorSignals: [Int32: sigaction] = [:]
     private let ended: () -> Void
@@ -76,6 +84,7 @@ import Foundation
         guard fd >= 0 else { throw CoachingCommandError.localControlRequired }
         let pair = AsyncThrowingStream<String, any Error>.makeStream(bufferingPolicy: .bufferingOldest(4))
         lines = pair.stream; continuation = pair.continuation; self.ended = ended
+        descriptor = fd
         source = DispatchSource.makeReadSource(fileDescriptor: fd, queue: .main)
         source.setEventHandler { [weak self] in
             MainActor.assumeIsolated { self?.read(fd) }
@@ -105,6 +114,15 @@ import Foundation
         source.cancel(); signals.forEach { $0.cancel() }; restoreSignals()
         ended() // Clear capture/TTS/child authority synchronously before delivering stream completion.
         if error { continuation.finish(throwing: CoachingCommandError.invalidControl) } else { continuation.finish() }
+    }
+    /// Recheck descriptor lifetime at effect admission, including HUP behind already buffered input.
+    func permitsControl() -> Bool {
+        guard !closed else { return false }
+        var state = pollfd(fd: descriptor, events: Int16(POLLIN), revents: 0)
+        guard poll(&state, 1, 0) >= 0, state.revents & Int16(POLLHUP | POLLERR | POLLNVAL) == 0 else {
+            close(); return false
+        }
+        return true
     }
     private func restoreSignals() {
         let previous = priorSignals
