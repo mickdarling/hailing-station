@@ -66,6 +66,7 @@ import Foundation
     private let continuation: AsyncThrowingStream<String, any Error>.Continuation
     private let source: any DispatchSourceRead
     private var signals: [any DispatchSourceSignal] = []
+    private var priorSignals: [Int32: sigaction] = [:]
     private let ended: () -> Void
     private var buffer = Data()
     private(set) var closed = false
@@ -82,20 +83,36 @@ import Foundation
         source.setCancelHandler { Darwin.close(fd) }
         source.activate()
         for number in observeSignals ? [SIGINT, SIGTERM] : [] {
-            Darwin.signal(number, SIG_IGN)
+            var ignored = sigaction(), previous = sigaction()
+            ignored.__sigaction_u.__sa_handler = SIG_IGN
+            sigemptyset(&ignored.sa_mask)
+            guard sigaction(number, &ignored, &previous) == 0 else {
+                close(error: true); throw CoachingCommandError.localControlRequired
+            }
+            priorSignals[number] = previous
             let observer = DispatchSource.makeSignalSource(signal: number, queue: .main)
             observer.setEventHandler { [weak self] in MainActor.assumeIsolated { self?.close() } }
             observer.activate(); signals.append(observer)
         }
     }
-    isolated deinit { source.cancel(); signals.forEach { $0.cancel() }; continuation.finish() }
+    isolated deinit {
+        source.cancel(); signals.forEach { $0.cancel() }; restoreSignals(); continuation.finish()
+    }
 
     func close(error: Bool = false) {
         guard !closed else { return }
         closed = true
+        source.cancel(); signals.forEach { $0.cancel() }; restoreSignals()
         ended() // Clear capture/TTS/child authority synchronously before delivering stream completion.
-        source.cancel(); signals.forEach { $0.cancel() }
         if error { continuation.finish(throwing: CoachingCommandError.invalidControl) } else { continuation.finish() }
+    }
+    private func restoreSignals() {
+        let previous = priorSignals
+        priorSignals.removeAll()
+        for (number, value) in previous {
+            var action = value
+            _ = sigaction(number, &action, nil)
+        }
     }
     private func read(_ fd: Int32) {
         guard !closed else { return }
