@@ -99,14 +99,34 @@ package final class OwnedReplyRenderer: Sendable {
                       hooks: ReplyRendererLifecycleHooks())
     }
 
+    /// Coaching must install ownership before checking post-spawn cancellation, then join retirement.
+    /// Pre-spawn validation/cancellation still throws; ordinary constructor behavior is unchanged.
+    package static func startForJoinedRetirement(
+        text: String, outputRoot: URL, environment: [String: String]
+    ) throws -> OwnedReplyRenderer {
+        try startForJoinedRetirement(text: text, outputRoot: outputRoot, environment: environment,
+                                     hooks: ReplyRendererLifecycleHooks())
+    }
+
+    static func startForJoinedRetirement(
+        text: String, outputRoot: URL, environment: [String: String], hooks: ReplyRendererLifecycleHooks
+    ) throws -> OwnedReplyRenderer {
+        try OwnedReplyRenderer(text: text, outputRoot: outputRoot, environment: environment,
+                               hooks: hooks, retainStartupCancellation: true)
+    }
+
     // Internal deterministic scheduling seam; the package CLI cannot supply a launcher or PID.
-    init(text: String, outputRoot: URL, environment: [String: String], hooks: ReplyRendererLifecycleHooks) throws {
+    init(text: String, outputRoot: URL, environment: [String: String], hooks: ReplyRendererLifecycleHooks,
+         retainStartupCancellation: Bool = false) throws {
         try ReplyRendererChildIdentity.requireOwnedRuntime()
         try Task.checkCancellation()
         hooks.startup()
         lifetime = try ReplyRendererLifetime(text: text, outputRoot: outputRoot, environment: environment, hooks: hooks)
         outputDirectory = lifetime.folder.url
-        if Task.isCancelled { lifetime.retire(cancel: true); throw OwnedReplyRendererError.cancelled }
+        if Task.isCancelled {
+            lifetime.retire(cancel: true)
+            if !retainStartupCancellation { throw OwnedReplyRendererError.cancelled }
+        }
     }
 
     deinit { lifetime.retire(cancel: true) }
