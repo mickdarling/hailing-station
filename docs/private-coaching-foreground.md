@@ -22,7 +22,10 @@ overflow/error; it must not assume one atomic 4 KiB write. No transcript-JSONL s
 Trusted local profile, explicit enable and participant awareness precede qualification/capture forwarding.
 The child is inert until qualification. The foreground owner alone issues actual route-qualified leases.
 Renewals occur every second, use new qualification IDs and never extend an earlier advice/TTS/playback
-deadline or the original 15-minute session budget. Measured pause/owner-mid-answer/playback activity
+deadline or the original 15-minute session budget. A current-epoch effect that observes either deadline
+has elapsed retires capture and the child immediately, even while timer delivery is withheld. A changed
+lease is held without retiring a renewed owner; a different epoch never grants old cleanup authority.
+Measured pause/owner-mid-answer/playback activity
 is correlated to finalized SpeechEvents, never guessed from words. The agreed activity envelope is
 `{schema_version:1,type:"coaching_activity",session_id,generation_id,utterance_id,pause_ms,
 owner_mid_answer,playback}`: canonical UUID session/generation, existing bounded Turn identifier

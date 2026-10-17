@@ -9,8 +9,11 @@ extension ForegroundCoaching {
     func live(_ id: UUID) -> Bool {
         guard epoch == id, status == .active, let lease, let deadline else { return false }
         let now = clock.now()
-        return epoch == id && status == .active && self.lease == lease && self.deadline == deadline
-            && now < lease.expiresAt && now < deadline
+        guard epoch == id, status == .active, self.deadline == deadline else { return false }
+        guard now < deadline else { off(epoch: id); return false }
+        guard self.lease == lease else { return false }
+        guard now < lease.expiresAt else { off(epoch: id); return false }
+        return true
     }
 
     func forward(_ buffer: AudioCaptureBuffer, lease source: CoachingQualification, epoch id: UUID) {
