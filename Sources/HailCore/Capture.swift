@@ -81,6 +81,7 @@ public final class AVAudioEngineCapture: AudioCapturing {
     private let routeInputChanged: AudioCaptureEndingSignal.RouteInputChange
     private let routeOverrideWindow: AppRouteOverrideWindow
     private var continuation: AsyncStream<AudioCaptureBuffer>.Continuation?
+    private var runID: UUID?
     private var hasTap = false
     private var observer: AudioCaptureEndingObserver?
     /// Read when a run starts; set it before `start` to watch that run for stalls (#443).
@@ -123,9 +124,14 @@ public final class AVAudioEngineCapture: AudioCapturing {
 
         let pair = AsyncStream<AudioCaptureBuffer>.makeStream(bufferingPolicy: .unbounded)
         let streamContinuation = pair.continuation
+        let id = UUID()
+        runID = id
         continuation = streamContinuation
         streamContinuation.onTermination = { @Sendable [weak self] _ in
-            Task { @MainActor in self?.stop() }
+            Task { @MainActor in
+                guard let self, self.runID == id else { return }
+                self.stop()
+            }
         }
 
         installTap(streamContinuation)
@@ -148,6 +154,7 @@ public final class AVAudioEngineCapture: AudioCapturing {
     }
 
     public func stop() {
+        runID = nil // Retire before finishing the stream can enqueue its termination callback.
         watchdog?.cancel()
         watchdog = nil
         observer = nil
