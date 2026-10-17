@@ -53,6 +53,30 @@ import Testing
         }
     }
 
+    /// Only a private regular file is trusted: anyone else able to write it could rebind "notes" to any Shortcut.
+    @Test func aFileOthersCouldWriteOrThatIsNotARegularFileIsUnsafe() throws {
+        let directory = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
+        try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: directory) }
+        let file = directory.appendingPathComponent("destinations.json")
+        try Data(#"{"notes": {"shortcut": "Hail to Notes"}}"#.utf8).write(to: file)
+        try FileManager.default.setAttributes([.posixPermissions: 0o664], ofItemAtPath: file.path)
+        #expect(throws: VoiceDestinations.LoadError.unsafe) { try VoiceDestinations.load(file) }
+        try FileManager.default.setAttributes([.posixPermissions: 0o600], ofItemAtPath: file.path)
+        try FileManager.default.setAttributes([.posixPermissions: 0o777], ofItemAtPath: directory.path)
+        #expect(throws: VoiceDestinations.LoadError.unsafe) { try VoiceDestinations.load(file) }
+        try FileManager.default.setAttributes([.posixPermissions: 0o700], ofItemAtPath: directory.path)
+        #expect(try VoiceDestinations.load(file) != nil)
+        let fifo = directory.appendingPathComponent("fifo.json")
+        #expect(mkfifo(fifo.path, 0o600) == 0)
+        #expect(throws: VoiceDestinations.LoadError.unsafe) { try VoiceDestinations.load(fifo) }
+        let big = directory.appendingPathComponent("big.json")
+        try Data(count: 64 * 1024 + 1).write(to: big)
+        #expect(throws: VoiceDestinations.LoadError.unsafe) { try VoiceDestinations.load(big) }
+        let remote = try #require(URL(string: "https://example.invalid/destinations.json"))
+        #expect(throws: VoiceDestinations.LoadError.unsafe) { try VoiceDestinations.load(remote) }
+    }
+
     /// A fake `shortcuts` that saves its argv and its input, then exits as told.
     private func runner(_ script: String, timeout: Duration = .seconds(20)) throws -> (ShortcutRunner, URL) {
         let directory = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
@@ -65,13 +89,17 @@ import Testing
 
     @Test func theShortcutGetsTheWordsInAPrivateFileThatIsThenRemoved() async throws {
         let (runner, directory) = try runner(#"printf '%s\n' "$@" > argv.txt; /bin/cat "$4" > input.txt; "#
-            + #"/usr/bin/stat -f %Lp "$4" > mode.txt; echo "$4" > path.txt"#)
+            + #"/usr/bin/stat -f %Lp "$4" > mode.txt; echo "$4" > path.txt; /usr/bin/env | /usr/bin/sort > env.txt"#)
         defer { try? FileManager.default.removeItem(at: directory) }
         #expect(await runner.run("Hail to Notes", text: "buy milk; rm -rf ~") == "saved")
         let read = { (name: String) in try String(contentsOf: directory.appendingPathComponent(name), encoding: .utf8) }
         #expect(try read("input.txt") == "buy milk; rm -rf ~")
         #expect(try read("mode.txt") == "600\n")
         #expect(try read("argv.txt").hasPrefix("run\nHail to Notes\n--input-path\n"))
+        // Only the fixed child environment (the shell itself may add PWD, SHLVL and _).
+        let names = Set(try read("env.txt").split(separator: "\n").compactMap { $0.split(separator: "=").first }
+            .map(String.init)).subtracting(["PWD", "SHLVL", "_", "OLDPWD"])
+        #expect(names.isSubset(of: ["PATH", "HOME", "TMPDIR"]))
         let input = try read("path.txt").trimmingCharacters(in: .newlines)
         #expect(!FileManager.default.fileExists(atPath: input))
     }

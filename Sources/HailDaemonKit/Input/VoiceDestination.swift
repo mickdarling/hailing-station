@@ -19,7 +19,7 @@ public struct VoiceDestinations: Sendable, Equatable {
         let text: String
     }
 
-    public enum LoadError: Error, Equatable { case malformed, invalidName, invalidShortcut }
+    public enum LoadError: Error, Equatable { case malformed, invalidName, invalidShortcut, unsafe }
 
     /// Longest note accepted, in characters; a longer turn is a request to the agent like any other.
     static let maxText = 2000
@@ -45,11 +45,18 @@ public struct VoiceDestinations: Sendable, Equatable {
     }
 
     /// `{"notes": {"shortcut": "Hail to Notes"}}`; nil when the file does not exist (the feature is then off).
+    /// The file alone decides which Shortcut a spoken name runs, so it is trusted only as the RightyO executable is
+    /// (`RightyoChildProcess.validate`): after symlinks, a regular file of at most 64 KB owned by this user or root and
+    /// not group/world-writable, in directories up to `/` that no other user can write either. Otherwise `unsafe`.
     public static func load(_ url: URL) throws -> VoiceDestinations? {
-        guard let data = try? Data(contentsOf: url) else {
-            if FileManager.default.fileExists(atPath: url.path) { throw LoadError.malformed }
-            return nil
+        var info = stat()
+        guard url.isFileURL, url.path.hasPrefix("/") else { throw LoadError.unsafe }
+        if lstat(url.path, &info) != 0 {
+            if errno == ENOENT { return nil }
+            throw LoadError.unsafe
         }
+        guard let path = trustedPath(url.path),
+              let data = try? Data(contentsOf: URL(fileURLWithPath: path)) else { throw LoadError.unsafe }
         guard let raw = try? JSONDecoder().decode([String: [String: String]].self, from: data) else {
             throw LoadError.malformed
         }
@@ -59,6 +66,23 @@ public struct VoiceDestinations: Sendable, Equatable {
             parsed[name] = Destination(shortcut: shortcut)
         }
         return try VoiceDestinations(parsed)
+    }
+
+    /// The resolved path when it and every directory above it pass `load`'s trust rule; nil otherwise.
+    private static func trustedPath(_ given: String) -> String? {
+        guard let resolved = realpath(given, nil) else { return nil }
+        defer { free(resolved) }
+        let path = String(cString: resolved), owners: Set<uid_t> = [0, getuid()]
+        var info = stat()
+        guard stat(path, &info) == 0, info.st_mode & S_IFMT == S_IFREG, info.st_size <= 64 * 1024 else { return nil }
+        var item = path
+        while true {
+            guard stat(item, &info) == 0, owners.contains(info.st_uid), info.st_mode & (S_IWGRP | S_IWOTH) == 0 else {
+                return nil
+            }
+            if item == "/" { return path }
+            item = (item as NSString).deletingLastPathComponent
+        }
     }
 
     /// The note a whole turn dictates, given the session's keyed addressing `names`; nil for anything else. After
@@ -133,6 +157,8 @@ struct ShortcutRunner: Sendable {
         let process = Process()
         process.executableURL = executable
         process.arguments = ["run", shortcut, "--input-path", input.path]
+        // As for the RightyO child: a fixed PATH with HOME and TMPDIR, never the rest of haild's environment.
+        process.environment = RightyoChildProcess.environment()
         (process.standardInput, process.standardOutput, process.standardError) = (nil, nil, nil)
         let exited = AsyncStream<Int32>.makeStream()
         process.terminationHandler = { exited.continuation.yield($0.terminationStatus) }
