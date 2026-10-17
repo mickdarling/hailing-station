@@ -45,10 +45,16 @@ actor timers; the previous source fails all three effect cases. Renderer tests c
 queueing and lost engine readiness inside the gate. These are software checks, not hardware-atomic guarantees.
 Every void-mute readiness failure is also recorded, including engine/route denial before its ticket gate runs.
 The owner disarms/invalidate-clears that lifetime before surfacing the error; repeated cleanup is idempotent.
+
+Renewal failure cleanup owns the exact input lease, then the exact returned lease during consumer
+registration. A stale renewal or an observation that publishes a newer lease in the same generation
+must fail without stopping that newer capture/ledger. AppleCoachingRenewalOwnershipTests reproduces
+both schedules; fresh advice remains usable, and explicit Stop still retires capture once.
 The route-loss-inside-unmute regression fails on the prior source and asserts prompt capture/context retirement.
 The separately reviewed generation-cleanup prerequisite preserves a successor created synchronously inside
-an old route or clock observation. Renderer denial cleanup and failed renewal are likewise scoped to their
-originating generation: old work cannot disarm a new monitor, cancel its queued advice or stop its capture.
+an old route or clock observation. Renderer denial cleanup is scoped to its originating generation;
+failed renewal is scoped more narrowly to its exact lease. Old work cannot disarm a new monitor,
+cancel its queued advice or stop its capture.
 Replacement regressions exercise core, renderer and final-gate observations across schedule/resume/mute,
 plus failed renewal after an explicitly begun successor. The old operations fail; fresh advice remains usable.
 Arm and observation failure retire only their captured monitor revision, including a successor on a different

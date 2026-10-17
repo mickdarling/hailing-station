@@ -72,12 +72,15 @@ public final class ApplePrivateCoaching {
 
     @discardableResult
     public func renew(_ lease: CoachingQualification) throws -> CoachingQualification {
+        var ownedLease = lease
         do {
             let fresh = try session.renew(lease)
+            ownedLease = fresh
             try consumer.register(fresh)
             return fresh
         } catch {
-            if session.qualification?.generation == lease.generation { stop() }
+            // Observation/registration can publish a newer lease within this same generation.
+            if session.qualification == ownedLease { stop() }
             throw error
         }
     }
