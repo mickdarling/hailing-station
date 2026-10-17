@@ -7,14 +7,14 @@ import Testing
 
 /// The user's own ambient request in the thread (#318): the speaking device is told what it said, once per delivered
 /// request, before the acknowledgement and before the request is typed, and the words are never logged.
-@Suite(.serialized, .timeLimit(.minutes(1))) struct AmbientHeardTests {
+@Suite(.serialized, .timeLimit(.minutes(1))) struct AmbientWiringHeardTests {
     static let heard = "Rightyo, check our discussion."
     static let clip = AmbientAckClip(pcm: Data(repeating: 1, count: 480), sampleRate: 24_000, text: "On it.")
     static let capable = ["probe", AmbientHeard.capability]
 
     /// A pipeline over the fixture's one request, recording the heard text and the order of heard, ack and typing.
     private func pipelineOrder(isEcho: Bool = false) async throws -> (order: [String], heard: [String]) {
-        let fake = try FakeRightyo(AmbientAcknowledgementTests.fixtureWithNames)
+        let fake = try FakeRightyo(AmbientWiringAcknowledgementTests.fixtureWithNames)
         defer { fake.cleanUp() }
         try fake.install(fixture: "tool-events.jsonl")
         let order = Mutex<[String]>([])
@@ -112,7 +112,7 @@ import Testing
     private func run(
         capabilities: [String], check: (URLSessionWebSocketTask) async throws -> Void
     ) async throws -> [String] {
-        let fake = try FakeRightyo(AmbientAcknowledgementTests.fixtureWithNames)
+        let fake = try FakeRightyo(AmbientWiringAcknowledgementTests.fixtureWithNames)
         defer { fake.cleanUp() }
         try fake.install(fixture: "tool-events.jsonl")
         let details = Mutex<[String]>([])

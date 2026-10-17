@@ -8,7 +8,7 @@ import Testing
 /// #230 over loopback sockets: a reply with no request reference, with two devices selecting its target and no
 /// last input yet (a restart, or ten quiet minutes), goes to the device the user is listening on instead of being
 /// refused. Synthetic only; not device hearing.
-@Suite(.serialized) struct AmbientOwnerReplyRoutingTests {
+@Suite(.serialized) struct AmbientWiringOwnerReplyRoutingTests {
     /// Reports `owner` as the connection whose ambient stream feeds the active child.
     final class FakeWiring: AmbientListenerWiring {
         let owner = Mutex<UUID?>(nil)
