@@ -16,8 +16,9 @@ import Testing
             try rig.adapter.begin(sessionID: UUID(), destinationID: UUID(), consentConfirmed: true)
         }
         #expect(rig.capture.startCount == (replace ? 1 : 0) && rig.capture.stopCount == 0)
-        if replace { try rig.adapter.resume(#require(freshAdvice)); #expect(rig.player.resumed == 1) }
-        else { #expect(rig.monitor.observe() == .unqualified) }
+        if replace { try rig.adapter.resume(#require(freshAdvice)); #expect(rig.player.resumed == 1) } else {
+            #expect(rig.monitor.observe() == .unqualified)
+        }
         rig.adapter.stop()
     }
 
