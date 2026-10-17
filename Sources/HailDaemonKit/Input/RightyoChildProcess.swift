@@ -43,7 +43,7 @@ public final class RightyoChildProcess: Sendable {
         continuation.onTermination = { _ in ended.withLock { $0 = 1 } }
         group = RightyoChildGroup(leader: child.pid, termGrace: timing.termGrace) {
             guard ended.withLock({ $0 }) == 0 else { return false }
-            revocation?.revoke()
+            revocation?.ownedGroupEnded()
             continuation.finish(throwing: RightyoChildError.transportLost)
             return true
         }
