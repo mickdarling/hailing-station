@@ -5,7 +5,7 @@ import Testing
 @testable import haild
 
 @Suite(.serialized, .timeLimit(.minutes(1))) @MainActor struct CoachingStartupEventTests {
-    @Test(arguments: ["-1", "0.0", "true", "0"])
+    @Test(arguments: ["-1", "0.5", "true", "0", "0.0"])
     func malformedStartupTimeCannotUnlockAdvice(emitted: String) async throws {
         let root = FileManager.default.temporaryDirectory.appendingPathComponent("coaching-event-\(UUID())")
         try FileManager.default.createDirectory(at: root, withIntermediateDirectories: false,
@@ -40,8 +40,9 @@ import Testing
             while advice == 0, ended == 0, ContinuousClock.now < deadline {
                 try await Task.sleep(for: .milliseconds(10))
             }
-            #expect(advice == (emitted == "0" ? 1 : 0))
-            #expect(ended == (emitted == "0" ? 0 : 1))
+            let valid = emitted == "0" || emitted == "0.0"
+            #expect(advice == (valid ? 1 : 0))
+            #expect(ended == (valid ? 0 : 1))
         } catch { await transport.stop(); throw error }
         await transport.stop()
     }

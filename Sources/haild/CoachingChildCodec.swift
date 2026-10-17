@@ -42,7 +42,7 @@ enum CoachingChildCodec {
         return try wire(["version": 1, "type": "listener_profile", "action": "add", "profile": profile])
     }
 
-    static func integer(_ value: Any?) -> Int? {
+    private static func integer(_ value: Any?) -> Int? {
         guard let number = value as? NSNumber, CFGetTypeID(number) != CFBooleanGetTypeID(),
               !["f", "d"].contains(String(cString: number.objCType)) else { return nil }
         return number as? Int

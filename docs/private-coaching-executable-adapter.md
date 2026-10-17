@@ -17,10 +17,10 @@ only with the explicit synthetic coaching capability. This does not broaden ordi
 allowlists. Duplicate final IDs and unknown action-shaped output fail closed. Transcript text, roles,
 names and coaching state are never controls or qualification grants, and are not retained by the host.
 
-Ordinary child events require a strict integer nonnegative emitted timestamp before lifecycle or
+Ordinary child events require an integer-valued nonnegative emitted timestamp before lifecycle or
 sequence state is committed. The existing typed decoder remains responsible for shape decoding.
-An authored startup/next-advice regression rejects negative, fractional and Boolean timestamps;
-the valid integer-zero startup control still forwards data to its downstream admission boundary.
+An authored startup/next-advice regression rejects negative, nonintegral and Boolean timestamps;
+valid zero, including its integral floating representation, preserves the existing decoder behavior.
 
 Pause derives from the same converted PCM stream and monotonic receipt time. Missing/stale capture
 evidence holds. Owner-mid-answer and playback flags come only from separate trusted local observations;
