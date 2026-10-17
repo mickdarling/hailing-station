@@ -115,14 +115,10 @@ import Foundation
         ended() // Clear capture/TTS/child authority synchronously before delivering stream completion.
         if error { continuation.finish(throwing: CoachingCommandError.invalidControl) } else { continuation.finish() }
     }
-    /// Recheck descriptor lifetime at effect admission, including HUP behind already buffered input.
+    /// Drain ready input/EOF before admitting buffered authority; canonical Ctrl-D has no HUP bit.
     func permitsControl() -> Bool {
-        guard !closed else { return false }
-        var state = pollfd(fd: descriptor, events: Int16(POLLIN), revents: 0)
-        guard poll(&state, 1, 0) >= 0, state.revents & Int16(POLLHUP | POLLERR | POLLNVAL) == 0 else {
-            close(); return false
-        }
-        return true
+        read(descriptor)
+        return !closed
     }
     private func restoreSignals() {
         let previous = priorSignals
@@ -133,24 +129,35 @@ import Foundation
         }
     }
     private func read(_ fd: Int32) {
-        guard !closed else { return }
-        var bytes = [UInt8](repeating: 0, count: min(128, max(1, Int(source.data))))
-        let count = bytes.withUnsafeMutableBytes { Darwin.read(fd, $0.baseAddress, $0.count) }
-        if count < 0, errno == EINTR { return }
-        guard count > 0 else { close(error: count < 0); return }
-        for byte in bytes.prefix(count) {
-            if byte == 10 {
-                guard let line = String(data: buffer, encoding: .ascii) else { close(error: true); return }
-                buffer.removeAll(keepingCapacity: true)
-                switch continuation.yield(line) {
-                case .enqueued: break
-                case .dropped, .terminated: close(error: true); return
-                @unknown default: close(error: true); return
-                }
-            } else {
-                guard (32...126).contains(byte), buffer.count < 96 else { close(error: true); return }
-                buffer.append(byte)
-            }
+        for _ in 0..<8 { // Queue/line bounds normally stop sooner; never monopolize the audio actor.
+            guard !closed else { return }
+            var state = pollfd(fd: fd, events: Int16(POLLIN), revents: 0)
+            let ready = poll(&state, 1, 0)
+            if ready == 0 { return }
+            guard ready > 0, state.revents & Int16(POLLERR | POLLNVAL) == 0 else { close(error: true); return }
+            if state.revents & Int16(POLLHUP) != 0 { close(); return }
+            guard state.revents & Int16(POLLIN) != 0 else { close(error: true); return }
+            var bytes = [UInt8](repeating: 0, count: 128)
+            let count = bytes.withUnsafeMutableBytes { Darwin.read(fd, $0.baseAddress, $0.count) }
+            guard count > 0 else { close(error: count < 0); return }
+            accept(bytes.prefix(count))
         }
+        close(error: true)
+    }
+    private func accept(_ bytes: ArraySlice<UInt8>) {
+        for byte in bytes {
+                if byte == 10 {
+                    guard let line = String(data: buffer, encoding: .ascii) else { close(error: true); return }
+                    buffer.removeAll(keepingCapacity: true)
+                    switch continuation.yield(line) {
+                    case .enqueued: break
+                    case .dropped, .terminated: close(error: true); return
+                    @unknown default: close(error: true); return
+                    }
+                } else {
+                    guard (32...126).contains(byte), buffer.count < 96 else { close(error: true); return }
+                    buffer.append(byte)
+                }
+            }
     }
 }

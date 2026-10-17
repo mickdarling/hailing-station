@@ -54,3 +54,8 @@ description. Redirected refusal feedback accepts only already nonblocking pipes;
 stderr is silent with the same refusal exit status rather than changing another writer's flags.
 An admission-time HUP/error check also rejects buffered enable after the writer has closed, including
 when the consumer was already waiting. Authored PTY/pipe tests cover these orderings without native audio.
+
+Canonical terminal Ctrl-D reports readable EOF without HUP. The same bounded keyboard reader now
+drains ready input and EOF before actor suspension and rechecks through that reader at admission.
+The queue/line bounds and an eight-read ceiling bound actor work. A precise pending-EOF admission
+regression fails before this correction; an already-waiting canonical terminal consumer is also covered.
