@@ -9,7 +9,7 @@ private final class RecipientPublicationClock: Sendable {
     private let origin = ContinuousClock.now
     private let remaining = Mutex<Int?>(nil)
     let gate = RecipientPublicationGate()
-    let executor = RecipientPublicationExecutor()
+    let executor = RecipientPublicationExecutor.shared
     // Pruning is followed by the pre-gate lifetime check; pause there, before either authority lock.
     func arm() { remaining.withLock { $0 = 2 } }
     func now() -> ContinuousClock.Instant {

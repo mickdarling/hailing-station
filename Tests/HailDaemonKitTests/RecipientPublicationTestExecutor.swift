@@ -2,7 +2,12 @@ import Foundation
 import Synchronization
 
 /// Blocking synthetic actor jobs must not occupy Swift's cooperative pool while revocation runs there.
+/// A task executor preference holds its executor unowned, and tasks spawned under it inherit the preference, so
+/// they may run after the test that created them has returned. Tests therefore share `shared`, which lives for the
+/// whole process, rather than one per test that could be freed under a late job (#574).
 final class RecipientPublicationExecutor: TaskExecutor {
+    static let shared = RecipientPublicationExecutor()
+
     private let queue = DispatchQueue(label: "synthetic.recipient-publication")
     private let marker = DispatchSpecificKey<Bool>()
 
