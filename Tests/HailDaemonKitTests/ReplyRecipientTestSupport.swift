@@ -160,8 +160,9 @@ func recipientSocketReceive(on socket: URLSessionWebSocketTask) async throws -> 
 
 /// The pong follows prior host publications on this peer's serial send queue. A stray reply is a failure,
 /// not a timeout-based inference that nothing arrived.
-func recipientSocketBarrier(on socket: URLSessionWebSocketTask) async throws {
+func recipientSocketBarrier(on socket: URLSessionWebSocketTask, step: String = "recipient barrier") async throws {
     let nonce = UUID().uuidString
     try await recipientSocketSend(sessionFrame(payload: .control(.ping(nonce: nonce))), on: socket)
-    try #require(await recipientSocketReceive(on: socket).payload == .control(.pong(nonce: nonce)))
+    let received = try await recipientSocketReceive(on: socket).payload
+    try #require(received == .control(.pong(nonce: nonce)), "Unexpected payload at \(step): \(received)")
 }

@@ -113,19 +113,24 @@ func fakeFileSize(_ fake: FakeRightyo, _ name: String) -> Int {
         let fake = try FakeRightyo("exec /bin/sleep 60")
         defer { fake.cleanUp() }
         let env = try await ambientRig(fake, timing: .init(eofGrace: 0.2, termGrace: 0.2))
-        let pair = try await FallbackSocketPair.connect(port: env.port, selecting: [RecipientTestRig.target])
-        defer { pair.close() }
-        let stream = UUID()
-        try await recipientSocketSend(audio(stream, 0), on: pair.sockets[0])
-        try await pair.barrier()
-        let old = try #require(env.router.activePipeline)
-        #expect(await env.router.reload() == .reloaded)
-        // As if a segment read the old child just before the swap and found its input closed after it.
-        env.router.inputClosed(stream, pipeline: old)
-        #expect(env.router.activeStream == stream)
-        #expect(env.router.activePipeline !== old)
-        try await pair.barrier()
-        #expect(await env.gate.activeStream == stream)
+        do {
+            let pair = try await FallbackSocketPair.connect(port: env.port, selecting: [RecipientTestRig.target])
+            defer { pair.close() }
+            let stream = UUID()
+            try await recipientSocketSend(audio(stream, 0), on: pair.sockets[0])
+            try await pair.barrier(step: "after first segment")
+            let old = try #require(env.router.activePipeline)
+            #expect(await env.router.reload() == .reloaded)
+            // As if a segment read the old child just before the swap and found its input closed after it.
+            env.router.inputClosed(stream, pipeline: old)
+            #expect(env.router.activeStream == stream)
+            #expect(env.router.activePipeline !== old)
+            try await pair.barrier(step: "after replaced-child inputClosed")
+            #expect(await env.gate.activeStream == stream)
+        } catch {
+            await env.listener.stop(reason: "synthetic test failure")
+            throw error
+        }
         await env.listener.stop(reason: "synthetic test complete")
     }
 }
