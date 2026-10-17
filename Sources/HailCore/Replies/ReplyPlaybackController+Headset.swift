@@ -17,7 +17,8 @@ extension ReplyPlaybackController {
     }
 
     /// A reply started or ended: only while one is active does the headset's pause belong to Hail, so the user's
-    /// music app has its controls back between replies.
+    /// music app has its controls back between replies. An abandoned head (`+Idle`) frees it while its buffered
+    /// tail still plays out; a press then reaches the music app, accepted as rare for this interim (#269).
     func replyActivityChanged() {
         #if os(iOS)
         HeadsetReplyCommands.shared.replyActivity(self, active: activeKey != nil)

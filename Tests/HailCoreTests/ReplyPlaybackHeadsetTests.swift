@@ -54,4 +54,26 @@ import Testing
         controller.stopAndMuteFromHeadset()
         #expect(controller.isMuted)
     }
+
+    @Test func aPressWhilePausedStopsAndMutes() {
+        let player = IdlePlayer()
+        let controller = ReplyPlaybackController(player: player)
+        controller.ingest(idleAudio(idleReply(), sequence: 0, final: false, byte: 10))
+        controller.togglePause()
+        #expect(controller.stopAndMuteFromHeadset())
+        #expect(controller.isMuted && !controller.isPaused)
+        #expect(controller.status == "Muted")
+    }
+
+    @Test func aPressWhileListeningStopsAndMutesAndKeepsTheListeningStatus() {
+        let player = IdlePlayer()
+        let controller = ReplyPlaybackController(player: player)
+        controller.ingest(idleAudio(idleReply(), sequence: 0, final: false, byte: 10))
+        controller.beginCaptureSuppression()
+        #expect(controller.stopAndMuteFromHeadset())
+        #expect(controller.isMuted && player.cancelCount == 1)
+        #expect(controller.statusForControls == "Paused while listening")
+        controller.endCaptureSuppression()
+        #expect(controller.status == "Muted")
+    }
 }
