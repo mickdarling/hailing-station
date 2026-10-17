@@ -20,8 +20,7 @@ import Testing
         if abandon == "before" { revocation.revoke() }
         writer.close()
         if abandon == "after" { revocation.revoke() }
-        revocation.ownedGroupEnded()
-        stream.continuation.finish(throwing: RightyoChildError.transportLost)
+        revocation.ownedGroupEnded(); stream.continuation.finish(throwing: RightyoChildError.transportLost)
         let lines = RightyoChildOutput(base: .init(stream: stream.stream, queued: queued),
                                        revocation: revocation, control: writer)
         var iterator = lines.makeAsyncIterator()
@@ -31,12 +30,13 @@ import Testing
         } catch { #expect(error as? RightyoChildError == .transportLost) }
     }
 
-    @Test func gracefulCoachingEOFStillDeliversBufferedAndTerminalOutput() async throws {
+    @Test(arguments: [false, true])
+    func gracefulCoachingEOFStillDeliversBufferedAndTerminalOutput(leaderExits: Bool) async throws {
         let fake = try FakeRightyo("""
         printf 'authored-buffered\\n'
         /bin/cat >/dev/null
         printf 'authored-terminal\\n'
-        exec /bin/sleep 60
+        \(leaderExits ? "exit 0" : "exec /bin/sleep 60")
         """)
         defer { fake.cleanUp() }
         let child = try RightyoChildProcess(executable: FakeRightyo.shared, config: fake.config,

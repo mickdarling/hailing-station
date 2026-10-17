@@ -9,7 +9,9 @@ final class RightyoOutputRevocation: Sendable {
     private let state = Mutex(State())
     func revoke() { state.withLock { $0.revoked = true } }
     func noteGracefulInputClosure() { state.withLock { $0.graceful = true } }
-    func ownedGroupEnded() { state.withLock { if !$0.graceful { $0.revoked = true } } }
+    @discardableResult func ownedGroupEnded() -> Bool {
+        state.withLock { if !$0.graceful { $0.revoked = true }; return $0.revoked }
+    }
     func check() throws {
         if state.withLock({ $0.revoked }) { throw RightyoChildError.transportLost }
     }
@@ -20,25 +22,30 @@ public struct RightyoChildOutput: AsyncSequence, Sendable {
     let base: RightyoChildLines
     let revocation: RightyoOutputRevocation?
     let control: RightyoCoachingControlWriter?
+    let exit: RightyoExitLatch?
     init(base: RightyoChildLines, revocation: RightyoOutputRevocation?,
-         control: RightyoCoachingControlWriter? = nil) {
-        self.base = base; self.revocation = revocation; self.control = control
+         control: RightyoCoachingControlWriter? = nil, exit: RightyoExitLatch? = nil) {
+        self.base = base; self.revocation = revocation; self.control = control; self.exit = exit
     }
     public struct AsyncIterator: AsyncIteratorProtocol {
         var base: RightyoChildLines.AsyncIterator
         let revocation: RightyoOutputRevocation?
         let control: RightyoCoachingControlWriter?
+        let exit: RightyoExitLatch?
+        private func check() throws {
+            if exit?.value != nil { revocation?.ownedGroupEnded() }
+            try revocation?.check()
+            guard control?.peerAvailable() != false else { throw RightyoChildError.transportLost }
+        }
         public mutating func next() async throws -> Data? {
-            try revocation?.check()
-            guard control?.peerAvailable() != false else { throw RightyoChildError.transportLost }
+            try check()
             let line = try await base.next()
-            try revocation?.check()
-            guard control?.peerAvailable() != false else { throw RightyoChildError.transportLost }
+            try check()
             return line
         }
     }
     public func makeAsyncIterator() -> AsyncIterator {
-        AsyncIterator(base: base.makeAsyncIterator(), revocation: revocation, control: control)
+        AsyncIterator(base: base.makeAsyncIterator(), revocation: revocation, control: control, exit: exit)
     }
     func revokeCoaching() { revocation?.revoke() }
 }
@@ -102,6 +109,16 @@ extension RightyoChildProcess {
         guard coachingControl != nil else { return }
         lines.revokeCoaching()
         input.close(abandon: true); coachingControl?.close()
+    }
+
+    /// Observe the existing owned leader latch even when stdout ended or a descendant retains fd 3.
+    static func observeCoachingExit(_ exit: RightyoExitLatch, revocation: RightyoOutputRevocation?,
+                                    continuation: AsyncThrowingStream<Data, any Error>.Continuation) {
+        guard let revocation else { return }
+        Task {
+            _ = await exit.wait(timeout: nil)
+            if revocation.ownedGroupEnded() { continuation.finish(throwing: RightyoChildError.transportLost) }
+        }
     }
 
     static func coachingWriter(_ descriptor: Int32?, input: RightyoStdinWriter,

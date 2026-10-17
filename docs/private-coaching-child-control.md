@@ -57,3 +57,17 @@ output semantics. A peer loss already present at that boundary revokes instead, 
 watcher has not run. RightyoCoachingGracefulRaceTests withholds the actual writer queue, closes the
 peer first, and asserts that buffered output remains refused after local close and group completion.
 The regression fails before the synchronous close probe; healthy graceful EOF controls remain covered.
+
+A close with a partly written control record revokes output instead of granting graceful EOF after
+truncated JSON. An authored real-pipe regression fills/backpressures the pipe, observes a partial
+record, withholds the writer retry, then closes and verifies that buffered output is refused.
+Hard stdin write failures now use the same coaching revocation/stream-failure fence. The existing
+RightyoStdinWriter is moved unchanged into its own file except for that failure propagation, keeping
+both files within the repository length rule. An authored child closes stdin while keeping control
+and stdout open: coaching refuses its later output; ordinary non-coaching output remains unchanged.
+
+Coaching also observes the existing owned-leader exit latch directly. Output admission checks that
+same latch before and after awaiting a line; a delayed group-abandon callback or inherited control
+fd cannot preserve output from a lost producer. The observation task retains only the latch/fence/
+continuation and finishes revoked streams promptly; graceful EOF remains allowed to drain terminal
+lines. An authored leader-exit/descendant-retained-fd regression fails before this correction.
