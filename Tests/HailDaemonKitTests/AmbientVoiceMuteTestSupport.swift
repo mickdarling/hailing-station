@@ -59,6 +59,5 @@ extension AmbientWiringVoiceMuteTests {
                                       on: socket)
         try await recipientSocketBarrier(on: socket)
     }
-
 }
 #endif
