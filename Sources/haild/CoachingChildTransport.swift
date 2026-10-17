@@ -136,8 +136,8 @@ struct CoachingChildConfiguration {
             return // Advisory only; never a grant or a lease renewal.
         }
         guard object["session_id"] as? String == session?.uuidString.lowercased(),
-              let next = CoachingChildCodec.integer(object["sequence"]), next == sequence + 1,
-              let emitted = CoachingChildCodec.integer(object["emitted_at_ms"]), emitted >= 0 else {
+              let next = object["sequence"] as? Int, next == sequence + 1,
+              let emitted = object["emitted_at_ms"] as? Int, emitted >= 0 else {
             throw CoachingChildError.invalidOutput
         }
         _ = try RightyoInputEvent.decode(data) // Existing ordinary typed event envelope; no action consumer.
