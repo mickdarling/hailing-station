@@ -18,6 +18,7 @@ final class AppleCoachingRig {
     var suspensions: [CoachingSuspension] = []
     var onSnapshot: (() -> Void)?
     var onReady: (() -> Void)?
+    var onSuspended: (() -> Void)?
     var rendererReady = true
     lazy var monitor = CoachingOutputMonitor(snapshot: { [weak self] in
         self?.onSnapshot?()
@@ -42,7 +43,10 @@ final class AppleCoachingRig {
             self?.captureBuffers += 1
             let samples = buffer.pcmBuffer.floatChannelData?.pointee
             self?.nonzeroCapture = samples?[1] != 0
-        }, suspended: { [weak self] _, reason in self?.suspensions.append(reason) }), clock: time.clock)
+        }, suspended: { [weak self] _, reason in
+            self?.suspensions.append(reason)
+            self?.onSuspended?()
+        }), clock: time.clock)
     }
 }
 
