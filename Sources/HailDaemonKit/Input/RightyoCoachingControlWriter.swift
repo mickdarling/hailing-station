@@ -89,6 +89,7 @@ final class RightyoCoachingControlWriter: Sendable {
         watcher.cancel()
         let notify = state.withLock { current -> Bool in
             guard let fd = current.descriptor else { return false }
+            guard (current.lines.first?.offset ?? 0) == 0 else { return revoke(&current) }
             var peer = pollfd(fd: fd, events: Int16(POLLERR | POLLHUP), revents: 0)
             guard poll(&peer, 1, 0) >= 0, peer.revents & Int16(POLLERR | POLLHUP | POLLNVAL) == 0 else {
                 return revoke(&current)
