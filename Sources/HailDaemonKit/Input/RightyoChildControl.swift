@@ -11,8 +11,11 @@ public enum RightyoReplyPhase: String, Sendable { case started, ended }
 final class RightyoControlWriter: Sendable {
     private let descriptor: Mutex<Int32?>
     init(_ descriptor: Int32?) { self.descriptor = Mutex(descriptor) }
-    func report(_ phase: RightyoReplyPhase) -> Bool {
-        let line = Array("{\"reply\":\"\(phase.rawValue)\"}\n".utf8)
+    func report(_ phase: RightyoReplyPhase) -> Bool { write("{\"reply\":\"\(phase.rawValue)\"}\n") }
+    /// Media mode (#551, rightyo#195): a RightyO without it skips the line and attends as before.
+    func media(_ on: Bool) -> Bool { write("{\"media\":\(on)}\n") }
+    private func write(_ text: String) -> Bool {
+        let line = Array(text.utf8)
         return descriptor.withLock { fd in
             guard let fd else { return false }
             return line.withUnsafeBytes { Darwin.write(fd, $0.baseAddress, $0.count) } == line.count
@@ -44,5 +47,7 @@ extension RightyoChildProcess {
     /// Reports the assistant's spoken reply to the child (rightyo#124) without blocking; false when the child was
     /// started without `replyControl`, its control input is closed, or the pipe is full (the report is dropped).
     @discardableResult public func reportReply(_ phase: RightyoReplyPhase) -> Bool { control.report(phase) }
+    /// Sets the child's media mode (#551) the same way; false when it could not be written.
+    @discardableResult public func reportMedia(_ on: Bool) -> Bool { control.media(on) }
 }
 #endif

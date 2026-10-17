@@ -616,3 +616,19 @@ reports `unrecognized` at most once and `recognized` at most once, only after it
 replayed status is ignored, never refused. The status goes as `owner_voice` only to the device whose stream it is, only
 if it advertised `owner_voice_status`, and is logged as `ambient_owner_voice state=<state> device=<outcome>` (`sent`,
 `unsupported`, `failed` or `no_connection`): tokens only.
+
+### Media mode (#551, rightyo#195)
+
+While the owner watches TV or videos, a show's dialogue can sound like a request. When the owner says a media phrase as a whole turn, `haild` turns media mode on for that device's stream. Examples are "Jarvis, media mode" and "I'm going to watch TV" (`VoiceMedia`). The phrases follow the same rules as the spoken mute (#404): an optional greeting and name, no other words, and on an enrolled session only the owner's turn counts. The phrase is never typed to the agent.
+
+`haild` writes `{"media":true}` to the child's control descriptor (`--control-fd`, so reply control must be on). RightyO then attends only when the turn names the assistant and, with speaker roles, is in the owner's voice. It refuses every follow-up. A child started or reloaded while the mode is on is told at once.
+
+The mode ends in three ways, each logged as `ambient_media on=… reason=… reported=…`:
+
+- A spoken off phrase. While the mode is on, this needs the name, for example "Jarvis, done watching".
+- After `mediaTimeout`, three hours by default.
+- When the connection ends.
+
+When the ack library has clips in the reserved `confirm-media-on/` and `confirm-media-off/` folders, the change is confirmed on the device. A RightyO without rightyo#195 skips the control line and attends as before.
+
+The app control and the "Media mode" indicator on the ambient card are a later slice.

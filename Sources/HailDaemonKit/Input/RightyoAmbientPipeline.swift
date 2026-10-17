@@ -78,6 +78,9 @@ public final class RightyoAmbientPipeline: Sendable {
         /// Called once per admitted request that is the owner's spoken mute (true) or unmute (false) (#404), instead
         /// of typing it: it is never acknowledged, shown or delivered to the target. It must return at once.
         public var onVoiceMute: (@Sendable (Bool) -> Void)?
+        /// Called once per admitted request that is the owner's spoken media mode on (true) or off (#551), handled
+        /// like `onVoiceMute`. It must return at once.
+        public var onVoiceMedia: (@Sendable (Bool) -> Void)?
         /// Called when RightyO says the owner's voice is `unrecognized` on this input, or `recognized` again
         /// (rightyo#164), only on a session whose `started` advertised `owner_voice`, each state at most once and
         /// `recognized` only after `unrecognized`. It must return at once.
@@ -109,6 +112,7 @@ public final class RightyoAmbientPipeline: Sendable {
     private let consumer: RightyoInputConsumer
     private let onDismiss: (@Sendable (RightyoDismissReceipt) -> Void)?
     private let onVoiceMute: (@Sendable (Bool) -> Void)?
+    private let onVoiceMedia: (@Sendable (Bool) -> Void)?
     private let acknowledgement: AmbientAckRelay
     private let heard: AmbientHeardRelay
     private let overheard: AmbientOverheardRelay
@@ -124,14 +128,15 @@ public final class RightyoAmbientPipeline: Sendable {
                                               acknowledge: { relay.fire() }, heard: { await heard.deliver() })
         consumer = try RightyoInputConsumer(host: nil, target: configuration.target, binding: configuration.binding,
                                             session: session, allowSynthetic: configuration.allowSynthetic,
-                                            dispatcher: step, echoFilter: configuration.isEcho)
+                                            dispatcher: step, echoFilter: configuration.isEcho,
+                                            mediaCommands: configuration.replyControl)
         child = try RightyoChildProcess(executable: configuration.executable, config: configuration.config,
                                         session: session, timing: configuration.timing,
                                         replyControl: configuration.replyControl,
                                         env: configuration.environment)
         self.session = session
         onDismiss = configuration.onDismiss
-        onVoiceMute = configuration.onVoiceMute
+        (onVoiceMute, onVoiceMedia) = (configuration.onVoiceMute, configuration.onVoiceMedia)
         acknowledgement = relay
         self.heard = heard
         overheard = AmbientOverheardRelay(onOverheard: configuration.onOverheard, isEcho: configuration.isEcho)
@@ -145,6 +150,10 @@ public final class RightyoAmbientPipeline: Sendable {
     /// Reports the assistant's spoken reply on this stream's device (rightyo#124); false when reply control is off
     /// or the report was dropped. Never blocks.
     @discardableResult public func reportReply(_ phase: RightyoReplyPhase) -> Bool { child.reportReply(phase) }
+
+    /// Sets media mode in this stream's RightyO (#551) over the same control descriptor; false when reply control is
+    /// off or the line was dropped. Never blocks.
+    @discardableResult public func reportMedia(_ on: Bool) -> Bool { child.reportMedia(on) }
 
     /// Ends the audio (EOF after queued audio is written); the child then emits `stopped` and `run` returns.
     public func finishInput() { child.closeInput() }
@@ -180,6 +189,9 @@ public final class RightyoAmbientPipeline: Sendable {
                 // A newly admitted voice mute (#404) is handed to the host instead of being typed.
                 if event.type == "request", let command = await consumer.lastVoiceMute {
                     onVoiceMute?(command == .mute)
+                }
+                if event.type == "request", let command = await consumer.lastVoiceMedia {
+                    onVoiceMedia?(command == .on)
                 }
             }
             try await consumer.finish()
