@@ -25,8 +25,11 @@ Renewals occur every second, use new qualification IDs and never extend an earli
 deadline or the original 15-minute session budget. A current-epoch effect that observes either deadline
 has elapsed retires capture and the child immediately, even while timer delivery is withheld. A changed
 lease is held without retiring a renewed owner; a different epoch never grants old cleanup authority.
-Measured pause/owner-mid-answer/playback activity
-is correlated to finalized SpeechEvents, never guessed from words. The agreed activity envelope is
+The run budget is anchored before the audio owner's Begin can activate capture. Time spent sending
+the initial qualification cannot shift that deadline; an authored 500ms startup-delay case fails on
+the prior late-anchor source and retires at the original boundary after correction.
+Measured pause/owner-mid-answer/playback activity is correlated to finalized SpeechEvents, never guessed
+from words. The agreed activity envelope is
 `{schema_version:1,type:"coaching_activity",session_id,generation_id,utterance_id,pause_ms,
 owner_mid_answer,playback}`: canonical UUID session/generation, existing bounded Turn identifier
 (1..96 ASCII characters), integer pause 0..60000 and strict booleans. One pending final/activity;
