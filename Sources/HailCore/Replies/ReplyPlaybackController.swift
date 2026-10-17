@@ -54,7 +54,8 @@ public final class ReplyPlaybackController {
     var lastAudio: [AudioPayload] = []
     var lastKey: ReplyStreamKey?
     var playbackOrder: [ReplyStreamKey] = []
-    var activeKey: ReplyStreamKey?
+    /// A reply starting or ending claims or frees the headset's pause (`+Headset`).
+    var activeKey: ReplyStreamKey? { didSet { if (oldValue == nil) != (activeKey == nil) { replyActivityChanged() } } }
     var playbackGeneration: UInt = 0
     var seenFrames: [UUID] = []
     var seenFrameSet: Set<UUID> = []
