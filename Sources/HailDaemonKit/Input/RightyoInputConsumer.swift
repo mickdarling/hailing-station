@@ -122,14 +122,17 @@ enum VoiceMedia {
 /// connection that said stop, with no round trip through the agent session. Clips live in reserved folders of the
 /// acknowledgement directory: `confirm-stopped/` ("Stopped.") and `confirm-idle/` ("Nothing playing, standing by."),
 /// for the owner's spoken mute (#404) `confirm-muted/` ("Muted.") and `confirm-unmuted/` ("Unmuted."), and for media
-/// mode (#551) `confirm-media-on/` and `confirm-media-off/`.
+/// mode (#551) `confirm-media-on/` and `confirm-media-off/`, and for spoken notes (#552) `confirm-saved/` and
+/// `confirm-not-saved/`.
 enum AmbientStopConfirmation {
     static let stopped = RightyoAddressing.key("confirm-stopped"), idle = RightyoAddressing.key("confirm-idle")
     static let muted = RightyoAddressing.key("confirm-muted"), unmuted = RightyoAddressing.key("confirm-unmuted")
     /// Media mode (#551): "Media mode on." and "Media mode off."
     static let mediaOn = RightyoAddressing.key("confirm-media-on")
     static let mediaOff = RightyoAddressing.key("confirm-media-off")
-    static let reserved: Set<String> = [stopped, idle, muted, unmuted, mediaOn, mediaOff]
+    /// A spoken note (#552): "Saved." once its Shortcut succeeded, "That didn't save." when it did not.
+    static let saved = RightyoAddressing.key("confirm-saved"), notSaved = RightyoAddressing.key("confirm-not-saved")
+    static let reserved: Set<String> = [stopped, idle, muted, unmuted, mediaOn, mediaOff, saved, notSaved]
 
     /// Why a playback stop is not confirmed, as a log token, or nil when it is: only the enrolled owner's stop, and
     /// only on a connection still there to hear it.

@@ -632,3 +632,19 @@ The mode ends in three ways, each logged as `ambient_media on=… reason=… rep
 When the ack library has clips in the reserved `confirm-media-on/` and `confirm-media-off/` folders, the change is confirmed on the device. A RightyO without rightyo#195 skips the control line and attends as before.
 
 The app control and the "Media mode" indicator on the ambient card are a later slice.
+
+### Spoken notes to allowlisted destinations (#552, slice 1)
+
+The owner can say "Jarvis, add to Notes: buy oat milk" or "Jarvis, put this in Notes …" as a whole turn on an enrolled session. `haild` then runs the Apple Shortcut the owner allowlisted for that destination, with the words, as said, as its input. The note is never typed to the agent.
+
+- **Destinations** come from `--ambient-destinations <file>` (`"destinations"` in `host.json`'s `ambient` block), for example `{"Notes": {"shortcut": "Hail to Notes"}}`.
+  - A missing file leaves spoken notes off.
+  - A malformed file is logged (`ambient_destinations error=…`) and also leaves them off. It never stops the daemon.
+  - Only names in the file are reachable. Arbitrary Shortcuts can't be run by name.
+  - Every destination only saves. Anything that sends waits for #89.
+- **Who:** only the enrolled owner's turn counts. On an anonymous session, or for anyone else, the phrase goes to the agent as before. A destination name followed by `.` or `/` ("notes.md") also stays a request.
+- **Run:** `/usr/bin/shortcuts run <shortcut> --input-path <file>`, with no shell. The words go only into a `0600` temporary file, which is removed afterwards. It times out after 30 s (SIGTERM, then SIGKILL).
+- **Confirmation:** only after the Shortcut exits does the device hear a clip from `confirm-saved/` ("Saved."), or from `confirm-not-saved/` when it failed.
+- **Log:** `ambient_voice_note destination=… outcome=… bytes=… confirm=…`, with tokens and a byte count only, never the words.
+
+Setup is the owner's: create the Shortcut (for example, "Append to Note" with the Shortcut Input), write the destinations file, and add the two clip folders.
