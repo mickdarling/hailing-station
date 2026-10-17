@@ -5,6 +5,32 @@ import Testing
 @testable import HailDaemonKit
 
 @Suite(.serialized, .timeLimit(.minutes(1))) struct RightyoCoachingGracefulRaceTests {
+    @Test(arguments: [false, true])
+    func observedLeaderExitCannotBecomeANewerGracefulClose(exitedFirst: Bool) async throws {
+        var control: [Int32] = [-1, -1]
+        try #require(pipe(&control) == 0)
+        let queue = DispatchQueue(label: "authored-leader-close-order")
+        queue.suspend(); defer { queue.resume(); close(control[0]) }
+        let revocation = RightyoOutputRevocation(), exit = RightyoExitLatch()
+        revocation.observe(exit)
+        let writer = RightyoCoachingControlWriter(control[1], revocation: revocation, queue: queue) {}
+        defer { writer.close() }
+        if exitedFirst { exit.signal(.exited(0)) }
+        writer.close(); writer.close()
+        if !exitedFirst { exit.signal(.exited(0)) }
+        revocation.ownedGroupEnded()
+        let stream = AsyncThrowingStream<Data, any Error>.makeStream(), queued = RightyoByteCount()
+        queued.withLock { $0 = 1 }; stream.continuation.yield(Data([7])); stream.continuation.finish()
+        let output = RightyoChildOutput(base: .init(stream: stream.stream, queued: queued),
+                                        revocation: revocation, control: writer)
+        var iterator = output.makeAsyncIterator()
+        if exitedFirst {
+            do { _ = try await iterator.next()
+                Issue.record("Observed exit became a later graceful EOF")
+            } catch { #expect(error as? RightyoChildError == .transportLost) }
+        } else { #expect(try await iterator.next() == Data([7])) }
+    }
+
     @Test func peerLossBeforeLocalEOFCannotBecomeGraceful() async throws {
         var control: [Int32] = [-1, -1]
         try #require(pipe(&control) == 0)

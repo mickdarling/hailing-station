@@ -71,3 +71,8 @@ same latch before and after awaiting a line; a delayed group-abandon callback or
 fd cannot preserve output from a lost producer. The observation task retains only the latch/fence/
 continuation and finishes revoked streams promptly; graceful EOF remains allowed to drain terminal
 lines. An authored leader-exit/descendant-retained-fd regression fails before this correction.
+
+The graceful-close transition checks the same bound leader latch synchronously. An exit already
+observed before local EOF cannot become a graceful close while the asynchronous exit observer is
+still waiting to resume. The authored two-order latch/real-writer regression fails for exit-first on
+prior source; local-EOF-first remains allowed and repeated close stays idempotent after leader exit.
