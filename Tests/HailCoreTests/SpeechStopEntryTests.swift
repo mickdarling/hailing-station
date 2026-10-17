@@ -18,7 +18,7 @@ func enteredSpeechStop(_ transcriber: SFSpeechRecognizerTranscriber) async -> Ta
     return stop
 }
 
-@Suite struct SpeechStopEntryTests {
+@Suite struct SFSpeechRecognizerTranscriberStopEntryTests {
     @Test func creatingAStopTaskDoesNotGuaranteeItJoinedActiveCleanup() async throws {
         let backend = StubStreamingSpeechRecognitionBackend()
         let transcriber = SFSpeechRecognizerTranscriber(backend: backend)
