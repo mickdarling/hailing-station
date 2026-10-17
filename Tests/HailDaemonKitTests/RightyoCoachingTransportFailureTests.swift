@@ -33,7 +33,13 @@ import Testing
 
     @Test func observedLeaderExitRefusesBufferedOutputWhileDescendantHoldsControl() async throws {
         let fake = try FakeRightyo("""
-        (trap '' TERM; exec 1>&-; exec /bin/sleep 60) &
+        (
+          trap '' TERM
+          exec 1>&-
+          printf ready > descendant-ready
+          exec /bin/sleep 60
+        ) &
+        while [ ! -f descendant-ready ]; do /bin/sleep 0.01; done
         printf 'authored-after-leader\\n'
         exit 0
         """)
@@ -42,6 +48,7 @@ import Testing
             session: UUID().uuidString.lowercased(), provenance: .synthetic, coaching: .init())
         do {
             try #require(await eventually { child.exitStatus != nil && child.lines.base.queued.withLock { $0 > 0 } })
+            #expect(try fake.recorded("descendant-ready") == "ready")
             #expect(child.coachingControl?.peerAvailable() == true)
             var iterator = child.lines.makeAsyncIterator()
             do { _ = try await iterator.next()

@@ -56,7 +56,7 @@ struct FallbackSocketPair {
             if let target {
                 try await recipientSocketSend(sessionFrame(payload: .control(.select(targetID: target))), on: socket)
             }
-            try await recipientSocketBarrier(on: socket)
+            try await recipientSocketBarrier(on: socket, step: "connection setup")
         }
         return Self(sessions: sessions, sockets: sockets)
     }
@@ -67,8 +67,8 @@ struct FallbackSocketPair {
     }
 
     /// Every socket must be idle: a stray reply is a failure, never a timing inference.
-    func barrier() async throws {
-        for socket in sockets { try await recipientSocketBarrier(on: socket) }
+    func barrier(step: String = "pair barrier") async throws {
+        for socket in sockets { try await recipientSocketBarrier(on: socket, step: step) }
     }
 
     func select(_ target: String, on index: Int) async throws {
