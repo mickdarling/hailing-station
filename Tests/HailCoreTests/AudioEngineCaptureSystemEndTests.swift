@@ -12,16 +12,18 @@ final class FakeEngineOperations {
     /// Runs inside `start`, after the engine reports running: models a notification landing mid-start.
     var duringStart: (@MainActor () -> Void)?
 
+    /// Weak, not unowned (#574): a streamer's task can stop its capture after the test has dropped this fake, and an
+    /// unowned read then traps the whole test process. A fake that is gone simply reports a stopped engine.
     var operations: AudioEngineOperations {
         AudioEngineOperations(
-            installTap: { [unowned self] _, tap in self.tap = tap },
-            removeTap: { [unowned self] _ in tap = nil },
-            start: { [unowned self] _ in
-                running = true
-                duringStart?()
+            installTap: { [weak self] _, tap in self?.tap = tap },
+            removeTap: { [weak self] _ in self?.tap = nil },
+            start: { [weak self] _ in
+                self?.running = true
+                self?.duringStart?()
             },
-            stop: { [unowned self] _ in running = false },
-            isRunning: { [unowned self] _ in running }
+            stop: { [weak self] _ in self?.running = false },
+            isRunning: { [weak self] _ in self?.running ?? false }
         )
     }
 
