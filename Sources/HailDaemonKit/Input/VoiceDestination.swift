@@ -1,25 +1,27 @@
 #if os(macOS)
 public import Foundation
-import Synchronization
 
-/// The owner's spoken note to a named destination (#552, slice 1): "Jarvis, add to Notes: buy oat milk" runs the
-/// Apple Shortcut the owner allowlisted for "notes", with the dictated words as its input. Only names in the owner's
-/// destinations file are reachable; there is no "run any shortcut", since a Shortcut may order or send things.
+/// The owner's spoken note to a named destination (#552): "Jarvis, add to Notes: buy oat milk" saves the dictated
+/// words wherever the owner configured "notes", by one of haild's own handlers (`VoiceNoteRunner`). Only names in the
+/// owner's destinations file are reachable, and a handler is code in this repo, never one named at run time.
 /// Every destination here only saves: anything that sends waits for #89's confirmation.
 public struct VoiceDestinations: Sendable, Equatable {
-    public struct Destination: Sendable, Equatable {
-        public let shortcut: String
-        public init(shortcut: String) { self.shortcut = shortcut }
+    /// Where a destination's notes go: the handler's kind, as the file's single key, and its target.
+    public enum Destination: Sendable, Equatable {
+        /// Appended as a dated list item to this Markdown file (an absolute path ending `.md`).
+        case markdown(String)
+        /// Given as the input of this allowlisted Apple Shortcut, by name.
+        case shortcut(String)
     }
 
-    /// One recognised note: the destination's key, its Shortcut and the words to save, as heard.
+    /// One recognised note: the destination's key, where it goes and the words to save, as heard.
     struct Command: Sendable, Equatable {
         let destination: String
-        let shortcut: String
+        let target: Destination
         let text: String
     }
 
-    public enum LoadError: Error, Equatable { case malformed, invalidName, invalidShortcut, unsafe }
+    public enum LoadError: Error, Equatable { case malformed, invalidName, invalidShortcut, invalidFile, unsafe }
 
     /// Longest note accepted, in characters; a longer turn is a request to the agent like any other.
     static let maxText = 2000
@@ -33,19 +35,35 @@ public struct VoiceDestinations: Sendable, Equatable {
             guard !key.isEmpty, name.split(separator: " ").count <= 3, keyed[key] == nil else {
                 throw LoadError.invalidName
             }
-            let shortcut = destination.shortcut
-            // From the owner's own file, but still argv: never empty, an option, overlong or carrying controls.
-            guard !shortcut.isEmpty, shortcut.count <= 100, !shortcut.hasPrefix("-"),
-                  !shortcut.unicodeScalars.contains(where: { CharacterSet.controlCharacters.contains($0) }) else {
-                throw LoadError.invalidShortcut
-            }
+            try Self.validate(destination)
             keyed[key] = destination
         }
         self.destinations = keyed
     }
 
-    /// `{"notes": {"shortcut": "Hail to Notes"}}`; nil when the file does not exist (the feature is then off).
-    /// The file alone decides which Shortcut a spoken name runs, so it is trusted only as the RightyO executable is
+    /// From the owner's own file, but still argv or a path: never empty, overlong or carrying controls; a Shortcut
+    /// never an option; a file absolute, without `.`, `..` or empty components, and Markdown.
+    private static func validate(_ destination: Destination) throws {
+        let controls = { (value: String) in
+            value.unicodeScalars.contains { CharacterSet.controlCharacters.contains($0) }
+        }
+        switch destination {
+        case .shortcut(let name):
+            guard !name.isEmpty, name.count <= 100, !name.hasPrefix("-"), !controls(name) else {
+                throw LoadError.invalidShortcut
+            }
+        case .markdown(let path):
+            let parts = path.split(separator: "/", omittingEmptySubsequences: false).dropFirst()
+            guard path.hasPrefix("/"), path.count <= 1024, path.hasSuffix(".md"), !controls(path),
+                  !parts.contains(where: { $0.isEmpty || $0 == "." || $0 == ".." }) else {
+                throw LoadError.invalidFile
+            }
+        }
+    }
+
+    /// `{"notes": {"markdown": "/Users/me/Notes/Inbox.md"}}` or `{"notes": {"shortcut": "Hail to Notes"}}`, exactly
+    /// one handler per destination; nil when the file does not exist (the feature is then off).
+    /// The file alone decides where a spoken name's words go, so it is trusted only as the RightyO executable is
     /// (`RightyoChildProcess.validate`): after symlinks, a regular file of at most 64 KB owned by this user or root and
     /// not group/world-writable, in directories up to `/` that no other user can write either. Otherwise `unsafe`.
     public static func load(_ url: URL) throws -> VoiceDestinations? {
@@ -62,8 +80,11 @@ public struct VoiceDestinations: Sendable, Equatable {
         }
         var parsed: [String: Destination] = [:]
         for (name, fields) in raw {
-            guard Set(fields.keys) == ["shortcut"], let shortcut = fields["shortcut"] else { throw LoadError.malformed }
-            parsed[name] = Destination(shortcut: shortcut)
+            switch (fields.count, fields["markdown"], fields["shortcut"]) {
+            case (1, let path?, nil): parsed[name] = .markdown(path)
+            case (1, nil, let shortcut?): parsed[name] = .shortcut(shortcut)
+            default: throw LoadError.malformed
+            }
         }
         return try VoiceDestinations(parsed)
     }
@@ -105,7 +126,7 @@ public struct VoiceDestinations: Sendable, Equatable {
             let text = heard[end...].drop { $0.isWhitespace || ":,-".contains($0) }
                 .trimmingCharacters(in: .whitespacesAndNewlines)
             guard !text.isEmpty, text.count <= Self.maxText else { return nil }
-            return Command(destination: key, shortcut: destination.shortcut, text: text)
+            return Command(destination: key, target: destination, text: text)
         }
         return nil
     }
@@ -140,49 +161,6 @@ public struct VoiceDestinations: Sendable, Equatable {
             }
         }
         return found
-    }
-}
-
-/// Runs one allowlisted Shortcut with a note as its input (#552): `shortcuts run <name> --input-path <file>`, no
-/// shell, the words only in a private temporary file that is removed afterwards. Returns an outcome token for logs.
-struct ShortcutRunner: Sendable {
-    var executable = URL(fileURLWithPath: "/usr/bin/shortcuts")
-    var timeout: Duration = .seconds(30)
-
-    func run(_ shortcut: String, text: String) async -> String {
-        let input = FileManager.default.temporaryDirectory.appendingPathComponent("hail-note-\(UUID().uuidString).txt")
-        guard FileManager.default.createFile(atPath: input.path, contents: Data(text.utf8),
-                                             attributes: [.posixPermissions: 0o600]) else { return "input_failed" }
-        defer { try? FileManager.default.removeItem(at: input) }
-        let process = Process()
-        process.executableURL = executable
-        process.arguments = ["run", shortcut, "--input-path", input.path]
-        // As for the RightyO child: a fixed PATH with HOME and TMPDIR, never the rest of haild's environment.
-        process.environment = RightyoChildProcess.environment()
-        (process.standardInput, process.standardOutput, process.standardError) = (nil, nil, nil)
-        let exited = AsyncStream<Int32>.makeStream()
-        process.terminationHandler = { exited.continuation.yield($0.terminationStatus) }
-        do { try process.run() } catch { return "launch_failed" }
-        let timedOut = Mutex(false)
-        // SIGTERM at the timeout, then SIGKILL if it is ignored, so the wait below always ends.
-        let timer = Task {
-            try? await Task.sleep(for: timeout)
-            guard !Task.isCancelled, process.isRunning else { return }
-            timedOut.withLock { $0 = true }
-            process.terminate()
-            try? await Task.sleep(for: .seconds(2))
-            if process.isRunning { kill(process.processIdentifier, SIGKILL) }
-        }
-        defer { timer.cancel() }
-        var statuses = exited.stream.makeAsyncIterator()
-        guard let status = await statuses.next() else {
-            // The caller was cancelled: the Shortcut is stopped, never left running on a removed input.
-            if process.isRunning { kill(process.processIdentifier, SIGKILL) }
-            return "cancelled"
-        }
-        if timedOut.withLock({ $0 }) { return "timeout" }
-        if process.terminationReason == .uncaughtSignal { return "signal_\(status)" }
-        return status == 0 ? "saved" : "exit_\(status)"
     }
 }
 #endif

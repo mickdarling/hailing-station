@@ -82,10 +82,11 @@ public final class RightyoAmbientPipeline: Sendable {
         /// like `onVoiceMute`. It must return at once.
         public var onVoiceMedia: (@Sendable (Bool) -> Void)?
         /// The owner's allowlisted note destinations (#552); nil is off. A note to one is handed to
-        /// `onVoiceDestination` with its destination key, Shortcut and words instead of being typed. It must return
-        /// at once; the words go only to the Shortcut, never to logs.
+        /// `onVoiceDestination` with its destination key, target and words instead of being typed. It must return
+        /// at once; the words go only to that destination, never to logs.
         public var destinations: VoiceDestinations?
-        public var onVoiceDestination: (@Sendable (_ destination: String, _ shortcut: String, _ text: String) -> Void)?
+        public var onVoiceDestination: (@Sendable (
+            _ destination: String, _ target: VoiceDestinations.Destination, _ text: String) -> Void)?
         /// Called when RightyO says the owner's voice is `unrecognized` on this input, or `recognized` again
         /// (rightyo#164), only on a session whose `started` advertised `owner_voice`, each state at most once and
         /// `recognized` only after `unrecognized`. It must return at once.
@@ -118,7 +119,7 @@ public final class RightyoAmbientPipeline: Sendable {
     private let onDismiss: (@Sendable (RightyoDismissReceipt) -> Void)?
     private let onVoiceMute: (@Sendable (Bool) -> Void)?
     private let onVoiceMedia: (@Sendable (Bool) -> Void)?
-    private let onVoiceDestination: (@Sendable (String, String, String) -> Void)?
+    private let onVoiceDestination: (@Sendable (String, VoiceDestinations.Destination, String) -> Void)?
     private let acknowledgement: AmbientAckRelay
     private let heard: AmbientHeardRelay
     private let overheard: AmbientOverheardRelay
@@ -202,7 +203,7 @@ public final class RightyoAmbientPipeline: Sendable {
                     onVoiceMedia?(command == .on)
                 }
                 if event.type == "request", let note = await consumer.lastVoiceDestination {
-                    onVoiceDestination?(note.destination, note.shortcut, note.text)
+                    onVoiceDestination?(note.destination, note.target, note.text)
                 }
             }
             try await consumer.finish()

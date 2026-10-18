@@ -447,7 +447,7 @@ public final class AmbientRightyoRouter: AmbientAudioSink, AmbientListenerWiring
         public var mediaTimeout: TimeInterval = AmbientRightyoRouter.defaultMediaTimeout
         /// The owner's allowlisted note destinations (#552); nil leaves spoken notes off.
         public var destinations: VoiceDestinations?
-        var shortcuts = ShortcutRunner()
+        var notes = VoiceNoteRunner()
 
         public init(executable: URL, config: URL, target: String, binding: String, allowSynthetic: Bool = false,
                     timing: RightyoChildProcess.Timing = .init(),
@@ -1278,18 +1278,18 @@ extension AmbientRightyoRouter {
         }
     }
 
-    /// The owner's note to an allowlisted destination (#552): its Shortcut runs, and only once it saved does the
+    /// The owner's note to an allowlisted destination (#552): its handler saves it, and only once it has does the
     /// device that said it hear a `confirm-saved/` clip; a failure plays `confirm-not-saved/`. One at a time per run
     /// (as the mute's chain), in the order said. A note still running when haild exits leaves its input file, which
     /// the next start sweeps. Logs the destination key, outcome, byte count and clip token; never the words.
     fileprivate func voiceNote(
         on connection: UUID, listener: WebSocketListener
-    ) -> @Sendable (String, String, String) -> Void {
+    ) -> @Sendable (String, VoiceDestinations.Destination, String) -> Void {
         let chain = SerialTaskChain()
-        return { [weak self, weak listener] destination, shortcut, text in
+        return { [weak self, weak listener] destination, target, text in
             chain.enqueue { [weak self, weak listener] in
                 guard let self else { return }
-                let outcome = await configuration.shortcuts.run(shortcut, text: text)
+                let outcome = await configuration.notes.run(target, text: text)
                 let persona = outcome == "saved" ? AmbientStopConfirmation.saved : AmbientStopConfirmation.notSaved
                 let confirm = await confirmVoiceMute(persona, on: connection, listener: listener)
                 let detail = "destination=\(destination) outcome=\(outcome) bytes=\(text.utf8.count)"
