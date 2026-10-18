@@ -18,16 +18,20 @@ struct VoiceNoteRunner: Sendable {
 
 /// Appends a note to a Markdown file (#552) as one list item, `- yyyy-MM-dd HH:mm <words>`, with line breaks in the
 /// words made spaces. A file that does not end in a newline gets one first. An absent file is created `0600` (its
-/// directory must exist); the last component is never followed as a symlink, and only a regular file is written.
+/// directory must exist); the last component is never followed as a symlink, and only a regular file of this user's
+/// with a single link is written, so a file someone else made or hard-linked in a shared folder never gets the words.
+/// A failed write is cut back to the file's earlier length.
 struct MarkdownNoteWriter: Sendable {
     var now: @Sendable () -> Date = { Date() }
 
     func append(_ text: String, to path: String) -> String {
-        let descriptor = open(path, O_RDWR | O_APPEND | O_CREAT | O_NOFOLLOW | O_NONBLOCK | O_CLOEXEC, 0o600)
+        let flags = O_RDWR | O_APPEND | O_CREAT | O_NOFOLLOW | O_NONBLOCK | O_NOCTTY | O_CLOEXEC
+        let descriptor = open(path, flags, 0o600)
         guard descriptor >= 0 else { return "open_failed" }
         defer { close(descriptor) }
         var info = stat()
-        guard fstat(descriptor, &info) == 0, info.st_mode & S_IFMT == S_IFREG else { return "not_a_file" }
+        guard fstat(descriptor, &info) == 0, info.st_mode & S_IFMT == S_IFREG, info.st_uid == geteuid(),
+              info.st_nlink == 1 else { return "not_a_file" }
         var last: UInt8 = 0
         let separate = info.st_size > 0 && pread(descriptor, &last, 1, info.st_size - 1) == 1
             && last != UInt8(ascii: "\n")
@@ -37,7 +41,10 @@ struct MarkdownNoteWriter: Sendable {
         while written < bytes.count {
             let count = bytes[written...].withUnsafeBytes { write(descriptor, $0.baseAddress, $0.count) }
             if count < 0, errno == EINTR { continue }
-            guard count > 0 else { return "write_failed" }
+            guard count > 0 else {
+                ftruncate(descriptor, info.st_size)
+                return "write_failed"
+            }
             written += count
         }
         return "saved"

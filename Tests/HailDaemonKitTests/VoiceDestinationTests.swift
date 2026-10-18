@@ -174,8 +174,11 @@ extension VoiceDestinationTests {
                 try VoiceDestinations(["notes": .markdown(path)])
             }
         }
-        try Data(#"{"notes": {"markdown": "/a/Inbox.md", "shortcut": "x"}}"#.utf8).write(to: file)
-        #expect(throws: VoiceDestinations.LoadError.malformed) { try VoiceDestinations.load(file) }
+        for body in [#"{"notes": {"markdown": "/a/Inbox.md", "shortcut": "x"}}"#, #"{"notes": {}}"#,
+                     #"{"notes": {"markdown": 5}}"#, #"{"notes": {"word": "/a/Inbox.md"}}"#] {
+            try Data(body.utf8).write(to: file)
+            #expect(throws: VoiceDestinations.LoadError.malformed) { try VoiceDestinations.load(file) }
+        }
         let note = try VoiceDestinations(["notes": .markdown("/a/Inbox.md")])
             .command(in: "add to notes milk", names: [])
         #expect(note?.target == .markdown("/a/Inbox.md") && note?.text == "milk")

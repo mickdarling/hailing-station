@@ -54,6 +54,18 @@ import Testing
         #expect(Self.writer.append("x", to: directory.appendingPathComponent("gone/Inbox.md").path) == "open_failed")
     }
 
+    /// A hard link to another of the owner's files (say, in a shared folder) is refused: it would write that file.
+    @Test func aHardLinkedFileIsRefused() throws {
+        let directory = try directory()
+        defer { try? FileManager.default.removeItem(at: directory) }
+        let real = directory.appendingPathComponent("profile")
+        try Data("export A=1\n".utf8).write(to: real)
+        let link = directory.appendingPathComponent("Inbox.md")
+        try FileManager.default.linkItem(at: real, to: link)
+        #expect(Self.writer.append("x", to: link.path) == "not_a_file")
+        #expect(try String(contentsOf: real, encoding: .utf8) == "export A=1\n")
+    }
+
     @Test func theStampIsMinutesInAFixedFormat() {
         #expect(MarkdownNoteWriter.stamp(Date()).wholeMatch(of: /\d{4}-\d{2}-\d{2} \d{2}:\d{2}/) != nil)
     }
