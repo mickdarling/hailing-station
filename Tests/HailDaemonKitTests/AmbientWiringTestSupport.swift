@@ -32,7 +32,7 @@ func ambientRig(
         acknowledgements: acknowledgements, replyControl: replyControl
     )
     (configuration.mediaTimeout, configuration.destinations) = (mediaTimeout, destinations)
-    configuration.shortcuts = shortcuts
+    configuration.notes.shortcuts = shortcuts
     let router = AmbientRightyoRouter(configuration: configuration, log: { events?.record($0); onEvent?($0) })
     let gate = AmbientAudioGate(target: RecipientTestRig.target, sink: router, sweepInterval: nil)
     let listener = try WebSocketListener(

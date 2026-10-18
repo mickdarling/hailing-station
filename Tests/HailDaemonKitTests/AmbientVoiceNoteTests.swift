@@ -5,8 +5,8 @@ import Synchronization
 import Testing
 @testable import HailDaemonKit
 
-/// The owner's spoken note (#552) end to end through the listener: the allowlisted Shortcut runs with the words, and
-/// only then does the device hear whether it saved. Synthetic only; a fake `shortcuts`, no real Shortcut.
+/// The owner's spoken note (#552) end to end through the listener: its handler saves the words, and
+/// only then does the device hear whether it saved. Synthetic only: a fake `shortcuts` or a temporary file.
 @Suite(.serialized, .timeLimit(.minutes(1))) struct AmbientVoiceNoteTests {
     static let saved = AmbientAckClip(pcm: Data(repeating: 7, count: 480), sampleRate: 24_000, text: "Saved.")
     static let notSaved = AmbientAckClip(pcm: Data(repeating: 8, count: 480), sampleRate: 24_000,
@@ -30,7 +30,7 @@ import Testing
             fake, timing: .init(eofGrace: 20, termGrace: 20),
             acknowledgements: AmbientAckLibrary(clips: ["confirmsaved": [Self.saved],
                                                         "confirmnotsaved": [Self.notSaved]]),
-            destinations: try VoiceDestinations(["Notes": .init(shortcut: "Hail to Notes")]),
+            destinations: try VoiceDestinations(["Notes": .shortcut("Hail to Notes")]),
             shortcuts: ShortcutRunner(executable: shortcuts, timeout: .seconds(20)),
             onEvent: { event in
                 if event.event == "ambient_voice_note" { details.withLock { $0.append(event.detail ?? "") } }
@@ -55,6 +55,47 @@ import Testing
         await env.listener.stop(reason: "synthetic test complete")
         #expect(details.withLock { $0 } == ["destination=notes outcome=\(outcome) bytes=9 confirm=\(folder)/0:sent"])
         #expect(try String(contentsOf: directory.appendingPathComponent("note.txt"), encoding: .utf8) == "buy milk.")
+    }
+
+    /// A Markdown destination needs no Shortcut: the words are appended to the owner's file, then "Saved." plays.
+    @Test func aNoteToAMarkdownFileIsAppendedThenConfirmed() async throws {
+        let fake = try FakeRightyo(AmbientVoiceMuteTests.fixture(saying: "Rightyo, add to Notes: buy milk.",
+                                                                 enrolled: true))
+        defer { fake.cleanUp() }
+        try fake.install(fixture: "enrolled-formed-request.jsonl")
+        let directory = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
+        try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: directory) }
+        let inbox = directory.appendingPathComponent("Inbox.md")
+        let details = Mutex<[String]>([])
+        let env = try await ambientRig(
+            fake, timing: .init(eofGrace: 20, termGrace: 20),
+            acknowledgements: AmbientAckLibrary(clips: ["confirmsaved": [Self.saved]]),
+            destinations: try VoiceDestinations(["Notes": .markdown(inbox.path)]),
+            onEvent: { event in
+                if event.event == "ambient_voice_note" { details.withLock { $0.append(event.detail ?? "") } }
+            }
+        )
+        let (session, socket) = try await Self.connect(env)
+        defer {
+            socket.cancel(with: .normalClosure, reason: nil)
+            session.invalidateAndCancel()
+        }
+        let stream = UUID()
+        try await recipientSocketSend(audio(stream, 0), on: socket)
+        let text = try await receiveFrame(on: socket, step: "confirmation words")
+        guard case .text(let heard) = text.payload else {
+            Issue.record("expected the confirmation")
+            return
+        }
+        #expect(heard.text == "Saved.")
+        #expect(await eventually { details.withLock { !$0.isEmpty } })
+        try await recipientSocketSend(audio(stream, 1, final: true), on: socket)
+        await env.router.settle()
+        await env.listener.stop(reason: "synthetic test complete")
+        #expect(details.withLock { $0 } == ["destination=notes outcome=saved bytes=9 confirm=confirmsaved/0:sent"])
+        let body = try String(contentsOf: inbox, encoding: .utf8)
+        #expect(body.hasPrefix("- ") && body.hasSuffix(" buy milk.\n"))
     }
 }
 

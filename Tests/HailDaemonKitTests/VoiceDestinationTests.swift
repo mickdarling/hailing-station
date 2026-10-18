@@ -8,8 +8,8 @@ import Testing
 @Suite(.serialized, .timeLimit(.minutes(1))) struct VoiceDestinationTests {
     static let names: Set<String> = ["jarvis", "rightyo"]
     static func destinations() throws -> VoiceDestinations {
-        try VoiceDestinations(["Notes": .init(shortcut: "Hail to Notes"),
-                               "Shopping list": .init(shortcut: "Hail to Groceries")])
+        try VoiceDestinations(["Notes": .shortcut("Hail to Notes"),
+                               "Shopping list": .shortcut("Hail to Groceries")])
     }
 
     @Test(arguments: [
@@ -44,7 +44,7 @@ import Testing
         let file = directory.appendingPathComponent("destinations.json")
         #expect(try VoiceDestinations.load(file) == nil)
         try Data(#"{"Notes": {"shortcut": "Hail to Notes"}}"#.utf8).write(to: file)
-        #expect(try VoiceDestinations.load(file)?.destinations["notes"]?.shortcut == "Hail to Notes")
+        #expect(try VoiceDestinations.load(file)?.destinations["notes"] == .shortcut("Hail to Notes"))
         for (body, error) in [(#"{"notes": {"shortcut": "x", "send": "y"}}"#, VoiceDestinations.LoadError.malformed),
                               ("not json", .malformed), (#"{"notes": {"shortcut": "-h"}}"#, .invalidShortcut),
                               (#"{"!!": {"shortcut": "x"}}"#, .invalidName)] {
@@ -130,10 +130,10 @@ import Testing
     }
 
     @Test func theLongestNameWinsAndNamesMustBeDistinct() throws {
-        let both = try VoiceDestinations(["notes": .init(shortcut: "A"), "notes app": .init(shortcut: "B")])
-        #expect(both.command(in: "add to notes app: x", names: [])?.shortcut == "B")
+        let both = try VoiceDestinations(["notes": .shortcut("A"), "notes app": .shortcut("B")])
+        #expect(both.command(in: "add to notes app: x", names: [])?.target == .shortcut("B"))
         #expect(throws: VoiceDestinations.LoadError.invalidName) {
-            try VoiceDestinations(["Notes": .init(shortcut: "A"), "notes": .init(shortcut: "B")])
+            try VoiceDestinations(["Notes": .shortcut("A"), "notes": .shortcut("B")])
         }
     }
 
@@ -149,14 +149,39 @@ import Testing
             connection: UUID(), allowSynthetic: true, timing: .init(eofGrace: 20, termGrace: 20)
         )
         configuration.destinations = try Self.destinations()
-        configuration.onVoiceDestination = { key, shortcut, text in
-            notes.withLock { $0.append("\(key)|\(shortcut)|\(text)") }
+        configuration.onVoiceDestination = { key, target, text in
+            notes.withLock { $0.append("\(key)|\(target)|\(text)") }
         }
         let dispatcher = RecordingAmbientDispatcher()
         let pipeline = try RightyoAmbientPipeline(configuration: configuration, dispatcher: dispatcher)
         pipeline.finishInput()
         #expect(try await pipeline.run().delivered == (enrolled ? 0 : 1))
-        #expect(notes.withLock { $0 } == (enrolled ? ["notes|Hail to Notes|buy milk."] : []))
+        #expect(notes.withLock { $0 } == (enrolled ? ["notes|shortcut(\"Hail to Notes\")|buy milk."] : []))
+    }
+}
+
+extension VoiceDestinationTests {
+    /// A Markdown destination names one absolute `.md` file; any other path, or two handlers at once, is refused.
+    @Test func aMarkdownDestinationIsOneAbsoluteMarkdownFile() throws {
+        let directory = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
+        try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: directory) }
+        let file = directory.appendingPathComponent("destinations.json")
+        try Data(#"{"Notes": {"markdown": "/Users/me/Obsidian/Inbox.md"}}"#.utf8).write(to: file)
+        #expect(try VoiceDestinations.load(file)?.destinations["notes"] == .markdown("/Users/me/Obsidian/Inbox.md"))
+        for path in ["Inbox.md", "~/Inbox.md", "/a/Inbox.txt", "/a/../Inbox.md", "/a//Inbox.md", "/a/./Inbox.md", ""] {
+            #expect(throws: VoiceDestinations.LoadError.invalidFile) {
+                try VoiceDestinations(["notes": .markdown(path)])
+            }
+        }
+        for body in [#"{"notes": {"markdown": "/a/Inbox.md", "shortcut": "x"}}"#, #"{"notes": {}}"#,
+                     #"{"notes": {"markdown": 5}}"#, #"{"notes": {"word": "/a/Inbox.md"}}"#] {
+            try Data(body.utf8).write(to: file)
+            #expect(throws: VoiceDestinations.LoadError.malformed) { try VoiceDestinations.load(file) }
+        }
+        let note = try VoiceDestinations(["notes": .markdown("/a/Inbox.md")])
+            .command(in: "add to notes milk", names: [])
+        #expect(note?.target == .markdown("/a/Inbox.md") && note?.text == "milk")
     }
 }
 #endif
