@@ -19,7 +19,27 @@ import Testing
         try names.enumerated().map { try DiagnosticEvent($0.element, timestamp: Int64(1_000 + $0.offset)) }
     }
 
-    func run(replyControl: Bool, events: [DiagnosticEventName]) async throws -> String? {
+    static func reply(_ text: String) -> [Frame] {
+        let reply = ReplyDescriptor(id: UUID(), hostID: "mac-test", targetID: "tmux:test", audioStreamID: UUID(),
+                                    requestID: UUID())
+        return [Frame(timestamp: 0, target: "tmux:test", source: "mac-test",
+                      payload: .text(TextPayload(text: text, reply: reply))), replyAudio(reply)]
+    }
+
+    /// Audio of another reply, as a text-less acknowledgement clip sends it.
+    static func clip() -> Frame {
+        replyAudio(ReplyDescriptor(id: UUID(), hostID: "mac-test", targetID: "tmux:test", audioStreamID: UUID()))
+    }
+
+    /// A reply's own audio, which shares its descriptor with the text.
+    static func replyAudio(_ reply: ReplyDescriptor) -> Frame {
+        Frame(timestamp: 0, target: "tmux:test", source: "mac-test", payload: .audio(AudioPayload(
+            codec: .pcm16, sampleRate: 24_000, channels: 1, sequence: 0, streamID: reply.audioStreamID,
+            bytes: Data(repeating: 0, count: 480), reply: reply)))
+    }
+
+    func run(replyControl: Bool, events: [DiagnosticEventName], replies: [String] = [],
+             clip: Bool = false) async throws -> String? {
         let fake = try FakeRightyo(Self.script)
         defer { fake.cleanUp() }
         let env = try await ambientRig(fake, timing: .init(eofGrace: 20, termGrace: 20), replyControl: replyControl)
@@ -31,6 +51,8 @@ import Testing
         let id = try #require(env.connected.all.first)
         let connection = try #require(await env.listener.peers[id]?.session.connectionID)
         #expect(await eventually { env.router.liveRuns == 1 })
+        for text in replies { Self.reply(text).forEach(env.router.observeReply) }
+        if clip { env.router.observeReply(Self.clip()) }
         env.router.replyPlayback(try Self.playback(events), connection: connection)
         // Another connection's reports never reach this stream.
         env.router.replyPlayback(try Self.playback([.replyPlaybackStart]), connection: UUID())
@@ -50,6 +72,23 @@ import Testing
         #expect(try await run(replyControl: true, events: [.replyPlaybackStart, .replyPlaybackError])
                 == "{\"reply\":\"ended\"}\n")
         #expect(try await run(replyControl: true, events: [.routeChange, .captureState]) == "")
+    }
+
+    /// rightyo#199: an end after a reply that asked a question says so, through its own audio; a later plain
+    /// reply, or another reply's audio, clears it.
+    @Test func anEndAfterAQuestionSaysTheReplyAsked() async throws {
+        #expect(try await run(replyControl: true, events: [.replyPlaybackStart, .replyPlaybackEnd],
+                              replies: ["Should I tidy both folders? "])
+                == "{\"reply\":\"ended\",\"asked\":true}\n")
+        #expect(try await run(replyControl: true, events: [.replyPlaybackStart, .replyPlaybackEnd],
+                              replies: ["Should I tidy both folders?", "Done, both are tidy."])
+                == "{\"reply\":\"ended\"}\n")
+        #expect(try await run(replyControl: true, events: [.replyPlaybackStart, .replyPlaybackEnd],
+                              replies: ["Should I tidy both folders?"], clip: true)
+                == "{\"reply\":\"ended\"}\n")
+        #expect(try await run(replyControl: true, events: [.replyPlaybackStart],
+                              replies: ["Should I tidy both folders?"])
+                == "{\"reply\":\"started\"}\n")
     }
 
     @Test func withoutReplyControlTheChildGetsNoDescriptorAndNoReports() async throws {

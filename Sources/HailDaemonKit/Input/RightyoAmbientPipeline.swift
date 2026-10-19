@@ -158,7 +158,9 @@ public final class RightyoAmbientPipeline: Sendable {
 
     /// Reports the assistant's spoken reply on this stream's device (rightyo#124); false when reply control is off
     /// or the report was dropped. Never blocks.
-    @discardableResult public func reportReply(_ phase: RightyoReplyPhase) -> Bool { child.reportReply(phase) }
+    @discardableResult public func reportReply(_ phase: RightyoReplyPhase, asked: Bool = false) -> Bool {
+        child.reportReply(phase, asked: asked)
+    }
 
     /// Sets media mode in this stream's RightyO (#551) over the same control descriptor; false when reply control is
     /// off or the line was dropped. Never blocks.

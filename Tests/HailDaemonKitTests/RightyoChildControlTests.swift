@@ -37,9 +37,18 @@ import Testing
                                             timing: .init(eofGrace: 20, termGrace: 20), replyControl: true)
         #expect(child.reportReply(.started))
         #expect(child.reportReply(.ended))
+        // rightyo#199: `asked` rides only on an end.
+        #expect(child.reportReply(.started, asked: true))
+        #expect(child.reportReply(.ended, asked: true))
         // Closing input ends the control descriptor too, so `cat` sees EOF and the child exits.
         #expect(await child.stop() == .exited(0))
-        #expect(try fake.recorded("control.txt") == "{\"reply\":\"started\"}\n{\"reply\":\"ended\"}\n")
+        #expect(try fake.recorded("control.txt") == """
+            {"reply":"started"}
+            {"reply":"ended"}
+            {"reply":"started"}
+            {"reply":"ended","asked":true}
+
+            """)
         #expect(try fake.recorded("argv.txt").hasSuffix("--control-fd\n3\n"))
         #expect(!child.reportReply(.ended))
     }
