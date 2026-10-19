@@ -12,10 +12,11 @@ owning files/tests/docs; historical intermediate versions are not separate deliv
 
 Existing foundation #514, #516, #518 and #549 cover lifetime, wire/consumer, renderer/monitor and
 capture-run identity. #553 adds fixed Mac output evidence/binding; #557 adds Apple/native ownership.
-The bounded #561–#566 branches publish foreground lifetime, child control, codec/transport/configuration,
-joined speech, explicit command/keyboard and test-only entry/cleanup fences. This follow-through carries
-verifier registration and the late #557/#561 corrections with original commit references; later bounded
-follow-through units carry #562/#563/#565 corrections without rewriting earlier published histories.
+#561–#566 cover foreground lifetime, child control, codec/transport/configuration, joined speech,
+explicit command/keyboard and test-only entry/cleanup fences. On main these land as non-codex ports
+(#591–#600 and the #566 port), each taken from the newest codex tip, so the late #557/#561 corrections
+(first published in #568) and the #562/#563/#565 corrections (#569, #572) are already inside the ported
+#557, #561, #562, #563 and #565 slices. #568, #569 and #572 therefore add no further source.
 Every source unit stays within the authoritative four-production-file limit.
 
 A complete-tree comparison for this follow-through against the corrected anchor accounts for:
@@ -36,8 +37,9 @@ A complete-tree comparison for this follow-through against the corrected anchor 
   rather than copying the aggregate's historical 0.1.158. It is not a new installed build.
 - This provenance document is additional documentation.
 
-The existing verifier registration for CoachingTransportRegression and AmbientSharedAudit is included.
-It moves the unchanged suites into the serial timing lane. Assertions, budgets, watchdogs and gates
+Verifier registration for CoachingTransportRegression and AmbientSharedAudit lands with the command
+slice (#565 port), and CoachingStartupEvent with the fence slice (#566 port). Each moves unchanged
+suites into the serial timing lane. Assertions, budgets, watchdogs and gates
 are not relaxed. Tests, fixtures, documentation, Package.swift and all other source content are compared
 as complete trees, not inferred from path counts or commit subjects.
 
