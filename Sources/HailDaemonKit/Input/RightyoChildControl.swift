@@ -1,7 +1,60 @@
 #if os(macOS)
 import Darwin
-import Foundation
+public import Foundation
 import Synchronization
+
+/// Coaching failure/abandonment revokes output; explicit graceful EOF preserves buffered terminal lines.
+final class RightyoOutputRevocation: Sendable {
+    private struct State { var revoked = false, graceful = false; var exit: RightyoExitLatch? }
+    private let state = Mutex(State())
+    func revoke() { state.withLock { $0.revoked = true } }
+    func observe(_ exit: RightyoExitLatch) { state.withLock { $0.exit = exit } }
+    func noteGracefulInputClosure() {
+        state.withLock {
+            guard !$0.graceful else { return }
+            if $0.exit?.value != nil { $0.revoked = true } else { $0.graceful = true }
+        }
+    }
+    @discardableResult func ownedGroupEnded() -> Bool {
+        state.withLock { if !$0.graceful { $0.revoked = true }; return $0.revoked }
+    }
+    func check() throws {
+        if state.withLock({ $0.revoked }) { throw RightyoChildError.transportLost }
+    }
+}
+
+/// The existing byte-bounded stdout reader with a coaching-only fence before and after suspension.
+public struct RightyoChildOutput: AsyncSequence, Sendable {
+    let base: RightyoChildLines
+    let revocation: RightyoOutputRevocation?
+    let control: RightyoCoachingControlWriter?
+    let exit: RightyoExitLatch?
+    init(base: RightyoChildLines, revocation: RightyoOutputRevocation?,
+         control: RightyoCoachingControlWriter? = nil, exit: RightyoExitLatch? = nil) {
+        self.base = base; self.revocation = revocation; self.control = control; self.exit = exit
+    }
+    public struct AsyncIterator: AsyncIteratorProtocol {
+        var base: RightyoChildLines.AsyncIterator
+        let revocation: RightyoOutputRevocation?
+        let control: RightyoCoachingControlWriter?
+        let exit: RightyoExitLatch?
+        private func check() throws {
+            if exit?.value != nil { revocation?.ownedGroupEnded() }
+            try revocation?.check()
+            guard control?.peerAvailable() != false else { throw RightyoChildError.transportLost }
+        }
+        public mutating func next() async throws -> Data? {
+            try check()
+            let line = try await base.next()
+            try check()
+            return line
+        }
+    }
+    public func makeAsyncIterator() -> AsyncIterator {
+        AsyncIterator(base: base.makeAsyncIterator(), revocation: revocation, control: control, exit: exit)
+    }
+    func revokeCoaching() { revocation?.revoke() }
+}
 
 /// What the host reports about the assistant's spoken reply (rightyo#124).
 public enum RightyoReplyPhase: String, Sendable { case started, ended }
@@ -26,6 +79,12 @@ final class RightyoControlWriter: Sendable {
 }
 
 extension RightyoChildProcess {
+    /// Nonblocking PCM queue: refuses closed input, empty/odd chunks or chunks above the backlog bound.
+    @discardableResult public func write(_ pcm: Data) -> Bool { input.write(pcm) }
+
+    /// Graceful EOF after already-queued PCM; does not revoke buffered terminal output. Idempotent.
+    public func closeInput() { control.close(); coachingControl?.close(); input.close(abandon: false) }
+
     /// Close-on-exec on both ends of a fresh pipe, and its child end moved above every `dup2` target (0-3), so no
     /// `dup2` source is ever a target too: the actions' order cannot matter, and no `dup2` is same-fd (a no-op
     /// that would leave the close-on-exec descriptor closed in the child).
@@ -49,5 +108,40 @@ extension RightyoChildProcess {
     @discardableResult public func reportReply(_ phase: RightyoReplyPhase) -> Bool { control.report(phase) }
     /// Sets the child's media mode (#551) the same way; false when it could not be written.
     @discardableResult public func reportMedia(_ on: Bool) -> Bool { control.media(on) }
+
+    /// Trusted coaching controls only: one ASCII JSON object without newline. The receiver validates
+    /// the exact envelope. Queue admission is not receipt; original host advice deadlines still apply.
+    @discardableResult public func sendCoachingControl(_ data: Data, validUntil: ContinuousClock.Instant) -> Bool {
+        coachingControl?.send(data, validUntil: validUntil) ?? false
+    }
+
+    /// Immediate coaching revocation, not ordinary graceful stdin EOF: discard queued old PCM.
+    public func abandonCoachingInput() {
+        guard coachingControl != nil else { return }
+        lines.revokeCoaching()
+        input.close(abandon: true); coachingControl?.close()
+    }
+
+    /// Observe the existing owned leader latch even when stdout ended or a descendant retains fd 3.
+    static func observeCoachingExit(_ exit: RightyoExitLatch, revocation: RightyoOutputRevocation?,
+                                    continuation: AsyncThrowingStream<Data, any Error>.Continuation) {
+        guard let revocation else { return }
+        revocation.observe(exit)
+        Task {
+            _ = await exit.wait(timeout: nil)
+            if revocation.ownedGroupEnded() { continuation.finish(throwing: RightyoChildError.transportLost) }
+        }
+    }
+
+    static func coachingWriter(_ descriptor: Int32?, input: RightyoStdinWriter,
+                               continuation: AsyncThrowingStream<Data, any Error>.Continuation,
+                               revocation: RightyoOutputRevocation? = nil)
+        -> RightyoCoachingControlWriter {
+        RightyoCoachingControlWriter(descriptor, revocation: revocation) {
+            revocation?.revoke()
+            input.close(abandon: true)
+            continuation.finish(throwing: RightyoChildError.transportLost)
+        }
+    }
 }
 #endif

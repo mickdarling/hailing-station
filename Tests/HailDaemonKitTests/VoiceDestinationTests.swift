@@ -139,7 +139,7 @@ import Testing
 
     /// Only the enrolled owner's note is held back; on an anonymous session it is a request like any other.
     @Test(arguments: [true, false]) func onlyTheEnrolledOwnersNoteIsHandedToTheHost(_ enrolled: Bool) async throws {
-        let fake = try FakeRightyo(AmbientVoiceMuteTests.fixture(saying: "Rightyo, add to Notes: buy milk.",
+        let fake = try FakeRightyo(AmbientWiringVoiceMuteTests.fixture(saying: "Rightyo, add to Notes: buy milk.",
                                                                  enrolled: enrolled))
         defer { fake.cleanUp() }
         try fake.install(fixture: enrolled ? "enrolled-formed-request.jsonl" : "tool-events.jsonl")

@@ -6,7 +6,7 @@ import Testing
 /// #230, direct sessions and the block itself: an ambient dispatch to a legacy adapter mints an opaque reply
 /// reference bound host-side to the dispatching connection, its selection generation and the exact binding.
 /// Synthetic only; not device hearing.
-@Suite struct AmbientReplyReferenceTests {
+@Suite struct AmbientWiringReplyBlockTests {
     static let reference = UUID(uuidString: "1B4E28BA-2FA1-41D2-883F-0016D3CCA427") ?? UUID()
 
     @Test func theReferencedBlockNamesTheRequestAndKeepsTheBlockShape() throws {

@@ -56,7 +56,7 @@ import Testing
 
     /// The fixture with names, under a `started` that also advertises gating, and its request marked not to
     /// acknowledge.
-    static let gatedFixture = AmbientAcknowledgementTests.fixtureWithNames
+    static let gatedFixture = AmbientWiringAcknowledgementTests.fixtureWithNames
         .replacingOccurrences(of: #""addressing": {"#, with: #""acknowledgement": {"version": 1}, "addressing": {"#)
         .replacingOccurrences(of: "events.jsonl",
                               with: #"events.jsonl | /usr/bin/sed 's/^{"context"/{"acknowledge": false, "context"/'"#)
@@ -92,7 +92,7 @@ import Testing
     /// Starts one ambient stream from the phone, lets the fixture's request through, checks the phone's socket,
     /// then ends the stream and returns every `ambient_acknowledged` detail.
     private func run(
-        clips: [String: [AmbientAckClip]], fixture: String = AmbientAcknowledgementTests.fixtureWithNames,
+        clips: [String: [AmbientAckClip]], fixture: String = AmbientWiringAcknowledgementTests.fixtureWithNames,
         check: (URLSessionWebSocketTask) async throws -> Void
     ) async throws -> [String] {
         let fake = try FakeRightyo(fixture)

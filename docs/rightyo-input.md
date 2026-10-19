@@ -216,7 +216,7 @@ the phone hears it. For the target `tmux:demo` it is, byte for byte (it begins w
 
   The UUID is lowercase, freshly minted for each request and the block's only other variable part. The block stays
   ASCII, one line and free of double quotes, and it passes the sanitizer and default guard
-  (`AmbientReplyReferenceTests`). It ends in fixed text. Only an exact trailing request-less block for the
+  (`AmbientWiringReplyBlockTests`). It ends in fixed text. Only an exact trailing request-less block for the
   target is rewritten. A prompt that the longer block would push past the 1,200,000-byte dispatch cap keeps its
   request-less block and gets no reference. `haild rightyo` (direct or `--reply-to`) still delivers the
   request-less block above. Routing and the doctrine change are in

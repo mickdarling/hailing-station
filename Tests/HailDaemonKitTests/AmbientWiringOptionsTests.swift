@@ -92,7 +92,7 @@ import Testing
 }
 
 #if os(macOS)
-@Suite(.timeLimit(.minutes(1))) struct AmbientStartupValidationTests {
+@Suite(.timeLimit(.minutes(1))) struct AmbientWiringStartupValidationTests {
     @Test func startupPinsTheListedBindingAndRefusesUnknownTargetsAndUnsafeExecutables() async throws {
         let rig = try await RecipientTestRig.make()
         let fake = try FakeRightyo("exit 0")
@@ -132,7 +132,7 @@ import Testing
         defer { try? FileManager.default.removeItem(at: root) }
         let jarvis = root.appendingPathComponent("jarvis")
         try FileManager.default.createDirectory(at: jarvis, withIntermediateDirectories: true)
-        try AmbientAcknowledgementTests.wav(samples: 10).write(to: jarvis.appendingPathComponent("a.wav"))
+        try AmbientWiringAcknowledgementTests.wav(samples: 10).write(to: jarvis.appendingPathComponent("a.wav"))
         var options = ConnectionProbeDaemon.AmbientOptions(
             executable: fake.executable, config: fake.config, target: RecipientTestRig.target, ackClips: root
         )
@@ -148,7 +148,7 @@ import Testing
         // Stop confirmation clips alone (#418) keep the library, with no persona.
         let confirmOnly = root.appendingPathComponent("confirm-only/confirm-stopped")
         try FileManager.default.createDirectory(at: confirmOnly, withIntermediateDirectories: true)
-        try AmbientAcknowledgementTests.wav(samples: 10).write(to: confirmOnly.appendingPathComponent("a.wav"))
+        try AmbientWiringAcknowledgementTests.wav(samples: 10).write(to: confirmOnly.appendingPathComponent("a.wav"))
         options.ackClips = root.appendingPathComponent("confirm-only")
         let reserved = try await ConnectionProbeDaemon.ambientRouter(options, host: rig.host, log: log)
         #expect(reserved.configuration.acknowledgements?.clips.isEmpty == true)
