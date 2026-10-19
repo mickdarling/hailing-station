@@ -7,7 +7,7 @@ import Testing
 
 /// The owner's spoken "mute" and "unmute" (#404): carried out by the host on the device that said it, never typed to
 /// the agent. Synthetic only; not device hearing.
-@Suite(.serialized, .timeLimit(.minutes(1))) struct AmbientVoiceMuteTests {
+@Suite(.serialized, .timeLimit(.minutes(1))) struct AmbientWiringVoiceMuteTests {
     static let muted = AmbientAckClip(pcm: Data(repeating: 4, count: 480), sampleRate: 24_000, text: "Muted.")
     static let unmuted = AmbientAckClip(pcm: Data(repeating: 5, count: 480), sampleRate: 24_000, text: "Unmuted.")
 
@@ -116,8 +116,8 @@ import Testing
     @Test func anUnmuteIsSentBeforeUnmutedIsSpoken() async throws {
         let caps = [PlaybackStop.capability, ReplyMute.capability]
         let details = try await run(saying: "Rightyo, you can talk again.", capabilities: caps) { socket in
-            #expect(try await receiveFrame(on: socket, step: "unmute").payload
-                == .control(.setReplyMute(muted: false)))
+            let unmute = try await receiveFrame(on: socket, step: "unmute").payload
+            #expect(unmute == .control(.setReplyMute(muted: false)))
             let text = try await receiveFrame(on: socket, step: "confirmation words")
             guard case .text(let words) = text.payload else {
                 Issue.record("expected the confirmation")
@@ -145,47 +145,4 @@ import Testing
     }
 }
 
-/// The listener rig, kept outside the suite's body so it stays within the type-length limit.
-extension AmbientVoiceMuteTests {
-    /// One ambient stream whose request says `saying`, with confirmation clips loaded, from a device advertising
-    /// `capabilities`; waits for the `ambient_voice_mute` line, runs `check`, then returns every such detail.
-    private func run(
-        saying words: String, capabilities: [String], check: (URLSessionWebSocketTask) async throws -> Void
-    ) async throws -> [String] {
-        let fake = try FakeRightyo(Self.fixture(saying: words))
-        defer { fake.cleanUp() }
-        try fake.install(fixture: "tool-events.jsonl")
-        let details = Mutex<[String]>([])
-        let library = AmbientAckLibrary(clips: [
-            "confirmstopped": [AmbientStopConfirmationTests.stopped], "confirmmuted": [Self.muted],
-            "confirmunmuted": [Self.unmuted]
-        ])
-        let env = try await ambientRig(
-            fake, timing: .init(eofGrace: 20, termGrace: 20), acknowledgements: library,
-            onEvent: { event in
-                if event.event == "ambient_voice_mute" { details.withLock { $0.append(event.detail ?? "") } }
-            }
-        )
-        let (session, socket) = try recipientSocket(port: env.port)
-        defer {
-            socket.cancel(with: .normalClosure, reason: nil)
-            session.invalidateAndCancel()
-        }
-        try await recipientSocketSend(sessionFrame(payload: .control(.hello(HelloInfo(
-            versions: [1], capabilities: capabilities, deviceName: "test"
-        )))), on: socket)
-        _ = try await recipientSocketReceive(on: socket)
-        try await recipientSocketSend(sessionFrame(payload: .control(.select(targetID: RecipientTestRig.target))),
-                                      on: socket)
-        try await recipientSocketBarrier(on: socket)
-        let stream = UUID()
-        try await recipientSocketSend(audio(stream, 0), on: socket)
-        #expect(await eventually { details.withLock { !$0.isEmpty } })
-        try await check(socket)
-        try await recipientSocketSend(audio(stream, 1, final: true), on: socket)
-        await env.router.settle()
-        await env.listener.stop(reason: "synthetic test complete")
-        return details.withLock { $0 }
-    }
-}
 #endif

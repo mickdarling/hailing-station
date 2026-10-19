@@ -6,7 +6,7 @@ import Testing
 
 /// #230 review: the reference is written only for plain legacy targets, never into a contextual bridge's prompt, and
 /// the fail-closed `ambient-dispatch` audit record carries the size of the prompt actually dispatched.
-@Suite(.serialized) struct AmbientReplyReferenceScopeTests {
+@Suite(.serialized) struct AmbientWiringReplyReferenceScopeTests {
     @Test func aContextualTargetKeepsTheOriginalBlockAndItsOutOfBandContextID() async throws {
         let rig = try await RecipientTestRig.make()
         let (listener, connected) = try dispatchListener(rig: rig)

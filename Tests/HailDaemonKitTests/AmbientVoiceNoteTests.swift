@@ -15,7 +15,7 @@ import Testing
     @Test(arguments: [(0, "Saved.", "saved", "confirmsaved"), (3, "That didn't save.", "exit_3", "confirmnotsaved")])
     func aNoteRunsItsShortcutThenConfirms(_ exit: Int, _ words: String, _ outcome: String, _ folder: String)
         async throws {
-        let fake = try FakeRightyo(AmbientVoiceMuteTests.fixture(saying: "Rightyo, add to Notes: buy milk.",
+        let fake = try FakeRightyo(AmbientWiringVoiceMuteTests.fixture(saying: "Rightyo, add to Notes: buy milk.",
                                                                  enrolled: true))
         defer { fake.cleanUp() }
         try fake.install(fixture: "enrolled-formed-request.jsonl")
@@ -59,7 +59,7 @@ import Testing
 
     /// A Markdown destination needs no Shortcut: the words are appended to the owner's file, then "Saved." plays.
     @Test func aNoteToAMarkdownFileIsAppendedThenConfirmed() async throws {
-        let fake = try FakeRightyo(AmbientVoiceMuteTests.fixture(saying: "Rightyo, add to Notes: buy milk.",
+        let fake = try FakeRightyo(AmbientWiringVoiceMuteTests.fixture(saying: "Rightyo, add to Notes: buy milk.",
                                                                  enrolled: true))
         defer { fake.cleanUp() }
         try fake.install(fixture: "enrolled-formed-request.jsonl")

@@ -41,7 +41,7 @@ import Testing
 
     /// Only with reply control, whose descriptor carries the mode to RightyO; without it the phrase is a request.
     @Test(arguments: [true, false]) func aSpokenMediaCommandIsHandedToTheHostNotTyped(_ control: Bool) async throws {
-        let fake = try FakeRightyo(AmbientVoiceMuteTests.fixture(saying: "Rightyo, media mode."))
+        let fake = try FakeRightyo(AmbientWiringVoiceMuteTests.fixture(saying: "Rightyo, media mode."))
         defer { fake.cleanUp() }
         try fake.install(fixture: "tool-events.jsonl")
         let seen = Mutex<[Bool]>([]), mutes = Mutex(0)
@@ -63,7 +63,7 @@ import Testing
     /// device that said it; the timeout then turns it off in the same child.
     @Test func mediaModeReachesTheChildIsConfirmedAndTimesOut() async throws {
         let fake = try FakeRightyo("/bin/cat <&3 > control.txt &\n"
-            + AmbientVoiceMuteTests.fixture(saying: "Rightyo, media mode."))
+            + AmbientWiringVoiceMuteTests.fixture(saying: "Rightyo, media mode."))
         defer { fake.cleanUp() }
         try fake.install(fixture: "tool-events.jsonl")
         let details = Mutex<[String]>([])
@@ -106,7 +106,7 @@ import Testing
     /// A child reloaded while media mode is on is told at registration, before anything it hears is decided.
     @Test func aReloadedChildIsToldMediaModeIsOn() async throws {
         let fake = try FakeRightyo("/bin/cat <&3 >> control.txt &\n"
-            + AmbientVoiceMuteTests.fixture(saying: "Rightyo, media mode."))
+            + AmbientWiringVoiceMuteTests.fixture(saying: "Rightyo, media mode."))
         defer { fake.cleanUp() }
         try fake.install(fixture: "tool-events.jsonl")
         let details = Mutex<[String]>([])
