@@ -12,11 +12,11 @@ extension SFSpeechRecognizerTranscriberTests {
         let stopping = Task { await transcriber.stop() }
         await backend.waitUntilEndAudioIsBlocked()
         await #expect(throws: CancellationError.self) { try await transcriber.start() }
-        let concurrentStop = Task { await transcriber.stop() }
+        let concurrentStop = await enteredSpeechStop(transcriber)
         await backend.emit(.result(text: "finished", isFinal: true))
         await backend.resumeEndAudio()
         await backend.waitUntilCancelIsBlocked()
-        let cleanupStop = Task { await transcriber.stop() }
+        let cleanupStop = await enteredSpeechStop(transcriber)
         await #expect(throws: CancellationError.self) { try await transcriber.start() }
         await backend.resumeCancel()
 
