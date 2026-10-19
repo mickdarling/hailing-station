@@ -26,7 +26,16 @@ import Testing
                      payload: .text(TextPayload(text: text, reply: reply)))
     }
 
-    func run(replyControl: Bool, events: [DiagnosticEventName], replies: [String] = []) async throws -> String? {
+    /// Audio of another reply, as a text-less acknowledgement clip sends it.
+    static func clip() -> Frame {
+        let reply = ReplyDescriptor(id: UUID(), hostID: "mac-test", targetID: "tmux:test", audioStreamID: UUID())
+        return Frame(timestamp: 0, target: "tmux:test", source: "mac-test", payload: .audio(AudioPayload(
+            codec: .pcm16, sampleRate: 24_000, channels: 1, sequence: 0, streamID: reply.audioStreamID,
+            bytes: Data(repeating: 0, count: 480), reply: reply)))
+    }
+
+    func run(replyControl: Bool, events: [DiagnosticEventName], replies: [String] = [],
+             clip: Bool = false) async throws -> String? {
         let fake = try FakeRightyo(Self.script)
         defer { fake.cleanUp() }
         let env = try await ambientRig(fake, timing: .init(eofGrace: 20, termGrace: 20), replyControl: replyControl)
@@ -39,6 +48,7 @@ import Testing
         let connection = try #require(await env.listener.peers[id]?.session.connectionID)
         #expect(await eventually { env.router.liveRuns == 1 })
         for text in replies { env.router.observeReply(Self.reply(text)) }
+        if clip { env.router.observeReply(Self.clip()) }
         env.router.replyPlayback(try Self.playback(events), connection: connection)
         // Another connection's reports never reach this stream.
         env.router.replyPlayback(try Self.playback([.replyPlaybackStart]), connection: UUID())
@@ -67,6 +77,9 @@ import Testing
                 == "{\"reply\":\"ended\",\"asked\":true}\n")
         #expect(try await run(replyControl: true, events: [.replyPlaybackStart, .replyPlaybackEnd],
                               replies: ["Should I tidy both folders?", "Done, both are tidy."])
+                == "{\"reply\":\"ended\"}\n")
+        #expect(try await run(replyControl: true, events: [.replyPlaybackStart, .replyPlaybackEnd],
+                              replies: ["Should I tidy both folders?"], clip: true)
                 == "{\"reply\":\"ended\"}\n")
         #expect(try await run(replyControl: true, events: [.replyPlaybackStart],
                               replies: ["Should I tidy both folders?"])

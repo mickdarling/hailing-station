@@ -469,9 +469,15 @@ public final class AmbientRightyoRouter: AmbientAudioSink, AmbientListenerWiring
 
     public func observeReply(_ frame: Frame) {
         spokenReplies.observe(frame)
-        if case .text(let text) = frame.payload, text.isFinal, text.reply != nil {
+        switch frame.payload {
+        case .text(let text):
+            guard text.isFinal, let reply = text.reply else { return }
             let asked = text.text.trimmingCharacters(in: .whitespacesAndNewlines).hasSuffix("?")
-            state.withLock { $0.replyAsked = asked }
+            state.withLock { $0.replyAsked = asked ? reply.id : nil }
+        case .audio(let audio):
+            guard let reply = audio.reply else { return }
+            state.withLock { if $0.replyAsked != reply.id { $0.replyAsked = nil } }
+        default: return
         }
     }
     /// Runs at once, including those whose child is reaped but whose dispatch is still typing. A run stuck in a
@@ -510,9 +516,10 @@ public final class AmbientRightyoRouter: AmbientAudioSink, AmbientListenerWiring
         /// Connections whose owner turned media mode on (#551), each with its timeout; dropped (and the timeout
         /// cancelled) when it ends, times out or the connection stops. Every child registered meanwhile is told.
         var media: [UUID: AmbientMediaTimer] = [:]
-        /// Whether the latest final reply text this host delivered ended with a question (rightyo#199). The phone
-        /// plays replies in order and reports one end when its queue drains, so that reply is the one just heard.
-        var replyAsked = false
+        /// The reply whose final text, the latest this host delivered, ended with a question (rightyo#199); nil
+        /// otherwise, and cleared by audio of any other reply (a text-less acknowledgement clip). The phone plays
+        /// replies in order and reports one end when its queue drains, so that reply is the one just heard.
+        var replyAsked: UUID?
     }
     fileprivate struct WeakListener { weak var value: WebSocketListener? }
 
@@ -586,7 +593,7 @@ public final class AmbientRightyoRouter: AmbientAudioSink, AmbientListenerWiring
             guard let stream = state.latest[connection], let active = state.active, active.stream == stream else {
                 return nil
             }
-            return (active.pipeline, state.replyAsked)
+            return (active.pipeline, state.replyAsked != nil)
         }
         guard let (pipeline, replyAsked) = target else { return }
         // Only an end says whether the reply asked the owner something; RightyO times answers from it.
