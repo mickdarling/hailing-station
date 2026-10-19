@@ -23,16 +23,16 @@ import Testing
         let reply = ReplyDescriptor(id: UUID(), hostID: "mac-test", targetID: "tmux:test", audioStreamID: UUID(),
                                     requestID: UUID())
         return [Frame(timestamp: 0, target: "tmux:test", source: "mac-test",
-                      payload: .text(TextPayload(text: text, reply: reply))), audio(reply)]
+                      payload: .text(TextPayload(text: text, reply: reply))), replyAudio(reply)]
     }
 
     /// Audio of another reply, as a text-less acknowledgement clip sends it.
     static func clip() -> Frame {
-        audio(ReplyDescriptor(id: UUID(), hostID: "mac-test", targetID: "tmux:test", audioStreamID: UUID()))
+        replyAudio(ReplyDescriptor(id: UUID(), hostID: "mac-test", targetID: "tmux:test", audioStreamID: UUID()))
     }
 
     /// A reply's own audio, which shares its descriptor with the text.
-    static func audio(_ reply: ReplyDescriptor) -> Frame {
+    static func replyAudio(_ reply: ReplyDescriptor) -> Frame {
         Frame(timestamp: 0, target: "tmux:test", source: "mac-test", payload: .audio(AudioPayload(
             codec: .pcm16, sampleRate: 24_000, channels: 1, sequence: 0, streamID: reply.audioStreamID,
             bytes: Data(repeating: 0, count: 480), reply: reply)))
