@@ -64,7 +64,12 @@ public enum RightyoReplyPhase: String, Sendable { case started, ended }
 final class RightyoControlWriter: Sendable {
     private let descriptor: Mutex<Int32?>
     init(_ descriptor: Int32?) { self.descriptor = Mutex(descriptor) }
-    func report(_ phase: RightyoReplyPhase) -> Bool { write("{\"reply\":\"\(phase.rawValue)\"}\n") }
+    /// `asked` (rightyo#199) rides only on an end: a RightyO without it skips the line, as for an unknown key.
+    func report(_ phase: RightyoReplyPhase, asked: Bool = false) -> Bool {
+        asked && phase == .ended
+            ? write("{\"reply\":\"ended\",\"asked\":true}\n")
+            : write("{\"reply\":\"\(phase.rawValue)\"}\n")
+    }
     /// Media mode (#551, rightyo#195): a RightyO without it skips the line and attends as before.
     func media(_ on: Bool) -> Bool { write("{\"media\":\(on)}\n") }
     private func write(_ text: String) -> Bool {
@@ -105,7 +110,9 @@ extension RightyoChildProcess {
     }
     /// Reports the assistant's spoken reply to the child (rightyo#124) without blocking; false when the child was
     /// started without `replyControl`, its control input is closed, or the pipe is full (the report is dropped).
-    @discardableResult public func reportReply(_ phase: RightyoReplyPhase) -> Bool { control.report(phase) }
+    @discardableResult public func reportReply(_ phase: RightyoReplyPhase, asked: Bool = false) -> Bool {
+        control.report(phase, asked: asked)
+    }
     /// Sets the child's media mode (#551) the same way; false when it could not be written.
     @discardableResult public func reportMedia(_ on: Bool) -> Bool { control.media(on) }
 

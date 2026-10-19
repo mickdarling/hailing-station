@@ -617,6 +617,9 @@ replayed status is ignored, never refused. The status goes as `owner_voice` only
 if it advertised `owner_voice_status`, and is logged as `ambient_owner_voice state=<state> device=<outcome>` (`sent`,
 `unsupported`, `failed` or `no_connection`): tokens only.
 
+### A reply that asked a question (rightyo#199)
+With reply control on, `haild` writes `{"reply":"started"}` and `{"reply":"ended"}` to the child's control descriptor when the phone reports that reply playback started or drained. When the latest final reply text it delivered ends with "?", the end says so: `{"reply":"ended","asked":true}`. RightyO then lets an answer-shaped follow-up ("yes", "go ahead") through its cue rule until the next reply starts. The phone plays replies in order and reports one end when its queue drains, so the flag describes the reply just heard. A RightyO without rightyo#211 skips that line, and attends as before. The `ambient_reply` log line carries `asked=true|false`, never the text.
+
 ### Media mode (#551, rightyo#195)
 
 While the owner watches TV or videos, a show's dialogue can sound like a request. When the owner says a media phrase as a whole turn, `haild` turns media mode on for that device's stream. Examples are "Jarvis, media mode" and "I'm going to watch TV" (`VoiceMedia`). The phrases follow the same rules as the spoken mute (#404): an optional greeting and name, no other words, and on an enrolled session only the owner's turn counts. The phrase is never typed to the agent.
