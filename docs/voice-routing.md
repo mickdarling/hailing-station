@@ -10,7 +10,8 @@ once is out of scope.
 | Slice | State |
 | --- | --- |
 | 1. Allow-list file and the opening-name parser (`VoiceRoutes`) | In source. Not wired to any input path, not deployed. |
-| 2–8. Host listing, route-group authority, ambient routing, refusals, spoken and visual labels, app selector | Proposed; see the [plan on #636](https://github.com/mickdarling/hailing-station/issues/636). |
+| 2. Host listing: route names, offline routes and `--voice-routes` | In source. Not deployed: `host.sh` does not pass the flag yet (slice 8). |
+| 3–8. Route-group authority, ambient routing, refusals, spoken and visual labels, app selector | Proposed; see the [plan on #636](https://github.com/mickdarling/hailing-station/issues/636). |
 
 Nothing below changes the running daemon or installed builds until a later slice wires it in and it is deployed.
 
@@ -73,3 +74,24 @@ The parser decides nothing about who is speaking. The owner-only rule is applied
 (slices 3 and 4).
 
 Verification is synthetic only (`VoiceRoutesTests`, `VoiceRoutesFileTests`).
+
+## The device's target list
+
+With `haild run --personal-terminal --voice-routes <absolute path>`, the daemon loads `routes.json` at startup and
+logs `voice_routes` with the route count or `missing`. A missing file leaves routing off. A file that fails to load
+refuses startup. Without that, routing would be silently off and a request naming a session would go to whichever
+target was already chosen.
+
+The `targets` list a device receives changes in two ways:
+
+- A listed, allowed and bound target that is a route shows the route's `name` instead of its session name. Its id
+  is unchanged.
+- A route that is not listed, not allowed by policy or no longer at its allowed binding is still listed, with its
+  name, as `alive: false`. The device can show it as offline instead of hiding it. `select` reads the policy-filtered
+  listing without names, so an offline route cannot be selected (`not_allowed`). The routes file adds no target the
+  policy does not allow.
+
+Targets that are not routes are listed exactly as before. The device's remembered selection matches on id and name,
+so renaming a target forgets it once and the owner picks it again.
+
+Verification is synthetic only (`VoiceRouteListingTests`, `VoiceRouteOptionsTests`).
