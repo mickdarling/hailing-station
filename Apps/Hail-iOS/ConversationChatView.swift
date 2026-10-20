@@ -87,10 +87,7 @@ struct ConversationChatView: View {
                         .foregroundStyle(.secondary)
                         .accessibilityHidden(true) // The bubble's own label says it.
                 }
-                Text(Self.linked(segments))
-                    .foregroundStyle(entry.overheard ? Color.secondary : isYou ? Color.white : Color.primary)
-                    .tint(isYou ? Color.white : Color.accentColor)
-                    .italic(entry.overheard)
+                messageContent(entry, segments: segments, isYou: isYou)
                 if entry.speaker == .haili, entry.id == controlledReplyID {
                     replyControls
                 }
@@ -107,6 +104,7 @@ struct ConversationChatView: View {
                 Button("Copy", systemImage: "doc.on.doc") { UIPasteboard.general.string = entry.text }
                 ShareLink(item: entry.text)
                 Button("Select Text", systemImage: "selection.pin.in.out") { selecting = entry }
+                pasteActions(entry)
                 linkActions(segments)
             }
             .accessibilityElement(children: .contain)
@@ -117,7 +115,7 @@ struct ConversationChatView: View {
 
     private static func accessibilityLabel(_ entry: ConversationEntry) -> String {
         switch (entry.speaker, entry.overheard) {
-        case (.you, false): "You said"
+        case (.you, false): youSaid(entry)
         case (.you, true): "You said, heard but not sent"
         case (.someone, _): "\(entry.name ?? "Someone") said, heard but not sent"
         case (.haili, _): "Haili replied"
