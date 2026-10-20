@@ -93,6 +93,7 @@ private extension AudioDiagnosticsView {
         .frame(maxWidth: .infinity, alignment: .leading)
     }
 }
+#if os(iOS)
 struct AudioOutputRoutePicker: UIViewRepresentable {
     func makeUIView(context: Context) -> AVRoutePickerView {
         let picker = AVRoutePickerView()
@@ -106,3 +107,21 @@ struct AudioOutputRoutePicker: UIViewRepresentable {
 
     func updateUIView(_ view: AVRoutePickerView, context: Context) {}
 }
+#else
+/// macOS has no app-level output route: the system default plays replies. The button opens Sound settings,
+/// where that default is chosen; the station never changes it itself.
+struct AudioOutputRoutePicker: View {
+    @Environment(\.openURL) private var openURL
+
+    var body: some View {
+        Button {
+            if let url = URL(string: "x-apple.systempreferences:com.apple.Sound-Settings.extension") { openURL(url) }
+        } label: {
+            Image(systemName: "airplayaudio")
+        }
+        .buttonStyle(.borderless)
+        .accessibilityLabel("Choose audio output")
+        .accessibilityHint("Opens Sound settings, where the Mac's output is chosen.")
+    }
+}
+#endif
