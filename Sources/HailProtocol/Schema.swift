@@ -74,7 +74,18 @@ public enum Schema {
         "properties": .object([
             "text": .object(["type": .string("string"), "maxLength": .integer(Int64(PayloadLimits.maxTextBytes))]),
             "final": .object(["type": .string("boolean")]),
-            "reply": .object(["$ref": .string("#/$defs/reply")])
+            "reply": .object(["$ref": .string("#/$defs/reply")]),
+            // #606: a reply's unspoken Markdown; only beside `reply`, never empty.
+            "metadata": .object([
+                "type": .string("string"), "minLength": .integer(1),
+                "maxLength": .integer(Int64(PayloadLimits.maxMetadataBytes))
+            ])
+        ]),
+        "allOf": .array([
+            .object([
+                "if": .object(["required": .array([.string("metadata")])]),
+                "then": .object(["required": .array([.string("reply")])])
+            ])
         ])
     ])
 

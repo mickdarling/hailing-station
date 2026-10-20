@@ -66,14 +66,20 @@ public enum ReplyLimits {
 
 /// Text from the terminal to a target, or from a target back. Only `isFinal` text is delivered (#2, #5).
 public struct TextPayload: Codable, Sendable, Equatable {
+    /// On a reply, the words spoken aloud: the transcript shows them in a speech style (#606).
     public var text: String
     public var isFinal: Bool
     public var reply: ReplyDescriptor?
+    /// Markdown shown beside a reply's spoken words and never spoken (#606): links, references, file paths, tables,
+    /// status. Untrusted content, rendered by the client's safe Markdown model. Only on a reply; a non-empty string or
+    /// absent. A client that predates it ignores the key.
+    public var metadata: String?
 
-    public init(text: String, isFinal: Bool = true, reply: ReplyDescriptor? = nil) {
+    public init(text: String, isFinal: Bool = true, reply: ReplyDescriptor? = nil, metadata: String? = nil) {
         self.text = text
         self.isFinal = isFinal
         self.reply = reply
+        self.metadata = metadata
     }
 
     public init(from decoder: any Decoder) throws {
@@ -81,10 +87,22 @@ public struct TextPayload: Codable, Sendable, Equatable {
         text = try container.decode(String.self, forKey: .text)
         isFinal = try container.decode(Bool.self, forKey: .isFinal)
         reply = try container.decodeIfPresent(ReplyDescriptor.self, forKey: .reply)
+        metadata = container.contains(.metadata) ? try container.decode(String.self, forKey: .metadata) : nil
         try requireAtMost(text.utf8.count, PayloadLimits.maxTextBytes, "text", decoder)
+        if let metadata {
+            try requireNonEmpty(metadata, "metadata", decoder)
+            try requireAtMost(metadata.utf8.count, PayloadLimits.maxMetadataBytes, "metadata", decoder)
+            guard reply != nil else {
+                let context = DecodingError.Context(
+                    codingPath: decoder.codingPath + [CodingKeys.metadata],
+                    debugDescription: "metadata is only on a reply"
+                )
+                throw DecodingError.dataCorrupted(context)
+            }
+        }
     }
 
-    private enum CodingKeys: String, CodingKey { case text, isFinal = "final", reply }
+    private enum CodingKeys: String, CodingKey { case text, isFinal = "final", reply, metadata }
 }
 
 /// Bounds every decoder enforces so consumers never see nonsense dimensions or rates (#2 slice 1b, #44).
@@ -94,6 +112,8 @@ public enum PayloadLimits {
     public static let dimensions = 1...16_384
     /// Raw payload caps per type, from #44: text 8 KB of UTF-8, one audio segment 64 KB, an image 8 MB.
     public static let maxTextBytes = 8 * 1024
+    /// A reply's unspoken Markdown metadata (#606): twice the spoken text, so the frame stays under its whole-frame cap.
+    public static let maxMetadataBytes = 16 * 1024
     public static let maxAudioBytes = 64 * 1024
     public static let maxImageBytes = 8 * 1024 * 1024
     /// Whole-frame size the shared decoder accepts by default: the largest base64-inflated audio frame plus
