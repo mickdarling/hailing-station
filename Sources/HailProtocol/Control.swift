@@ -142,6 +142,7 @@ public enum ControlPayload: Sendable, Equatable {
     /// `priority` (one of `SessionUpdateCard.priorities`), the short line `text` that is or will be spoken, and an
     /// optional `card` body shown, never spoken. `update` identifies it, so a device shows a resent update once. Sent
     /// only to a device that advertises `SessionUpdateCard.capability`. It grants no authority and selects nothing.
+    /// The host fills `session` from the live registry target the update was submitted for, never from caller text.
     case sessionUpdate(update: UUID, session: String, priority: String, text: String, card: String? = nil)
 
     /// Host to device (#612): whether the owner's spoken media mode (#551) is on for this device's ambient stream, why
@@ -982,7 +983,7 @@ extension Schema {
             "additionalProperties": .bool(false),
             "properties": .object([
                 "command": .object([:]),
-                "update": .object(["type": .string("string"), "minLength": .integer(1)]),
+                "update": .object(["type": .string("string"), "format": .string("uuid")]),
                 // The decoder is stricter: printable only and untrimmed refused, as for a guest's name.
                 "session": .object([
                     "type": .string("string"), "minLength": .integer(1),
