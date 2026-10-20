@@ -8,10 +8,12 @@ public enum LocalHostBootstrap {
     public static let endpointID: HostEndpoint.Identifier = "this-mac"
     public static let endpointName = "This Mac"
 
+    #if os(macOS)
     /// The daemon's configuration on this Mac (`~/.config/hail/host.json`). Only `bind` and `port` are read.
     public static var hostConfigURL: URL {
         FileManager.default.homeDirectoryForCurrentUser.appendingPathComponent(".config/hail/host.json")
     }
+    #endif
 
     /// The loopback endpoint for the daemon `host.json` describes. Nil without a readable config, with a port
     /// outside 1–65535, or when `bind` is a specific non-loopback address, which haild does not answer on loopback.
