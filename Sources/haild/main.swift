@@ -48,13 +48,14 @@ func usage() -> Never {
            haild status [--json]
            haild ambient reload|status [--socket <path>]
       (reload restarts the active ambient stream's RightyO child; never starts listening)
-           haild coaching --rightyo <absolute-path> --rightyo-config <absolute-path>
+           haild coaching [--parent-control] --rightyo <absolute-path> --rightyo-config <absolute-path>
       --listener-profile <private-absolute-path> --listener <id> --private-output <local-device-id>
       --room-microphone <distinct-local-device-id> --renderer-output-root <private-absolute-directory>
       [--coaching-provider mock|jev]
       (jev also requires --coaching-allow-hosted-text --coaching-max-requests <1..100>
        --coaching-advice-catalog <absolute-authored-catalog>; never implies hosted ASR consent)
-      (foreground terminal only; starts OFF; separate participant-aware keyboard opt-in required)
+      (a terminal, or --parent-control from the pinned Mac app's socket; starts OFF; awareness opt-in required)
+           haild coaching trust-app <absolute-app-path>  (owner terminal; pins the Mac app; redo per build)
            haild doctor      (checks the running daemon against this haild; exits 1 with a fix per failure)
            haild audit verify|tail|today
            haild diagnostics tail [--device <name>] [--since <90s|15m|2h|1d|ISO-8601>] [--limit <n>] [--json]
@@ -340,6 +341,8 @@ do {
     case "doctor" where arguments.count == 1: doctor()
     case "reply": try await reply(arguments.dropFirst())
     case "ambient": try await ambient(arguments.dropFirst())
+    case "coaching" where arguments.dropFirst().first == "trust-app":
+        try CoachingParentTrust.trustApp(Array(arguments.dropFirst(2)))
     case "coaching": try await CoachingCommand.run(Array(arguments.dropFirst()))
     case "rightyo": try await rightyo(arguments.dropFirst())
     case "audit": try audit(arguments.dropFirst())

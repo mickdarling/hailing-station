@@ -106,7 +106,7 @@ struct CoachingConfiguration {
 
     /// Mode bits alone do not establish owner privacy on macOS. Query the same opened descriptor;
     /// any extended entry or inspection failure is refused, including conservative deny-only ACLs.
-    private static func hasNoExtendedACL(_ descriptor: Int32) -> Bool {
+    static func hasNoExtendedACL(_ descriptor: Int32) -> Bool {
         guard let access = acl_get_fd_np(descriptor, ACL_TYPE_EXTENDED) else { return errno == ENOENT }
         defer { acl_free(UnsafeMutableRawPointer(access)) }
         var entry: acl_entry_t?
