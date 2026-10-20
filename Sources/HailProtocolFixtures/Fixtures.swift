@@ -234,6 +234,13 @@ public enum Fixtures {
             id: id(212), timestamp: 1_758_200_050_900, source: "terminal",
             payload: .control(.ambientInput(route: "usb_audio"))
         )),
+        Example(name: "control-session-update", frame: Frame(
+            id: id(213), timestamp: 1_758_200_051_000, source: "host",
+            payload: .control(.sessionUpdate(
+                update: id(214), session: "Voice Work", priority: "action", text: "The build failed; it needs you.",
+                card: "Build log: see PR #1"
+            ))
+        )),
         Example(name: "control-set-reply-mute", frame: Frame(
             id: id(209), timestamp: 1_758_200_050_600, source: "host", payload: .control(.setReplyMute(muted: true))
         )),
