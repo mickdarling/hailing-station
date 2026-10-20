@@ -18,8 +18,16 @@ public struct ConversationEntry: Identifiable, Equatable, Sendable {
     /// The known guest who said an overheard turn (#434), from the host's `name`; nil shows "Someone". Never the
     /// owner's, never logged.
     public var name: String?
-    /// Text the user pasted with this request (#608), shown as its own block; `text` may then be empty.
+    /// Text the user pasted with this request (#608), shown as its own block; `text` may then be empty. Set only for
+    /// the device's own sent turns, never from a host frame.
     public var pasted: String?
+    /// The paste's state (#608): pending until a reply for this destination arrives or the Mac refuses it.
+    public var pasteState: PasteState?
+
+    public enum PasteState: Equatable, Sendable {
+        case pending, delivered
+        case refused(String)
+    }
 }
 
 /// The session's conversation, in the order things happened: each request as it is sent, each reply as its text
@@ -50,7 +58,17 @@ public final class ConversationLog {
             endpointID: endpointID, targetID: targetID, date: now()
         )
         entry.pasted = pasted
+        entry.pasteState = pasted == nil ? nil : .pending
         append(entry)
+    }
+
+    /// The Mac refused the latest pending paste for `endpointID` (#608); returns that turn. Refusals carry no request
+    /// id, and the station sends one request per destination at a time, so the newest pending paste is the one.
+    func notePasteRefused(_ message: String, endpointID: HostEndpoint.Identifier) -> (id: String, text: String)? {
+        guard let index = entries.lastIndex(where: { $0.endpointID == endpointID && $0.pasteState == .pending }),
+              let pasted = entries[index].pasted else { return nil }
+        entries[index].pasteState = .refused(message)
+        return (entries[index].id, pasted)
     }
 
     /// A turn the ambient stream heard but did not send (#398), as the owner's or someone else's, with a known
@@ -76,6 +94,11 @@ public final class ConversationLog {
         if let index = entries.firstIndex(where: { $0.id == id }) {
             entries[index].text = payload.text
             return
+        }
+        // A reply from the destination means its pending pastes were taken (#608).
+        for index in entries.indices where entries[index].pasteState == .pending
+            && entries[index].endpointID == event.endpointID && entries[index].targetID == reply.targetID {
+            entries[index].pasteState = .delivered
         }
         append(ConversationEntry(
             id: id, speaker: .haili, text: payload.text,

@@ -29,8 +29,8 @@ struct TranscriptionLabView: View {
     let onCaptureTeardownCompleted: (@MainActor (UUID) -> Void)?
     /// Sends the spoken request, with the attached paste when there is one (#608).
     let onFinalized: (@MainActor (String, PastedDraft?) async throws -> Void)?
-    /// The connected Mac takes pasted text (#608): only then is Paste offered.
-    let acceptsPaste: Bool
+    /// Whether the destination takes pasted text, and the latest paste its Mac refused (#608).
+    let pasteOffer: PasteOffer
     let onEscape: (@MainActor () async throws -> Void)?
 
     @State var capture: any AudioCapturing
@@ -84,7 +84,7 @@ struct TranscriptionLabView: View {
         onCaptureDidEnd: (@MainActor (UUID, _ resumingPlayback: Bool) -> Void)? = nil,
         onCaptureTeardownCompleted: (@MainActor (UUID) -> Void)? = nil,
         onFinalized: (@MainActor (String, PastedDraft?) async throws -> Void)? = nil,
-        acceptsPaste: Bool = false,
+        pasteOffer: PasteOffer = PasteOffer(),
         onEscape: (@MainActor () async throws -> Void)? = nil
     ) {
         self.audioSession = audioSession
@@ -100,7 +100,7 @@ struct TranscriptionLabView: View {
         self.onCaptureDidEnd = onCaptureDidEnd
         self.onCaptureTeardownCompleted = onCaptureTeardownCompleted
         self.onFinalized = onFinalized
-        self.acceptsPaste = acceptsPaste
+        self.pasteOffer = pasteOffer
         self.onEscape = onEscape
         _capture = State(initialValue: capture)
         _transcriber = State(initialValue: transcriber ?? Self.defaultTranscriber())
