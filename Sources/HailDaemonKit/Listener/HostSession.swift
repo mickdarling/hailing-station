@@ -246,11 +246,13 @@ public actor HostSession {
                     text: text.text, target: target, frame: frame, device: device, version: version
                 ))
             }
-            // The paste is framed here, once, so the authorized text is exactly the line the host sanitises.
+            // The paste is framed here, once, so the authorized text is exactly the line the host sanitises, and
+            // within what the target's adapter takes (the id's kind prefix), so an oversized paste says so.
+            let limit = PastedContent.maxFramedBytes(forTargetKind: String(target.prefix { $0 != ":" }))
             do {
                 return .input(AuthorizedInput(
-                    text: try PastedContent.frame(spoken: text.text, pasted: pasted.text), target: target,
-                    frame: frame, device: device, version: version, carriesPaste: true
+                    text: try PastedContent.frame(spoken: text.text, pasted: pasted.text, limit: limit),
+                    target: target, frame: frame, device: device, version: version, carriesPaste: true
                 ))
             } catch {
                 return .refusedPaste(PastedContent.refusal(error))
