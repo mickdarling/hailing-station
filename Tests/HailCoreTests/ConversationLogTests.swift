@@ -46,8 +46,10 @@ import Testing
         log.noteReply(HostReplyEvent(endpointID: "mac", frame: frame))
         #expect(log.entries.map(\.text) == ["Done."])
         #expect(log.entries.map(\.metadata) == ["- [#1](https://example.invalid/pull/1)"])
+        #expect(log.entries.first?.metadataBlocks == MessageMarkdown.blocks("- [#1](https://example.invalid/pull/1)"))
         log.noteReply(replyEvent("Done, updated.", id: id))
         #expect(log.entries.map(\.metadata) == [nil])
+        #expect(log.entries.first?.metadataBlocks == [])
     }
 
     /// #606: only a reply with audio was spoken aloud; a text-only reply is not shown as speech.

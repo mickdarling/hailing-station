@@ -87,8 +87,7 @@ struct MarkdownTableView: View {
 }
 
 #Preview("Reply details (#606)") {
-    ScrollView {
-        ReplyMetadataView(source: """
+    let source = """
         ## Build
         - **Status:** green, see [the pull request](https://example.com/pull/1)
         - File: `Sources/Example.swift`
@@ -103,8 +102,11 @@ struct MarkdownTableView: View {
         let reply = "synthetic"
         ```
 
+        > a _quoted_ note
         <b>raw html stays text</b> ![chart](https://example.com/chart.png) [odd](javascript:void(0))
-        """)
-        .padding()
+        """
+    ScrollView {
+        ReplyMetadataView(source: source, blocks: MessageMarkdown.blocks(source))
+            .padding()
     }
 }

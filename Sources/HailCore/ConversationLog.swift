@@ -19,7 +19,11 @@ public struct ConversationEntry: Identifiable, Equatable, Sendable {
     /// owner's, never logged.
     public var name: String?
     /// A reply's unspoken Markdown (#606), shown beside its spoken `text` through `MessageMarkdown`; never spoken.
-    public var metadata: String?
+    public var metadata: String? {
+        didSet { metadataBlocks = metadata.map(MessageMarkdown.blocks) ?? [] }
+    }
+    /// `metadata` parsed once when it is set, not on every redraw or context menu.
+    public private(set) var metadataBlocks: [MarkdownBlock] = []
     /// The reply has audio (#606), so its `text` is the words spoken aloud: the chat shows it in a speech style.
     public var spoken = false
 }
