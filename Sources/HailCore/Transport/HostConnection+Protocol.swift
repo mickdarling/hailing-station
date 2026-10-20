@@ -43,6 +43,8 @@ extension HostConnection {
              .control(.ambientOverheard), .control(.ownerVoice):
             // Like reply frames, needing no reply capability (#309, #404, #366, #318, rightyo#164).
             await replyObserver(HostReplyEvent(endpointID: snapshot.id, frame: frame))
+        case .control(.error(_, let message)) where message.hasPrefix("paste"): // #608: that paste failed, not the link
+            await replyObserver(HostReplyEvent(endpointID: snapshot.id, frame: frame))
         case .control(let control):
             try await process(control)
         case .text(let text) where text.isFinal && text.reply != nil:
@@ -177,10 +179,8 @@ extension HostConnection {
             await self?.pongTimedOut(nonce: nonce, generation: token)
         }
     }
-
     func pongTimedOut(nonce: String, generation token: UInt64) async {
-        guard isCurrent(token), wantsConnection,
-              pendingPings.removeValue(forKey: nonce) != nil else { return }
+        guard isCurrent(token), wantsConnection, pendingPings.removeValue(forKey: nonce) != nil else { return }
         await replaceLoop()
     }
 
