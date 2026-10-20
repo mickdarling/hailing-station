@@ -79,12 +79,23 @@ public enum Schema {
             "metadata": .object([
                 "type": .string("string"), "minLength": .integer(1),
                 "maxLength": .integer(Int64(PayloadLimits.maxMetadataBytes))
+            ]),
+            "pasted": requiring(["text"], [
+                "text": .object([
+                    "type": .string("string"), "minLength": .integer(1),
+                    "maxLength": .integer(Int64(PayloadLimits.maxPastedTextBytes))
+                ])
             ])
         ]),
         "allOf": .array([
             .object([
                 "if": .object(["required": .array([.string("metadata")])]),
                 "then": .object(["required": .array([.string("reply")])])
+            ]),
+            // #608: a paste rides only on a final frame.
+            .object([
+                "if": .object(["required": .array([.string("pasted")])]),
+                "then": .object(["properties": .object(["final": .object(["const": .bool(true)])])])
             ])
         ])
     ])
