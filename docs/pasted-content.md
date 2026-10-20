@@ -22,6 +22,10 @@ A final text frame may carry an optional `pasted` object:
   sends `pasted` to a host without it. An older host ignores the unknown key and would deliver the spoken text
   alone, so the paste would be dropped without a word.
 
+Two known differences between the schema and the decoder, both on the safe side: the schema's `maxLength` counts
+code points while the decoder counts UTF-8 bytes (the decoder is the stricter cap), and `"pasted": null` decodes as
+no paste while the schema refuses it. Senders omit the key when there is no paste.
+
 Fixtures: `fixtures/frames/text-pasted.json`, `fixtures/frames/text-pasted-only.json`, and the negatives
 `fixtures/invalid/text-pasted-*.json`.
 
