@@ -73,11 +73,12 @@ enum StationPlatform {
         #endif
     }
 
-    /// Headphones keep their A2DP route only without voice processing on iOS (#343). A Mac usually plays replies
-    /// through speakers in the same room, so it keeps voice processing, the iOS default for any unknown route.
+    /// Headphones keep their A2DP route only without voice processing on iOS (#343). A Mac captures plain, as the
+    /// resolver already decides for an iPad app on a Mac: turning voice processing on there raised an uncatchable
+    /// exception (#433). The echo guard still silences the mic while replies play.
     static var ambientCaptureMode: AmbientCaptureMode {
         #if os(macOS)
-        .voiceProcessing
+        .plain
         #else
         AmbientCaptureModeResolver.currentMode()
         #endif
