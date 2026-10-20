@@ -50,6 +50,16 @@ import Testing
         #expect(log.entries.map(\.metadata) == [nil])
     }
 
+    /// #606: only a reply with audio was spoken aloud; a text-only reply is not shown as speech.
+    @Test func aReplyIsSpokenOnlyWhenItHasAudio() {
+        let log = ConversationLog()
+        log.noteReply(replyEvent("Text only.", id: UUID()))
+        let reply = ReplyDescriptor(id: UUID(), hostID: "host", targetID: "tmux:a", audioStreamID: UUID())
+        let frame = Frame(timestamp: 0, source: "host", payload: .text(TextPayload(text: "Spoken.", reply: reply)))
+        log.noteReply(HostReplyEvent(endpointID: "mac", frame: frame))
+        #expect(log.entries.map(\.spoken) == [false, true])
+    }
+
     @Test func blankSendsAndNonTextFramesAreIgnored() {
         let log = ConversationLog()
         log.noteSent("   ", endpointID: "mac", targetID: "tmux:a")

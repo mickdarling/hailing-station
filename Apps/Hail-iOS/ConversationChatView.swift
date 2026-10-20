@@ -90,7 +90,9 @@ struct ConversationChatView: View {
                 Text(Self.linked(segments))
                     .foregroundStyle(entry.overheard ? Color.secondary : isYou ? Color.white : Color.primary)
                     .tint(isYou ? Color.white : Color.accentColor)
-                    .italic(entry.overheard)
+                    // The words Haili spoke aloud are in a speech style, set apart from the unspoken details (#606).
+                    .italic(entry.overheard || (entry.speaker == .haili && entry.spoken))
+                replyDetails(entry)
                 if entry.speaker == .haili, entry.id == controlledReplyID {
                     replyControls
                 }
@@ -107,20 +109,11 @@ struct ConversationChatView: View {
                 Button("Copy", systemImage: "doc.on.doc") { UIPasteboard.general.string = entry.text }
                 ShareLink(item: entry.text)
                 Button("Select Text", systemImage: "selection.pin.in.out") { selecting = entry }
-                linkActions(segments)
+                detailsActions(entry, segments: segments)
             }
             .accessibilityElement(children: .contain)
             .accessibilityLabel(Self.accessibilityLabel(entry))
             if !isYou { Spacer(minLength: 48) }
-        }
-    }
-
-    private static func accessibilityLabel(_ entry: ConversationEntry) -> String {
-        switch (entry.speaker, entry.overheard) {
-        case (.you, false): "You said"
-        case (.you, true): "You said, heard but not sent"
-        case (.someone, _): "\(entry.name ?? "Someone") said, heard but not sent"
-        case (.haili, _): "Haili replied"
         }
     }
 

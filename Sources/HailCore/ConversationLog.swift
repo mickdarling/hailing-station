@@ -20,6 +20,8 @@ public struct ConversationEntry: Identifiable, Equatable, Sendable {
     public var name: String?
     /// A reply's unspoken Markdown (#606), shown beside its spoken `text` through `MessageMarkdown`; never spoken.
     public var metadata: String?
+    /// The reply has audio (#606), so its `text` is the words spoken aloud: the chat shows it in a speech style.
+    public var spoken = false
 }
 
 /// The session's conversation, in the order things happened: each request as it is sent, each reply as its text
@@ -74,6 +76,7 @@ public final class ConversationLog {
         if let index = entries.firstIndex(where: { $0.id == id }) {
             entries[index].text = payload.text
             entries[index].metadata = payload.metadata
+            entries[index].spoken = reply.audioStreamID != nil
             return
         }
         var entry = ConversationEntry(
@@ -81,6 +84,7 @@ public final class ConversationLog {
             endpointID: event.endpointID, targetID: reply.targetID, date: now()
         )
         entry.metadata = payload.metadata
+        entry.spoken = reply.audioStreamID != nil
         append(entry)
     }
 
