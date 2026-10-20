@@ -27,3 +27,14 @@ Fixtures: `fixtures/frames/text-pasted.json`, `fixtures/frames/text-pasted-only.
 
 **Compatibility:** one optional key, no protocol version bump (`protocol:compatible`). Frames without a paste are
 byte-identical to before.
+
+## Device side (HailCore)
+
+- `PastedDraft` checks a paste before it is attached: visible text, at most 32 KB of UTF-8. Its `preview` and
+  `isLong` (more than 4 lines or 280 characters) drive the collapsed transcript block, so a Mac client can reuse them.
+- `HostConnection.sendFinalText(_:pasted:to:)` sends a paste only to a host that advertised `pasted_text`
+  (`PastedDraft.Problem.unsupportedByHost` otherwise) and only when the encoded frame fits
+  `PayloadLimits.defaultMaxFrameBytes` (`.tooLarge` otherwise). Nothing is sent in either case.
+- `HostConnectionStore.acceptsPaste(host:)` tells the station whether to offer paste at all, and a sent paste joins the
+  conversation as `ConversationEntry.pasted`, beside the spoken text (which may be empty).
+- `Problem.message` gives the station's error sentence. The wording is a placeholder for Mick to approve.

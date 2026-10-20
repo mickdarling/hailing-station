@@ -18,6 +18,8 @@ public struct ConversationEntry: Identifiable, Equatable, Sendable {
     /// The known guest who said an overheard turn (#434), from the host's `name`; nil shows "Someone". Never the
     /// owner's, never logged.
     public var name: String?
+    /// Text the user pasted with this request (#608), shown as its own block; `text` may then be empty.
+    public var pasted: String?
 }
 
 /// The session's conversation, in the order things happened: each request as it is sent, each reply as its text
@@ -40,13 +42,15 @@ public final class ConversationLog {
         entries.filter { $0.endpointID == endpointID && $0.targetID == targetID }
     }
 
-    func noteSent(_ text: String, endpointID: HostEndpoint.Identifier, targetID: String) {
+    func noteSent(_ text: String, pasted: String? = nil, endpointID: HostEndpoint.Identifier, targetID: String) {
         let trimmed = text.trimmingCharacters(in: .whitespacesAndNewlines)
-        guard !trimmed.isEmpty else { return }
-        append(ConversationEntry(
+        guard !trimmed.isEmpty || pasted != nil else { return }
+        var entry = ConversationEntry(
             id: "you|\(UUID().uuidString.lowercased())", speaker: .you, text: trimmed,
             endpointID: endpointID, targetID: targetID, date: now()
-        ))
+        )
+        entry.pasted = pasted
+        append(entry)
     }
 
     /// A turn the ambient stream heard but did not send (#398), as the owner's or someone else's, with a known

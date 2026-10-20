@@ -297,10 +297,18 @@ extension HostConnectionStore {
 
 /// Text and Escape to a target; sent text joins the station chat (#288).
 extension HostConnectionStore {
-    public func sendFinalText(_ text: String, host id: HostEndpoint.Identifier, targetID: String) async throws {
+    /// `pasted` (#608) rides with `text`, which may then be empty; the transcript shows both once sent.
+    public func sendFinalText(
+        _ text: String, pasted: PastedDraft? = nil, host id: HostEndpoint.Identifier, targetID: String
+    ) async throws {
         guard let connection = connections[id] else { throw HostConnectionFailure.notReady }
-        try await connection.sendFinalText(text, to: targetID)
-        conversation.noteSent(text, endpointID: id, targetID: targetID)
+        try await connection.sendFinalText(text, pasted: pasted, to: targetID)
+        conversation.noteSent(text, pasted: pasted?.text, endpointID: id, targetID: targetID)
+    }
+
+    /// Whether the connected Mac takes pasted text (#608): the station offers paste only then.
+    public func acceptsPaste(host id: HostEndpoint.Identifier) -> Bool {
+        snapshots[id]?.capabilities.contains(PastedText.capability) == true
     }
     public func sendEscape(host id: HostEndpoint.Identifier, targetID: String) async throws {
         guard let connection = connections[id] else { throw HostConnectionFailure.notReady }
