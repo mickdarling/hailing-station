@@ -349,6 +349,15 @@ extension WebSocketListener {
     /// with `haild reply <target> --request <ref>`. A contextual adapter keeps its out-of-band context id and the
     /// original block: the UUID must never enter a bridge's model prompt. A prompt that does not end in the
     /// target's block, or would outgrow the dispatch cap, is left unchanged with no reference.
+    /// A voice route's current binding (#636): listed, alive and at the binding its policy entry allows; nil otherwise.
+    /// A snapshot for addressing only: local dispatch checks the listing and binding again, and the policy decides.
+    func voiceRouteBinding(_ target: String) async -> String? {
+        guard let listed = try? await host.registry.listing().first(where: { $0.info.id == target }),
+              listed.info.alive, let binding = listed.binding, let policy = await host.refreshedPolicy(),
+              policy.targets[target]?.binding == binding else { return nil }
+        return binding
+    }
+
     func referenceAmbient(_ request: LocalDispatchRequest) async -> (LocalDispatchRequest, UUID?) {
         guard let (adapter, _) = try? await host.registry.resolve(request.target),
               !(adapter is any ProviderContextDelivering) else { return (request, nil) }
@@ -949,6 +958,15 @@ extension AmbientRightyoRouter {
         }
         (settings.onOwnerVoice, settings.environment) = (ownerVoice(on: connection, listener: listener),
                                                          childEnvironment(for: connection))
+        // The owner's voice routes (#636), from the same authorizer the listing names them with.
+        if let routes = listener.authorizer.voiceRoutes {
+            settings.routing = RightyoVoiceRouting(routes: routes) { [weak listener] target in
+                await listener?.voiceRouteBinding(target)
+            }
+            settings.onVoiceRouteRefused = { [weak self] refusal in
+                self?.emit("ambient_voice_route_refused", connection: connection, detail: refusal.token)
+            }
+        }
         return try RightyoAmbientPipeline(configuration: settings,
                                           dispatcher: AmbientListenerDispatcher(
                                               listener: listener, audit: configuration.audit,

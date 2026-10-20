@@ -299,6 +299,10 @@ public actor RightyoInputConsumer {
     /// The owner's note to an allowlisted destination (#552), held back like `lastVoiceMute`; nil for any other line.
     private(set) var lastVoiceDestination: VoiceDestinations.Command?
     private let destinations: VoiceDestinations?
+    /// The owner's voice routes (#636); nil leaves every request on `target`. A request the owner addressed to a route
+    /// that cannot take it is held back, its reason left in `lastRouteRefusal` like a dismissal, and ends nothing.
+    private let routing: RightyoVoiceRouting?
+    private(set) var lastRouteRefusal: RightyoVoiceRouting.Refusal?
     /// `streamBudgetMs` is an optional ceiling on producer stream time; the default is no ceiling (#188).
     /// `dispatcher` replaces the direct `HailHost.send` step (#188 item 1); without it, `host` delivers directly
     /// and nil `host` validates only. A dispatcher with no host still delivers (it owns its own host access).
@@ -307,13 +311,15 @@ public actor RightyoInputConsumer {
     public init(host: HailHost?, target: String, binding: String, session: String,
                 allowSynthetic: Bool = false, streamBudgetMs: Int? = nil,
                 dispatcher: (any RightyoDispatching)? = nil, echoFilter: (@Sendable (String) -> Bool)? = nil,
-                mediaCommands: Bool = false, destinations: VoiceDestinations? = nil) throws {
+                mediaCommands: Bool = false, destinations: VoiceDestinations? = nil,
+                routing: RightyoVoiceRouting? = nil) throws {
         guard !binding.isEmpty, RightyoInputEvent.identifier(session), streamBudgetMs.map({ $0 >= 0 }) ?? true else {
             throw RightyoInputError.unavailableBinding
         }
         try Self.validateTarget(target)
         self.dispatcher = dispatcher ?? host.map { RightyoHostDispatcher(host: $0) }
         (self.echoFilter, self.mediaCommands, self.destinations) = (echoFilter, mediaCommands, destinations)
+        self.routing = routing
         self.allowSynthetic = allowSynthetic
         self.target = target
         self.binding = binding
@@ -345,7 +351,7 @@ public actor RightyoInputConsumer {
         lastReceipt = nil
         lastDismissal = nil
         lastVoiceMute = nil
-        (lastVoiceMedia, lastVoiceDestination) = (nil, nil)
+        (lastVoiceMedia, lastVoiceDestination, lastRouteRefusal) = (nil, nil, nil)
         do {
             guard try admit(event) else { return false }
             if event.type == "override" { return true }
@@ -362,18 +368,8 @@ public actor RightyoInputConsumer {
             // counts; anyone else's is a request like any other. On an anonymous one any voice counts (see
             // `VoiceMute`): the mute is device-local and reversible.
             if let turn = event.turn, holdsVoiceCommand(turn) { return false }
-            busy = true
-            defer { busy = false }
-            do {
-                try Task.checkCancellation()
-                lastReceipt = try await dispatcher.dispatch(
-                    text: event.prompt(speakers: speakers, target: target), target: target, binding: binding
-                )
-                return true
-            } catch {
-                terminal = true
-                throw error
-            }
+            guard let address = await address(event.turn) else { return false }
+            return try await deliver(event, to: address, with: dispatcher)
         } catch {
             terminal = true
             failed = true
@@ -571,5 +567,102 @@ extension RightyoInputConsumer {
         lastDismissal = RightyoDismissReceipt(reason: reason, scope: scope, withdrawn: ids.count - delivered.count,
                                               alreadyDelivered: delivered.count,
                                               owner: event.role == "owner" && owners.contains(utterance))
+    }
+}
+
+/// The owner's voice routes for ambient requests (#636), and how to read a route's current binding: listed, alive and
+/// at the binding its policy allows, or nil. The routes only name targets; the host still checks each delivery.
+public struct RightyoVoiceRouting: Sendable {
+    /// Why a request the owner addressed to a route was not sent. Nothing went anywhere; the owner is told.
+    public enum Refusal: Sendable, Equatable {
+        /// The route is offline, or refused the request before it was handed off. Carries the route's name.
+        case notDelivered(String)
+        /// The route's name alone, with nothing to send.
+        case nothingToSay(String)
+        /// Opening words that sound like a route's name but are none of its spellings.
+        case unclear
+    }
+
+    public let routes: VoiceRoutes
+    public let binding: @Sendable (String) async -> String?
+
+    public init(routes: VoiceRoutes, binding: @escaping @Sendable (String) async -> String?) {
+        self.routes = routes
+        self.binding = binding
+    }
+}
+
+extension RightyoInputConsumer {
+    /// Where an admitted request goes, with the binding it is pinned to, and the route when it is not `target`.
+    struct Address {
+        let target: String
+        let binding: String
+        let route: VoiceRoutes.Route?
+    }
+
+    /// The owner's own turn on an enrolled session may name another route (#636), while `target` is itself a route;
+    /// every other turn goes to `target`. Speaker labels decide nothing else here: anyone else's "Deck, …" is a
+    /// request to `target` like any other. A route that is offline, a name alone and a near miss are held back in
+    /// `lastRouteRefusal` (nil), so nothing is sent anywhere and the stream goes on.
+    func address(_ turn: RightyoInputEvent.Turn?) async -> Address? {
+        let own = Address(target: target, binding: binding, route: nil)
+        guard let routing, let turn, speakers == "enrolled", owners.contains(turn.utteranceId),
+              routing.routes.route(for: target) != nil else { return own }
+        switch routing.routes.match(turn.text, names: voiceNames) {
+        case .unaddressed:
+            return own
+        case .routed(let route, _) where route.target == target:
+            return own
+        case .routed(let route, _):
+            guard let pinned = await routing.binding(route.target) else {
+                lastRouteRefusal = .notDelivered(route.name)
+                return nil
+            }
+            return Address(target: route.target, binding: pinned, route: route)
+        case .nothingToSay(let route):
+            lastRouteRefusal = .nothingToSay(route.name)
+            return nil
+        case .unclear:
+            lastRouteRefusal = .unclear
+            return nil
+        }
+    }
+
+    /// Types the prompt, its reply block naming `address.target`. A routed request refused before its handoff is a
+    /// route refusal that ends nothing; any other failure ends the consumer, as before.
+    func deliver(
+        _ event: RightyoInputEvent, to address: Address, with dispatcher: any RightyoDispatching
+    ) async throws -> Bool {
+        busy = true
+        defer { busy = false }
+        do {
+            try Task.checkCancellation()
+            lastReceipt = try await dispatcher.dispatch(
+                text: event.prompt(speakers: speakers, target: address.target), target: address.target,
+                binding: address.binding
+            )
+            return true
+        } catch let refusal as LocalDispatchRefusal where !refusal.handedOff {
+            guard let route = address.route else {
+                terminal = true
+                throw refusal
+            }
+            lastRouteRefusal = .notDelivered(route.name)
+            return false
+        } catch {
+            terminal = true
+            throw error
+        }
+    }
+}
+
+extension RightyoVoiceRouting.Refusal {
+    /// The audit token: the reason only, never the route's name or the words.
+    public var token: String {
+        switch self {
+        case .notDelivered: "reason=not_delivered"
+        case .nothingToSay: "reason=nothing_to_say"
+        case .unclear: "reason=unclear"
+        }
     }
 }

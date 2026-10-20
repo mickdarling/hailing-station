@@ -97,6 +97,11 @@ public final class RightyoAmbientPipeline: Sendable {
         public var destinations: VoiceDestinations?
         public var onVoiceDestination: (@Sendable (
             _ destination: String, _ target: VoiceDestinations.Destination, _ text: String) -> Void)?
+        /// The owner's voice routes (#636); nil leaves every request on `target`. A request the owner addressed to a
+        /// route that cannot take it is not typed anywhere; its reason goes to `onVoiceRouteRefused`, which must
+        /// return at once.
+        public var routing: RightyoVoiceRouting?
+        public var onVoiceRouteRefused: (@Sendable (RightyoVoiceRouting.Refusal) -> Void)?
         /// Called when RightyO says the owner's voice is `unrecognized` on this input, or `recognized` again
         /// (rightyo#164), only on a session whose `started` advertised `owner_voice`, each state at most once and
         /// `recognized` only after `unrecognized`. It must return at once.
@@ -130,6 +135,7 @@ public final class RightyoAmbientPipeline: Sendable {
     private let onVoiceMute: (@Sendable (Bool) -> Void)?
     private let onVoiceMedia: (@Sendable (Bool) -> Void)?
     private let onVoiceDestination: (@Sendable (String, VoiceDestinations.Destination, String) -> Void)?
+    private let onVoiceRouteRefused: (@Sendable (RightyoVoiceRouting.Refusal) -> Void)?
     private let acknowledgement: AmbientAckRelay
     private let heard: AmbientHeardRelay
     private let overheard: AmbientOverheardRelay
@@ -147,7 +153,8 @@ public final class RightyoAmbientPipeline: Sendable {
                                             session: session, allowSynthetic: configuration.allowSynthetic,
                                             dispatcher: step, echoFilter: configuration.isEcho,
                                             mediaCommands: configuration.replyControl,
-                                            destinations: configuration.destinations)
+                                            destinations: configuration.destinations,
+                                            routing: configuration.routing)
         child = try RightyoChildProcess(executable: configuration.executable, config: configuration.config,
                                         session: session, timing: configuration.timing,
                                         replyControl: configuration.replyControl,
@@ -156,6 +163,7 @@ public final class RightyoAmbientPipeline: Sendable {
         onDismiss = configuration.onDismiss
         (onVoiceMute, onVoiceMedia) = (configuration.onVoiceMute, configuration.onVoiceMedia)
         onVoiceDestination = configuration.onVoiceDestination
+        onVoiceRouteRefused = configuration.onVoiceRouteRefused
         acknowledgement = relay
         self.heard = heard
         overheard = AmbientOverheardRelay(onOverheard: configuration.onOverheard, isEcho: configuration.isEcho)
@@ -216,6 +224,9 @@ public final class RightyoAmbientPipeline: Sendable {
                 }
                 if event.type == "request", let note = await consumer.lastVoiceDestination {
                     onVoiceDestination?(note.destination, note.target, note.text)
+                }
+                if event.type == "request", let refusal = await consumer.lastRouteRefusal {
+                    onVoiceRouteRefused?(refusal)
                 }
             }
             try await consumer.finish()

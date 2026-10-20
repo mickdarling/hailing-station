@@ -13,7 +13,8 @@ once is out of scope.
 | 2. Host listing: route names, offline routes and `--voice-routes` | Merged (#678, #686). Not deployed: `host.sh` does not pass the flag yet (slice 8). |
 | 3. Tap-to-talk routing and reply return (route group) | Merged (#688). Not deployed. |
 | 4a. Ambient dispatch may address a covered route (host authority) | In review. No consumer routes yet (4b). Not deployed. |
-| 4b–8. Ambient routing by the owner's voice, refusals, spoken and visual labels (7a model merged in #666), app selector | Proposed; see the [plan on #636](https://github.com/mickdarling/hailing-station/issues/636). |
+| 4b. Ambient routing by the owner's own turn (RightyO consumer) | In review. Not deployed; needs route names in RightyO `addressing.names`. |
+| 5–8. Refusals, spoken and visual labels (7a model merged in #666), app selector | Proposed; see the [plan on #636](https://github.com/mickdarling/hailing-station/issues/636). |
 
 Nothing below changes the running daemon or installed builds until a later slice wires it in and it is deployed.
 
@@ -184,3 +185,27 @@ on that same generation. A request to another target without that decision binds
 
 No ambient request addresses a route yet. Slice 4b makes the RightyO consumer choose a route from the owner's own
 turn on an enrolled session. Verification is synthetic only (`VoiceRouteAmbientAuthorityTests`, `VoiceRouteRaceTests`).
+
+## Ambient routing by the owner's voice (slice 4b)
+
+With `--voice-routes`, each ambient stream's RightyO consumer gets the owner's routes. It reads them from the same
+authorizer the listing uses, together with a binding lookup (`WebSocketListener.voiceRouteBinding`: listed, alive
+and at the binding the policy allows).
+
+- **Owner only.** Only a request whose turn both the transcript and the attention record call the owner's, on an
+  enrolled session, can name a route. That is the same rule as spoken notes (#552). Anyone else's "Deck, …", and
+  every turn on an anonymous session, is an ordinary request to the ambient target.
+- **Only from a route.** Routing applies only while the ambient target is itself a route.
+- **The prompt.** A routed request is typed into the named route with that route's own reply block, so its answer
+  names that route. A plain tmux route gets a reply reference (#230) and a last-input record (#370) through slice
+  4a, so the reply comes back to the streaming device.
+- **No silent fallback.** An offline route, a name alone or a near miss is held back in `lastRouteRefusal`. Nothing
+  is typed anywhere and the stream goes on. So does a routed dispatch refused before its handoff, for example a
+  route rebound between addressing and dispatch. The listener logs `ambient_voice_route_refused` with
+  `reason=not_delivered|nothing_to_say|unclear` only, never the name or the words. Slice 5 tells the owner. A
+  refusal for the ambient target itself still ends the stream, as before.
+- **RightyO must forward the turn.** RightyO forwards only turns addressed to the system. Because "Jarvis, Deck,
+  …" never re-routes, each route's spoken name must also be in RightyO's `addressing.names`. That is a live config
+  change, made only with Mick listening.
+
+Verification is synthetic only (`RightyoInputVoiceRouteTests`): synthetic RightyO events and a recording dispatcher.
