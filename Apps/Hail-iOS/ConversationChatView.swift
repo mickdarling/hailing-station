@@ -9,8 +9,8 @@ struct ConversationChatView: View {
     /// Overheard remarks (#398) appear only when the user chose to show them.
     @AppStorage(OverheardSettingsView.showKey) private var showsOverheard = false
     @AppStorage(OverheardSettingsView.whoseKey) private var overheardWhose = "owner"
-    /// The message whose text is open for selecting part of it (#412).
-    @State private var selecting: ConversationEntry?
+    @State private var selecting: ConversationEntry? // The message open for selecting part of it (#412).
+    @State private var links = MessageSegmentCache() // Each message's links, parsed once per text (#641 review).
 
     init(entries: [ConversationEntry], playback: ReplyPlaybackController) {
         allEntries = entries
@@ -77,7 +77,7 @@ struct ConversationChatView: View {
 
     @ViewBuilder
     private func bubble(_ entry: ConversationEntry) -> some View {
-        let (isYou, segments) = (entry.speaker == .you, MessageLinks.segments(entry.text))
+        let (isYou, segments) = (entry.speaker == .you, links.segments(for: entry))
         HStack {
             if isYou { Spacer(minLength: 48) }
             VStack(alignment: .leading, spacing: 8) {
