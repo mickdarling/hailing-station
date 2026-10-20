@@ -208,6 +208,10 @@ struct AmbientListeningCard: View {
                     .font(.headline)
             }
             .accessibilityIdentifier("station.ambient-toggle")
+            #if os(macOS)
+            // Private coaching and ambient capture never run together (#645).
+            .disabled(!controller.isOn && MacCoachingController.shared.state.holdsAudio)
+            #endif
             Toggle("Mask mic while speaking", isOn: $masksDuringReplies)
                 .font(.subheadline)
                 .accessibilityHint("Sends silence while a reply plays, instead of relying on echo cancellation")

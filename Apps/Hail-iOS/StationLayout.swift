@@ -105,12 +105,13 @@ extension RootView {
         }
     }
 
-    /// Private coaching, then ambient listening. The Mac drafts put their coaching card in this slot (#504); iPhone
-    /// and iPad show it disabled until #604 lands (#611).
+    /// Private coaching, then ambient listening. The Mac shows its opt-in coaching card here (#645); iPhone and iPad
+    /// show it disabled until #604 lands (#611).
     @ViewBuilder
     private var listeningSurfaces: some View {
-        // The Mac shows no coaching card until its own private coaching card is ported (#266).
-        #if !os(macOS)
+        #if os(macOS)
+        MacCoachingSlot(playback: playback, ambientListening: connections.ambientStreaming)
+        #else
         CoachingUnavailableCard()
         #endif
         ambientListeningSurface
