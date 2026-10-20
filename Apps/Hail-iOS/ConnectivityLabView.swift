@@ -1,4 +1,5 @@
 import HailCore
+import HailProtocol
 import SwiftUI
 
 /// Manual Mac setup and connection status for the station.
@@ -80,11 +81,37 @@ struct ConnectivityLabView: View {
             Text("last ping \(ping.formatted(.number.precision(.fractionLength(1)))) ms")
                 .font(.caption.monospaced())
         }
+        healthSummary(host)
         if host.receivedTargetList, host.targets.isEmpty {
             Text("No allowed targets returned.").font(.caption).foregroundStyle(.secondary)
         }
         ForEach(host.targets, id: \.id) { target in
             Text("\(target.alive ? "●" : "○") \(target.name) · \(target.kind)").font(.caption)
+        }
+    }
+
+    /// The host's doctor summary (#614), read-only, when it answers `health`; refreshable while connected.
+    @ViewBuilder
+    private func healthSummary(_ host: HostConnectionSnapshot) -> some View {
+        if let health = store.health[host.id] {
+            VStack(alignment: .leading, spacing: 4) {
+                Label(health.headline, systemImage: health.healthy ? "checkmark.seal" : "exclamationmark.triangle")
+                    .font(.caption.weight(.semibold))
+                    .foregroundStyle(health.healthy ? Color.green : Color.orange)
+                ForEach(Array(health.lines.enumerated()), id: \.offset) { _, line in
+                    Label(line.title, systemImage: line.ok ? "checkmark" : "xmark")
+                        .font(.caption)
+                        .foregroundStyle(line.ok ? Color.secondary : Color.orange)
+                }
+                Text(health.buildLine).font(.caption2.monospaced()).foregroundStyle(.secondary)
+            }
+            .accessibilityElement(children: .combine)
+            .accessibilityIdentifier("connectivity.host-health")
+        }
+        if host.state == .ready, host.capabilities.contains(HostHealth.capability) {
+            Button("Check host health") { store.requestHealth(host.id) }
+                .font(.caption)
+                .buttonStyle(.borderless)
         }
     }
 

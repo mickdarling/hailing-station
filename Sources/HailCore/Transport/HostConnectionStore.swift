@@ -32,6 +32,9 @@ public final class HostConnectionStore {
     /// Hosts that said RightyO does not recognise the owner's voice on this device's input (rightyo#164), until they
     /// say it does, the device starts a new stream, or the host is removed.
     public private(set) var ownerVoiceUnrecognized: Set<HostEndpoint.Identifier> = []
+    /// Each host's last doctor summary (#614), asked for when its connection reaches ready and on request from Mac
+    /// Setup; kept until the host is removed, so a host that drops still shows what it last reported.
+    public private(set) var health: [HostEndpoint.Identifier: HostHealth] = [:]
     /// This device's current input route kind for `ambient_input` (rightyo#164); replaceable in tests.
     @ObservationIgnored var inputRoute: @MainActor () async -> String? = { HostConnectionStore.currentInputRoute() }
 
@@ -153,6 +156,7 @@ public final class HostConnectionStore {
         if let barrier { retiredBarriers[id] = barrier }
         snapshots[id] = nil
         ownerVoiceUnrecognized.remove(id)
+        health[id] = nil
         order.removeAll { $0 == id }
     }
     /// Active hosts are pinged; hosts already trying to recover skip their backoff and reconnect now.
@@ -173,7 +177,7 @@ public final class HostConnectionStore {
         let previous = snapshots[snapshot.id]?.state
         snapshots[snapshot.id] = snapshot
         recordDiagnostics(from: previous, to: snapshot.state)
-        if snapshot.state == .ready, previous != .ready { applyOverheardScope(to: snapshot.id) }
+        if snapshot.state == .ready, previous != .ready { hostBecameReady(snapshot.id) }
     }
 
     private func receive(_ event: HostReplyEvent, token: UUID) {
@@ -185,6 +189,22 @@ public final class HostConnectionStore {
         if replyFrames.count > Self.replyFrameLimit {
             replyFrames.removeFirst(replyFrames.count - Self.replyFrameLimit)
         }
+    }
+}
+
+/// The host's doctor summary (#614).
+extension HostConnectionStore {
+    /// A connection just reached ready: the current overheard scope (#398) and a health request (#614) go to it.
+    func hostBecameReady(_ id: HostEndpoint.Identifier) {
+        applyOverheardScope(to: id)
+        requestHealth(id)
+    }
+
+    /// Asks a ready host that advertised `host_health` for its doctor summary (#614); others are left alone.
+    public func requestHealth(_ id: HostEndpoint.Identifier) {
+        guard let connection = connections[id], snapshots[id]?.state == .ready,
+              snapshots[id]?.capabilities.contains(HostHealth.capability) == true else { return }
+        Task { try? await connection.requestHealth() }
     }
 }
 
@@ -202,6 +222,8 @@ extension HostConnectionStore {
             conversation.noteOverheard(
                 text, owner: speaker == "owner", name: name, endpointID: event.endpointID, targetID: targetID
             )
+        case .control(.healthReport(let report)):
+            health[event.endpointID] = report
         case .control(.ownerVoice(let state)):
             if state == "unrecognized" {
                 ownerVoiceUnrecognized.insert(event.endpointID)

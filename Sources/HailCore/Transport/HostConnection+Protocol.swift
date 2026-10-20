@@ -40,8 +40,8 @@ extension HostConnection {
         }
         switch frame.payload {
         case .control(.stopPlayback), .control(.setReplyMute), .control(.ambientMovedHere), .control(.ambientHeard),
-             .control(.ambientOverheard), .control(.ownerVoice):
-            // Like reply frames, needing no reply capability (#309, #404, #366, #318, rightyo#164).
+             .control(.ambientOverheard), .control(.ownerVoice), .control(.healthReport):
+            // Like reply frames, needing no reply capability (#309, #404, #366, #318, rightyo#164, #614).
             await replyObserver(HostReplyEvent(endpointID: snapshot.id, frame: frame))
         case .control(let control):
             try await process(control)
