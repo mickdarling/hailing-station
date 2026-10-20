@@ -437,6 +437,9 @@ public final class AmbientListeningController {
     @ObservationIgnored private var confirmation = UUID()
     /// The device diagnostics log (#234): ambient start, stop with its cause, and host refusals. Never audio.
     @ObservationIgnored public var diagnostics: DeviceDiagnostics?
+    /// Shared with private coaching where a platform runs both (#645): a request while coaching holds the
+    /// microphone is refused with a reason, never queued. Nil (iOS today) changes nothing.
+    @ObservationIgnored public var exclusion: PrivateListeningExclusion?
     /// The session that most recently began activating the audio session. Only it may release the audio session,
     /// so a slow teardown of an earlier session cannot deactivate the one a fast off→on started (#218).
     @ObservationIgnored private var activation: UUID?
@@ -475,8 +478,15 @@ public final class AmbientListeningController {
         self.send = send
     }
 
+    /// A card torn down while on must not leave coaching locked out (#645).
+    isolated deinit { if isOn { exclusion?.releaseAmbient() } }
+
     public func turnOn(for binding: AmbientAudioBinding) async {
         guard !isOn, scene == .active else { return }
+        guard exclusion?.claimAmbient() ?? true else {
+            stopReason = "Private coaching is using the microphone. Stop it to listen here."
+            return
+        }
         let current = UUID()
         session = current
         isOn = true
@@ -545,6 +555,7 @@ public final class AmbientListeningController {
         diagnostics?.record(.ambientStop, fields)
         session = UUID()
         isOn = false
+        exclusion?.releaseAmbient()
         isListening = false
         pendingStart = false
         awaitingPermission = false
