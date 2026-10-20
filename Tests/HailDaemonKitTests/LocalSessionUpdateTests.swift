@@ -58,46 +58,37 @@ import Testing
         }
     }
 
-    @Test func infoIsHeldAndActionSpeaksOnlyWhileListening() async throws {
+    @Test func everythingIsHeldAndActionIsPushedOnlyWithADeviceAndNoQuiet() async throws {
         try await withListener { listener, wiring in
-            #expect(await listener.sessionUpdate(request(.submit)).outcome == .held)
+            let info = await listener.sessionUpdate(request(.submit))
+            #expect(info.outcome == .held && !info.push)
             let idle = await listener.sessionUpdate(request(.submit, priority: .action))
             #expect(idle.outcome == .held && !idle.push, "no listening or last active device: nothing to push")
             wiring.listening.withLock { $0 = UUID() }
-            #expect(await listener.sessionUpdate(request(.submit, priority: .action)).outcome == .speak)
+            let listening = await listener.sessionUpdate(request(.submit, priority: .action))
+            #expect(listening.outcome == .held && listening.push,
+                    "never handed to the reply path, whose routing may pick another device (#605, #551)")
             wiring.media.withLock { $0 = true }
             let media = await listener.sessionUpdate(request(.submit, priority: .action))
             #expect(media.outcome == .held && media.push, "media mode holds and pushes")
-            #expect(media.held == 3)
-        }
-    }
-
-    @Test func quietHoldsActionWithoutAPushAndAnnounceNeverHolds() async throws {
-        try await withListener { listener, wiring in
-            wiring.listening.withLock { $0 = UUID() }
-            #expect(await listener.sessionUpdate(request(.announce)).outcome == .speak)
             #expect(await listener.sessionUpdate(.init(action: .quietOn)).quiet)
             let quiet = await listener.sessionUpdate(request(.submit, priority: .action))
-            #expect(quiet.outcome == .held && !quiet.push)
-            #expect(await listener.sessionUpdate(request(.announce)).outcome == .notListening)
-            #expect(await listener.sessionUpdate(.init(action: .quietOff)).quiet == false)
-            wiring.listening.withLock { $0 = nil }
-            let announce = await listener.sessionUpdate(request(.announce))
-            #expect(announce.outcome == .notListening && announce.held == 1, "an announce is never held")
+            #expect(quiet.outcome == .held && !quiet.push && quiet.held == 5)
         }
     }
 
-    @Test func eachSessionHasABudgetAndAFailedSpeechIsHeldWithoutSpendingIt() async throws {
+    @Test func everyUpdateSpendsTheSessionsBudget() async throws {
         try await withListener { listener, wiring in
             wiring.listening.withLock { $0 = UUID() }
             for _ in 0..<SessionUpdatePolicy().perSessionLimit {
-                #expect(await listener.sessionUpdate(request(.submit, priority: .action)).outcome == .speak)
+                #expect(await listener.sessionUpdate(request(.submit, priority: .action)).outcome == .held)
             }
-            let limited = await listener.sessionUpdate(request(.submit))
-            #expect(limited.outcome == .refused && limited.reason == "rate_limited")
-            #expect((limited.retryAfter ?? 0) > 3_500)
-            let held = await listener.sessionUpdate(request(.hold, priority: .action))
-            #expect(held.outcome == .held && held.push && held.held == 1, "hold spends nothing and decides a push")
+            for priority in [SessionUpdatePriority.info, .action] {
+                let limited = await listener.sessionUpdate(request(.submit, priority: priority))
+                #expect(limited.outcome == .refused && limited.reason == "rate_limited")
+                #expect((limited.retryAfter ?? 0) > 3_500)
+                #expect(limited.held == SessionUpdatePolicy().perSessionLimit, "a refusal holds nothing")
+            }
         }
     }
 
@@ -115,8 +106,13 @@ import Testing
     @Test func onlyTheKeysTheActionUsesDecode() throws {
         #expect(decode(#"{"kind":"update","action":"submit","target":"tmux:a","text":"Done"}"#)
                 == LocalSessionUpdateRequest(action: .submit, target: "tmux:a", text: "Done"))
-        #expect(decode(#"{"kind":"update","action":"hold","target":"tmux:a","priority":"action","text":"Done","#
-                       + #""card":"PR #1"}"#)?.card == "PR #1")
+        #expect(decode(#"{"kind":"update","action":"submit","target":"tmux:a","priority":"action","#
+                       + #""text":"Done","card":"PR #1"}"#)?.card == "PR #1")
+        for removed in ["hold", "announce", "quiet_off"] {
+            #expect(decode(#"{"kind":"update","action":"\#(removed)","target":"tmux:a","text":"x"}"#) == nil)
+            #expect(decode(#"{"kind":"update","action":"\#(removed)"}"#) == nil,
+                     "no hold or announce until haild delivers itself; a session cannot turn quiet off")
+        }
         #expect(decode(#"{"kind":"update","action":"quiet_on"}"#) == LocalSessionUpdateRequest(action: .quietOn))
         #expect(decode(#"{"kind":"update","action":"status"}"#) == LocalSessionUpdateRequest(action: .status))
         #expect(decode(#"{"kind":"update","action":"submit","text":"Done"}"#) == nil, "no target")
@@ -127,7 +123,7 @@ import Testing
         #expect(decode(#"{"kind":"update","action":"submit","target":"tmux:a","text":"x","priority":"urgent"}"#)
                 == nil)
         #expect(decode(#"{"kind":"ambient","action":"status"}"#) == nil)
-        let sent = LocalSessionUpdateRequest(action: .announce, target: "tmux:a", priority: .action, text: "Back")
+        let sent = LocalSessionUpdateRequest(action: .submit, target: "tmux:a", priority: .action, text: "Back")
         #expect(try JSONDecoder().decode(LocalSessionUpdateRequest.self, from: JSONEncoder().encode(sent)) == sent)
     }
 
@@ -176,9 +172,12 @@ import Testing
         #expect(status.update?.outcome == .status)
         let refused = try await submit(Data(#"{"kind":"update","action":"shout"}"#.utf8), socket: socket.path)
         #expect(refused.code == .decodeFailure && refused.update == nil)
+        let unknown = #"{"kind":"update","action":"submit","target":"Synthetic Unlisted Name","text":"x"}"#
+        #expect(try await submit(Data(unknown.utf8), socket: socket.path).update?.reason == "unknown_target")
         let history = try AuditHistory(directory: auditDirectory).today()
-        #expect(history.filter { $0.contains("local-update") }.count == 2)
+        #expect(history.filter { $0.contains("local-update") }.count == 3)
         #expect(!history.contains { $0.contains("Synthetic secret words") })
+        #expect(!history.contains { $0.contains("Synthetic Unlisted Name") }, "the action token, never caller text")
         await endpoint.stop()
         await listener.stop(reason: "synthetic test complete")
     }

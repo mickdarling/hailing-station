@@ -3,21 +3,24 @@ import OSLog
 
 private let updateLogger = Logger(subsystem: "com.mickdarling.hailing-station", category: "local-update")
 
-/// `haild notify` over the owner-only local reply socket (#609): a local session's unsolicited update, the quiet
-/// switch, or a status question. The speaking session is a live target the registry lists, never free text, so it
-/// cannot dodge its budget or pose as another session. Exactly the keys the action uses; anything else is refused.
+/// `haild notify` over the owner-only local reply socket (#609): a local session's unsolicited update, quiet on, or
+/// a status question. The speaking session must be a live target the registry lists, never free text. Any local
+/// process of the owner may name any live target (sessions may phone in, #371), so the name says which session an
+/// update is about, not which process sent it, and the per-session budget, quiet and media mode are cooperative
+/// limits, not a security boundary. Exactly the keys the action uses; anything else is refused.
 public struct LocalSessionUpdateRequest: Codable, Sendable, Equatable {
     public static let kind = "update"
 
     public enum Action: String, Codable, Sendable, CaseIterable {
-        /// `submit` speaks now or holds, by the policy. `hold` holds an update whose immediate speech failed, without
-        /// spending budget again. `announce` (#605) speaks only on a listening device and never holds.
-        case submit, hold, announce
-        /// The do-not-disturb switch, until haild restarts.
-        case quietOn = "quiet_on", quietOff = "quiet_off"
+        /// Holds the update by the policy. Speaking now (an `action` on a listening device, and #605's announce)
+        /// waits for haild to deliver to the device it decided on itself; until then nothing is spoken from here.
+        case submit
+        /// Turns do-not-disturb on until haild restarts. A session may only turn it on: turning it off is the user's
+        /// own control, not something a session can do over this socket.
+        case quietOn = "quiet_on"
         case status
 
-        var carriesUpdate: Bool { [.submit, .hold, .announce].contains(self) }
+        var carriesUpdate: Bool { self == .submit }
     }
 
     public var action: Action
@@ -71,11 +74,9 @@ public struct LocalSessionUpdateRequest: Codable, Sendable, Equatable {
 /// The daemon's answer to a local update request (#609): an outcome token and counts. Never the update's text.
 public struct LocalSessionUpdateReport: Codable, Sendable, Equatable {
     public enum Outcome: String, Codable, Sendable {
-        /// `speak`: deliver it now through the reply path (`haild reply --say`), and send `hold` if that fails.
-        /// `held`: kept for a natural pause, "any updates?", or the next interaction. `not_listening`: an announce
-        /// found no listening device, or quiet or media mode is on; nothing was held. `status`: a status or quiet
+        /// `held`: kept for a natural pause, "any updates?", or the next interaction. `status`: a status or quiet
         /// answer. `not_enabled`: haild runs without `--session-updates`.
-        case speak, held, notListening = "not_listening", refused, status, notEnabled = "not_enabled"
+        case held, refused, status, notEnabled = "not_enabled"
     }
 
     public var outcome: Outcome
@@ -83,7 +84,7 @@ public struct LocalSessionUpdateReport: Codable, Sendable, Equatable {
     public var reason: String?
     /// Whole seconds until the session may send again, for `rate_limited`.
     public var retryAfter: Int?
-    /// A held `action` update: the caller may raise its own push notification too.
+    /// A held `action` update with a device to tell: the caller may raise its own push notification too.
     public var push = false
     public var held = 0
     public var quiet = false
@@ -101,10 +102,10 @@ extension WebSocketListener {
         guard !stopped else { return updateReport(.refused, reason: "stopping") }
         switch request.action {
         case .status: return updateReport(.status)
-        case .quietOn, .quietOff:
-            sessionUpdatesQuiet = request.action == .quietOn
+        case .quietOn:
+            sessionUpdatesQuiet = true
             return updateReport(.status)
-        case .submit, .hold, .announce: return await sessionUpdate(carried: request)
+        case .submit: return await sessionUpdate(carried: request)
         }
     }
 
@@ -114,18 +115,19 @@ extension WebSocketListener {
             return updateReport(.refused, reason: "unknown_target")
         }
         let now = ContinuousClock.now
-        let priority = request.action == .announce ? .action : request.priority ?? .info
-        guard !stopped, let update = SessionUpdate(session: target, priority: priority, spoken: request.text ?? "",
-                                                   card: request.card, submitted: now) else {
+        guard !stopped, let update = SessionUpdate(
+            session: target, priority: request.priority ?? .info, spoken: request.text ?? "", card: request.card,
+            submitted: now
+        ) else {
             return updateReport(.refused, reason: stopped ? "stopping" : "invalid")
         }
         let audience = updateAudience(for: target)
-        switch request.action {
-        case .hold: return decided(sessionUpdates.hold(update, audience: audience, at: now))
-        case .announce where audience.listeningDevice == nil || audience.quiet || audience.media:
-            return updateReport(.notListening)
-        default: return decided(sessionUpdates.submit(update, audience: audience, now: now))
-        }
+        // A `speak` is not handed to the reply path, whose request-less routing may pick another device than the
+        // listening one the policy approved (#605, #551). It is held with its push until haild delivers to the
+        // decided device itself. Its budget is already spent; holding the same update spends nothing more.
+        let decision = sessionUpdates.submit(update, audience: audience, now: now)
+        guard case .speak(let spoken, _) = decision else { return decided(decision) }
+        return decided(sessionUpdates.hold(spoken, audience: audience, at: now))
     }
 
     /// The listening device, else the device that last sent `target` input (#370), and that device's media mode.
@@ -139,7 +141,8 @@ extension WebSocketListener {
 
     private func decided(_ decision: SessionUpdateDecision) -> LocalSessionUpdateReport {
         switch decision {
-        case .speak: return updateReport(.speak)
+        // Not reached: a `speak` is held before this (`sessionUpdate(carried:)`).
+        case .speak: return updateReport(.held)
         case .held(let push):
             var report = updateReport(.held)
             report.push = push != nil
@@ -163,7 +166,7 @@ extension WebSocketListener {
 
 extension LocalReplyEndpoint {
     /// Same admission budget and fail-closed audit as an ambient request: `pushed(tool: "local-update")` with the
-    /// target, or the action when there is none. The update's text is never logged or audited.
+    /// action token. Neither the target nor the update's text is logged or audited.
     func submitSessionUpdate(_ data: Data, from client: LocalReplyConnection) async {
         do {
             try Task.checkCancellation()
@@ -173,8 +176,9 @@ extension LocalReplyEndpoint {
                 updateLogger.error("Local update decode failed: \(String(reflecting: error), privacy: .private)")
                 throw LocalReplyRefusal.decodeFailure
             }
-            let target = request.target ?? request.action.rawValue
-            do { _ = try await audit.record(.pushed(tool: "local-update", target: target, bytes: data.count)) } catch {
+            // The action token, never the caller's target text: an unknown target is refused only after this record.
+            let action = request.action.rawValue
+            do { _ = try await audit.record(.pushed(tool: "local-update", target: action, bytes: data.count)) } catch {
                 updateLogger.error("Local update audit failed: \(String(reflecting: error), privacy: .private)")
                 throw LocalReplyRefusal.auditFailure
             }
