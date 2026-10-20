@@ -69,7 +69,7 @@ import Testing
         #expect(queue.submit(action, audience: listening, now: at(0)) == .speak(action, device: phone))
         let first = queue.hold(action, audience: listening, at: at(1))
         let again = queue.hold(action, audience: listening, at: at(1))
-        #expect(first == .held(push: phone) && again == .held(push: phone), "holding twice keeps one copy")
+        #expect(first == .held(push: phone) && again == .held(push: nil), "holding twice keeps one copy, one push")
         #expect(queue.held.map(\.id) == [action.id])
         #expect(queue.retryAfter(session: "Voice Work", now: at(1)) == .seconds(3_599))
     }

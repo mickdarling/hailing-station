@@ -79,7 +79,7 @@ public struct LocalSessionUpdateReport: Codable, Sendable, Equatable {
     }
 
     public var outcome: Outcome
-    /// For `refused`: `disabled`, `rate_limited`, `full`, `unknown_target`, `invalid` or `stopping`.
+    /// For `refused`: `disabled`, `rate_limited`, `full`, `expired`, `unknown_target`, `invalid` or `stopping`.
     public var reason: String?
     /// Whole seconds until the session may send again, for `rate_limited`.
     public var retryAfter: Int?
@@ -146,6 +146,7 @@ extension WebSocketListener {
             return report
         case .refused(.disabled): return updateReport(.refused, reason: "disabled")
         case .refused(.full): return updateReport(.refused, reason: "full")
+        case .refused(.expired): return updateReport(.refused, reason: "expired")
         case .refused(.rateLimited(let wait)):
             var report = updateReport(.refused, reason: "rate_limited")
             report.retryAfter = Int(wait.components.seconds) + (wait.components.attoseconds > 0 ? 1 : 0)
