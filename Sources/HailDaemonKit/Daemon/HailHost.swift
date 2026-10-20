@@ -122,19 +122,15 @@ public actor HailHost {
     private func dispatch(_ text: String, request dispatch: DispatchRequest) async throws -> SendOutcome {
         let id = dispatch.target
         try requireSendPreflight()
-        let lines: [String]
-        do {
-            let policy = Self.localDispatchIngress ? dispatchSanitizing
-                : Self.pastedIngress ? pasteSanitizing : sanitizing
-            lines = try Sanitizer.sanitize(text, policy: policy)
-        } catch let error as SanitizeError {
-            throw HostError.refused(error)
-        }
+        var lines = try sanitizedLines(text)
         let listed = try await dispatchListing(dispatch, lineCount: lines.count)
         // Commit the first dispatch attempt after policy I/O, before consuming one-shot confirmation.
         // No further cancellation observation occurs before its adapter handoff; later lines may stop.
         try Task.checkCancellation()
-        var request = DeliveryRequest(target: id, binding: listed.binding, lines: lines, device: dispatch.device)
+        let guardLines = try screenPaste(&lines)
+        var request = DeliveryRequest(
+            target: id, binding: listed.binding, lines: lines, device: dispatch.device, guardLines: guardLines
+        )
         // No suspension from here to the first evaluation: the consumed token cannot go stale in between.
         let confirmed = consume(dispatch.confirmedHash, for: request)
         let confirmedRevision = policyRevision
@@ -394,5 +390,25 @@ extension HailHost {
     func revokeAuthority() {
         replyPublicationAuthority.invalidate()
         (pending, policyRevision) = ([:], UUID())
+    }
+
+    /// The sanitized lines under this ingress's caps: a local dispatch's, a framed paste's, or the host's own.
+    private func sanitizedLines(_ text: String) throws -> [String] {
+        do {
+            let policy = Self.localDispatchIngress ? dispatchSanitizing
+                : Self.pastedIngress ? pasteSanitizing : sanitizing
+            return try Sanitizer.sanitize(text, policy: policy)
+        } catch let error as SanitizeError {
+            throw HostError.refused(error)
+        }
+    }
+
+    /// A framed paste (#608) is screened, not guarded: the guard reads only its spoken part (returned), and the paste
+    /// body's matches become a validation flag on the block, under the policy this dispatch evaluates. Nil otherwise.
+    private func screenPaste(_ lines: inout [String]) throws -> [String]? {
+        guard Self.pastedIngress else { return nil }
+        let screened = try PastedContent.screen(lines, with: evaluator, spoken: sanitizing)
+        lines = screened.lines
+        return screened.guardLines
     }
 }

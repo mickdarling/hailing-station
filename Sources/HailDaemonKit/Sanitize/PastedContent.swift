@@ -45,9 +45,12 @@ public enum PastedContent {
         guard bytes <= PayloadLimits.maxPastedTextBytes else {
             throw .tooManyBytes(bytes: bytes, limit: PayloadLimits.maxPastedTextBytes)
         }
-        // Normalised as the host will, so the stability check below speaks only about the paste.
-        let request = Sanitizer.foldSpaces(spoken.precomposedStringWithCanonicalMapping)
-            .trimmingCharacters(in: .whitespacesAndNewlines)
+        // Cleaned as the host will (#628 round 2): an escape sequence or control left in the spoken part would make the
+        // host's sanitizer cut the rest of the line, notice and block included. A line break stays a refusal.
+        let request = Sanitizer.foldSpaces(Sanitizer.stripControls(Sanitizer.stripEscapeSequences(
+            spoken.precomposedStringWithCanonicalMapping
+        ))).trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !request.contains(where: \.isNewline) else { throw .containsLineBreak }
         guard request.count <= spokenCap.maxCharacters, request.utf8.count <= spokenCap.maxUTF8Bytes else {
             throw .tooLong(characters: request.count, limit: spokenCap.maxCharacters)
         }
@@ -61,9 +64,11 @@ public enum PastedContent {
         guard framed.utf8.count <= min(limit, maxFramedBytes) else {
             throw .tooManyBytes(bytes: framed.utf8.count, limit: min(limit, maxFramedBytes))
         }
-        // The host normalises the whole line again. Scalar for scalar, that must be a no-op.
-        guard framed.unicodeScalars.elementsEqual(framed.precomposedStringWithCanonicalMapping.unicodeScalars) else {
-            throw .hiddenCharacters("character that changes when normalised")
+        // The host sanitises the whole line again. Scalar for scalar, that must be a no-op: one line, nothing dropped.
+        guard framed.unicodeScalars.elementsEqual(framed.precomposedStringWithCanonicalMapping.unicodeScalars),
+              let resanitized = try? Sanitizer.sanitize(framed, policy: lineCap), resanitized.count == 1,
+              resanitized[0].unicodeScalars.elementsEqual(framed.unicodeScalars) else {
+            throw .hiddenCharacters("character the host would change")
         }
         return framed
     }
@@ -120,6 +125,61 @@ public enum PastedContent {
     /// JSON's backslash-u form, as a surrogate pair above the Basic Multilingual Plane.
     private static func hexEscape(_ scalar: Unicode.Scalar) -> String {
         String(scalar).utf16.map { String(format: "\\u%04x", $0) }.joined()
+    }
+}
+
+/// Mick's decision (#608): a paste is screened, not guarded. Guarded words inside it do not stop delivery; they are
+/// named in a `validation` attribute on the block's opening tag, outside the body, so the receiving session knows
+/// what the paste contains. The spoken request in the same line is still guarded exactly as on its own. A paste is
+/// never executed or treated as a command: it reaches the target only as data inside its block.
+extension PastedContent {
+    struct Screened: Equatable {
+        /// The framed line, with the validation attribute when anything matched.
+        var lines: [String]
+        /// The spoken request's sanitized lines, for the guard; empty for a paste on its own.
+        var guardLines: [String]
+    }
+
+    /// Splits the one sanitized framed line into its spoken part and paste body, guards the former's sanitized form
+    /// under `spoken`, and screens the latter. Anything that does not parse as a frame from `frame` is refused.
+    static func screen(_ lines: [String], with evaluator: PolicyEvaluator, spoken: SanitizePolicy) throws -> Screened {
+        guard lines.count == 1, let parts = parts(of: lines[0]) else {
+            throw HostError.refused(.hiddenCharacters("unreadable paste frame"))
+        }
+        let guardLines: [String]
+        do {
+            guardLines = parts.spoken.isEmpty ? [] : try Sanitizer.sanitize(parts.spoken, policy: spoken)
+        } catch let error as SanitizeError {
+            throw HostError.refused(error)
+        }
+        let body = parts.body.split(omittingEmptySubsequences: true, whereSeparator: \.isNewline).map(String.init)
+        return Screened(lines: [flagged(lines[0], evaluator.pasteFlags(in: body))], guardLines: guardLines)
+    }
+
+    /// The spoken request before the notice, and the decoded body. The last notice-and-tag is the frame's own: the
+    /// body can hold no raw `<`, so nothing inside it can look like one.
+    static func parts(of line: String) -> (spoken: String, body: String)? {
+        guard let start = line.range(of: notice + " " + open, options: .backwards), line.hasSuffix(close) else {
+            return nil
+        }
+        let literal = line[start.upperBound..<line.index(line.endIndex, offsetBy: -close.count)]
+        guard let body = try? JSONDecoder().decode(String.self, from: Data(literal.utf8)) else { return nil }
+        return (String(line[..<start.lowerBound]).trimmingCharacters(in: .whitespaces), body)
+    }
+
+    /// The line with `validation="contains: ..."` on the opening tag. Rule names are reduced to plain words, so a
+    /// policy file's naming cannot add markup.
+    static func flagged(_ line: String, _ flags: [String]) -> String {
+        let names = flags.map { String($0.unicodeScalars.filter(isPlainNameScalar).map(Character.init)) }
+            .filter { !$0.isEmpty }
+        guard !names.isEmpty, let tag = line.range(of: open, options: .backwards) else { return line }
+        let attribute = #" validation="contains: \#(names.joined(separator: ", "))">"#
+        return line.replacingCharacters(in: tag, with: String(open.dropLast()) + attribute)
+    }
+
+    private static func isPlainNameScalar(_ scalar: Unicode.Scalar) -> Bool {
+        scalar.isASCII && (scalar.properties.isAlphabetic || ("0"..."9").contains(scalar) || " -_.".unicodeScalars
+            .contains(scalar))
     }
 }
 

@@ -55,10 +55,22 @@ compare this with the open issues [Hail: the user pasted the block that follows.
   `pasted text is too large for this destination: N bytes, and the limit is M`.
 - The spoken request keeps its own cap (2,000 characters) when it carries a paste. It is never escaped, because it is
   the user's own speech: a device must never put clipboard text into the spoken `text` field.
-- `HailHost` applies the larger line cap only to a framed paste (`pastedIngress`). The newline rule,
-  dangerous-pattern guard, tier, binding, lockdown and rate limit all apply as usual, so for now a guarded word inside
-  a paste (for example "delete") still needs a confirmation at the Mac. Mick decided this becomes a validation flag
-  instead (a follow-up PR).
+- `HailHost` applies the larger line cap only to a framed paste (`pastedIngress`). The newline rule, tier, binding,
+  lockdown and rate limit all apply as usual.
+- **Validation, not a guard, for the paste (Mick's decision).** The dangerous-pattern guard reads only the spoken
+  part of a request with a paste (`DeliveryRequest.guardLines`), sanitized under the spoken policy, so a guarded word
+  there still needs a confirmation at the Mac, exactly as without a paste. The paste body is screened instead
+  (`PastedContent.screen`): rules that match it are named on the opening tag, outside the body, and the paste is
+  delivered:
+
+  ```text
+  <pasted_content source="hail" trust="untrusted" encoding="json-string" validation="contains: sudo, delete">"..."</pasted_content>
+  ```
+
+  Rule names are reduced to plain ASCII words, so a policy file cannot add markup. On the paste body a rule that runs
+  out of its match budget is not reported (a timeout is not a match), so a long benign paste is never blocked by load;
+  on the spoken part a timeout still fails closed. A paste is never executed or treated as a command: it reaches the
+  target only as data inside its block. Showing the flag on the device needs a reply field and is a follow-up.
 - A refused paste delivers nothing and answers `malformed` with a plain reason, such as
   `pasted text contains a bidirectional control; remove it and paste again`.
 - Nothing in the host opens, fetches or previews a link inside a paste.

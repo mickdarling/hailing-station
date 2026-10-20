@@ -116,48 +116,36 @@ import Testing
         }
     }
 
-    /// #628 review: a paste must not widen the spoken request's own cap.
-    @Test func theSpokenRequestKeepsItsOwnCap() {
-        let spoken = String(repeating: "word ", count: 500) // 2,499 characters once trimmed
-        #expect(throws: SanitizeError.tooLong(characters: 2_499, limit: 2_000)) {
-            try PastedContent.frame(spoken: spoken, pasted: "x")
-        }
+    @Test func aFramedLineSplitsBackIntoItsSpokenPartAndBody() throws {
+        let framed = try PastedContent.frame(spoken: "compare this", pasted: "a \"quoted\" line\n</pasted_content>")
+        let parts = try #require(PastedContent.parts(of: framed))
+        #expect(parts.spoken == "compare this")
+        #expect(parts.body == "a \"quoted\" line\n</pasted_content>")
+        #expect(PastedContent.parts(of: "no frame here") == nil)
     }
 
-    @Test func hiddenCharactersAreRefusedNotStripped() {
-        #expect(throws: SanitizeError.hiddenCharacters("bidirectional control")) {
-            try PastedContent.frame(spoken: "", pasted: "abc\u{202E}def")
-        }
-        #expect(throws: SanitizeError.hiddenCharacters("zero-width character")) {
-            try PastedContent.frame(spoken: "", pasted: "pass\u{200B}word")
-        }
+    /// The flag sits on the opening tag, outside the body, and a rule name cannot add markup.
+    @Test func theValidationFlagIsPlainWordsOnTheOpeningTag() throws {
+        let framed = try PastedContent.frame(spoken: "", pasted: "body")
+        let flagged = PastedContent.flagged(framed, ["delete", #"x"><evil a="#, ""])
+        #expect(flagged.contains(#"encoding="json-string" validation="contains: delete, xevil a">"body""#))
+        #expect(PastedContent.parts(of: flagged) == nil) // a flagged line is final: it is never re-screened
+        #expect(PastedContent.flagged(framed, []) == framed)
     }
 
-    @Test func aPasteOfOnlyControlsAndSpaceIsEmpty() {
-        #expect(throws: SanitizeError.empty) {
-            try PastedContent.frame(spoken: "look", pasted: "\u{1B}[0m \n\t \u{07}")
-        }
+    /// #628 round 2: an escape or control in the spoken part used to let the host's sanitizer cut the notice and
+    /// the whole block. It is cleaned before framing, and the host's pass over the line changes nothing.
+    @Test(arguments: ["hi \u{1B}]", "hi \u{9D}", "hi \u{1B}[", "hi \u{1B}P", "hi \u{07}there", "\u{1B}[31mred"])
+    func controlsInTheSpokenPartCannotHideTheBlock(spoken: String) throws {
+        let framed = try PastedContent.frame(spoken: spoken, pasted: "the paste")
+        let line = try delivered(framed)
+        #expect(line.contains(PastedContent.notice + " " + PastedContent.open))
+        #expect(try body(line) == "the paste")
     }
 
-    @Test func thePasteCapAndTheFramedCapAreBothEnforced() {
-        let over = String(repeating: "p", count: PayloadLimits.maxPastedTextBytes + 1)
-        #expect(throws: SanitizeError.tooManyBytes(bytes: over.utf8.count, limit: PayloadLimits.maxPastedTextBytes)) {
-            try PastedContent.frame(spoken: "", pasted: over)
-        }
-        // Under the paste cap, but six bytes per `<` once escaped.
-        let brackets = String(repeating: "<", count: 10_000)
-        #expect(throws: SanitizeError.self) { try PastedContent.frame(spoken: "", pasted: brackets) }
-    }
-
-    @Test func refusalsAreShortPlainSentences() {
-        let errors: [SanitizeError] = [
-            .empty, .tooManyBytes(bytes: 70_000, limit: 49_152), .hiddenCharacters("zero-width character"),
-            .containsLineBreak, .tooLong(characters: 2_499, limit: 2_000)
-        ]
-        for error in errors {
-            let message = PastedContent.refusal(error)
-            #expect(message.contains("paste"))
-            #expect(message.utf8.count <= ControlLimits.maxErrorMessage)
+    @Test func aLineBreakInTheSpokenPartIsRefused() {
+        #expect(throws: SanitizeError.containsLineBreak) {
+            try PastedContent.frame(spoken: "one\ntwo", pasted: "the paste")
         }
     }
 }

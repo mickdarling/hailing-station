@@ -47,25 +47,39 @@ public struct CompiledGuards: Sendable {
     /// once. The joined form catches a command split across lines (a trailing backslash continuation
     /// under a split policy would otherwise put `rm \` and `-rf /` on different Enters).
     public func matches(in lines: [String]) -> [String] {
+        hits(in: lines, timeoutIsHit: true)
+    }
+
+    /// The rules that actually match pasted text (#608): a validation note for the receiving session, never a gate,
+    /// so a rule that runs out of budget is simply not reported (a timeout is not a match here).
+    public func flags(in lines: [String]) -> [String] {
+        hits(in: lines, timeoutIsHit: false)
+    }
+
+    private func hits(in lines: [String], timeoutIsHit: Bool) -> [String] {
         let candidates = lines.count > 1 ? lines + [lines.joined(separator: " ")] : lines
         let clock = GuardBudgetClock.current
         return rules.compactMap { rule in
             let deadline = clock.now() + matchBudget
             return candidates.contains { line in
-                boundedMatch(rule.regex, in: line, clock: clock, deadline: deadline)
+                boundedMatch(rule.regex, in: line, clock: clock, deadline: deadline, timeoutIsHit: timeoutIsHit)
             } ? rule.name : nil
         }
     }
 
-    /// ICU progress callbacks bound custom expressions; exceeding the budget is a guard hit, never a bypass.
+    /// ICU progress callbacks bound custom expressions; for the guard, exceeding the budget is a hit, never a bypass.
     private func boundedMatch(
-        _ regex: NSRegularExpression, in line: String, clock: GuardBudgetClock, deadline: ContinuousClock.Instant
+        _ regex: NSRegularExpression, in line: String, clock: GuardBudgetClock, deadline: ContinuousClock.Instant,
+        timeoutIsHit: Bool
     ) -> Bool {
         var hit = false
         let range = NSRange(line.startIndex..., in: line)
         regex.enumerateMatches(in: line, options: .reportProgress, range: range) { result, _, stop in
-            if result != nil || clock.now() >= deadline {
+            if result != nil {
                 hit = true
+                stop.pointee = true
+            } else if clock.now() >= deadline {
+                hit = timeoutIsHit
                 stop.pointee = true
             }
         }
