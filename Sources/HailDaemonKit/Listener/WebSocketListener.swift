@@ -1324,7 +1324,7 @@ extension AmbientRightyoRouter {
     /// while that timeout is still the current one. The children are written under the lock (a write never blocks),
     /// so a child `register` adds at the same moment either is written here or sees the new state.
     @discardableResult
-    fileprivate func setMedia(_ on: Bool, connection: UUID, reason: String, expected: UUID? = nil) -> Int {
+    func setMedia(_ on: Bool, connection: UUID, reason: String, expected: UUID? = nil) -> Int {
         let token = UUID(), timeout = configuration.mediaTimeout
         let reported = state.withLock { state -> Int? in
             if let expected, state.media[connection]?.token != expected { return nil }
@@ -1337,20 +1337,24 @@ extension AmbientRightyoRouter {
                 }
                 state.media[connection] = AmbientMediaTimer(token: token, timer: timer)
             }
-            return state.runs.values.filter { $0.connection == connection && $0.pipeline.reportMedia(on) }.count
+            let reported = state.runs.values.filter { $0.connection == connection && $0.pipeline.reportMedia(on) }.count
+            // The device sees on only once a child took it, so it never shows a mode not in force; off always (#612).
+            // Queued under the same lock as the change, so a timeout's off and a spoken on reach the device in the
+            // order the mode changed (the chain takes only its own lock).
+            if !on || reported > 0 {
+                let expires = on ? Int64((Date().timeIntervalSince1970 + timeout) * 1_000) : nil
+                let listener = state.listener?.value
+                mediaNotices.enqueue { [weak self, weak listener] in
+                    let sent = await listener?.showMediaMode(on, reason: reason, expires: expires,
+                                                             connection: connection)
+                    self?.emit("ambient_media_device", connection: connection,
+                               detail: "on=\(on) device=\(sent ?? "no_connection")")
+                }
+            }
+            return reported
         }
         guard let reported else { return 0 }
         emit("ambient_media", connection: connection, detail: "on=\(on) reason=\(reason) reported=\(reported)")
-        // The device sees on only once a child took it, so it never shows a mode not in force; off always (#612).
-        if !on || reported > 0 {
-            let expires = on ? Int64((Date().timeIntervalSince1970 + timeout) * 1_000) : nil
-            let listener = state.withLock { $0.listener?.value }
-            mediaNotices.enqueue { [weak self, weak listener] in
-                let sent = await listener?.showMediaMode(on, reason: reason, expires: expires, connection: connection)
-                self?.emit("ambient_media_device", connection: connection,
-                           detail: "on=\(on) device=\(sent ?? "no_connection")")
-            }
-        }
         return reported
     }
 }

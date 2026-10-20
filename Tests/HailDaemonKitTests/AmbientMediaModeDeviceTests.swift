@@ -55,6 +55,50 @@ import Testing
         #expect(off.payload == .control(.mediaMode(on: false, reason: "timeout")))
     }
 
+    /// #654 review: changes racing from many threads (a timeout's off against a spoken on) reach the device in the
+    /// same order they reached the child, so the device never ends up showing a mode the host is not in.
+    @Test func racingChangesReachTheDeviceInTheOrderTheModeChanged() async throws {
+        let fake = try FakeRightyo("/bin/cat <&3 > control.txt &\n"
+            + AmbientWiringVoiceMuteTests.fixture(saying: "Rightyo, media mode."))
+        defer { fake.cleanUp() }
+        try fake.install(fixture: "tool-events.jsonl")
+        let device = Mutex<[String]>([]), connection = Mutex<UUID?>(nil)
+        let env = try await ambientRig(fake, timing: .init(eofGrace: 20, termGrace: 20), replyControl: true,
+                                       onEvent: { event in
+            if event.event == "ambient_media" { connection.withLock { $0 = $0 ?? event.sessionID } }
+            if event.event == "ambient_media_device" { device.withLock { $0.append(event.detail ?? "") } }
+        })
+        let (session, socket) = try recipientSocket(port: env.port)
+        defer {
+            socket.cancel(with: .normalClosure, reason: nil)
+            session.invalidateAndCancel()
+        }
+        try await recipientSocketSend(sessionFrame(payload: .control(.hello(HelloInfo(
+            versions: [1], capabilities: [], deviceName: "test"
+        )))), on: socket)
+        _ = try await recipientSocketReceive(on: socket)
+        try await recipientSocketSend(sessionFrame(payload: .control(.select(targetID: RecipientTestRig.target))),
+                                      on: socket)
+        try await recipientSocketBarrier(on: socket)
+        let stream = UUID()
+        try await recipientSocketSend(audio(stream, 0), on: socket)
+        #expect(await eventually { device.withLock { $0.count == 1 } })
+        let id = try #require(connection.withLock { $0 })
+        let router = env.router
+        await withTaskGroup(of: Void.self) { group in
+            for index in 0..<40 {
+                group.addTask { router.setMedia(index.isMultiple(of: 2), connection: id, reason: "voice") }
+            }
+        }
+        #expect(await eventually { device.withLock { $0.count == 41 } })
+        let child = try fake.recorded("control.txt").split(separator: "\n").map { $0.contains("true") }
+        let shown = device.withLock { $0 }.map { $0.hasPrefix("on=true") }
+        #expect(child == shown)
+        try await recipientSocketSend(audio(stream, 1, final: true), on: socket)
+        await env.router.settle()
+        await env.listener.stop(reason: "synthetic test complete")
+    }
+
     @Test func aCapableDeviceIsToldWhenMediaModeTurnsOnAndOff() async throws {
         let details = try await run(capabilities: [MediaMode.capability], expectFrames: true)
         #expect(details == ["on=true device=sent", "on=false device=sent"])
