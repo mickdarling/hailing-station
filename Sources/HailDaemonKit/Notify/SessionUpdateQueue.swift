@@ -88,14 +88,25 @@ public struct SessionUpdateQueue: Sendable, Equatable {
     private mutating func keep(_ update: SessionUpdate, now: Instant) -> Bool {
         expire(now: now)
         guard !held.contains(where: { $0.id == update.id }) else { return true }
-        if held.count >= max(policy.capacity, 0) {
-            // The oldest info by submit time goes first, the earliest held among equals: the drain order.
-            guard let oldest = held.indices.filter({ held[$0].priority == .info })
-                .min(by: { held[$0].submitted < held[$1].submitted }) else { return false }
-            held.remove(at: oldest)
+        // The session's own cap first, so one session's updates never crowd out another's; then the shared one.
+        if held.count(where: { $0.session == update.session }) >= max(policy.perSessionHeld, 0) {
+            guard evictOldestInfo(where: { $0.session == update.session }) else { return false }
         }
-        guard held.count < policy.capacity else { return false }
+        if held.count >= max(policy.capacity, 0) {
+            guard evictOldestInfo(where: { _ in true }) else { return false }
+        }
+        guard held.count < policy.capacity,
+              held.count(where: { $0.session == update.session }) < policy.perSessionHeld else { return false }
         held.append(update)
+        return true
+    }
+
+    /// Drops the oldest matching `info` by submit time, the earliest held among equals (the drain order). False
+    /// when no `info` matches.
+    private mutating func evictOldestInfo(where matches: (SessionUpdate) -> Bool) -> Bool {
+        guard let oldest = held.indices.filter({ held[$0].priority == .info && matches(held[$0]) })
+            .min(by: { held[$0].submitted < held[$1].submitted }) else { return false }
+        held.remove(at: oldest)
         return true
     }
 

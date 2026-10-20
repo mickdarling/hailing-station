@@ -121,13 +121,13 @@ extension WebSocketListener {
         ) else {
             return updateReport(.refused, reason: stopped ? "stopping" : "invalid")
         }
-        let audience = updateAudience(for: target)
-        // A `speak` is not handed to the reply path, whose request-less routing may pick another device than the
-        // listening one the policy approved (#605, #551). It is held with its push until haild delivers to the
-        // decided device itself. Its budget is already spent; holding the same update spends nothing more.
-        let decision = sessionUpdates.submit(update, audience: audience, now: now)
-        guard case .speak(let spoken, _) = decision else { return decided(decision) }
-        return decided(sessionUpdates.hold(spoken, audience: audience, at: now))
+        // Nothing is spoken from here: the reply path's request-less routing may pick another device than the
+        // listening one the policy would approve (#605, #551). Until haild delivers to the decided device itself, the
+        // listening device is offered only as the target to push to, so the policy holds the update, and spends the
+        // session's budget only once it is held (a full queue costs nothing).
+        var audience = updateAudience(for: target)
+        (audience.lastActiveDevice, audience.listeningDevice) = (audience.target, nil)
+        return decided(sessionUpdates.submit(update, audience: audience, now: now))
     }
 
     /// The listening device, else the device that last sent `target` input (#370), and that device's media mode.
@@ -141,7 +141,7 @@ extension WebSocketListener {
 
     private func decided(_ decision: SessionUpdateDecision) -> LocalSessionUpdateReport {
         switch decision {
-        // Not reached: a `speak` is held before this (`sessionUpdate(carried:)`).
+        // Not reached: no listening device is offered (`sessionUpdate(carried:)`).
         case .speak: return updateReport(.held)
         case .held(let push):
             var report = updateReport(.held)
