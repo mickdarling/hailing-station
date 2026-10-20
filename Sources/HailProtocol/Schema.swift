@@ -74,7 +74,20 @@ public enum Schema {
         "properties": .object([
             "text": .object(["type": .string("string"), "maxLength": .integer(Int64(PayloadLimits.maxTextBytes))]),
             "final": .object(["type": .string("boolean")]),
-            "reply": .object(["$ref": .string("#/$defs/reply")])
+            "reply": .object(["$ref": .string("#/$defs/reply")]),
+            "pasted": requiring(["text"], [
+                "text": .object([
+                    "type": .string("string"), "minLength": .integer(1),
+                    "maxLength": .integer(Int64(PayloadLimits.maxPastedTextBytes))
+                ])
+            ])
+        ]),
+        // #608: a paste rides only on a final frame.
+        "allOf": .array([
+            .object([
+                "if": .object(["required": .array([.string("pasted")])]),
+                "then": .object(["properties": .object(["final": .object(["const": .bool(true)])])])
+            ])
         ])
     ])
 
