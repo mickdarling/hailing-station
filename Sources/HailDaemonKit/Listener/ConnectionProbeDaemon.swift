@@ -65,6 +65,9 @@ public enum ConnectionProbeDaemon {
         /// `--device-diagnostics` (#234), only with `--personal-terminal`: where accepted diagnostics are
         /// stored. Without the flag the capability is not advertised and nothing is written.
         var diagnostics: URL?
+        /// `--host-health` (#614), only with `--personal-terminal`: answer a device's `health` with the doctor
+        /// summary. Without the flag `host_health` is not advertised and the request is refused.
+        var health = false
     }
 
     // Each accepted flag is an explicit branch; combinations are validated after parsing.
@@ -91,7 +94,7 @@ public enum ConnectionProbeDaemon {
                 guard let path = rest.popFirst(), !path.isEmpty else { throw WebSocketListenerError.invalidArguments }
                 replySocket = URL(fileURLWithPath: path)
             case "--single-terminal-reply-fallback", "--device-diagnostics",
-                 "--ambient-reply-control": switches.insert(flag)
+                 "--ambient-reply-control", "--host-health": switches.insert(flag)
             case "--ambient-rightyo", "--ambient-rightyo-config", "--ambient-target", "--ambient-ack-clips",
                  "--ambient-destinations":
                 try parseAmbient(flag, from: &rest, into: &ambient)
@@ -108,7 +111,8 @@ public enum ConnectionProbeDaemon {
             personalTerminal: personalTerminal ? (replySocket ?? LocalReplyEndpoint.standardSocket()) : nil,
             singleTerminalReplyFallback: switches.contains("--single-terminal-reply-fallback"),
             ambient: try ambientOptions(ambient, switches),
-            diagnostics: switches.contains("--device-diagnostics") ? DiagnosticLog.standardDirectory() : nil
+            diagnostics: switches.contains("--device-diagnostics") ? DiagnosticLog.standardDirectory() : nil,
+            health: switches.contains("--host-health")
         )
     }
 }
@@ -134,6 +138,11 @@ extension ConnectionProbeDaemon {
             let diagnostics = DiagnosticLog(directory: directory)
             await ambient?.observe(diagnostics) // The phone's playback reports, for reply control (rightyo#124).
             authorizer = PersonalTerminalAuthorizer(ambientAudio: authorizer.ambientAudio, diagnostics: diagnostics)
+        }
+        if options.health {
+            authorizer = PersonalTerminalAuthorizer(ambientAudio: authorizer.ambientAudio,
+                                                    diagnostics: authorizer.diagnostics,
+                                                    health: HostHealthSummary.current)
         }
         let listener = try WebSocketListener(
             bindAddress: options.address, port: options.port, host: host,
