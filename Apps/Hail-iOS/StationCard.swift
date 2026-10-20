@@ -289,6 +289,7 @@ struct AmbientListeningCard: View {
         }
         .onAppear { echoGuard.masksDuringReplies = masksDuringReplies }
         .onChange(of: masksDuringReplies) { _, masks in echoGuard.masksDuringReplies = masks }
+        .modifier(StationMenuListeningPublisher(controller: controller, binding: binding))
     }
 
     private var scene: AmbientScene {
