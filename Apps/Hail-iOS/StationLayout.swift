@@ -109,7 +109,10 @@ extension RootView {
     /// and iPad show it disabled until #604 lands (#611).
     @ViewBuilder
     private var listeningSurfaces: some View {
+        // The Mac shows no coaching card until its own private coaching card is ported (#266).
+        #if !os(macOS)
         CoachingUnavailableCard()
+        #endif
         ambientListeningSurface
     }
 
