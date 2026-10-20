@@ -26,8 +26,8 @@ import Foundation
                 if fd >= 0 { Darwin.close(fd) }; throw CoachingCommandError.localControlRequired
             }
         } else {
-            // A dup shares file-status flags. Only an already nonblocking pipe is safe for redirected feedback.
-            guard !requireTerminal, original.st_mode & S_IFMT == S_IFIFO,
+            // A dup shares file-status flags. Only an already nonblocking pipe or socket is safe for redirected feedback.
+            guard !requireTerminal, [S_IFIFO, S_IFSOCK].contains(original.st_mode & S_IFMT),
                   fcntl(output, F_GETFL) & O_NONBLOCK != 0 else {
                 throw CoachingCommandError.localControlRequired
             }
@@ -38,14 +38,16 @@ import Foundation
         }
         descriptor = fd
     }
-    /// Status for a parent app over its stderr pipe (#645). Feedback never blocks the audio actor, so the
-    /// pipe is made nonblocking first; the parent reads it promptly and closes its copy when it exits.
-    static func parentPipe(output: Int32 = STDERR_FILENO) throws -> CoachingTerminal {
-        let flags = fcntl(output, F_GETFL)
-        guard isatty(output) == 0, flags >= 0, fcntl(output, F_SETFL, flags | O_NONBLOCK) == 0 else {
+    /// Status for the verified parent app, written back over its control socket (#645). Feedback never blocks the
+    /// audio actor, so the socket is made nonblocking; the keyboard only reads it after poll reports data.
+    static func parentSocket(socket: Int32 = STDIN_FILENO) throws -> CoachingTerminal {
+        var details = stat()
+        let flags = fcntl(socket, F_GETFL)
+        guard fstat(socket, &details) == 0, details.st_mode & S_IFMT == S_IFSOCK, flags >= 0,
+              fcntl(socket, F_SETFL, flags | O_NONBLOCK) == 0 else {
             throw CoachingCommandError.localControlRequired
         }
-        return try CoachingTerminal(output: output, requireTerminal: false)
+        return try CoachingTerminal(output: socket, requireTerminal: false)
     }
     /// The final CLI diagnostic must not re-enter ordinary blocking stderr after owned retirement.
     static func reportRefusal(output: Int32 = STDERR_FILENO) {

@@ -4,8 +4,8 @@ import HailCore
 import Testing
 @testable import haild
 
-/// `haild coaching --parent-control` (#645): the Mac app's pipes replace the terminal, and the only extra
-/// output is a content-free end reason.
+/// `haild coaching --parent-control` (#645): the verified Mac app's socket replaces the terminal, and the only
+/// extra output is a content-free end reason.
 @Suite(.serialized, .timeLimit(.minutes(1))) @MainActor struct CoachingParentControlTests {
     @Test func routeEndIsNamedAndLocalOffIsNot() async throws {
         let rig = try Rig()
@@ -38,30 +38,47 @@ import Testing
         _ = try rig.command.control("enable aware")
         try #require(rig.audio).session.invalidateRoute()
         await rig.command.join()
-        let input = try Pipe(), output = try Pipe()
-        defer { output.closeRead() }
-        let keyboard = try CoachingKeyboard(input: input.read, observeSignals: false, ended: { rig.command.off() })
-        let terminal = try CoachingTerminal.parentPipe(output: output.write)
-        input.send("status\nquit\n")
+        let channel = try Channel()
+        defer { channel.closeApp() }
+        let keyboard = try CoachingKeyboard(input: channel.haild, observeSignals: false,
+                                            ended: { rig.command.off() })
+        let terminal = try CoachingTerminal.parentSocket(socket: channel.haild)
+        channel.send("status\nquit\n")
         try await CoachingCommand.interact(rig.command, keyboard: keyboard, terminal: terminal)
-        input.closeWrite(); input.closeRead(); output.closeWrite()
-        let lines = output.drain().split(separator: "\n").map(String.init)
+        channel.closeHaild()
+        let lines = channel.drain().split(separator: "\n").map(String.init)
         // The banner is ignored by the card's parser; only the two status words parse.
         #expect(lines.suffix(2) == ["coaching: off", "coaching ended: route"])
         #expect(lines.compactMap(PrivateCoachingStatusLine.init) == [.status(.off), .ended(.route)])
     }
 
-    @Test func parentPipeIsNonblockingAndRefusesATerminal() throws {
-        let pipe = try Pipe()
-        defer { pipe.closeRead(); pipe.closeWrite() }
-        let terminal = try CoachingTerminal.parentPipe(output: pipe.write)
-        #expect(fcntl(pipe.write, F_GETFL) & O_NONBLOCK != 0)
+    @Test func statusGoesBackOverTheSocketAndPipesOrTerminalsAreRefused() throws {
+        let channel = try Channel()
+        defer { channel.closeApp() }
+        let terminal = try CoachingTerminal.parentSocket(socket: channel.haild)
+        #expect(fcntl(channel.haild, F_GETFL) & O_NONBLOCK != 0)
         try terminal.write("coaching: off\n")
-        terminal.close()
+        terminal.close(); channel.closeHaild()
+        #expect(channel.drain() == "coaching: off\n")
+        var descriptors: [Int32] = [-1, -1]
+        try #require(pipe(&descriptors) == 0)
+        defer { Darwin.close(descriptors[0]); Darwin.close(descriptors[1]) }
+        #expect(throws: CoachingCommandError.localControlRequired) {
+            try CoachingTerminal.parentSocket(socket: descriptors[1])
+        }
         var controller: Int32 = -1, endpoint: Int32 = -1
         try #require(openpty(&controller, &endpoint, nil, nil, nil) == 0)
         defer { Darwin.close(controller); Darwin.close(endpoint) }
-        #expect(throws: CoachingCommandError.localControlRequired) { try CoachingTerminal.parentPipe(output: endpoint) }
+        #expect(throws: CoachingCommandError.localControlRequired) {
+            try CoachingTerminal.parentSocket(socket: endpoint)
+        }
+    }
+
+    @Test func parentControlIsRefusedBeforeAnyConfigurationIsRead() async {
+        // Test stdin is never a socket from a pinned app, so even unparseable arguments fail on the parent check.
+        await #expect(throws: CoachingCommandError.localControlRequired) {
+            try await CoachingCommand.run(["--parent-control", "--not-a-flag"])
+        }
     }
 
     @MainActor private final class Rig {
@@ -87,27 +104,33 @@ import Testing
         func stop() async {}
     }
 
-    private struct Pipe {
-        let read: Int32, write: Int32
+    /// A socketpair as the Mac app makes it: one end for the app, one for haild's stdin.
+    private struct Channel {
+        let app: Int32, haild: Int32
         init() throws {
             var descriptors: [Int32] = [-1, -1]
-            guard Darwin.pipe(&descriptors) == 0 else { throw CoachingCommandError.invalidControl }
-            read = descriptors[0]; write = descriptors[1]
+            guard socketpair(AF_UNIX, SOCK_STREAM, 0, &descriptors) == 0 else {
+                throw CoachingCommandError.invalidControl
+            }
+            app = descriptors[0]; haild = descriptors[1]
         }
         func send(_ text: String) {
             let bytes = Data(text.utf8)
-            _ = bytes.withUnsafeBytes { Darwin.write(write, $0.baseAddress, $0.count) }
+            _ = bytes.withUnsafeBytes { Darwin.write(app, $0.baseAddress, $0.count) }
         }
+        /// Reads what haild already wrote, without waiting for EOF: the keyboard's own copy of the socket closes
+        /// later on the main queue, which this main-actor test must not block.
         func drain() -> String {
             var data = Data(), buffer = [UInt8](repeating: 0, count: 256)
+            _ = fcntl(app, F_SETFL, fcntl(app, F_GETFL) | O_NONBLOCK)
             while true {
-                let count = buffer.withUnsafeMutableBytes { Darwin.read(read, $0.baseAddress, $0.count) }
+                let count = buffer.withUnsafeMutableBytes { Darwin.read(app, $0.baseAddress, $0.count) }
                 guard count > 0 else { break }
                 data.append(contentsOf: buffer.prefix(count))
             }
             return String(bytes: data, encoding: .utf8) ?? ""
         }
-        func closeRead() { Darwin.close(read) }
-        func closeWrite() { Darwin.close(write) }
+        func closeApp() { Darwin.close(app) }
+        func closeHaild() { Darwin.close(haild) }
     }
 }

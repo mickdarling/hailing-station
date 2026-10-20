@@ -26,6 +26,7 @@ import Testing
         try owner.capture.yield(sineBuffer())
         await drainCoachingTasks()
         #expect(rig.driver.status == .off && owner.capture.stopCount == 1)
+        #expect(rig.driver.endReason == .expired) // The run cap is named, so the card shows no error (#645).
         rig.driver.off()
         await drainCoachingTasks()
     }
@@ -55,6 +56,7 @@ import Testing
         #expect(child.closes == (expired ? 1 : 0))
         #expect(child.buffers == (!expired && action == "buffer" ? 1 : 0))
         #expect(rig.speech.texts.count == (!expired && action == "advice" ? 1 : 0))
+        #expect(rig.driver.endReason == (expired ? .expired : nil))
         rig.driver.off()
         await drainCoachingTasks()
     }

@@ -10,7 +10,10 @@ extension ForegroundCoaching {
         guard epoch == id, status == .active, let lease, let deadline else { return false }
         let now = clock.now()
         guard epoch == id, status == .active, self.deadline == deadline else { return false }
-        guard now < deadline else { off(epoch: id); return false }
+        guard now < deadline else {
+            if endReason == nil { endReason = .expired } // The 15-minute run cap is a named end, not an error (#645).
+            off(epoch: id); return false
+        }
         guard self.lease == lease else { return false }
         guard now < lease.expiresAt else { off(epoch: id); return false }
         return true
