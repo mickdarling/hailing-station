@@ -38,6 +38,15 @@ import Foundation
         }
         descriptor = fd
     }
+    /// Status for a parent app over its stderr pipe (#645). Feedback never blocks the audio actor, so the
+    /// pipe is made nonblocking first; the parent reads it promptly and closes its copy when it exits.
+    static func parentPipe(output: Int32 = STDERR_FILENO) throws -> CoachingTerminal {
+        let flags = fcntl(output, F_GETFL)
+        guard isatty(output) == 0, flags >= 0, fcntl(output, F_SETFL, flags | O_NONBLOCK) == 0 else {
+            throw CoachingCommandError.localControlRequired
+        }
+        return try CoachingTerminal(output: output, requireTerminal: false)
+    }
     /// The final CLI diagnostic must not re-enter ordinary blocking stderr after owned retirement.
     static func reportRefusal(output: Int32 = STDERR_FILENO) {
         guard let terminal = try? CoachingTerminal(output: output, requireTerminal: false) else { return }

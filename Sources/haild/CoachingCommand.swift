@@ -82,14 +82,24 @@ struct CoachingCommandAudio {
     }
 
     @MainActor static func run(_ arguments: [String]) async throws {
-        guard isatty(STDIN_FILENO) == 1, isatty(STDERR_FILENO) == 1 else {
+        // `--parent-control` (#645): the Mac app that spawned this process holds both pipes instead of a TTY.
+        // Either way the controller is the local owner; a closed pipe retires coaching like a closed terminal.
+        let parentControl = arguments.first == "--parent-control"
+        let parsed = parentControl ? Array(arguments.dropFirst()) : arguments
+        guard parentControl ? isParentPipe(STDIN_FILENO) && isParentPipe(STDERR_FILENO)
+                : isatty(STDIN_FILENO) == 1 && isatty(STDERR_FILENO) == 1 else {
             throw CoachingCommandError.localControlRequired
         }
-        let configuration = try CoachingConfiguration.parse(arguments)
+        let configuration = try CoachingConfiguration.parse(parsed)
         let command = try native(configuration)
-        let terminal = try CoachingTerminal()
+        let terminal = try parentControl ? CoachingTerminal.parentPipe() : CoachingTerminal()
         let keyboard = try CoachingKeyboard(ended: { command.off() })
         try await interact(command, keyboard: keyboard, terminal: terminal)
+    }
+
+    private static func isParentPipe(_ descriptor: Int32) -> Bool {
+        var details = stat()
+        return isatty(descriptor) == 0 && fstat(descriptor, &details) == 0 && details.st_mode & S_IFMT == S_IFIFO
     }
 
     /// Shared run loop for native composition and authored-only control/feedback regressions.
@@ -108,6 +118,9 @@ struct CoachingCommandAudio {
                 guard keyboard.permitsControl() else { break } // Recheck terminal loss before buffered authority.
                 guard try command.control(line) else { break }
                 try terminal.write("coaching: \(command.owner.status)\n")
+                if command.owner.status == .off, let reason = command.owner.endReason {
+                    try terminal.write("coaching ended: \(reason.rawValue)\n") // Content-free, never text.
+                }
             }
         } catch { failure = CoachingCommandError.invalidControl }
         keyboard.close()
