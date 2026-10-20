@@ -18,7 +18,7 @@ import Testing
     private let dead = TargetInfo(id: "test:two", kind: "test", name: "two", alive: false)
 
     @Test func connectingHostIsPendingUntilTheTimeoutThenUnreachable() throws {
-        for state: HostConnectionState in [.connecting, .negotiating, .disconnected,
+        for state: HostConnectionState in [.connecting, .negotiating,
                                            .reconnecting(attempt: 2, nextDelay: 1), .ready] {
             let host = try snapshot(state)
             #expect(StationConnectionCheck.outcome(for: host, timedOut: false) == nil)
@@ -45,6 +45,29 @@ import Testing
             == .failed(host: "Test Mac", reason: "refused"))
     }
 
+    /// A Mac disconnected in Mac Setup is reported as such at once; the check never reconnects it.
+    @Test func aDisconnectedHostIsReportedNotWaitedFor() throws {
+        let host = try snapshot(.disconnected)
+        #expect(StationConnectionCheck.outcome(for: host, timedOut: false) == .disconnected(host: "Test Mac"))
+    }
+
+    /// The review of #632: a check cancelled because the view went away ends with no result, so the view returns
+    /// to idle instead of spinning; one left running reports at the timeout.
+    @MainActor
+    @Test func aCancelledWaitEndsWithNoResultAndAnUncancelledOneTimesOut() async throws {
+        let pending = [try snapshot(.connecting)]
+        let waiting = Task { @MainActor in
+            await StationConnectionCheck.wait(for: { pending }, staleGenerations: [:],
+                                              timeout: .seconds(30), interval: .milliseconds(10))
+        }
+        try await Task.sleep(for: .milliseconds(50))
+        waiting.cancel()
+        #expect(await waiting.value == nil)
+        let timedOut = await StationConnectionCheck.wait(for: { pending }, staleGenerations: [:],
+                                                         timeout: .milliseconds(30), interval: .milliseconds(10))
+        #expect(timedOut == .unreachable(host: "Test Mac"))
+    }
+
     @Test func severalMacsReportTheFirstConnectedOrWaitForAll() throws {
         let failed = try snapshot(.failed(reason: "refused"), id: "a", name: "Mac A")
         let pending = try snapshot(.connecting, id: "b", name: "Mac B")
@@ -60,9 +83,9 @@ import Testing
     @Test func everyResultHasAVisibleMessage() {
         let results: [StationConnectionCheck] = [
             .checking, .connected(host: "M"), .noDestinations(host: "M"),
-            .failed(host: "M", reason: "r"), .unreachable(host: "M")
+            .failed(host: "M", reason: "r"), .unreachable(host: "M"), .disconnected(host: "M")
         ]
         for result in results { #expect(!result.message.isEmpty) }
-        #expect(results.map(\.isProblem) == [false, false, true, true, true])
+        #expect(results.map(\.isProblem) == [false, false, true, true, true, true])
     }
 }

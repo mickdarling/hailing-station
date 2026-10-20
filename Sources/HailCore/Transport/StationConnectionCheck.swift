@@ -8,6 +8,8 @@ public enum StationConnectionCheck: Equatable, Sendable {
     case noDestinations(host: String)
     case failed(host: String, reason: String)
     case unreachable(host: String)
+    /// Disconnected on purpose in Mac Setup: the check leaves it that way rather than reconnecting it.
+    case disconnected(host: String)
 
     /// How long the station waits for a reconnect before it reports the Mac as unreachable.
     public static let timeout: Duration = .seconds(10)
@@ -25,6 +27,8 @@ public enum StationConnectionCheck: Equatable, Sendable {
             return host.targets.contains(where: \.alive) ? .connected(host: name) : .noDestinations(host: name)
         case .failed(let reason) where host.connectionGeneration != staleGeneration || timedOut:
             return .failed(host: name, reason: reason)
+        case .disconnected:
+            return .disconnected(host: name)
         default:
             return timedOut ? .unreachable(host: name) : nil
         }
@@ -45,6 +49,24 @@ public enum StationConnectionCheck: Equatable, Sendable {
         return results.compactMap { $0 }.min { $0.rank < $1.rank }
     }
 
+    /// Polls `hosts` until they give an outcome or `timeout` passes. Nil when the check is cancelled first (the view
+    /// went away), so the caller goes back to idle instead of showing progress forever.
+    @MainActor
+    public static func wait(
+        for hosts: @MainActor () -> [HostConnectionSnapshot], staleGenerations: [HostEndpoint.Identifier: UUID],
+        timeout: Duration = timeout, interval: Duration = .milliseconds(250)
+    ) async -> Self? {
+        let deadline = ContinuousClock.now + timeout
+        while !Task.isCancelled {
+            let timedOut = ContinuousClock.now >= deadline
+            if let outcome = outcome(for: hosts(), staleGenerations: staleGenerations, timedOut: timedOut) {
+                return outcome
+            }
+            try? await Task.sleep(for: interval)
+        }
+        return nil
+    }
+
     public var message: String {
         switch self {
         case .checking: "Checking the Mac connection…"
@@ -53,13 +75,14 @@ public enum StationConnectionCheck: Equatable, Sendable {
         case .failed(let host, let reason): "\(host) could not connect: \(reason)"
         case .unreachable(let host):
             "\(host) did not answer. Check that it is awake, on this network and running Hailing Station."
+        case .disconnected(let host): "\(host) is disconnected. Connect it in Mac Setup."
         }
     }
 
     public var isProblem: Bool {
         switch self {
         case .checking, .connected: false
-        case .noDestinations, .failed, .unreachable: true
+        case .noDestinations, .failed, .unreachable, .disconnected: true
         }
     }
 
@@ -69,7 +92,8 @@ public enum StationConnectionCheck: Equatable, Sendable {
         case .noDestinations: 1
         case .failed: 2
         case .unreachable: 3
-        case .checking: 4
+        case .disconnected: 4
+        case .checking: 5
         }
     }
 }

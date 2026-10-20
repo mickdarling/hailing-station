@@ -42,6 +42,7 @@ final class DestinationSetupUITests: XCTestCase {
         url.tap()
         url.typeText(String(repeating: XCUIKeyboardKey.delete.rawValue, count: 30) + "ws://127.0.0.1:9")
         app.buttons["Add Mac"].tap()
+        app.buttons["Connect"].firstMatch.tap()
         app.navigationBars["Mac Setup"].buttons.element(boundBy: 0).tap()
 
         let check = app.buttons["station.check-connection"]
@@ -54,9 +55,20 @@ final class DestinationSetupUITests: XCTestCase {
             XCTWaiter.wait(for: [XCTNSPredicateExpectation(predicate: finished, object: result)], timeout: 20),
             .completed
         )
-        // Names the Mac it checked. A simulator with a remembered destination checks that Mac instead.
-        XCTAssertTrue(result.label.contains("Mac"), result.label)
+        // A named problem, never success, for a Mac at an unreachable address. A simulator with a remembered
+        // destination checks that Mac instead, so the name is not asserted.
+        let problems = ["did not answer", "could not connect"]
+        XCTAssertTrue(problems.contains { result.label.contains($0) }, result.label)
         XCTAssertTrue(app.buttons["station.setup-mac"].exists)
+
+        // Leaving for Mac Setup mid-check and coming back leaves the check idle, never spinning (#385 review).
+        check.tap()
+        app.buttons["station.setup-mac"].tap()
+        XCTAssertTrue(app.navigationBars["Mac Setup"].waitForExistence(timeout: 5))
+        app.navigationBars["Mac Setup"].buttons.element(boundBy: 0).tap()
+        XCTAssertTrue(check.waitForExistence(timeout: 5))
+        XCTAssertTrue(check.isEnabled)
+        XCTAssertFalse(app.staticTexts["station.connection-check-result"].exists)
     }
 
     @MainActor

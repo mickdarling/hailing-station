@@ -35,7 +35,11 @@ struct StationConnectionCheckView: View {
                 .font(.subheadline)
             }
         }
-        .onDisappear { check?.cancel() }
+        .onDisappear {
+            // A cancelled check goes back to idle: the station keeps this state while Mac Setup is pushed (#385).
+            check?.cancel()
+            if result == .checking { result = nil }
+        }
     }
 
     @ViewBuilder
@@ -65,21 +69,12 @@ struct StationConnectionCheckView: View {
             connections.snapshots[id].map { (id, $0.connectionGeneration) }
         })
         check = Task { @MainActor in
-            for id in ids { await connections.connect(id) }
-            // Hosts already retrying skip their backoff and reconnect now; a ready host is pinged.
-            await connections.sceneBecameActive()
-            let deadline = ContinuousClock.now + StationConnectionCheck.timeout
-            while !Task.isCancelled {
-                let hosts = ids.compactMap { connections.snapshots[$0] }
-                let timedOut = ContinuousClock.now >= deadline
-                if let outcome = StationConnectionCheck.outcome(
-                    for: hosts, staleGenerations: stale, timedOut: timedOut
-                ) {
-                    result = outcome
-                    return
-                }
-                try? await Task.sleep(for: .milliseconds(250))
-            }
+            // Only the Macs checked: retrying ones skip their backoff, a ready one is pinged, a disconnected one stays.
+            await connections.checkConnection(ids)
+            let outcome = await StationConnectionCheck.wait(
+                for: { ids.compactMap { connections.snapshots[$0] } }, staleGenerations: stale
+            )
+            if !Task.isCancelled { result = outcome }
         }
     }
 }
