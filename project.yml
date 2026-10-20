@@ -62,6 +62,9 @@ targets:
     settings:
       base:
         TARGETED_DEVICE_FAMILY: ""
+        # XcodeGen would otherwise point INFOPLIST_FILE at the iOS plist found in the shared sources, merging
+        # UIBackgroundModes, UILaunchScreen and orientation keys into the Mac app.
+        INFOPLIST_FILE: ""
         GENERATE_INFOPLIST_FILE: YES
         INFOPLIST_KEY_CFBundleDisplayName: Hailing Station
         INFOPLIST_KEY_LSApplicationCategoryType: public.app-category.productivity
