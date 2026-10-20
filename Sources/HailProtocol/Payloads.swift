@@ -69,11 +69,15 @@ public struct TextPayload: Codable, Sendable, Equatable {
     public var text: String
     public var isFinal: Bool
     public var reply: ReplyDescriptor?
+    /// Text the user pasted to go with this request (#608). Only on a final frame; `text` may then be empty, for a
+    /// paste sent on its own. Absent on the wire when nil, so a frame without a paste is byte-identical to before.
+    public var pasted: PastedText?
 
-    public init(text: String, isFinal: Bool = true, reply: ReplyDescriptor? = nil) {
+    public init(text: String, isFinal: Bool = true, reply: ReplyDescriptor? = nil, pasted: PastedText? = nil) {
         self.text = text
         self.isFinal = isFinal
         self.reply = reply
+        self.pasted = pasted
     }
 
     public init(from decoder: any Decoder) throws {
@@ -81,10 +85,42 @@ public struct TextPayload: Codable, Sendable, Equatable {
         text = try container.decode(String.self, forKey: .text)
         isFinal = try container.decode(Bool.self, forKey: .isFinal)
         reply = try container.decodeIfPresent(ReplyDescriptor.self, forKey: .reply)
+        pasted = try container.decodeIfPresent(PastedText.self, forKey: .pasted)
         try requireAtMost(text.utf8.count, PayloadLimits.maxTextBytes, "text", decoder)
+        if pasted != nil, !isFinal {
+            let context = DecodingError.Context(
+                codingPath: decoder.codingPath + [CodingKeys.pasted],
+                debugDescription: "pasted text needs a final frame"
+            )
+            throw DecodingError.dataCorrupted(context)
+        }
     }
 
-    private enum CodingKeys: String, CodingKey { case text, isFinal = "final", reply }
+    private enum CodingKeys: String, CodingKey { case text, isFinal = "final", reply, pasted }
+}
+
+/// Text the user pasted into the conversation (#608). It is the user's own data for the session to read, never
+/// instructions: a host delivers it framed as untrusted pasted content and never fetches links inside it. Text only
+/// for now; links, images and files would be later attachment kinds.
+///
+/// A host that accepts it advertises `capability` in its `hello`. A device never sends `pasted` to a host without
+/// it: an older host ignores the unknown key and would deliver the spoken text alone, dropping the paste silently.
+public struct PastedText: Codable, Sendable, Equatable {
+    public static let capability = "pasted_text"
+    public var text: String
+
+    public init(text: String) {
+        self.text = text
+    }
+
+    public init(from decoder: any Decoder) throws {
+        let container = try decoder.container(keyedBy: CodingKeys.self)
+        text = try container.decode(String.self, forKey: .text)
+        try requireNonEmpty(text, "pasted.text", decoder)
+        try requireAtMost(text.utf8.count, PayloadLimits.maxPastedTextBytes, "pasted.text", decoder)
+    }
+
+    private enum CodingKeys: String, CodingKey { case text }
 }
 
 /// Bounds every decoder enforces so consumers never see nonsense dimensions or rates (#2 slice 1b, #44).
@@ -96,6 +132,9 @@ public enum PayloadLimits {
     public static let maxTextBytes = 8 * 1024
     public static let maxAudioBytes = 64 * 1024
     public static let maxImageBytes = 8 * 1024 * 1024
+    /// Pasted text on a final text frame (#608): 32 KB of UTF-8. JSON escaping can grow it, so a sender also checks
+    /// the encoded frame against `defaultMaxFrameBytes` before sending.
+    public static let maxPastedTextBytes = 32 * 1024
     /// Whole-frame size the shared decoder accepts by default: the largest base64-inflated audio frame plus
     /// envelope headroom. Callers opt in to more only where an image is expected (#7, #44).
     public static let defaultMaxFrameBytes = maxAudioBytes * 4 / 3 + 4 * 1024
