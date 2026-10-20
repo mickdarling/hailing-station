@@ -42,10 +42,11 @@ public enum PastedContent {
     public static let agentOnlyRefusal = "pastes go only to agent sessions"
 
     /// Whether a target of adapter `kind` may receive a paste: only a known agent session. The Codex app-server
-    /// adapter starts an agent by construction. A tmux pane may be a raw shell, and no adapter here says otherwise
-    /// yet, so tmux and every unknown kind are refused (fail closed).
+    /// adapter starts an agent by construction. A tmux pane may be a raw shell, so the tmux adapter pastes only when
+    /// the pane's foreground command is a known agent, checked in the same tmux command as the paste
+    /// (`TmuxAdapter.pasteToAgent`). Every other kind is refused (fail closed).
     public static func acceptsPaste(targetKind kind: String) -> Bool {
-        kind == "codex-owned"
+        kind == "codex-owned" || kind == "tmux"
     }
 
     /// The largest framed line a target of adapter `kind` takes. The Codex app-server and diagnostic adapters take

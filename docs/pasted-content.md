@@ -34,11 +34,16 @@ byte-identical to before.
 `HostSession` frames it with `PastedContent.frame(spoken:pasted:limit:)` before anything else sees the text, so the
 authorized input is exactly the line the host sanitises and delivers.
 
-**Pastes go only to agent sessions.** A raw shell pane must never receive a paste. Today only the Codex app-server
-adapter (`codex-owned`) is known to be an agent session. tmux panes can be shells, and nothing yet tells an agent
-pane from a shell, so a paste to a tmux target, or to any unknown kind, is refused with
-`pastes go only to agent sessions`. Spoken text to those targets is unchanged. Classifying tmux panes (for example
-by the pane's current command) is a follow-up.
+**Pastes go only to agent sessions.** A raw shell pane must never receive a paste.
+- The Codex app-server adapter (`codex-owned`) runs an agent by construction.
+- A tmux pane takes a paste only while its foreground command (`#{pane_current_command}`) is `claude`, `claude.exe`
+  (the native Claude Code build, as tmux 3.5 reports it) or `codex`. A shell, `node` or anything else is refused. The
+  check runs inside the tmux server in the same command as the paste (`if-shell -F ... 'paste-buffer ...'`), so there
+  is no gap between checking and pasting on haild's side. A refused paste puts nothing in the pane, deletes its buffer
+  and leaves the pane usable for spoken text.
+- Every other kind (`tmux-reply`, `diagnostic-reply`, anything unknown) is refused.
+
+The refusal is `pastes go only to agent sessions`. Spoken text to those targets is unchanged.
 
 Every adapter takes one line per Enter, so the paste becomes a single line, block first, spoken request last:
 

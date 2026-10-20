@@ -162,9 +162,7 @@ extension TmuxAdapter {
                 throw AdapterError.deliveryFailed("unsubmitted text appeared in the input of pane \(target)")
             }
             try abandoned.check()
-            pasting()
-            let paste = ["paste-buffer", "-p", "-d", "-b", buffer, "-t", session.paneID]
-            try await tmux(paste, failure: AdapterError.deliveryFailed)
+            try await pasteBuffer(buffer, holding: text, into: session.paneID, pasting: pasting)
             return fresh
         } catch {
             _ = try? await runner.run(tmuxPath, Self.baseArguments(socket: socket) + ["delete-buffer", "-b", buffer])

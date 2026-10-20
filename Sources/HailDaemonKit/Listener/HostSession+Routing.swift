@@ -121,6 +121,9 @@ extension HostSession {
                 if let owner { replyRequests[owner.context.id] = nil }
                 return .confirmationRequired
             }
+        } catch AdapterError.deliveryFailed(let message) where message == PastedContent.agentOnlyRefusal {
+            // The tmux pane was not running an agent (#608): said plainly, as a paste refusal the device keeps.
+            return .refused(.notAllowed, PastedContent.agentOnlyRefusal)
         } catch {
             return .refused(deliveryCode(error), "target action was refused")
         }
