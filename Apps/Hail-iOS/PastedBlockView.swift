@@ -13,8 +13,13 @@ extension ConversationChatView {
                 .italic(entry.overheard)
         }
         if isYou, !entry.overheard, let pasted = entry.pasted {
-            PastedBlockView(text: pasted)
+            PastedBlockView(text: pasted, state: entry.pasteState)
         }
+    }
+
+    /// What Copy, Share and Select Text act on: the spoken words, or the paste on a paste-only turn.
+    static func copyable(_ entry: ConversationEntry) -> String {
+        entry.text.isEmpty ? entry.pasted ?? "" : entry.text
     }
 
     @ViewBuilder
@@ -35,7 +40,17 @@ extension ConversationChatView {
 /// fetched.
 struct PastedBlockView: View {
     let text: String
+    /// Pending until a reply for the destination arrives, or refused with the Mac's reason.
+    var state: ConversationEntry.PasteState?
     @State private var expanded = false
+
+    private var stateLine: String? {
+        switch state {
+        case .pending: "Waiting for the Mac"
+        case .refused(let reason): "Not taken: \(reason)"
+        case .delivered, nil: nil
+        }
+    }
 
     private var isLong: Bool { PastedDraft.isLong(text) }
 
@@ -51,6 +66,15 @@ struct PastedBlockView: View {
                 .font(.callout.monospaced())
                 .foregroundStyle(.primary)
                 .frame(maxWidth: .infinity, alignment: .leading)
+                // VoiceOver reads the whole paste as the value, collapsed or not.
+                .accessibilityLabel("Pasted text")
+                .accessibilityValue(text)
+            if let stateLine {
+                Text(stateLine)
+                    .font(.caption)
+                    .foregroundStyle(state == .pending ? Color.secondary : Color.red)
+                    .accessibilityIdentifier("station.chat.paste.state")
+            }
             if isLong {
                 Button(expanded ? "Show Less" : "Show All") {
                     withAnimation(.easeOut(duration: 0.2)) { expanded.toggle() }
@@ -62,8 +86,7 @@ struct PastedBlockView: View {
         }
         .padding(10)
         .background(.background, in: RoundedRectangle(cornerRadius: 12, style: .continuous))
-        .accessibilityElement(children: .combine)
-        .accessibilityLabel("Pasted text")
+        .accessibilityElement(children: .contain)
         .accessibilityIdentifier("station.chat.paste")
     }
 }
