@@ -725,6 +725,24 @@ class ReplyCLITests(unittest.TestCase):
                     self.assertEqual(result.returncode, 1, result.stderr)
                     self.assertIn("metadata", result.stderr)
                     self.assertNotIn("socket", result.stderr.lower())
+            # Within the 16 KiB cap, but six bytes each once JSON-escaped: over the whole-frame cap (#606).
+            escaped = "\x01" * (16 * 1024)
+            link = Path(scratch) / "link.md"
+            link.symlink_to(Path(scratch) / "big.md")
+            for name, arguments in {
+                "over the frame cap": ["--text", "x", "--metadata", escaped],
+                "spoken over the frame cap": ["--say", "x", "--metadata", escaped],
+                "symlink": ["--text", "x", "--metadata-file", str(link)],
+            }.items():
+                with self.subTest(name):
+                    result = subprocess.run(
+                        [str(HAILD), "reply", "tmux:test", "--host", "mac-test", *arguments,
+                         "--socket", "/nonexistent/hail-test.sock"],
+                        cwd=REPO, capture_output=True, text=True, timeout=15, check=False,
+                    )
+                    self.assertEqual(result.returncode, 1, result.stderr)
+                    self.assertTrue("metadata" in result.stderr or "frame" in result.stderr, result.stderr)
+                    self.assertNotIn("socket", result.stderr.lower())
             twice = subprocess.run(
                 [str(HAILD), "reply", "tmux:test", "--host", "mac-test", "--text", "x", "--metadata", "a",
                  "--metadata-file", str(big), "--socket", "/nonexistent/hail-test.sock"],

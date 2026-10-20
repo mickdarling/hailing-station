@@ -154,6 +154,33 @@ private func requireWithinAudioBound(_ file: URL, sampleRate: Int, paced: Bool, 
 
 private let pcmSegmentBytes = 48 * 1_024
 
+/// The reply's text frame, carrying any metadata (#606); nil when the reply has no text.
+private func textFrame(_ options: ReplyOptions, descriptor: ReplyDescriptor) -> Frame? {
+    options.text.map { text in
+        Frame(
+            timestamp: replyTimestamp(), target: options.target, source: options.host,
+            payload: .text(TextPayload(text: text, reply: descriptor, metadata: options.metadata))
+        )
+    }
+}
+
+/// #606: JSON escaping can grow text and metadata within their byte caps past the whole-frame cap (a control
+/// character is six bytes on the wire). Checked on a stand-in frame of the same shape (UUIDs and a millisecond
+/// timestamp encode at fixed widths) before anything is sent, and before a spoken reply detaches.
+private func requireTextFrameFits(_ options: ReplyOptions) throws {
+    let descriptor = ReplyDescriptor(
+        id: UUID(), hostID: options.host, targetID: options.target,
+        audioStreamID: options.pcm16 != nil || options.say != nil ? UUID() : nil, requestID: options.requestID
+    )
+    guard let frame = textFrame(options, descriptor: descriptor) else { return }
+    let size = try FrameCoding.encode(frame).count
+    guard size <= PayloadLimits.defaultMaxFrameBytes else {
+        throw ReplyCommandError.invalid(
+            "text and metadata encode to \(size) bytes; a frame holds at most \(PayloadLimits.defaultMaxFrameBytes)"
+        )
+    }
+}
+
 private func streamReply(_ options: ReplyOptions, rendererRoot: URL, pacing: ReplyStreamPacing) async throws {
     let streamID = (options.pcm16 != nil || options.say != nil) ? UUID() : nil
     let descriptor = ReplyDescriptor(
@@ -162,11 +189,7 @@ private func streamReply(_ options: ReplyOptions, rendererRoot: URL, pacing: Rep
     )
     var frames = 0, deliveries = 0
     RequestKeepAlive.begin(requestBound: options.requestID != nil)
-    if let text = options.text {
-        let frame = Frame(
-            timestamp: replyTimestamp(), target: options.target, source: options.host,
-            payload: .text(TextPayload(text: text, reply: descriptor, metadata: options.metadata))
-        )
+    if let frame = textFrame(options, descriptor: descriptor) {
         try await admit(audioBytes: 0, sampleRate: options.sampleRate, pacing: pacing)
         deliveries += try await ReplyBackground.submit(frame, socketURL: options.socket)
         frames += 1
@@ -215,6 +238,7 @@ private func replyOptions(_ arguments: ArraySlice<String>) throws -> ReplyOption
         throw ReplyCommandError.invalid("text exceeds \(PayloadLimits.maxTextBytes) bytes")
     }
     try options.requireSendableMetadata()
+    try requireTextFrameFits(options)
     if options.say != nil, options.sampleRate != 24_000 {
         throw ReplyCommandError.invalid("vbsay output is fixed at 24000 Hz")
     }
