@@ -16,7 +16,8 @@ Nothing below changes the running daemon or installed builds until a later slice
 
 ## The allow-list: `routes.json`
 
-The owner writes one file on the Mac. Routing is off when the file is absent.
+The owner writes one file on the Mac, by hand. The daemon only reads it and never writes, creates or rewrites it.
+Routing is off when the file is absent.
 
 ```json
 {"version": 1, "default": "tmux:hailing-test", "routes": [
@@ -45,18 +46,22 @@ The example is synthetic.
 
 `VoiceRoutes.match(_:names:)` reads the start of a request.
 
-1. It skips an optional greeting ("hey", "ok"). A route's spelling is tried first, then an optional addressing name
-   from RightyO's advertised names (e.g. "Jarvis"), then a route's spelling again. So a route may share a spelling
-   with an addressing name.
-2. It looks for a route's name or alias of up to three words, longest first. The name must end at a space or the
-   end of the text, after any of `, : ; . ! ? -`. So "Deck: add a slide" matches and "deck.md needs work" does not.
-3. The outcome is one of:
-   - `routed(route, text)`: the request goes to that route. `text` holds the words after the name, as said. The
+1. It skips an optional greeting ("hey", "ok").
+2. The request must then open with a route's name or alias of up to three words, longest first, followed by `,`,
+   `:` or `-` and then a space or the end. So "Deck: add a slide" and "Voice Work, check the build" route. "Deck is
+   still stopped", "Deck-building is next" and "deck.md needs work" do not: without the mark a name is just a word.
+3. A request that opens with an addressing name from RightyO's advertised names (e.g. "Jarvis") is addressed to
+   that name, and nothing after it re-routes it. "Jarvis, Deck, add a slide" goes where "Jarvis" goes, and
+   "Jarvis, deck is stopped" stays a request. A route may still use an addressing name as its own spelling, because
+   route spellings are tried first.
+4. The outcome is one of:
+   - `routed(route, text)`: the request goes to that route. `text` holds the words after the mark, as said. The
      input paths are expected to send the whole request as heard, so the session sees how it was addressed.
-   - `nothingToSay(route)`: the name alone, so there is nothing to send.
+   - `nothingToSay(route)`: the name alone ("Deck", "Deck?", "Deck:"), so there is nothing to send.
    - `unclear`: the opening words, followed directly by a comma, are within one edit per four letters of a spelling
      of at least five letters ("Voice Wok, …"). Nothing is sent: a misheard name must never land in the wrong
      session or fall back silently. A short name's misrecognitions ("Duck" for "Deck") belong in its `aliases`.
+     An addressing name is never unclear.
    - `unaddressed`: everything else, including a name in mid-sentence ("Can Voice Work look at this?"). The request
      goes unchanged to the target already chosen.
 

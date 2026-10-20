@@ -16,11 +16,10 @@ import Testing
 
     @Test(arguments: [
         ("Voice Work, check the build.", "tmux:voicework11", "check the build."),
-        ("voicework run the tests", "tmux:voicework11", "run the tests"),
+        ("voicework , run the tests", "tmux:voicework11", "run the tests"),
         ("Deck: add a slide on pricing", "tmux:deck", "add a slide on pricing"),
         ("Hey Deck - what's next?", "tmux:deck", "what's next?"),
-        ("Jarvis, Voice Work, open the issue", "tmux:voicework11", "open the issue"),
-        ("Hey RightyO, scratch, status please", "tmux:hailing-test", "status please"),
+        ("Okay scratch: status please", "tmux:hailing-test", "status please"),
         ("Hailing Scratch, are you there?", "tmux:hailing-test", "are you there?"),
         ("Voice Walk, look at the logs", "tmux:voicework11", "look at the logs")
     ])
@@ -32,27 +31,43 @@ import Testing
         #expect(route.target == target && words == text)
     }
 
+    /// A name is an address only when a mark follows it; anywhere else, or after an addressing name, it is a word.
     @Test(arguments: [
         "What's the build status?", "Jarvis, what's the build status?", "Check, the build is red",
         "Decks are stacked", "deck.md needs work", "Can Voice Work look at this?", "Ok", "",
-        "Please ask Deck to add a slide", "Work, voice the build"
+        "Please ask Deck to add a slide", "Work, voice the build", "Deck the halls", "Jarvis, deck is still stopped",
+        "Voice Work run the tests", "Deck-building is next", "Deck. Add a slide", "Jarvis, Voice Work, open it",
+        "Hey RightyO, scratch, status please", "Jarvis, Deck."
     ])
     func anythingElseIsUnaddressed(_ heard: String) throws {
         #expect(try Self.routes().match(heard, names: Self.names) == .unaddressed)
     }
 
     /// A misheard name that is no listed spelling sends nothing, rather than guessing or falling back.
-    @Test(arguments: ["Voice Wok, run it", "Jarvis, Voice Word, run it", "Hailing Scratcher, hi", "Vice Work, go"])
+    @Test(arguments: ["Voice Wok, run it", "Hey Voice Word, run it", "Hailing Scratcher, hi", "Vice Work, go"])
     func aNearMissFollowedByACommaIsUnclear(_ heard: String) throws {
         #expect(try Self.routes().match(heard, names: Self.names) == .unclear)
     }
 
-    @Test(arguments: ["Voice Wok run it", "Duck, quack", "Desk, please"])
-    func aNearMissWithoutACommaOrOfAShortNameIsUnaddressed(_ heard: String) throws {
+    @Test(arguments: ["Voice Wok run it", "Duck, quack", "Desk, please", "Jarvis, Voice Word, run it"])
+    func aNearMissWithoutACommaOfAShortNameOrAfterAnAddressingNameIsUnaddressed(_ heard: String) throws {
         #expect(try Self.routes().match(heard, names: Self.names) == .unaddressed)
     }
 
-    @Test(arguments: ["Deck", "Jarvis, Deck.", "Hey deck - "])
+    /// A common-word name is the riskiest: only "Sales, …" addresses the session, not a sentence about sales.
+    @Test func aCommonWordNameRoutesOnlyWhenAddressed() throws {
+        let sales = VoiceRoutes.Route(target: "tmux:sales", name: "Sales")
+        let routes = try VoiceRoutes(defaultTarget: Self.scratch.target, routes: [Self.scratch, sales])
+        #expect(routes.match("Sales are slow this week", names: Self.names) == .unaddressed)
+        #expect(routes.match("Jarvis, sales are slow", names: Self.names) == .unaddressed)
+        #expect(routes.match("Sales, how is the week?", names: Self.names) == .routed(sales, text: "how is the week?"))
+    }
+
+    @Test func anAddressingNameIsNeverANearMiss() throws {
+        #expect(try Self.routes().match("Voice Word, run it", names: ["voiceword"]) == .unaddressed)
+    }
+
+    @Test(arguments: ["Deck", "Deck?", "Hey deck - ", "Deck:"])
     func aNameAloneHasNothingToSay(_ heard: String) throws {
         #expect(try Self.routes().match(heard, names: Self.names) == .nothingToSay(Self.deck))
     }

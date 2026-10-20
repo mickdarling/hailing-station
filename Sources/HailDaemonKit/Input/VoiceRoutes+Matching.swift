@@ -15,38 +15,39 @@ extension VoiceRoutes {
         case unclear
     }
 
-    /// Marks that may follow a name: "Voice Work, …", "Deck: …", "Deck - …".
-    static let separators = ",:;.!?-"
+    /// The marks that make a name an address: "Voice Work, …", "Deck: …", "Deck - …". Each must be followed by a
+    /// space or the end, so "Deck-building …" stays a request.
+    static let marks: Set<Character> = [",", ":", "-"]
 
-    /// Where `heard` goes. After an optional greeting ("hey", "ok") and an optional addressing name from `names`
-    /// (keyed, as `RightyoAddressing.key`, e.g. "jarvis"), a route's name or alias, longest first and up to three
-    /// words, must end at a space or the end, after any separators ("Deck: …", but not "deck.md"). A route's own
-    /// spelling is tried before an addressing name, so a route may share a spelling with one. A near miss of a
-    /// route's name counts only when a comma follows it, so ordinary openings such as "Check, …" stay requests.
+    /// Where `heard` goes. After an optional greeting ("hey", "ok"), the request must open with a route's name or
+    /// alias (longest first, up to three words) followed by one of `marks`. Without the mark, a name is just a
+    /// word: "Deck is still stopped" or "Sales are slow" stay requests. A name with nothing after it, at most a
+    /// final ".", "?" or "!", has nothing to say. A request opening with an addressing name from `names` (keyed,
+    /// as `RightyoAddressing.key`, e.g. "jarvis") that is not itself a route's spelling is addressed to that name
+    /// and is never re-routed or called unclear, whatever follows: "Jarvis, Deck, …" goes where "Jarvis" goes.
+    /// A near miss of a route's name counts only when a comma follows it, so ordinary openings such as
+    /// "Check, …" stay requests.
     public func match(_ heard: String, names: Set<String> = []) -> Match {
         let words = VoiceDestinations.words(heard)
-        var index = 0
-        if index < words.count, VoiceMute.greetings.contains(words[index].text) { index += 1 }
-        if let found = named(heard, words, at: index) { return found }
-        if let width = (1...3).first(where: { width in
-            index + width < words.count && names.contains(words[index..<index + width].map(\.key).joined())
-        }) {
-            index += width
-            if let found = named(heard, words, at: index) { return found }
+        let start = words.first.map { VoiceMute.greetings.contains($0.text) } == true ? 1 : 0
+        if let found = named(heard, words, at: start) { return found }
+        let addressed = (1...3).contains { width in
+            start + width <= words.count && names.contains(words[start..<start + width].map(\.key).joined())
         }
-        return nearMiss(heard, words, at: index) ? .unclear : .unaddressed
+        return !addressed && nearMiss(heard, words, at: start) ? .unclear : .unaddressed
     }
 
-    /// The route spelled by the words at `start`, and what follows it; nil when no spelling starts there.
+    /// The route addressed by the words at `start`, and what follows it; nil when no spelling starts there or the
+    /// spelling found is not followed by a mark or the end.
     private func named(_ heard: String, _ words: [VoiceDestinations.Word], at start: Int) -> Match? {
         for width in stride(from: 3, through: 1, by: -1) where start + width <= words.count {
             guard let route = keyed[words[start..<start + width].map(\.key).joined()] else { continue }
-            let end = words[start + width - 1].range.upperBound
-            let after = heard[end...].drop { Self.separators.contains($0) }
-            guard after.first?.isWhitespace ?? true else { return nil }
-            let text = heard[end...].drop { $0.isWhitespace || Self.separators.contains($0) }
-                .trimmingCharacters(in: .whitespacesAndNewlines)
-            return text.isEmpty ? .nothingToSay(route) : .routed(route, text: text)
+            let rest = heard[words[start + width - 1].range.upperBound...].drop { $0.isWhitespace }
+            if let mark = rest.first, Self.marks.contains(mark), rest.dropFirst().first?.isWhitespace ?? true {
+                let text = rest.dropFirst().trimmingCharacters(in: .whitespacesAndNewlines)
+                return text.isEmpty ? .nothingToSay(route) : .routed(route, text: text)
+            }
+            return rest.allSatisfy { $0.isWhitespace || ".?!".contains($0) } ? .nothingToSay(route) : nil
         }
         return nil
     }
