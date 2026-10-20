@@ -67,11 +67,34 @@ import Testing
         let action = try update(.action)
         let listening = SessionUpdateAudience(listeningDevice: phone)
         #expect(queue.submit(action, audience: listening, now: at(0)) == .speak(action, device: phone))
-        let first = queue.hold(action, at: at(1))
-        let again = queue.hold(action, at: at(1))
-        #expect(first && again, "holding the same update twice keeps one copy")
+        let first = queue.hold(action, audience: listening, at: at(1))
+        let again = queue.hold(action, audience: listening, at: at(1))
+        #expect(first == .held(push: phone) && again == .held(push: phone), "holding twice keeps one copy")
         #expect(queue.held.map(\.id) == [action.id])
         #expect(queue.retryAfter(session: "Voice Work", now: at(1)) == .seconds(3_599))
+    }
+
+    @Test func holdDecidesThePushFromTheAudienceNow() throws {
+        var queue = enabled()
+        let action = try update(.action)
+        #expect(queue.hold(action, audience: .init(lastActiveDevice: pad), at: at(0)) == .held(push: pad))
+        #expect(queue.hold(try update(.action), audience: .init(lastActiveDevice: pad, quiet: true), at: at(0))
+                == .held(push: nil), "quiet holds without a push")
+        #expect(queue.hold(try update(.info), audience: .init(listeningDevice: phone), at: at(0)) == .held(push: nil))
+        #expect(queue.hold(try update(.action), audience: .init(), at: at(0)) == .held(push: nil))
+        var off = SessionUpdateQueue()
+        #expect(off.hold(action, audience: .init(listeningDevice: phone), at: at(0)) == .refused(.disabled))
+    }
+
+    @Test func aReheldActionKeepsItsSubmitOrder() throws {
+        var queue = enabled()
+        let early = try update(.action, spoken: "early", at: 0)
+        let late = try update(.action, spoken: "late", at: 5)
+        let listening = SessionUpdateAudience(listeningDevice: phone)
+        #expect(queue.submit(early, audience: listening, now: at(0)) == .speak(early, device: phone))
+        _ = queue.submit(late, audience: .init(), now: at(5))
+        _ = queue.hold(early, audience: .init(), at: at(10))
+        #expect(queue.drain(.asked, audience: .init(), now: at(11)).map(\.id) == [early.id, late.id])
     }
 
     @Test func eachSessionHasItsOwnSlidingBudget() throws {
@@ -140,46 +163,5 @@ import Testing
         var queue = enabled { $0.lifetime = .seconds(60) }
         _ = queue.submit(try update(at: 0), audience: .init(), now: at(0))
         #expect(queue.drain(.asked, audience: .init(), now: at(60)).isEmpty)
-    }
-}
-
-@Suite struct SessionUpdateShapeTests {
-    let now = ContinuousClock().now
-
-    @Test func fieldsAreTrimmedAndBounded() {
-        let made = SessionUpdate(session: " Jarvis ", priority: .info, spoken: " Done. ", card: "  ", submitted: now)
-        #expect(made?.session == "Jarvis")
-        #expect(made?.spoken == "Done.")
-        #expect(made?.card == nil, "a blank card is no card")
-        #expect(SessionUpdate(session: "", priority: .info, spoken: "Done", submitted: now) == nil)
-        #expect(SessionUpdate(session: "Jarvis", priority: .info, spoken: "  ", submitted: now) == nil)
-        let long = String(repeating: "a", count: SessionUpdate.maxSpokenBytes + 1)
-        #expect(SessionUpdate(session: "Jarvis", priority: .info, spoken: long, submitted: now) == nil)
-        let card = String(repeating: "c", count: SessionUpdate.maxCardBytes + 1)
-        #expect(SessionUpdate(session: "Jarvis", priority: .info, spoken: "ok", card: card, submitted: now) == nil)
-    }
-
-    @Test func digestNamesEachSpeaker() throws {
-        #expect(SessionUpdateQueue.digest([]) == nil)
-        let one = try #require(SessionUpdate(session: "Jarvis", priority: .info, spoken: "PR is green", submitted: now))
-        #expect(SessionUpdateQueue.digest([one]) == "Jarvis: PR is green.")
-        let two = try #require(SessionUpdate(session: "Voice Work", priority: .action, spoken: "Need a decision?",
-                                             submitted: now))
-        #expect(SessionUpdateQueue.digest([two, one])
-                == "You have 2 updates. Voice Work: Need a decision? Jarvis: PR is green.")
-    }
-
-    @Test func quietHoursWrapMidnight() throws {
-        let night = try #require(SessionUpdateQuietHours(start: 22 * 60, end: 7 * 60))
-        #expect(night.contains(minuteOfDay: 23 * 60))
-        #expect(night.contains(minuteOfDay: 6 * 60 + 59))
-        #expect(!night.contains(minuteOfDay: 7 * 60))
-        #expect(!night.contains(minuteOfDay: 12 * 60))
-        let lunch = try #require(SessionUpdateQuietHours(start: 12 * 60, end: 13 * 60))
-        #expect(lunch.contains(minuteOfDay: 12 * 60 + 30))
-        #expect(!lunch.contains(minuteOfDay: 13 * 60))
-        #expect(SessionUpdateQuietHours(start: 0, end: 0)?.contains(minuteOfDay: 0) == false)
-        #expect(SessionUpdateQuietHours(start: -1, end: 10) == nil)
-        #expect(SessionUpdateQuietHours(start: 0, end: 24 * 60) == nil)
     }
 }

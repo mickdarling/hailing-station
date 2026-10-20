@@ -46,10 +46,11 @@ import Testing
             await ready.session.receive(paste("what does this mean", pasted, ready))
         }
         #expect(result.frames.isEmpty)
-        let framed = try PastedContent.frame(spoken: "what does this mean", pasted: pasted)
-        let expected = PastedContent.begin + " Validation: contains sudo, delete. "
-            + framed.dropFirst(PastedContent.begin.count + 1)
-        #expect(await ready.adapter.deliveries.map(\.text) == [expected])
+        let framed = try PastedContentTests.frame(spoken: "what does this mean", pasted: pasted)
+        let begin = PastedContent.begin(PastedContentTests.token)
+        let expected = begin + " Validation: contains sudo, delete. " + framed.dropFirst(begin.count + 1)
+        let delivered = await ready.adapter.deliveries.map { PastedContentTests.masked($0.text) }
+        #expect(delivered == [PastedContentTests.masked(expected)])
         #expect(try PastedContentTests.hostAddedTextIsInert(expected))
     }
 
@@ -119,9 +120,10 @@ import Testing
 
     /// The note sits after the begin marker, outside the body, and a rule name cannot add markup or shell syntax.
     @Test func theValidationNoteIsPlainWordsOutsideTheBody() throws {
-        let framed = try PastedContent.frame(spoken: "", pasted: "body")
+        let framed = try PastedContentTests.frame(spoken: "", pasted: "body")
         let flagged = PastedContent.flagged(framed, ["delete", #"x"; touch PWNED $(y) <z>"#, ""])
-        #expect(flagged.hasPrefix(PastedContent.begin + " Validation: contains delete, x touch PWNED y z. "))
+        let begin = PastedContent.begin(PastedContentTests.token)
+        #expect(flagged.hasPrefix(begin + " Validation: contains delete, x touch PWNED y z. "))
         #expect(try PastedContentTests.hostAddedTextIsInert(flagged))
         #expect(PastedContent.parts(of: flagged)?.body == "body")
         #expect(PastedContent.flagged(framed, []) == framed)

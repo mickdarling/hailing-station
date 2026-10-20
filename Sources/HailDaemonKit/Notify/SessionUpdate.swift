@@ -10,7 +10,8 @@ public enum SessionUpdatePriority: String, Codable, Sendable, CaseIterable {
 }
 
 /// One update a local session asks to give the user without a pending request (#609). The session name is what the
-/// device shows as the speaker (#371): a target id or its display name, never anything more sensitive.
+/// device shows as the speaker (#371) and the session's rate-limit key: the registry's target id, never text the
+/// caller supplied, so a session can neither dodge its budget nor pose as another.
 public struct SessionUpdate: Sendable, Equatable, Identifiable {
     public typealias Instant = ContinuousClock.Instant
 
