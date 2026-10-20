@@ -71,6 +71,12 @@ compare this with the open issues [Hail: the user pasted the block that follows.
   out of its match budget is not reported (a timeout is not a match), so a long benign paste is never blocked by load;
   on the spoken part a timeout still fails closed. A paste is never executed or treated as a command: it reaches the
   target only as data inside its block. Showing the flag on the device needs a reply field and is a follow-up.
+- The flag is advisory, not a gate. It tells the receiving session what the paste contains and changes nothing about
+  what that session may do; the block is untrusted data either way.
+- A read-back for a confirm-tier target, and the `confirmedHash` that confirms it, cover the line as delivered, flag
+  included. The host computes both, so a client only echoes the hash it was given. A policy change between the
+  read-back and the confirmation can change the flag, and then the confirmation fails closed, as any policy change
+  already makes it do.
 - A refused paste delivers nothing and answers `malformed` with a plain reason, such as
   `pasted text contains a bidirectional control; remove it and paste again`.
 - Nothing in the host opens, fetches or previews a link inside a paste.
