@@ -86,7 +86,7 @@ extension RootView {
             .frame(maxWidth: .infinity, maxHeight: fit.fitsOneScreen ? .infinity : nil, alignment: .top)
             side {
                 VStack(spacing: 18) {
-                    ambientListeningSurface
+                    listeningSurfaces
                     if fit.isWide { chatSurface }
                 }
                 .frame(maxWidth: regular ? (fit.isWide ? 420 : 360) : .infinity, alignment: .top)
@@ -103,6 +103,17 @@ extension RootView {
                 .frame(maxWidth: regular ? (fit.isWide ? 280 : 360) : .infinity, alignment: .top)
             }
         }
+    }
+
+    /// Private coaching, then ambient listening. The Mac drafts put their coaching card in this slot (#504); iPhone
+    /// and iPad show it disabled until #604 lands (#611).
+    @ViewBuilder
+    private var listeningSurfaces: some View {
+        // The Mac shows no coaching card until its own private coaching card is ported (#266).
+        #if !os(macOS)
+        CoachingUnavailableCard()
+        #endif
+        ambientListeningSurface
     }
 
     /// The chat for the confirmed destination. Without one, the latest reply keeps its own card so its playback
