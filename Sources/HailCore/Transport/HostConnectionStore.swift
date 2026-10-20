@@ -34,7 +34,7 @@ public final class HostConnectionStore {
     public private(set) var ownerVoiceUnrecognized: Set<HostEndpoint.Identifier> = []
     /// Each host's last doctor summary (#614), asked for when its connection reaches ready and on request from Mac
     /// Setup; kept until the host is removed, so a host that drops still shows what it last reported.
-    public private(set) var health: [HostEndpoint.Identifier: HostHealth] = [:]
+    public private(set) var health: [HostEndpoint.Identifier: HostHealthReading] = [:]
     /// This device's current input route kind for `ambient_input` (rightyo#164); replaceable in tests.
     @ObservationIgnored var inputRoute: @MainActor () async -> String? = { HostConnectionStore.currentInputRoute() }
 
@@ -223,7 +223,8 @@ extension HostConnectionStore {
                 text, owner: speaker == "owner", name: name, endpointID: event.endpointID, targetID: targetID
             )
         case .control(.healthReport(let report)):
-            health[event.endpointID] = report
+            let generation = snapshots[event.endpointID]?.connectionGeneration
+            health[event.endpointID] = HostHealthReading(report: report, connectionGeneration: generation)
         case .control(.ownerVoice(let state)):
             if state == "unrecognized" {
                 ownerVoiceUnrecognized.insert(event.endpointID)

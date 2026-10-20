@@ -22,10 +22,15 @@ import Testing
         try await waitUntil { try await healthRequests(socket) == 1 }
         try await socket.push(FrameCoding.encode(Frame(timestamp: 1, source: "host",
                                                        payload: .control(.healthReport(Self.report)))))
-        try await waitUntil { await MainActor.run { store.health[endpoint.id] == Self.report } }
+        try await waitUntil { await MainActor.run { store.health[endpoint.id]?.report == Self.report } }
+        #expect(store.health[endpoint.id]?.isStale(for: store.snapshots[endpoint.id]) == false)
         #expect(store.replyFrames.isEmpty) // a notice, never a reply
         store.requestHealth(endpoint.id)
         try await waitUntil { try await healthRequests(socket) == 2 }
+        await store.disconnect(endpoint.id)
+        try await waitUntil { await MainActor.run { store.snapshots[endpoint.id]?.state != .ready } }
+        // Kept after the connection ends, but marked as from an earlier connection.
+        #expect(store.health[endpoint.id]?.isStale(for: store.snapshots[endpoint.id]) == true)
         await store.remove(endpoint.id)
         #expect(store.health[endpoint.id] == nil)
     }

@@ -1,3 +1,4 @@
+public import Foundation
 public import HailProtocol
 
 extension HostConnection {
@@ -6,6 +7,19 @@ extension HostConnection {
     public func requestHealth() async throws {
         try requireReady(capability: HostHealth.capability)
         try await send(.health, generation: generation)
+    }
+}
+
+/// A host's last health summary (#614) and the connection it came on, so Mac Setup can say when it is from an
+/// earlier connection rather than showing an old answer as current.
+public struct HostHealthReading: Equatable, Sendable {
+    public let report: HostHealth
+    public let connectionGeneration: UUID?
+
+    /// True unless `snapshot` is ready on the same connection the report came on.
+    public func isStale(for snapshot: HostConnectionSnapshot?) -> Bool {
+        guard let snapshot, snapshot.state == .ready else { return true }
+        return snapshot.connectionGeneration != connectionGeneration
     }
 }
 

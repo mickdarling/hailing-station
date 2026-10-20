@@ -93,8 +93,12 @@ struct ConnectivityLabView: View {
     /// The host's doctor summary (#614), read-only, when it answers `health`; refreshable while connected.
     @ViewBuilder
     private func healthSummary(_ host: HostConnectionSnapshot) -> some View {
-        if let health = store.health[host.id] {
+        if let reading = store.health[host.id] {
+            let health = reading.report
             VStack(alignment: .leading, spacing: 4) {
+                if reading.isStale(for: host) {
+                    Text("From an earlier connection").font(.caption2.weight(.semibold)).foregroundStyle(.secondary)
+                }
                 Label(health.headline, systemImage: health.healthy ? "checkmark.seal" : "exclamationmark.triangle")
                     .font(.caption.weight(.semibold))
                     .foregroundStyle(health.healthy ? Color.green : Color.orange)
