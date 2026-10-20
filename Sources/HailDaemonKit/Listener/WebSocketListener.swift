@@ -528,6 +528,8 @@ public final class AmbientRightyoRouter: AmbientAudioSink, AmbientListenerWiring
     fileprivate let log: @Sendable (WebSocketListenerEvent) -> Void
     /// Wakes the worker; signals coalesce, the events themselves are in `State.queue`.
     fileprivate let wake: AsyncStream<Void>.Continuation
+    /// Media mode state for devices (#612), sent one at a time in the order the mode changed.
+    fileprivate let mediaNotices = SerialTaskChain()
 
     public init(configuration: Configuration, log: @escaping @Sendable (WebSocketListenerEvent) -> Void = { _ in }) {
         (self.configuration, self.log) = (configuration, log)
@@ -1339,6 +1341,16 @@ extension AmbientRightyoRouter {
         }
         guard let reported else { return 0 }
         emit("ambient_media", connection: connection, detail: "on=\(on) reason=\(reason) reported=\(reported)")
+        // The device sees on only once a child took it, so it never shows a mode not in force; off always (#612).
+        if !on || reported > 0 {
+            let expires = on ? Int64((Date().timeIntervalSince1970 + timeout) * 1_000) : nil
+            let listener = state.withLock { $0.listener?.value }
+            mediaNotices.enqueue { [weak self, weak listener] in
+                let sent = await listener?.showMediaMode(on, reason: reason, expires: expires, connection: connection)
+                self?.emit("ambient_media_device", connection: connection,
+                           detail: "on=\(on) device=\(sent ?? "no_connection")")
+            }
+        }
         return reported
     }
 }
