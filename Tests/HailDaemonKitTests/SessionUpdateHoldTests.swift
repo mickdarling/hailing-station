@@ -58,3 +58,40 @@ import Testing
         #expect(Set(queue.held.map(\.id)) == [newer.id, incoming.id], "the oldest submitted went, not the first held")
     }
 }
+
+/// #609 review of #630: one session cannot crowd out the others, and a refusal for room costs no budget.
+@Suite struct SessionUpdateSessionCapTests {
+    let start = ContinuousClock().now
+
+    func at(_ seconds: Double) -> SessionUpdate.Instant { start + .seconds(seconds) }
+
+    func update(_ session: String, _ priority: SessionUpdatePriority = .info, at seconds: Double) throws
+        -> SessionUpdate {
+        try #require(SessionUpdate(session: session, priority: priority, spoken: "Done", submitted: at(seconds)))
+    }
+
+    @Test func aSessionAtItsCapDropsItsOwnOldestInfo() throws {
+        var queue = SessionUpdateQueue(policy: .init(enabled: true, perSessionLimit: 100, perSessionHeld: 2))
+        let other = try update("tmux:other", at: 0)
+        _ = queue.submit(other, audience: .init(), now: at(0))
+        let first = try update("tmux:busy", at: 1)
+        for each in [first, try update("tmux:busy", at: 2), try update("tmux:busy", at: 3)] {
+            #expect(queue.submit(each, audience: .init(), now: each.submitted) == .held(push: nil))
+        }
+        #expect(queue.held.count(where: { $0.session == "tmux:busy" }) == 2)
+        #expect(!queue.held.contains { $0.id == first.id }, "its own oldest went")
+        #expect(queue.held.contains { $0.id == other.id }, "another session's update is untouched")
+    }
+
+    @Test func aSessionFullOfActionIsRefusedWithoutSpendingBudget() throws {
+        var queue = SessionUpdateQueue(policy: .init(enabled: true, perSessionLimit: 3, perSessionHeld: 2))
+        for second in [0.0, 1] {
+            _ = queue.submit(try update("tmux:busy", .action, at: second), audience: .init(), now: at(second))
+        }
+        #expect(queue.submit(try update("tmux:busy", .action, at: 2), audience: .init(), now: at(2))
+                == .refused(.full))
+        #expect(queue.retryAfter(session: "tmux:busy", now: at(2)) == nil, "the refusal spent nothing")
+        #expect(queue.submit(try update("tmux:other", .action, at: 3), audience: .init(), now: at(3))
+                == .held(push: nil), "another session still has room")
+    }
+}
