@@ -121,6 +121,26 @@ import Testing
         #expect(table.truncated)
     }
 
+    /// A list crossing the block cap keeps the items it could not place as text, from the first one left out.
+    @Test func aListCutByTheBlockCapKeepsTheRestAsText() throws {
+        let items = (0..<450).map { "- item \($0)" }.joined(separator: "\n")
+        let blocks = MessageMarkdown.blocks(items + "\nTAIL")
+        #expect(blocks.count == MessageMarkdown.maxBlocks + 1)
+        guard case .paragraph(let rest) = try #require(blocks.last) else {
+            Issue.record("no remainder paragraph")
+            return
+        }
+        #expect(text(rest).hasPrefix("- item \(MessageMarkdown.maxBlocks)\n"))
+        #expect(text(rest).hasSuffix("- item 449\nTAIL"))
+    }
+
+    @Test func aLinkTargetOver2048BytesIsNotALink() {
+        let target = "https://example.com/" + String(repeating: "a", count: 2_048)
+        let shown = MessageMarkdown.inline("[long](\(target))")
+        #expect(links(shown).isEmpty)
+        #expect(text(shown).hasPrefix("long (https://example.com/"))
+    }
+
     @Test func deeplyNestedInputDoesNotRecurse() {
         let quotes = String(repeating: ">", count: 10_000) + " deep"
         let brackets = String(repeating: "[", count: 10_000) + "x"

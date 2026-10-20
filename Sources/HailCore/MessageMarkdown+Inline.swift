@@ -44,8 +44,9 @@ extension MessageMarkdown {
 
     private static func link(label: String, target: URL, _ attributes: AttributeContainer) -> AttributedString {
         let label = MessageLinks.visible(label)
-        guard let url = MessageLinks.webURL(target.absoluteString), !label.trimmingCharacters(in: .whitespaces).isEmpty
-        else {
+        // The #444 rules: a target over 2,048 bytes is never a link.
+        guard target.absoluteString.utf8.count <= 2_048, let url = MessageLinks.webURL(target.absoluteString),
+              !label.trimmingCharacters(in: .whitespaces).isEmpty else {
             // Not a web link: the label, then where it pointed, as plain text that opens nothing.
             return AttributedString("\(label) (\(target.absoluteString.prefix(200)))", attributes: attributes)
         }

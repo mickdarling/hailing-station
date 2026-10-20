@@ -5,6 +5,8 @@ extension MarkdownBlockParser {
     // MARK: Lists
 
     struct Item {
+        /// The item's first line, so a list cut by the block cap resumes there as readable text.
+        var line = 0
         var indent: Int
         var marker: String
         var text: String
@@ -27,11 +29,13 @@ extension MarkdownBlockParser {
 
     mutating func list(_ first: Item) {
         var items = [first]
+        items[0].line = index
         index += 1
         while index < lines.count {
             let line = lines[index]
             let trimmed = line.trimmingCharacters(in: .whitespaces)
-            if let item = Self.listItem(line) {
+            if var item = Self.listItem(line) {
+                item.line = index
                 items.append(item)
             } else if !trimmed.isEmpty, line.first == " " || line.first == "\t" {
                 items[items.count - 1].text += "\n" + trimmed // An indented continuation of the item above.
@@ -46,7 +50,10 @@ extension MarkdownBlockParser {
             while let last = indents.last, item.indent < last { indents.removeLast() }
             if indents.last.map({ item.indent > $0 }) ?? true { indents.append(item.indent) }
             let depth = min(indents.count - 1, MessageMarkdown.maxListDepth)
-            guard blocks.count < MessageMarkdown.maxBlocks else { return }
+            guard blocks.count < MessageMarkdown.maxBlocks else {
+                index = item.line // The rest of the list, from this item on, is kept as plain text by `parse`.
+                return
+            }
             blocks.append(.listItem(depth: depth, marker: item.marker, text: MessageMarkdown.inline(item.text)))
         }
     }
