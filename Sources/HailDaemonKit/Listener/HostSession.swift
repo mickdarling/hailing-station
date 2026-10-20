@@ -44,7 +44,8 @@ public struct ConnectionProbeAuthorizer: HostSessionAuthorizing {
 /// Ambient audio (#203) is admitted, and `stream_audio` advertised, only when a gate is supplied; so is a device's
 /// `overheard_scope` (#398), with `ambient_overheard` advertised, and its `ambient_input` route kind (rightyo#164),
 /// with `ambient_input_route` advertised. Device
-/// diagnostics (#234) are admitted, and `device_diagnostics` advertised, only when a sink is supplied.
+/// diagnostics (#234) are admitted, and `device_diagnostics` advertised, only when a sink is supplied. A final
+/// text frame may carry a paste (#608, `pasted_text`), which is framed as untrusted data before delivery.
 public struct PersonalTerminalAuthorizer: HostSessionAuthorizing {
     public let capabilities: [String]
     public let ambientAudio: AmbientAudioGate?
@@ -53,7 +54,8 @@ public struct PersonalTerminalAuthorizer: HostSessionAuthorizing {
     public init(ambientAudio: AmbientAudioGate? = nil, diagnostics: DiagnosticLog? = nil) {
         self.ambientAudio = ambientAudio
         self.diagnostics = diagnostics
-        capabilities = ["list_targets", "ping", "select_target", "send_text", "escape", "receive_replies"]
+        capabilities = ["list_targets", "ping", "select_target", "send_text", "escape", "receive_replies",
+                        PastedText.capability]
             + (ambientAudio == nil ? [] : ["stream_audio", AmbientOverheard.capability, AmbientInput.capability])
             + (diagnostics == nil ? [] : [DiagnosticLimits.capability, DiagnosticLimits.streamAbandonedCapability])
     }
@@ -94,9 +96,15 @@ struct AuthorizedInput: ~Copyable, Sendable {
     let version: Int
     /// A caller's listing pin, not part of the authorized identity; a changed binding refuses, never follows.
     var expectedBinding: String?
+    /// True when `text` is a spoken request framed with a paste by `PastedContent` (#608): the host then applies the
+    /// paste line cap, and nothing else changes.
+    let carriesPaste: Bool
 
-    fileprivate init(text: String, target: String, frame: Frame, device: String, version: Int) {
+    fileprivate init(
+        text: String, target: String, frame: Frame, device: String, version: Int, carriesPaste: Bool = false
+    ) {
         self.text = text
+        self.carriesPaste = carriesPaste
         self.target = target
         utteranceID = frame.id
         self.device = device
@@ -111,6 +119,8 @@ enum AdmittedFrame: ~Copyable, Sendable {
     case input(AuthorizedInput)
     case nonFinalText
     case untargetedText
+    /// A paste `PastedContent` refused (#608), with the plain reason for the device; nothing is delivered.
+    case refusedPaste(String)
     /// An ambient segment the authorizer allowed; the gate still checks shape, target, sequence and rate.
     case audio(AudioPayload, target: String?)
     case unsupported
@@ -231,9 +241,20 @@ public actor HostSession {
         case .text(let text):
             guard text.isFinal else { return .nonFinalText }
             guard let target = frame.target else { return .untargetedText }
-            return .input(AuthorizedInput(
-                text: text.text, target: target, frame: frame, device: device, version: version
-            ))
+            guard let pasted = text.pasted else {
+                return .input(AuthorizedInput(
+                    text: text.text, target: target, frame: frame, device: device, version: version
+                ))
+            }
+            // The paste is framed here, once, so the authorized text is exactly the line the host sanitises.
+            do {
+                return .input(AuthorizedInput(
+                    text: try PastedContent.frame(spoken: text.text, pasted: pasted.text), target: target,
+                    frame: frame, device: device, version: version, carriesPaste: true
+                ))
+            } catch {
+                return .refusedPaste(PastedContent.refusal(error))
+            }
         case .audio(let audio): return .audio(audio, target: frame.target)
         default: return .unsupported
         }
