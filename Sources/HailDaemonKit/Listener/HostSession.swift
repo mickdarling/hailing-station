@@ -247,8 +247,13 @@ public actor HostSession {
                 ))
             }
             // The paste is framed here, once, so the authorized text is exactly the line the host sanitises, and
-            // within what the target's adapter takes (the id's kind prefix), so an oversized paste says so.
-            let limit = PastedContent.maxFramedBytes(forTargetKind: String(target.prefix { $0 != ":" }))
+            // within what the target's adapter takes (the id's kind prefix), so an oversized paste says so. Only a known
+            // agent session takes a paste: a raw shell pane never does, and an unknown kind is refused (#628 review).
+            let kind = String(target.prefix { $0 != ":" })
+            guard PastedContent.acceptsPaste(targetKind: kind) else {
+                return .refusedPaste(PastedContent.agentOnlyRefusal)
+            }
+            let limit = PastedContent.maxFramedBytes(forTargetKind: kind)
             do {
                 return .input(AuthorizedInput(
                     text: try PastedContent.frame(spoken: text.text, pasted: pasted.text, limit: limit),

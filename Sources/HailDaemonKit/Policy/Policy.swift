@@ -115,14 +115,19 @@ public struct DeliveryRequest: Sendable, Equatable {
     /// Every frame that reaches policy came from a paired device; the CLI passes its own name.
     public var device: String
     /// What the guard reads when it is not `lines`: for a framed paste (#608), only the spoken request's sanitized
-    /// lines (empty for a paste sent on its own). The paste body is screened for a validation flag instead.
-    public var guardLines: [String]?
+    /// lines (empty for a paste sent on its own). The paste body is screened for a validation flag instead. Only the
+    /// host's paste path sets it (#635 review): outside this module a request is always guarded on its `lines`.
+    var guardLines: [String]?
 
-    public init(target: String, binding: String?, lines: [String], device: String, guardLines: [String]? = nil) {
+    public init(target: String, binding: String?, lines: [String], device: String) {
         self.target = target
         self.binding = binding
         self.lines = lines
         self.device = device
+    }
+
+    init(target: String, binding: String?, lines: [String], device: String, guardLines: [String]?) {
+        self.init(target: target, binding: binding, lines: lines, device: device)
         self.guardLines = guardLines
     }
 }
@@ -178,7 +183,7 @@ public struct PolicyEvaluator: Sendable {
     }
 
     /// The guard rules that match a paste's lines (#608): reported to the session as a validation flag, never a gate.
-    public func pasteFlags(in lines: [String]) -> [String] { guards.flags(in: lines) }
+    func pasteFlags(in lines: [String]) -> [String] { guards.flags(in: lines) }
 
     /// Capture is its own permission (#41 item 5) and never bypasses lockdown or the binding.
     public func mayCapture(target id: String, binding: String?, lockdown: Bool) -> Bool {

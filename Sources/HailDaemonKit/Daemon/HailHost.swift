@@ -412,3 +412,13 @@ extension HailHost {
         return screened.guardLines
     }
 }
+
+extension SanitizePolicy {
+    /// This policy with the larger of its own and `cap`'s length caps; the newline rule and line count stay.
+    func widened(to cap: SanitizePolicy) -> SanitizePolicy {
+        var policy = self
+        policy.maxCharacters = max(maxCharacters, cap.maxCharacters)
+        policy.maxUTF8Bytes = max(maxUTF8Bytes, cap.maxUTF8Bytes)
+        return policy
+    }
+}

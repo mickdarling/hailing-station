@@ -52,7 +52,7 @@ public struct CompiledGuards: Sendable {
 
     /// The rules that actually match pasted text (#608): a validation note for the receiving session, never a gate,
     /// so a rule that runs out of budget is simply not reported (a timeout is not a match here).
-    public func flags(in lines: [String]) -> [String] {
+    func flags(in lines: [String]) -> [String] {
         hits(in: lines, timeoutIsHit: false)
     }
 
