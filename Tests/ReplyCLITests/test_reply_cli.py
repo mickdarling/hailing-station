@@ -683,6 +683,55 @@ class ReplyCLITests(unittest.TestCase):
             self.assertFalse(frames[1]["payload"]["final"])
             self.assertEqual(len(list(root.iterdir())), 1)
 
+    def test_metadata_rides_on_the_text_frame_beside_the_spoken_words(self):
+        markdown = "## Synthetic\n- [#1](https://example.invalid/pull/1)\n- `Sources/Example.swift`"
+        frames = self.submit_frames(["--text", "synthetic reply", "--metadata", markdown], 1)
+        self.assertEqual(frames[0]["payload"]["text"], "synthetic reply")
+        self.assertEqual(frames[0]["payload"]["metadata"], markdown)
+
+    def test_metadata_file_is_read_as_utf8(self):
+        with tempfile.TemporaryDirectory(prefix="hail-reply-metadata-") as scratch:
+            path = Path(scratch) / "metadata.md"
+            path.write_text("| a | b |\n| - | - |\n| é | 🙂 |\n", encoding="utf-8")
+            frames = self.submit_frames(["--text", "synthetic reply", "--metadata-file", str(path)], 1)
+        self.assertEqual(frames[0]["payload"]["metadata"], "| a | b |\n| - | - |\n| é | 🙂 |\n")
+
+    def test_legacy_text_has_no_metadata_key(self):
+        frames = self.submit_frames(["--text", "synthetic reply"], 1)
+        self.assertNotIn("metadata", frames[0]["payload"])
+
+    def test_invalid_metadata_is_refused_before_connecting(self):
+        with tempfile.TemporaryDirectory(prefix="hail-reply-metadata-") as scratch:
+            big = Path(scratch) / "big.md"
+            big.write_bytes(b"m" * (16 * 1024 + 1))
+            binary = Path(scratch) / "binary.md"
+            binary.write_bytes(b"\xff\xfe\x00")
+            cases = {
+                "too large": ["--text", "x", "--metadata", "m" * (16 * 1024 + 1)],
+                "file too large": ["--text", "x", "--metadata-file", str(big)],
+                "not UTF-8": ["--text", "x", "--metadata-file", str(binary)],
+                "not a regular file": ["--text", "x", "--metadata-file", scratch],
+                "missing file": ["--text", "x", "--metadata-file", str(Path(scratch) / "absent.md")],
+                "empty": ["--text", "x", "--metadata", ""],
+                "no text": ["--pcm16", str(big), "--metadata", "m"],
+            }
+            for name, arguments in cases.items():
+                with self.subTest(name):
+                    result = subprocess.run(
+                        [str(HAILD), "reply", "tmux:test", "--host", "mac-test", *arguments,
+                         "--socket", "/nonexistent/hail-test.sock"],
+                        cwd=REPO, capture_output=True, text=True, timeout=15, check=False,
+                    )
+                    self.assertEqual(result.returncode, 1, result.stderr)
+                    self.assertIn("metadata", result.stderr)
+                    self.assertNotIn("socket", result.stderr.lower())
+            twice = subprocess.run(
+                [str(HAILD), "reply", "tmux:test", "--host", "mac-test", "--text", "x", "--metadata", "a",
+                 "--metadata-file", str(big), "--socket", "/nonexistent/hail-test.sock"],
+                cwd=REPO, capture_output=True, text=True, timeout=15, check=False,
+            )
+            self.assertTrue(twice.stderr.startswith("usage:"), twice.stderr)
+
     def test_legacy_text_does_not_invent_request_identity(self):
         frames = self.submit_frames(["--text", "synthetic reply"], 1)
         self.assertNotIn("request", frames[0]["payload"]["reply"])

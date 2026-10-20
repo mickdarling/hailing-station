@@ -36,6 +36,9 @@ unchanged on the wire.
 - It is only valid beside a `reply` descriptor. The decoder and the schema refuse it on any other text payload.
 - It is untrusted content. A client renders it through its safe Markdown model (no raw HTML, no remote images,
   links shown with their real destination), keeps a raw-text fallback, and never passes it to speech.
+- `haild reply` sends it with `--metadata <markdown>` or `--metadata-file <path>` (a regular UTF-8 file), on the
+  text frame of a reply sent with `--text` or `--say`. Without one of those, or over the cap, it is refused before
+  anything is sent, never dropped.
 
 ## Which device a reply reaches (#370)
 

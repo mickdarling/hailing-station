@@ -25,6 +25,8 @@ private struct ReplyOptions {
     var text: String?
     var pcm16: URL?
     var say: String?
+    /// #606: the reply's unspoken Markdown, from `--metadata` or `--metadata-file`; travels on its text frame.
+    var metadata: String?
     var requestID: UUID?
     var rendererOutputRoot: URL?
     var sampleRate = 24_000
@@ -36,11 +38,44 @@ private struct ReplyOptions {
         return host
     }
 
-    mutating func apply(_ flag: String, value: String) throws {
-        if flag == "--renderer-output-root" {
-            rendererOutputRoot = URL(fileURLWithPath: value, isDirectory: true)
-            return
+    /// A regular file of UTF-8 Markdown, its size checked before it is read: never a device, pipe or directory.
+    private static func metadataFile(_ path: String) throws -> String {
+        let url = URL(fileURLWithPath: path)
+        let attributes = try? FileManager.default.attributesOfItem(atPath: url.path)
+        guard attributes?[.type] as? FileAttributeType == .typeRegular else {
+            throw ReplyCommandError.invalid("metadata file must be a regular file")
         }
+        let size = (attributes?[.size] as? NSNumber)?.intValue ?? 0
+        guard size <= PayloadLimits.maxMetadataBytes else { throw metadataTooLarge }
+        guard let data = try? Data(contentsOf: url), let text = String(data: data, encoding: .utf8) else {
+            throw ReplyCommandError.invalid("metadata file must be readable UTF-8")
+        }
+        return text
+    }
+
+    /// Metadata rides on the text frame, so it needs `--text` or `--say`: refused, never silently dropped.
+    func requireSendableMetadata() throws {
+        guard let metadata else { return }
+        guard text != nil else { throw ReplyCommandError.invalid("metadata needs --text or --say") }
+        guard !metadata.isEmpty else { throw ReplyCommandError.invalid("metadata is empty") }
+        guard metadata.utf8.count <= PayloadLimits.maxMetadataBytes else { throw metadataTooLarge }
+    }
+
+    /// The flags beside the reply's own content: the renderer root, and `--metadata` or `--metadata-file` (at most one
+    /// of them). False for any other flag.
+    private mutating func applyAncillary(_ flag: String, value: String) throws -> Bool {
+        switch flag {
+        case "--renderer-output-root": rendererOutputRoot = URL(fileURLWithPath: value, isDirectory: true)
+        case "--metadata", "--metadata-file":
+            guard metadata == nil else { throw ReplyCommandError.usage }
+            metadata = flag == "--metadata" ? value : try Self.metadataFile(value)
+        default: return false
+        }
+        return true
+    }
+
+    mutating func apply(_ flag: String, value: String) throws {
+        if try applyAncillary(flag, value: value) { return }
         switch flag {
         case "--host": host = try Self.explicitHost(value)
         case "--text": text = value
@@ -60,6 +95,8 @@ private struct ReplyOptions {
         }
     }
 }
+
+private let metadataTooLarge = ReplyCommandError.invalid("metadata exceeds \(PayloadLimits.maxMetadataBytes) bytes")
 
 private func parseReplyRequest(_ value: String) throws -> UUID {
     guard let id = UUID(uuidString: value) else { throw ReplyCommandError.invalid("request must be a UUID") }
@@ -128,7 +165,7 @@ private func streamReply(_ options: ReplyOptions, rendererRoot: URL, pacing: Rep
     if let text = options.text {
         let frame = Frame(
             timestamp: replyTimestamp(), target: options.target, source: options.host,
-            payload: .text(TextPayload(text: text, reply: descriptor))
+            payload: .text(TextPayload(text: text, reply: descriptor, metadata: options.metadata))
         )
         try await admit(audioBytes: 0, sampleRate: options.sampleRate, pacing: pacing)
         deliveries += try await ReplyBackground.submit(frame, socketURL: options.socket)
@@ -177,6 +214,7 @@ private func replyOptions(_ arguments: ArraySlice<String>) throws -> ReplyOption
     if let text = options.text, text.utf8.count > PayloadLimits.maxTextBytes {
         throw ReplyCommandError.invalid("text exceeds \(PayloadLimits.maxTextBytes) bytes")
     }
+    try options.requireSendableMetadata()
     if options.say != nil, options.sampleRate != 24_000 {
         throw ReplyCommandError.invalid("vbsay output is fixed at 24000 Hz")
     }
