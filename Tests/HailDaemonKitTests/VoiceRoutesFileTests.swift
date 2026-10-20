@@ -4,7 +4,7 @@ import Testing
 @testable import HailDaemonKit
 
 /// The allow-list file (#636, slice 1): off when absent, strict when present, trusted only when private.
-@Suite(.serialized, .timeLimit(.minutes(1))) struct VoiceRoutesFileTests {
+@Suite(.serialized, .frozenGuardBudget, .timeLimit(.minutes(1))) struct VoiceRoutesFileTests {
     static let valid = #"""
         {"version": 1, "default": "tmux:hailing-test", "routes": [
           {"target": "tmux:hailing-test", "name": "Hailing Scratch", "aliases": ["Scratch"]},

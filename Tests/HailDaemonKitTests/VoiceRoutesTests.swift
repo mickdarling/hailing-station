@@ -3,8 +3,9 @@ import Foundation
 import Testing
 @testable import HailDaemonKit
 
-/// The owner's allow-list of named sessions and the opening-name parser (#636, slice 1). Synthetic only.
-@Suite(.timeLimit(.minutes(1))) struct VoiceRoutesTests {
+/// The owner's allow-list of named sessions and the opening-name parser (#636, slice 1). Synthetic only. Route
+/// targets pass `validateTarget`, whose guard budget is frozen so scheduler load cannot refuse a valid id (#208).
+@Suite(.frozenGuardBudget, .timeLimit(.minutes(1))) struct VoiceRoutesTests {
     static let names: Set<String> = ["jarvis", "rightyo"]
     static let scratch = VoiceRoutes.Route(target: "tmux:hailing-test", name: "Hailing Scratch", aliases: ["Scratch"])
     static let voice = VoiceRoutes.Route(target: "tmux:voicework11", name: "Voice Work", aliases: ["Voice Walk"])
