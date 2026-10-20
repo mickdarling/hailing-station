@@ -262,6 +262,16 @@ public enum Fixtures {
             id: id(211), timestamp: 1_758_200_050_800, source: "host",
             payload: .control(.ownerVoice(state: "unrecognized"))
         )),
+        Example(name: "control-health", frame: Frame(
+            id: id(240), timestamp: 1_758_200_052_000, source: "terminal", payload: .control(.health)
+        )),
+        Example(name: "control-health-report", frame: Frame(
+            id: id(241), timestamp: 1_758_200_052_100, source: "host",
+            payload: .control(.healthReport(HostHealth(version: "0.1.0", build: "0123456789abcdef", checks: [
+                .init(name: "daemon_running", ok: true), .init(name: "build_match", ok: true),
+                .init(name: "listener_ready", ok: true), .init(name: "ambient_listening", ok: false)
+            ])))
+        )),
         Example(name: "control-ambient-input", frame: Frame(
             id: id(212), timestamp: 1_758_200_050_900, source: "terminal",
             payload: .control(.ambientInput(route: "usb_audio"))

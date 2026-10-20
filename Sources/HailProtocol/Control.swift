@@ -137,12 +137,17 @@ public enum ControlPayload: Sendable, Equatable {
     /// diagnostic `route` tokens (`usb_audio`, `car_audio`, ...), never a port name. Sent only to a host that
     /// advertises `AmbientInput.capability`, so speaker-ID results can be attributed to an input chain.
     case ambientInput(route: String)
+    /// Device to host (#614): ask for the host's health summary. Only `command`; sent only to a host that advertises
+    /// `HostHealth.capability`.
+    case health
+    /// Host to device (#614): the answer to `health`, closed and bounded (`HostHealth`). It grants no authority.
+    case healthReport(HostHealth)
 }
 
 extension ControlPayload: Codable {
     private enum CodingKeys: String, CodingKey {
         case command, hello, targets, targetID = "target", nonce, code, message, events, from, text, speaker, scope
-        case muted, name, state, route
+        case muted, name, state, route, report
     }
 
     private enum Command: String, Codable {
@@ -150,6 +155,7 @@ extension ControlPayload: Codable {
         case diagnostic, stopPlayback = "stop_playback", ambientMovedHere = "ambient_moved_here"
         case ambientHeard = "ambient_heard", ambientOverheard = "ambient_overheard", overheardScope = "overheard_scope"
         case setReplyMute = "set_reply_mute", ownerVoice = "owner_voice", ambientInput = "ambient_input"
+        case health, healthReport = "health_report"
     }
 
     // A closed wire enum is clearest as one exhaustive switch.
@@ -192,7 +198,19 @@ extension ControlPayload: Codable {
         case .setReplyMute: self = try Self.setReplyMute(from: decoder)
         case .ownerVoice: self = try Self.ownerVoice(from: decoder)
         case .ambientInput: self = try Self.ambientInput(from: decoder)
+        case .health, .healthReport: self = try Self.health(from: decoder)
         }
+    }
+
+    /// Strict (#614): `health` carries only `command`; `health_report` only `command` and a closed `report`.
+    private static func health(from decoder: any Decoder) throws -> ControlPayload {
+        let container = try decoder.container(keyedBy: CodingKeys.self)
+        guard try container.decode(Command.self, forKey: .command) == .healthReport else {
+            try requireOnly(["command"], "health", decoder)
+            return .health
+        }
+        try requireOnly(["command", "report"], "health_report", decoder)
+        return .healthReport(try container.decode(HostHealth.self, forKey: .report))
     }
 
     /// Strict (rightyo#164): only `command` and a `state` from `OwnerVoice.states`.
@@ -366,6 +384,10 @@ extension ControlPayload: Codable {
         case .ambientInput(let route):
             try container.encode(Command.ambientInput, forKey: .command)
             try container.encode(try Self.closed(AmbientInput.route(route), route, encoder), forKey: .route)
+        case .health: try container.encode(Command.health, forKey: .command)
+        case .healthReport(let report):
+            try container.encode(Command.healthReport, forKey: .command)
+            try container.encode(report, forKey: .report)
         }
     }
 }
@@ -846,6 +868,44 @@ extension Schema {
             "additionalProperties": .bool(false),
             "properties": .object([
                 "command": .object([:]), "route": .object(["enum": .array(AmbientInput.routes.map(JSONValue.string))])
+            ])
+        ])
+    ])
+
+    /// `health` carries only `command` (#614).
+    static let healthPayloadRule: JSONValue = .object([
+        "if": .object(["properties": .object(["command": .object(["const": .string("health")])])]),
+        "then": .object(["additionalProperties": .bool(false), "properties": .object(["command": .object([:])])])
+    ])
+
+    /// `health_report` carries `command` and a closed `report` (#614): a version, an optional 16-hex build and 1–16
+    /// known checks. That each name appears once is checked by the decoder.
+    static let healthReportPayloadRule: JSONValue = .object([
+        "if": .object(["properties": .object(["command": .object(["const": .string("health_report")])])]),
+        "then": .object([
+            "additionalProperties": .bool(false),
+            "properties": .object([
+                "command": .object([:]),
+                "report": .object([
+                    "type": .string("object"), "required": .array([.string("version"), .string("checks")]),
+                    "additionalProperties": .bool(false),
+                    "properties": .object([
+                        "version": .object(["type": .string("string"), "pattern": .string("^[0-9A-Za-z.+-]{1,32}$")]),
+                        "build": .object(["type": .string("string"), "pattern": .string("^[0-9a-f]{16}$")]),
+                        "checks": .object([
+                            "type": .string("array"), "minItems": .integer(1),
+                            "maxItems": .integer(Int64(HostHealth.maxChecks)),
+                            "items": .object([
+                                "type": .string("object"), "required": .array([.string("name"), .string("ok")]),
+                                "additionalProperties": .bool(false),
+                                "properties": .object([
+                                    "name": .object(["enum": .array(HostHealth.checkNames.map(JSONValue.string))]),
+                                    "ok": .object(["type": .string("boolean")])
+                                ])
+                            ])
+                        ])
+                    ])
+                ])
             ])
         ])
     ])

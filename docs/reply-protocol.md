@@ -168,3 +168,19 @@ diagnostic `route` tokens (`built_in_mic`, `usb_audio`, `car_audio`, `bluetooth_
 or device name. The host logs it with the stream so a speaker-ID mismatch can be attributed to an input chain.
 
 The decoder and the schema refuse any other key or value in either command.
+
+### Host health summary (#614)
+
+A device's Mac Setup shows the host's `haild doctor` result, so a broken host is visible from the phone. A device
+sends `{"command": "health"}` (nothing else) only to a host that advertised `host_health` (`HostHealth.capability`).
+The host answers on the same connection:
+
+`{"command": "health_report", "report": {"version": "0.1.0", "build"?: "<16 hex>", "checks": [{"name": "<check>", "ok": true | false}, ...]}}`
+
+- `version` is the host's release version.
+- `build` is the first 16 hex digits of the running executable's SHA-256.
+- `checks` holds 1 to 16 checks, each name at most once. Each check is one of the `haild doctor` names, with whether it passed: `daemon_running`, `build_match`, `host_id_match`, `listener_ready`, `ambient_listening`, `device_connected`, `recent_refusals`, `audit_history`.
+
+The doctor's free-text detail and fix never cross the wire, because they can name paths, ports and identities. The device words each check itself and points to `haild doctor` on the Mac for the detail.
+
+The report is read-only and grants no authority. The decoder and the schema refuse any other key or value. Only the decoder checks that a name appears once.
