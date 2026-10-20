@@ -32,7 +32,10 @@ extension RootView {
                         text, pasted: pasted, host: destination.hostID, targetID: destination.target.id
                     )
                 },
-                acceptsPaste: connections.acceptsPaste(host: destination.hostID),
+                pasteOffer: PasteOffer(
+                    accepts: connections.acceptsPaste(host: destination.hostID, targetID: destination.target.id),
+                    refusal: connections.lastPasteRefusal.flatMap { $0.endpointID == destination.hostID ? $0 : nil }
+                ),
                 onEscape: {
                     try await connections.sendEscape(
                         host: destination.hostID, targetID: destination.target.id

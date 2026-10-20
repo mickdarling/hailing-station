@@ -1,33 +1,51 @@
 import HailCore
 import SwiftUI
 
+/// What the station knows about pasting to its destination (#608): whether it takes pastes, and the latest paste its
+/// Mac refused (a new value puts that paste back with the reason).
+struct PasteOffer: Equatable {
+    var accepts = false
+    var refusal: PasteRefusal?
+}
+
 /// Paste text into the conversation (#608). The system Paste button reads the clipboard only when tapped, so there is
 /// no paste-permission prompt and nothing is read in the background. The paste rides with the next spoken request, or
-/// goes on its own with Send Paste. Links in it are never opened or fetched. Shown only when the Mac takes pastes.
+/// goes on its own with Send Paste. Links in it are never opened or fetched. Paste is offered only when the destination
+/// takes pastes, but an attached paste always stays visible with Remove, and it never follows a destination change.
+/// When the Mac refuses a sent paste, it comes back attached with the reason.
 extension TranscriptionLabView {
-    @ViewBuilder
     var pasteControl: some View {
-        if acceptsPaste, onFinalized != nil {
-            VStack(alignment: .leading, spacing: 8) {
-                if let attachedPaste {
-                    attachedPasteCard(attachedPaste)
-                } else {
-                    PasteButton(payloadType: String.self) { strings in
-                        Task { @MainActor in attach(strings.joined(separator: "\n")) }
-                    }
-                    .labelStyle(.titleAndIcon)
-                    .buttonBorderShape(.capsule)
-                    .disabled(pendingSendID != nil)
-                    .accessibilityIdentifier("station.paste")
+        VStack(alignment: .leading, spacing: 8) {
+            if let attachedPaste {
+                attachedPasteCard(attachedPaste)
+            } else if pasteOffer.accepts, onFinalized != nil {
+                PasteButton(payloadType: String.self) { strings in
+                    Task { @MainActor in attach(strings.joined(separator: "\n")) }
                 }
-                if let pasteProblem {
-                    Text(pasteProblem)
-                        .font(.caption)
-                        .foregroundStyle(.red)
-                        .accessibilityIdentifier("station.paste.problem")
-                }
+                .labelStyle(.titleAndIcon)
+                .buttonBorderShape(.capsule)
+                .disabled(pendingSendID != nil)
+                .accessibilityIdentifier("station.paste")
             }
-            .frame(maxWidth: .infinity, alignment: .leading)
+            if let pasteProblem {
+                Text(pasteProblem)
+                    .font(.caption)
+                    .foregroundStyle(.red)
+                    .accessibilityIdentifier("station.paste.problem")
+            }
+        }
+        .frame(maxWidth: .infinity, alignment: .leading)
+        .onChange(of: destinationID) { _, _ in
+            attachedPaste = nil
+            pasteProblem = nil
+        }
+        .onChange(of: pasteOffer.refusal) { _, refusal in
+            guard let refusal, let restored = try? PastedDraft(refusal.pasted) else { return }
+            attachedPaste = restored
+            pasteProblem = PastedDraft.Problem.refusedByHost(refusal.message).message
+            // That request is over: no reply will come for it.
+            clearPendingSend()
+            status = "Paste not taken"
         }
     }
 

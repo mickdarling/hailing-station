@@ -122,7 +122,8 @@ extension TranscriptionLabView {
         let paste = attachedPaste
         do {
             try await onFinalized(text, paste)
-            // Sent with this request (#608); a paste attached while it was in flight stays for the next one.
+            // Handed to the Mac with this request (#608). If the Mac refuses it, it comes back attached with the
+            // reason (`pasteOffer.refusal`); a paste attached while this one was in flight stays for the next request.
             if paste != nil, attachedPaste == paste { attachedPaste = nil }
             guard pendingSendID == sendID, pendingDestinationID == destinationAtSend else { return }
             if let destinationAtSend, Self.uncorrelatedDestinations.contains(destinationAtSend) {
@@ -134,10 +135,11 @@ extension TranscriptionLabView {
             scheduleReplyTimeout(sendID: sendID, destinationID: destinationAtSend)
         } catch {
             guard pendingSendID == sendID, pendingDestinationID == destinationAtSend else { return }
-            if let destinationAtSend { Self.uncorrelatedDestinations.insert(destinationAtSend) }
+            // A paste refused here was never sent, so the destination's reply correlation is unaffected (#608).
+            let problem = (error as? PastedDraft.Problem)?.message
+            if problem == nil, let destinationAtSend { Self.uncorrelatedDestinations.insert(destinationAtSend) }
             clearPendingSend()
             // A refused paste stays attached, with the reason, so it can be fixed or removed (#608).
-            let problem = (error as? PastedDraft.Problem)?.message
             if let problem { pasteProblem = problem }
             status = "\(failurePrefix): \(problem ?? error.localizedDescription)"
         }
