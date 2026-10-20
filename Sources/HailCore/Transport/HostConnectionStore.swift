@@ -178,7 +178,8 @@ public final class HostConnectionStore {
         guard tokens[event.endpointID] == token else { return }
         if receiveAmbientNotice(event) { return }
         replyFrames.append(event)
-        conversation.noteReply(event)
+        conversation.noteReply(event, selected: selectedTargets[event.endpointID],
+                               targets: snapshots[event.endpointID]?.targets ?? [])
         onReplyFrame?(event)
         if replyFrames.count > Self.replyFrameLimit {
             replyFrames.removeFirst(replyFrames.count - Self.replyFrameLimit)

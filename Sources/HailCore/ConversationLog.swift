@@ -18,6 +18,17 @@ public struct ConversationEntry: Identifiable, Equatable, Sendable {
     /// The known guest who said an overheard turn (#434), from the host's `name`; nil shows "Someone". Never the
     /// owner's, never logged.
     public var name: String?
+    /// A reply from a session other than the one selected when it arrived, such as one the user addressed by name
+    /// (#636): that session's listed name, shown as the reply's label. Nil for every other entry.
+    public var source: String?
+    /// The target selected when that reply arrived, so it shows in the thread the user was in. Nil otherwise.
+    public var shownIn: String?
+
+    /// Whether the entry shows in one destination's thread: its own target's entries, plus a reply from another
+    /// session that arrived there (`shownIn`). The one place a thread's membership is decided.
+    public func belongs(endpointID: HostEndpoint.Identifier, targetID: String) -> Bool {
+        self.endpointID == endpointID && (self.targetID == targetID || shownIn == targetID)
+    }
 }
 
 /// The session's conversation, in the order things happened: each request as it is sent, each reply as its text
@@ -35,9 +46,9 @@ public final class ConversationLog {
         self.now = now
     }
 
-    /// Entries for one destination, oldest first.
+    /// Entries for one destination, oldest first, with replies from other sessions that arrived while it was selected.
     public func entries(endpointID: HostEndpoint.Identifier, targetID: String) -> [ConversationEntry] {
-        entries.filter { $0.endpointID == endpointID && $0.targetID == targetID }
+        entries.filter { $0.belongs(endpointID: endpointID, targetID: targetID) }
     }
 
     func noteSent(_ text: String, endpointID: HostEndpoint.Identifier, targetID: String) {
@@ -65,18 +76,25 @@ public final class ConversationLog {
         append(entry)
     }
 
-    /// A reply's text frame. The id matches `ReplyPresentation.id`, so the chat can show that reply's playback.
-    func noteReply(_ event: HostReplyEvent) {
+    /// A reply's text frame. The id matches `ReplyPresentation.id`, so the chat can show that reply's playback. A reply
+    /// from a target other than `selected` (#636) is labelled with that target's name in `targets`, or its id, and
+    /// shown in the selected thread. Its label is fixed when its first text arrives.
+    func noteReply(_ event: HostReplyEvent, selected: String? = nil, targets: [TargetInfo] = []) {
         guard case .text(let payload) = event.frame.payload, let reply = payload.reply else { return }
         let id = "\(event.endpointID)|\(reply.id.uuidString.lowercased())"
         if let index = entries.firstIndex(where: { $0.id == id }) {
             entries[index].text = payload.text
             return
         }
-        append(ConversationEntry(
+        var entry = ConversationEntry(
             id: id, speaker: .haili, text: payload.text,
             endpointID: event.endpointID, targetID: reply.targetID, date: now()
-        ))
+        )
+        if let selected, selected != reply.targetID {
+            entry.shownIn = selected
+            entry.source = targets.first { $0.id == reply.targetID }?.name ?? reply.targetID
+        }
+        append(entry)
     }
 
     private func append(_ entry: ConversationEntry) {
