@@ -1,5 +1,6 @@
 import Foundation
 import HailProtocol
+import Synchronization
 import Testing
 @testable import HailDaemonKit
 
@@ -28,16 +29,40 @@ import Testing
         #expect(await adapter.deliveries.isEmpty)
     }
 
-    @Test func anUnavailableSummaryIsARefusalThatKeepsTheConnection() async throws {
-        let (host, _) = try await sessionHost()
-        let session = HostSession(host: host, authorizer: PersonalTerminalAuthorizer(health: { nil }))
-        _ = try await capabilities(session)
-        let result = await session.receive(sessionFrame(payload: .control(.health)))
-        guard case .error(let code, _) = try onlyControl(result) else {
-            Issue.record("expected a refusal")
-            return
+    /// The #661 review: any number of concurrent requests cost one evaluation, every one is answered, and a repeat
+    /// inside the window is answered from the cache; only once the window has passed does a request evaluate again.
+    @Test func concurrentRequestsShareOneEvaluationAndRepeatsAreCached() async {
+        let evaluations = Mutex(0), clock = Mutex(ContinuousClock.now)
+        let service = HostHealthService(ttl: .seconds(30), now: { clock.withLock { $0 } }, evaluate: {
+            evaluations.withLock { $0 += 1 }
+            Thread.sleep(forTimeInterval: 0.2) // slow, as the real audit verify is
+            return Self.report
+        })
+        let answers = await withTaskGroup(of: HostHealth.self) { group in
+            for _ in 0..<64 { group.addTask { await service.current() } }
+            return await group.reduce(into: [HostHealth]()) { $0.append($1) }
         }
-        #expect(code == .notAllowed && result.disposition == .keepOpen)
+        #expect(answers.count == 64 && answers.allSatisfy { $0 == Self.report })
+        #expect(evaluations.withLock { $0 } == 1)
+        clock.withLock { $0 += .seconds(29) }
+        #expect(await service.current() == Self.report && evaluations.withLock { $0 } == 1)
+        clock.withLock { $0 += .seconds(2) }
+        #expect(await service.current() == Self.report && evaluations.withLock { $0 } == 2)
+    }
+
+    /// The doctor's check names and the protocol's list are kept in two places; this fails if they drift apart.
+    @Test func everyDoctorCheckNameIsOneTheProtocolCarries() {
+        let cli = HealthReport.CLI(version: "0.1.0", build: "aaaaaaaaaaaaaaaa", hostID: "h")
+        let daemon = DaemonStatus(
+            schema: DaemonStatus.currentSchema, version: "0.1.0", build: "aaaaaaaaaaaaaaaa", pid: 1,
+            startedAt: Date(timeIntervalSince1970: 0), updatedAt: Date(timeIntervalSince1970: 0), hostID: "h",
+            listener: .init(state: "ready", endpoint: "127.0.0.1:1"), connectedSessions: 1,
+            ambient: .init(enabled: true)
+        )
+        let every = HealthReport.evaluate(cli: cli, daemon: daemon,
+                                          refusals: RefusalSummary.summarize([], now: Date()),
+                                          auditUnreadable: true, isRunning: { _ in true })
+        #expect(Set(every.checks.map(\.name)) == Set(HostHealth.checkNames))
     }
 
     @Test func withoutASummaryNothingIsAdvertisedOrAnswered() async throws {
@@ -71,15 +96,20 @@ import Testing
                 .ok("daemon_running", "again"), .ok("a_future_check", "x")
             ]
         )
-        let summary = try #require(HostHealthSummary.summary(of: report))
+        let summary = HostHealthSummary.summary(of: report)
         #expect(summary == HostHealth(version: "0.1.0", build: nil, checks: [
             .init(name: "daemon_running", ok: true), .init(name: "listener_ready", ok: false)
         ]))
         let digest = HealthReport(cli: .init(version: "0.1.0", build: "0123456789abcdef", hostID: nil), daemon: nil,
                                   checks: [.ok("daemon_running", "pid 42")])
-        #expect(HostHealthSummary.summary(of: digest)?.build == "0123456789abcdef")
+        #expect(HostHealthSummary.summary(of: digest).build == "0123456789abcdef")
+        // ASCII hex only: full-width or other Unicode digits drop the build, never the report.
+        let wide = HealthReport(cli: .init(version: "0.1.0", build: "０１２３４５６７８９abcdef", hostID: nil),
+                                daemon: nil, checks: [.ok("daemon_running", "pid 42")])
+        #expect(HostHealthSummary.summary(of: wide).build == nil)
+        // Never empty: the daemon answering is itself running.
         let empty = HealthReport(cli: .init(version: "0.1.0", build: nil, hostID: nil), daemon: nil,
                                  checks: [.ok("a_future_check", "x")])
-        #expect(HostHealthSummary.summary(of: empty) == nil)
+        #expect(HostHealthSummary.summary(of: empty).checks == [.init(name: "daemon_running", ok: true)])
     }
 }

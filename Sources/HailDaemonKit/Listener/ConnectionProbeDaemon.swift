@@ -139,10 +139,11 @@ extension ConnectionProbeDaemon {
             await ambient?.observe(diagnostics) // The phone's playback reports, for reply control (rightyo#124).
             authorizer = PersonalTerminalAuthorizer(ambientAudio: authorizer.ambientAudio, diagnostics: diagnostics)
         }
-        if options.health {
+        // Personal terminal only, checked again here as well as in `options` (#614 review).
+        if options.health, options.personalTerminal != nil {
             authorizer = PersonalTerminalAuthorizer(ambientAudio: authorizer.ambientAudio,
                                                     diagnostics: authorizer.diagnostics,
-                                                    health: HostHealthSummary.current)
+                                                    health: HostHealthService().current)
         }
         let listener = try WebSocketListener(
             bindAddress: options.address, port: options.port, host: host,

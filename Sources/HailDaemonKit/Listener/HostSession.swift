@@ -18,14 +18,14 @@ public protocol HostSessionAuthorizing: Sendable {
     /// The device diagnostics sink when haild runs with `--device-diagnostics` (#234); nil otherwise.
     var diagnostics: DiagnosticLog? { get }
     /// The host's read-only health summary when haild runs with `--host-health` (#614); nil otherwise.
-    var health: (@Sendable () async -> HostHealth?)? { get }
+    var health: (@Sendable () async -> HostHealth)? { get }
     func authorize(_ frame: Frame) async -> HostSessionAuthorization
 }
 
 extension HostSessionAuthorizing {
     public var ambientAudio: AmbientAudioGate? { nil }
     public var diagnostics: DiagnosticLog? { nil }
-    public var health: (@Sendable () async -> HostHealth?)? { nil }
+    public var health: (@Sendable () async -> HostHealth)? { nil }
 }
 
 /// The temporary connection proof can negotiate and inspect liveness, but it grants no target authority.
@@ -53,11 +53,11 @@ public struct PersonalTerminalAuthorizer: HostSessionAuthorizing {
     public let capabilities: [String]
     public let ambientAudio: AmbientAudioGate?
     public let diagnostics: DiagnosticLog?
-    public let health: (@Sendable () async -> HostHealth?)?
+    public let health: (@Sendable () async -> HostHealth)?
 
     public init(
         ambientAudio: AmbientAudioGate? = nil, diagnostics: DiagnosticLog? = nil,
-        health: (@Sendable () async -> HostHealth?)? = nil
+        health: (@Sendable () async -> HostHealth)? = nil
     ) {
         self.ambientAudio = ambientAudio
         self.diagnostics = diagnostics
@@ -228,12 +228,10 @@ public actor HostSession {
                 await gate.noteInputRoute(route, connection: connectionID)
                 return HostSessionResult(frames: [])
             }
-            // The host's read-only health summary (#614): answered on this connection only, never logged.
+            // The host's read-only health summary (#614): always answered, from the shared cached result, on this
+            // connection only, never logged. A refusal here would end an older device's connection.
             if case .control(.health) = frame.payload, let health = authorizer.health {
-                guard let report = await health() else {
-                    return failure(.notAllowed, "host health unavailable", close: false, version: version)
-                }
-                return HostSessionResult(frames: [response(.healthReport(report), version: version)])
+                return HostSessionResult(frames: [response(.healthReport(await health()), version: version)])
             }
             return await route(admitted, version: version)
         }
