@@ -98,15 +98,15 @@ public actor HostConnection {
 
     public func currentSnapshot() -> HostConnectionSnapshot { snapshot }
 
-    public func sendFinalText(_ text: String, pasted: PastedDraft? = nil, to targetID: String) async throws {
+    public func sendFinalText(_ text: String, to targetID: String) async throws {
         try requireReady(capability: "send_text")
-        let payload = TextPayload(text: text, pasted: pasted.map { PastedText(text: $0.text) })
-        let data = try PastedDraft.encodedRequest(Frame(
-            version: snapshot.negotiatedVersion ?? ProtocolVersion.current, timestamp: wallNow(), target: targetID,
-            source: deviceName, payload: .text(payload)
-        ), hostCapabilities: snapshot.capabilities)
+        let frame = Frame(
+            version: snapshot.negotiatedVersion ?? ProtocolVersion.current,
+            timestamp: wallNow(), target: targetID, source: deviceName,
+            payload: .text(TextPayload(text: text, isFinal: true))
+        )
         guard let socket else { throw HostConnectionFailure.notReady }
-        try await socket.send(data)
+        try await socket.send(FrameCoding.encode(frame))
     }
 
     public func sendEscape(to targetID: String) async throws {

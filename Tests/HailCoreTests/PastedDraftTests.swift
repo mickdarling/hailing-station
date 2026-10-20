@@ -93,10 +93,62 @@ import Testing
         let before = try await socket.sentFrames().count
         // Within the 32 KB paste cap, but each control character encodes as six bytes of JSON.
         let controls = try PastedDraft(String(repeating: "\u{01}", count: 20_000))
-        await #expect(throws: PastedDraft.Problem.self) {
+        await #expect(throws: PastedDraft.Problem.tooManySpecialCharacters) {
             try await connection.sendFinalText("", pasted: controls, to: "tmux:a")
         }
         #expect(try await socket.sentFrames().count == before)
         await connection.disconnect()
     }
+
+    /// #637 review: a Mac's refusal of a paste request ends that request, never the connection. It reaches the reply
+    /// observer as an event; any other host error still ends the connection as before.
+    @Test func aPasteRefusalKeepsTheConnection() async throws {
+        let mac = try endpoint()
+        let socket = ScriptedSocket()
+        let connector = ScriptedConnector()
+        let events = PasteEvents()
+        await connector.enqueue(.socket(socket), for: mac.url)
+        let connection = HostConnection(endpoint: mac, connector: connector, replyObserver: { await events.append($0) })
+        await connection.connect()
+        try await waitUntil { await connection.currentSnapshot().state == .negotiating }
+        try await socket.push(.hello(HelloInfo(
+            versions: [ProtocolVersion.current], capabilities: ["send_text", PastedText.capability], deviceName: "Mac"
+        )))
+        try await waitUntil { await connection.currentSnapshot().state == .ready }
+        try await socket.push(.error(code: .malformed, message: "pastes go only to agent sessions"))
+        try await waitUntil { await events.values.count == 1 }
+        #expect(await connection.currentSnapshot().state == .ready)
+        try await socket.push(.error(code: .notAllowed, message: "target requires confirmation at the Mac"))
+        try await waitUntil { await connection.currentSnapshot().state != .ready }
+        await connection.disconnect()
+    }
+}
+
+@MainActor @Suite struct PasteConversationStateTests {
+    @Test func aPasteIsPendingUntilARefusalMarksItWithTheReason() throws {
+        let log = ConversationLog()
+        log.noteSent("compare", pasted: "first", endpointID: "mac", targetID: "tmux:a")
+        log.noteSent("again", pasted: "second", endpointID: "mac", targetID: "tmux:a")
+        #expect(log.entries.map(\.pasteState) == [.pending, .pending])
+        let refused = try #require(log.notePasteRefused("pastes go only to agent sessions", endpointID: "mac"))
+        #expect(refused.text == "second")
+        #expect(log.entries.map(\.pasteState) == [.pending, .refused("pastes go only to agent sessions")])
+        #expect(log.notePasteRefused("x", endpointID: "other") == nil)
+    }
+
+    @Test func aReplyFromTheDestinationMarksItsPendingPastesDelivered() throws {
+        let log = ConversationLog()
+        log.noteSent("compare", pasted: "note", endpointID: "mac", targetID: "tmux:a")
+        log.noteSent("other", pasted: "note", endpointID: "mac", targetID: "tmux:b")
+        log.noteReply(HostReplyEvent(endpointID: "mac", frame: Frame(timestamp: 1, source: "mac", payload: .text(
+            TextPayload(text: "Done.", reply: ReplyDescriptor(id: UUID(), hostID: "mac", targetID: "tmux:a"))
+        ))))
+        #expect(log.entries.prefix(2).map(\.pasteState) == [.delivered, .pending])
+        #expect(log.entries.last?.pasted == nil) // a host reply never carries a paste
+    }
+}
+
+private actor PasteEvents {
+    private(set) var values: [HostReplyEvent] = []
+    func append(_ event: HostReplyEvent) { values.append(event) }
 }

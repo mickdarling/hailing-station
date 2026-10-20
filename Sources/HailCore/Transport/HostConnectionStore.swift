@@ -32,6 +32,8 @@ public final class HostConnectionStore {
     /// Hosts that said RightyO does not recognise the owner's voice on this device's input (rightyo#164), until they
     /// say it does, the device starts a new stream, or the host is removed.
     public private(set) var ownerVoiceUnrecognized: Set<HostEndpoint.Identifier> = []
+    /// The latest paste request a Mac refused (#608), so the station can show why and offer the paste again.
+    public private(set) var lastPasteRefusal: PasteRefusal?
     /// This device's current input route kind for `ambient_input` (rightyo#164); replaceable in tests.
     @ObservationIgnored var inputRoute: @MainActor () async -> String? = { HostConnectionStore.currentInputRoute() }
 
@@ -178,7 +180,7 @@ public final class HostConnectionStore {
 
     private func receive(_ event: HostReplyEvent, token: UUID) {
         guard tokens[event.endpointID] == token else { return }
-        if receiveAmbientNotice(event) { return }
+        if receiveAmbientNotice(event) || receivePasteRefusal(event) { return }
         replyFrames.append(event)
         conversation.noteReply(event)
         onReplyFrame?(event)
@@ -302,13 +304,34 @@ extension HostConnectionStore {
         _ text: String, pasted: PastedDraft? = nil, host id: HostEndpoint.Identifier, targetID: String
     ) async throws {
         guard let connection = connections[id] else { throw HostConnectionFailure.notReady }
-        try await connection.sendFinalText(text, pasted: pasted, to: targetID)
+        if let pasted {
+            try await connection.sendFinalText(text, pasted: pasted, to: targetID)
+        } else {
+            try await connection.sendFinalText(text, to: targetID)
+        }
+        // A paste stays pending until a reply for the destination arrives or the Mac refuses it (#608).
         conversation.noteSent(text, pasted: pasted?.text, endpointID: id, targetID: targetID)
     }
 
-    /// Whether the connected Mac takes pasted text (#608): the station offers paste only then.
-    public func acceptsPaste(host id: HostEndpoint.Identifier) -> Bool {
-        snapshots[id]?.capabilities.contains(PastedText.capability) == true
+    /// Whether the destination takes pasted text (#608): the Mac advertises `pasted_text` and the target is of a kind
+    /// that may (the Mac still checks a tmux pane is an agent, and refuses without dropping the connection).
+    public func acceptsPaste(host id: HostEndpoint.Identifier, targetID: String) -> Bool {
+        guard let snapshot = snapshots[id], snapshot.capabilities.contains(PastedText.capability) else { return false }
+        let kind = snapshot.targets.first { $0.id == targetID }?.kind
+        return kind.map(PastedDraft.pasteTargetKinds.contains) == true
+    }
+
+    /// A paste request the Mac refused (#608): the pending pasted turn is marked refused with the reason, and the
+    /// station can put the paste back.
+    func receivePasteRefusal(_ event: HostReplyEvent) -> Bool {
+        guard case .control(.error(_, let message)) = event.frame.payload, message.hasPrefix("paste") else {
+            return false
+        }
+        if let refused = conversation.notePasteRefused(message, endpointID: event.endpointID) {
+            lastPasteRefusal = PasteRefusal(endpointID: event.endpointID, entryID: refused.id, pasted: refused.text,
+                                            message: message)
+        }
+        return true
     }
     public func sendEscape(host id: HostEndpoint.Identifier, targetID: String) async throws {
         guard let connection = connections[id] else { throw HostConnectionFailure.notReady }
