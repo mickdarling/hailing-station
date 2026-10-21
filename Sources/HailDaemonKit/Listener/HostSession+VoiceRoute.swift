@@ -16,12 +16,14 @@ extension HostSession {
     struct VoiceRouted: Sendable, Equatable {
         let from: String
         let to: String
+        /// Nil only for a route made outside a session's own routing step (none yet), which then skips this check.
         var generation: UUID?
     }
 
     /// The route this one ingress is being handed to, bound only while the host delivers a frame it routed itself
-    /// (`voiceRoute`) or the listener dispatches an ambient request its consumer routed. No frame field, device name
-    /// or local socket request can set it, and it admits nothing once the selection has moved off `from`.
+    /// (`voiceRoute`). No frame field, device name or local socket request can set it, and it admits nothing once the
+    /// selection has moved off `from`. Tasks started during that delivery inherit it; none of them may call back into
+    /// a session's `deliver` or `dispatch` while it is bound.
     @TaskLocal static var voiceRouted: VoiceRouted?
 
     enum VoiceRouting {
@@ -60,6 +62,8 @@ extension HostSession {
     /// frame meets the lockdown refusal as it is. Every other frame is untouched.
     func voiceRoute(_ frame: Frame) async -> VoiceRouting {
         #if os(macOS)
+        // The selection the frame arrived on; the awaits below cannot carry the route onto a later one.
+        let generation = selectionGeneration
         guard let routes = authorizer.voiceRoutes, case .text(let text) = frame.payload, text.isFinal,
               text.reply == nil, let target = frame.target, target == selectedTarget,
               routes.route(for: target) != nil, await authorizer.authorize(frame) == .allow,
@@ -87,7 +91,7 @@ extension HostSession {
         }
         var routed = frame
         routed.target = named.target
-        return .deliver(routed, routed: VoiceRouted(from: target, to: named.target, generation: selectionGeneration))
+        return .deliver(routed, routed: VoiceRouted(from: target, to: named.target, generation: generation))
         #else
         return .deliver(frame, routed: nil)
         #endif

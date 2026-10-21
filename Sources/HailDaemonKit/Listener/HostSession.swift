@@ -21,6 +21,8 @@ public protocol HostSessionAuthorizing: Sendable {
     /// The owner's named voice routes when haild runs with `--voice-routes` and the file exists (#636); nil otherwise.
     var voiceRoutes: VoiceRoutes? { get }
     #endif
+    /// Must be free of side effects and give the same answer for the same frame: the session may ask about one frame
+    /// more than once (voice routing asks about the frame as sent, then as delivered, #636).
     func authorize(_ frame: Frame) async -> HostSessionAuthorization
 }
 
@@ -131,8 +133,9 @@ struct AuthorizedInput: ~Copyable, Sendable {
     }
 }
 
-/// One authorizer decision per frame, taken exactly once. The allowed frame is classified here so routing
-/// answers each shape exactly as before without consulting the authorizer again.
+/// One admitting authorizer decision per frame. The allowed frame is classified here so routing answers each shape
+/// exactly as before without consulting the authorizer again. (Voice routing, #636, also asks the authorizer about
+/// the frame as sent before choosing a route, so `authorize` must have no side effects.)
 enum AdmittedFrame: ~Copyable, Sendable {
     case control(ControlPayload)
     case input(AuthorizedInput)
@@ -155,9 +158,10 @@ public struct HostSessionResult: Sendable, Equatable {
     }
 }
 
-/// One peer's protocol state. Every path to `HailHost.send` runs through this session's authorizer exactly
-/// once per frame and through its captured selection: `deliver` accepts only an `AuthorizedInput`, which
-/// only the authorizer's own allow decision on that frame can produce.
+/// One peer's protocol state. Every path to `HailHost.send` runs through this session's authorizer and its captured
+/// selection: `deliver` accepts only an `AuthorizedInput`, which only the authorizer's own allow decision on that
+/// (possibly voice-routed) frame can produce. `authorize` must be free of side effects: a frame to a selected voice
+/// route is asked about twice, once as sent and once as delivered (#636).
 public actor HostSession {
     enum State: Sendable, Equatable {
         case awaitingHello
@@ -244,7 +248,7 @@ public actor HostSession {
         }
     }
 
-    /// The single authorizer call for `frame`. An allowed final targeted text frame becomes the only
+    /// The admitting authorizer call for `frame`. An allowed final targeted text frame becomes the only
     /// `AuthorizedInput` that frame will ever yield; `deliver` accepts nothing else. `device` is the
     /// session's attribution of the sender and is supplied by the session, not read from the frame.
     private func admit(_ frame: Frame, version: Int, device: String) async -> AdmittedFrame? {

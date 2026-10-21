@@ -133,9 +133,10 @@ route: "Deck, add a slide on pricing".
 - **The reply comes back.** A delivered routed request makes this connection that route's last input device (#370),
   on its current selection generation. The selection *covers* a target when it is the selected target, or when both
   it and the selected target are routes. The reply checks (`holds`, request records, `recordOwner`, `selects`) use
-  that, so Deck's reply reaches the device that asked, and no other device. The single-selector fallback stays
-  exact: a device selecting Scratch never receives Deck's unsolicited replies. Selecting away, or away and back,
-  ends the claim, as it does for any reply.
+  that, so while the claim holds Deck's reply reaches the device that asked and no other device. Selecting away, or
+  away and back, ends the claim, as do the 10-minute last-input lifetime and a disconnect. After that the existing
+  single-selector rule applies unchanged: Deck's reply can reach a device that selects Deck itself, never a device
+  that selects Scratch.
 
 Verification is synthetic only (`VoiceRouteDeliveryTests`): a fake tmux-kind adapter and never-started transports.
 It is not device hearing, and the app does not yet show a routed reply in the selected destination's thread
