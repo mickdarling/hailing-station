@@ -13,7 +13,7 @@ struct StationBuildFooter: View {
             .frame(maxWidth: .infinity)
             .padding(.horizontal, 16)
             .padding(.vertical, 8)
-            .background(Color(uiColor: .systemGroupedBackground))
+            .background(StationPlatform.background)
             .accessibilityIdentifier("station.build-info")
     }
 }
