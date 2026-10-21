@@ -32,8 +32,9 @@ import Testing
         let output: String
     }
 
-    /// Blocks until the shell exits, so only from a body on `HeavyTestExecutor`. A shell still running at `deadline`
-    /// is killed, which ends the read and the wait, and the test fails on its status.
+    /// Blocks until the shell exits, so only from a body on `HeavyTestExecutor`. A shell still running at `deadline` is
+    /// killed with its whole process group (the shell leads its own), so a child holding the pipe open dies too, the
+    /// read and the wait end, and the test fails.
     private func run(_ shell: String, _ arguments: [String], in directory: URL) throws -> Run {
         let process = Process()
         process.executableURL = URL(fileURLWithPath: shell)
@@ -46,12 +47,13 @@ import Testing
         process.standardError = output
         try process.run()
         let pid = process.processIdentifier
-        let overdue = DispatchWorkItem { _ = Darwin.kill(pid, SIGKILL) }
+        let overdue = DispatchWorkItem { _ = Darwin.kill(-pid, SIGKILL) }
         DispatchQueue.global().asyncAfter(deadline: .now() + Self.deadline, execute: overdue)
         let data = output.fileHandleForReading.readDataToEndOfFile()
         process.waitUntilExit()
         overdue.cancel()
-        #expect(process.terminationReason == .exit, "\(shell) did not exit within \(Self.deadline) s")
+        #expect(process.terminationReason == .exit,
+                "\(shell) ended on signal \(process.terminationStatus); one running at \(Self.deadline) s is killed")
         return Run(status: process.terminationStatus, output: String(bytes: data, encoding: .utf8) ?? "")
     }
 
