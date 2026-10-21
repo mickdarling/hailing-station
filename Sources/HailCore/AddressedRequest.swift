@@ -1,5 +1,5 @@
-public import Foundation
-public import HailProtocol
+import Foundation
+import HailProtocol
 
 /// A request the user addressed by name to another listed session from one thread (#636), so that session's reply
 /// can show in that thread too. The host decides where a request goes; this only places the reply in the chat, and
