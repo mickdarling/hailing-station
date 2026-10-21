@@ -132,7 +132,9 @@ enum AmbientStopConfirmation {
     static let mediaOff = RightyoAddressing.key("confirm-media-off")
     /// A spoken note (#552): "Saved." once its Shortcut succeeded, "That didn't save." when it did not.
     static let saved = RightyoAddressing.key("confirm-saved"), notSaved = RightyoAddressing.key("confirm-not-saved")
-    static let reserved: Set<String> = [stopped, idle, muted, unmuted, mediaOn, mediaOff, saved, notSaved]
+    /// An ambient request the owner addressed to a voice route that did not take it (#636): "Nothing was sent."
+    static let notSent = RightyoAddressing.key("confirm-not-sent")
+    static let reserved: Set<String> = [stopped, idle, muted, unmuted, mediaOn, mediaOff, saved, notSaved, notSent]
 
     /// Why a playback stop is not confirmed, as a log token, or nil when it is: only the enrolled owner's stop, and
     /// only on a connection still there to hear it.
@@ -676,6 +678,15 @@ extension RightyoInputConsumer {
 }
 
 extension RightyoVoiceRouting.Refusal {
+    /// What the owner's own device shows (#636, slice 5c), worded as tap-to-talk's refusals; never logged.
+    public var message: String {
+        switch self {
+        case .notDelivered(let name): "voice route: \(name) couldn't take it; nothing was sent"
+        case .nothingToSay(let name): "voice route: nothing to send to \(name)"
+        case .unclear: "voice route: which session? Nothing was sent"
+        }
+    }
+
     /// The audit token: the reason only, never the route's name or the words.
     public var token: String {
         switch self {

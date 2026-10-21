@@ -964,9 +964,7 @@ extension AmbientRightyoRouter {
             settings.routing = RightyoVoiceRouting(routes: routes) { [weak listener] target in
                 await listener?.voiceRouteBinding(target)
             }
-            settings.onVoiceRouteRefused = { [weak self] refusal in
-                self?.emit("ambient_voice_route_refused", connection: connection, detail: refusal.token)
-            }
+            settings.onVoiceRouteRefused = voiceRouteRefused(on: connection, listener: listener)
         }
         return try RightyoAmbientPipeline(configuration: settings,
                                           dispatcher: AmbientListenerDispatcher(
@@ -1384,6 +1382,27 @@ extension AmbientRightyoRouter {
                 let confirm = await confirmVoiceMute(persona, on: connection, listener: listener)
                 let detail = "destination=\(destination) outcome=\(outcome) bytes=\(text.utf8.count)"
                 emit("ambient_voice_note", connection: connection, detail: "\(detail) confirm=\(confirm)")
+            }
+        }
+    }
+
+    /// An ambient request the owner addressed to a voice route that did not take it (#636, slice 5c): the device that
+    /// said it is told, with one refusal line (`voice_route_refused`, sent only to a device that takes request
+    /// refusals) and one `confirm-not-sent/` clip, in the order said. Logs the reason and both outcomes as tokens;
+    /// never the route's name or the words.
+    fileprivate func voiceRouteRefused(
+        on connection: UUID, listener: WebSocketListener
+    ) -> @Sendable (RightyoVoiceRouting.Refusal) -> Void {
+        let chain = SerialTaskChain()
+        return { [weak self, weak listener] refusal in
+            chain.enqueue { [weak self, weak listener] in
+                guard let self else { return }
+                let shown = await listener?.showRouteRefusal(refusal.message, target: configuration.target,
+                                                             connection: connection) ?? "no_connection"
+                let confirm = await confirmVoiceMute(AmbientStopConfirmation.notSent, on: connection,
+                                                     listener: listener)
+                emit("ambient_voice_route_refused", connection: connection,
+                     detail: "\(refusal.token) shown=\(shown) confirm=\(confirm)")
             }
         }
     }

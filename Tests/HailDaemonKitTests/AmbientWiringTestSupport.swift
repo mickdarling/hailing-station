@@ -22,7 +22,7 @@ func ambientRig(
     events: AmbientEventNames? = nil, acknowledgements: AmbientAckLibrary? = nil, replyControl: Bool = false,
     mediaTimeout: TimeInterval = AmbientRightyoRouter.defaultMediaTimeout,
     destinations: VoiceDestinations? = nil, shortcuts: ShortcutRunner = ShortcutRunner(),
-    onEvent: (@Sendable (WebSocketListenerEvent) -> Void)? = nil
+    routes: VoiceRoutes? = nil, onEvent: (@Sendable (WebSocketListenerEvent) -> Void)? = nil
 ) async throws -> AmbientWiringRig {
     let rig = try await RecipientTestRig.make()
     let connected = ConnectedPeerIDs()
@@ -37,7 +37,7 @@ func ambientRig(
     let gate = AmbientAudioGate(target: RecipientTestRig.target, sink: router, sweepInterval: nil)
     let listener = try WebSocketListener(
         bindAddress: "127.0.0.1", port: 0, host: rig.host,
-        authorizer: PersonalTerminalAuthorizer(ambientAudio: gate), hostName: "mac-test",
+        authorizer: PersonalTerminalAuthorizer(ambientAudio: gate).naming(routes), hostName: "mac-test",
         singleTerminalReplyFallback: true, ambient: router, log: { connected.record($0) }
     )
     return AmbientWiringRig(rig: rig, listener: listener, router: router, gate: gate, connected: connected,

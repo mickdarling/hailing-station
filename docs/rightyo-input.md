@@ -668,3 +668,7 @@ The owner can say "Jarvis, add to Notes: buy oat milk" or "Jarvis, put this in N
 - **Log:** `ambient_voice_note destination=… outcome=… bytes=… confirm=…`, with tokens and a byte count only, never the words.
 
 Setup is the owner's: write the destinations file (mode `0600`), point `host.json` at it, and add the two clip folders.
+
+Separately, an ambient request the owner addressed to a voice route that sent nothing plays a clip from the
+reserved `confirm-not-sent/` folder ("Nothing was sent."), after the device's refusal line (#636, see
+`docs/voice-routing.md`).
