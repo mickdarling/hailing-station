@@ -34,9 +34,15 @@ public actor HailHost {
     /// keeps the host's `sanitizing` policy. Only the cap changes: newline rule, guard, tier, lockdown,
     /// binding and rate limit run exactly as on any other send.
     @TaskLocal static var localDispatchIngress = false
+    /// The line cap for a phone request that carries a paste (#608): the whole framed line from `PastedContent`.
+    public static let pastedSanitizing = PastedContent.lineCap
+    /// Bound to true only by `HostSession` for a phone request whose text `PastedContent` framed, so that send alone
+    /// sanitises under `pasteSanitizing`. As with a dispatch, only the cap changes.
+    @TaskLocal static var pastedIngress = false
     public let registry: Registry
     private let sanitizing: SanitizePolicy
     private let dispatchSanitizing: SanitizePolicy
+    private let pasteSanitizing: SanitizePolicy
     private let store: any PolicyStore
     private let clock = ContinuousClock()
     private let window: Duration
@@ -54,11 +60,9 @@ public actor HailHost {
     ) throws {
         self.registry = registry
         self.sanitizing = sanitizing
-        // The host's own newline rule stands; a dispatch only gets the local-prompt length caps.
-        var dispatch = sanitizing
-        dispatch.maxCharacters = max(sanitizing.maxCharacters, Self.localPromptSanitizing.maxCharacters)
-        dispatch.maxUTF8Bytes = max(sanitizing.maxUTF8Bytes, Self.localPromptSanitizing.maxUTF8Bytes)
-        dispatchSanitizing = dispatch
+        // The host's own newline rule stands; a dispatch or a paste only gets its own length caps.
+        dispatchSanitizing = sanitizing.widened(to: Self.localPromptSanitizing)
+        pasteSanitizing = sanitizing.widened(to: Self.pastedSanitizing)
         self.store = store
         window = confirmationWindow
         var loaded = Policy()
@@ -120,7 +124,8 @@ public actor HailHost {
         try requireSendPreflight()
         let lines: [String]
         do {
-            let policy = Self.localDispatchIngress ? dispatchSanitizing : sanitizing
+            let policy = Self.localDispatchIngress ? dispatchSanitizing
+                : Self.pastedIngress ? pasteSanitizing : sanitizing
             lines = try Sanitizer.sanitize(text, policy: policy)
         } catch let error as SanitizeError {
             throw HostError.refused(error)
