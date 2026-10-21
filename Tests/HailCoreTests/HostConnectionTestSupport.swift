@@ -18,7 +18,22 @@ actor ScriptedSocket: WebSocketTransport {
         self.finishReceiveOnClose = finishReceiveOnClose
     }
 
-    func send(_ data: Data) { outgoing.append(data) }
+    private var holding = false
+    private var held: [CheckedContinuation<Void, Never>] = []
+
+    /// Each later send is recorded at once but returns only at `releaseSends`, so a test can act while it suspends.
+    func holdSends() { holding = true }
+
+    func releaseSends() {
+        holding = false
+        held.forEach { $0.resume() }
+        held.removeAll()
+    }
+
+    func send(_ data: Data) async {
+        outgoing.append(data)
+        if holding { await withCheckedContinuation { held.append($0) } }
+    }
 
     func receive() async throws -> Data {
         if !incoming.isEmpty { return try incoming.removeFirst().get() }
