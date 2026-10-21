@@ -36,6 +36,20 @@ import Testing
         #expect(log.entries.map(\.text) == ["Partial, then complete.", "Next"])
     }
 
+    /// #606: a reply keeps its spoken words in `text` and its unspoken Markdown apart, in `metadata`.
+    @Test func aReplyKeepsItsMetadataApartFromItsSpokenText() {
+        let log = ConversationLog()
+        let id = UUID()
+        let reply = ReplyDescriptor(id: id, hostID: "host", targetID: "tmux:a")
+        let payload = TextPayload(text: "Done.", reply: reply, metadata: "- [#1](https://example.invalid/pull/1)")
+        let frame = Frame(timestamp: 0, source: "host", payload: .text(payload))
+        log.noteReply(HostReplyEvent(endpointID: "mac", frame: frame))
+        #expect(log.entries.map(\.text) == ["Done."])
+        #expect(log.entries.map(\.metadata) == ["- [#1](https://example.invalid/pull/1)"])
+        log.noteReply(replyEvent("Done, updated.", id: id))
+        #expect(log.entries.map(\.metadata) == [nil])
+    }
+
     @Test func blankSendsAndNonTextFramesAreIgnored() {
         let log = ConversationLog()
         log.noteSent("   ", endpointID: "mac", targetID: "tmux:a")

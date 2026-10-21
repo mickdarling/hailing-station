@@ -6,7 +6,7 @@ import Testing
 @testable import HailDaemonKit
 
 /// Instant acknowledgement, input side (rightyo#105, #324): advertised names, clips, and the cue at admission.
-@Suite(.serialized, .timeLimit(.minutes(1))) struct AmbientWiringAcknowledgementTests {
+@Suite(.serialized, .timeLimit(.minutes(1)), .frozenGuardBudget) struct AmbientWiringAcknowledgementTests {
     static let addressing: JSONValue = .object([
         "names": .array([.string("Haili"), .string("Friday"), .string("Jarvis"), .string("RightyO")]),
         "variants": .object(["Haili": .array([.string("Hailey"), .string("Haley")]),

@@ -4,7 +4,7 @@ import Foundation
 import Testing
 @testable import HailDaemonKit
 
-@Suite(.serialized, .timeLimit(.minutes(1))) struct RightyoCoachingTransportFailureTests {
+@Suite(.serialized, .timeLimit(.minutes(1)), .frozenGuardBudget) struct RightyoCoachingTransportFailureTests {
     @Test(arguments: [false, true])
     func stdinFailureRevokesOnlyCoachingOutput(coaching: Bool) async throws {
         let fake = try FakeRightyo("""
