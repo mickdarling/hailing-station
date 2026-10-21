@@ -127,7 +127,7 @@ enum StationPlatform {
 }
 
 extension View {
-    /// macOS station destinations need an explicit return control (#523).
+    /// macOS station destinations need an explicit return control (#523) in place of the overlapping chevron (#528).
     @ViewBuilder func stationToolBackNavigation() -> some View {
         #if os(macOS)
         modifier(StationToolBackNavigation())
@@ -182,7 +182,7 @@ private struct StationToolBackNavigation: ViewModifier {
     @Environment(\.dismiss) private var dismiss
 
     func body(content: Content) -> some View {
-        content.safeAreaInset(edge: .top, spacing: 0) {
+        content.navigationBarBackButtonHidden(true).safeAreaInset(edge: .top, spacing: 0) {
             HStack {
                 Button("Back", systemImage: "chevron.left") { dismiss() }
                 .buttonStyle(.bordered)
