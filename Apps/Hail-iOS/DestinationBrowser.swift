@@ -80,7 +80,8 @@ struct DestinationBrowser: View {
                     .foregroundStyle(target.alive ? Color.green : Color.secondary)
                 VStack(alignment: .leading, spacing: 2) {
                     Text(target.name)
-                    Text(target.kind == "tmux" ? "Terminal session" : target.kind)
+                    // A listed but unavailable target, such as an offline voice route (#636), says so in words.
+                    Text(target.alive ? target.kindLabel : "Offline · \(target.kindLabel)")
                         .font(.caption)
                         .foregroundStyle(.secondary)
                 }
@@ -95,7 +96,7 @@ struct DestinationBrowser: View {
             "\(target.name), \(role), Mac \(host.endpoint.name), \(host.endpoint.url.absoluteString)"
         )
         .accessibilityValue(target.accessibilityValue(isSelected: isSelected))
-        .accessibilityHint(target.alive ? "Selects this target" : "This target is unavailable")
+        .accessibilityHint(target.alive ? "Selects this target" : "This target is offline, so it cannot be selected")
     }
 
     private func hostHeader(_ host: HostConnectionSnapshot) -> some View {
@@ -125,8 +126,10 @@ private extension HostConnectionState {
 }
 
 private extension TargetInfo {
+    var kindLabel: String { kind == "tmux" ? "Terminal session" : kind }
+
     func accessibilityValue(isSelected: Bool) -> String {
-        if !alive { return "Unavailable" }
+        if !alive { return "Offline" }
         return isSelected ? "Live, selected" : "Live"
     }
 }
