@@ -112,7 +112,7 @@ extension HostSession {
     /// the captured selection. A refused, unconfirmed or ownerless handoff records nothing.
     func deliver(_ input: consuming AuthorizedInput, recordsLastInput: Bool = false) async -> HostDeliveryOutcome {
         let recordsInput = recordsLastInput || Self.ambientInputDispatch
-        guard input.target == selectedTarget else {
+        guard admitsInput(to: input.target) else {
             return .refused(.notAllowed, "select the destination before speaking")
         }
         do {
@@ -152,10 +152,11 @@ extension HostSession {
         return outcome
     }
 
-    /// The captured selection authority: still negotiated, same selection generation, same target.
+    /// The captured selection authority: still negotiated, same selection generation, and a target the selection
+    /// covers (the selected target, or a voice route while a route is selected, #636).
     private func selects(_ target: String, generation: UUID) -> Bool {
         guard case .ready = state else { return false }
-        return generation == selectionGeneration && selectedTarget == target
+        return generation == selectionGeneration && covers(target)
     }
 
     private func commit(_ context: ProviderTurnContext, generation: UUID) -> HostDeliveryOutcome {
@@ -236,7 +237,7 @@ extension HostSession {
     ) throws {
         let target = context.binding.targetID
         pruneReplyRequests()
-        guard case .ready = state, generation == selectionGeneration, selectedTarget == target else {
+        guard case .ready = state, generation == selectionGeneration, covers(target) else {
             throw HostError.denied(.notAllowed(target))
         }
         guard replyRequests.count < HostReplyRequest.capacity else { throw ProviderContractError.capacityExceeded }
@@ -348,7 +349,7 @@ extension HostSession {
         #endif
     }
 
-    private func policyFilteredTargets() async throws -> [TargetInfo] {
+    func policyFilteredTargets() async throws -> [TargetInfo] {
         let listing = try await host.registry.listing()
         guard let policy = await host.refreshedPolicy() else { return [] }
         return listing.compactMap { listed in
