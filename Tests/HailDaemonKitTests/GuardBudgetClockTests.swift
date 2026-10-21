@@ -100,13 +100,22 @@ extension RightyoInputConsumerTests {
         }
     }
 
-    @Test func unbudgetedMatchingIgnoresTheClockButBudgetedMatchingStillFailsClosed() throws {
+    @Test func targetBlockMatchingIgnoresTheClockButBudgetedMatchingStillFailsClosed() throws {
         let guards = try CompiledGuards(DangerousPatternGuard.defaults)
-        let block = RightyoInputEvent.replyBlock(target: RecipientTestRig.target)
+        let longest = String(repeating: "a", count: 96)
         GuardBudgetClock.$current.withValue(.expiring()) {
-            #expect(guards.unbudgetedMatches(in: [block]).isEmpty)
+            #expect(DangerousPatternGuard.targetBlockMatches(target: RecipientTestRig.target).isEmpty)
+            #expect(DangerousPatternGuard.targetBlockMatches(target: longest).isEmpty)
+            #expect(DangerousPatternGuard.targetBlockMatches(target: "tmux:sudo") == ["sudo"])
             #expect(!guards.matches(in: [GuardBudgetClockTests.benign]).isEmpty)
-            #expect(guards.unbudgetedMatches(in: ["sudo rm -rf /"]) == ["rm -rf", "sudo"])
         }
+    }
+
+    /// Defence in depth (#658): the longest allowlisted id stays well under the cap; a block over it is a hit.
+    @Test func aTargetBlockOverTheByteCapIsAHit() {
+        let longest = RightyoInputEvent.replyBlock(target: String(repeating: "a", count: 96))
+        #expect(longest.utf8.count <= DangerousPatternGuard.maxTargetBlockBytes)
+        #expect(DangerousPatternGuard.targetBlockMatches(target: String(repeating: "a", count: 512))
+                == ["target block too long"])
     }
 }

@@ -10,7 +10,8 @@ once is out of scope.
 | Slice | State |
 | --- | --- |
 | 1. Allow-list file and the opening-name parser (`VoiceRoutes`) | In source. Not wired to any input path, not deployed. |
-| 2–8. Host listing, route-group authority, ambient routing, refusals, spoken and visual labels, app selector | Proposed; see the [plan on #636](https://github.com/mickdarling/hailing-station/issues/636). |
+| 2. Host listing: route names, offline routes and `--voice-routes` | In source. Not deployed: `host.sh` does not pass the flag yet (slice 8). |
+| 3–8. Route-group authority, ambient routing, refusals, spoken and visual labels, app selector | Proposed; see the [plan on #636](https://github.com/mickdarling/hailing-station/issues/636). |
 
 Nothing below changes the running daemon or installed builds until a later slice wires it in and it is deployed.
 
@@ -36,8 +37,8 @@ The example is synthetic.
   Targets are unique, and `default` must be one of them.
 - **Names.** A `name` and each of up to eight `aliases` is 1–48 characters with no control characters. It must also
   be sayable as the parser hears it: one to three of its words (runs of letters, digits and apostrophes), separated
-  by whitespace alone, each keying to at least one ASCII letter or digit, the first not a greeting. So "Voice-Work",
-  "One-Two-Three-Four", "Okay Deck" and "東京 Deck" are refused. Names are compared as `RightyoAddressing.key` (case-folded ASCII letters and digits), so "Voice Work"
+  by whitespace alone, each wholly ASCII letters, digits and apostrophes, the first not a greeting. So "Voice-Work",
+  "One-Two-Three-Four", "Okay Deck", "Café" and "東京 Deck" are refused. Names are compared as `RightyoAddressing.key` (case-folded ASCII letters and digits), so "Voice Work"
   and "voicework" are the same spelling. Every spelling must be unique across routes and must not be a greeting
   ("hey", "ok", "okay").
 - **Trust.** The file decides where the owner's spoken requests go, so it is trusted exactly as `destinations.json`
@@ -73,3 +74,31 @@ The parser decides nothing about who is speaking. The owner-only rule is applied
 (slices 3 and 4).
 
 Verification is synthetic only (`VoiceRoutesTests`, `VoiceRoutesFileTests`).
+
+## The device's target list
+
+With `haild run --personal-terminal --voice-routes <absolute path>`, the daemon loads `routes.json` at startup and
+logs `voice_routes` with the route count. A file that is missing or fails to load refuses startup and logs
+`voice_routes error=…`. Without that, routing would be silently off and a request naming a session would go to whichever
+target was already chosen.
+
+The `targets` list a device receives changes in two ways:
+
+- A listed, allowed and bound target that is a route shows the route's `name` instead of its session name. Its id
+  is unchanged.
+- A route that is not listed, not allowed by policy or no longer at its allowed binding is still listed, with its
+  name, as `alive: false`. The device can show it as offline instead of hiding it. `select` reads the policy-filtered
+  listing without names, so an offline route cannot be selected (`not_allowed`). The routes file adds no target the
+  policy does not allow.
+
+Targets that are not routes are listed exactly as before.
+
+**What the listing exposes.** The personal-terminal listener has no authentication (#7, #21). Any peer that
+completes its handshake receives the target list, so with `--voice-routes` it sees every configured route's id and
+name, offline routes and routes the policy does not allow included. Before routes, it saw only allowed targets.
+Keep the listener on a trusted network, as for everything else it carries.
+
+The device's remembered selection matches on id and name, so renaming a target forgets it once and the owner picks
+it again.
+
+Verification is synthetic only (`VoiceRouteListingTests`, `VoiceRouteOptionsTests`).

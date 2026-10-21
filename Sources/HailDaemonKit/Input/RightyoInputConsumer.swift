@@ -336,8 +336,7 @@ public actor RightyoInputConsumer {
               target.allSatisfy({ alphanumeric.contains($0) || "._:-".contains($0) }) else {
             throw RightyoTargetError.unsafeIdentifier
         }
-        let hits = DangerousPatternGuard.unbudgetedMatches(in: [RightyoInputEvent.replyBlock(target: target)],
-                                                           patterns: DangerousPatternGuard.defaults)
+        let hits = DangerousPatternGuard.targetBlockMatches(target: target)
         guard hits.isEmpty else { throw RightyoTargetError.guarded(hits) }
     }
     /// True means handled: guarded delivery, or validation only when initialized with no host. An admitted `dismiss`

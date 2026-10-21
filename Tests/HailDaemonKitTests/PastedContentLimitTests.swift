@@ -56,7 +56,7 @@ import Testing
         ]
         for error in errors {
             let message = PastedContent.refusal(error)
-            #expect(message.hasPrefix("paste")) // a device keeps the connection for a "paste" refusal
+            #expect(message.hasPrefix("paste"))
             #expect(message.utf8.count <= ControlLimits.maxErrorMessage)
         }
         #expect(PastedContent.agentOnlyRefusal.hasPrefix("paste"))
