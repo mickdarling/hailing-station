@@ -137,12 +137,16 @@ public enum ControlPayload: Sendable, Equatable {
     /// diagnostic `route` tokens (`usb_audio`, `car_audio`, ...), never a port name. Sent only to a host that
     /// advertises `AmbientInput.capability`, so speaker-ID results can be attributed to an input chain.
     case ambientInput(route: String)
+    /// Host to device (#612): whether the owner's spoken media mode (#551) is on for this device's ambient stream, why
+    /// it last changed (one of `MediaMode.reasons`), and while on, when it turns itself off (Unix milliseconds). Sent
+    /// only to a device that advertises `MediaMode.capability`. It shows state only and grants no authority.
+    case mediaMode(on: Bool, reason: String? = nil, expires: Int64? = nil)
 }
 
 extension ControlPayload: Codable {
     private enum CodingKeys: String, CodingKey {
         case command, hello, targets, targetID = "target", nonce, code, message, events, from, text, speaker, scope
-        case muted, name, state, route
+        case muted, name, state, route, on, reason, expires
     }
 
     private enum Command: String, Codable {
@@ -150,6 +154,7 @@ extension ControlPayload: Codable {
         case diagnostic, stopPlayback = "stop_playback", ambientMovedHere = "ambient_moved_here"
         case ambientHeard = "ambient_heard", ambientOverheard = "ambient_overheard", overheardScope = "overheard_scope"
         case setReplyMute = "set_reply_mute", ownerVoice = "owner_voice", ambientInput = "ambient_input"
+        case mediaMode = "media_mode"
     }
 
     // A closed wire enum is clearest as one exhaustive switch.
@@ -192,7 +197,27 @@ extension ControlPayload: Codable {
         case .setReplyMute: self = try Self.setReplyMute(from: decoder)
         case .ownerVoice: self = try Self.ownerVoice(from: decoder)
         case .ambientInput: self = try Self.ambientInput(from: decoder)
+        case .mediaMode: self = try Self.mediaMode(from: decoder)
         }
+    }
+
+    /// Strict (#612): only `command`, the boolean `on`, an optional `reason` from `MediaMode.reasons` and, only while
+    /// on, a positive `expires`.
+    private static func mediaMode(from decoder: any Decoder) throws -> ControlPayload {
+        try requireOnly(["command", "on", "reason", "expires"], "media_mode", decoder)
+        let container = try decoder.container(keyedBy: CodingKeys.self)
+        let on = try container.decode(Bool.self, forKey: .on)
+        let raw = try container.decodeIfPresent(String.self, forKey: .reason)
+        let expires = try container.decodeIfPresent(Int64.self, forKey: .expires)
+        guard raw == nil || MediaMode.reason(raw) != nil else {
+            throw DecodingError.dataCorrupted(.init(codingPath: decoder.codingPath,
+                                                    debugDescription: "unknown media_mode reason"))
+        }
+        guard MediaMode.validExpiry(expires, on: on) else {
+            throw DecodingError.dataCorrupted(.init(codingPath: decoder.codingPath,
+                                                    debugDescription: "invalid media_mode expires"))
+        }
+        return .mediaMode(on: on, reason: MediaMode.reason(raw), expires: expires)
     }
 
     /// Strict (rightyo#164): only `command` and a `state` from `OwnerVoice.states`.
@@ -366,6 +391,17 @@ extension ControlPayload: Codable {
         case .ambientInput(let route):
             try container.encode(Command.ambientInput, forKey: .command)
             try container.encode(try Self.closed(AmbientInput.route(route), route, encoder), forKey: .route)
+        case .mediaMode(let on, let reason, let expires):
+            try container.encode(Command.mediaMode, forKey: .command)
+            try container.encode(on, forKey: .on)
+            if let reason {
+                try container.encode(try Self.closed(MediaMode.reason(reason), reason, encoder), forKey: .reason)
+            }
+            guard MediaMode.validExpiry(expires, on: on) else {
+                throw EncodingError.invalidValue(expires as Any, .init(codingPath: encoder.codingPath,
+                                                                      debugDescription: "invalid media_mode expires"))
+            }
+            try container.encodeIfPresent(expires, forKey: .expires)
         }
     }
 }
@@ -410,6 +446,27 @@ public enum AmbientInput {
     /// `value` when it is exactly one of `routes`, else nil.
     public static func route(_ value: String?) -> String? {
         value.flatMap { value in routes.first { DiagnosticLimits.sameBytes($0, value) } }
+    }
+}
+
+/// Media mode state (#612): the owner's spoken media mode (#551) is host-side, so without this a device only notices
+/// that replies stopped. A host tells the device whose ambient stream it is when the mode changes. The device
+/// advertises `capability` in its `hello`; a host never sends `media_mode` to a device without it, because an older
+/// device refuses an unknown command. `reason` says why it last changed: `voice` (the owner said so) or `timeout`
+/// (it turned itself off). `expires` is when an on mode turns itself off, in Unix milliseconds like a frame's `ts`.
+public enum MediaMode {
+    public static let capability = "media_mode"
+    public static let reasons = ["voice", "timeout"]
+
+    /// `value` when it is exactly one of `reasons`, else nil.
+    public static func reason(_ value: String?) -> String? {
+        value.flatMap { value in reasons.first { DiagnosticLimits.sameBytes($0, value) } }
+    }
+
+    /// An expiry is optional, positive, and only meaningful while the mode is on.
+    static func validExpiry(_ expires: Int64?, on: Bool) -> Bool {
+        guard let expires else { return true }
+        return on && expires > 0
     }
 }
 
@@ -825,6 +882,20 @@ extension Schema {
         "then": .object([
             "additionalProperties": .bool(false),
             "properties": .object(["command": .object([:]), "muted": .object(["type": .string("boolean")])])
+        ])
+    ])
+
+    /// `media_mode` carries `command`, a boolean `on`, an optional known `reason` and an optional positive integer
+    /// `expires`, and nothing else (#612). That `expires` comes only with `on: true` is checked by the decoder.
+    static let mediaModePayloadRule: JSONValue = .object([
+        "if": .object(["properties": .object(["command": .object(["const": .string("media_mode")])])]),
+        "then": .object([
+            "additionalProperties": .bool(false),
+            "properties": .object([
+                "command": .object([:]), "on": .object(["type": .string("boolean")]),
+                "reason": .object(["enum": .array(MediaMode.reasons.map(JSONValue.string))]),
+                "expires": .object(["type": .string("integer"), "minimum": .integer(1)])
+            ])
         ])
     ])
 

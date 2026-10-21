@@ -55,6 +55,21 @@ final class AdaptiveStationUITests: XCTestCase {
         }
     }
 
+    /// #611: private coaching is visible on iPhone and iPad, disabled, and says it is not available here yet.
+    @MainActor
+    func testPrivateCoachingShowsDisabledNotYetAvailableEntry() {
+        let app = XCUIApplication()
+        app.launch()
+        XCTAssertTrue(app.staticTexts["Hailing Station"].waitForExistence(timeout: 10))
+
+        let start = app.buttons["station.coaching-start"]
+        XCTAssertTrue(start.waitForExistence(timeout: 10))
+        XCTAssertFalse(start.isEnabled)
+        let message = app.staticTexts["station.coaching-unavailable-message"]
+        XCTAssertTrue(message.exists)
+        XCTAssertTrue(message.label.contains("not yet available on iPhone/iPad"))
+    }
+
     @MainActor
     private func assertStationChrome(in app: XCUIApplication) {
         XCTAssertTrue(app.staticTexts["Hailing Station"].waitForExistence(timeout: 10))

@@ -37,7 +37,10 @@ import Testing
     @Test func defaultOffAdvertisesNothingNewAndRefusesAudioExactlyAsBefore() async throws {
         let (host, adapter) = try await ambientHost()
         let (session, capabilities) = try await openSession(PersonalTerminalAuthorizer(), host: host)
-        #expect(capabilities == ["list_targets", "ping", "select_target", "send_text", "escape", "receive_replies"])
+        // `pasted_text` (#608) is a final-text capability, not an ambient one.
+        #expect(capabilities == [
+            "list_targets", "ping", "select_target", "send_text", "escape", "receive_replies", PastedText.capability
+        ])
         let result = await session.receive(audioFrame(ambientSegment(stream: UUID(), sequence: 0)))
         #expect(try onlyControl(result) == .error(code: .unauthorized, message: "terminal action is not authorized"))
         #expect(result.disposition == .keepOpen)

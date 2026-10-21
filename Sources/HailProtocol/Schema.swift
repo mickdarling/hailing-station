@@ -79,12 +79,23 @@ public enum Schema {
             "metadata": .object([
                 "type": .string("string"), "minLength": .integer(1),
                 "maxLength": .integer(Int64(PayloadLimits.maxMetadataBytes))
+            ]),
+            "pasted": requiring(["text"], [
+                "text": .object([
+                    "type": .string("string"), "minLength": .integer(1),
+                    "maxLength": .integer(Int64(PayloadLimits.maxPastedTextBytes))
+                ])
             ])
         ]),
         "allOf": .array([
             .object([
                 "if": .object(["required": .array([.string("metadata")])]),
                 "then": .object(["required": .array([.string("reply")])])
+            ]),
+            // #608: a paste rides only on a final frame.
+            .object([
+                "if": .object(["required": .array([.string("pasted")])]),
+                "then": .object(["properties": .object(["final": .object(["const": .bool(true)])])])
             ])
         ])
     ])
@@ -165,7 +176,8 @@ public enum Schema {
                 [
                     "hello", "list_targets", "targets", "select", "subscribe", "unsubscribe", "escape", "ping", "pong",
                     "error", "diagnostic", "stop_playback", "ambient_moved_here", "ambient_heard",
-                    "ambient_overheard", "overheard_scope", "set_reply_mute", "owner_voice", "ambient_input"
+                    "ambient_overheard", "overheard_scope", "set_reply_mute", "owner_voice", "ambient_input",
+                    "media_mode"
                 ]
                     .map(JSONValue.string)
             )]),
@@ -213,6 +225,7 @@ public enum Schema {
             commandRule("set_reply_mute", requires: ["muted"]),
             commandRule("owner_voice", requires: ["state"]),
             commandRule("ambient_input", requires: ["route"]),
+            commandRule("media_mode", requires: ["on"]),
             diagnosticPayloadRule,
             stopPlaybackPayloadRule,
             ambientMovedHerePayloadRule,
@@ -221,7 +234,8 @@ public enum Schema {
             overheardScopePayloadRule,
             setReplyMutePayloadRule,
             ownerVoicePayloadRule,
-            ambientInputPayloadRule
+            ambientInputPayloadRule,
+            mediaModePayloadRule
         ])
     ])
 }

@@ -91,4 +91,28 @@ import Testing
         }
         #expect(log.entries.map(\.name) == ["Ben", nil, nil, nil])
     }
+
+    /// #428: overheard remarks build up in order and stay, interleaved with sends and a reply whose text streams in
+    /// place, even when one says the same words as another. None replaces another.
+    @Test func overheardRemarksAccumulateAndStayInOrder() {
+        let log = ConversationLog()
+        let reply = UUID()
+        log.noteOverheard("Pass the salt.", owner: false, endpointID: "mac", targetID: "tmux:a")
+        log.noteOverheard("Pass the salt.", owner: false, endpointID: "mac", targetID: "tmux:a")
+        log.noteOverheard("Is it raining?", owner: true, endpointID: "mac", targetID: "tmux:a")
+        log.noteSent("What changed?", endpointID: "mac", targetID: "tmux:a")
+        log.noteReply(replyEvent("The build", id: reply))
+        log.noteOverheard("Okay.", owner: false, name: "Ben", endpointID: "mac", targetID: "tmux:a")
+        log.noteReply(replyEvent("The build passed.", id: reply))
+        log.noteOverheard("Later.", owner: false, endpointID: "mac", targetID: "tmux:a")
+
+        let entries = log.entries(endpointID: "mac", targetID: "tmux:a")
+        #expect(entries.map(\.text) == [
+            "Pass the salt.", "Pass the salt.", "Is it raining?", "What changed?", "The build passed.",
+            "Okay.", "Later."
+        ])
+        #expect(entries.map(\.overheard) == [true, true, true, false, false, true, true])
+        #expect(entries.map(\.speaker) == [.someone, .someone, .you, .you, .haili, .someone, .someone])
+        #expect(Set(entries.map(\.id)).count == entries.count)
+    }
 }

@@ -31,11 +31,11 @@ extension RootView {
                 .environment(\.dynamicTypeSize, stationTypeSize(fit))
             }
             .scrollBounceBehavior(.basedOnSize)
-            .scrollDismissesKeyboard(.interactively)
+            .stationDismissKeyboardOnScroll()
         }
         // The station header names the app; a "Conversation" bar above it only costs height (#288).
-        .toolbar(.hidden, for: .navigationBar)
-        .background(Color(uiColor: .systemGroupedBackground))
+        .stationHiddenNavigationBar()
+        .background(StationPlatform.background)
         .safeAreaInset(edge: .bottom, spacing: 0) {
             StationBuildFooter()
         }
@@ -48,7 +48,7 @@ extension RootView {
     /// Only an iPad with room for the conversation and side columns fits one screen. A large iPhone in landscape
     /// is regular width too, and a short Stage Manager window may be too low; both keep scrolling.
     func stationFit(in size: CGSize) -> StationFit {
-        let fits = UIDevice.current.userInterfaceIdiom == .pad && horizontalSizeClass == .regular
+        let fits = StationPlatform.supportsWideLayout && horizontalSizeClass == .regular
             && !dynamicTypeSize.isAccessibilitySize && size.height >= 600
         return StationFit(fitsOneScreen: fits, isWide: fits && size.width >= 1_150, height: fits ? size.height : nil)
     }
@@ -86,7 +86,7 @@ extension RootView {
             .frame(maxWidth: .infinity, maxHeight: fit.fitsOneScreen ? .infinity : nil, alignment: .top)
             side {
                 VStack(spacing: 18) {
-                    ambientListeningSurface
+                    listeningSurfaces
                     if fit.isWide { chatSurface }
                 }
                 .frame(maxWidth: regular ? (fit.isWide ? 420 : 360) : .infinity, alignment: .top)
@@ -103,6 +103,17 @@ extension RootView {
                 .frame(maxWidth: regular ? (fit.isWide ? 280 : 360) : .infinity, alignment: .top)
             }
         }
+    }
+
+    /// Private coaching, then ambient listening. The Mac drafts put their coaching card in this slot (#504); iPhone
+    /// and iPad show it disabled until #604 lands (#611).
+    @ViewBuilder
+    private var listeningSurfaces: some View {
+        // The Mac shows no coaching card until its own private coaching card is ported (#266).
+        #if !os(macOS)
+        CoachingUnavailableCard()
+        #endif
+        ambientListeningSurface
     }
 
     /// The chat for the confirmed destination. Without one, the latest reply keeps its own card so its playback
