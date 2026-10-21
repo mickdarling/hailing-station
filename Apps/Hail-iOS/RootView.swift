@@ -13,7 +13,7 @@ struct RootView: View {
     /// Shared by reply playback and ambient capture (#227): the player raises it before audio can be heard.
     @State var echoGuard: AmbientReplyEchoGuard
     /// Keeps the station running in the background while connected without ambient listening (#352).
-    @State var keepalive = BackgroundKeepalive(renderer: SilentAudioKeepalive())
+    @State var keepalive = BackgroundKeepalive(renderer: StationPlatform.keepaliveRenderer())
     /// The "Diagnostics logging" log (#234): off by default; records and sends nothing until turned on.
     @State var diagnostics = DeviceDiagnostics()
     @State var selectedHostID: HostEndpoint.Identifier?
@@ -33,7 +33,7 @@ struct RootView: View {
 
     @MainActor
     init(selectionStore: any DestinationSelectionStoring = UserDefaultsDestinationSelectionStore()) {
-        let session = ManagedAudioSession(backend: AVAudioSessionBackend())
+        let session = ManagedAudioSession(backend: StationPlatform.audioSessionBackend())
         self.selectionStore = selectionStore
         _audioSession = State(initialValue: session)
         _audioRoutes = State(initialValue: AudioRouteModel(controller: session))
@@ -152,7 +152,9 @@ struct LabsView: View {
                     TranscriptionLabView(audioSession: audioSession)
                 }
             }
+            #if os(iOS)
             NavigationLink("Routing spike") { RoutingSpikeView() }
+            #endif
         }
         .navigationTitle("Labs")
     }
