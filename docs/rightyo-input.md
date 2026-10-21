@@ -665,9 +665,10 @@ The owner can say "Jarvis, add to Notes: buy oat milk" or "Jarvis, put this in N
   - `markdown`: the target is an absolute path ending `.md`, with no `.`, `..` or empty components. Each note is appended as one list item, `- yyyy-MM-dd HH:mm <words>` in local time, with line breaks in the words made spaces. If the file doesn't end in a newline, one is added first. An absent file is created `0600`, but its directory must already exist. The last path component is never followed as a symlink. Only a regular file you own, with a single hard link, is written (`open_failed` or `not_a_file` otherwise), so a file someone else made or linked in a shared folder never gets the words. A failed write is cut back to the earlier length. No macOS permission prompt is involved, as long as the file isn't in a protected folder such as `~/Documents`.
   - `shortcut`: `/usr/bin/shortcuts run <shortcut> --input-path <file>`, with no shell and a fixed `PATH` plus `HOME` and `TMPDIR`, never the rest of haild's environment. The words go only into a `0600` temporary file, which is removed afterwards. It times out after 30 s (SIGTERM, then SIGKILL). If haild exits during a run, the file is left behind and is removed at the next start once it is five minutes old. The Shortcut itself has to be built by hand in the Shortcuts app.
 - **Confirmation:** only after the handler finishes does the device hear a clip from `confirm-saved/` ("Saved."), or from `confirm-not-saved/` when it failed.
-
-An ambient request the owner addressed to a voice route that sent nothing plays a clip from the reserved
-`confirm-not-sent/` folder ("Nothing was sent."), after the device's refusal line (#636, see `docs/voice-routing.md`).
 - **Log:** `ambient_voice_note destination=… outcome=… bytes=… confirm=…`, with tokens and a byte count only, never the words.
 
 Setup is the owner's: write the destinations file (mode `0600`), point `host.json` at it, and add the two clip folders.
+
+Separately, an ambient request the owner addressed to a voice route that sent nothing plays a clip from the
+reserved `confirm-not-sent/` folder ("Nothing was sent."), after the device's refusal line (#636, see
+`docs/voice-routing.md`).

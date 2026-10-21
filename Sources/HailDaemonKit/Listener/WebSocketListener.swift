@@ -1397,7 +1397,8 @@ extension AmbientRightyoRouter {
         return { [weak self, weak listener] refusal in
             chain.enqueue { [weak self, weak listener] in
                 guard let self else { return }
-                let shown = await listener?.showRouteRefusal(refusal.message, connection: connection) ?? "no_connection"
+                let shown = await listener?.showRouteRefusal(refusal.message, target: configuration.target,
+                                                             connection: connection) ?? "no_connection"
                 let confirm = await confirmVoiceMute(AmbientStopConfirmation.notSent, on: connection,
                                                      listener: listener)
                 emit("ambient_voice_route_refused", connection: connection,

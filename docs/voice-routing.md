@@ -239,11 +239,17 @@ route's name alone, or a near miss), the device that said it is told, in the ord
 - **One spoken clip.** When the acknowledgement library has a reserved `confirm-not-sent/` folder ("Nothing was
   sent."), one clip plays through the acknowledgement path, to that device only. Like the other confirmations it is
   then held as a host phrase, so hearing it back is echo.
-- **The log.** `ambient_voice_route_refused` carries `reason=…`, `shown=sent|unsupported|failed|no_connection` and
-  `confirm=<folder>/<index>:<outcome>` (or `no_clips`), never the route's name or the words. The route's name goes
-  only to the owner's own device.
+- **Only that device, only while it listens there.** The line and the clip go to the connection whose stream it is,
+  and only while it still selects the stream's target; a reconnected, moved or other device gets nothing.
+- **The log.** `ambient_voice_route_refused` carries `reason=…`,
+  `shown=sent|unsupported|not_ready|failed|no_connection` and `confirm=<key>/<index>:<outcome>` (for example
+  `confirmnotsent/0:sent`, or `no_clips`), never the route's name or the words. The route's name goes only to the
+  owner's own device.
+- **Before turning routing on**, check that the installed app includes #701. An app built between #665 and #701
+  advertises request refusals but does not know `voice_route_refused`, and would drop its connection.
 
-Verification is synthetic only (`AmbientVoiceRouteRefusalTests`, `VoiceRouteRefusalMessageTests`).
+Verification is synthetic only (`AmbientVoiceRouteRefusalTests`, end to end with a second device on the same target,
+for each reason; `VoiceRouteRefusalMessageTests`).
 
 ## The spoken label (slice 6)
 
