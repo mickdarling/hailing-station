@@ -46,7 +46,7 @@ struct ConversationChatView: View {
                                 .frame(maxWidth: .infinity, alignment: .leading)
                         }
                         ForEach(entries) { entry in
-                            bubble(entry).id(entry.id)
+                            if entry.notice { notice(entry).id(entry.id) } else { bubble(entry).id(entry.id) }
                         }
                     }
                     .padding(.vertical, 4)
@@ -72,7 +72,16 @@ struct ConversationChatView: View {
 
     /// The reply the player controls now, else the newest reply.
     private var controlledReplyID: String? {
-        playback.presentationForControls?.id ?? entries.last { $0.speaker == .haili }?.id
+        playback.presentationForControls?.id ?? entries.last { $0.speaker == .haili && !$0.notice }?.id
+    }
+
+    /// A host's refusal of one request (#608, #636): a system line, not a message. The store announces it once.
+    private func notice(_ entry: ConversationEntry) -> some View {
+        Label(entry.text, systemImage: "exclamationmark.bubble")
+            .font(.footnote)
+            .foregroundStyle(.secondary)
+            .frame(maxWidth: .infinity, alignment: .center)
+            .accessibilityLabel("Not sent. \(entry.text)")
     }
 
     @ViewBuilder

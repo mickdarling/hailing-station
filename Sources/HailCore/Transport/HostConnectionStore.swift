@@ -18,6 +18,9 @@ public final class HostConnectionStore {
     /// Called for every reply frame as it arrives, so replies reach the player while the app is in the background,
     /// when SwiftUI view updates such as `onChange` may not run (#282).
     @ObservationIgnored public var onReplyFrame: (@MainActor (HostReplyEvent) -> Void)?
+    /// Called once for each request the host refused (any `ErrorCode.isRequestRefusal`), with its message, so the app
+    /// can announce it once; the chat already shows it (#608, #636).
+    @ObservationIgnored public var onRequestRefusal: (@MainActor (String) -> Void)?
     /// The station chat (#288): requests as they are sent and replies as they arrive, in the background too.
     public let conversation = ConversationLog()
     /// True while ambient listening is streaming; leaving the foreground then keeps the destination authorized (#282).
@@ -243,6 +246,11 @@ extension HostConnectionStore {
             health[event.endpointID] = HostHealthReading(report: report, connectionGeneration: generation)
         case .control(.mediaMode(let on, let reason, let expires)):
             mediaMode[event.endpointID] = MediaModeStatus(on: on, reason: reason, expiresMilliseconds: expires)
+        case .control(.error(let code, let message)) where code.isRequestRefusal:
+            // The one chat line and the one announcement for every request refusal, whatever its code.
+            conversation.noteRefusal(message, endpointID: event.endpointID,
+                                     targetID: selectedTargets[event.endpointID] ?? "")
+            onRequestRefusal?(message)
         case .control(.ownerVoice(let state)):
             if state == "unrecognized" {
                 ownerVoiceUnrecognized.insert(event.endpointID)
