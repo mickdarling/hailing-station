@@ -41,11 +41,11 @@ extension HostSession {
         #endif
     }
 
-    /// Input may go to the selected target, or to the route the host routed this very input to from the target that
-    /// is still selected.
+    /// Input goes to the selected target; host-routed input goes only to its route, and only while its origin is still
+    /// exactly what is selected. So input routed from a stream on Scratch is refused once Deck is selected, even
+    /// when Deck was its route: it belonged to a selection that has ended.
     func admitsInput(to target: String) -> Bool {
-        if target == selectedTarget { return true }
-        guard let routed = Self.voiceRouted else { return false }
+        guard let routed = Self.voiceRouted else { return target == selectedTarget }
         return routed.to == target && routed.from == selectedTarget && covers(target)
     }
 
