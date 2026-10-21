@@ -1,4 +1,5 @@
 import Foundation
+import HailProtocol
 import Testing
 @testable import HailDaemonKit
 
@@ -10,6 +11,24 @@ struct TmuxPasteAgentTests {
     @Test func theAgentFormatTestsEveryAgentCommand() {
         #expect(TmuxAdapter.isAgentFormat == "#{||:#{||:#{==:#{pane_current_command},claude},"
             + "#{==:#{pane_current_command},claude.exe}},#{==:#{pane_current_command},codex}}")
+    }
+
+    /// A pane that is not an agent: the device hears the plain reason as this request's refusal, not a dropped link.
+    @Test func aNonAgentPaneRefusalReachesTheDeviceAsAPasteRefusal() async throws {
+        let registry = Registry()
+        try await registry.register(ShellPaneAdapter())
+        var policy = Policy()
+        try policy.allow("tmux:shell", binding: "binding-s", tier: .open)
+        let host = try HailHost(registry: registry, store: InMemoryPolicyStore(policy))
+        let session = HostSession(host: host, authorizer: PersonalTerminalAuthorizer())
+        _ = await session.receive(helloFrame(capabilities: [RequestRefusals.capability]))
+        _ = await session.receive(sessionFrame(payload: .control(.select(targetID: "tmux:shell"))))
+        let result = await GuardBudgetClock.$current.withValue(.frozen) {
+            await session.receive(sessionFrame(
+                target: "tmux:shell", payload: .text(TextPayload(text: "look", pasted: PastedText(text: "notes")))
+            ))
+        }
+        #expect(try onlyControl(result) == .error(code: .pasteRefused, message: PastedContent.agentOnlyRefusal))
     }
 
     @Test func aPasteReachesAnAgentPaneAndNeverAShell() async throws {
@@ -50,13 +69,23 @@ struct TmuxPasteAgentTests {
             await #expect(throws: AdapterError.deliveryFailed(PastedContent.agentOnlyRefusal)) {
                 try await adapter.deliver(framed, to: refused, binding: nil)
             }
-            #expect(try await !adapter.capture(refused).contains(PastedContent.begin))
+            #expect(try await !adapter.capture(refused).contains(PastedContent.begin("")))
         }
         // The refusal pasted nothing, so the pane stays usable for spoken text.
         try await adapter.deliver("echo still-usable", to: "plain", binding: nil)
         try await adapter.deliver(framed, to: "agent", binding: nil)
         try await Task.sleep(for: .milliseconds(400))
-        #expect(try await adapter.capture("agent").contains(PastedContent.begin))
+        #expect(try await adapter.capture("agent").contains(PastedContent.begin("")))
         #expect(try await adapter.capture("plain").contains("still-usable"))
     }
+}
+
+/// A tmux target whose pane runs a shell: every framed paste is refused the way `TmuxAdapter.pasteToAgent` does.
+private actor ShellPaneAdapter: Adapter {
+    nonisolated let kind = "tmux"
+    func listTargets() async throws -> [AdapterTarget] { [AdapterTarget(name: "shell", binding: "binding-s")] }
+    func deliver(_ text: String, to target: String, binding: String?) async throws {
+        if text.hasPrefix(PastedContent.begin("")) { throw AdapterError.deliveryFailed(PastedContent.agentOnlyRefusal) }
+    }
+    func capture(_ target: String) async throws -> String { "" }
 }

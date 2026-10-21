@@ -62,10 +62,10 @@ public enum PastedContent {
         kind == "codex-owned" || kind == "tmux"
     }
 
-    /// The largest framed line a target of adapter `kind` takes. Every kind that takes a paste today (the Codex
-    /// app-server adapter) takes one text item of at most `PayloadLimits.maxTextBytes`.
+    /// The largest framed line a target of adapter `kind` takes: tmux pastes through a buffer in chunks and takes up to
+    /// `maxFramedBytes`; the Codex app-server adapter takes one text item of at most `PayloadLimits.maxTextBytes`.
     public static func maxFramedBytes(forTargetKind kind: String) -> Int {
-        PayloadLimits.maxTextBytes
+        kind == "tmux" ? maxFramedBytes : PayloadLimits.maxTextBytes
     }
 
     /// The single line a target receives for `pasted` with `spoken` (may be empty), at most `limit` bytes, marked

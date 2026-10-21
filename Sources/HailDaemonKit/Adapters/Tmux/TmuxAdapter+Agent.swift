@@ -6,7 +6,7 @@ extension TmuxAdapter {
     /// goes only to an agent: the tmux server checks the pane's foreground command and pastes in the same command, so
     /// no check-then-paste gap is left on this side. `pasting` runs once text may have reached the pane.
     func pasteBuffer(_ buffer: String, holding text: String, into pane: String, pasting: () -> Void) async throws {
-        if text.hasPrefix(PastedContent.begin + " ") {
+        if text.hasPrefix(PastedContent.begin("")) {
             try await pasteToAgent(buffer: buffer, pane: pane, pasting: pasting)
             return
         }
