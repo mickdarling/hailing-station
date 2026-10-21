@@ -67,11 +67,13 @@ extension VoiceRoutes {
         }
     }
 
-    /// The joined key of `width` words at `start`, or nil past the end or when the words are not separated by
-    /// whitespace alone: a window never crosses a mark, so "Voice, Work, …" is "Voice" addressed, never "Voice Work".
+    /// The joined key of `width` words at `start`, or nil past the end, when a word keys to nothing (one made only of
+    /// letters `RightyoAddressing.key` drops, such as "東京"), or when the words are not separated by whitespace alone:
+    /// a window never crosses a mark, so "Voice, Work, …" is "Voice" addressed, never "Voice Work".
     static func windowKey(_ heard: String, _ words: [VoiceDestinations.Word], _ start: Int, _ width: Int) -> String? {
         guard start + width <= words.count else { return nil }
         let window = words[start..<start + width]
+        guard window.allSatisfy({ !$0.key.isEmpty }) else { return nil }
         for (left, right) in zip(window, window.dropFirst())
         where !heard[left.range.upperBound..<right.range.lowerBound].allSatisfy(\.isWhitespace) {
             return nil

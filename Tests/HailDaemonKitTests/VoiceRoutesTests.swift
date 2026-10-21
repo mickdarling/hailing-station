@@ -72,6 +72,8 @@ import Testing
         #expect(routes.match("Voice, Work, status") == .routed(voice, text: "Work, status"))
         #expect(routes.match("Voice Work, status") == .routed(Self.voice, text: "status"))
         #expect(routes.match("Okay voice: status") == .routed(voice, text: "status"))
+        // A heard word that keys to nothing is never skipped over to reach a name.
+        #expect(routes.match("東京 Voice, status") == .unaddressed)
     }
 
     @Test func anAddressingNameIsNeverANearMiss() throws {
@@ -109,6 +111,7 @@ import Testing
         ([VoiceRoutes.Route(target: "tmux:deck", name: "Okay Deck")], "tmux:deck", .invalidName),
         ([VoiceRoutes.Route(target: "tmux:deck", name: "One-Two-Three-Four")], "tmux:deck", .invalidName),
         ([VoiceRoutes.Route(target: "tmux:deck", name: "Voice-Work")], "tmux:deck", .invalidName),
+        ([VoiceRoutes.Route(target: "tmux:deck", name: "東京 Deck")], "tmux:deck", .invalidName),
         ([VoiceRoutes.Route(target: "tmux:deck", name: "De\nck")], "tmux:deck", .invalidName),
         ([], "tmux:deck", .malformed)
     ])
