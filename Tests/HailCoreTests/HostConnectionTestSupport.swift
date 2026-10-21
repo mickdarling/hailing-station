@@ -172,22 +172,6 @@ private func requireURL(_ value: String) -> URL {
     return url
 }
 
-// Fixture scheduling watchdog; protocol deadlines use injected clocks and separate assertions.
-func waitUntil(
-    timeout: Duration = .seconds(10),
-    file: String = #fileID,
-    line: Int = #line,
-    _ condition: @escaping @Sendable () async throws -> Bool
-) async throws {
-    let clock = ContinuousClock()
-    let deadline = clock.now.advanced(by: timeout)
-    while clock.now < deadline {
-        if try await condition() { return }
-        try await Task.sleep(for: .milliseconds(5))
-    }
-    throw SocketTestError.conditionTimedOut(file: file, line: line)
-}
-
 func hostHello(version: Int = ProtocolVersion.current) -> ControlPayload {
     .hello(HelloInfo(versions: [version], capabilities: ["connection_probe", "ping"], deviceName: "Mac"))
 }
