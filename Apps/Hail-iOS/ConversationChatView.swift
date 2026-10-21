@@ -95,6 +95,12 @@ struct ConversationChatView: View {
                         .font(.caption2.weight(.semibold))
                         .foregroundStyle(.secondary)
                         .accessibilityHidden(true) // The bubble's own label says it.
+                } else if let source = entry.source {
+                    // Another session answered a request addressed to it from this thread (#636).
+                    Label(source, systemImage: "arrow.turn.down.right")
+                        .font(.caption2.weight(.semibold))
+                        .foregroundStyle(.secondary)
+                        .accessibilityHidden(true) // The bubble's own label says it.
                 }
                 messageContent(entry, segments: segments, isYou: isYou)
                 replyDetails(entry)

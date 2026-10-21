@@ -7,7 +7,8 @@ extension ConversationChatView {
         case (.you, false): "You said"
         case (.you, true): "You said, heard but not sent"
         case (.someone, _): "\(entry.name ?? "Someone") said, heard but not sent"
-        case (.haili, _): entry.spoken ? "Haili said" : "Haili replied" // spoken aloud, or text only (#606)
+        // Spoken aloud, or text only (#606); from another session addressed by name, that session (#636).
+        case (.haili, _): "\(entry.source ?? "Haili") \(entry.spoken ? "said" : "replied")"
         }
     }
 
