@@ -124,8 +124,9 @@ extension TranscriptionLabView {
             try await onFinalized(text, paste)
             // Handed to the Mac with this request (#608). If the Mac refuses it, it comes back attached with the
             // reason (`pasteOffer.refusal`); a paste attached while this one was in flight stays for the next request.
-            if paste != nil, attachedPaste == paste { attachedPaste = nil }
+            // A refusal that ended this send already put the paste back, so it is left alone.
             guard pendingSendID == sendID, pendingDestinationID == destinationAtSend else { return }
+            if paste != nil, attachedPaste == paste { (attachedPaste, pasteProblem) = (nil, nil) }
             if let destinationAtSend, Self.uncorrelatedDestinations.contains(destinationAtSend) {
                 clearPendingSend()
                 status = "Sent — reply turn unverified"

@@ -65,6 +65,7 @@ struct TranscriptionLabView: View {
     /// Text pasted to go with the next request, or on its own (#608); never read from the clipboard without a tap.
     @State var attachedPaste: PastedDraft?
     @State var pasteProblem: String?
+    @State var pasteRefusalHandling = PasteRefusalHandling()
     @Environment(\.scenePhase) var scenePhase
     @Environment(\.accessibilityReduceMotion) var reduceMotion
 
@@ -150,7 +151,7 @@ struct TranscriptionLabView: View {
             noteReplyArrival(previous: previous, current: current)
         }
         .onChange(of: status) { _, current in
-            announceStatusIfNeeded(current)
+            announceStatusUnlessQuiet(current)
         }
         .onChange(of: ownsCaptureSuppression) { wasSuppressed, isSuppressed in
             if wasSuppressed && !isSuppressed { announceDeferredStatusIfNeeded() }
