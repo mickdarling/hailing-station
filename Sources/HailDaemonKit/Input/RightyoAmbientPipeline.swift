@@ -14,13 +14,14 @@ public protocol RightyoAmbientDispatching: Sendable {
     func dispatch(_ request: LocalDispatchRequest) async throws -> UUID?
     /// `routed` (#636) says the consumer's own route match chose this request's target: the owner named one of their
     /// voice routes. Only that decision may carry a request to a target other than the stream's own; without it, a
-    /// different target is just refused. The default dispatches it un-routed.
+    /// different target is just refused. The default dispatches an un-routed request and refuses a routed one.
     func dispatch(_ request: LocalDispatchRequest, routed: Bool) async throws -> UUID?
 }
 
 extension RightyoAmbientDispatching {
     public func dispatch(_ request: LocalDispatchRequest, routed: Bool) async throws -> UUID? {
-        try await dispatch(request)
+        guard !routed else { throw LocalDispatchRefusal.notAuthorized }
+        return try await dispatch(request)
     }
 }
 
@@ -29,22 +30,38 @@ extension RightyoAmbientDispatching {
 struct RightyoAmbientDispatchStep: RightyoDispatching {
     let connection: UUID
     let dispatcher: any RightyoAmbientDispatching
-    /// Acknowledges the admitted request (rightyo#105) before it is typed; never awaited, never throws.
+    /// Acknowledges the admitted request (rightyo#105) before it is typed, or, for a routed one (#636), once it is
+    /// handed off; never awaited, never throws.
     var acknowledge: (@Sendable () -> Void)?
-    /// Shows the speaking device what it said (#318); awaited, so it precedes the acknowledgement and the typing.
+    /// Shows the speaking device what it said (#318); awaited, so it precedes the acknowledgement, and the typing
+    /// too unless the request is routed.
     var heard: (@Sendable () async -> Void)?
-
     func dispatch(text: String, target: String, binding: String) async throws -> RightyoDispatchReceipt {
+        try await dispatch(text: text, target: target, binding: binding, routed: false)
+    }
+
+    /// A request the owner routed (#636) is shown and acknowledged only once handed off, so a route that refuses it
+    /// never looks sent; the routing decision goes on to the listener, which alone may bind the route.
+    func dispatch(
+        text: String, target: String, binding: String, routed: Bool
+    ) async throws -> RightyoDispatchReceipt {
         // The daemon's own local-dispatch cap, as for `--reply-to`; in process there is no socket answer deadline.
         guard text.utf8.count <= LocalDispatchRequest.maxTextBytes else { throw RightyoInputError.capacity }
+        if !routed { await announce() }
+        let request = LocalDispatchRequest(connection: connection, target: target, binding: binding, text: text)
+        let receipt: RightyoDispatchReceipt
+        do {
+            receipt = RightyoDispatchReceipt(request: try await dispatcher.dispatch(request, routed: routed))
+        } catch let refusal as LocalDispatchRefusal where refusal.handedOff {
+            receipt = RightyoDispatchReceipt(request: nil, caveat: refusal.message)
+        }
+        if routed { await announce() }
+        return receipt
+    }
+
+    private func announce() async {
         await heard?()
         acknowledge?()
-        let request = LocalDispatchRequest(connection: connection, target: target, binding: binding, text: text)
-        do {
-            return RightyoDispatchReceipt(request: try await dispatcher.dispatch(request))
-        } catch let refusal as LocalDispatchRefusal where refusal.handedOff {
-            return RightyoDispatchReceipt(request: nil, caveat: refusal.message)
-        }
     }
 }
 
@@ -97,6 +114,11 @@ public final class RightyoAmbientPipeline: Sendable {
         public var destinations: VoiceDestinations?
         public var onVoiceDestination: (@Sendable (
             _ destination: String, _ target: VoiceDestinations.Destination, _ text: String) -> Void)?
+        /// The owner's voice routes (#636); nil leaves every request on `target`. A request the owner addressed to a
+        /// route that cannot take it is not typed anywhere; its reason goes to `onVoiceRouteRefused`, which must
+        /// return at once.
+        public var routing: RightyoVoiceRouting?
+        public var onVoiceRouteRefused: (@Sendable (RightyoVoiceRouting.Refusal) -> Void)?
         /// Called when RightyO says the owner's voice is `unrecognized` on this input, or `recognized` again
         /// (rightyo#164), only on a session whose `started` advertised `owner_voice`, each state at most once and
         /// `recognized` only after `unrecognized`. It must return at once.
@@ -130,6 +152,7 @@ public final class RightyoAmbientPipeline: Sendable {
     private let onVoiceMute: (@Sendable (Bool) -> Void)?
     private let onVoiceMedia: (@Sendable (Bool) -> Void)?
     private let onVoiceDestination: (@Sendable (String, VoiceDestinations.Destination, String) -> Void)?
+    private let onVoiceRouteRefused: (@Sendable (RightyoVoiceRouting.Refusal) -> Void)?
     private let acknowledgement: AmbientAckRelay
     private let heard: AmbientHeardRelay
     private let overheard: AmbientOverheardRelay
@@ -147,7 +170,8 @@ public final class RightyoAmbientPipeline: Sendable {
                                             session: session, allowSynthetic: configuration.allowSynthetic,
                                             dispatcher: step, echoFilter: configuration.isEcho,
                                             mediaCommands: configuration.replyControl,
-                                            destinations: configuration.destinations)
+                                            destinations: configuration.destinations,
+                                            routing: configuration.routing)
         child = try RightyoChildProcess(executable: configuration.executable, config: configuration.config,
                                         session: session, timing: configuration.timing,
                                         replyControl: configuration.replyControl,
@@ -156,6 +180,7 @@ public final class RightyoAmbientPipeline: Sendable {
         onDismiss = configuration.onDismiss
         (onVoiceMute, onVoiceMedia) = (configuration.onVoiceMute, configuration.onVoiceMedia)
         onVoiceDestination = configuration.onVoiceDestination
+        onVoiceRouteRefused = configuration.onVoiceRouteRefused
         acknowledgement = relay
         self.heard = heard
         overheard = AmbientOverheardRelay(onOverheard: configuration.onOverheard, isEcho: configuration.isEcho)
@@ -216,6 +241,9 @@ public final class RightyoAmbientPipeline: Sendable {
                 }
                 if event.type == "request", let note = await consumer.lastVoiceDestination {
                     onVoiceDestination?(note.destination, note.target, note.text)
+                }
+                if event.type == "request", let refusal = await consumer.lastRouteRefusal {
+                    onVoiceRouteRefused?(refusal)
                 }
             }
             try await consumer.finish()

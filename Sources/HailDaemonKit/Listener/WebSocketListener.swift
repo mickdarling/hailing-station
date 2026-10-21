@@ -344,6 +344,15 @@ extension WebSocketListener {
         }
     }
 
+    /// A voice route's current binding (#636): listed, alive and at the binding its policy entry allows; nil otherwise.
+    /// A snapshot for addressing only: local dispatch checks the listing and binding again, and the policy decides.
+    func voiceRouteBinding(_ target: String) async -> String? {
+        guard let listed = try? await host.registry.listing().first(where: { $0.info.id == target }),
+              listed.info.alive, let binding = listed.binding, let policy = await host.refreshedPolicy(),
+              policy.targets[target]?.binding == binding else { return nil }
+        return binding
+    }
+
     /// #230: for a plain legacy target only (an adapter without contextual delivery, such as `tmux:`), mints a fresh
     /// opaque reply reference and writes it into the prompt's own trailing reply block, so the session can answer
     /// with `haild reply <target> --request <ref>`. A contextual adapter keeps its out-of-band context id and the
@@ -462,8 +471,9 @@ public final class AmbientRightyoRouter: AmbientAudioSink, AmbientListenerWiring
         /// prompt still being typed may be left partly typed and unsubmitted in the pane (as #204's taint rule
         /// describes for an abandoned send); nothing is retried.
         public var shutdownGrace: TimeInterval
-        /// Each ambient dispatch is recorded as `pushed(tool: "ambient-dispatch")` (target and byte count, never
-        /// text), as the `--reply-to` socket records `local-dispatch`; a failed record refuses the dispatch.
+        /// Each ambient dispatch is recorded as `pushed(tool: "ambient-dispatch")`, or `ambient-dispatch-routed` for
+        /// a voice route (#636), with the target and byte count, never text, as the `--reply-to` socket records
+        /// `local-dispatch`; a failed record refuses the dispatch.
         public var audit: AuditLog?
         /// Acknowledgement clips (rightyo#105): each admitted request plays one on its phone first. Nil is off.
         public var acknowledgements: AmbientAckLibrary?
@@ -949,6 +959,15 @@ extension AmbientRightyoRouter {
         }
         (settings.onOwnerVoice, settings.environment) = (ownerVoice(on: connection, listener: listener),
                                                          childEnvironment(for: connection))
+        // The owner's voice routes (#636), from the same authorizer the listing names them with.
+        if let routes = listener.authorizer.voiceRoutes {
+            settings.routing = RightyoVoiceRouting(routes: routes) { [weak listener] target in
+                await listener?.voiceRouteBinding(target)
+            }
+            settings.onVoiceRouteRefused = { [weak self] refusal in
+                self?.emit("ambient_voice_route_refused", connection: connection, detail: refusal.token)
+            }
+        }
         return try RightyoAmbientPipeline(configuration: settings,
                                           dispatcher: AmbientListenerDispatcher(
                                               listener: listener, audit: configuration.audit,
@@ -1288,17 +1307,18 @@ struct AmbientListenerDispatcher: RightyoAmbientDispatching {
     }
 
     /// The reply reference (#230) is written first, so the fail-closed audit record carries the final prompt size.
-    /// Only a `routed` request to a target other than the stream's is bound as a voice route; any other request to
-    /// another target binds nothing, so the session refuses it.
+    /// Only a `routed` request to a target other than the stream's is bound as a voice route, and is recorded as
+    /// `ambient-dispatch-routed` (still content-free); any other request to another target binds nothing, so the
+    /// session refuses it.
     func dispatch(_ request: LocalDispatchRequest, routed: Bool) async throws -> UUID? {
         let (prepared, reference) = await listener.referenceAmbient(request)
+        let from = streamTarget.flatMap { routed && $0 != prepared.target ? $0 : nil }
         if let audit {
             do {
-                _ = try await audit.record(.pushed(tool: "ambient-dispatch", target: prepared.target,
-                                                   bytes: prepared.text.utf8.count))
+                _ = try await audit.record(.pushed(tool: from == nil ? "ambient-dispatch" : "ambient-dispatch-routed",
+                                                   target: prepared.target, bytes: prepared.text.utf8.count))
             } catch { throw LocalReplyRefusal.auditFailure }
         }
-        let from = streamTarget.flatMap { routed && $0 != prepared.target ? $0 : nil }
         return try await listener.dispatchAmbient(prepared, reference: reference, selection: selection,
                                                   routedFrom: from)
     }
