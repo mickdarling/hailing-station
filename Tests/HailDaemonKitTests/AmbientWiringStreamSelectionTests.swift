@@ -48,12 +48,12 @@ import Testing
                                       on: pair.sockets[0])
     }
 
-    /// When the owner selects away and back around a reload (#405).
-    enum Reselection: CaseIterable { case none, beforeReload, afterReload }
+    /// When the owner selects away and back around a reload (#405); `twoReloads` reloads twice and never reselects.
+    enum Reselection: CaseIterable { case none, beforeReload, afterReload, twoReloads }
 
-    /// A reload swaps the stream's child mid-stream: the new child keeps the selection the stream opened on. It
-    /// dispatches while that selection holds, and nothing once the owner has selected away and back, before the reload
-    /// or after it.
+    /// A reload swaps the stream's child mid-stream: the new child keeps the selection the stream opened on, and so
+    /// does the child of a second reload. It dispatches while that selection holds, and nothing once the owner has
+    /// selected away and back, before the reload or after it.
     @Test(arguments: Reselection.allCases)
     func aReloadedChildKeepsTheSelectionItsStreamOpenedOn(_ reselection: Reselection) async throws {
         let fake = try FakeRightyo("/bin/cat > v1-audio.bin")
@@ -68,6 +68,12 @@ import Testing
             try await pair.barrier()
             // The old child is running its own behaviour before the new install is written.
             #expect(await eventually { fakeFileSize(fake, "v1-audio.bin") == 3_200 })
+            if reselection == .twoReloads {
+                // A middle child that only listens, so neither replaced child dispatches.
+                try rewriteFake(fake, "/bin/cat > v2-audio.bin")
+                #expect(await env.router.reload() == .reloaded)
+                #expect(await eventually { fakeFileSize(fake, "v2-audio.bin") >= 0 })
+            }
             try rewriteFake(fake, ambientEchoAtEOF)
             if reselection == .beforeReload { try await awayAndBack(pair) }
             #expect(await env.router.reload() == .reloaded)
@@ -75,7 +81,8 @@ import Testing
             try await reloadSend(ambientSegment(stream: stream, sequence: 1, isFinal: true), on: pair)
             try await pair.barrier()
             await settle(env.router, step: "reloaded run")
-            #expect(await env.rig.adapter.contexts.count == (reselection == .none ? 1 : 0))
+            let delivers = reselection == .none || reselection == .twoReloads
+            #expect(await env.rig.adapter.contexts.count == (delivers ? 1 : 0))
         } catch {
             await env.listener.stop(reason: "synthetic test failed")
             throw error
