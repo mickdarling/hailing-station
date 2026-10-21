@@ -105,6 +105,32 @@ private struct VoiceRouteRig {
         #expect(await rig.adapter.deliveries.isEmpty)
     }
 
+    /// During lockdown nothing is routed: a named request meets the lockdown refusal as it is, never "offline".
+    @Test func lockdownRefusesANamedRequestAsLockdown() async throws {
+        let rig = try await VoiceRouteRig.make()
+        let session = try await rig.session(routes: try VoiceRouteRig.routes())
+        _ = await rig.host.engageLockdown(reason: "synthetic")
+        for text in ["Deck, add a slide", "Voice Work, run the tests"] {
+            let result = await session.receive(VoiceRouteRig.tap(text))
+            guard case .error(let code, _) = try onlyControl(result) else { throw TestSupportError.expectedOneControl }
+            #expect(code == .lockdown)
+        }
+        #expect(await rig.adapter.deliveries.isEmpty)
+    }
+
+    /// A name with nothing spoken after it is not "nothing to send" when a paste goes with it (#608): it routes, and
+    /// the routed target's own paste gate decides (a plain tmux pane takes no paste).
+    @Test func aNameAloneWithAPasteRoutesToThePasteGate() async throws {
+        let rig = try await VoiceRouteRig.make()
+        let session = try await rig.session(routes: try VoiceRouteRig.routes())
+        let frame = sessionFrame(target: VoiceRouteRig.scratch, payload: .text(TextPayload(
+            text: "Deck:", pasted: PastedText(text: "synthetic pasted notes")
+        )))
+        let result = await session.receive(frame)
+        #expect(try onlyControl(result) == .error(code: .malformed, message: PastedContent.agentOnlyRefusal))
+        #expect(await rig.adapter.deliveries.isEmpty)
+    }
+
     /// Only a frame the host routed itself may name another route; a device cannot address one directly.
     @Test func aFrameAddressedToAnotherRouteByTheDeviceIsRefused() async throws {
         let rig = try await VoiceRouteRig.make()

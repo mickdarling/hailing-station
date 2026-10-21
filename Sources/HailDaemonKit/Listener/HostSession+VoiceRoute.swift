@@ -8,15 +8,23 @@ import HailProtocol
 ///
 /// Tap-to-talk has no speaker identity, so the device holding the connection is treated as the owner here, exactly
 /// as for `select`. A route only names a target. Each one still needs its own policy entry and binding, and every
-/// existing gate (shape, sanitizer, paste, policy, tier, binding) applies to the routed frame as to any other.
+/// existing gate (shape, sanitizer, paste, policy, tier, lockdown, binding) applies to the routed frame as to any
+/// other.
 extension HostSession {
-    /// The route this one ingress is being handed to, bound only while the host delivers a frame it rewrote itself
-    /// (`voiceRoute`). No frame field, device name or local socket request can set it.
-    @TaskLocal static var voiceRoutedTarget: String?
+    /// One host-made route: input selected on `from` is being handed to `to`.
+    struct VoiceRouted: Sendable, Equatable {
+        let from: String
+        let to: String
+    }
+
+    /// The route this one ingress is being handed to, bound only while the host delivers a frame it routed itself
+    /// (`voiceRoute`) or the listener dispatches an ambient request its consumer routed. No frame field, device name
+    /// or local socket request can set it, and it admits nothing once the selection has moved off `from`.
+    @TaskLocal static var voiceRouted: VoiceRouted?
 
     enum VoiceRouting {
-        /// Deliver this frame; `routedTo` names the route when the host rewrote its target.
-        case deliver(Frame, routedTo: String?)
+        /// Deliver this frame; `routed` names the route when the host rewrote its target.
+        case deliver(Frame, routed: VoiceRouted?)
         case refused(ErrorCode, String)
     }
 
@@ -33,39 +41,48 @@ extension HostSession {
         #endif
     }
 
-    /// Input may go to the selected target, or to the route the host voice-routed this very frame to.
+    /// Input may go to the selected target, or to the route the host routed this very input to from the target that
+    /// is still selected.
     func admitsInput(to target: String) -> Bool {
-        target == selectedTarget || (target == Self.voiceRoutedTarget && covers(target))
+        if target == selectedTarget { return true }
+        guard let routed = Self.voiceRouted else { return false }
+        return routed.to == target && routed.from == selectedTarget && covers(target)
     }
 
     /// A device's final text frame to its selected route, opening with another route's name, is addressed to that
     /// route: only its target changes, and the text goes as heard. A route that is not listed, allowed, bound and
-    /// alive refuses; so do a name with nothing after it and a near miss. Every other frame is untouched.
+    /// alive refuses; so do a name with nothing after it (unless a paste goes with it) and a near miss. During
+    /// lockdown nothing is routed, so the frame meets the lockdown refusal as it is. Every other frame is untouched.
     func voiceRoute(_ frame: Frame) async -> VoiceRouting {
         #if os(macOS)
         guard let routes = authorizer.voiceRoutes, case .text(let text) = frame.payload, text.isFinal,
               text.reply == nil, let target = frame.target, target == selectedTarget,
-              routes.route(for: target) != nil else { return .deliver(frame, routedTo: nil) }
+              routes.route(for: target) != nil, await !host.lockdown.isOn else { return .deliver(frame, routed: nil) }
+        let named: VoiceRoutes.Route
         switch routes.match(text.text) {
         case .unaddressed:
-            return .deliver(frame, routedTo: nil)
-        case .routed(let route, _) where route.target == target:
-            return .deliver(frame, routedTo: nil)
+            return .deliver(frame, routed: nil)
         case .routed(let route, _):
-            let online = try? await policyFilteredTargets().contains { $0.id == route.target && $0.alive }
-            guard online == true else {
-                return .refused(.unknownTarget, "voice route: \(route.name) is offline; nothing was sent")
-            }
-            var routed = frame
-            routed.target = route.target
-            return .deliver(routed, routedTo: route.target)
+            named = route
+        case .nothingToSay(let route) where text.pasted != nil:
+            named = route
         case .nothingToSay(let route):
             return .refused(.malformed, "voice route: nothing to send to \(route.name)")
         case .unclear:
             return .refused(.notAllowed, "voice route: which session? Nothing was sent")
         }
+        guard named.target != target else { return .deliver(frame, routed: nil) }
+        guard let listed = try? await policyFilteredTargets() else {
+            return .refused(.malformed, "voice route: the target list is unavailable; nothing was sent")
+        }
+        guard listed.contains(where: { $0.id == named.target && $0.alive }) else {
+            return .refused(.unknownTarget, "voice route: \(named.name) is offline; nothing was sent")
+        }
+        var routed = frame
+        routed.target = named.target
+        return .deliver(routed, routed: VoiceRouted(from: target, to: named.target))
         #else
-        return .deliver(frame, routedTo: nil)
+        return .deliver(frame, routed: nil)
         #endif
     }
 }

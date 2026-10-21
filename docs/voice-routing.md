@@ -111,7 +111,11 @@ route: "Deck, add a slide on pricing".
   to the selected target.
 - **Only host-routed frames.** A device cannot address another route itself. A frame whose target is not the
   selected one is refused as before (`select the destination before speaking`), unless the host routed that very
-  frame. The task-local `HostSession.voiceRoutedTarget` is bound only for that delivery.
+  frame. The task-local `HostSession.voiceRouted` (from, to) is bound only for that delivery, and admits the input
+  only while the selection is still exactly `from`.
+- **Lockdown and pastes.** During lockdown nothing is routed, so a named request meets the lockdown refusal as it
+  is. A name with nothing spoken after it routes when a paste goes with it (#608), and the routed target's own
+  paste gate then decides.
 - **Nothing falls back.** Each of these sends nothing to any target and keeps the connection open:
 
   | Case | Error frame |

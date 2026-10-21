@@ -236,30 +236,12 @@ public actor HostSession {
             switch await voiceRoute(frame) {
             case .refused(let code, let message):
                 return failure(code, message, close: false, version: version)
-            case .deliver(let frame, let routedTo):
-                return await Self.$voiceRoutedTarget.withValue(routedTo) {
+            case .deliver(let frame, let routed):
+                return await Self.$voiceRouted.withValue(routed) {
                     await receiveReady(frame, version: version)
                 }
             }
         }
-    }
-
-    private func receiveReady(_ frame: Frame, version: Int) async -> HostSessionResult {
-        // The phone is attributed by its negotiated Hello name, never by the frame's own `source`.
-        guard let admitted = await admit(frame, version: version, device: peerName) else {
-            return failure(.unauthorized, "terminal action is not authorized", close: false, version: version)
-        }
-        // Diagnostics (#234) are stored and never answered: no error, no selection or delivery change.
-        if case .control(.diagnostic(let events)) = frame.payload, let sink = authorizer.diagnostics {
-            await sink.record(events, session: connectionID, device: peerName)
-            return HostSessionResult(frames: [])
-        }
-        // A closed route kind (rightyo#164), never a port name: noted for attribution and never answered either.
-        if case .control(.ambientInput(let route)) = frame.payload, let gate = authorizer.ambientAudio {
-            await gate.noteInputRoute(route, connection: connectionID)
-            return HostSessionResult(frames: [])
-        }
-        return await route(admitted, version: version)
     }
 
     /// The single authorizer call for `frame`. An allowed final targeted text frame becomes the only
@@ -347,5 +329,26 @@ public actor HostSession {
             frames: [response(.error(code: code, message: message), version: version)],
             disposition: close ? .close : .keepOpen
         )
+    }
+}
+
+/// The ready-state body of `receive`, kept out of the actor body (#636 adds the voice-route step before it).
+extension HostSession {
+    fileprivate func receiveReady(_ frame: Frame, version: Int) async -> HostSessionResult {
+        // The phone is attributed by its negotiated Hello name, never by the frame's own `source`.
+        guard let admitted = await admit(frame, version: version, device: peerName) else {
+            return failure(.unauthorized, "terminal action is not authorized", close: false, version: version)
+        }
+        // Diagnostics (#234) are stored and never answered: no error, no selection or delivery change.
+        if case .control(.diagnostic(let events)) = frame.payload, let sink = authorizer.diagnostics {
+            await sink.record(events, session: connectionID, device: peerName)
+            return HostSessionResult(frames: [])
+        }
+        // A closed route kind (rightyo#164), never a port name: noted for attribution and never answered either.
+        if case .control(.ambientInput(let route)) = frame.payload, let gate = authorizer.ambientAudio {
+            await gate.noteInputRoute(route, connection: connectionID)
+            return HostSessionResult(frames: [])
+        }
+        return await route(admitted, version: version)
     }
 }
