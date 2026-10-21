@@ -69,11 +69,28 @@ import Testing
     }
 }
 
-/// One newline-terminated request over the owner-only Unix socket; returns the response line.
-private func socketExchange(_ data: Data, path: String) async throws -> String {
+/// One newline-terminated request over the owner-only Unix socket; returns the response line. With no line within
+/// `within`, the connection is cancelled, which ends the wait, and a recorded issue names the step (#704).
+private func socketExchange(_ data: Data, path: String, within: Duration = .seconds(15)) async throws -> String {
     let connection = NWConnection(to: .unix(path: path), using: .tcp)
+    let timer = Task {
+        try await Task.sleep(for: within)
+        connection.cancel()
+    }
+    defer {
+        timer.cancel()
+        connection.cancel()
+    }
+    do {
+        return try await exchange(data, on: connection)
+    } catch {
+        Issue.record("no local dispatch answer within \(within)")
+        throw error
+    }
+}
+
+private func exchange(_ data: Data, on connection: NWConnection) async throws -> String {
     let resumed = Mutex(false)
-    defer { connection.cancel() }
     return try await withCheckedThrowingContinuation { continuation in
         @Sendable func finish(_ result: Result<String, any Error>) {
             guard !resumed.withLock({ seen in defer { seen = true }; return seen }) else { return }
@@ -97,6 +114,7 @@ private func socketExchange(_ data: Data, path: String) async throws -> String {
                     if let error { finish(.failure(error)) } else { receive(Data()) }
                 })
             case .failed(let error): finish(.failure(error))
+            case .cancelled: finish(.failure(CancellationError()))
             default: break
             }
         }
