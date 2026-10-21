@@ -313,10 +313,12 @@ extension WebSocketListener {
     ///
     /// `selection` (#636) is the selection generation the stream opened on: the request is delivered only while the
     /// session is still on it, so nothing a stream heard reaches a target after the owner selected another
-    /// destination, even after selecting this one again. Nil binds the generation current as the dispatch starts.
+    /// destination, even after selecting this one again. A stream without one dispatches nothing: the current
+    /// selection is never assumed.
     func dispatchAmbient(
-        _ request: LocalDispatchRequest, reference: UUID? = nil, selection: UUID? = nil
+        _ request: LocalDispatchRequest, reference: UUID? = nil, selection: UUID?
     ) async throws -> UUID? {
+        guard let selection else { throw LocalDispatchRefusal.notAuthorized }
         guard let peer = peers.first(where: { $0.value.session.connectionID == request.connection }) else {
             throw LocalDispatchRefusal.unknownConnection
         }
