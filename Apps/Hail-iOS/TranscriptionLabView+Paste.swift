@@ -43,10 +43,10 @@ extension TranscriptionLabView {
             guard let refusal, let restored = try? PastedDraft(refusal.pasted) else { return }
             attachedPaste = restored
             pasteProblem = PastedDraft.Problem.refusedByHost(refusal.message).message
-            // That request is over: no reply will come for it. The host's reason is announced once, by the
-            // conversation's request-refusal line (Part 11), so the status here stays neutral.
+            // That request is over: no reply will come for it, so its reply wait ends. The status is left alone,
+            // because any status change is spoken; the shared request refusal (#692) already adds the one line and
+            // the one announcement.
             clearPendingSend()
-            status = "Ready"
         }
     }
 
