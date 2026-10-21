@@ -159,19 +159,6 @@ public final class HostConnectionStore {
         mediaMode[id] = nil
         order.removeAll { $0 == id }
     }
-    /// The station's connection check (#385) for `ids` only: as `sceneBecameActive`, a ready host is pinged and one
-    /// trying to recover skips its backoff. A host disconnected in Mac Setup stays disconnected.
-    public func checkConnection(_ ids: [HostEndpoint.Identifier]) async {
-        for id in ids { await connections[id]?.foregrounded() }
-    }
-
-    /// Active hosts are pinged; hosts already trying to recover skip their backoff and reconnect now.
-    public func sceneBecameActive() async {
-        for id in order {
-            await connections[id]?.foregrounded()
-        }
-    }
-
     /// Every selection change, endpoint change or removal invalidates outstanding bindings for the host.
     private func forgetSelection(_ id: HostEndpoint.Identifier) {
         selectionSerials[id, default: 0] &+= 1
@@ -195,6 +182,22 @@ public final class HostConnectionStore {
         onReplyFrame?(event)
         if replyFrames.count > Self.replyFrameLimit {
             replyFrames.removeFirst(replyFrames.count - Self.replyFrameLimit)
+        }
+    }
+}
+
+/// Reconnect nudges: the station's connection check (#385) and scene activation.
+extension HostConnectionStore {
+    /// The station's connection check (#385) for `ids` only: as `sceneBecameActive`, a ready host is pinged and one
+    /// trying to recover skips its backoff. A host disconnected in Mac Setup stays disconnected.
+    public func checkConnection(_ ids: [HostEndpoint.Identifier]) async {
+        for id in ids { await connections[id]?.foregrounded() }
+    }
+
+    /// Active hosts are pinged; hosts already trying to recover skip their backoff and reconnect now.
+    public func sceneBecameActive() async {
+        for id in order {
+            await connections[id]?.foregrounded()
         }
     }
 }
