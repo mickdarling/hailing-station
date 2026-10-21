@@ -4,63 +4,15 @@ import HailProtocol
 import Testing
 @testable import HailDaemonKit
 
-/// Routes `scratch`, `deck` and `voice` (not running), plus an allowed non-route `other`, on a fake tmux adapter.
-private struct VoiceRouteRig {
-    static let scratch = "tmux:scratch", deck = "tmux:deck", other = "tmux:other"
-    let host: HailHost
-    let adapter: FakeAdapter
-    let listener: WebSocketListener
-    let clock = RecipientTestClock()
-
-    static func make() async throws -> Self {
-        let adapter = FakeAdapter(kind: "tmux", targets: [
-            AdapterTarget(name: "scratch", binding: "s"), AdapterTarget(name: "deck", binding: "d"),
-            AdapterTarget(name: "other", binding: "o")
-        ])
-        let registry = Registry()
-        try await registry.register(adapter)
-        // One authored guard keeps unrelated default-guard wall budgets out of this suite.
-        var policy = Policy(guardPatterns: [.init(name: "synthetic guard", regex: "^synthetic guarded command$")],
-                            deliveriesPerMinute: 1_000)
-        for (target, binding) in [(scratch, "s"), (deck, "d"), (other, "o")] {
-            try policy.allow(target, binding: binding, tier: .open)
-        }
-        let host = try HailHost(registry: registry, store: InMemoryPolicyStore(policy))
-        let listener = try WebSocketListener(
-            bindAddress: "127.0.0.1", port: 0, host: host, authorizer: PersonalTerminalAuthorizer(),
-            hostName: "mac-test", singleTerminalReplyFallback: true, log: { _ in }
-        )
-        return Self(host: host, adapter: adapter, listener: listener)
-    }
-
-    static func routes() throws -> VoiceRoutes {
-        try VoiceRoutes(defaultTarget: scratch, routes: [
-            .init(target: scratch, name: "Hailing Scratch"), .init(target: deck, name: "Deck"),
-            .init(target: "tmux:voice", name: "Voice Work")
-        ])
-    }
-
-    /// A negotiated session with the owner's routes, selecting `target`, recording into the listener's ledger.
-    func session(selecting target: String = scratch, routes: VoiceRoutes? = nil) async throws -> HostSession {
-        let session = HostSession(host: host, authorizer: PersonalTerminalAuthorizer().naming(routes),
-                                  hostName: "mac-test", now: clock.now, requestClock: clock.instant)
-        _ = await session.receive(helloFrame())
-        _ = await session.receive(sessionFrame(payload: .control(.select(targetID: target))))
-        return session
-    }
-
-    static func tap(_ text: String, to target: String = scratch) -> Frame {
-        sessionFrame(target: target, payload: .text(TextPayload(text: text)))
-    }
-}
-
 /// Tap-to-talk voice routing (#636, slice 3): one named request goes to that route and its reply comes back, while
 /// the device keeps its selection. Synthetic only: a fake tmux-kind adapter and never-started transports.
 @Suite(.serialized, .timeLimit(.minutes(1))) struct VoiceRouteDeliveryTests {
     @Test func aNamedRequestGoesToThatRouteAsHeardAndItsReplyComesBack() async throws {
         let rig = try await VoiceRouteRig.make()
+        // The bystander selects Deck itself, so only the asker's last-input claim keeps Deck's reply from it.
         let (asker, bystander) = (try await rig.session(routes: try VoiceRouteRig.routes()),
-                                  try await rig.session(routes: try VoiceRouteRig.routes()))
+                                  try await rig.session(selecting: VoiceRouteRig.deck,
+                                                        routes: try VoiceRouteRig.routes()))
         let peers = await rig.listener.installFallbackSyntheticPeers([asker, bystander])
         #expect(await asker.receive(VoiceRouteRig.tap("Deck, add a slide on pricing")).frames.isEmpty)
         #expect(await rig.adapter.deliveries.map(\.target) == ["deck"])
@@ -72,8 +24,9 @@ private struct VoiceRouteRig {
         #expect(route.entry.connection == (await asker.connectionID))
         #expect(await peers[0].admitsRequestlessReply(reply, lastInput: route))
         #expect(!(await peers[1].admitsRequestlessReply(reply, lastInput: route)))
-        // The single-selector rule stays exact: neither device selects Deck.
+        // The single-selector rule stays exact: only the device that selects Deck could take it, never the asker.
         #expect(!(await peers[0].admitsRequestlessReply(reply)))
+        #expect(await peers[1].admitsRequestlessReply(reply))
         // Selecting away (and back) ends the routed request's claim on the reply, as for any selection.
         _ = await asker.receive(sessionFrame(payload: .control(.select(targetID: VoiceRouteRig.other))))
         _ = await asker.receive(sessionFrame(payload: .control(.select(targetID: VoiceRouteRig.scratch))))
@@ -81,13 +34,46 @@ private struct VoiceRouteRig {
         await rig.listener.stop(reason: "synthetic test complete")
     }
 
+    /// Anything that names no other route goes to the selected one as before, including its own name alone.
     @Test func anUnnamedRequestGoesToTheSelectedRoute() async throws {
         let rig = try await VoiceRouteRig.make()
         let session = try await rig.session(routes: try VoiceRouteRig.routes())
-        for text in ["What's the build status?", "Deck is still stopped", "Hailing Scratch, are you there?"] {
+        let texts = ["What's the build status?", "Deck is still stopped", "Hailing Scratch, are you there?",
+                     "Hailing Scratch"]
+        for text in texts {
             #expect(await session.receive(VoiceRouteRig.tap(text)).frames.isEmpty)
         }
-        #expect(await rig.adapter.deliveries.map(\.target) == ["scratch", "scratch", "scratch"])
+        #expect(await rig.adapter.deliveries.map(\.target) == Array(repeating: "scratch", count: texts.count))
+    }
+
+    /// The asker's claim on Deck's reply lasts the last-input lifetime (#370); after it, a device selecting Deck takes it.
+    @Test func theAskersClaimEndsWithTheLastInputLifetime() async throws {
+        let rig = try await VoiceRouteRig.make()
+        let (asker, deckSelector) = (try await rig.session(routes: try VoiceRouteRig.routes()),
+                                     try await rig.session(selecting: VoiceRouteRig.deck))
+        let peers = await rig.listener.installFallbackSyntheticPeers([asker, deckSelector])
+        #expect(await asker.receive(VoiceRouteRig.tap("Deck, add a slide")).frames.isEmpty)
+        let reply = recipientText(referenceDescriptor(nil, target: VoiceRouteRig.deck))
+        let route = try #require(await rig.listener.lastInputRoute(reply))
+        rig.clock.advance(Int64(LastInputLedger.lifetime.components.seconds) * 1_000 + 1)
+        #expect(!(await peers[0].admitsRequestlessReply(reply, lastInput: route)))
+        #expect(await peers[1].admitsRequestlessReply(reply))
+        await rig.listener.stop(reason: "synthetic test complete")
+    }
+
+    /// A route running but never allowed is offline, and a policy that cannot be read says so; nothing is sent.
+    @Test func aRouteWithoutPolicyIsOfflineAndAnUnreadablePolicySaysSo() async throws {
+        let rig = try await VoiceRouteRig.make()
+        let session = try await rig.session(routes: try VoiceRouteRig.routes())
+        let rogue = await session.receive(VoiceRouteRig.tap("Rogue, run it"))
+        #expect(try onlyControl(rogue) == .error(code: .unknownTarget,
+                                                 message: "voice route: Rogue is offline; nothing was sent"))
+        rig.store.setLoadError(PolicyFileError.malformed("policy.json: synthetic"))
+        let unreadable = await session.receive(VoiceRouteRig.tap("Deck, add a slide"))
+        #expect(try onlyControl(unreadable) == .error(
+            code: .malformed, message: "voice route: the target list is unavailable; nothing was sent"
+        ))
+        #expect(await rig.adapter.deliveries.isEmpty)
     }
 
     /// No silent fallback: an offline route, a name alone or a misheard name sends nothing anywhere and says so.
@@ -118,16 +104,23 @@ private struct VoiceRouteRig {
         #expect(await rig.adapter.deliveries.isEmpty)
     }
 
-    /// A name with nothing spoken after it is not "nothing to send" when a paste goes with it (#608): it routes, and
-    /// the routed target's own paste gate decides (a plain tmux pane takes no paste).
-    @Test func aNameAloneWithAPasteRoutesToThePasteGate() async throws {
+    /// A name with nothing spoken after it routes when a paste goes with it (#608), and the paste gate judges the
+    /// routed target, not the selected one: a paste routed to the agent is delivered, one routed to a tmux pane refused.
+    @Test func aNameAloneWithAPasteRoutesAndTheRoutedTargetsPasteGateDecides() async throws {
         let rig = try await VoiceRouteRig.make()
-        let session = try await rig.session(routes: try VoiceRouteRig.routes())
-        let frame = sessionFrame(target: VoiceRouteRig.scratch, payload: .text(TextPayload(
+        let onScratch = try await rig.session(routes: try VoiceRouteRig.routes())
+        let toAgent = sessionFrame(target: VoiceRouteRig.scratch, payload: .text(TextPayload(
+            text: "Agent:", pasted: PastedText(text: "synthetic pasted notes")
+        )))
+        #expect(await onScratch.receive(toAgent).frames.isEmpty)
+        #expect(await rig.agentAdapter.deliveries.map(\.target) == ["agent"])
+        #expect(await rig.agentAdapter.deliveries.last?.text.contains("synthetic pasted notes") == true)
+        let onAgent = try await rig.session(selecting: VoiceRouteRig.agent, routes: try VoiceRouteRig.routes())
+        let toDeck = sessionFrame(target: VoiceRouteRig.agent, payload: .text(TextPayload(
             text: "Deck:", pasted: PastedText(text: "synthetic pasted notes")
         )))
-        let result = await session.receive(frame)
-        #expect(try onlyControl(result) == .error(code: .malformed, message: PastedContent.agentOnlyRefusal))
+        let refused = await onAgent.receive(toDeck)
+        #expect(try onlyControl(refused) == .error(code: .malformed, message: PastedContent.agentOnlyRefusal))
         #expect(await rig.adapter.deliveries.isEmpty)
     }
 

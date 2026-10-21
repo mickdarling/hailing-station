@@ -11,10 +11,12 @@ import HailProtocol
 /// existing gate (shape, sanitizer, paste, policy, tier, lockdown, binding) applies to the routed frame as to any
 /// other.
 extension HostSession {
-    /// One host-made route: input selected on `from` is being handed to `to`.
+    /// One host-made route: input selected on `from` is being handed to `to`. A tap route also carries the selection
+    /// generation it was made on, so it admits nothing on any later selection, even of the same target.
     struct VoiceRouted: Sendable, Equatable {
         let from: String
         let to: String
+        var generation: UUID?
     }
 
     /// The route this one ingress is being handed to, bound only while the host delivers a frame it routed itself
@@ -42,29 +44,33 @@ extension HostSession {
     }
 
     /// Input goes to the selected target; host-routed input goes only to its route, and only while its origin is still
-    /// exactly what is selected. So input routed from a stream on Scratch is refused once Deck is selected, even
-    /// when Deck was its route: it belonged to a selection that has ended.
+    /// exactly what is selected, on the generation it was routed on when it carries one. So input routed from a stream
+    /// on Scratch is refused once Deck is selected, even when Deck was its route: it belonged to an ended selection.
     func admitsInput(to target: String) -> Bool {
         guard let routed = Self.voiceRouted else { return target == selectedTarget }
         return routed.to == target && routed.from == selectedTarget && covers(target)
+            && (routed.generation ?? selectionGeneration) == selectionGeneration
     }
 
     /// A device's final text frame to its selected route, opening with another route's name, is addressed to that
-    /// route: only its target changes, and the text goes as heard. A route that is not listed, allowed, bound and
-    /// alive refuses; so do a name with nothing after it (unless a paste goes with it) and a near miss. During
-    /// lockdown nothing is routed, so the frame meets the lockdown refusal as it is. Every other frame is untouched.
+    /// route: only its target changes, and the text goes as heard. The authorizer judges the frame first, so a frame
+    /// it would refuse meets that refusal rather than any route answer. A route that is not listed, allowed, bound and
+    /// alive refuses; so do another route's name with nothing after it (unless a paste goes with it) and a near miss.
+    /// The selected route's own name alone goes to it, as before routing. During lockdown nothing is routed, so the
+    /// frame meets the lockdown refusal as it is. Every other frame is untouched.
     func voiceRoute(_ frame: Frame) async -> VoiceRouting {
         #if os(macOS)
         guard let routes = authorizer.voiceRoutes, case .text(let text) = frame.payload, text.isFinal,
               text.reply == nil, let target = frame.target, target == selectedTarget,
-              routes.route(for: target) != nil, await !host.lockdown.isOn else { return .deliver(frame, routed: nil) }
+              routes.route(for: target) != nil, await authorizer.authorize(frame) == .allow,
+              await !host.lockdown.isOn else { return .deliver(frame, routed: nil) }
         let named: VoiceRoutes.Route
         switch routes.match(text.text) {
         case .unaddressed:
             return .deliver(frame, routed: nil)
         case .routed(let route, _):
             named = route
-        case .nothingToSay(let route) where text.pasted != nil:
+        case .nothingToSay(let route) where text.pasted != nil || route.target == target:
             named = route
         case .nothingToSay(let route):
             return .refused(.malformed, "voice route: nothing to send to \(route.name)")
@@ -72,7 +78,8 @@ extension HostSession {
             return .refused(.notAllowed, "voice route: which session? Nothing was sent")
         }
         guard named.target != target else { return .deliver(frame, routed: nil) }
-        guard let listed = try? await policyFilteredTargets() else {
+        // A policy that cannot be read lists nothing; that is not the route being offline.
+        guard await host.refreshedPolicy() != nil, let listed = try? await policyFilteredTargets() else {
             return .refused(.malformed, "voice route: the target list is unavailable; nothing was sent")
         }
         guard listed.contains(where: { $0.id == named.target && $0.alive }) else {
@@ -80,7 +87,7 @@ extension HostSession {
         }
         var routed = frame
         routed.target = named.target
-        return .deliver(routed, routed: VoiceRouted(from: target, to: named.target))
+        return .deliver(routed, routed: VoiceRouted(from: target, to: named.target, generation: selectionGeneration))
         #else
         return .deliver(frame, routed: nil)
         #endif

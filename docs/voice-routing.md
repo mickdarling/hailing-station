@@ -115,7 +115,11 @@ route: "Deck, add a slide on pricing".
   only while the selection is still exactly `from`.
 - **Lockdown and pastes.** During lockdown nothing is routed, so a named request meets the lockdown refusal as it
   is. A name with nothing spoken after it routes when a paste goes with it (#608), and the routed target's own
-  paste gate then decides.
+  paste gate then decides. A paste routed to an agent route is delivered there; one routed to a tmux pane is refused.
+- **Authorizer first.** The authorizer judges the frame before any route answer, so a frame it would refuse gets
+  `unauthorized`, never a route's liveness. The selected route's own name alone goes to it, as before routing. A
+  policy that cannot be read refuses with "the target list is unavailable", not "offline". A tap route is bound to
+  the selection generation it was made on.
 - **Nothing falls back.** Each of these sends nothing to any target and keeps the connection open:
 
   | Case | Error frame |
