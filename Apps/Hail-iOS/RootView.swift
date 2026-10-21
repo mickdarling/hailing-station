@@ -48,6 +48,7 @@ struct RootView: View {
         NavigationStack {
             content
         }
+        .modifier(StationMenuStatusPublisher(connections: connections, destination: destination?.label))
         .onChange(of: scenePhase) { _, phase in
             scenePhaseRevision &+= 1
             selectionRevision &+= 1
