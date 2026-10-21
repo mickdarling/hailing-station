@@ -48,8 +48,8 @@ struct PublisherFixture: Sendable {
         try FileManager.default.removeItem(at: base)
     }
 
-    /// A `.watchdog` names its call site and whether the process stalled (#740): one poll with a long sleep
-    /// overshoot is a stall, many polls with a false condition is a real wait that never came true.
+    /// A `.watchdog` names its call site and whether the process stalled (#740): a couple of polls with a long sleep
+    /// overshoot is a stall, hundreds of polls with a false condition is a real wait that never came true.
     static func until(
         timeout: Duration = .seconds(4), _ condition: @Sendable () async -> Bool,
         fileID: String = #fileID, line: Int = #line
