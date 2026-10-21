@@ -110,7 +110,7 @@ extension RootView {
     @ViewBuilder
     private var listeningSurfaces: some View {
         #if os(macOS)
-        MacCoachingSlot(playback: playback, ambientListening: connections.ambientStreaming)
+        MacCoachingSlot(playback: playback)
         #else
         CoachingUnavailableCard()
         #endif
