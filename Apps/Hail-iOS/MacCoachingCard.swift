@@ -6,7 +6,7 @@ import SwiftUI
 
 /// Start, Stop, the explicit device choice and the consent steps for one coaching run. Choices are held by device
 /// UID, never by the reusable numeric ID. Awareness and consents are cleared when a run ends, so each Start asks
-/// again. Placeholder wording: see `PrivateCoachingConsentText`.
+/// again. Consent toggles show `PrivateCoachingConsentText.Shown`, visibly marked as placeholder wording.
 struct MacCoachingCard: View {
     let playback: ReplyPlaybackController
     @State private var controller = MacCoachingController.shared
@@ -75,7 +75,7 @@ struct MacCoachingCard: View {
             ForEach(outputs) { Text($0.name).tag($0.key) }
         }
         if let output, headphoneCheckNeeded(output) {
-            Toggle(PrivateCoachingConsentText.headphoneCheck, isOn: Binding(
+            Toggle(PrivateCoachingConsentText.Shown.headphoneCheck, isOn: Binding(
                 get: { confirmedKey == output.key }, set: { confirmedKey = $0 ? output.key : nil }))
         }
         if setup?.offersHosted == true {
@@ -85,12 +85,12 @@ struct MacCoachingCard: View {
             }
             .pickerStyle(.segmented)
         }
-        Toggle(PrivateCoachingConsentText.participantAwareness, isOn: $awareness)
+        Toggle(PrivateCoachingConsentText.Shown.participantAwareness, isOn: $awareness)
         if provider == .hosted {
-            Toggle(PrivateCoachingConsentText.hostedProvider, isOn: $hostedConsent)
+            Toggle(PrivateCoachingConsentText.Shown.hostedProvider, isOn: $hostedConsent)
         }
         if setup?.speechServices == .hosted {
-            Toggle(PrivateCoachingConsentText.hostedSpeech, isOn: $hostedSpeechConsent)
+            Toggle(PrivateCoachingConsentText.Shown.hostedSpeech, isOn: $hostedSpeechConsent)
         }
     }
 

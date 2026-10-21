@@ -12,6 +12,18 @@ public enum PrivateCoachingConsentText {
     public static let hostedSpeech = "Hosted speech services will receive this Mac's audio or the spoken cues."
     /// PLACEHOLDER (Mick's call): the one-tap check for a Bluetooth or USB output (#604).
     public static let headphoneCheck = "I'm wearing these headphones."
+    /// Shown after every sentence above, on screen and to VoiceOver, until Mick settles the wording.
+    public static let marker = "(placeholder wording)"
+
+    /// The sentences as the card displays them: each carries the visible placeholder marker.
+    public enum Shown {
+        public static let participantAwareness = marked(PrivateCoachingConsentText.participantAwareness)
+        public static let hostedProvider = marked(PrivateCoachingConsentText.hostedProvider)
+        public static let hostedSpeech = marked(PrivateCoachingConsentText.hostedSpeech)
+        public static let headphoneCheck = marked(PrivateCoachingConsentText.headphoneCheck)
+    }
+
+    static func marked(_ sentence: String) -> String { "\(sentence) \(marker)" }
 }
 
 /// Why a coaching run ended, without any of its content. haild prints it after `coaching ended:`.
