@@ -1,6 +1,7 @@
 import Foundation
 import HailCore
 import HailProtocol
+import Synchronization
 
 enum SocketTestError: Error, Sendable {
     case closed, unavailable
@@ -92,6 +93,7 @@ actor ScriptedConnector: WebSocketConnecting {
     }
 
     func open(url: URL, subprotocol: String) async throws -> any WebSocketTransport {
+        Self.openTimes.withLock { $0 = Array(($0 + [ContinuousClock.now]).suffix(256)) }
         opens.append((url, subprotocol))
         guard var steps = stepsByURL[url], !steps.isEmpty else { throw SocketTestError.unavailable }
         let step = steps.removeFirst()
@@ -103,6 +105,16 @@ actor ScriptedConnector: WebSocketConnecting {
     }
 
     func openCount(for url: URL) -> Int { opens.count { $0.0 == url } }
+
+    /// Every scripted open in the process (#704), newest 256: whether connection opening tasks ran at all.
+    private static let openTimes = Mutex<[ContinuousClock.Instant]>([])
+
+    /// The opens since `start`, as a count and the first offset: "0", or "3, first after 0.2 seconds".
+    static func opens(since start: ContinuousClock.Instant) -> String {
+        let since = openTimes.withLock { $0.filter { $0 >= start } }
+        guard let first = since.first else { return "0" }
+        return "\(since.count), first after \(first - start)"
+    }
 }
 
 actor SnapshotRecorder {
