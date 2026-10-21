@@ -11,13 +11,12 @@ import HailProtocol
 /// existing gate (shape, sanitizer, paste, policy, tier, lockdown, binding) applies to the routed frame as to any
 /// other.
 extension HostSession {
-    /// One host-made route: input selected on `from` is being handed to `to`. A tap route also carries the selection
-    /// generation it was made on, so it admits nothing on any later selection, even of the same target.
+    /// One host-made route: input selected on `from` is being handed to `to`, on the selection generation it was made
+    /// on, so it admits nothing on any later selection, even of the same target.
     struct VoiceRouted: Sendable, Equatable {
         let from: String
         let to: String
-        /// Nil only for a route made outside a session's own routing step (none yet), which then skips this check.
-        var generation: UUID?
+        let generation: UUID
     }
 
     /// The route this one ingress is being handed to, bound only while the host delivers a frame it routed itself
@@ -51,7 +50,7 @@ extension HostSession {
     func admitsInput(to target: String) -> Bool {
         guard let routed = Self.voiceRouted else { return target == selectedTarget }
         return routed.to == target && routed.from == selectedTarget && covers(target)
-            && (routed.generation ?? selectionGeneration) == selectionGeneration
+            && routed.generation == selectionGeneration
     }
 
     /// A device's final text frame to its selected route, opening with another route's name, is addressed to that

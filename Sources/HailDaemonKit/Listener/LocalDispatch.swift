@@ -97,7 +97,9 @@ extension WebSocketListener {
     /// Resolves the operator-visible connection id and runs that peer's own ingress path. A stale or
     /// unknown id refuses; there is no fallback to whichever connection currently selects the target.
     public func dispatch(_ request: LocalDispatchRequest) async throws -> UUID? {
-        try await dispatch(request, generation: nil)
+        // Never under a voice route: the socket's `dispatch` kind cannot inherit one from a routed delivery's task
+        // (#636, second-key review on #691), so it stays limited to the selected target.
+        try await HostSession.$voiceRouted.withValue(nil) { try await dispatch(request, generation: nil) }
     }
 
     /// The same, pinned to `generation` when one is given: the listener's ambient dispatch passes the selection
@@ -183,13 +185,14 @@ extension HostSession {
         if let owner { replyRequests[owner] = nil }
     }
 
-    /// Negotiated, selecting the target and, once bound, still on the captured selection generation.
+    /// Negotiated, selecting the target (or, for the listener's own ambient dispatch only, a voice route the selection
+    /// covers, #636) and, once bound, still on the captured selection generation.
     @discardableResult
     private func requireSelection(
         of request: LocalDispatchRequest, generation: UUID? = nil
     ) throws -> (version: Int, generation: UUID) {
         guard case .ready(let version) = state else { throw LocalDispatchRefusal.sessionNotReady }
-        guard selectedTarget == request.target else { throw LocalDispatchRefusal.targetNotSelected }
+        guard admitsInput(to: request.target) else { throw LocalDispatchRefusal.targetNotSelected }
         if let generation, generation != selectionGeneration { throw LocalDispatchRefusal.selectionChanged }
         return (version, selectionGeneration)
     }
