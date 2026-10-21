@@ -31,8 +31,10 @@ import Testing
             try await send(ambientSegment(stream: stream, sequence: 0), on: pair)
             try await pair.select(LegacyReferenceRig.other, on: 0)
             try await pair.select(LegacyReferenceRig.target, on: 0)
-            // The same stream continues on the same target and ends; only now does the child dispatch.
+            // The same stream's next segment: the gate ends it and tells the device why (#636), and only now does the
+            // child, at EOF, dispatch what it heard.
             try await send(ambientSegment(stream: stream, sequence: 1, isFinal: true), on: pair)
+            #expect(try await recipientSocketReceive(on: pair.sockets[0]).payload == Self.reselected)
             try await pair.barrier()
             await router.settle()
             #expect(await rig.adapter.deliveries.isEmpty)
@@ -42,6 +44,8 @@ import Testing
         }
         await listener.stop(reason: "synthetic test complete")
     }
+
+    static let reselected = FramePayload.control(.error(code: .notAllowed, message: AmbientAudioGate.reselectedMessage))
 
     private func send(_ segment: AudioPayload, on pair: FallbackSocketPair) async throws {
         try await recipientSocketSend(sessionFrame(target: LegacyReferenceRig.target, payload: .audio(segment)),
@@ -79,9 +83,12 @@ import Testing
             #expect(await env.router.reload() == .reloaded)
             if reselection == .afterReload { try await awayAndBack(pair) }
             try await reloadSend(ambientSegment(stream: stream, sequence: 1, isFinal: true), on: pair)
+            let delivers = reselection == .none || reselection == .twoReloads
+            if !delivers {
+                #expect(try await recipientSocketReceive(on: pair.sockets[0]).payload == Self.reselected)
+            }
             try await pair.barrier()
             await settle(env.router, step: "reloaded run")
-            let delivers = reselection == .none || reselection == .twoReloads
             #expect(await env.rig.adapter.contexts.count == (delivers ? 1 : 0))
         } catch {
             await env.listener.stop(reason: "synthetic test failed")

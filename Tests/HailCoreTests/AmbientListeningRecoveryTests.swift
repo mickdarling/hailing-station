@@ -141,6 +141,8 @@ import Testing
             "malformed: ambient stream must be new and start at sequence 0",
             "malformed: ambient sequence must increase",
             "not_allowed: ambient stopped: listener exited",
+            // The host ended a stream opened before the owner selected away and back (#636): listen again at once.
+            "not_allowed: ambient stopped: the destination was selected again",
             "rate_limited: ambient rate exceeded"
         ]
         let final = [
