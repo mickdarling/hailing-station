@@ -302,6 +302,7 @@ extension HostSession {
             if selectedTarget != targetID {
                 selectionGeneration = UUID()
                 replyRequests.removeAll()
+                evictedForHandoff.removeAll() // The old selection's evictions can never be restored (#723).
                 selectedTarget = targetID
             }
             return HostSessionResult(frames: [])

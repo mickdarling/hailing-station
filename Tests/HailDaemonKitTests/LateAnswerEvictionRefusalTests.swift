@@ -93,6 +93,23 @@ import Testing
         return context
     }
 
+    /// A reselection or a close drops the in-flight handoff's stashed eviction at once, not when the handoff ends.
+    @Test(arguments: ["select", "close"])
+    func aResetClearsTheStashedEvictionImmediately(reset: String) async throws {
+        let rig = try await RecipientTestRig.make()
+        let (session, _) = try await fullOfLateRecords(rig)
+        _ = try await heldHandoff(rig, session) {
+            #expect(await session.evictedForHandoff.count == 1)
+            if reset == "select" {
+                _ = await session.receive(sessionFrame(payload: .control(.select(targetID: "recipient:other"))))
+            } else {
+                _ = await session.failure(.malformed, "synthetic close", close: true)
+            }
+            #expect(await session.evictedForHandoff.isEmpty)
+        }
+        #expect(await session.evictedForHandoff.isEmpty)
+    }
+
     @Test func aSelectionChangeDuringTheHandoffRestoresNothing() async throws {
         let rig = try await RecipientTestRig.make()
         let (session, contexts) = try await fullOfLateRecords(rig)

@@ -33,11 +33,16 @@ let package = Package(
             name: "HailProtocolTests", dependencies: ["HailProtocol", "HailProtocolFixtures"], swiftSettings: strict
         ),
 
+        // Test-only helpers shared by test targets, such as the CI stall watchdog (#704). Nothing ships it.
+        .target(name: "HailTestSupport", path: "Tests/HailTestSupport", swiftSettings: strict),
+
         .target(name: "HailCore", dependencies: ["HailProtocol"], swiftSettings: strict),
-        .testTarget(name: "HailCoreTests", dependencies: ["HailCore"], swiftSettings: strict),
+        .testTarget(name: "HailCoreTests", dependencies: ["HailCore", "HailTestSupport"], swiftSettings: strict),
 
         .target(name: "HailDaemonKit", dependencies: ["HailProtocol"], swiftSettings: strict),
-        .testTarget(name: "HailDaemonKitTests", dependencies: ["HailDaemonKit"], swiftSettings: strict),
+        .testTarget(
+            name: "HailDaemonKitTests", dependencies: ["HailDaemonKit", "HailTestSupport"], swiftSettings: strict
+        ),
         .executableTarget(name: "haild", dependencies: ["HailDaemonKit", "HailCore"], swiftSettings: strict),
         .testTarget(name: "HailCoachingCommandTests", dependencies: ["haild", "HailCore"], swiftSettings: strict),
         .executableTarget(

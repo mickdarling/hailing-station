@@ -4,6 +4,7 @@ import Foundation
 import HailProtocol
 import Synchronization
 @testable import HailDaemonKit
+import HailTestSupport
 
 struct PublisherFixture: Sendable {
     let base: URL
@@ -13,6 +14,7 @@ struct PublisherFixture: Sendable {
     let environment: [String: String]
 
     init(mode: String = "normal", cli: Bool = false) throws {
+        _ = StallWatchdog.started // #704: names what stalls the pool, on CI only
         base = FileManager.default.temporaryDirectory.appendingPathComponent("rp-\(UUID().uuidString.prefix(8))")
         root = base.appendingPathComponent("output"); record = base.appendingPathComponent("record")
         try FileManager.default.createDirectory(at: base, withIntermediateDirectories: false,
