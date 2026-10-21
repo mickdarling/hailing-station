@@ -33,18 +33,29 @@ struct RightyoAmbientDispatchStep: RightyoDispatching {
     var acknowledge: (@Sendable () -> Void)?
     /// Shows the speaking device what it said (#318); awaited, so it precedes the acknowledgement and the typing.
     var heard: (@Sendable () async -> Void)?
+    /// The stream's own target (#636). A request to any other target is one the owner routed: it is shown and
+    /// acknowledged only once handed off, so a route that refuses it never looks sent.
+    var streamTarget: String?
 
     func dispatch(text: String, target: String, binding: String) async throws -> RightyoDispatchReceipt {
         // The daemon's own local-dispatch cap, as for `--reply-to`; in process there is no socket answer deadline.
         guard text.utf8.count <= LocalDispatchRequest.maxTextBytes else { throw RightyoInputError.capacity }
+        let routed = streamTarget.map { $0 != target } ?? false
+        if !routed { await announce() }
+        let request = LocalDispatchRequest(connection: connection, target: target, binding: binding, text: text)
+        let receipt: RightyoDispatchReceipt
+        do {
+            receipt = RightyoDispatchReceipt(request: try await dispatcher.dispatch(request))
+        } catch let refusal as LocalDispatchRefusal where refusal.handedOff {
+            receipt = RightyoDispatchReceipt(request: nil, caveat: refusal.message)
+        }
+        if routed { await announce() }
+        return receipt
+    }
+
+    private func announce() async {
         await heard?()
         acknowledge?()
-        let request = LocalDispatchRequest(connection: connection, target: target, binding: binding, text: text)
-        do {
-            return RightyoDispatchReceipt(request: try await dispatcher.dispatch(request))
-        } catch let refusal as LocalDispatchRefusal where refusal.handedOff {
-            return RightyoDispatchReceipt(request: nil, caveat: refusal.message)
-        }
     }
 }
 
@@ -148,7 +159,8 @@ public final class RightyoAmbientPipeline: Sendable {
                                     onSkip: configuration.onAcknowledgementSkipped)
         let heard = AmbientHeardRelay(onHeard: configuration.onHeard)
         let step = RightyoAmbientDispatchStep(connection: configuration.connection, dispatcher: dispatcher,
-                                              acknowledge: { relay.fire() }, heard: { await heard.deliver() })
+                                              acknowledge: { relay.fire() }, heard: { await heard.deliver() },
+                                              streamTarget: configuration.target)
         consumer = try RightyoInputConsumer(host: nil, target: configuration.target, binding: configuration.binding,
                                             session: session, allowSynthetic: configuration.allowSynthetic,
                                             dispatcher: step, echoFilter: configuration.isEcho,

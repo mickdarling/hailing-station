@@ -204,6 +204,8 @@ and at the binding the policy allows).
   route rebound between addressing and dispatch. The listener logs `ambient_voice_route_refused` with
   `reason=not_delivered|nothing_to_say|unclear` only, never the name or the words. Slice 5 tells the owner. A
   refusal for the ambient target itself still ends the stream, as before.
+- **Announced only once sent.** A routed request is shown to the device (#318) and acknowledged only after its
+  handoff, so a route that refuses it never looks sent. The stream's own requests still announce before typing.
 - **RightyO must forward the turn.** RightyO forwards only turns addressed to the system. Because "Jarvis, Deck,
   …" never re-routes, each route's spoken name must also be in RightyO's `addressing.names`. That is a live config
   change, made only with Mick listening.
