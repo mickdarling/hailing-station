@@ -89,8 +89,9 @@ public struct VoiceDestinations: Sendable, Equatable {
         return try VoiceDestinations(parsed)
     }
 
-    /// The resolved path when it and every directory above it pass `load`'s trust rule; nil otherwise.
-    private static func trustedPath(_ given: String) -> String? {
+    /// The resolved path when it and every directory above it pass `load`'s trust rule (also `VoiceRoutes.load`'s);
+    /// nil otherwise.
+    static func trustedPath(_ given: String) -> String? {
         guard let resolved = realpath(given, nil) else { return nil }
         defer { free(resolved) }
         let path = String(cString: resolved), owners: Set<uid_t> = [0, getuid()]
@@ -147,7 +148,7 @@ public struct VoiceDestinations: Sendable, Equatable {
     }
 
     /// Runs of letters, digits and apostrophes, lowercased and keyed, with where each sits in `heard`.
-    private static func words(_ heard: String) -> [Word] {
+    static func words(_ heard: String) -> [Word] {
         var found: [Word] = []
         var start: String.Index?
         for index in heard.indices + [heard.endIndex] {
