@@ -64,21 +64,27 @@ extension RootView {
                     }
                     .buttonStyle(.borderedProminent)
                     .accessibilityIdentifier("station.choose-destination")
-                } else {
+                } else if availability == .unconfigured {
                     NavigationLink {
                         ConnectivityLabView(store: connections, endpointsChanged: persist)
                     } label: {
-                        Label(
-                            availability == .unconfigured ? "Set up a Mac" : "Check Mac connection",
-                            systemImage: availability == .unconfigured ? "plus.circle.fill" : "network"
-                        )
+                        Label("Set up a Mac", systemImage: "plus.circle.fill")
                     }
                     .buttonStyle(.borderedProminent)
                     .accessibilityIdentifier("station.setup-mac")
+                } else {
+                    // A real check with a visible result, not only a link to Mac Setup (#385).
+                    StationConnectionCheckView(
+                        connections: connections,
+                        hostIDs: connectionCheckHostIDs,
+                        endpointsChanged: persist
+                    )
                 }
             }
             .padding(24)
             .stationCard(minHeight: horizontalSizeClass == .regular ? 420 : 260)
+            // A container, so the buttons inside keep their own identifiers (docs/station-build-footer.md).
+            .accessibilityElement(children: .contain)
             .accessibilityIdentifier("station.availability")
         }
     }
@@ -127,6 +133,13 @@ extension RootView {
             hasRememberedSelection: rememberedSelection != nil,
             selectionInProgress: isRestoringSelection
         )
+    }
+
+    /// The remembered Mac when it is still configured, otherwise every configured Mac (#385).
+    var connectionCheckHostIDs: [HostEndpoint.Identifier] {
+        let all = connections.hosts.map(\.id)
+        guard let preferred = rememberedSelection?.hostID, all.contains(preferred) else { return all }
+        return [preferred]
     }
 
     var connectionPresentation: StationConnectionPresentation { stationAvailability.badge }

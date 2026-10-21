@@ -133,6 +133,25 @@ public enum Fixtures {
                 )
             ))
         )),
+        // #606: a reply's spoken words in `text`, its unspoken Markdown in `metadata`.
+        Example(name: "text-reply-metadata", frame: Frame(
+            id: id(26), timestamp: 1_758_200_040_020, target: "tmux:codex-hail", source: "mac-main",
+            payload: .text(TextPayload(
+                text: "The build is green and the pull request is ready.",
+                reply: ReplyDescriptor(
+                    id: id(104), hostID: "mac-main", targetID: "tmux:codex-hail"
+                ),
+                metadata: """
+                ## Build
+                - PR: [#1](https://example.invalid/pull/1)
+                - File: `Sources/Example.swift`
+
+                | Check | Result |
+                | --- | --- |
+                | tests | passed |
+                """
+            ))
+        )),
         Example(name: "reply-ziggy-audio", frame: Frame(
             id: id(24), timestamp: 1_758_200_040_017, target: "tmux:codex-hail", source: "ziggy",
             payload: .audio(AudioPayload(
@@ -243,9 +262,34 @@ public enum Fixtures {
             id: id(211), timestamp: 1_758_200_050_800, source: "host",
             payload: .control(.ownerVoice(state: "unrecognized"))
         )),
+        Example(name: "control-health", frame: Frame(
+            id: id(240), timestamp: 1_758_200_052_000, source: "terminal", payload: .control(.health)
+        )),
+        Example(name: "control-health-report", frame: Frame(
+            id: id(241), timestamp: 1_758_200_052_100, source: "host",
+            payload: .control(.healthReport(HostHealth(version: "0.1.0", build: "0123456789abcdef", checks: [
+                .init(name: "daemon_running", ok: true), .init(name: "build_match", ok: true),
+                .init(name: "listener_ready", ok: true), .init(name: "ambient_listening", ok: false)
+            ])))
+        )),
+        Example(name: "control-media-mode", frame: Frame(
+            id: id(230), timestamp: 1_758_200_051_000, source: "host",
+            payload: .control(.mediaMode(on: true, reason: "voice", expires: 1_758_210_851_000))
+        )),
+        Example(name: "control-media-mode-off", frame: Frame(
+            id: id(231), timestamp: 1_758_200_051_100, source: "host",
+            payload: .control(.mediaMode(on: false, reason: "timeout"))
+        )),
         Example(name: "control-ambient-input", frame: Frame(
             id: id(212), timestamp: 1_758_200_050_900, source: "terminal",
             payload: .control(.ambientInput(route: "usb_audio"))
+        )),
+        Example(name: "control-session-update", frame: Frame(
+            id: id(213), timestamp: 1_758_200_051_000, source: "host",
+            payload: .control(.sessionUpdate(
+                update: id(214), session: "Voice Work", priority: "action", text: "The build failed; it needs you.",
+                card: "Build log: see PR #1"
+            ))
         )),
         Example(name: "control-set-reply-mute", frame: Frame(
             id: id(209), timestamp: 1_758_200_050_600, source: "host", payload: .control(.setReplyMute(muted: true))

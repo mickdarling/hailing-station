@@ -7,7 +7,7 @@ import Testing
 
 /// The owner's spoken "mute" and "unmute" (#404): carried out by the host on the device that said it, never typed to
 /// the agent. Synthetic only; not device hearing.
-@Suite(.serialized, .timeLimit(.minutes(1))) struct AmbientWiringVoiceMuteTests {
+@Suite(.serialized, .timeLimit(.minutes(1)), .frozenGuardBudget) struct AmbientWiringVoiceMuteTests {
     static let muted = AmbientAckClip(pcm: Data(repeating: 4, count: 480), sampleRate: 24_000, text: "Muted.")
     static let unmuted = AmbientAckClip(pcm: Data(repeating: 5, count: 480), sampleRate: 24_000, text: "Unmuted.")
 

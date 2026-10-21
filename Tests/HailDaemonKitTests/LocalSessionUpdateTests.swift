@@ -80,14 +80,15 @@ import Testing
     @Test func everyUpdateSpendsTheSessionsBudget() async throws {
         try await withListener { listener, wiring in
             wiring.listening.withLock { $0 = UUID() }
-            for _ in 0..<SessionUpdatePolicy().perSessionLimit {
-                #expect(await listener.sessionUpdate(request(.submit, priority: .action)).outcome == .held)
+            let policy = SessionUpdatePolicy()
+            for _ in 0..<policy.perSessionLimit {
+                #expect(await listener.sessionUpdate(request(.submit)).outcome == .held)
             }
             for priority in [SessionUpdatePriority.info, .action] {
                 let limited = await listener.sessionUpdate(request(.submit, priority: priority))
                 #expect(limited.outcome == .refused && limited.reason == "rate_limited")
                 #expect((limited.retryAfter ?? 0) > 3_500)
-                #expect(limited.held == SessionUpdatePolicy().perSessionLimit, "a refusal holds nothing")
+                #expect(limited.held == policy.perSessionHeld, "the session's own cap; a refusal holds nothing")
             }
         }
     }

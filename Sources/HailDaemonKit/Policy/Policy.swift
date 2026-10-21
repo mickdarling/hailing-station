@@ -114,12 +114,21 @@ public struct DeliveryRequest: Sendable, Equatable {
     public var lines: [String]
     /// Every frame that reaches policy came from a paired device; the CLI passes its own name.
     public var device: String
+    /// What the guard reads when it is not `lines`: for a framed paste (#608), only the spoken request's sanitized
+    /// lines (empty for a paste sent on its own). The paste body is screened for a validation flag instead. Only the
+    /// host's paste path sets it (#635 review): outside this module a request is always guarded on its `lines`.
+    var guardLines: [String]?
 
     public init(target: String, binding: String?, lines: [String], device: String) {
         self.target = target
         self.binding = binding
         self.lines = lines
         self.device = device
+    }
+
+    init(target: String, binding: String?, lines: [String], device: String, guardLines: [String]?) {
+        self.init(target: target, binding: binding, lines: lines, device: device)
+        self.guardLines = guardLines
     }
 }
 
@@ -167,11 +176,15 @@ public struct PolicyEvaluator: Sendable {
             )
         }
         if let longest = waits.max() { return .denied(.rateLimited(retryAfter: longest)) }
-        let hits = guards.matches(in: request.lines)
+        let hits = guards.matches(in: request.guardLines ?? request.lines)
         if target.tier == .confirm { return .confirm(reason: "confirm tier", guardHits: hits) }
         if !hits.isEmpty { return .confirm(reason: "guarded: " + hits.joined(separator: ", "), guardHits: hits) }
         return .deliver
     }
+
+    /// The guard rules that match a paste's lines, and those that ran out of budget (#608): reported to the session as
+    /// a validation note, never a gate.
+    func pasteFlags(in lines: [String]) -> (matched: [String], unchecked: [String]) { guards.flags(in: lines) }
 
     /// Capture is its own permission (#41 item 5) and never bypasses lockdown or the binding.
     public func mayCapture(target id: String, binding: String?, lockdown: Bool) -> Bool {

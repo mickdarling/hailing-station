@@ -137,11 +137,17 @@ import Testing
     @Test func aPasteRefusalMarksTheTurnAndOffersThePasteBack() {
         let store = HostConnectionStore()
         store.conversation.noteSent("look", pasted: "synthetic notes", endpointID: "mac", targetID: "tmux:a")
-        #expect(!store.receivePasteRefusal(refusal(.notAllowed)))
+        #expect(!store.receiveAmbientNotice(refusal(.notAllowed)))
         #expect(store.conversation.entries.last?.pasteState == .pending)
-        #expect(store.receivePasteRefusal(refusal(.pasteRefused)))
-        #expect(store.conversation.entries.last?.pasteState == .refused("pastes go only to agent sessions"))
+        var announced: [String] = []
+        store.onRequestRefusal = { announced.append($0) }
+        #expect(store.receiveAmbientNotice(refusal(.pasteRefused)))
+        let pasted = store.conversation.entries.first { $0.pasted != nil }
+        #expect(pasted?.pasteState == .refused("pastes go only to agent sessions"))
         #expect(store.lastPasteRefusal?.pasted == "synthetic notes")
         #expect(store.lastPasteRefusal?.message == "pastes go only to agent sessions")
+        // The one conversation line and the one announcement are the shared request refusal's (#692), not a second.
+        #expect(store.conversation.entries.filter(\.notice).map(\.text) == ["pastes go only to agent sessions"])
+        #expect(announced == ["pastes go only to agent sessions"])
     }
 }

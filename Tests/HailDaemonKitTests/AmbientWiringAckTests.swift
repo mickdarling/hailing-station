@@ -7,7 +7,7 @@ import Testing
 
 /// Instant acknowledgement through the real listener (rightyo#105, #324): an admitted ambient request plays its
 /// persona's clip on the phone that heard it, as a request-less reply, and is logged with tokens only.
-@Suite(.serialized, .timeLimit(.minutes(1))) struct AmbientWiringAckTests {
+@Suite(.serialized, .timeLimit(.minutes(1)), .frozenGuardBudget) struct AmbientWiringAckTests {
     static let clip = AmbientAckClip(pcm: Data(repeating: 1, count: 480), sampleRate: 24_000, text: "On it.")
 
     @Test func anAdmittedRequestPlaysThePersonasClipOnTheOriginatingPhone() async throws {

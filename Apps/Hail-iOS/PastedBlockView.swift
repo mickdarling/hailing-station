@@ -10,7 +10,8 @@ extension ConversationChatView {
             Text(Self.linked(segments))
                 .foregroundStyle(entry.overheard ? Color.secondary : isYou ? Color.white : Color.primary)
                 .tint(isYou ? Color.white : Color.accentColor)
-                .italic(entry.overheard)
+                // The words Haili spoke aloud are in a speech style, set apart from the unspoken details (#606).
+                .italic(entry.overheard || (entry.speaker == .haili && entry.spoken))
         }
         if isYou, !entry.overheard, let pasted = entry.pasted {
             PastedBlockView(text: pasted, state: entry.pasteState)
@@ -25,12 +26,13 @@ extension ConversationChatView {
     @ViewBuilder
     func pasteActions(_ entry: ConversationEntry) -> some View {
         if let pasted = entry.pasted {
-            Button("Copy Pasted Text", systemImage: "doc.on.clipboard") { UIPasteboard.general.string = pasted }
+            Button("Copy Pasted Text", systemImage: "doc.on.clipboard") { StationPlatform.copy(pasted) }
         }
     }
 
-    static func youSaid(_ entry: ConversationEntry) -> String {
-        guard entry.pasted != nil else { return "You said" }
+    /// The bubble's label for the user's own sent turn with a paste; nil for every other entry.
+    static func youSaid(_ entry: ConversationEntry) -> String? {
+        guard entry.speaker == .you, !entry.overheard, entry.pasted != nil else { return nil }
         return entry.text.isEmpty ? "You pasted" : "You said, with a paste"
     }
 }
