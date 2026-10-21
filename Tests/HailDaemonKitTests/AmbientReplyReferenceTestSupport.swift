@@ -86,6 +86,11 @@ func blockReference(in prompt: String) -> UUID? {
 func ambientDispatch(
     _ listener: WebSocketListener, _ request: LocalDispatchRequest, audit: AuditLog? = nil
 ) async throws -> UUID? {
-    try await AmbientListenerDispatcher(listener: listener, audit: audit).dispatch(request)
+    // A stream opened on the named session's selection now (#636).
+    var selection: UUID?
+    for peer in await listener.peers.values where await peer.session.connectionID == request.connection {
+        selection = await peer.session.selectionGeneration
+    }
+    return try await AmbientListenerDispatcher(listener: listener, audit: audit, selection: selection).dispatch(request)
 }
 #endif

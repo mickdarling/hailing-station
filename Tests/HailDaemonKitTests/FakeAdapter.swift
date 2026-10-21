@@ -17,11 +17,14 @@ actor FakeAdapter: Adapter {
     private let deliverError: (any Error)?
     /// After this many successful deliveries, every further one throws `AdapterError.rebound`.
     private let failAfter: Int?
+    /// Refuses framed pastes the way `TmuxAdapter` does for a pane that is not running an agent (#608).
+    private let refusesFramedPastes: Bool
 
     init(
         kind: String, targets: [AdapterTarget] = [], listError: (any Error)? = nil,
-        deliverError: (any Error)? = nil, failAfter: Int? = nil
+        deliverError: (any Error)? = nil, failAfter: Int? = nil, refusesFramedPastes: Bool = false
     ) {
+        self.refusesFramedPastes = refusesFramedPastes
         self.kind = kind
         self.targetsToList = targets
         self.listError = listError
@@ -42,6 +45,9 @@ actor FakeAdapter: Adapter {
     func deliver(_ text: String, to target: String, binding: String?) async throws {
         guard targetsToList.contains(where: { $0.name == target }) else { throw AdapterError.unknownTarget(target) }
         if let deliverError { throw deliverError }
+        if refusesFramedPastes, text.hasPrefix(PastedContent.begin("")) {
+            throw AdapterError.deliveryFailed(PastedContent.agentOnlyRefusal)
+        }
         if let failAfter, deliveries.count >= failAfter { throw AdapterError.rebound(target) }
         deliveries.append(Delivery(target: target, text: text, binding: binding))
     }

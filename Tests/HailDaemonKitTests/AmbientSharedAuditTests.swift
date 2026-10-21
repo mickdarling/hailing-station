@@ -8,7 +8,7 @@ import Testing
 
 /// #203 round 2: the daemon composes one `AuditLog` for the `--reply-to` socket and ambient dispatches, so
 /// both are audited in the same day's file; two writers on one directory would lock one of them out.
-@Suite(.serialized, .timeLimit(.minutes(1))) struct AmbientSharedAuditTests {
+@Suite(.serialized, .timeLimit(.minutes(1)), .frozenGuardBudget) struct AmbientSharedAuditTests {
     // Composition, both ingress paths and the audit read stay in one scope, as in LocalReplyEndpointTests.
     // swiftlint:disable:next function_body_length
     @Test func ambientAndReplyToDispatchesAreBothAuditedInOneDaemonDay() async throws {

@@ -1,3 +1,5 @@
+// The pane observation, the buffered paste and its agent gate (#608) stay together: the gate is part of the paste.
+// swiftlint:disable file_length
 import Foundation
 import Synchronization
 
@@ -162,9 +164,7 @@ extension TmuxAdapter {
                 throw AdapterError.deliveryFailed("unsubmitted text appeared in the input of pane \(target)")
             }
             try abandoned.check()
-            pasting()
-            let paste = ["paste-buffer", "-p", "-d", "-b", buffer, "-t", session.paneID]
-            try await tmux(paste, failure: AdapterError.deliveryFailed)
+            try await pasteBuffer(buffer, holding: text, into: session.paneID, pasting: pasting)
             return fresh
         } catch {
             _ = try? await runner.run(tmuxPath, Self.baseArguments(socket: socket) + ["delete-buffer", "-b", buffer])
@@ -196,5 +196,81 @@ final class DeliveryAbandonment: Sendable {
             $0 = .committed
             return true
         }
+    }
+}
+
+/// Pastes, and the Enters that submit them, only to agent panes (#608).
+extension TmuxAdapter {
+    /// The paste itself, bracketed when the target asked for it, and `-d` deletes the buffer. A framed paste (#608)
+    /// goes only to an agent: the tmux server checks the pane's foreground command and pastes in the same command, so
+    /// no check-then-paste gap is left on this side. `pasting` runs once text may have reached the pane. The pane is
+    /// remembered as holding a framed paste, so its Enters are checked the same way (`pressEnter`).
+    func pasteBuffer(_ buffer: String, holding text: String, into pane: String, pasting: () -> Void) async throws {
+        let key = "\(socket ?? "")|\(pane)"
+        if text.hasPrefix(PastedContent.begin("")) {
+            try await pasteToAgent(buffer: buffer, pane: pane, pasting: pasting)
+            _ = Self.framedPanes.withLock { $0.insert(key) }
+            return
+        }
+        _ = Self.framedPanes.withLock { $0.remove(key) }
+        pasting()
+        try await tmux(["paste-buffer", "-p", "-d", "-b", buffer, "-t", pane], failure: AdapterError.deliveryFailed)
+    }
+
+    /// Panes (by socket and pane id) whose latest paste was framed. Deliveries to one adapter run one at a time, and
+    /// every paste sets or clears its pane, so an entry always describes the text the next Enter would submit.
+    private static let framedPanes = Mutex<Set<String>>([])
+
+    /// The Enter that submits a delivery. After a framed paste it goes through the same agent check, in the same
+    /// tmux command: if the agent left the pane between the paste and the Enter (a shell is in front now), no Enter
+    /// is sent and the delivery fails with the agent-only reason.
+    func pressEnter(_ pane: String) async throws {
+        guard Self.framedPanes.withLock({ $0.contains("\(socket ?? "")|\(pane)") }) else {
+            try await tmux(["send-keys", "-t", pane, "Enter"], failure: AdapterError.deliveryFailed)
+            return
+        }
+        guard pane.hasPrefix("%"), pane.dropFirst().allSatisfy(\.isNumber) else {
+            throw AdapterError.deliveryFailed("unexpected tmux pane name")
+        }
+        let refused = "hail-enter-not-agent"
+        let result = try await tmux([
+            "if-shell", "-F", "-t", pane, Self.isAgentFormat, "send-keys -t \(pane) Enter",
+            "display-message -p \(refused)"
+        ], failure: AdapterError.deliveryFailed)
+        if result.stdout.contains(refused) { throw AdapterError.deliveryFailed(PastedContent.agentOnlyRefusal) }
+    }
+
+    /// Foreground commands of a pane that runs an agent session (#608): Claude Code (`claude`, or `claude.exe` for the
+    /// native build, as tmux 3.5 reports it) and Codex. Anything else, a shell or `node` included, is refused.
+    static let agentCommands = ["claude", "claude.exe", "codex"]
+
+    /// `if-shell -F` evaluates `#{pane_current_command}` for the pane inside the tmux server and runs the paste only
+    /// when it is an agent; otherwise the else branch prints a marker and nothing reaches the pane. The buffer and pane
+    /// names are generated (`hail-<uuid>`, `%<n>`), so the command strings hold no tmux syntax of their own.
+    func pasteToAgent(buffer: String, pane: String, pasting: () -> Void) async throws {
+        guard buffer.allSatisfy({ $0.isLetter || $0.isNumber || $0 == "-" }),
+              pane.hasPrefix("%"), pane.dropFirst().allSatisfy(\.isNumber) else {
+            throw AdapterError.deliveryFailed("unexpected tmux buffer or pane name")
+        }
+        let refused = "hail-paste-not-agent"
+        let result: CommandResult
+        do {
+            result = try await tmux([
+                "if-shell", "-F", "-t", pane, Self.isAgentFormat,
+                "paste-buffer -p -d -b \(buffer) -t \(pane)", "display-message -p \(refused)"
+            ], failure: AdapterError.deliveryFailed)
+        } catch {
+            pasting() // Unknown whether it pasted: treated as typed, so the pane is not reused blindly.
+            throw error
+        }
+        // A refusal pasted nothing, so the pane stays clean; the caller deletes the buffer.
+        if result.stdout.contains(refused) { throw AdapterError.deliveryFailed(PastedContent.agentOnlyRefusal) }
+        pasting()
+    }
+
+    /// `1` when the pane's foreground command is one of `agentCommands`: nested `#{||:a,b}` over `#{==:...}` tests.
+    static var isAgentFormat: String {
+        let tests = agentCommands.map { "#{==:#{pane_current_command},\($0)}" }
+        return tests.dropFirst().reduce(tests[0]) { "#{||:\($0),\($1)}" }
     }
 }
