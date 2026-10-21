@@ -37,8 +37,8 @@ The example is synthetic.
   Targets are unique, and `default` must be one of them.
 - **Names.** A `name` and each of up to eight `aliases` is 1–48 characters with no control characters. It must also
   be sayable as the parser hears it: one to three of its words (runs of letters, digits and apostrophes), separated
-  by whitespace alone, each keying to at least one ASCII letter or digit, the first not a greeting. So "Voice-Work",
-  "One-Two-Three-Four", "Okay Deck" and "東京 Deck" are refused. Names are compared as `RightyoAddressing.key` (case-folded ASCII letters and digits), so "Voice Work"
+  by whitespace alone, each wholly ASCII letters, digits and apostrophes, the first not a greeting. So "Voice-Work",
+  "One-Two-Three-Four", "Okay Deck", "Café" and "東京 Deck" are refused. Names are compared as `RightyoAddressing.key` (case-folded ASCII letters and digits), so "Voice Work"
   and "voicework" are the same spelling. Every spelling must be unique across routes and must not be a greeting
   ("hey", "ok", "okay").
 - **Trust.** The file decides where the owner's spoken requests go, so it is trusted exactly as `destinations.json`
