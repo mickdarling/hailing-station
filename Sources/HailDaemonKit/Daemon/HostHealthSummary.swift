@@ -28,6 +28,12 @@ public enum HostHealthSummary {
         return summary(of: report)
     }
 
+    /// The minimal report for a request that could not wait for an evaluation: the daemon answering is running.
+    static func fallback(build: String?) -> HostHealth {
+        summary(of: HealthReport(cli: .init(version: DaemonInfo.version, build: build, hostID: nil), daemon: nil,
+                                 checks: []))
+    }
+
     /// Known check names only, each once, at most `HostHealth.maxChecks`; a build that is not a 16-digit lowercase
     /// ASCII hex digest is left off. Never empty: the daemon answering is itself running, so with nothing else left
     /// `daemon_running` passes.
@@ -47,66 +53,100 @@ public enum HostHealthSummary {
     }
 }
 
-/// One shared health summary for every connection (#614 review): a `health` request is answered from a result at
-/// most `ttl` old; when it is older, one evaluation runs, on its own low-priority queue rather than the cooperative
-/// pool, and every request waiting meanwhile shares it. So any number of devices or repeats cost at most one doctor
-/// evaluation per window, and every request is answered.
+/// One shared health summary for every connection (#614 review). A `health` request never waits on a slow doctor
+/// evaluation: a result at most `ttl` old is answered as is; an older one is answered at once while a single refresh
+/// runs in the background; with none yet, the request waits at most `deadline`, then gets a minimal report. Each
+/// evaluation runs on its own low-priority queue, never the cooperative pool, and at most one is in flight, shared by
+/// every request, so a stuck one is never restarted. The daemon's service starts its first evaluation when it is
+/// created, so a request after startup normally finds a result; at worst a request waits `deadline`, never longer,
+/// before the connection's other frames (ambient audio) continue. Any number of devices or repeats cost at most one
+/// evaluation per window.
 public final class HostHealthService: Sendable {
     public static let defaultTTL: Duration = .seconds(30)
+    public static let defaultDeadline: Duration = .seconds(8)
 
     private struct State {
         var cached: (health: HostHealth, at: ContinuousClock.Instant)?
         var inFlight: Task<HostHealth, Never>?
     }
 
-    private enum Either {
-        case fresh(HostHealth)
-        case wait(Task<HostHealth, Never>)
-    }
-
     private let state = Mutex(State())
     private let ttl: Duration
+    private let deadline: Duration
     private let now: @Sendable () -> ContinuousClock.Instant
     private let evaluate: @Sendable () -> HostHealth
-    private static let queue = DispatchQueue(label: "hail.host-health", qos: .utility)
+    /// What a request gets when no result arrives within `deadline`: the daemon answering is running.
+    private let fallback: HostHealth
+    private let queue = DispatchQueue(label: "hail.host-health", qos: .utility)
 
     /// `build` is computed once here, at startup, not on each request.
     public convenience init() {
         let build = BuildIdentity.current()
-        self.init { HostHealthSummary.evaluate(build: build) }
+        self.init(fallback: HostHealthSummary.fallback(build: build)) { HostHealthSummary.evaluate(build: build) }
+        prime()
     }
 
-    init(ttl: Duration = defaultTTL, now: @escaping @Sendable () -> ContinuousClock.Instant = { .now },
+    /// Starts the first evaluation now, off the cooperative pool, so the first `health` request after startup does
+    /// not wait for a cold one (#690 review).
+    func prime() {
+        state.withLock { state in
+            if state.cached == nil, state.inFlight == nil { state.inFlight = startEvaluation() }
+        }
+    }
+
+    init(ttl: Duration = defaultTTL, deadline: Duration = defaultDeadline,
+         now: @escaping @Sendable () -> ContinuousClock.Instant = { .now }, fallback: HostHealth,
          evaluate: @escaping @Sendable () -> HostHealth) {
-        (self.ttl, self.now, self.evaluate) = (ttl, now, evaluate)
+        (self.ttl, self.deadline, self.now, self.fallback, self.evaluate) = (ttl, deadline, now, fallback, evaluate)
     }
 
     @Sendable public func current() async -> HostHealth {
-        // One lock decides: a fresh cached result, the evaluation already running, or a new one.
-        let decision = state.withLock { state -> Either in
-            if let cached = state.cached, now() - cached.at < ttl { return .fresh(cached.health) }
-            if let running = state.inFlight { return .wait(running) }
-            let evaluate = evaluate
-            let running = Task<HostHealth, Never> {
-                await withCheckedContinuation { continuation in
-                    Self.queue.async { continuation.resume(returning: evaluate()) }
-                }
-            }
+        // One lock decides: a fresh result; a stale one, answered while one refresh runs; or none yet, waited for.
+        let (cached, running) = state.withLock { state -> (HostHealth?, Task<HostHealth, Never>?) in
+            if let cached = state.cached, now() - cached.at < ttl { return (cached.health, nil) }
+            let running = state.inFlight ?? startEvaluation()
             state.inFlight = running
-            return .wait(running)
+            return (state.cached?.health, running)
         }
-        let task: Task<HostHealth, Never>
-        switch decision {
-        case .fresh(let health): return health
-        case .wait(let running): task = running
-        }
-        let health = await task.value
-        state.withLock { state in
-            if state.inFlight == task {
-                state.cached = (health, now())
+        if let cached { return cached }
+        guard let running else { return fallback }
+        return await Self.first(of: running, or: fallback, after: deadline)
+    }
+
+    /// The evaluation stores its own result, so a refresh nobody waits for still lands in the cache.
+    private func startEvaluation() -> Task<HostHealth, Never> {
+        let (evaluate, queue) = (evaluate, queue)
+        return Task { [weak self] in
+            let health = await withCheckedContinuation { continuation in
+                queue.async { continuation.resume(returning: evaluate()) }
+            }
+            self?.state.withLock { state in
+                state.cached = (health, self?.now() ?? .now)
                 state.inFlight = nil
             }
+            return health
         }
-        return health
+    }
+
+    /// `task`'s result if it arrives within `deadline`, else `fallback`; the task itself keeps running. The deadline
+    /// fires from a Dispatch timer, not a task sleeping on the cooperative pool, so a busy pool cannot hold it back.
+    private static func first(of task: Task<HostHealth, Never>, or fallback: HostHealth,
+                              after deadline: Duration) async -> HostHealth {
+        await withCheckedContinuation { continuation in
+            let answered = Mutex(false)
+            let answer: @Sendable (HostHealth) -> Void = { health in
+                guard answered.withLock({ done in
+                    defer { done = true }
+                    return !done
+                }) else { return }
+                continuation.resume(returning: health)
+            }
+            let (seconds, attoseconds) = deadline.components
+            let nanoseconds = Int(clamping: seconds * 1_000_000_000 + attoseconds / 1_000_000_000)
+            DispatchQueue.global(qos: .utility).asyncAfter(deadline: .now() + .nanoseconds(nanoseconds)) {
+                answer(fallback)
+            }
+            Task { answer(await task.value) }
+        }
     }
 }
