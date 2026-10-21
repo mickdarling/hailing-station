@@ -185,7 +185,7 @@ extension TranscriptionLabView {
     }
 
     private static func defaultTranscriber() -> any Transcriber {
-        if #available(iOS 26.0, *) { return SpeechAnalyzerTranscriber() }
+        if #available(iOS 26.0, macOS 26.0, *) { return SpeechAnalyzerTranscriber() }
         return SFSpeechRecognizerTranscriber()
     }
 }

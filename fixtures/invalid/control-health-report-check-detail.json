@@ -1,0 +1,1 @@
+{"id":"0B0B0B0B-0000-4000-8000-0000000002F1","payload":{"command":"health_report","report":{"version":"0.1.0","checks":[{"name":"listener_ready","ok":false,"detail":"127.0.0.1:8765 in use"}]}},"source":"host","ts":1,"type":"control","v":1}

@@ -7,7 +7,7 @@ import Testing
 
 /// rightyo#164: a device names the kind of input its ambient audio comes from, and the host logs it as a token so a
 /// speaker-ID mismatch can be attributed to an input chain. Synthetic only.
-@Suite(.serialized, .timeLimit(.minutes(1))) struct AmbientWiringInputRouteTests {
+@Suite(.serialized, .timeLimit(.minutes(1)), .frozenGuardBudget) struct AmbientWiringInputRouteTests {
     final class RouteSink: AmbientAudioSink {
         let routes = Mutex<[String]>([])
         func ambientAudio(_ event: AmbientAudioEvent) {}
