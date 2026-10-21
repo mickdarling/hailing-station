@@ -104,9 +104,8 @@ public enum PastedContent {
         return framed
     }
 
-    /// The plain sentence a device shows when its paste is refused; under `ControlLimits.maxErrorMessage`. Every one
-    /// starts with "paste", like `agentOnlyRefusal`, so a device can treat it as this request's refusal and keep the
-    /// connection, as it does for an "ambient" refusal.
+    /// The plain sentence a device shows when its paste is refused; under `ControlLimits.maxErrorMessage`. It is sent
+    /// with the `paste_refused` code, which is what tells the device this request is over and the connection is not.
     public static func refusal(_ error: SanitizeError) -> String {
         switch error {
         case .empty: "pasted text is empty"

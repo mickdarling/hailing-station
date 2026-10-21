@@ -68,6 +68,10 @@ public enum ConnectionProbeDaemon {
         /// `--session-updates` (#609), only with `--personal-terminal`: sessions may send unsolicited updates
         /// through `haild notify`. Off by default.
         var sessionUpdates = false
+        /// `--voice-routes` (#636), only with `--personal-terminal`: the owner's named routes file, an absolute path.
+        /// A missing file leaves routing off; a file that does not load refuses startup, so a request naming a
+        /// session never goes elsewhere because the routes silently failed.
+        var voiceRoutes: URL?
     }
 
     // Each accepted flag is an explicit branch; combinations are validated after parsing.
@@ -76,7 +80,7 @@ public enum ConnectionProbeDaemon {
         var address: String?, port: UInt16?
         var authorizer: (any HostSessionAuthorizing)?, personalTerminal = false
         // Value-free switches: `--single-terminal-reply-fallback`, `--device-diagnostics` (#234), and the rest below.
-        var switches: Set<String> = [], replySocket: URL?, ambient: [String: String] = [:]
+        var switches: Set<String> = [], replySocket: URL?, ambient: [String: String] = [:], voiceRoutes: URL?
         var rest = arguments[...]
         while let flag = rest.popFirst() {
             switch flag {
@@ -90,9 +94,8 @@ public enum ConnectionProbeDaemon {
                 guard authorizer == nil else { throw WebSocketListenerError.invalidArguments }
                 authorizer = PersonalTerminalAuthorizer()
                 personalTerminal = true
-            case "--reply-socket":
-                guard let path = rest.popFirst(), !path.isEmpty else { throw WebSocketListenerError.invalidArguments }
-                replySocket = URL(fileURLWithPath: path)
+            case "--reply-socket": replySocket = try path(from: &rest)
+            case "--voice-routes" where voiceRoutes == nil: voiceRoutes = try path(from: &rest, absolute: true)
             case "--single-terminal-reply-fallback", "--device-diagnostics",
                  "--ambient-reply-control", "--session-updates": switches.insert(flag)
             case "--ambient-rightyo", "--ambient-rightyo-config", "--ambient-target", "--ambient-ack-clips",
@@ -102,7 +105,7 @@ public enum ConnectionProbeDaemon {
             }
         }
         guard let address, let port, let authorizer,
-              personalTerminal || (replySocket == nil && switches.isEmpty),
+              personalTerminal || (replySocket == nil && switches.isEmpty && voiceRoutes == nil),
               ambient.isEmpty || (personalTerminal && switches.contains("--single-terminal-reply-fallback")) else {
             throw WebSocketListenerError.invalidArguments
         }
@@ -112,7 +115,8 @@ public enum ConnectionProbeDaemon {
             singleTerminalReplyFallback: switches.contains("--single-terminal-reply-fallback"),
             ambient: try ambientOptions(ambient, switches),
             diagnostics: switches.contains("--device-diagnostics") ? DiagnosticLog.standardDirectory() : nil,
-            sessionUpdates: switches.contains("--session-updates")
+            sessionUpdates: switches.contains("--session-updates"),
+            voiceRoutes: voiceRoutes
         )
     }
 }
@@ -139,6 +143,11 @@ extension ConnectionProbeDaemon {
             await ambient?.observe(diagnostics) // The phone's playback reports, for reply control (rightyo#124).
             authorizer = PersonalTerminalAuthorizer(ambientAudio: authorizer.ambientAudio, diagnostics: diagnostics)
         }
+        #if os(macOS)
+        if let file = options.voiceRoutes, let personal = authorizer as? PersonalTerminalAuthorizer {
+            authorizer = personal.naming(try voiceRoutes(file, log: log))
+        }
+        #endif
         let listener = try WebSocketListener(
             bindAddress: options.address, port: options.port, host: host,
             authorizer: authorizer, hostName: hostName,
@@ -156,6 +165,14 @@ extension ConnectionProbeDaemon {
         var ackClips: URL? // `--ambient-ack-clips` (rightyo#105); nil or no clips leaves acknowledgements off.
         var replyControl = false // `--ambient-reply-control` (rightyo#124), only with `--device-diagnostics`.
         var destinations: URL? // `--ambient-destinations` (#552); a missing file leaves spoken notes off.
+    }
+
+    /// A flag's path: never empty and, when `absolute`, starting at `/`.
+    fileprivate static func path(from rest: inout ArraySlice<String>, absolute: Bool = false) throws -> URL {
+        guard let path = rest.popFirst(), !path.isEmpty, !absolute || path.hasPrefix("/") else {
+            throw WebSocketListenerError.invalidArguments
+        }
+        return URL(fileURLWithPath: path)
     }
 
     /// Each ambient flag once, with a value: paths absolute, the target never another option.
@@ -182,6 +199,21 @@ extension ConnectionProbeDaemon {
     }
 
     #if os(macOS)
+    /// The owner's voice routes (#636), logged by count only. A missing file leaves routing off; any other failure
+    /// refuses startup rather than letting a named request go to whichever target was chosen before.
+    static func voiceRoutes(
+        _ file: URL, log: @Sendable (WebSocketListenerEvent) -> Void
+    ) throws -> VoiceRoutes? {
+        do {
+            let routes = try VoiceRoutes.load(file)
+            log(.init(event: "voice_routes", detail: routes.map { "count=\($0.routes.count)" } ?? "missing"))
+            return routes
+        } catch {
+            log(.init(event: "voice_routes", detail: "error=\(error)"))
+            throw error
+        }
+    }
+
     /// A note input (#552) left behind when a haild exited during its Shortcut: removed at the next start, once older
     /// than any run could still be reading it. Owner-only files in the per-user temporary folder.
     private static func sweepNoteInputs() {

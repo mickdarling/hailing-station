@@ -76,6 +76,12 @@ import Testing
         #expect(routes.match("東京 Voice, status") == .unaddressed)
     }
 
+    @Test func aNameWithAnApostropheOrDigitIsSayable() throws {
+        let micks = VoiceRoutes.Route(target: "tmux:m", name: "Mick's Deck 2")
+        let routes = try VoiceRoutes(defaultTarget: micks.target, routes: [micks])
+        #expect(routes.match("mick's deck 2, status") == .routed(micks, text: "status"))
+    }
+
     @Test func anAddressingNameIsNeverANearMiss() throws {
         #expect(try Self.routes().match("Voice Word, run it", names: ["voiceword"]) == .unaddressed)
     }
@@ -112,6 +118,7 @@ import Testing
         ([VoiceRoutes.Route(target: "tmux:deck", name: "One-Two-Three-Four")], "tmux:deck", .invalidName),
         ([VoiceRoutes.Route(target: "tmux:deck", name: "Voice-Work")], "tmux:deck", .invalidName),
         ([VoiceRoutes.Route(target: "tmux:deck", name: "東京 Deck")], "tmux:deck", .invalidName),
+        ([VoiceRoutes.Route(target: "tmux:deck", name: "Café")], "tmux:deck", .invalidName),
         ([VoiceRoutes.Route(target: "tmux:deck", name: "De\nck")], "tmux:deck", .invalidName),
         ([], "tmux:deck", .malformed)
     ])

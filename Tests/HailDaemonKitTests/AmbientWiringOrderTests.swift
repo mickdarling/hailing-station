@@ -4,7 +4,7 @@ import Testing
 @testable import HailDaemonKit
 
 /// Ambient lifecycle events stay in order per run (#273), which the status recorder (#278) relies on.
-@Suite struct AmbientWiringOrderTests {
+@Suite(.frozenGuardBudget) struct AmbientWiringOrderTests {
     @Test func aChildThatExitsAtOnceStillLogsItsStartBeforeItsEnd() async throws {
         // #273: the run's own task emits `ambient_started`, so a fast exit can never log its end first.
         let fake = try FakeRightyo("exit 0")
