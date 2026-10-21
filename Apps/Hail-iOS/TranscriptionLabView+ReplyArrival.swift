@@ -11,6 +11,7 @@ extension TranscriptionLabView {
         }
         guard pendingDestinationID == destinationID,
               status == "Sending…" || status == "Waiting for reply…" else { return }
+        answeredSendID = status == "Sending…" ? pendingSendID : nil
         clearPendingSend()
         status = "Reply received"
     }

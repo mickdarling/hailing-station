@@ -116,6 +116,7 @@ extension TranscriptionLabView {
         replyTimeoutTask = nil
         let sendID = UUID()
         let destinationAtSend = destinationID
+        answeredSendID = nil
         pendingSendID = sendID
         pendingDestinationID = destinationAtSend
         status = "Sending…"
@@ -135,7 +136,10 @@ extension TranscriptionLabView {
             status = "Waiting for reply…"
             scheduleReplyTimeout(sendID: sendID, destinationID: destinationAtSend)
         } catch {
-            guard pendingSendID == sendID, pendingDestinationID == destinationAtSend else { return }
+            // A reply that arrived during this send (#636) does not hide its failure: the store took that reply back.
+            let answered = answeredSendID == sendID && pendingSendID == nil && destinationID == destinationAtSend
+            guard answered || (pendingSendID == sendID && pendingDestinationID == destinationAtSend) else { return }
+            answeredSendID = nil
             // A paste refused here was never sent, so the destination's reply correlation is unaffected (#608).
             let problem = (error as? PastedDraft.Problem)?.message
             if problem == nil, let destinationAtSend { Self.uncorrelatedDestinations.insert(destinationAtSend) }
