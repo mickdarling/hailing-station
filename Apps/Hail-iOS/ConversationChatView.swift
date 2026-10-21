@@ -66,7 +66,7 @@ struct ConversationChatView: View {
         .accessibilityIdentifier("station.chat")
         // The entry's current text, so a reply still streaming in keeps growing in the sheet.
         .sheet(item: $selecting) { entry in
-            SelectableTextSheet(text: allEntries.first { $0.id == entry.id }?.text ?? entry.text)
+            SelectableTextSheet(text: Self.copyable(allEntries.first { $0.id == entry.id } ?? entry))
         }
     }
 
@@ -96,11 +96,7 @@ struct ConversationChatView: View {
                         .foregroundStyle(.secondary)
                         .accessibilityHidden(true) // The bubble's own label says it.
                 }
-                Text(Self.linked(segments))
-                    .foregroundStyle(entry.overheard ? Color.secondary : isYou ? Color.white : Color.primary)
-                    .tint(isYou ? Color.white : Color.accentColor)
-                    // The words Haili spoke aloud are in a speech style, set apart from the unspoken details (#606).
-                    .italic(entry.overheard || (entry.speaker == .haili && entry.spoken))
+                messageContent(entry, segments: segments, isYou: isYou)
                 replyDetails(entry)
                 if entry.speaker == .haili, entry.id == controlledReplyID {
                     replyControls
@@ -115,13 +111,14 @@ struct ConversationChatView: View {
             )
             // Copy, Share or select part of any message (#412).
             .contextMenu {
-                Button("Copy", systemImage: "doc.on.doc") { StationPlatform.copy(entry.text) }
-                ShareLink(item: entry.text)
+                Button("Copy", systemImage: "doc.on.doc") { StationPlatform.copy(Self.copyable(entry)) }
+                ShareLink(item: Self.copyable(entry))
                 Button("Select Text", systemImage: "selection.pin.in.out") { selecting = entry }
+                pasteActions(entry)
                 detailsActions(entry, segments: segments)
             }
             .accessibilityElement(children: .contain)
-            .accessibilityLabel(Self.accessibilityLabel(entry))
+            .accessibilityLabel(Self.youSaid(entry) ?? Self.accessibilityLabel(entry))
             if !isYou { Spacer(minLength: 48) }
         }
     }
