@@ -34,6 +34,9 @@ public struct ConversationEntry: Identifiable, Equatable, Sendable {
     public var source: String?
     /// The thread such a reply shows in, besides its own. Nil otherwise.
     public var shownIn: String?
+    /// The host refused one request and nothing was sent (any `ErrorCode.isRequestRefusal`, #608, #636): `text` is the
+    /// host's own message, shown as a system line, never as a reply.
+    public var notice = false
 
     /// Whether the entry shows in one destination's thread: its own target's entries, plus, with `addressed`, a reply
     /// that answers a request addressed from it to another session (`shownIn`). The one place a thread's membership
@@ -113,6 +116,19 @@ public final class ConversationLog {
             }
         }
         placements.removeAll { $0.address == id }
+    }
+
+    /// A request the host refused, nothing sent (#608, #636): its message as a system line in the thread selected when
+    /// the refusal arrived. The one place a refusal joins the chat, whatever its code.
+    func noteRefusal(_ message: String, endpointID: HostEndpoint.Identifier, targetID: String) {
+        let trimmed = message.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !trimmed.isEmpty else { return }
+        var entry = ConversationEntry(
+            id: "notice|\(UUID().uuidString.lowercased())", speaker: .haili, text: trimmed,
+            endpointID: endpointID, targetID: targetID, date: now()
+        )
+        entry.notice = true
+        append(entry)
     }
 
     /// A turn the ambient stream heard but did not send (#398), as the owner's or someone else's, with a known

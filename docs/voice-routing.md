@@ -148,3 +148,17 @@ route: "Deck, add a slide on pricing".
 Verification is synthetic only (`VoiceRouteDeliveryTests`): a fake tmux-kind adapter and never-started transports.
 It is not device hearing, and the app does not yet show a routed reply in the selected destination's thread
 (slice 7).
+
+## Showing a refused request (slice 5b)
+
+When the host refuses one request and sends nothing (any `ErrorCode.isRequestRefusal`, from #665's
+`RequestRefusals.codes`: a paste refusal today, `voice_route_refused` once slice 5a lands), the app:
+
+- keeps the connection, as #665 already does;
+- adds the host's message as one system line in the thread selected when it arrived (`ConversationLog.noteRefusal`,
+  shown with an exclamation-bubble icon, never as a reply); and
+- announces it once through VoiceOver (`HostConnectionStore.onRequestRefusal`, wired in `RootView`).
+
+This is the only chat line and the only announcement for any refusal code. Feature-specific UI, such as a paste kept
+attached with its reason, adds neither. Verification is synthetic only (`RequestRefusalNoticeTests`), plus the iOS
+Simulator build.
