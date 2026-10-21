@@ -81,36 +81,9 @@ private func sameFile(_ descriptor: Int32, as url: URL) -> Bool {
         #expect(try mode(dir) == 0o700)
     }
 
-    @Test func updateIsOneTransactionAgainstTheFile() throws {
-        defer { cleanUp() }
-        let policy = try samplePolicy()
-        try file.save(policy)
-        // A second writer on its own descriptor, as another haild process would be: it must wait for the
-        // lock, then apply its change to what the first writer stored.
-        let other = PolicyFile(directory: dir)
-        let otherFinished = Mutex(false)
-        let writer = Thread {
-            _ = try? other.update { $0.deny("tmux:a") }
-            otherFinished.withLock { $0 = true }
-        }
-        let saved = try file.update { current in
-            #expect(current == policy)
-            try current.allow("tmux:b", binding: "b2")
-            writer.start()
-            Thread.sleep(forTimeInterval: 0.2)
-            #expect(otherFinished.withLock { $0 } == false, "the second writer is held out by the lock")
-        }
-        #expect(saved.policy.targets.keys.sorted() == ["tmux:a", "tmux:b"])
-        #expect(saved.durabilityFailure == nil)
-        while !otherFinished.withLock({ $0 }) { Thread.sleep(forTimeInterval: 0.01) }
-        #expect(try file.load().targets.keys.sorted() == ["tmux:b"], "both changes survive, in order")
-        let untouched = try file.update { _ in }
-        #expect(untouched.policy == (try file.load()))
-        #expect(untouched.durabilityFailure == nil)
-        #expect(throws: PolicyFormatError.emptyBinding("tmux:c")) {
-            try file.update { try $0.allow("tmux:c", binding: " ") }
-        }
-        #expect(try file.load().targets.keys.sorted() == ["tmux:b"], "a change that throws writes nothing")
+    /// Blocks on the file lock, sleeps and spins, so off the cooperative pool (#704).
+    @Test func updateIsOneTransactionAgainstTheFile() async throws {
+        try await withTaskExecutorPreference(HeavyTestExecutor.shared) { try oneTransactionAgainstTheFile() }
     }
 
     @Test func aFileOthersCanReadIsRefused() throws {
@@ -179,5 +152,39 @@ private func sameFile(_ descriptor: Int32, as url: URL) -> Bool {
             == home.appendingPathComponent(".config/hail", isDirectory: true))
         #expect(PolicyFile.standard(environment: ["HAIL_CONFIG_DIR": "/tmp/x"]).path.path == "/tmp/x/policy.json")
         #expect(file.summary.hasSuffix("policy.json (unsigned until #39)"))
+    }
+}
+
+extension PolicyFileTests {
+    fileprivate func oneTransactionAgainstTheFile() throws {
+        defer { cleanUp() }
+        let policy = try samplePolicy()
+        try file.save(policy)
+        // A second writer on its own descriptor, as another haild process would be: it must wait for the
+        // lock, then apply its change to what the first writer stored.
+        let other = PolicyFile(directory: dir)
+        let otherFinished = Mutex(false)
+        let writer = Thread {
+            _ = try? other.update { $0.deny("tmux:a") }
+            otherFinished.withLock { $0 = true }
+        }
+        let saved = try file.update { current in
+            #expect(current == policy)
+            try current.allow("tmux:b", binding: "b2")
+            writer.start()
+            Thread.sleep(forTimeInterval: 0.2)
+            #expect(otherFinished.withLock { $0 } == false, "the second writer is held out by the lock")
+        }
+        #expect(saved.policy.targets.keys.sorted() == ["tmux:a", "tmux:b"])
+        #expect(saved.durabilityFailure == nil)
+        while !otherFinished.withLock({ $0 }) { Thread.sleep(forTimeInterval: 0.01) }
+        #expect(try file.load().targets.keys.sorted() == ["tmux:b"], "both changes survive, in order")
+        let untouched = try file.update { _ in }
+        #expect(untouched.policy == (try file.load()))
+        #expect(untouched.durabilityFailure == nil)
+        #expect(throws: PolicyFormatError.emptyBinding("tmux:c")) {
+            try file.update { try $0.allow("tmux:c", binding: " ") }
+        }
+        #expect(try file.load().targets.keys.sorted() == ["tmux:b"], "a change that throws writes nothing")
     }
 }
