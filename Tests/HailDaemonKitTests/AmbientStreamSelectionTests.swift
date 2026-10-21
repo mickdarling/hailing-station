@@ -92,7 +92,9 @@ import Testing
     @Test func aStreamsSelectionDoesNotSurviveAReconnect() async throws {
         let rig = try await VoiceRouteRig.make()
         let (old, new) = (try await rig.session(), try await rig.session())
-        await rig.listener.installFallbackSyntheticPeers([new])
+        let peers = await rig.listener.installFallbackSyntheticPeers([old, new])
+        // The old connection ends, as `peerEnded` removes it.
+        await rig.listener.dropSyntheticPeer(peers[0])
         let stream = AmbientListenerDispatcher(listener: rig.listener, audit: nil,
                                                selection: await old.selectionGeneration)
         await #expect(throws: LocalDispatchRefusal.unknownConnection) {
@@ -130,6 +132,47 @@ import Testing
         _ = try await streams[1].dispatch(request)
         #expect(await rig.adapter.deliveries.map(\.target) == ["scratch"])
         await rig.listener.stop(reason: "synthetic test complete")
+    }
+
+    /// Another device takes listening over (#366), then the first device selects away and back: the superseded stream's
+    /// late request is refused on its own connection and on the new one, and the new device's stream still delivers.
+    @Test func aTakeOverLeavesEachStreamOnItsOwnSessionsSelection() async throws {
+        let rig = try await VoiceRouteRig.make()
+        let sink = RecordingAmbientSink()
+        let gate = ambientGate(target: VoiceRouteRig.scratch, sink: sink, clock: AmbientTestClock())
+        var sessions: [HostSession] = []
+        for _ in 0..<2 {
+            let session = HostSession(host: rig.host, authorizer: PersonalTerminalAuthorizer(ambientAudio: gate),
+                                      hostName: "mac-test")
+            _ = await session.receive(helloFrame())
+            await Self.select(VoiceRouteRig.scratch, on: session)
+            sessions.append(session)
+        }
+        await rig.listener.installFallbackSyntheticPeers(sessions)
+        _ = await sessions[0].receive(Self.audio(UUID()))
+        _ = await sessions[1].receive(Self.audio(UUID()))
+        #expect(sink.endings == [.superseded])
+        let streams = sink.events.compactMap { event -> AmbientListenerDispatcher? in
+            guard case .started(_, _, let selection) = event else { return nil }
+            return AmbientListenerDispatcher(listener: rig.listener, audit: nil, selection: selection)
+        }
+        try #require(streams.count == 2)
+        await Self.select(VoiceRouteRig.other, on: sessions[0])
+        await Self.select(VoiceRouteRig.scratch, on: sessions[0])
+        let first = Self.request(await sessions[0].connectionID)
+        let second = Self.request(await sessions[1].connectionID)
+        await #expect(throws: LocalDispatchRefusal.selectionChanged) { try await streams[0].dispatch(first) }
+        await #expect(throws: LocalDispatchRefusal.selectionChanged) { try await streams[0].dispatch(second) }
+        _ = try await streams[1].dispatch(second)
+        #expect(await rig.adapter.deliveries.map(\.target) == ["scratch"])
+        await rig.listener.stop(reason: "synthetic test complete")
+    }
+}
+
+extension WebSocketListener {
+    /// Removes a synthetic peer as its end would.
+    func dropSyntheticPeer(_ peer: WebSocketPeer) {
+        peers = peers.filter { $0.value !== peer }
     }
 }
 #endif

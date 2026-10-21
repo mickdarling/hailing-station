@@ -48,10 +48,14 @@ import Testing
                                       on: pair.sockets[0])
     }
 
-    /// A reload (#405) swaps the stream's child mid-stream: the new child keeps the selection the stream opened on. It
-    /// dispatches while that selection holds, and nothing once the owner has selected away and back.
-    @Test(arguments: [false, true])
-    func aReloadedChildKeepsTheSelectionItsStreamOpenedOn(_ awayAndBack: Bool) async throws {
+    /// When the owner selects away and back around a reload (#405).
+    enum Reselection: CaseIterable { case none, beforeReload, afterReload }
+
+    /// A reload swaps the stream's child mid-stream: the new child keeps the selection the stream opened on. It
+    /// dispatches while that selection holds, and nothing once the owner has selected away and back, before the reload
+    /// or after it.
+    @Test(arguments: Reselection.allCases)
+    func aReloadedChildKeepsTheSelectionItsStreamOpenedOn(_ reselection: Reselection) async throws {
         let fake = try FakeRightyo("/bin/cat > v1-audio.bin")
         defer { fake.cleanUp() }
         try fake.install(fixture: "tool-events.jsonl")
@@ -65,20 +69,23 @@ import Testing
             // The old child is running its own behaviour before the new install is written.
             #expect(await eventually { fakeFileSize(fake, "v1-audio.bin") == 3_200 })
             try rewriteFake(fake, ambientEchoAtEOF)
+            if reselection == .beforeReload { try await awayAndBack(pair) }
             #expect(await env.router.reload() == .reloaded)
-            if awayAndBack {
-                try await pair.select("recipient:other", on: 0)
-                try await pair.select(RecipientTestRig.target, on: 0)
-            }
+            if reselection == .afterReload { try await awayAndBack(pair) }
             try await reloadSend(ambientSegment(stream: stream, sequence: 1, isFinal: true), on: pair)
             try await pair.barrier()
             await settle(env.router, step: "reloaded run")
-            #expect(await env.rig.adapter.contexts.count == (awayAndBack ? 0 : 1))
+            #expect(await env.rig.adapter.contexts.count == (reselection == .none ? 1 : 0))
         } catch {
             await env.listener.stop(reason: "synthetic test failed")
             throw error
         }
         await env.listener.stop(reason: "synthetic test complete")
+    }
+
+    private func awayAndBack(_ pair: FallbackSocketPair) async throws {
+        try await pair.select("recipient:other", on: 0)
+        try await pair.select(RecipientTestRig.target, on: 0)
     }
 
     private func reloadSend(_ segment: AudioPayload, on pair: FallbackSocketPair) async throws {
