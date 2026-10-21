@@ -3,8 +3,9 @@ import HailProtocol
 import Testing
 @testable import HailDaemonKit
 
-/// Complete synthetic utility ingress and origin admission, with no renderer, network or physical device.
-@Suite struct DiagnosticBridgeRecipientTests {
+/// Complete synthetic utility ingress and origin admission, with no renderer, network or physical device. Guard
+/// timing is not under test, so its budget is frozen: a stalled pool cannot fail a benign line closed (#704).
+@Suite(.frozenGuardBudget) struct DiagnosticBridgeRecipientTests {
     @Test(arguments: [false, true])
     func utilityRetainsOriginAcrossTwoClientsAndInterleavedCompletion(reverseOrder: Bool) async throws {
         let publisher = DiagnosticSyntheticPublisher()
@@ -25,7 +26,7 @@ import Testing
         }
         await publisher.waitForCount(2)
         let replies = await publisher.replies.sorted { $0.sequence < $1.sequence }
-        #expect(replies.count == 2)
+        try #require(replies.count == 2)
         #expect(replies[0].requestID != replies[1].requestID)
         for index in [1, 0] {
             let frame = utilityReplyFrame(replies[index])
