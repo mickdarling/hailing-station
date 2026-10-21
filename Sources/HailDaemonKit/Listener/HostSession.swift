@@ -351,6 +351,7 @@ public actor HostSession {
         if close {
             state = .closed
             replyRequests.removeAll()
+            evictedForHandoff.removeAll() // Nothing can be restored into a closed session (#723).
         }
         return HostSessionResult(
             frames: [response(.error(code: code, message: message), version: version)],
