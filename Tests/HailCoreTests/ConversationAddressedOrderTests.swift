@@ -29,7 +29,7 @@ extension HostConnectionStoreAmbientBindingTests {
             timestamp: 2, target: "tmux:deck", source: "mac",
             payload: .text(TextPayload(text: "Added it.", isFinal: true, reply: reply))
         )))
-        try await waitUntil { await MainActor.run { store.conversation.entries.count == 2 } }
+        try await waitUntil { await MainActor.run { store.conversation.entries.contains { $0.speaker == .haili } } }
         await socket.releaseSends()
         try await sending.value
         let thread = store.conversation.entries(endpointID: endpoint.id, targetID: "tmux:a", addressed: true)
