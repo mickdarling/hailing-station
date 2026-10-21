@@ -7,7 +7,7 @@ import Testing
 
 /// The owner's spoken stop is confirmed out loud (#418): a host clip, after the stop, on the connection that said
 /// stop, through the acknowledgement path. Synthetic only; not device hearing.
-@Suite(.serialized, .timeLimit(.minutes(1))) struct AmbientWiringStopConfirmationTests {
+@Suite(.serialized, .timeLimit(.minutes(1)), .frozenGuardBudget) struct AmbientWiringStopConfirmationTests {
     static let stopped = AmbientAckClip(pcm: Data(repeating: 2, count: 480), sampleRate: 24_000, text: "Stopped.")
     static let idle = AmbientAckClip(pcm: Data(repeating: 3, count: 480), sampleRate: 24_000,
                                      text: "Nothing playing, standing by.")

@@ -66,18 +66,27 @@ public enum ReplyLimits {
 
 /// Text from the terminal to a target, or from a target back. Only `isFinal` text is delivered (#2, #5).
 public struct TextPayload: Codable, Sendable, Equatable {
+    /// On a reply, the words spoken aloud: the transcript shows them in a speech style (#606).
     public var text: String
     public var isFinal: Bool
     public var reply: ReplyDescriptor?
+    /// Markdown shown beside a reply's spoken words and never spoken (#606): links, references, file paths, tables,
+    /// status. Untrusted content, rendered by the client's safe Markdown model. Only on a reply; a non-empty string or
+    /// absent. A client that predates it ignores the key.
+    public var metadata: String?
     /// Text the user pasted to go with this request (#608). Only on a final frame; `text` may then be empty, for a
     /// paste sent on its own. Absent on the wire when nil, so a frame without a paste is byte-identical to before.
     public var pasted: PastedText?
 
-    public init(text: String, isFinal: Bool = true, reply: ReplyDescriptor? = nil, pasted: PastedText? = nil) {
+    public init(
+        text: String, isFinal: Bool = true, reply: ReplyDescriptor? = nil, pasted: PastedText? = nil,
+        metadata: String? = nil
+    ) {
         self.text = text
         self.isFinal = isFinal
         self.reply = reply
         self.pasted = pasted
+        self.metadata = metadata
     }
 
     public init(from decoder: any Decoder) throws {
@@ -86,6 +95,7 @@ public struct TextPayload: Codable, Sendable, Equatable {
         isFinal = try container.decode(Bool.self, forKey: .isFinal)
         reply = try container.decodeIfPresent(ReplyDescriptor.self, forKey: .reply)
         pasted = try container.decodeIfPresent(PastedText.self, forKey: .pasted)
+        metadata = container.contains(.metadata) ? try container.decode(String.self, forKey: .metadata) : nil
         try requireAtMost(text.utf8.count, PayloadLimits.maxTextBytes, "text", decoder)
         if pasted != nil, !isFinal {
             let context = DecodingError.Context(
@@ -94,9 +104,22 @@ public struct TextPayload: Codable, Sendable, Equatable {
             )
             throw DecodingError.dataCorrupted(context)
         }
+        if let metadata {
+            try requireNonEmpty(metadata, "metadata", decoder)
+            try requireAtMost(metadata.utf8.count, PayloadLimits.maxMetadataBytes, "metadata", decoder)
+            guard reply != nil else {
+                let context = DecodingError.Context(
+                    codingPath: decoder.codingPath + [CodingKeys.metadata],
+                    debugDescription: "metadata is only on a reply"
+                )
+                throw DecodingError.dataCorrupted(context)
+            }
+        }
     }
 
-    private enum CodingKeys: String, CodingKey { case text, isFinal = "final", reply, pasted }
+    private enum CodingKeys: String, CodingKey {
+        case text, isFinal = "final", reply, pasted, metadata
+    }
 }
 
 /// Text the user pasted into the conversation (#608). It is the user's own data for the session to read, never
@@ -130,6 +153,8 @@ public enum PayloadLimits {
     public static let dimensions = 1...16_384
     /// Raw payload caps per type, from #44: text 8 KB of UTF-8, one audio segment 64 KB, an image 8 MB.
     public static let maxTextBytes = 8 * 1024
+    /// A reply's unspoken Markdown metadata (#606): twice the spoken text, so the frame stays under its whole-frame cap.
+    public static let maxMetadataBytes = 16 * 1024
     public static let maxAudioBytes = 64 * 1024
     public static let maxImageBytes = 8 * 1024 * 1024
     /// Pasted text on a final text frame (#608): 32 KB of UTF-8. JSON escaping can grow it, so a sender also checks

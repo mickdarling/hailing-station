@@ -188,10 +188,11 @@ extension HostSession {
         lastInputLedger?.record(entry, for: target)
     }
 
-    /// The route still names this connection on the same selection of `target`, and an unpinned route is current.
+    /// The route still names this connection on the same selection, which still covers `target` (a voice-routed
+    /// request's route counts, #636), and an unpinned route is current.
     private func holds(_ route: LastInputRoute, target: String) -> Bool {
         guard case .ready = state, route.entry.connection == connectionID,
-              route.entry.generation == selectionGeneration, selectedTarget == target else { return false }
+              route.entry.generation == selectionGeneration, covers(target) else { return false }
         guard !route.pinned else { return true }
         let elapsed = route.entry.at.duration(to: requestClock())
         return elapsed >= .zero && elapsed < LastInputLedger.lifetime
@@ -242,7 +243,7 @@ extension HostSession {
               !stoppedReplies.contains(reply.id) else { return nil }
         guard case .ready(let version) = state, frame.version == version,
               var request = replyRequests[requestID], request.isCurrent(at: requestClock()),
-              request.generation == selectionGeneration, selectedTarget == frame.target,
+              request.generation == selectionGeneration, frame.target.map(covers) == true,
               request.context.connectionID == connectionID,
               frame.target == request.context.binding.targetID,
               request.accept(frame, descriptor: reply) else { return nil }
@@ -299,11 +300,14 @@ extension HostSession {
     }
 
     /// Any explicit request reference, owned or not, stays on the correlated path. Only the plain
-    /// `haild reply --say` shape may fall back, so a stale reference can never reach another connection.
+    /// `haild reply --say` shape may fall back, so a stale reference can never reach another connection. A voice
+    /// route the selection covers (#636) counts only with a last-input route: the single-selector rule stays exact.
     private func selectsRequestlessReplyTarget(_ frame: Frame, lastInput: LastInputRoute?) -> Bool {
         guard !Task.isCancelled, case .ready(let version) = state, frame.version == version,
               let reply = replyDescriptor(frame), reply.requestID == nil, !stoppedReplies.contains(reply.id),
-              let target = frame.target, target == selectedTarget else { return false }
+              let target = frame.target, target == selectedTarget || (lastInput != nil && covers(target)) else {
+            return false
+        }
         return lastInput.map { holds($0, target: target) } ?? true
     }
 

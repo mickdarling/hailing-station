@@ -130,7 +130,7 @@ func observedStoppedWrite(lines: Int) async throws {
             #expect(await session.status == .stopped)
             #expect(await session.state(for: proposed.id) == nil)
             await rig.adapter.dispatch.release()
-            try await observedAwaitStoppedInput(completed)
+            await observedAwaitStoppedInput(completed)
             if lines == 1 {
                 #expect(try rig.sent(try await input.value) == proposed)
                 #expect(await session.state(for: proposed.id) == .sent)
