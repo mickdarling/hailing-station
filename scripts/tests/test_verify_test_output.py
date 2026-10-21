@@ -17,14 +17,22 @@ if sys.argv[1] == "build":
         calls.write("build\n")
     sys.exit(0)
 assert sys.argv[1:3] == ["test", "--skip-build"], sys.argv
-lane = sys.argv[3:5]
-assert lane[0] in ("--parallel", "--no-parallel"), sys.argv
-assert lane[1] == ("--skip" if lane[0] == "--parallel" else "--filter"), sys.argv
-assert sys.argv[6] == "--experimental-event-stream-output", sys.argv
-assert sys.argv[8:] == ["--experimental-event-stream-version", "0"], sys.argv
-events = sys.argv[7]
+# The parallel lane runs HailCoreTests alone, then every other target (#704); the timing suites run serially.
+core = "^HailCoreTests\\."
+selection, rest = sys.argv[3:-4], sys.argv[-4:]
+assert rest[0] == "--experimental-event-stream-output", sys.argv
+assert rest[2:] == ["--experimental-event-stream-version", "0"], sys.argv
+events = rest[1]
+if selection[:3] == ["--parallel", "--filter", core] and selection[3:4] == ["--skip"] and len(selection) == 5:
+    lane = "parallel-core"
+elif selection[:3] == ["--parallel", "--skip", core] and selection[3:4] == ["--skip"] and len(selection) == 5:
+    lane = "parallel-rest"
+elif selection[:2] == ["--no-parallel", "--filter"] and len(selection) == 3:
+    lane = "serial"
+else:
+    raise AssertionError(sys.argv)
 with open(os.environ["FAKE_SWIFT_CALLS"], "a") as calls:
-    calls.write(lane[0] + "\n")
+    calls.write(lane + "\n")
 mode = os.fstat(1).st_mode
 if not stat.S_ISREG(mode) or mode & 0o077:
     print("test output is not an owner-only regular capture", file=sys.stderr)
@@ -51,7 +59,8 @@ if os.environ.get("FAKE_SWIFT_HANG"):
     with open(os.environ["FAKE_SWIFT_CHILD"], "w") as pid:
         pid.write(str(child.pid))
     time.sleep(600)
-sys.exit(int(os.environ["FAKE_SWIFT_STATUS"]))
+failing = os.environ.get("FAKE_SWIFT_FAIL_LANE")
+sys.exit(int(os.environ["FAKE_SWIFT_STATUS"]) if failing in (None, lane) else 0)
 '''
 
 
@@ -99,8 +108,8 @@ class VerifyTestOutputTests(SuccessfulFixtureCleanup):
         self.assertIn("fixture stdout\n", result.stdout)
         self.assertIn("fixture stderr\n", result.stdout)
         self.assertIn("x" * 65536 + "\n", result.stdout)
-        # Both lanes are captured and replayed; a failure stops at the parallel lane.
-        lanes = ["--parallel"] if status else ["--parallel", "--no-parallel"]
+        # Every lane is captured and replayed; a failure stops at the first parallel half.
+        lanes = ["parallel-core"] if status else ["parallel-core", "parallel-rest", "serial"]
         self.assertEqual((self.scratch / "swift-calls").read_text().split(), ["build"] + lanes)
         self.assertEqual(result.stdout.count("fixture stdout\n"), len(lanes))
         captures = list(self.scratch.glob("hailing-swift-tests.*"))
@@ -115,6 +124,15 @@ class VerifyTestOutputTests(SuccessfulFixtureCleanup):
 
     def test_failure_preserves_output_and_exact_test_status(self):
         self.captures_regular_private_output_and_replays_every_byte(7)
+
+    def test_a_failing_second_half_fails_the_lane_with_its_status(self):
+        # #704: the halves are separate processes; a green first half never masks a red second.
+        self.env["FAKE_SWIFT_FAIL_LANE"] = "parallel-rest"
+        result = self.run_lane(7)
+        self.assertEqual(result.returncode, 7, result.stderr)
+        self.assertEqual((self.scratch / "swift-calls").read_text().split(),
+                         ["build", "parallel-core", "parallel-rest"])
+        self.assertEqual(len(list(self.scratch.glob("hailing-swift-tests.*"))), 1)
 
     def test_reporting_failure_cannot_make_success_look_successful(self):
         self.write_tool("cat", "import sys; sys.exit(9)")
@@ -162,7 +180,7 @@ class VerifyTestOutputTests(SuccessfulFixtureCleanup):
         self.assertIn("  Fake.Suite/hangsForever()/F.swift:2:1\n", result.stderr)
         self.assertNotIn("finishes()", result.stderr)
         self.assertNotIn("  Fake.Suite\n", result.stderr)
-        self.assertEqual((self.scratch / "swift-calls").read_text().split(), ["build", "--parallel"])
+        self.assertEqual((self.scratch / "swift-calls").read_text().split(), ["build", "parallel-core"])
         child = int((self.scratch / "child-pid").read_text())
         deadline = time.monotonic() + 10
         while time.monotonic() < deadline and alive(child):
