@@ -165,6 +165,17 @@ import Testing
         #expect(crowded.contains(String(repeating: "x", count: 40) + ". "))
         #expect(crowded.contains("Not fully checked: slow rule 1"))
         #expect(!crowded.contains("contains , and more"))
+        // #635 follow-up: a matched rule whose owner-written name is all non-ASCII still produces a note.
+        let unnamed = PastedContent.flagged(framed, (["删除"], []))
+        #expect(unnamed.hasPrefix(begin + " Validation: contains unnamed rules. "))
+        // Each clause says "and more" for itself, so the truncated list is clear.
+        let clauses = PastedContent.flagged(framed, ((1...60).map { "rule number \($0)" }, ["slow"]))
+        #expect(clauses.contains(", and more. Not fully checked: "))
+        #expect(clauses.utf8.count - framed.utf8.count <= PastedContent.validationReserve)
+        let uncheckedMore = PastedContent.flagged(framed, (["sudo"], (1...40).map { "slow rule \($0)" }))
+        #expect(uncheckedMore.contains("Validation: contains sudo. Not fully checked: slow rule 1"))
+        #expect(uncheckedMore.contains(", and more. untrusted data"))
+        #expect(!uncheckedMore.contains("sudo, and more"))
         // A timed-out rule whose name filters away entirely still marks the paste unchecked.
         let nameless = PastedContent.flagged(framed, ([], ["<>"]))
         #expect(nameless.hasPrefix(begin + " Validation: not fully checked. "))
