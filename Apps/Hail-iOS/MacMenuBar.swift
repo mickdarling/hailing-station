@@ -12,7 +12,7 @@ struct MacMenuBarContent: View {
     var body: some View {
         Text(status.summary)
         Divider()
-        Toggle("Ambient Listening", isOn: Binding(get: { status.isListening }, set: { status.setListening($0) }))
+        Toggle("Ambient Listening", isOn: Binding(get: { status.listening.isOn }, set: { status.setListening($0) }))
             .disabled(!status.canToggleListening)
         Button("Open Hailing Station") {
             openWindow(id: MacMenuBar.windowID)
@@ -30,7 +30,12 @@ enum MacMenuBar {
 
     @MainActor
     static func symbol(for status: StationMenuStatus) -> String {
-        if status.isListening { return "ear.fill" }
+        switch status.listening {
+        case .listening: return "ear.fill"
+        case .starting: return "ear"
+        case .paused: return "pause.circle"
+        case .off, .elsewhere: break
+        }
         return status.windowOpen && status.readyHostCount > 0
             ? "antenna.radiowaves.left.and.right" : "antenna.radiowaves.left.and.right.slash"
     }
