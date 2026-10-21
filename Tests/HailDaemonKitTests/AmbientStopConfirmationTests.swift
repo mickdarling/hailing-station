@@ -128,7 +128,7 @@ import Testing
         ("owner dismiss citing a participant turn", fixture(dismiss: "owner", turn: "participant"))
     ])
     func anyOtherStopPlaysNothing(_ name: String, _ fixture: String) async throws {
-        let details = try await run(fixture: fixture) { socket in try await recipientSocketBarrier(on: socket) }
+        let details = try await run(fixture: fixture) { try await barrier(on: $0, step: "nothing played") }
         #expect(details == ["outcome=skipped reason=not_owner"], "\(name)")
     }
 
@@ -172,11 +172,11 @@ import Testing
         try await recipientSocketSend(sessionFrame(payload: .control(.hello(HelloInfo(
             versions: [1], capabilities: capabilities, deviceName: "test"
         )))), on: socket)
-        _ = try await recipientSocketReceive(on: socket)
+        _ = try await receiveFrame(on: socket, step: "host hello")
         try await recipientSocketSend(
             sessionFrame(payload: .control(.select(targetID: RecipientTestRig.target))), on: socket
         )
-        try await recipientSocketBarrier(on: socket)
+        try await barrier(on: socket, step: "selection")
         return (session, socket)
     }
 }

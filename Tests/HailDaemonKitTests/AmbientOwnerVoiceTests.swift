@@ -127,7 +127,7 @@ import Testing
             if event.event == "ambient_owner_voice" { logged.withLock { $0.append(event.detail ?? "") } }
         })
         do {
-            let pair = try await FallbackSocketPair.connect(
+            let pair = try await FallbackSocketPair.boundedConnect(
                 port: env.port, selecting: [RecipientTestRig.target],
                 capabilities: ["probe"] + (capable ? [OwnerVoice.capability] : [])
             )

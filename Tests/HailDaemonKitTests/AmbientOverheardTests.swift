@@ -99,7 +99,7 @@ import Testing
             acknowledgements: AmbientAckLibrary(clips: ["rightyo": [Self.clip]]),
             onEvent: { event in if event.event == "ambient_acknowledged" { acknowledged.withLock { $0 = true } } }
         )
-        let pair = try await FallbackSocketPair.connect(
+        let pair = try await FallbackSocketPair.boundedConnect(
             port: env.port, selecting: [RecipientTestRig.target], capabilities: Self.capable
         )
         defer { pair.close() }
@@ -107,17 +107,17 @@ import Testing
         if everyone {
             try await recipientSocketSend(sessionFrame(payload: .control(.overheardScope(scope: "everyone"))),
                                           on: socket)
-            try await recipientSocketBarrier(on: socket)
+            try await barrier(on: socket, step: "scope everyone")
         }
         let stream = UUID()
         try await recipientSocketSend(audio(stream, 0), on: socket)
         #expect(await eventually { acknowledged.withLock { $0 } })
         if everyone {
-            #expect(try await recipientSocketReceive(on: socket).payload == .control(.ambientOverheard(
+            #expect(try await receiveFrame(on: socket, step: "overheard turn").payload == .control(.ambientOverheard(
                 targetID: RecipientTestRig.target, text: "The review is scheduled for Friday.", speaker: "other"
             )))
         }
-        #expect(try await recipientSocketReceive(on: socket).payload == .control(.ambientHeard(
+        #expect(try await receiveFrame(on: socket, step: "heard request").payload == .control(.ambientHeard(
             targetID: RecipientTestRig.target, text: "Rightyo, check our discussion."
         )))
         try await recipientSocketSend(audio(stream, 1, final: true), on: socket)
@@ -134,7 +134,7 @@ import Testing
         let rig = try await RecipientTestRig.make()
         let listener = try fallbackListener(rig: rig, enabled: false)
         let port = try await listener.start()
-        let pair = try await FallbackSocketPair.connect(
+        let pair = try await FallbackSocketPair.boundedConnect(
             port: port, selecting: [RecipientTestRig.target],
             capabilities: expected == "incapable" ? ["probe"] : Self.capable
         )
@@ -150,12 +150,12 @@ import Testing
         )
         #expect(sent == ["sent", "owner_scope_owner"].contains(expected))
         if sent {
-            let frame = try await recipientSocketReceive(on: pair.sockets[0])
+            let frame = try await receiveFrame(on: pair.sockets[0], step: "guarded overheard frame")
             #expect(frame.payload == .control(.ambientOverheard(
                 targetID: target, text: text, speaker: owner ? "owner" : "other"
             )))
         } else {
-            try await pair.barrier()
+            try await pair.boundedBarrier(step: "nothing reached the phone")
         }
         await listener.stop(reason: "synthetic test complete")
     }

@@ -139,7 +139,7 @@ import Testing
             }
             #expect(words.text == "Stopped.")
             _ = try await receiveFrame(on: socket, step: "confirmation clip")
-            try await recipientSocketBarrier(on: socket) // and no set_reply_mute after it
+            try await barrier(on: socket, step: "no mute after the confirmation")
         }
         #expect(details == ["muted=true mute=unsupported playback=stopped confirm=confirmstopped/0:sent"])
     }

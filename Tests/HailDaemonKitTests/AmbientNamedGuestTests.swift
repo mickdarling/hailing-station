@@ -133,16 +133,16 @@ import Testing
         try fake.install(fixture: "tool-events.jsonl")
         let env = try await ambientRig(fake, timing: .init(eofGrace: 20, termGrace: 20))
         let capabilities = AmbientWiringOverheardTests.capable + (canShow ? [AmbientOverheard.namesCapability] : [])
-        let pair = try await FallbackSocketPair.connect(
+        let pair = try await FallbackSocketPair.boundedConnect(
             port: env.port, selecting: [RecipientTestRig.target], capabilities: capabilities
         )
         defer { pair.close() }
         let socket = pair.sockets[0]
         try await recipientSocketSend(sessionFrame(payload: .control(.overheardScope(scope: "everyone"))), on: socket)
-        try await recipientSocketBarrier(on: socket)
+        try await barrier(on: socket, step: "scope everyone")
         let stream = UUID()
         try await recipientSocketSend(audio(stream, 0), on: socket)
-        #expect(try await recipientSocketReceive(on: socket).payload == .control(.ambientOverheard(
+        #expect(try await receiveFrame(on: socket, step: "overheard turn").payload == .control(.ambientOverheard(
             targetID: RecipientTestRig.target, text: "The review is scheduled for Friday.", speaker: "other",
             name: canShow ? "Ben" : nil
         )))

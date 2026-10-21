@@ -20,13 +20,13 @@ import Testing
         let endpoint = try LocalReplyEndpoint(socketURL: socket, destination: env.listener,
                                               audit: AuditLog(directory: auditDirectory))
         try await endpoint.start()
-        let pair = try await FallbackSocketPair.connect(port: env.port, selecting: [RecipientTestRig.target])
+        let pair = try await FallbackSocketPair.boundedConnect(port: env.port, selecting: [RecipientTestRig.target])
         defer { pair.close() }
         let idle = try await submit(Data(#"{"kind":"ambient","action":"reload"}"#.utf8), socket: socket.path)
         #expect(idle.ambient?.outcome == .idle)
         let stream = UUID()
         try await recipientSocketSend(audio(stream, 0), on: pair.sockets[0])
-        try await pair.barrier()
+        try await pair.boundedBarrier(step: "first segment")
         let reloaded = try await submit(Data(#"{"kind":"ambient","action":"reload"}"#.utf8), socket: socket.path)
         #expect(reloaded.ambient?.outcome == .reloaded)
         #expect(reloaded.ambient?.active == true)
@@ -37,7 +37,7 @@ import Testing
         let refused = try await submit(Data(#"{"kind":"ambient","action":"start"}"#.utf8), socket: socket.path)
         #expect(refused == LocalReplyResponse(delivered: 0, error: LocalReplyRefusal.decodeFailure.message,
                                               code: .decodeFailure))
-        try await pair.barrier()
+        try await pair.boundedBarrier(step: "local requests answered")
         #expect(await env.gate.activeStream == stream)
         let history = try AuditHistory(directory: auditDirectory).today()
         #expect(history.filter { $0.contains("local-ambient") }.count == 3)

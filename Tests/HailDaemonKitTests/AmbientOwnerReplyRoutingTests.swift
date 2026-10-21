@@ -27,7 +27,7 @@ import Testing
         let wiring = FakeWiring()
         let (listener, events) = try rig.routedListener(ambient: wiring)
         let port = try await listener.start()
-        let devices = try await FallbackSocketPair.connect(
+        let devices = try await FallbackSocketPair.boundedConnect(
             port: port, selecting: Array(repeating: LegacyReferenceRig.target, count: 2)
         )
         defer { devices.close() }
@@ -49,8 +49,8 @@ import Testing
             let frame = recipientText(referenceDescriptor(nil))
             #expect(await listener.lastInputRoute(frame) == nil, "no device input yet: a fresh restart")
             #expect(try await listener.publish(frame) == 1)
-            #expect(try await recipientSocketReceive(on: devices.sockets[1]) == frame)
-            try await devices.barrier()
+            #expect(try await receiveFrame(on: devices.sockets[1], step: "owner reply") == frame)
+            try await devices.boundedBarrier(step: "owner reply only")
             #expect(events.routes.map(\.0) == [events.connected[1]])
             #expect(events.routes.map(\.1) == ["path=ambient_owner"])
         }

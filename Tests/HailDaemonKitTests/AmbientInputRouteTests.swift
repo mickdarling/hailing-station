@@ -102,7 +102,7 @@ import Testing
         try await recipientSocketSend(sessionFrame(payload: .control(.hello(HelloInfo(
             versions: [1], capabilities: ["probe"], deviceName: "test"
         )))), on: socket)
-        guard case .control(.hello(let info)) = try await recipientSocketReceive(on: socket).payload else {
+        guard case .control(.hello(let info)) = try await receiveFrame(on: socket, step: "host hello").payload else {
             Issue.record("expected the host hello")
             return
         }
@@ -110,7 +110,7 @@ import Testing
         for route in ["usb_audio", "usb_audio", "car_audio"] {
             try await recipientSocketSend(sessionFrame(payload: .control(.ambientInput(route: route))), on: socket)
         }
-        try await recipientSocketBarrier(on: socket) // nothing answered before the barrier's own reply
+        try await barrier(on: socket, step: "input routes sent") // nothing answered before the barrier's own reply
         #expect(await eventually { logged.withLock { $0.count == 2 } })
         #expect(logged.withLock { $0 } == ["route=usb_audio", "route=car_audio"])
         // Each line names its connection, the same id its stream's `ambient_started` line carries.
