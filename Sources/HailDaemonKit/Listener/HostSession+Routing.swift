@@ -47,6 +47,8 @@ extension HostSession {
             return failure(.malformed, "only final text can be delivered", close: false, version: version)
         case .untargetedText:
             return failure(.notAllowed, "select the destination before speaking", close: false, version: version)
+        case .refusedPaste(let reason):
+            return failure(.malformed, reason, close: false, version: version)
         case .audio(let audio, let target):
             return await ambient(audio, target: target, version: version)
         case .unsupported:
@@ -163,15 +165,17 @@ extension HostSession {
     }
 
     private func send(_ input: borrowing AuthorizedInput, owner: HostReplyOwnership?) async throws -> SendOutcome {
+        let (text, target, device) = (input.text, input.target, input.device)
+        let expectedBinding = owner?.context.binding.sessionID ?? input.expectedBinding
         do {
-            if let owner, owner.contextual {
-                return try await host.send(input.text, context: owner.context, from: input.device)
+            // A framed paste (#608) gets the paste line cap; every other gate is the same.
+            return try await HailHost.$pastedIngress.withValue(input.carriesPaste) {
+                if let owner, owner.contextual {
+                    return try await host.send(text, context: owner.context, from: device)
+                }
+                // Legacy generic input. An unleased ambient record (#230) pins the exact binding it was minted for.
+                return try await host.send(text, to: target, from: device, expectedBinding: expectedBinding)
             }
-            // Legacy generic input. An unleased ambient record (#230) pins the exact binding it was minted for.
-            return try await host.send(
-                input.text, to: input.target, from: input.device,
-                expectedBinding: owner?.context.binding.sessionID ?? input.expectedBinding
-            )
         } catch {
             if let owner { replyRequests[owner.context.id] = nil }
             throw error
