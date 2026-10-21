@@ -168,3 +168,19 @@ diagnostic `route` tokens (`built_in_mic`, `usb_audio`, `car_audio`, `bluetooth_
 or device name. The host logs it with the stream so a speaker-ID mismatch can be attributed to an input chain.
 
 The decoder and the schema refuse any other key or value in either command.
+
+### Media mode state (#612)
+
+Media mode (#551) is the owner's spoken "media mode" / "done watching": while it is on, RightyO attends only to the
+owner naming the assistant, so replies stop. It lives on the host, so a device needs to be told, or replies just seem
+to stop.
+
+`{"command": "media_mode", "on": true | false, "reason"?: "voice" | "timeout", "expires"?: <Unix ms>}` is sent by a
+host to the device whose ambient stream it is, each time the mode changes for that stream. `reason` says why: `voice`
+when the owner said so, `timeout` when an on mode turned itself off. `expires` comes only with `on: true`: when the
+mode will turn itself off, in Unix milliseconds like a frame's `ts`. It is sent only to a device that advertised
+`media_mode` (`MediaMode.capability`), because an older device refuses an unknown command. It shows state only: it
+grants no authority, and a device cannot change the mode with it.
+
+The decoder refuses any other key, an unknown `reason`, a non-positive `expires`, or `expires` with `on: false`; the
+schema refuses all but the last, which only the decoder can check.
