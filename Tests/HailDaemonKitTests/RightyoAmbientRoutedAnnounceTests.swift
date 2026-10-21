@@ -17,7 +17,11 @@ private struct ScriptedAmbientDispatcher: RightyoAmbientDispatching {
     let order: Order
 
     func dispatch(_ request: LocalDispatchRequest) async throws -> UUID? {
-        order.add("dispatch \(request.target)")
+        try await dispatch(request, routed: false)
+    }
+
+    func dispatch(_ request: LocalDispatchRequest, routed: Bool) async throws -> UUID? {
+        order.add("dispatch \(request.target)\(routed ? " routed" : "")")
         if let refusal { throw refusal }
         return nil
     }
@@ -30,7 +34,7 @@ private struct ScriptedAmbientDispatcher: RightyoAmbientDispatching {
         RightyoAmbientDispatchStep(
             connection: UUID(), dispatcher: ScriptedAmbientDispatcher(refusal: refusal, order: order),
             acknowledge: { order.add("acknowledge") },
-            heard: { order.add("heard") }, streamTarget: "tmux:scratch"
+            heard: { order.add("heard") }
         )
     }
 
@@ -44,17 +48,17 @@ private struct ScriptedAmbientDispatcher: RightyoAmbientDispatching {
     @Test func aRoutedRequestAnnouncesOnlyAfterItsHandoff() async throws {
         let order = Order()
         let accepting = step(refusing: LocalDispatchRefusal?.none, order: order)
-        _ = try await accepting.dispatch(text: "hi", target: "tmux:deck", binding: "d")
-        #expect(order.all == ["dispatch tmux:deck", "heard", "acknowledge"])
+        _ = try await accepting.dispatch(text: "hi", target: "tmux:deck", binding: "d", routed: true)
+        #expect(order.all == ["dispatch tmux:deck routed", "heard", "acknowledge"])
     }
 
     @Test func aRoutedRequestRefusedBeforeItsHandoffIsNeverAnnounced() async throws {
         let order = Order()
         let refusing = step(refusing: LocalDispatchRefusal.bindingMismatch, order: order)
         await #expect(throws: LocalDispatchRefusal.bindingMismatch) {
-            try await refusing.dispatch(text: "hi", target: "tmux:deck", binding: "d")
+            try await refusing.dispatch(text: "hi", target: "tmux:deck", binding: "d", routed: true)
         }
-        #expect(order.all == ["dispatch tmux:deck"])
+        #expect(order.all == ["dispatch tmux:deck routed"])
     }
 }
 #endif

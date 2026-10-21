@@ -210,6 +210,17 @@ final class HostPhrases: Sendable {
 /// `RightyoHostDispatcher` is the direct path; `haild rightyo --reply-to` supplies a reply-socket dispatcher.
 public protocol RightyoDispatching: Sendable {
     func dispatch(text: String, target: String, binding: String) async throws -> RightyoDispatchReceipt
+    /// `routed` (#636): the consumer's own route match chose `target`, a voice route the owner named. The default
+    /// delivers it as any other request.
+    func dispatch(text: String, target: String, binding: String, routed: Bool) async throws -> RightyoDispatchReceipt
+}
+
+extension RightyoDispatching {
+    public func dispatch(
+        text: String, target: String, binding: String, routed: Bool
+    ) async throws -> RightyoDispatchReceipt {
+        try await dispatch(text: text, target: target, binding: binding)
+    }
 }
 /// The direct path: `HailHost.send` from the fixed `rightyo-local` device with the pinned binding. A
 /// confirmation read-back is cancelled and refused; this consumer never confirms on the person's behalf.
@@ -639,7 +650,7 @@ extension RightyoInputConsumer {
             try Task.checkCancellation()
             lastReceipt = try await dispatcher.dispatch(
                 text: event.prompt(speakers: speakers, target: address.target), target: address.target,
-                binding: address.binding
+                binding: address.binding, routed: address.route != nil
             )
             return true
         } catch let refusal as LocalDispatchRefusal where !refusal.handedOff {

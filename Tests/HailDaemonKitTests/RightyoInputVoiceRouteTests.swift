@@ -8,6 +8,7 @@ private actor VoiceRouteRecordingDispatcher: RightyoDispatching {
         let target: String
         let binding: String
         let text: String
+        var routed = false
     }
 
     private(set) var calls: [Call] = []
@@ -16,8 +17,12 @@ private actor VoiceRouteRecordingDispatcher: RightyoDispatching {
     func refuse(_ refusal: LocalDispatchRefusal?) { self.refusal = refusal }
 
     func dispatch(text: String, target: String, binding: String) async throws -> RightyoDispatchReceipt {
+        try await dispatch(text: text, target: target, binding: binding, routed: false)
+    }
+
+    func dispatch(text: String, target: String, binding: String, routed: Bool) async throws -> RightyoDispatchReceipt {
         if let refusal { throw refusal }
-        calls.append(Call(target: target, binding: binding, text: text))
+        calls.append(Call(target: target, binding: binding, text: text, routed: routed))
         return RightyoDispatchReceipt(request: nil)
     }
 }
@@ -70,7 +75,7 @@ extension RightyoInputConsumerTests {
         let (consumer, dispatcher) = try await routingRig()
         #expect(try await consumer.consume(request(consumer, 0, saying: "Deck, add a slide on pricing.")))
         let call = try #require(await dispatcher.calls.first)
-        #expect(call.target == "tmux:deck" && call.binding == "deck-binding")
+        #expect(call.target == "tmux:deck" && call.binding == "deck-binding" && call.routed)
         #expect(call.text.hasSuffix(RightyoInputEvent.replyBlock(target: "tmux:deck")))
         #expect(await consumer.lastRouteRefusal == nil)
     }
@@ -84,6 +89,7 @@ extension RightyoInputConsumerTests {
         for dispatcher in [toTarget, alsoToTarget] {
             #expect(await dispatcher.calls.map(\.target) == ["tmux:demo"])
             #expect(await dispatcher.calls.first?.binding == "original")
+            #expect(await dispatcher.calls.allSatisfy { !$0.routed })
         }
     }
 
