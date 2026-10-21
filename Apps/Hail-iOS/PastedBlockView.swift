@@ -40,17 +40,12 @@ extension ConversationChatView {
 /// fetched.
 struct PastedBlockView: View {
     let text: String
-    /// Pending until a reply for the destination arrives, or refused with the Mac's reason.
+    /// Pending until a reply for the destination arrives. A refusal is not shown here: the conversation's
+    /// request-refusal line (Part 11) shows and announces the Mac's reason once, and the paste goes back on its card.
     var state: ConversationEntry.PasteState?
     @State private var expanded = false
 
-    private var stateLine: String? {
-        switch state {
-        case .pending: "Waiting for the Mac"
-        case .refused(let reason): "Not taken: \(reason)"
-        case .delivered, nil: nil
-        }
-    }
+    private var stateLine: String? { state == .pending ? "Waiting for the Mac" : nil }
 
     private var isLong: Bool { PastedDraft.isLong(text) }
 
@@ -72,7 +67,7 @@ struct PastedBlockView: View {
             if let stateLine {
                 Text(stateLine)
                     .font(.caption)
-                    .foregroundStyle(state == .pending ? Color.secondary : Color.red)
+                    .foregroundStyle(.secondary)
                     .accessibilityIdentifier("station.chat.paste.state")
             }
             if isLong {
