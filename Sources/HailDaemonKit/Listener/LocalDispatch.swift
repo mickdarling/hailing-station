@@ -97,9 +97,16 @@ extension WebSocketListener {
     /// Resolves the operator-visible connection id and runs that peer's own ingress path. A stale or
     /// unknown id refuses; there is no fallback to whichever connection currently selects the target.
     public func dispatch(_ request: LocalDispatchRequest) async throws -> UUID? {
+        try await dispatch(request, generation: nil)
+    }
+
+    /// The same, pinned to `generation` when one is given: the listener's ambient dispatch passes the selection
+    /// generation its stream opened on (#636), so nothing a stream heard is delivered once the owner has selected
+    /// another destination, even after selecting this one again.
+    func dispatch(_ request: LocalDispatchRequest, generation: UUID?) async throws -> UUID? {
         guard !stopped, readyResult != nil else { throw WebSocketListenerError.stoppedBeforeReady }
         guard let peer = peers[request.connection] else { throw LocalDispatchRefusal.unknownConnection }
-        let owner = try await peer.dispatch(request)
+        let owner = try await peer.dispatch(request, generation: generation)
         // Membership is rechecked after the handoff: a peer that left the listing cannot be an owner.
         guard peers[request.connection] === peer else {
             await peer.session.revokeDispatch(owner)
@@ -115,9 +122,9 @@ extension WebSocketPeer {
     /// peer's record. The handoff itself cannot hold the transport gate (the session cannot read it
     /// synchronously), so a peer that ends during the handoff has its minted record revoked and the caller
     /// is told the connection was lost.
-    func dispatch(_ request: LocalDispatchRequest) async throws -> UUID? {
+    func dispatch(_ request: LocalDispatchRequest, generation: UUID? = nil) async throws -> UUID? {
         guard isLive else { throw LocalDispatchRefusal.connectionEnded }
-        let owner = try await session.dispatch(request)
+        let owner = try await session.dispatch(request, generation: generation)
         guard isLive else {
             await session.revokeDispatch(owner)
             throw LocalDispatchRefusal.connectionLost
@@ -134,15 +141,16 @@ extension HostSession {
     /// `HailHost.send`, then commit after delivery. Returns the committed request id, or nil when the
     /// adapter accepts only legacy generic input and so cannot own a reply. The host sanitises the prompt
     /// under its local-prompt cap (#200), bound here and nowhere else; every other gate is the phone's.
-    func dispatch(_ request: LocalDispatchRequest) async throws -> UUID? {
-        try await HailHost.$localDispatchIngress.withValue(true) { try await dispatchScoped(request) }
+    /// `pinned`, when given, is the selection generation the request must still be on from the start (#636).
+    func dispatch(_ request: LocalDispatchRequest, generation pinned: UUID? = nil) async throws -> UUID? {
+        try await HailHost.$localDispatchIngress.withValue(true) { try await dispatchScoped(request, pinned: pinned) }
     }
 
-    private func dispatchScoped(_ request: LocalDispatchRequest) async throws -> UUID? {
+    private func dispatchScoped(_ request: LocalDispatchRequest, pinned: UUID?) async throws -> UUID? {
         try Task.checkCancellation()
-        // The selection generation seen here is the one the dispatch is bound to: a reselection of the same
-        // target while this call is suspended (A → B → A) revokes it like any other selection change.
-        let (version, generation) = try requireSelection(of: request)
+        // The selection generation seen here, or the pinned one, is the one the dispatch is bound to: a reselection
+        // of the same target while this call is suspended (A → B → A) revokes it like any other selection change.
+        let (version, generation) = try requireSelection(of: request, generation: pinned)
         // One final text frame, judged once by the authorizer every phone frame passes; its id is the
         // utterance id the host receives, and the session attributes it to the fixed local device, not to
         // anything the caller wrote. A connection-probe session yields nothing, whatever it selects.

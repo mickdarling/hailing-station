@@ -7,7 +7,7 @@ import Testing
 /// #366 end to end through the listener: a phone streams, a pad takes ambient listening over, the phone's child is
 /// retired and the pad gets a fresh one; each device's reply reference (#230) still reaches only that device.
 /// Synthetic only (fake `rightyo`, legacy fake adapter); not device hearing.
-@Suite(.serialized, .timeLimit(.minutes(1))) struct AmbientWiringTakeOverTests {
+@Suite(.serialized, .timeLimit(.minutes(1)), .frozenGuardBudget) struct AmbientWiringTakeOverTests {
     private struct Device {
         let session: URLSession
         let socket: URLSessionWebSocketTask

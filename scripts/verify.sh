@@ -30,7 +30,7 @@ build() { echo "== build"; swift build ${SWIFT_FLAGS[@]+"${SWIFT_FLAGS[@]}"}; }
 TIMING_SUITES=(
   OwnedReply OwnedStdioChild CodexStdio ProviderObservedSession ProviderInputCoordinator LocalReplyEndpoint
   TmuxDeliveryCommit AmbientWiring RightyoInput RightyoChildProcess SFSpeechRecognizerTranscriber
-  TmuxPrePaste TmuxStaleInput TmuxCursorInput TmuxSubmitConfirmation
+  TmuxPrePaste TmuxStaleInput TmuxCursorInput TmuxSubmitConfirmation TmuxIntegration TmuxPasteAgent TmuxPasteEnter
   CoachingTransportRegression AmbientSharedAudit CoachingStartupEvent
 )
 TIMING_PATTERN="($(IFS='|'; echo "${TIMING_SUITES[*]}"))"

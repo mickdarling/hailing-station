@@ -6,7 +6,7 @@ import Testing
 
 /// Generous limits: these suites spawn real processes beside every other parallel suite (#203).
 /// Serialized: the repo's own process suites have tight deadlines, so these never add parallel process load.
-@Suite(.serialized, .timeLimit(.minutes(1))) struct RightyoChildProcessTests {
+@Suite(.serialized, .timeLimit(.minutes(1)), .frozenGuardBudget) struct RightyoChildProcessTests {
     @Test func launchesExactArgvMinimalEnvironmentAndConfigDirectory() async throws {
         let fake = try FakeRightyo("""
             printf '%s\\n' "$0" "$@" > argv.txt

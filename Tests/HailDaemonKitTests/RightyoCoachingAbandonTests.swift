@@ -4,7 +4,7 @@ import Foundation
 import Testing
 @testable import HailDaemonKit
 
-@Suite(.serialized, .timeLimit(.minutes(1))) struct RightyoCoachingAbandonTests {
+@Suite(.serialized, .timeLimit(.minutes(1)), .frozenGuardBudget) struct RightyoCoachingAbandonTests {
     @Test(arguments: ["none", "before", "after"])
     func gracefulOwnedExitPreservesBuffersButNeverErasesRevocation(abandon: String) async throws {
         var pcm: [Int32] = [-1, -1], control = pcm

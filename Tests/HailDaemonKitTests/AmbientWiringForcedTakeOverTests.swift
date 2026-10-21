@@ -8,7 +8,7 @@ import Testing
 /// the oldest retired child out (EOF, SIGTERM, SIGKILL within about a second) and then gets its own child, in the
 /// gate's order. Each fake child copies stdin to its own file, then ignores EOF and SIGTERM, so only SIGKILL ends it.
 /// Synthetic only.
-@Suite(.serialized, .timeLimit(.minutes(1))) struct AmbientWiringForcedTakeOverTests {
+@Suite(.serialized, .timeLimit(.minutes(1)), .frozenGuardBudget) struct AmbientWiringForcedTakeOverTests {
     static let stubborn = "/bin/cat > \"audio-$$.bin\"\ntrap '' TERM\nexec /bin/sleep 60"
 
     private struct Device {
