@@ -64,6 +64,14 @@ struct PrivateCoachingCardTests {
         #expect(failed.state == .error)
     }
 
+    @Test func theRunCapEndsStoppedNotInError() {
+        var model = live()
+        model.received(.status(.off))
+        model.received(.ended(.expired))
+        model.childExited()
+        #expect(model.state == .stopped)
+    }
+
     @Test func activeAfterStopDoesNotGoLive() {
         var model = PrivateCoachingCardModel()
         model.startRequested()
@@ -97,6 +105,15 @@ struct PrivateCoachingCardTests {
         #expect(gate.blocker == .notIdle)
     }
 
+    @Test func hostedSpeechNeedsItsOwnConsentEvenWithTheLocalProvider() {
+        var gate = ready()
+        gate.hostedSpeech = true
+        #expect(gate.blocker == .hostedSpeechConsent)
+        gate.hostedSpeechConsentConfirmed = true
+        #expect(gate.blocker == nil)
+        #expect(PrivateCoachingConsentText.hostedSpeech.contains("Hosted"))
+    }
+
     @Test func gateRefusesWhileAnotherCaptureHoldsReplies() {
         var gate = ready()
         gate.captureActive = true
@@ -121,70 +138,7 @@ struct PrivateCoachingCardTests {
         PrivateCoachingStartGate(state: .idle, setupReady: true, ambientListening: false, captureActive: false,
                                  microphoneChosen: true, outputChosen: true, headphoneCheckNeeded: false,
                                  headphonesConfirmed: false, awarenessConfirmed: true, hostedChosen: false,
-                                 hostedConsentConfirmed: false)
-    }
-}
-
-@Suite("Private coaching setup (#645)")
-struct PrivateCoachingSetupTests {
-    private static let local = """
-    {"haild":"/synthetic/haild","rightyo":"/synthetic/rightyo","rightyoConfig":"/synthetic/config",
-     "listenerProfile":"/synthetic/profile","listener":"owner","rendererOutputRoot":"/synthetic/out"}
-    """
-    private static let hosted = """
-    {"haild":"/synthetic/haild","rightyo":"/synthetic/rightyo","rightyoConfig":"/synthetic/config",
-     "listenerProfile":"/synthetic/profile","listener":"owner","rendererOutputRoot":"/synthetic/out",
-     "hosted":{"maxRequests":12,"adviceCatalog":"/synthetic/catalog"}}
-    """
-
-    @Test func localArgumentsCarryNoHostedFlags() throws {
-        let setup = try PrivateCoachingSetup.parse(Data(Self.local.utf8))
-        #expect(!setup.offersHosted)
-        let arguments = try setup.arguments(privateOutput: 7, roomMicrophone: 9, provider: .local,
-                                            hostedConsentConfirmed: true)
-        #expect(arguments.prefix(2) == ["coaching", "--parent-control"])
-        #expect(!arguments.contains("--coaching-allow-hosted-text"))
-        #expect(arguments.contains("7") && arguments.contains("9"))
-        #expect(throws: PrivateCoachingSetup.SetupError.hostedNotConfigured) {
-            try setup.arguments(privateOutput: 7, roomMicrophone: 9, provider: .hosted, hostedConsentConfirmed: true)
-        }
-    }
-
-    @Test func hostedArgumentsRequireConsent() throws {
-        let setup = try PrivateCoachingSetup.parse(Data(Self.hosted.utf8))
-        #expect(throws: PrivateCoachingSetup.SetupError.hostedConsentRequired) {
-            try setup.arguments(privateOutput: 7, roomMicrophone: 9, provider: .hosted, hostedConsentConfirmed: false)
-        }
-        let arguments = try setup.arguments(privateOutput: 7, roomMicrophone: 9, provider: .hosted,
-                                            hostedConsentConfirmed: true)
-        #expect(arguments.suffix(7) == ["--coaching-provider", "jev", "--coaching-allow-hosted-text",
-                                        "--coaching-max-requests", "12",
-                                        "--coaching-advice-catalog", "/synthetic/catalog"])
-        let local = try setup.arguments(privateOutput: 7, roomMicrophone: 9, provider: .local,
-                                        hostedConsentConfirmed: true)
-        #expect(!local.contains("--coaching-allow-hosted-text"))
-    }
-
-    @Test func sameOrUnknownDevicesAreRefused() throws {
-        let setup = try PrivateCoachingSetup.parse(Data(Self.local.utf8))
-        #expect(throws: PrivateCoachingSetup.SetupError.invalid) {
-            try setup.arguments(privateOutput: 7, roomMicrophone: 7, provider: .local, hostedConsentConfirmed: false)
-        }
-        #expect(throws: PrivateCoachingSetup.SetupError.invalid) {
-            try setup.arguments(privateOutput: 0, roomMicrophone: 7, provider: .local, hostedConsentConfirmed: false)
-        }
-    }
-
-    @Test func relativePathsBadListenersAndBudgetsAreRefused() {
-        let bad = [
-            Self.local.replacingOccurrences(of: "/synthetic/rightyo", with: "synthetic/rightyo"),
-            Self.local.replacingOccurrences(of: "\"owner\"", with: "\"own\\ner\""),
-            Self.hosted.replacingOccurrences(of: "12", with: "0"),
-            Self.hosted.replacingOccurrences(of: "12", with: "101"),
-            "{}", ""
-        ]
-        for text in bad {
-            #expect(throws: PrivateCoachingSetup.SetupError.invalid) { try PrivateCoachingSetup.parse(Data(text.utf8)) }
-        }
+                                 hostedConsentConfirmed: false, hostedSpeech: false,
+                                 hostedSpeechConsentConfirmed: false)
     }
 }

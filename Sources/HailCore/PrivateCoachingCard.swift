@@ -7,6 +7,9 @@ public enum PrivateCoachingConsentText {
     public static let participantAwareness = "Everyone nearby knows this Mac is listening for coaching."
     /// PLACEHOLDER (Mick's call): shown only when the hosted provider is chosen, confirmed on every Start.
     public static let hostedProvider = "A hosted provider will receive the text of what this Mac hears."
+    /// PLACEHOLDER (Mick's call): shown when the setup declares hosted speech recognition or synthesis, which the
+    /// advice-provider consent above does not cover. Confirmed on every Start.
+    public static let hostedSpeech = "Hosted speech services will receive this Mac's audio or the spoken cues."
     /// PLACEHOLDER (Mick's call): the one-tap check for a Bluetooth or USB output (#604).
     public static let headphoneCheck = "I'm wearing these headphones."
 }
@@ -96,8 +99,8 @@ public struct PrivateCoachingCardModel: Sendable, Equatable {
         guard state.holdsAudio else { return }
         switch ended {
         case .route: state = .suspendedOnRouteChange
-        case .stopped: state = .stopped
-        case .expired, .failed: state = stopping ? .stopped : .error
+        case .stopped, .expired: state = .stopped // Includes the 15-minute run cap: a normal end, not an error.
+        case .failed: state = stopping ? .stopped : .error
         case nil: state = stopping ? .stopped : .error
         }
     }
@@ -121,7 +124,7 @@ public enum PrivateCoachingOutputTransport: Sendable, Equatable {
 public struct PrivateCoachingStartGate: Sendable, Equatable {
     public enum Blocker: Sendable, Equatable {
         case notIdle, setupMissing, ambientListening, captureActive, noMicrophone, noOutput
-        case headphoneCheck, awareness, hostedConsent
+        case headphoneCheck, awareness, hostedConsent, hostedSpeechConsent
     }
 
     public var state: PrivateCoachingCardState
@@ -135,16 +138,20 @@ public struct PrivateCoachingStartGate: Sendable, Equatable {
     public var awarenessConfirmed: Bool
     public var hostedChosen: Bool
     public var hostedConsentConfirmed: Bool
+    public var hostedSpeech: Bool
+    public var hostedSpeechConsentConfirmed: Bool
 
     public init(state: PrivateCoachingCardState, setupReady: Bool, ambientListening: Bool, captureActive: Bool,
                 microphoneChosen: Bool, outputChosen: Bool, headphoneCheckNeeded: Bool, headphonesConfirmed: Bool,
-                awarenessConfirmed: Bool, hostedChosen: Bool, hostedConsentConfirmed: Bool) {
+                awarenessConfirmed: Bool, hostedChosen: Bool, hostedConsentConfirmed: Bool,
+                hostedSpeech: Bool, hostedSpeechConsentConfirmed: Bool) {
         self.state = state; self.setupReady = setupReady
         self.ambientListening = ambientListening; self.captureActive = captureActive
         self.microphoneChosen = microphoneChosen; self.outputChosen = outputChosen
         self.headphoneCheckNeeded = headphoneCheckNeeded; self.headphonesConfirmed = headphonesConfirmed
         self.awarenessConfirmed = awarenessConfirmed
         self.hostedChosen = hostedChosen; self.hostedConsentConfirmed = hostedConsentConfirmed
+        self.hostedSpeech = hostedSpeech; self.hostedSpeechConsentConfirmed = hostedSpeechConsentConfirmed
     }
 
     public var blocker: Blocker? {
@@ -157,6 +164,7 @@ public struct PrivateCoachingStartGate: Sendable, Equatable {
         if headphoneCheckNeeded, !headphonesConfirmed { return .headphoneCheck }
         if !awarenessConfirmed { return .awareness }
         if hostedChosen, !hostedConsentConfirmed { return .hostedConsent }
+        if hostedSpeech, !hostedSpeechConsentConfirmed { return .hostedSpeechConsent }
         return nil
     }
 }
