@@ -91,6 +91,8 @@ import Testing
             }
         }
         #expect(await eventually { device.withLock { $0.count == 41 } })
+        // The child's `cat <&3 > control.txt` writes in the background, so wait for its last line too (#654).
+        #expect(await eventually { ((try? fake.recorded("control.txt")) ?? "").split(separator: "\n").count == 41 })
         let child = try fake.recorded("control.txt").split(separator: "\n").map { $0.contains("true") }
         let shown = device.withLock { $0 }.map { $0.hasPrefix("on=true") }
         #expect(child == shown)
