@@ -17,6 +17,8 @@ public protocol HostSessionAuthorizing: Sendable {
     var ambientAudio: AmbientAudioGate? { get }
     /// The device diagnostics sink when haild runs with `--device-diagnostics` (#234); nil otherwise.
     var diagnostics: DiagnosticLog? { get }
+    /// The host's read-only health summary when haild runs with `--host-health` (#614); nil otherwise.
+    var health: (@Sendable () async -> HostHealth)? { get }
     #if os(macOS)
     /// The owner's named voice routes when haild runs with `--voice-routes` and the file exists (#636); nil otherwise.
     var voiceRoutes: VoiceRoutes? { get }
@@ -27,6 +29,7 @@ public protocol HostSessionAuthorizing: Sendable {
 extension HostSessionAuthorizing {
     public var ambientAudio: AmbientAudioGate? { nil }
     public var diagnostics: DiagnosticLog? { nil }
+    public var health: (@Sendable () async -> HostHealth)? { nil }
     #if os(macOS)
     public var voiceRoutes: VoiceRoutes? { nil }
     #endif
@@ -51,20 +54,27 @@ public struct ConnectionProbeAuthorizer: HostSessionAuthorizing {
 /// Ambient audio (#203) is admitted, and `stream_audio` advertised, only when a gate is supplied; so is a device's
 /// `overheard_scope` (#398), with `ambient_overheard` advertised, and its `ambient_input` route kind (rightyo#164),
 /// with `ambient_input_route` advertised. Device
-/// diagnostics (#234) are admitted, and `device_diagnostics` advertised, only when a sink is supplied. A final
-/// text frame may carry a paste (#608, `pasted_text`), which is framed as untrusted data before delivery.
+/// diagnostics (#234) are admitted, and `device_diagnostics` advertised, only when a sink is supplied; so is a
+/// `health` request (#614), with `host_health` advertised, only when a summary is supplied. A final text
+/// frame may carry a paste (#608, `pasted_text`), which is framed as untrusted data before delivery.
 public struct PersonalTerminalAuthorizer: HostSessionAuthorizing {
     public let capabilities: [String]
     public let ambientAudio: AmbientAudioGate?
     public let diagnostics: DiagnosticLog?
+    public let health: (@Sendable () async -> HostHealth)?
 
-    public init(ambientAudio: AmbientAudioGate? = nil, diagnostics: DiagnosticLog? = nil) {
+    public init(
+        ambientAudio: AmbientAudioGate? = nil, diagnostics: DiagnosticLog? = nil,
+        health: (@Sendable () async -> HostHealth)? = nil
+    ) {
         self.ambientAudio = ambientAudio
         self.diagnostics = diagnostics
+        self.health = health
         capabilities = ["list_targets", "ping", "select_target", "send_text", "escape", "receive_replies",
                         PastedText.capability]
             + (ambientAudio == nil ? [] : ["stream_audio", AmbientOverheard.capability, AmbientInput.capability])
             + (diagnostics == nil ? [] : [DiagnosticLimits.capability, DiagnosticLimits.streamAbandonedCapability])
+            + (health == nil ? [] : [HostHealth.capability])
     }
 
     #if os(macOS)
@@ -88,6 +98,7 @@ public struct PersonalTerminalAuthorizer: HostSessionAuthorizing {
             case .hello, .ping, .listTargets, .select, .escape: .allow
             case .diagnostic: diagnostics == nil ? .deny : .allow
             case .overheardScope, .ambientInput: ambientAudio == nil ? .deny : .allow
+            case .health: health == nil ? .deny : .allow
             default: .deny
             }
         default: .deny
@@ -245,6 +256,11 @@ public actor HostSession {
             if case .control(.ambientInput(let route)) = frame.payload, let gate = authorizer.ambientAudio {
                 await gate.noteInputRoute(route, connection: connectionID)
                 return HostSessionResult(frames: [])
+            }
+            // The host's read-only health summary (#614): always answered, from the shared cached result, on this
+            // connection only, never logged. A refusal here would end an older device's connection.
+            if case .control(.health) = frame.payload, let health = authorizer.health {
+                return HostSessionResult(frames: [response(.healthReport(await health()), version: version)])
             }
             return await route(admitted, version: version)
         }
