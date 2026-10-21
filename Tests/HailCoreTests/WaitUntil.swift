@@ -13,6 +13,7 @@ func waitUntil(
     line: Int = #line,
     _ condition: @escaping @Sendable () async throws -> Bool
 ) async throws {
+    _ = StallWatchdog.started // #704: names what stalls the pool, on CI only
     let clock = ContinuousClock()
     let start = clock.now
     let deadline = start.advanced(by: timeout)
