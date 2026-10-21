@@ -9,17 +9,17 @@ once is out of scope.
 
 | Slice | State |
 | --- | --- |
-| 1. Allow-list file and the opening-name parser (`VoiceRoutes`) | In source. Not wired to any input path, not deployed. |
-| 2. Host listing: route names, offline routes and `--voice-routes` | In source. Not deployed: `host.sh` does not pass the flag yet (slice 8). |
-| 3. Tap-to-talk routing and reply return (route group) | In source. Not deployed. |
-| 4–8. Ambient routing, refusals, spoken and visual labels, app selector | Proposed; see the [plan on #636](https://github.com/mickdarling/hailing-station/issues/636). |
+| 1. Allow-list file and the opening-name parser (`VoiceRoutes`) | Merged (#646). Not deployed. |
+| 2. Host listing: route names, offline routes and `--voice-routes` | Merged (#678); startup hardening in #686. Not deployed: `host.sh` does not pass the flag yet (slice 8). |
+| 3. Tap-to-talk routing and reply return (route group) | In review. Not deployed. |
+| 4–8. Ambient routing, refusals, spoken and visual labels (7a model merged in #666), app selector | Proposed; see the [plan on #636](https://github.com/mickdarling/hailing-station/issues/636). |
 
 Nothing below changes the running daemon or installed builds until a later slice wires it in and it is deployed.
 
 ## The allow-list: `routes.json`
 
 The owner writes one file on the Mac, by hand. The daemon only reads it and never writes, creates or rewrites it.
-Routing is off when the file is absent.
+Routing is off when haild runs without `--voice-routes`. With the flag, a missing file refuses startup (#686).
 
 ```json
 {"version": 1, "default": "tmux:hailing-test", "routes": [
