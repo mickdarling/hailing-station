@@ -258,6 +258,9 @@ struct AmbientListeningCard: View {
             if controller.isListening, connections.ownerVoiceUnrecognized.contains(binding.hostID) {
                 OwnerVoiceUnrecognizedView()
             }
+            if controller.isListening, let media = connections.mediaMode[binding.hostID] {
+                MediaModeStatusView(status: media)
+            }
             if controller.isListening, let handoff = controller.handoff, case .movedHere = handoff {
                 // This device took listening over (#366): a brief, calm confirmation.
                 Label(handoff.status, systemImage: "checkmark.circle.fill")
@@ -316,6 +319,30 @@ struct OwnerVoiceUnrecognizedView: View {
         }
         .accessibilityElement(children: .combine)
         .accessibilityIdentifier("station.ambient-owner-voice")
+    }
+}
+
+/// The owner's spoken media mode (#612): while it is on, replies stop because RightyO hears only the assistant's
+/// name, so the card says so and how it ends. Read-only: whether the device may turn it off is Mick's call.
+struct MediaModeStatusView: View {
+    let status: MediaModeStatus
+
+    var body: some View {
+        // Re-checked each minute, so a mode past its end stops showing even if the host's "off" never arrives.
+        TimelineView(.everyMinute) { context in
+            if let detail = status.detail(now: context.date) {
+                VStack(alignment: .leading, spacing: 4) {
+                    Label("Media mode is on", systemImage: "tv")
+                        .font(.subheadline.weight(.semibold))
+                        .foregroundStyle(.indigo)
+                    Text(detail)
+                        .font(.footnote)
+                        .foregroundStyle(.secondary)
+                }
+                .accessibilityElement(children: .combine)
+                .accessibilityIdentifier("station.ambient-media-mode")
+            }
+        }
     }
 }
 

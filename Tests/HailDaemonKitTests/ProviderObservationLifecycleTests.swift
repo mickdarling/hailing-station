@@ -82,7 +82,7 @@ import Testing
         #expect(await rig.adapter.delivered.isEmpty)
     }
 
-    @Test(.frozenGuardBudget, arguments: [1, 2])
+    @Test(.frozenGuardBudget, .timeLimit(.minutes(1)), arguments: [1, 2])
     func stopCancelsCaptureBeforeJoiningNoncooperativeWrites(lines: Int) async throws {
         try await observedStoppedWrite(lines: lines)
     }

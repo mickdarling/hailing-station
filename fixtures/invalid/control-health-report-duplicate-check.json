@@ -1,0 +1,1 @@
+{"_expect":"schema-pass","id":"0B0B0B0B-0000-4000-8000-0000000002F4","payload":{"command":"health_report","report":{"version":"0.1.0","checks":[{"name":"daemon_running","ok":true},{"name":"daemon_running","ok":false}]}},"source":"host","ts":1,"type":"control","v":1}

@@ -1,0 +1,1 @@
+{"id":"0B0B0B0B-0000-4000-8000-000000000241","payload":{"command":"health_report","report":{"build":"0123456789abcdef","checks":[{"name":"daemon_running","ok":true},{"name":"build_match","ok":true},{"name":"listener_ready","ok":true},{"name":"ambient_listening","ok":false}],"version":"0.1.0"}},"source":"host","ts":1758200052100,"type":"control","v":1}
