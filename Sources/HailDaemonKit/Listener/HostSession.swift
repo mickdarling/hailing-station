@@ -17,12 +17,19 @@ public protocol HostSessionAuthorizing: Sendable {
     var ambientAudio: AmbientAudioGate? { get }
     /// The device diagnostics sink when haild runs with `--device-diagnostics` (#234); nil otherwise.
     var diagnostics: DiagnosticLog? { get }
+    #if os(macOS)
+    /// The owner's named voice routes when haild runs with `--voice-routes` and the file exists (#636); nil otherwise.
+    var voiceRoutes: VoiceRoutes? { get }
+    #endif
     func authorize(_ frame: Frame) async -> HostSessionAuthorization
 }
 
 extension HostSessionAuthorizing {
     public var ambientAudio: AmbientAudioGate? { nil }
     public var diagnostics: DiagnosticLog? { nil }
+    #if os(macOS)
+    public var voiceRoutes: VoiceRoutes? { nil }
+    #endif
 }
 
 /// The temporary connection proof can negotiate and inspect liveness, but it grants no target authority.
@@ -59,6 +66,18 @@ public struct PersonalTerminalAuthorizer: HostSessionAuthorizing {
             + (ambientAudio == nil ? [] : ["stream_audio", AmbientOverheard.capability, AmbientInput.capability])
             + (diagnostics == nil ? [] : [DiagnosticLimits.capability, DiagnosticLimits.streamAbandonedCapability])
     }
+
+    #if os(macOS)
+    public private(set) var voiceRoutes: VoiceRoutes?
+
+    /// The same authorizer with the owner's voice routes (#636). Routes grant nothing and change no capability: the
+    /// listing shows their names and offline state, and every route still needs its own target policy and binding.
+    public func naming(_ routes: VoiceRoutes?) -> Self {
+        var named = self
+        named.voiceRoutes = routes
+        return named
+    }
+    #endif
 
     public func authorize(_ frame: Frame) async -> HostSessionAuthorization {
         switch frame.payload {
