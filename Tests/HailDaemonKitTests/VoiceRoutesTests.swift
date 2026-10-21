@@ -115,6 +115,8 @@ import Testing
         ([VoiceRoutes.Route(target: "tmux:deck", name: "!!")], "tmux:deck", .invalidName),
         ([VoiceRoutes.Route(target: "tmux:deck", name: "Hey")], "tmux:deck", .invalidName),
         ([VoiceRoutes.Route(target: "tmux:deck", name: "Okay Deck")], "tmux:deck", .invalidName),
+        ([VoiceRoutes.Route(target: "tmux:deck", name: "Hey' Deck")], "tmux:deck", .invalidName),
+        ([VoiceRoutes.Route(target: "tmux:deck", name: "O'K Deck")], "tmux:deck", .invalidName),
         ([VoiceRoutes.Route(target: "tmux:deck", name: "One-Two-Three-Four")], "tmux:deck", .invalidName),
         ([VoiceRoutes.Route(target: "tmux:deck", name: "Voice-Work")], "tmux:deck", .invalidName),
         ([VoiceRoutes.Route(target: "tmux:deck", name: "東京 Deck")], "tmux:deck", .invalidName),

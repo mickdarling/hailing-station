@@ -32,6 +32,9 @@ public final class HostConnectionStore {
     /// Hosts that said RightyO does not recognise the owner's voice on this device's input (rightyo#164), until they
     /// say it does, the device starts a new stream, or the host is removed.
     public private(set) var ownerVoiceUnrecognized: Set<HostEndpoint.Identifier> = []
+    /// Each host's last doctor summary (#614), asked for when its connection reaches ready and on request from Mac
+    /// Setup; kept until the host is removed, so a host that drops still shows what it last reported.
+    public private(set) var health: [HostEndpoint.Identifier: HostHealthReading] = [:]
     /// Each host's last `media_mode` for this device's stream (#612). A host keeps media mode per connection, so it
     /// is forgotten whenever that connection stops being ready or the host is removed.
     public private(set) var mediaMode: [HostEndpoint.Identifier: MediaModeStatus] = [:]
@@ -154,7 +157,7 @@ public final class HostConnectionStore {
         let connection = connections.removeValue(forKey: id)
         let barrier = connection.map(drainingTransportBarrier(for:)) ?? retiredBarriers[id]
         if let barrier { retiredBarriers[id] = barrier }
-        snapshots[id] = nil
+        (snapshots[id], health[id]) = (nil, nil)
         ownerVoiceUnrecognized.remove(id)
         mediaMode[id] = nil
         order.removeAll { $0 == id }
@@ -170,7 +173,7 @@ public final class HostConnectionStore {
         let previous = snapshots[snapshot.id]?.state
         snapshots[snapshot.id] = snapshot
         recordDiagnostics(from: previous, to: snapshot.state)
-        if snapshot.state == .ready, previous != .ready { applyOverheardScope(to: snapshot.id) }
+        if snapshot.state == .ready, previous != .ready { hostBecameReady(snapshot.id) }
         if snapshot.state != .ready { mediaMode[snapshot.id] = nil }
     }
 
@@ -184,6 +187,22 @@ public final class HostConnectionStore {
         if replyFrames.count > Self.replyFrameLimit {
             replyFrames.removeFirst(replyFrames.count - Self.replyFrameLimit)
         }
+    }
+}
+
+/// The host's doctor summary (#614).
+extension HostConnectionStore {
+    /// A connection just reached ready: the current overheard scope (#398) and a health request (#614) go to it.
+    func hostBecameReady(_ id: HostEndpoint.Identifier) {
+        applyOverheardScope(to: id)
+        requestHealth(id)
+    }
+
+    /// Asks a ready host that advertised `host_health` for its doctor summary (#614); others are left alone.
+    public func requestHealth(_ id: HostEndpoint.Identifier) {
+        guard let connection = connections[id], snapshots[id]?.state == .ready,
+              snapshots[id]?.capabilities.contains(HostHealth.capability) == true else { return }
+        Task { try? await connection.requestHealth() }
     }
 }
 
@@ -219,6 +238,9 @@ extension HostConnectionStore {
             conversation.noteOverheard(
                 text, owner: speaker == "owner", name: name, endpointID: event.endpointID, targetID: targetID
             )
+        case .control(.healthReport(let report)):
+            let generation = snapshots[event.endpointID]?.connectionGeneration
+            health[event.endpointID] = HostHealthReading(report: report, connectionGeneration: generation)
         case .control(.mediaMode(let on, let reason, let expires)):
             mediaMode[event.endpointID] = MediaModeStatus(on: on, reason: reason, expiresMilliseconds: expires)
         case .control(.ownerVoice(let state)):
