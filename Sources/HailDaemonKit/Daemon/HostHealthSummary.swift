@@ -128,7 +128,8 @@ public final class HostHealthService: Sendable {
         }
     }
 
-    /// `task`'s result if it arrives within `deadline`, else `fallback`; the task itself keeps running.
+    /// `task`'s result if it arrives within `deadline`, else `fallback`; the task itself keeps running. The deadline
+    /// fires from a Dispatch timer, not a task sleeping on the cooperative pool, so a busy pool cannot hold it back.
     private static func first(of task: Task<HostHealth, Never>, or fallback: HostHealth,
                               after deadline: Duration) async -> HostHealth {
         await withCheckedContinuation { continuation in
@@ -140,14 +141,12 @@ public final class HostHealthService: Sendable {
                 }) else { return }
                 continuation.resume(returning: health)
             }
-            let timer = Task {
-                try? await Task.sleep(for: deadline)
+            let (seconds, attoseconds) = deadline.components
+            let nanoseconds = Int(clamping: seconds * 1_000_000_000 + attoseconds / 1_000_000_000)
+            DispatchQueue.global(qos: .utility).asyncAfter(deadline: .now() + .nanoseconds(nanoseconds)) {
                 answer(fallback)
             }
-            Task {
-                answer(await task.value)
-                timer.cancel()
-            }
+            Task { answer(await task.value) }
         }
     }
 }

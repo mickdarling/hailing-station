@@ -48,16 +48,29 @@ import Testing
             release.wait() // stuck until released
             return Self.report
         })
-        let started = ContinuousClock.now
+        // The evaluation cannot finish until `release` is signalled below, so both answers came from the deadline,
+        // not from the evaluation. No wall-clock bound: a busy CI runner may be slow to schedule the callers, which
+        // says nothing about the deadline (#690 CI).
         #expect(await service.current() == Self.minimal)
         #expect(await service.current() == Self.minimal)
-        #expect(ContinuousClock.now - started < .seconds(2))
         // The stuck one stays in flight and is never restarted. It may not have reached the queue yet on a busy
         // runner, so this waits for it to start rather than reading the counter once.
         #expect(await eventually { evaluations.withLock { $0 } == 1 })
         release.signal()
         #expect(await eventually { await service.current() == Self.report })
         #expect(evaluations.withLock { $0 } == 1)
+    }
+
+    /// The evaluation runs on the service's own Dispatch queue, never a cooperative-pool thread, so a slow or stuck
+    /// doctor run cannot starve the tasks that answer requests (#690 CI).
+    @Test func theEvaluationRunsOnItsOwnQueue() async {
+        let label = Mutex("")
+        let service = HostHealthService(fallback: Self.minimal, evaluate: {
+            label.withLock { $0 = String(cString: __dispatch_queue_get_label(nil)) }
+            return Self.report
+        })
+        #expect(await eventually { await service.current() == Self.report })
+        #expect(label.withLock { $0 } == "hail.host-health")
     }
 
     /// Primed at startup, the first request finds the result instead of waiting for a cold evaluation (#690 review).
