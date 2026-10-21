@@ -20,9 +20,10 @@ extension HostSession {
     }
 
     /// The route this one ingress is being handed to, bound only while the host delivers a frame it routed itself
-    /// (`voiceRoute`). No frame field, device name or local socket request can set it, and it admits nothing once the
-    /// selection has moved off `from`. Tasks started during that delivery inherit it; none of them may call back into
-    /// a session's `deliver` or `dispatch` while it is bound.
+    /// (`voiceRoute`) or the listener's ambient dispatch sends a turn its consumer chose to route (#636). No frame
+    /// field, device name or local socket request can set it: the socket's `dispatch` runs with it unbound. It admits
+    /// nothing once the selection has moved off `from` or onto a later generation. Tasks started during that delivery
+    /// inherit it; none of them may call back into a session's `deliver` or `dispatch` while it is bound.
     @TaskLocal static var voiceRouted: VoiceRouted?
 
     enum VoiceRouting {
@@ -45,8 +46,8 @@ extension HostSession {
     }
 
     /// Input goes to the selected target; host-routed input goes only to its route, and only while its origin is still
-    /// exactly what is selected, on the generation it was routed on when it carries one. So input routed from a stream
-    /// on Scratch is refused once Deck is selected, even when Deck was its route: it belonged to an ended selection.
+    /// exactly what is selected, on the generation it was routed on. So input routed from a stream on Scratch is
+    /// refused once Deck is selected, even when Deck was its route: it belonged to an ended selection.
     func admitsInput(to target: String) -> Bool {
         guard let routed = Self.voiceRouted else { return target == selectedTarget }
         return routed.to == target && routed.from == selectedTarget && covers(target)
