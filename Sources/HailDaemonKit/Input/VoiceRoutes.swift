@@ -21,7 +21,7 @@ public struct VoiceRoutes: Sendable, Equatable {
     }
 
     public enum LoadError: Error, Equatable {
-        case malformed, invalidTarget, invalidName, duplicateTarget, duplicateName, unknownDefault, unsafe
+        case malformed, invalidTarget, invalidName, duplicateTarget, duplicateName, unknownDefault, unsafe, missing
     }
 
     public static let maxRoutes = 16, maxAliases = 8, maxNameLength = 48
@@ -61,7 +61,7 @@ public struct VoiceRoutes: Sendable, Equatable {
     private static func isName(_ spelling: String) -> Bool {
         let words = VoiceDestinations.words(spelling)
         return (1...maxNameLength).contains(spelling.count) && (1...3).contains(words.count)
-            && windowKey(spelling, words, 0, words.count) != nil && !VoiceMute.greetings.contains(words[0].text)
+            && windowKey(spelling, words, 0, words.count) != nil && !VoiceMute.greetings.contains(words[0].key)
             && words.allSatisfy { $0.key == $0.text.replacingOccurrences(of: "'", with: "") }
             && !spelling.unicodeScalars.contains { CharacterSet.controlCharacters.contains($0) }
     }

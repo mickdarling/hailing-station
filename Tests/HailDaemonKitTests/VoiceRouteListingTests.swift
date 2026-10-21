@@ -70,8 +70,8 @@ import Testing
     }
 }
 
-/// `--voice-routes` (#636): an absolute path, once, only on the personal terminal; a missing file leaves routing off
-/// and a file that does not load refuses startup.
+/// `--voice-routes` (#636): an absolute path, once, only on the personal terminal; a file that is missing or does not
+/// load refuses startup.
 @Suite(.serialized, .frozenGuardBudget, .timeLimit(.minutes(1))) struct VoiceRouteOptionsTests {
     static let base = ["--bind", "127.0.0.1", "--port", "4100"]
 
@@ -88,7 +88,7 @@ import Testing
         }
     }
 
-    @Test func aMissingFileIsOffAndABadFileRefusesStartup() throws {
+    @Test func aMissingOrBadFileRefusesStartup() throws {
         let directory = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
         try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
         defer { try? FileManager.default.removeItem(at: directory) }
@@ -97,14 +97,41 @@ import Testing
         let log: @Sendable (WebSocketListenerEvent) -> Void = { event in
             events.withLock { $0.append("\(event.event) \(event.detail ?? "")") }
         }
-        #expect(try ConnectionProbeDaemon.voiceRoutes(file, log: log) == nil)
+        #expect(throws: VoiceRoutes.LoadError.missing) { try ConnectionProbeDaemon.voiceRoutes(file, log: log) }
         try Data(#"{"version": 1, "default": "tmux:a", "routes": [{"target": "tmux:a", "name": "A"}]}"#.utf8)
             .write(to: file)
-        #expect(try ConnectionProbeDaemon.voiceRoutes(file, log: log)?.defaultTarget == "tmux:a")
+        #expect(try ConnectionProbeDaemon.voiceRoutes(file, log: log).defaultTarget == "tmux:a")
         try Data("not json".utf8).write(to: file)
         #expect(throws: VoiceRoutes.LoadError.malformed) { try ConnectionProbeDaemon.voiceRoutes(file, log: log) }
-        #expect(events.withLock { $0 } == ["voice_routes missing", "voice_routes count=1",
+        #expect(events.withLock { $0 } == ["voice_routes error=missing", "voice_routes count=1",
                                            "voice_routes error=malformed"])
+    }
+
+    /// Through the daemon's own composition (second-key review on #678): the routes reach the listener's authorizer,
+    /// and a missing file refuses to start, so routing is never silently off.
+    @Test func composeAttachesTheRoutesOrRefusesToStart() async throws {
+        let scratch = FileManager.default.temporaryDirectory
+            .appendingPathComponent("hs-\(UUID().uuidString.prefix(8))", isDirectory: true)
+        try FileManager.default.createDirectory(at: scratch, withIntermediateDirectories: true,
+                                                attributes: [.posixPermissions: 0o700])
+        defer { try? FileManager.default.removeItem(at: scratch) }
+        let file = scratch.appendingPathComponent("routes.json")
+        let rig = try await RecipientTestRig.make()
+        func compose() async throws -> WebSocketListener {
+            var options = try ConnectionProbeDaemon.options(Self.base + [
+                "--personal-terminal", "--reply-socket", scratch.appendingPathComponent("r.sock").path,
+                "--voice-routes", file.path
+            ])
+            options.port = 0
+            let audit = AuditLog(directory: scratch.appendingPathComponent("audit-\(UUID().uuidString)"))
+            return try await ConnectionProbeDaemon.compose(options, host: rig.host, hostName: "mac-test",
+                                                           audit: audit, log: { _ in }).0
+        }
+        await #expect(throws: VoiceRoutes.LoadError.missing) { _ = try await compose() }
+        try Data(#"{"version": 1, "default": "tmux:a", "routes": [{"target": "tmux:a", "name": "A"}]}"#.utf8)
+            .write(to: file)
+        let listener = try await compose()
+        #expect(await listener.authorizer.voiceRoutes?.defaultTarget == "tmux:a")
     }
 }
 #endif

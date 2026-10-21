@@ -78,8 +78,8 @@ Verification is synthetic only (`VoiceRoutesTests`, `VoiceRoutesFileTests`).
 ## The device's target list
 
 With `haild run --personal-terminal --voice-routes <absolute path>`, the daemon loads `routes.json` at startup and
-logs `voice_routes` with the route count or `missing`. A missing file leaves routing off. A file that fails to load
-refuses startup. Without that, routing would be silently off and a request naming a session would go to whichever
+logs `voice_routes` with the route count. A file that is missing or fails to load refuses startup and logs
+`voice_routes error=…`. Without that, routing would be silently off and a request naming a session would go to whichever
 target was already chosen.
 
 The `targets` list a device receives changes in two ways:
@@ -91,7 +91,12 @@ The `targets` list a device receives changes in two ways:
   listing without names, so an offline route cannot be selected (`not_allowed`). The routes file adds no target the
   policy does not allow.
 
-Targets that are not routes are listed exactly as before. The device's remembered selection matches on id and name,
+Targets that are not routes are listed exactly as before.
+
+**What the listing exposes.** The personal-terminal listener has no authentication (#7, #21). Any peer that
+completes its handshake receives the target list, so with `--voice-routes` it sees every configured route's id and
+name, offline routes and routes the policy does not allow included. Before routes, it saw only allowed targets.
+Keep the listener on a trusted network, as for everything else it carries. The device's remembered selection matches on id and name,
 so renaming a target forgets it once and the owner picks it again.
 
 Verification is synthetic only (`VoiceRouteListingTests`, `VoiceRouteOptionsTests`).
