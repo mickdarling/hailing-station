@@ -17,6 +17,7 @@ struct CoachingUnavailableCard: View {
                 Button("Start", systemImage: "ear") {}
                     .buttonStyle(.bordered)
                     .disabled(true)
+                    .accessibilityLabel("Start private coaching")
                     .accessibilityHint(Self.message)
                     .accessibilityIdentifier("station.coaching-start")
             }
