@@ -73,15 +73,18 @@ public struct SessionUpdatePolicy: Sendable, Equatable {
     public var window: Duration
     /// Held updates kept at once; the oldest `info` is dropped first.
     public var capacity: Int
+    /// Held updates one session may have at once, so one session cannot crowd out the others; its own oldest
+    /// `info` is dropped first.
+    public var perSessionHeld: Int
     /// A held update older than this is dropped unspoken.
     public var lifetime: Duration
 
     public init(
         enabled: Bool = false, perSessionLimit: Int = 6, window: Duration = .seconds(3_600), capacity: Int = 20,
-        lifetime: Duration = .seconds(4 * 3_600)
+        lifetime: Duration = .seconds(4 * 3_600), perSessionHeld: Int = 5
     ) {
         (self.enabled, self.perSessionLimit, self.window) = (enabled, perSessionLimit, window)
-        (self.capacity, self.lifetime) = (capacity, lifetime)
+        (self.capacity, self.lifetime, self.perSessionHeld) = (capacity, lifetime, perSessionHeld)
     }
 }
 
