@@ -99,8 +99,8 @@ public struct PrivateCoachingCardModel: Sendable, Equatable {
         guard state.holdsAudio else { return }
         switch ended {
         case .route: state = .suspendedOnRouteChange
-        case .stopped: state = .stopped
-        case .expired, .failed: state = stopping ? .stopped : .error
+        case .stopped, .expired: state = .stopped // Includes the 15-minute run cap: a normal end, not an error.
+        case .failed: state = stopping ? .stopped : .error
         case nil: state = stopping ? .stopped : .error
         }
     }

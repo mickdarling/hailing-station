@@ -64,6 +64,14 @@ struct PrivateCoachingCardTests {
         #expect(failed.state == .error)
     }
 
+    @Test func theRunCapEndsStoppedNotInError() {
+        var model = live()
+        model.received(.status(.off))
+        model.received(.ended(.expired))
+        model.childExited()
+        #expect(model.state == .stopped)
+    }
+
     @Test func activeAfterStopDoesNotGoLive() {
         var model = PrivateCoachingCardModel()
         model.startRequested()

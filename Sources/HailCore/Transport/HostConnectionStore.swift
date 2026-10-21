@@ -440,6 +440,7 @@ public final class AmbientListeningController {
     /// Shared with private coaching where a platform runs both (#645): a request while coaching holds the
     /// microphone is refused with a reason, never queued. Nil (iOS today) changes nothing.
     @ObservationIgnored public var exclusion: PrivateListeningExclusion?
+    @ObservationIgnored private var exclusionClaim: UUID?
     /// The session that most recently began activating the audio session. Only it may release the audio session,
     /// so a slow teardown of an earlier session cannot deactivate the one a fast off→on started (#218).
     @ObservationIgnored private var activation: UUID?
@@ -479,14 +480,11 @@ public final class AmbientListeningController {
     }
 
     /// A card torn down while on must not leave coaching locked out (#645).
-    isolated deinit { if isOn { exclusion?.releaseAmbient() } }
+    isolated deinit { releaseExclusion() }
 
     public func turnOn(for binding: AmbientAudioBinding) async {
         guard !isOn, scene == .active else { return }
-        guard exclusion?.claimAmbient() ?? true else {
-            stopReason = "Private coaching is using the microphone. Stop it to listen here."
-            return
-        }
+        guard claimExclusion() else { return }
         let current = UUID()
         session = current
         isOn = true
@@ -555,7 +553,7 @@ public final class AmbientListeningController {
         diagnostics?.record(.ambientStop, fields)
         session = UUID()
         isOn = false
-        exclusion?.releaseAmbient()
+        releaseExclusion()
         isListening = false
         pendingStart = false
         awaitingPermission = false
@@ -893,4 +891,23 @@ final class AmbientResumer {
 /// The streamer a send closure belongs to, filled in once it exists (#445).
 private final class StreamerSource: @unchecked Sendable {
     @MainActor weak var streamer: AmbientAudioStreamer?
+}
+
+/// Private coaching exclusion (#645), kept out of the controller's body.
+extension AmbientListeningController {
+    /// True when there is no exclusion (iOS today) or the claim succeeded; otherwise says why and refuses.
+    fileprivate func claimExclusion() -> Bool {
+        guard let exclusion else { return true }
+        guard let claim = exclusion.claimAmbient() else {
+            stopReason = "Private coaching is using the microphone. Stop it to listen here."
+            return false
+        }
+        exclusionClaim = claim
+        return true
+    }
+
+    fileprivate func releaseExclusion() {
+        if let exclusionClaim { exclusion?.releaseAmbient(exclusionClaim) }
+        exclusionClaim = nil
+    }
 }
