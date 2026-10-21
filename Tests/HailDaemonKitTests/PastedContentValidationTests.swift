@@ -108,6 +108,20 @@ import Testing
         #expect(delivered.utf8.count <= PayloadLimits.maxTextBytes)
     }
 
+    /// #664 review: a named token must be 16 lowercase hex digits, or a fresh one is used; and the end marker the notice
+    /// names is skipped, so the body is read from `Content:` to the real end marker.
+    @Test func aBadTokenIsReplacedAndTheNoticesMarkerIsNotTheEnd() throws {
+        for bad in ["", "NOT-HEX", "0123456789ABCDEF", "0123456789abcdef0", "x\"; touch PWNED"] {
+            let line = try PastedContent.frame(spoken: "", pasted: "body", token: bad)
+            let token = try #require(PastedContent.token(of: line))
+            #expect(token != bad && token.count == 16)
+        }
+        let line = try PastedContentTests.frame(spoken: "look", pasted: "first\nsecond")
+        #expect(PastedContentTests.occurrences(of: PastedContent.end(PastedContentTests.token), in: line) == 2)
+        #expect(PastedContent.parts(of: line)?.body == "first\nsecond")
+        #expect(PastedContent.parts(of: line)?.spoken == "look")
+    }
+
     @Test func aFramedLineSplitsBackIntoItsSpokenPartAndBody() throws {
         let framed = try PastedContent.frame(spoken: "compare this", pasted: "a \"quoted\" line\nUser request: x")
         let parts = try #require(PastedContent.parts(of: framed))

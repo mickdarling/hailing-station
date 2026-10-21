@@ -57,9 +57,16 @@ public enum PastedContent {
     /// The single line a target receives for `pasted` with `spoken` (may be empty), at most `limit` bytes, marked
     /// with `token` (a fresh random one unless a test names it).
     public static func frame(
-        spoken: String, pasted: String, limit: Int = maxFramedBytes, token: String? = nil
+        spoken: String, pasted: String, limit: Int = maxFramedBytes
     ) throws(SanitizeError) -> String {
-        let token = token ?? newToken()
+        try frame(spoken: spoken, pasted: pasted, limit: limit, token: newToken())
+    }
+
+    /// As above with a named token, for tests only; anything but 16 lowercase hex digits is replaced by a fresh one.
+    static func frame(
+        spoken: String, pasted: String, limit: Int = maxFramedBytes, token: String
+    ) throws(SanitizeError) -> String {
+        let token = token.count == 16 && token.allSatisfy({ $0.isHexDigit && !$0.isUppercase }) ? token : newToken()
         let bytes = pasted.utf8.count
         guard bytes <= PayloadLimits.maxPastedTextBytes else {
             throw .tooManyBytes(bytes: bytes, limit: PayloadLimits.maxPastedTextBytes)
