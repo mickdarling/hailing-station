@@ -330,8 +330,9 @@ private func streamVBSay(
     var context = context
     let timing = ReplyTimingRecorder()
     context.timing = timing
+    // "played" once the renderer's audio is all sent, even if its cleanup then fails the command.
     var outcome = "failed"
-    defer { timing.log(outcome: outcome) }
+    defer { timing.log(outcome: outcome, resends: ReplyResends.total) }
     let renderer = try OwnedReplyRenderer(
         text: text, outputRoot: outputRoot, environment: ProcessInfo.processInfo.environment
     )
@@ -346,6 +347,7 @@ private func streamVBSay(
         try await renderer.waitForCleanup()
         return result
     } catch {
+        if outcome == "failed", error is CancellationError { outcome = "cancelled" }
         renderer.retire(cancel: true)
         await renderer.waitForCancellationSignals()
         // The CLI must remain alive to retain reaping/cleanup ownership. This async suspension is not
@@ -590,6 +592,7 @@ enum ReplyClient {
                 throw failure.error
             }
             if response.code == .requestPending, response.delivered == 0 {
+                ReplyResends.note()
                 guard try await retryWindow.waitForRetry(after: attempt) else {
                     throw ReplyClientError.refused("reply request did not become ready within the retry budget")
                 }
@@ -926,10 +929,20 @@ extension ReplyBackground {
                 } else {
                     extendBound(by: .seconds(2)) // waiting on others' traffic is not the stream's own time
                 }
+                ReplyResends.note()
                 try await Task.sleep(for: .seconds(2))
             }
         }
     }
+}
+
+/// Resends this job made after a refusal that promises nothing was published (#737). Each wait falls inside a frame's
+/// acknowledgement time, so the reply's timing line names how many there were. One job is one reply.
+enum ReplyResends {
+    private static let count = Mutex(0)
+
+    static func note() { count.withLock { $0 += 1 } }
+    static var total: Int { count.withLock { $0 } }
 }
 
 /// #467: a request-bound reply keeps its host-minted request current only while its accepted frames come within the

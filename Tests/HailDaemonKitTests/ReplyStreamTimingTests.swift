@@ -16,8 +16,8 @@ import Testing
         let summary = timing.summary(at: at(4_000))
         #expect(summary.frames == 3)
         #expect(summary.audio == .milliseconds(2_500))
-        #expect(summary.firstAudio == .milliseconds(1_200))
-        #expect(summary.minimumLead == .milliseconds(300)) // second frame: 500 sent, 200 elapsed
+        #expect(summary.firstAudio == .milliseconds(1_210))
+        #expect(summary.minimumLead == .milliseconds(298)) // second frame: 500 ms ahead, acknowledged 202 ms later
         #expect(summary.slowestAcknowledgement == .milliseconds(30))
         #expect(summary.wall == .milliseconds(4_000))
     }
@@ -31,7 +31,14 @@ import Testing
         #expect(timing.summary(at: at(5_000)).minimumLead == .milliseconds(-1_250))
     }
 
-    @Test func theP95AcknowledgementIgnoresOneSlowOutlierInTwenty() {
+    @Test func aSlowAcknowledgementOnTheLastFrameShowsAsANegativeLead() {
+        var timing = ReplyStreamTiming(startedAt: at(0))
+        timing.sent(audio: .milliseconds(500), at: at(1_000), acknowledgedAfter: .milliseconds(5))
+        timing.sent(audio: .milliseconds(1_250), at: at(1_100), acknowledgedAfter: .milliseconds(3_000))
+        #expect(timing.summary(at: at(5_000)).minimumLead == .milliseconds(-2_595)) // 500 ahead, 3095 later
+    }
+
+    @Test func theP95AcknowledgementIgnoresOneSlowOutlierInForty() {
         var timing = ReplyStreamTiming(startedAt: at(0))
         for index in 0..<40 {
             let ack: Duration = index == 7 ? .milliseconds(900) : .milliseconds(10 + index % 5)
@@ -52,7 +59,7 @@ import Testing
         var timing = ReplyStreamTiming(startedAt: at(0))
         timing.sent(audio: .milliseconds(500), at: at(1_000), acknowledgedAfter: .milliseconds(8))
         timing.sent(audio: .milliseconds(750), at: at(1_100), acknowledgedAfter: .milliseconds(9))
-        #expect(timing.summary(at: at(3_000)).line == "reply audio: frames=2 audio_ms=1250 first_audio_ms=1000 "
-            + "min_lead_ms=400 ack_max_ms=9 ack_p95_ms=9 wall_ms=3000")
+        #expect(timing.summary(at: at(3_000)).line == "reply audio: frames=2 audio_ms=1250 first_audio_ms=1008 "
+            + "min_lead_ms=399 ack_max_ms=9 ack_p95_ms=9 wall_ms=3000")
     }
 }
