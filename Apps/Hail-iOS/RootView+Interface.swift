@@ -27,11 +27,15 @@ extension RootView {
                 onCaptureTeardownCompleted: {
                     CapturePlaybackSuppression.markCleanupComplete($0, using: playback)
                 },
-                onFinalized: { text in
+                onFinalized: { text, pasted in
                     try await connections.sendFinalText(
-                        text, host: destination.hostID, targetID: destination.target.id
+                        text, pasted: pasted, host: destination.hostID, targetID: destination.target.id
                     )
                 },
+                pasteOffer: PasteOffer(
+                    accepts: connections.acceptsPaste(host: destination.hostID, targetID: destination.target.id),
+                    refusal: connections.lastPasteRefusal.flatMap { $0.endpointID == destination.hostID ? $0 : nil }
+                ),
                 onEscape: {
                     try await connections.sendEscape(
                         host: destination.hostID, targetID: destination.target.id

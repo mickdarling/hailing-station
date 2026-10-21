@@ -47,6 +47,8 @@ extension HostSession {
             return failure(.malformed, "only final text can be delivered", close: false, version: version)
         case .untargetedText:
             return failure(.notAllowed, "select the destination before speaking", close: false, version: version)
+        case .lockedDownPaste:
+            return failure(.lockdown, "target action was refused", close: false, version: version)
         case .refusedPaste(let reason):
             return failure(pasteRefusal(.malformed), reason, close: false, version: version)
         case .audio(let audio, let target):
@@ -62,9 +64,10 @@ extension HostSession {
         guard let gate = authorizer.ambientAudio else {
             return failure(.unauthorized, "terminal action is not authorized", close: false, version: version)
         }
+        // A stream this segment opens keeps the selection generation it opened on (#636).
+        let selection = AmbientSelection(target: selectedTarget, generation: selectionGeneration)
         switch await gate.admission(
-            audio, frameTarget: target, selectedTarget: selectedTarget, connection: connectionID,
-            device: peerDeviceKind
+            audio, frameTarget: target, selection: selection, connection: connectionID, device: peerDeviceKind
         ) {
         case .admitted:
             return HostSessionResult(frames: [])
@@ -81,9 +84,9 @@ extension HostSession {
         // `paste_refused` to a device that takes request refusals, so it ends that request and keeps the connection;
         // the message is the plain reason. Lockdown, rate limits and unknown targets keep their own codes, as for
         // spoken text. Spoken text alone, and any device without the capability, is answered as before.
-        let pasteCode = input.carriesPaste ? pasteRefusal(.notAllowed) : nil
+        let carriesPaste = input.carriesPaste, takesRefusals = peerCapabilities.contains(RequestRefusals.capability)
         let refusal: (ErrorCode) -> ErrorCode = { code in
-            pasteCode == .pasteRefused && (code == .notAllowed || code == .malformed) ? .pasteRefused : code
+            Self.refusalCode(code, carriesPaste: carriesPaste, takesRequestRefusals: takesRefusals)
         }
         // A phone's own final text frame (tap-to-talk) is input from this device (#370).
         switch await deliver(input, recordsLastInput: true) {
@@ -112,7 +115,7 @@ extension HostSession {
     /// the captured selection. A refused, unconfirmed or ownerless handoff records nothing.
     func deliver(_ input: consuming AuthorizedInput, recordsLastInput: Bool = false) async -> HostDeliveryOutcome {
         let recordsInput = recordsLastInput || Self.ambientInputDispatch
-        guard input.target == selectedTarget else {
+        guard admitsInput(to: input.target) else {
             return .refused(.notAllowed, "select the destination before speaking")
         }
         do {
@@ -131,6 +134,9 @@ extension HostSession {
                 if let owner { replyRequests[owner.context.id] = nil }
                 return .confirmationRequired
             }
+        } catch AdapterError.deliveryFailed(let message) where message == PastedContent.agentOnlyRefusal {
+            // The tmux pane was not running an agent (#608): said plainly, as a paste refusal the device keeps.
+            return .refused(.notAllowed, PastedContent.agentOnlyRefusal)
         } catch {
             return .refused(deliveryCode(error), "target action was refused")
         }
@@ -152,10 +158,11 @@ extension HostSession {
         return outcome
     }
 
-    /// The captured selection authority: still negotiated, same selection generation, same target.
+    /// The captured selection authority: still negotiated, same selection generation, and a target the selection
+    /// covers (the selected target, or a voice route while a route is selected, #636).
     private func selects(_ target: String, generation: UUID) -> Bool {
         guard case .ready = state else { return false }
-        return generation == selectionGeneration && selectedTarget == target
+        return generation == selectionGeneration && covers(target)
     }
 
     private func commit(_ context: ProviderTurnContext, generation: UUID) -> HostDeliveryOutcome {
@@ -236,7 +243,7 @@ extension HostSession {
     ) throws {
         let target = context.binding.targetID
         pruneReplyRequests()
-        guard case .ready = state, generation == selectionGeneration, selectedTarget == target else {
+        guard case .ready = state, generation == selectionGeneration, covers(target) else {
             throw HostError.denied(.notAllowed(target))
         }
         guard replyRequests.count < HostReplyRequest.capacity else { throw ProviderContractError.capacityExceeded }
@@ -311,6 +318,13 @@ extension HostSession {
         failure(deliveryCode(error), "target action was refused", close: false, version: version)
     }
 
+    /// The code a refused request is answered with (#608): `paste_refused` in place of `not_allowed` or `malformed` for
+    /// a request that carried a paste, from a device that takes request refusals. Every other code, lockdown and
+    /// rate limits included, and every other request, keeps its own.
+    static func refusalCode(_ code: ErrorCode, carriesPaste: Bool, takesRequestRefusals: Bool) -> ErrorCode {
+        carriesPaste && takesRequestRefusals && (code == .notAllowed || code == .malformed) ? .pasteRefused : code
+    }
+
     /// `paste_refused` for a device that advertised `request_refusals`; `code` otherwise, as before (#608).
     private func pasteRefusal(_ code: ErrorCode) -> ErrorCode {
         peerCapabilities.contains(RequestRefusals.capability) ? .pasteRefused : code
@@ -348,7 +362,7 @@ extension HostSession {
         #endif
     }
 
-    private func policyFilteredTargets() async throws -> [TargetInfo] {
+    func policyFilteredTargets() async throws -> [TargetInfo] {
         let listing = try await host.registry.listing()
         guard let policy = await host.refreshedPolicy() else { return [] }
         return listing.compactMap { listed in

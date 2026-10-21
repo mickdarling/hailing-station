@@ -25,19 +25,29 @@ extension RightyoChildProcessTests {
     }
 
     /// A million two-byte chunks against a stalled child with a 1 MiB backlog (up to 524,288 queued chunks):
-    /// eviction stays O(1), so the caller is never held up (O(n) removal takes minutes here), and
-    /// every byte is either written (then read once the child resumes) or counted as dropped.
+    /// eviction stays O(1), so the caller is never held up, and every byte is either written (then read once the
+    /// child resumes) or counted as dropped. The child stays stalled until the test releases it, so the backlog
+    /// overflows however slowly a loaded runner writes; O(1) is checked by comparing the cost per chunk while
+    /// evicting against the cost while filling, not by a wall-clock bound. O(n) removal would make the evicting
+    /// slice thousands of times slower (minutes here); a factor of 10 leaves room for scheduler noise.
     @Test func manyTinyChunksEvictInConstantTime() async throws {
-        let fake = try FakeRightyo("echo ready\n/bin/sleep 2\n/usr/bin/wc -c | /usr/bin/tr -d ' ' > stdin-bytes.txt")
+        let fake = try FakeRightyo("echo ready\nuntil [ -f go ]; do /bin/sleep 0.05; done\n"
+            + "/usr/bin/wc -c | /usr/bin/tr -d ' ' > stdin-bytes.txt")
         defer { fake.cleanUp() }
         let child = try fake.child(.init(eofGrace: 20, termGrace: 20, backlogBytes: 1_048_576, backlogAge: 60))
         var lines = child.lines.makeAsyncIterator()
         #expect(try await lines.next() == Data("ready".utf8))
-        let chunks = 1_000_000, started = ContinuousClock.now
-        var accepted = 0
-        for _ in 0..<chunks where child.write(Data([1, 0])) { accepted += 1 }
+        let chunks = 1_000_000, slice = 200_000
+        var accepted = 0, filling = Duration.zero, evicting = Duration.zero
+        for index in 0..<chunks {
+            let started = ContinuousClock.now
+            if child.write(Data([1, 0])) { accepted += 1 }
+            if index < slice { filling += ContinuousClock.now - started }
+            if index >= chunks - slice { evicting += ContinuousClock.now - started }
+        }
+        try Data().write(to: fake.directory.appendingPathComponent("go"))
         #expect(accepted == chunks)
-        #expect(ContinuousClock.now - started < .seconds(10))
+        #expect(evicting < filling * 10, "evicting \(evicting) vs filling \(filling) for \(slice) chunks each")
         #expect(await child.stop() == .exited(0))
         let counters = child.counters
         #expect(counters.droppedChunks > 0)

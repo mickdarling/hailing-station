@@ -9,16 +9,17 @@ once is out of scope.
 
 | Slice | State |
 | --- | --- |
-| 1. Allow-list file and the opening-name parser (`VoiceRoutes`) | In source. Not wired to any input path, not deployed. |
-| 2. Host listing: route names, offline routes and `--voice-routes` | In source. Not deployed: `host.sh` does not pass the flag yet (slice 8). |
-| 3–8. Route-group authority, ambient routing, refusals, spoken and visual labels, app selector | Proposed; see the [plan on #636](https://github.com/mickdarling/hailing-station/issues/636). |
+| 1. Allow-list file and the opening-name parser (`VoiceRoutes`) | Merged (#646). Not deployed. |
+| 2. Host listing: route names, offline routes and `--voice-routes` | Merged (#678); startup hardening in #686. Not deployed: `host.sh` does not pass the flag yet (slice 8). |
+| 3. Tap-to-talk routing and reply return (route group) | In review. Not deployed. |
+| 4–8. Ambient routing, refusals, spoken and visual labels (7a model merged in #666), app selector | Proposed; see the [plan on #636](https://github.com/mickdarling/hailing-station/issues/636). |
 
 Nothing below changes the running daemon or installed builds until a later slice wires it in and it is deployed.
 
 ## The allow-list: `routes.json`
 
 The owner writes one file on the Mac, by hand. The daemon only reads it and never writes, creates or rewrites it.
-Routing is off when the file is absent.
+Routing is off when haild runs without `--voice-routes`. With the flag, a missing file refuses startup (#686).
 
 ```json
 {"version": 1, "default": "tmux:hailing-test", "routes": [
@@ -78,8 +79,8 @@ Verification is synthetic only (`VoiceRoutesTests`, `VoiceRoutesFileTests`).
 ## The device's target list
 
 With `haild run --personal-terminal --voice-routes <absolute path>`, the daemon loads `routes.json` at startup and
-logs `voice_routes` with the route count or `missing`. A missing file leaves routing off. A file that fails to load
-refuses startup. Without that, routing would be silently off and a request naming a session would go to whichever
+logs `voice_routes` with the route count. A file that is missing or fails to load refuses startup and logs
+`voice_routes error=…`. Without that, routing would be silently off and a request naming a session would go to whichever
 target was already chosen.
 
 The `targets` list a device receives changes in two ways:
@@ -91,7 +92,74 @@ The `targets` list a device receives changes in two ways:
   listing without names, so an offline route cannot be selected (`not_allowed`). The routes file adds no target the
   policy does not allow.
 
-Targets that are not routes are listed exactly as before. The device's remembered selection matches on id and name,
-so renaming a target forgets it once and the owner picks it again.
+Targets that are not routes are listed exactly as before.
+
+**What the listing exposes.** The personal-terminal listener has no authentication (#7, #21). Any peer that
+completes its handshake receives the target list, so with `--voice-routes` it sees every configured route's id and
+name, offline routes and routes the policy does not allow included. Before routes, it saw only allowed targets.
+Keep the listener on a trusted network, as for everything else it carries.
+
+The device's remembered selection matches on id and name, so renaming a target forgets it once and the owner picks
+it again.
 
 Verification is synthetic only (`VoiceRouteListingTests`, `VoiceRouteOptionsTests`).
+
+## Tap-to-talk routing and the reply (route group)
+
+While a device selects one of the owner's routes, a final text frame it sends to that route can name another
+route: "Deck, add a slide on pricing".
+
+- **Before authorization.** `HostSession.voiceRoute` runs before the authorizer and `admit`. Only the frame's
+  target changes; the text, including the name, goes as heard. So the authorizer, the paste gate, the sanitizer,
+  input shape, policy, tier and binding all see the frame that is delivered, exactly as for any other input.
+- **Owner.** Tap-to-talk has no speaker identity, so the device holding the connection counts as the owner, as it
+  does for `select`. Speaker-checked routing is the ambient path's (slice 4).
+- **One request.** The device keeps its selection and selection generation. Requests that name no route still go
+  to the selected target.
+- **Only host-routed frames.** A device cannot address another route itself. A frame whose target is not the
+  selected one is refused as before (`select the destination before speaking`), unless the host routed that very
+  frame. The task-local `HostSession.voiceRouted` (from, to) is bound only for that delivery, and admits the input
+  only while the selection is still exactly `from`.
+- **Lockdown and pastes.** During lockdown nothing is routed, so a named request meets the lockdown refusal as it
+  is. A name with nothing spoken after it routes when a paste goes with it (#608), and the routed target's own
+  paste gate then decides. A paste routed to an agent route is delivered there; one routed to a tmux pane is refused.
+- **Authorizer first.** The authorizer judges the frame before any route answer, so a frame it would refuse gets
+  `unauthorized`, never a route's liveness. The selected route's own name alone goes to it, as before routing. A
+  policy that cannot be read refuses with "the target list is unavailable", not "offline". A tap route is bound to
+  the selection generation it was made on.
+- **Nothing falls back.** Each of these sends nothing to any target and keeps the connection open:
+
+  | Case | Error frame |
+  | --- | --- |
+  | Route offline (not listed, allowed, bound and alive) | `unknown_target`: "voice route: Deck is offline; nothing was sent" |
+  | A name alone | `malformed`: "voice route: nothing to send to Deck" |
+  | A near miss (`unclear`) | `not_allowed`: "voice route: which session? Nothing was sent" |
+
+  A device that advertises `request_refusals` (#665) gets `voice_route_refused` for each of these instead, which ends
+  the request and keeps the connection. An older app treats any non-ambient error frame as fatal and reconnects.
+  Showing the refusal on the device is slice 5b.
+- **The reply comes back.** A delivered routed request makes this connection that route's last input device (#370),
+  on its current selection generation. The selection *covers* a target when it is the selected target, or when both
+  it and the selected target are routes. The reply checks (`holds`, request records, `recordOwner`, `selects`) use
+  that, so while the claim holds Deck's reply reaches the device that asked and no other device. Selecting away, or
+  away and back, ends the claim, as do the 10-minute last-input lifetime and a disconnect. After that the existing
+  single-selector rule applies unchanged: Deck's reply can reach a device that selects Deck itself, never a device
+  that selects Scratch.
+
+Verification is synthetic only (`VoiceRouteDeliveryTests`): a fake tmux-kind adapter and never-started transports.
+It is not device hearing, and the app does not yet show a routed reply in the selected destination's thread
+(slice 7).
+
+## Showing a refused request (slice 5b)
+
+When the host refuses one request and sends nothing (any `ErrorCode.isRequestRefusal`, from #665's
+`RequestRefusals.codes`: `paste_refused` and `voice_route_refused`), the app:
+
+- keeps the connection, as #665 already does;
+- adds the host's message as one system line in the thread selected when it arrived (`ConversationLog.noteRefusal`,
+  shown with an exclamation-bubble icon, never as a reply); and
+- announces it once through VoiceOver (`HostConnectionStore.onRequestRefusal`, wired in `RootView`).
+
+This is the only chat line and the only announcement for any refusal code. Feature-specific UI, such as a paste kept
+attached with its reason, adds neither. Verification is synthetic only (`RequestRefusalNoticeTests`), plus the iOS
+Simulator build.

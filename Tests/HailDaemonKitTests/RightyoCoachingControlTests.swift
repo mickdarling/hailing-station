@@ -61,8 +61,25 @@ private final class CoachingControlFailures: Sendable {
             #expect(!writer.send(data, validUntil: deadline))
             #expect(!writer.send(Data("{}".utf8), validUntil: .now.advanced(by: .seconds(1))))
             #expect(failures.total == 1)
-            var byte: UInt8 = 0
-            #expect(read(readEnd, &byte, 1) == 0)
+            let (count, error) = Self.readUntilEOF(readEnd)
+            #expect(count == 0, "expected EOF on the revoked channel, read \(count) (errno \(error))")
+        }
+    }
+
+    /// The writer closes its end synchronously, but the read end is nonblocking: while any other holder of the
+    /// write end lingers, `read` returns -1 (EAGAIN), not EOF. In the parallel lane this was seen once as a flake.
+    /// Waits up to 5 s for EOF instead of reading once; data, a hard error or a timeout still fail the test.
+    static func readUntilEOF(_ descriptor: Int32) -> (count: Int, errno: Int32) {
+        let deadline = ContinuousClock.now.advanced(by: .seconds(5))
+        var byte: UInt8 = 0
+        while true {
+            let count = read(descriptor, &byte, 1)
+            let error = errno
+            guard count < 0, error == EAGAIN || error == EINTR, ContinuousClock.now < deadline else {
+                return (count, count < 0 ? error : 0)
+            }
+            var ready = pollfd(fd: descriptor, events: Int16(POLLIN), revents: 0)
+            _ = poll(&ready, 1, 50)
         }
     }
 

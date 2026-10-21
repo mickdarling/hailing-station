@@ -202,7 +202,8 @@ failure. The host decides when to speak it (see `SessionUpdateQueue`); this comm
 "card": "<detail>"}` is sent by a host to a device that advertised `session_update` (`SessionUpdateCard.capability`),
 because an older device refuses an unknown command.
 - `session` is the speaking session's name (#371), the target id or its display name: 1 to 64 printable scalars with no
-  surrounding whitespace, by the same rule as a guest's name.
+  surrounding whitespace, by the same rule as a guest's name. The host fills it from the live registry target the
+  update was submitted for, never from text the caller supplied.
 - `text` is the short line that is or will be spoken.
 - `card` is optional detail (links, PR numbers) that is shown and never spoken. It is a plain string for now. If the
   reply metadata field from #606 lands, the card body may move to it.

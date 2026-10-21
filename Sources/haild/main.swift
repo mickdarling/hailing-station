@@ -71,6 +71,7 @@ let usageText = """
       (opt-in ambient listening; trusted network only: no TLS or peer authentication yet)
            haild run ... --personal-terminal --device-diagnostics
       (opt-in device diagnostics log: enumerated events only, owner-only, capped at 5 MiB)
+           haild run ... --personal-terminal --host-health  (opt-in: doctor check names and outcomes to the device)
 
     """
 

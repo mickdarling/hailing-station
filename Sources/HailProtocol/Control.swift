@@ -68,6 +68,9 @@ public enum ErrorCode: Sendable, Equatable, Codable {
     case unauthorized, unknownTarget, notAllowed, lockdown, rateLimited, protocolVersion, malformed
     /// A request that carried a paste (#608) was refused: that request is over, the connection is not.
     case pasteRefused
+    /// A request that named a voice route (#636) was not sent: the route is offline, the name came alone, or it was
+    /// misheard. That request is over, the connection is not.
+    case voiceRouteRefused
     case unknown(String)
 
     /// Codes that end one request, never the connection (`RequestRefusals`). Every other code ends the connection.
@@ -76,7 +79,7 @@ public enum ErrorCode: Sendable, Equatable, Codable {
     private static let names: [String: ErrorCode] = [
         "unauthorized": .unauthorized, "unknown_target": .unknownTarget, "not_allowed": .notAllowed,
         "lockdown": .lockdown, "rate_limited": .rateLimited, "protocol_version": .protocolVersion,
-        "malformed": .malformed, "paste_refused": .pasteRefused
+        "malformed": .malformed, "paste_refused": .pasteRefused, "voice_route_refused": .voiceRouteRefused
     ]
 
     public var rawValue: String {
@@ -147,6 +150,7 @@ public enum ControlPayload: Sendable, Equatable {
     /// `priority` (one of `SessionUpdateCard.priorities`), the short line `text` that is or will be spoken, and an
     /// optional `card` body shown, never spoken. `update` identifies it, so a device shows a resent update once. Sent
     /// only to a device that advertises `SessionUpdateCard.capability`. It grants no authority and selects nothing.
+    /// The host fills `session` from the live registry target the update was submitted for, never from caller text.
     case sessionUpdate(update: UUID, session: String, priority: String, text: String, card: String? = nil)
     /// Device to host (#614): ask for the host's health summary. Only `command`; sent only to a host that advertises
     /// `HostHealth.capability`.
@@ -476,7 +480,7 @@ extension ControlPayload: Codable {
 /// set is shared: a feature adds its own code here (a voice route refusal, say), never a message prefix.
 public enum RequestRefusals {
     public static let capability = "request_refusals"
-    public static let codes: [ErrorCode] = [.pasteRefused]
+    public static let codes: [ErrorCode] = [.pasteRefused, .voiceRouteRefused]
 }
 
 /// Session update cards (#609): a local session's unsolicited update, shown in the thread with the session that sent
@@ -1056,7 +1060,7 @@ extension Schema {
             "additionalProperties": .bool(false),
             "properties": .object([
                 "command": .object([:]),
-                "update": .object(["type": .string("string"), "minLength": .integer(1)]),
+                "update": .object(["type": .string("string"), "format": .string("uuid")]),
                 // The decoder is stricter: printable only and untrimmed refused, as for a guest's name.
                 "session": .object([
                     "type": .string("string"), "minLength": .integer(1),
