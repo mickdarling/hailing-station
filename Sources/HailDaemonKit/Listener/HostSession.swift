@@ -20,7 +20,7 @@ public protocol HostSessionAuthorizing: Sendable {
     /// The host's read-only health summary when haild runs with `--host-health` (#614); nil otherwise.
     var health: (@Sendable () async -> HostHealth)? { get }
     #if os(macOS)
-    /// The owner's named voice routes when haild runs with `--voice-routes` and the file exists (#636); nil otherwise.
+    /// The owner's named voice routes when haild runs with `--voice-routes` (#636), which requires the file; nil otherwise.
     var voiceRoutes: VoiceRoutes? { get }
     #endif
     func authorize(_ frame: Frame) async -> HostSessionAuthorization
