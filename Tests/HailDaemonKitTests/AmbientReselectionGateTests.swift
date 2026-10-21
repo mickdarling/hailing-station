@@ -84,6 +84,19 @@ import Testing
             == .refused(.notAllowed, AmbientAudioGate.reselectedMessage))
     }
 
+    /// A stream opened with a generation that later carries none is refused and ended too: a generation vanishing
+    /// mid-stream fails closed.
+    @Test func aGenerationVanishingMidStreamEndsIt() async throws {
+        let sink = RecordingAmbientSink()
+        let gate = ambientGate(sink: sink, clock: AmbientTestClock())
+        let stream = UUID()
+        #expect(await admit(gate, stream, 0, generation: UUID()) == .admitted)
+        #expect(await admit(gate, stream, 1, generation: nil)
+            == .refused(.notAllowed, AmbientAudioGate.reselectedMessage))
+        #expect(sink.endings == [.notAllowed] && sink.segments == [0])
+        #expect(await gate.activeStream == nil)
+    }
+
     /// End to end on the session: away and back with no segment between, then the stream's next segment.
     @Test func theDeviceIsToldWhyAndStaysConnected() async throws {
         let rig = try await VoiceRouteRig.make()

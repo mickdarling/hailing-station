@@ -16,13 +16,13 @@ import Testing
         let auditDirectory = fake.directory.appendingPathComponent("audit")
         let env = try await ambientRig(fake, timing: .init(eofGrace: 20, termGrace: 20),
                                        audit: AuditLog(directory: auditDirectory))
-        let pair = try await FallbackSocketPair.connect(port: env.port, selecting: [RecipientTestRig.target])
+        let pair = try await FallbackSocketPair.boundedConnect(port: env.port, selecting: [RecipientTestRig.target])
         defer { pair.close() }
         let stream = UUID()
         for sequence in 0..<3 {
             try await recipientSocketSend(audio(stream, sequence, final: sequence == 2), on: pair.sockets[0])
         }
-        try await pair.barrier()
+        try await pair.boundedBarrier(step: "three segments")
         await env.router.settle()
         #expect(try fake.recorded("stdin-bytes.txt") == "9600\n")
         let contexts = await env.rig.adapter.contexts
@@ -39,12 +39,12 @@ import Testing
         // A clean run after a final segment sends no error; the owned reply and the fallback reply both arrive.
         let owned = recipientText(recipientDescriptor(contexts[0]))
         #expect(try await env.listener.publish(owned) == 1)
-        #expect(try await recipientSocketReceive(on: pair.sockets[0]) == owned)
+        #expect(try await receiveFrame(on: pair.sockets[0], step: "owned reply") == owned)
         let fallback = Frame(timestamp: 1, target: RecipientTestRig.target, source: "mac-test",
                              payload: .text(TextPayload(text: "synthetic response", reply: uncorrelatedDescriptor())))
         #expect(try await env.listener.publish(fallback) == 1)
-        #expect(try await recipientSocketReceive(on: pair.sockets[0]) == fallback)
-        try await pair.barrier()
+        #expect(try await receiveFrame(on: pair.sockets[0], step: "fallback reply") == fallback)
+        try await pair.boundedBarrier(step: "replies done")
         await env.listener.stop(reason: "synthetic test complete")
     }
 
@@ -53,18 +53,18 @@ import Testing
         defer { fake.cleanUp() }
         try fake.install(fixture: "tool-events.jsonl")
         let env = try await ambientRig(fake, timing: .init(eofGrace: 20, termGrace: 20))
-        let pair = try await FallbackSocketPair.connect(port: env.port, selecting: [RecipientTestRig.target])
+        let pair = try await FallbackSocketPair.boundedConnect(port: env.port, selecting: [RecipientTestRig.target])
         defer { pair.close() }
         for round in 1...2 {
             let stream = UUID()
             try await recipientSocketSend(audio(stream, 0), on: pair.sockets[0])
             try await recipientSocketSend(audio(stream, 1, final: true), on: pair.sockets[0])
-            try await pair.barrier()
+            try await pair.boundedBarrier(step: "round \(round) stream")
             await env.router.settle()
             #expect(try fake.recorded("stdin-bytes.txt") == "6400\n")
             #expect(await env.rig.adapter.contexts.count == round)
         }
-        try await pair.barrier()
+        try await pair.boundedBarrier(step: "both rounds done")
         await env.listener.stop(reason: "synthetic test complete")
     }
 
@@ -73,9 +73,9 @@ import Testing
         let fake = try FakeRightyo("echo $$ > pid.txt\nexec /bin/sleep 60")
         defer { fake.cleanUp() }
         let env = try await ambientRig(fake, timing: .init(eofGrace: 0.2, termGrace: 5))
-        let pair = try await FallbackSocketPair.connect(port: env.port, selecting: [RecipientTestRig.target])
+        let pair = try await FallbackSocketPair.boundedConnect(port: env.port, selecting: [RecipientTestRig.target])
         try await recipientSocketSend(audio(UUID(), 0), on: pair.sockets[0])
-        try await pair.barrier()
+        try await pair.boundedBarrier(step: "segment before disconnect")
         #expect(env.router.liveRuns == 1)
         #expect(await eventually { (try? fake.recorded("pid.txt")) != nil })
         let pid = try #require(Int32(try fake.recorded("pid.txt").trimmingCharacters(in: .whitespacesAndNewlines)))
@@ -93,10 +93,10 @@ import Testing
         try fake.install(fixture: "tool-events.jsonl")
         let env = try await ambientRig(fake, timing: .init(eofGrace: 0.1, termGrace: 0.1))
         await env.rig.adapter.holdHandoff()
-        let pair = try await FallbackSocketPair.connect(port: env.port, selecting: [RecipientTestRig.target])
+        let pair = try await FallbackSocketPair.boundedConnect(port: env.port, selecting: [RecipientTestRig.target])
         defer { pair.close() }
         try await recipientSocketSend(audio(UUID(), 0), on: pair.sockets[0])
-        try await pair.barrier()
+        try await pair.boundedBarrier(step: "segment before stop")
         await env.rig.adapter.waitForHandoff()
         let stopped = Mutex(false)
         let stopping = Task {

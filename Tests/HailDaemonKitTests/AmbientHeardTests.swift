@@ -52,26 +52,26 @@ import Testing
     /// no listener event carries the words.
     @Test func aCapablePhoneSeesItsOwnWordsBeforeTheAcknowledgement() async throws {
         let details = try await run(capabilities: Self.capable) { socket in
-            let first = try await recipientSocketReceive(on: socket)
+            let first = try await receiveFrame(on: socket, step: "heard words")
             #expect(first.payload == .control(.ambientHeard(targetID: RecipientTestRig.target, text: Self.heard)))
-            guard case .text(let words) = try await recipientSocketReceive(on: socket).payload else {
+            guard case .text(let words) = try await receiveFrame(on: socket, step: "ack words").payload else {
                 Issue.record("expected the acknowledgement's words after the heard request")
                 return
             }
             #expect(words.text == "On it.")
-            _ = try await recipientSocketReceive(on: socket)
+            _ = try await receiveFrame(on: socket, step: "ack clip")
         }
         #expect(!details.contains { $0.contains("check our discussion") })
     }
 
     @Test func aPhoneWithoutTheCapabilityGetsOnlyTheAcknowledgement() async throws {
         _ = try await run(capabilities: ["probe"]) { socket in
-            guard case .text(let words) = try await recipientSocketReceive(on: socket).payload else {
+            guard case .text(let words) = try await receiveFrame(on: socket, step: "ack words").payload else {
                 Issue.record("expected the acknowledgement first")
                 return
             }
             #expect(words.text == "On it.")
-            _ = try await recipientSocketReceive(on: socket)
+            _ = try await receiveFrame(on: socket, step: "ack clip")
         }
     }
 
@@ -82,7 +82,7 @@ import Testing
         let rig = try await RecipientTestRig.make()
         let listener = try fallbackListener(rig: rig, enabled: false)
         let port = try await listener.start()
-        let pair = try await FallbackSocketPair.connect(
+        let pair = try await FallbackSocketPair.boundedConnect(
             port: port, selecting: [RecipientTestRig.target],
             capabilities: expected == "incapable" ? ["probe"] : Self.capable
         )
@@ -99,10 +99,10 @@ import Testing
         let sent = await listener.showAmbientHeard(connection: named, target: target, text: text)
         #expect(sent == (expected == "sent"))
         if sent {
-            let frame = try await recipientSocketReceive(on: pair.sockets[0])
+            let frame = try await receiveFrame(on: pair.sockets[0], step: "guarded heard frame")
             #expect(frame.payload == .control(.ambientHeard(targetID: target, text: text)))
         } else {
-            try await pair.barrier() // Nothing reached the phone.
+            try await pair.boundedBarrier(step: "nothing reached the phone")
         }
         await listener.stop(reason: "synthetic test complete")
     }
@@ -125,7 +125,7 @@ import Testing
                 if event.event == "ambient_acknowledged" { acknowledged.withLock { $0 = true } }
             }
         )
-        let pair = try await FallbackSocketPair.connect(
+        let pair = try await FallbackSocketPair.boundedConnect(
             port: env.port, selecting: [RecipientTestRig.target], capabilities: capabilities
         )
         defer { pair.close() }

@@ -29,11 +29,11 @@ func fakeFileSize(_ fake: FakeRightyo, _ name: String) -> Int {
         let env = try await ambientRig(fake, timing: .init(eofGrace: 2, termGrace: 2), events: events) { event in
             if event.event == "ambient_ended" { ended.withLock { $0.append(event.detail ?? "") } }
         }
-        let pair = try await FallbackSocketPair.connect(port: env.port, selecting: [RecipientTestRig.target])
+        let pair = try await FallbackSocketPair.boundedConnect(port: env.port, selecting: [RecipientTestRig.target])
         defer { pair.close() }
         let stream = UUID()
         for sequence in 0..<5 { try await recipientSocketSend(audio(stream, sequence), on: pair.sockets[0]) }
-        try await pair.barrier()
+        try await pair.boundedBarrier(step: "five segments")
         #expect(await eventually { fakeFileSize(fake, "v1-audio.bin") == 16_000 })
         let before = env.router.status()
         // #230: the recipient of last resort is the connection whose stream feeds the active child.
@@ -46,7 +46,7 @@ func fakeFileSize(_ fake: FakeRightyo, _ name: String) -> Int {
         // The replaced child's non-zero exit is logged, never sent to the phone.
         #expect(await eventually { env.router.liveRuns == 1 })
         try await Task.sleep(for: .milliseconds(200))
-        try await pair.barrier()
+        try await pair.boundedBarrier(step: "replaced child's exit withheld")
         #expect(await env.gate.activeStream == stream)
         let after = env.router.status()
         #expect(after.streamSince == before.streamSince)
@@ -55,12 +55,12 @@ func fakeFileSize(_ fake: FakeRightyo, _ name: String) -> Int {
         for sequence in 5..<8 {
             try await recipientSocketSend(audio(stream, sequence, final: sequence == 7), on: pair.sockets[0])
         }
-        try await pair.barrier()
+        try await pair.boundedBarrier(step: "segments to the new child")
         await settle(env.router, step: "reloaded run")
         #expect(try fake.recorded("stdin-bytes.txt") == "9600\n")
         #expect(fakeFileSize(fake, "v1-audio.bin") == 16_000)
         #expect(await env.rig.adapter.contexts.count == 1)
-        try await pair.barrier()
+        try await pair.boundedBarrier(step: "reloaded run settled")
         expectBalanced(events.all, ended: ended.withLock { $0 })
         await env.listener.stop(reason: "synthetic test complete")
     }
@@ -97,10 +97,10 @@ func fakeFileSize(_ fake: FakeRightyo, _ name: String) -> Int {
         let fake = try FakeRightyo("exec /bin/sleep 60")
         defer { fake.cleanUp() }
         let env = try await ambientRig(fake, timing: .init(eofGrace: 0.2, termGrace: 0.2))
-        let pair = try await FallbackSocketPair.connect(port: env.port, selecting: [RecipientTestRig.target])
+        let pair = try await FallbackSocketPair.boundedConnect(port: env.port, selecting: [RecipientTestRig.target])
         defer { pair.close() }
         try await recipientSocketSend(audio(UUID(), 0), on: pair.sockets[0])
-        try await pair.barrier()
+        try await pair.boundedBarrier(step: "segment before shutdown")
         #expect(env.router.activeStream != nil)
         await env.router.shutdown()
         #expect(await env.router.reload() == .stopping)
@@ -114,18 +114,18 @@ func fakeFileSize(_ fake: FakeRightyo, _ name: String) -> Int {
         defer { fake.cleanUp() }
         let env = try await ambientRig(fake, timing: .init(eofGrace: 0.2, termGrace: 0.2))
         do {
-            let pair = try await FallbackSocketPair.connect(port: env.port, selecting: [RecipientTestRig.target])
+            let pair = try await FallbackSocketPair.boundedConnect(port: env.port, selecting: [RecipientTestRig.target])
             defer { pair.close() }
             let stream = UUID()
             try await recipientSocketSend(audio(stream, 0), on: pair.sockets[0])
-            try await pair.barrier(step: "after first segment")
+            try await pair.boundedBarrier(step: "after first segment")
             let old = try #require(env.router.activePipeline)
             #expect(await env.router.reload() == .reloaded)
             // As if a segment read the old child just before the swap and found its input closed after it.
             env.router.inputClosed(stream, pipeline: old)
             #expect(env.router.activeStream == stream)
             #expect(env.router.activePipeline !== old)
-            try await pair.barrier(step: "after replaced-child inputClosed")
+            try await pair.boundedBarrier(step: "after replaced-child inputClosed")
             #expect(await env.gate.activeStream == stream)
         } catch {
             await env.listener.stop(reason: "synthetic test failure")

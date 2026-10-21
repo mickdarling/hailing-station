@@ -572,6 +572,12 @@ takes over. If another device started listening during the restart's backoff, th
 device's `ambient moved to <class>`, before it costs any rate budget or uses up its stream id. So the device someone
 moved to keeps listening. Only a start someone asked for (the toggle or "Listen here") takes over.
 
+When the owner selects away and back while a stream is open (#636, PR #705), the host ends that stream at its next
+segment with `not_allowed: ambient stopped: the destination was selected again`. The device treats this as transient
+and opens a fresh stream on the new selection after its recovery backoff (1 s, then 3 s, then 10 s). Each such end
+spends one of the device's three automatic restarts, and the count resets only once 120 s pass after the latest
+restart, so a fourth within that time turns listening off ("Gave up after 3 restarts."). It fails closed.
+
 Fast swaps (phone, pad, phone, pad) can leave retired children still stopping when the next start arrives. When
 every child slot is taken (`maxLiveChildren`, or `maxRuns`), the router forces the oldest retired child out
 before spawning the new one: EOF, SIGTERM after 0.5 s, SIGKILL after 0.5 s more, then up to 2 s to settle (about

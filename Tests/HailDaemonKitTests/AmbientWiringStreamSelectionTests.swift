@@ -24,18 +24,18 @@ import Testing
             singleTerminalReplyFallback: true, ambient: router
         )
         let port = try await listener.start()
-        let pair = try await FallbackSocketPair.connect(port: port, selecting: [LegacyReferenceRig.target])
+        let pair = try await FallbackSocketPair.boundedConnect(port: port, selecting: [LegacyReferenceRig.target])
         defer { pair.close() }
         do {
             let stream = UUID()
             try await send(ambientSegment(stream: stream, sequence: 0), on: pair)
-            try await pair.select(LegacyReferenceRig.other, on: 0)
-            try await pair.select(LegacyReferenceRig.target, on: 0)
+            try await pair.boundedSelect(LegacyReferenceRig.other, on: 0)
+            try await pair.boundedSelect(LegacyReferenceRig.target, on: 0)
             // The same stream's next segment: the gate ends it and tells the device why (#636), and only now does the
             // child, at EOF, dispatch what it heard.
             try await send(ambientSegment(stream: stream, sequence: 1, isFinal: true), on: pair)
             #expect(try await receiveFrame(on: pair.sockets[0], step: "reselected end").payload == Self.reselected)
-            try await pair.barrier()
+            try await pair.boundedBarrier(step: "stream ended")
             await router.settle()
             #expect(await rig.adapter.deliveries.isEmpty)
         } catch {
@@ -64,12 +64,12 @@ import Testing
         defer { fake.cleanUp() }
         try fake.install(fixture: "tool-events.jsonl")
         let env = try await ambientRig(fake, timing: .init(eofGrace: 2, termGrace: 2))
-        let pair = try await FallbackSocketPair.connect(port: env.port, selecting: [RecipientTestRig.target])
+        let pair = try await FallbackSocketPair.boundedConnect(port: env.port, selecting: [RecipientTestRig.target])
         defer { pair.close() }
         do {
             let stream = UUID()
             try await reloadSend(ambientSegment(stream: stream, sequence: 0), on: pair)
-            try await pair.barrier()
+            try await pair.boundedBarrier(step: "first segment")
             // The old child is running its own behaviour before the new install is written.
             #expect(await eventually { fakeFileSize(fake, "v1-audio.bin") == 3_200 })
             if reselection == .twoReloads {
@@ -87,7 +87,7 @@ import Testing
             if !delivers {
                 #expect(try await receiveFrame(on: pair.sockets[0], step: "reselected end").payload == Self.reselected)
             }
-            try await pair.barrier()
+            try await pair.boundedBarrier(step: "final segment")
             await settle(env.router, step: "reloaded run")
             #expect(await env.rig.adapter.contexts.count == (delivers ? 1 : 0))
         } catch {
@@ -98,8 +98,8 @@ import Testing
     }
 
     private func awayAndBack(_ pair: FallbackSocketPair) async throws {
-        try await pair.select("recipient:other", on: 0)
-        try await pair.select(RecipientTestRig.target, on: 0)
+        try await pair.boundedSelect("recipient:other", on: 0)
+        try await pair.boundedSelect(RecipientTestRig.target, on: 0)
     }
 
     private func reloadSend(_ segment: AudioPayload, on pair: FallbackSocketPair) async throws {

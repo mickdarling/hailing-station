@@ -13,13 +13,14 @@ import Testing
         defer { fake.cleanUp() }
         let env = try await ambientRig(fake, timing: .init(eofGrace: 1, termGrace: 1),
                                        executable: URL(fileURLWithPath: "/nonexistent/rightyo"))
-        let pair = try await FallbackSocketPair.connect(port: env.port, selecting: [RecipientTestRig.target])
+        let pair = try await FallbackSocketPair.boundedConnect(port: env.port, selecting: [RecipientTestRig.target])
         defer { pair.close() }
         try await recipientSocketSend(audio(UUID(), 0), on: pair.sockets[0])
-        #expect(try await ambientError(on: pair.sockets[0]) == "ambient unavailable: child unsafeExecutable")
+        #expect(try await ambientError(on: pair.sockets[0], step: "refused start")
+            == "ambient unavailable: child unsafeExecutable")
         #expect(await env.gate.activeStream == nil)
         #expect(env.router.liveRuns == 0)
-        try await pair.barrier()
+        try await pair.boundedBarrier(step: "nothing more after the refusal")
         await env.listener.stop(reason: "synthetic test complete")
     }
 
@@ -29,17 +30,18 @@ import Testing
         try fake.install(fixture: "tool-events.jsonl")
         let env = try await ambientRig(fake, timing: .init(eofGrace: 0.1, termGrace: 2))
         await env.rig.adapter.failHandoff()
-        let pair = try await FallbackSocketPair.connect(port: env.port, selecting: [RecipientTestRig.target])
+        let pair = try await FallbackSocketPair.boundedConnect(port: env.port, selecting: [RecipientTestRig.target])
         defer { pair.close() }
         let stream = UUID()
         try await recipientSocketSend(audio(stream, 0), on: pair.sockets[0])
-        let message = try await ambientError(on: pair.sockets[0])
+        let message = try await ambientError(on: pair.sockets[0], step: "refused dispatch")
         #expect(message.hasPrefix("ambient stopped: dispatch "))
         #expect(await env.gate.activeStream == nil)
         #expect(env.router.liveRuns == 0)
         // The connection stays open and the next segment of the ended stream is refused, not silently dropped.
         try await recipientSocketSend(audio(stream, 1), on: pair.sockets[0])
-        #expect(try await ambientError(on: pair.sockets[0], code: .malformed).hasPrefix("ambient stream must be new"))
+        #expect(try await ambientError(on: pair.sockets[0], step: "ended stream's next segment", code: .malformed)
+            .hasPrefix("ambient stream must be new"))
         await env.listener.stop(reason: "synthetic test complete")
     }
 
@@ -47,10 +49,10 @@ import Testing
         let fake = try FakeRightyo("exit 0")
         defer { fake.cleanUp() }
         let env = try await ambientRig(fake, timing: .init(eofGrace: 1, termGrace: 1))
-        let pair = try await FallbackSocketPair.connect(port: env.port, selecting: [RecipientTestRig.target])
+        let pair = try await FallbackSocketPair.boundedConnect(port: env.port, selecting: [RecipientTestRig.target])
         defer { pair.close() }
         try await recipientSocketSend(audio(UUID(), 0), on: pair.sockets[0])
-        #expect(try await ambientError(on: pair.sockets[0]).hasPrefix("ambient stopped: "))
+        #expect(try await ambientError(on: pair.sockets[0], step: "child exited").hasPrefix("ambient stopped: "))
         #expect(await env.gate.activeStream == nil)
         await env.listener.stop(reason: "synthetic test complete")
     }
@@ -61,7 +63,7 @@ import Testing
         try fake.install(fixture: "tool-events.jsonl")
         let env = try await ambientRig(fake, timing: .init(eofGrace: 1, termGrace: 1))
         await env.rig.adapter.holdHandoff()
-        let pair = try await FallbackSocketPair.connect(port: env.port, selecting: [RecipientTestRig.target])
+        let pair = try await FallbackSocketPair.boundedConnect(port: env.port, selecting: [RecipientTestRig.target])
         defer { pair.close() }
         let stream = UUID()
         try await recipientSocketSend(audio(stream, 0), on: pair.sockets[0])
@@ -73,7 +75,8 @@ import Testing
             try await recipientSocketSend(audio(stream, sequence), on: pair.sockets[0])
             try await Task.sleep(for: .milliseconds(25))
         }
-        #expect(try await ambientError(on: pair.sockets[0]) == "ambient stopped: listener input closed")
+        #expect(try await ambientError(on: pair.sockets[0], step: "input closed")
+            == "ambient stopped: listener input closed")
         #expect(await env.gate.activeStream == nil)
         #expect(env.router.liveRuns == 1)
         await env.rig.adapter.releaseHandoff()
@@ -87,10 +90,10 @@ import Testing
         try fake.install(fixture: "tool-events.jsonl")
         let env = try await ambientRig(fake, timing: .init(eofGrace: 0.1, termGrace: 0.1), shutdownGrace: 0.5)
         await env.rig.adapter.holdHandoff()
-        let pair = try await FallbackSocketPair.connect(port: env.port, selecting: [RecipientTestRig.target])
+        let pair = try await FallbackSocketPair.boundedConnect(port: env.port, selecting: [RecipientTestRig.target])
         defer { pair.close() }
         try await recipientSocketSend(audio(UUID(), 0), on: pair.sockets[0])
-        try await pair.barrier()
+        try await pair.boundedBarrier(step: "segment before stop")
         await env.rig.adapter.waitForHandoff()
         let started = ContinuousClock.now
         await env.listener.stop(reason: "synthetic stop")
@@ -118,18 +121,18 @@ import Testing
         let env = try await ambientRig(fake, timing: .init(eofGrace: 0.2, termGrace: 2))
         await env.rig.adapter.holdHandoff()
         await env.rig.adapter.failHandoff()
-        let pair = try await FallbackSocketPair.connect(port: env.port, selecting: [RecipientTestRig.target])
+        let pair = try await FallbackSocketPair.boundedConnect(port: env.port, selecting: [RecipientTestRig.target])
         defer { pair.close() }
         try await recipientSocketSend(audio(UUID(), 0), on: pair.sockets[0])
         await env.rig.adapter.waitForHandoff()
         let current = UUID()
         try await recipientSocketSend(audio(current, 0), on: pair.sockets[0])
-        try await pair.barrier()
+        try await pair.boundedBarrier(step: "replacement started")
         #expect(await env.gate.activeStream == current)
         // The old stream's dispatch is now refused; its run fails after the replacement started.
         await env.rig.adapter.releaseHandoff()
         #expect(await eventually { env.router.liveRuns == 1 })
-        try await pair.barrier()
+        try await pair.boundedBarrier(step: "superseded failure withheld")
         #expect(await env.gate.activeStream == current)
         await env.listener.stop(reason: "synthetic test complete")
     }
@@ -140,14 +143,15 @@ import Testing
         try fake.install(fixture: "tool-events.jsonl")
         let env = try await ambientRig(fake, timing: .init(eofGrace: 20, termGrace: 20))
         await env.rig.adapter.failHandoff()
-        let pair = try await FallbackSocketPair.connect(port: env.port, selecting: [RecipientTestRig.target])
+        let pair = try await FallbackSocketPair.boundedConnect(port: env.port, selecting: [RecipientTestRig.target])
         defer { pair.close() }
         // The final segment ends the stream at the gate; the child dispatches only after its input closes.
         try await recipientSocketSend(audio(UUID(), 0, final: true), on: pair.sockets[0])
-        #expect(try await ambientError(on: pair.sockets[0]).hasPrefix("ambient stopped: dispatch "))
+        #expect(try await ambientError(on: pair.sockets[0], step: "late failure")
+            .hasPrefix("ambient stopped: dispatch "))
         #expect(await env.gate.activeStream == nil)
         #expect(await eventually { env.router.liveRuns == 0 })
-        try await pair.barrier()
+        try await pair.boundedBarrier(step: "nothing more after the failure")
         await env.listener.stop(reason: "synthetic test complete")
     }
 
@@ -164,18 +168,18 @@ import Testing
         let env = try await ambientRig(fake, timing: .init(eofGrace: 0.2, termGrace: 2))
         await env.rig.adapter.holdHandoff()
         await env.rig.adapter.failHandoff()
-        let pair = try await FallbackSocketPair.connect(port: env.port, selecting: [RecipientTestRig.target])
+        let pair = try await FallbackSocketPair.boundedConnect(port: env.port, selecting: [RecipientTestRig.target])
         defer { pair.close() }
         try await recipientSocketSend(audio(UUID(), 0, final: true), on: pair.sockets[0])
         await env.rig.adapter.waitForHandoff()
         let current = UUID()
         try await recipientSocketSend(audio(current, 0), on: pair.sockets[0])
-        try await pair.barrier()
+        try await pair.boundedBarrier(step: "replacement started")
         #expect(await env.gate.activeStream == current)
         // The ended stream's dispatch is now refused after the replacement started: logged, not reported.
         await env.rig.adapter.releaseHandoff()
         #expect(await eventually { env.router.liveRuns == 1 })
-        try await pair.barrier()
+        try await pair.boundedBarrier(step: "ended stream's failure withheld")
         #expect(await env.gate.activeStream == current)
         await env.listener.stop(reason: "synthetic test complete")
     }

@@ -13,7 +13,7 @@ import Testing
         let rig = try await LegacyReferenceRig.make()
         let (listener, connected) = try rig.listener()
         let port = try await listener.start()
-        let pair = try await FallbackSocketPair.connect(
+        let pair = try await FallbackSocketPair.boundedConnect(
             port: port, selecting: [LegacyReferenceRig.target, LegacyReferenceRig.target]
         )
         defer { pair.close() }
@@ -32,14 +32,14 @@ import Testing
                 for frame in [recipientText(reply), recipientAudio(reply, sequence: 0),
                               recipientAudio(reply, sequence: 1, final: true)] {
                     #expect(try await listener.publish(frame) == 1)
-                    #expect(try await recipientSocketReceive(on: pair.sockets[origin]) == frame)
+                    #expect(try await receiveFrame(on: pair.sockets[origin], step: "referenced reply") == frame)
                 }
                 // The other device heard nothing; the request-less shape follows the last input device (#370).
-                try await pair.barrier()
+                try await pair.boundedBarrier(step: "referenced reply only")
                 let requestless = recipientText(referenceDescriptor(nil))
                 #expect(try await listener.publish(requestless) == 1)
-                #expect(try await recipientSocketReceive(on: pair.sockets[origin]) == requestless)
-                try await pair.barrier()
+                #expect(try await receiveFrame(on: pair.sockets[origin], step: "requestless reply") == requestless)
+                try await pair.boundedBarrier(step: "requestless reply only")
             }
         } catch {
             await listener.stop(reason: "synthetic test failed")
@@ -52,7 +52,7 @@ import Testing
         let rig = try await LegacyReferenceRig.make()
         let (listener, connected) = try rig.listener()
         let port = try await listener.start()
-        let pair = try await FallbackSocketPair.connect(
+        let pair = try await FallbackSocketPair.boundedConnect(
             port: port, selecting: [LegacyReferenceRig.target, LegacyReferenceRig.target]
         )
         defer { pair.close() }
@@ -79,7 +79,7 @@ import Testing
             try await listener.publish(recipientText(referenceDescriptor(owner, target: LegacyReferenceRig.other)))
         }
         // The originating device selects away: its reference dies with that selection.
-        try await pair.select(LegacyReferenceRig.other, on: 0)
+        try await pair.boundedSelect(LegacyReferenceRig.other, on: 0)
         await #expect(throws: LocalReplyRefusal.noRecipient) {
             try await listener.publish(recipientText(referenceDescriptor(owner)))
         }
@@ -90,14 +90,14 @@ import Testing
         await #expect(throws: LocalReplyRefusal.noRecipient) {
             try await listener.publish(recipientText(referenceDescriptor(gone)))
         }
-        try await recipientSocketBarrier(on: pair.sockets[0])
+        try await barrier(on: pair.sockets[0], step: "nobody heard a refused reply")
     }
 
     @Test func aRebindBetweenDispatchAndReplyRefusesThePublication() async throws {
         let rig = try await LegacyReferenceRig.make()
         let (listener, connected) = try rig.listener(fallback: false)
         let port = try await listener.start()
-        let pair = try await FallbackSocketPair.connect(port: port, selecting: [LegacyReferenceRig.target])
+        let pair = try await FallbackSocketPair.boundedConnect(port: port, selecting: [LegacyReferenceRig.target])
         defer { pair.close() }
         do {
             let connection = try await listener.sessionConnection(of: connected.all[0])
@@ -112,7 +112,7 @@ import Testing
             await #expect(throws: LocalReplyRefusal.noRecipient) {
                 try await listener.publish(recipientText(referenceDescriptor(owner)))
             }
-            try await pair.barrier()
+            try await pair.boundedBarrier(step: "refused publication")
         } catch {
             await listener.stop(reason: "synthetic test failed")
             throw error

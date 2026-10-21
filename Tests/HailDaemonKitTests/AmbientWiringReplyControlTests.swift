@@ -43,11 +43,11 @@ import Testing
         let fake = try FakeRightyo(Self.script)
         defer { fake.cleanUp() }
         let env = try await ambientRig(fake, timing: .init(eofGrace: 20, termGrace: 20), replyControl: replyControl)
-        let pair = try await FallbackSocketPair.connect(port: env.port, selecting: [RecipientTestRig.target])
+        let pair = try await FallbackSocketPair.boundedConnect(port: env.port, selecting: [RecipientTestRig.target])
         defer { pair.close() }
         let stream = UUID()
         try await recipientSocketSend(audio(stream, 0), on: pair.sockets[0])
-        try await pair.barrier()
+        try await pair.boundedBarrier(step: "first segment")
         let id = try #require(env.connected.all.first)
         let connection = try #require(await env.listener.peers[id]?.session.connectionID)
         #expect(await eventually { env.router.liveRuns == 1 })
@@ -57,7 +57,7 @@ import Testing
         // Another connection's reports never reach this stream.
         env.router.replyPlayback(try Self.playback([.replyPlaybackStart]), connection: UUID())
         try await recipientSocketSend(audio(stream, 1, final: true), on: pair.sockets[0])
-        try await pair.barrier()
+        try await pair.boundedBarrier(step: "final segment")
         await env.router.settle()
         await env.listener.stop(reason: "synthetic test complete")
         return try? fake.recorded("control.txt")

@@ -21,9 +21,9 @@ import Testing
         try await recipientSocketSend(sessionFrame(payload: .control(.hello(HelloInfo(
             versions: [1], capabilities: [AmbientTakeOver.capability], deviceName: "test", deviceKind: kind
         )))), on: socket)
-        _ = try await recipientSocketReceive(on: socket)
+        _ = try await receiveFrame(on: socket, step: "\(kind) hello")
         try await recipientSocketSend(sessionFrame(payload: .control(.select(targetID: target))), on: socket)
-        try await recipientSocketBarrier(on: socket)
+        try await barrier(on: socket, step: "\(kind) selection")
         return Device(session: session, socket: socket)
     }
 
@@ -72,20 +72,21 @@ import Testing
     ) async throws {
         let phoneStream = UUID(), padStream = UUID()
         for sequence in 0..<2 { try await recipientSocketSend(segment(phoneStream, sequence), on: phone.socket) }
-        try await recipientSocketBarrier(on: phone.socket)
+        try await barrier(on: phone.socket, step: "phone stream started")
         // The pad starts: it is told where listening came from, and the phone's child sees EOF and is retired.
         try await recipientSocketSend(segment(padStream, 0), on: pad.socket)
-        #expect(try await recipientSocketReceive(on: pad.socket).payload == .control(.ambientMovedHere(from: "phone")))
+        #expect(try await receiveFrame(on: pad.socket, step: "pad moved-here notice").payload
+            == .control(.ambientMovedHere(from: "phone")))
         #expect(await eventually { await rig.adapter.deliveries.count == 1 })
         let phoneReference = try #require(blockReference(in: await rig.adapter.deliveries[0].text))
         // The phone's next segment learns that listening moved; it is not an error that ends the connection.
         try await recipientSocketSend(segment(phoneStream, 2), on: phone.socket)
-        #expect(try await ambientError(on: phone.socket) == "ambient moved to pad")
+        #expect(try await ambientError(on: phone.socket, step: "phone told of the move") == "ambient moved to pad")
         // The phone's earlier request keeps its reference: the reply reaches the phone, not the pad.
         let phoneReply = recipientText(referenceDescriptor(phoneReference))
         #expect(try await listener.publish(phoneReply) == 1)
-        #expect(try await recipientSocketReceive(on: phone.socket) == phoneReply)
-        try await recipientSocketBarrier(on: pad.socket)
+        #expect(try await receiveFrame(on: phone.socket, step: "phone reply") == phoneReply)
+        try await barrier(on: pad.socket, step: "pad hears no phone reply")
         // The pad's own stream runs in a fresh child; its request and reply belong to the pad.
         try await recipientSocketSend(segment(padStream, 1, final: true), on: pad.socket)
         #expect(await eventually { await rig.adapter.deliveries.count == 2 })
@@ -94,9 +95,9 @@ import Testing
         #expect(padReference != phoneReference)
         let padReply = recipientText(referenceDescriptor(padReference))
         #expect(try await listener.publish(padReply) == 1)
-        #expect(try await recipientSocketReceive(on: pad.socket) == padReply)
-        try await recipientSocketBarrier(on: phone.socket)
-        try await recipientSocketBarrier(on: pad.socket)
+        #expect(try await receiveFrame(on: pad.socket, step: "pad reply") == padReply)
+        try await barrier(on: phone.socket, step: "phone hears no pad reply")
+        try await barrier(on: pad.socket, step: "pad idle after its reply")
         #expect(router.liveRuns == 0)
     }
 
@@ -119,13 +120,14 @@ import Testing
             let stream = UUID()
             try await recipientSocketSend(audio(stream, 0), on: device.socket)
             if round > 0 {
-                #expect(try await recipientSocketReceive(on: device.socket).payload
+                #expect(try await receiveFrame(on: device.socket, step: "round \(round) moved-here notice").payload
                     == .control(.ambientMovedHere(from: from)))
             }
-            try await recipientSocketBarrier(on: device.socket)
+            try await barrier(on: device.socket, step: "round \(round) start")
             if let previous {
                 try await recipientSocketSend(audio(previous.stream, 1), on: previous.device.socket)
-                #expect(try await ambientError(on: previous.device.socket).hasPrefix("ambient moved to "))
+                #expect(try await ambientError(on: previous.device.socket, step: "round \(round) moved away")
+                    .hasPrefix("ambient moved to "))
             }
             #expect(await env.gate.activeStream == stream)
             // Each retired child is reaped before the next swap, so the live-child bound is never the limit.

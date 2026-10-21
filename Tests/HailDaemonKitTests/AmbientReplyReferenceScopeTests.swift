@@ -11,7 +11,7 @@ import Testing
         let rig = try await RecipientTestRig.make()
         let (listener, connected) = try dispatchListener(rig: rig)
         let port = try await listener.start()
-        let pair = try await FallbackSocketPair.connect(port: port, selecting: [RecipientTestRig.target])
+        let pair = try await FallbackSocketPair.boundedConnect(port: port, selecting: [RecipientTestRig.target])
         defer { pair.close() }
         do {
             let connection = try await listener.sessionConnection(of: connected.all[0])
@@ -25,7 +25,7 @@ import Testing
             // The dispatch still owns its reply through the adapter's own out-of-band context id.
             let owner = try #require(try await ambientDispatch(listener, request))
             #expect(await rig.adapter.contexts.last?.id == owner)
-            try await pair.barrier()
+            try await pair.boundedBarrier(step: "contextual dispatch")
         } catch {
             await listener.stop(reason: "synthetic test failed")
             throw error
@@ -52,7 +52,7 @@ import Testing
         let rig = try await LegacyReferenceRig.make()
         let (listener, connected) = try rig.listener()
         let port = try await listener.start()
-        let pair = try await FallbackSocketPair.connect(port: port, selecting: [LegacyReferenceRig.target])
+        let pair = try await FallbackSocketPair.boundedConnect(port: port, selecting: [LegacyReferenceRig.target])
         defer { pair.close() }
         do {
             let connection = try await listener.sessionConnection(of: connected.all[0])
@@ -64,7 +64,7 @@ import Testing
             #expect(records.count == 1)
             #expect(records.first?.contains("\"bytes\":\(typed.utf8.count)") == true)
             #expect(records.first?.contains("\"bytes\":\(request.text.utf8.count)") == false)
-            try await pair.barrier()
+            try await pair.boundedBarrier(step: "audited dispatch")
         } catch {
             await listener.stop(reason: "synthetic test failed")
             throw error
