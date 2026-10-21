@@ -47,23 +47,35 @@ public struct CompiledGuards: Sendable {
     /// once. The joined form catches a command split across lines (a trailing backslash continuation
     /// under a split policy would otherwise put `rm \` and `-rf /` on different Enters).
     public func matches(in lines: [String]) -> [String] {
-        hits(in: lines, timeoutIsHit: true)
+        outcomes(in: lines).compactMap { $0.outcome == .none ? nil : $0.name }
     }
 
-    /// The rules that actually match pasted text (#608): a validation note for the receiving session, never a gate,
-    /// so a rule that runs out of budget is simply not reported (a timeout is not a match here).
-    func flags(in lines: [String]) -> [String] {
-        hits(in: lines, timeoutIsHit: false)
+    /// Pasted text's screening (#608), never a gate: the rules that match, and the rules that ran out of budget
+    /// before deciding (`unchecked`), so the note can say the paste was not fully checked rather than look clean.
+    func flags(in lines: [String]) -> (matched: [String], unchecked: [String]) {
+        let results = outcomes(in: lines)
+        return (results.filter { $0.outcome == .match }.map(\.name),
+                results.filter { $0.outcome == .timeout }.map(\.name))
     }
 
-    private func hits(in lines: [String], timeoutIsHit: Bool) -> [String] {
+    enum Outcome { case match, timeout, none }
+
+    /// Each rule's outcome over every candidate line: a match anywhere wins; otherwise a budget that ran out on any
+    /// line is a timeout; otherwise none.
+    private func outcomes(in lines: [String]) -> [(name: String, outcome: Outcome)] {
         let candidates = lines.count > 1 ? lines + [lines.joined(separator: " ")] : lines
         let clock = GuardBudgetClock.current
-        return rules.compactMap { rule in
+        return rules.map { rule in
             let deadline = clock.now() + matchBudget
-            return candidates.contains { line in
-                boundedMatch(rule.regex, in: line, clock: clock, deadline: deadline, timeoutIsHit: timeoutIsHit)
-            } ? rule.name : nil
+            var timedOut = false
+            for line in candidates {
+                switch boundedMatch(rule.regex, in: line, clock: clock, deadline: deadline) {
+                case .match: return (rule.name, .match)
+                case .timeout: timedOut = true
+                case .none: continue
+                }
+            }
+            return (rule.name, timedOut ? .timeout : .none)
         }
     }
 
@@ -75,23 +87,22 @@ public struct CompiledGuards: Sendable {
         }
     }
 
-    /// ICU progress callbacks bound custom expressions; for the guard, exceeding the budget is a hit, never a bypass.
+    /// ICU progress callbacks bound custom expressions; for the guard a timeout counts as a hit, never a bypass.
     private func boundedMatch(
-        _ regex: NSRegularExpression, in line: String, clock: GuardBudgetClock, deadline: ContinuousClock.Instant,
-        timeoutIsHit: Bool
-    ) -> Bool {
-        var hit = false
+        _ regex: NSRegularExpression, in line: String, clock: GuardBudgetClock, deadline: ContinuousClock.Instant
+    ) -> Outcome {
+        var outcome = Outcome.none
         let range = NSRange(line.startIndex..., in: line)
         regex.enumerateMatches(in: line, options: .reportProgress, range: range) { result, _, stop in
             if result != nil {
-                hit = true
+                outcome = .match
                 stop.pointee = true
             } else if clock.now() >= deadline {
-                hit = timeoutIsHit
+                outcome = .timeout
                 stop.pointee = true
             }
         }
-        return hit
+        return outcome
     }
 }
 

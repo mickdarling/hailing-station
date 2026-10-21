@@ -274,7 +274,8 @@ extension HostSession {
 
     private func listTargets(version: Int) async -> HostSessionResult {
         do {
-            return HostSessionResult(frames: [response(.targets(try await policyFilteredTargets()), version: version)])
+            return HostSessionResult(frames: [response(.targets(named(try await policyFilteredTargets())),
+                                                       version: version)])
         } catch {
             return failure(.malformed, "target listing unavailable", close: false, version: version)
         }
@@ -332,6 +333,28 @@ extension HostSession {
         case is HostError, is AdapterError, is RegistryError: .notAllowed
         default: .malformed
         }
+    }
+
+    /// The owner's voice routes (#636) over the policy-filtered listing: a listed route shows its name, and a route
+    /// that is not listed, allowed and bound shows as offline (`alive: false`) so the device can say so rather than
+    /// hide it. Names change only what is shown. Ids, policy and selection are untouched, and `select` reads the
+    /// unnamed listing, so an offline route cannot be selected.
+    private func named(_ targets: [TargetInfo]) -> [TargetInfo] {
+        #if os(macOS)
+        guard let routes = authorizer.voiceRoutes else { return targets }
+        var named = targets.map { target in
+            var target = target
+            if let route = routes.route(for: target.id) { target.name = route.name }
+            return target
+        }
+        for route in routes.routes where !targets.contains(where: { $0.id == route.target }) {
+            let kind = route.target.prefix { $0 != ":" }
+            named.append(TargetInfo(id: route.target, kind: String(kind), name: route.name, alive: false))
+        }
+        return named.sorted { $0.id < $1.id }
+        #else
+        return targets
+        #endif
     }
 
     private func policyFilteredTargets() async throws -> [TargetInfo] {

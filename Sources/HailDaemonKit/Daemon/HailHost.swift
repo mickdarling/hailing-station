@@ -467,22 +467,44 @@ extension PastedContent {
         return (String(rest.dropFirst(request.count + 2)), body)
     }
 
-    /// The line with `Validation: contains <rules>.` after the begin marker. Rule names are reduced to plain ASCII
-    /// words, so a policy file cannot add markup or shell syntax, and the note stays within `validationReserve`.
-    static func flagged(_ line: String, _ flags: [String]) -> String {
-        let names = flags.map { String($0.unicodeScalars.filter(isPlainNameScalar).map(Character.init)) }
-            .filter { !$0.isEmpty }
-        guard !names.isEmpty, let token = token(of: line) else { return line }
-        let begin = begin(token)
-        var shown: [String] = []
-        for name in names {
-            let candidate = "Validation: contains \((shown + [name]).joined(separator: ", ")), and more. "
-            guard candidate.utf8.count <= validationReserve else { break }
-            shown.append(name)
+    /// The line with a validation note after the begin marker: `Validation: contains <rules>.` for rules that match,
+    /// and `Validation: not fully checked: <rules>.` for rules that ran out of budget, so an unchecked paste never
+    /// looks like a clean one (#635 review). Rule names are reduced to plain ASCII words of at most 40 characters, so
+    /// a policy file cannot add markup or shell syntax, and the note stays within `validationReserve`; names that do
+    /// not fit become "and more", and an unchecked paste whose names do not fit still says `not fully checked`.
+    static func flagged(_ line: String, _ flags: (matched: [String], unchecked: [String])) -> String {
+        let plain = { (names: [String]) in
+            names.map { String(String($0.unicodeScalars.filter(isPlainNameScalar).map(Character.init)).prefix(40)) }
+                .filter { !$0.isEmpty }
         }
-        let more = shown.count < names.count ? ", and more" : ""
-        let note = "Validation: contains \(shown.joined(separator: ", "))\(more). "
-        return begin + " " + note + line.dropFirst(begin.count + 1)
+        let matched = plain(flags.matched), unchecked = plain(flags.unchecked)
+        guard !matched.isEmpty || !flags.unchecked.isEmpty, let token = token(of: line) else { return line }
+        var shown: (matched: [String], unchecked: [String]) = ([], [])
+        for (index, name) in (matched + unchecked).enumerated() {
+            var next = shown
+            if index < matched.count { next.matched.append(name) } else { next.unchecked.append(name) }
+            guard note(next, more: true, unchecked: !flags.unchecked.isEmpty).utf8.count <= validationReserve else {
+                break
+            }
+            shown = next
+        }
+        let more = shown.matched.count + shown.unchecked.count < matched.count + unchecked.count
+        let begin = begin(token)
+        return begin + " " + note(shown, more: more, unchecked: !flags.unchecked.isEmpty)
+            + line.dropFirst(begin.count + 1)
+    }
+
+    private static func note(
+        _ shown: (matched: [String], unchecked: [String]), more: Bool, unchecked: Bool
+    ) -> String {
+        var parts: [String] = []
+        if !shown.matched.isEmpty { parts.append("contains " + shown.matched.joined(separator: ", ")) }
+        if unchecked {
+            let label = parts.isEmpty ? "not fully checked" : "Not fully checked"
+            parts.append(shown.unchecked.isEmpty ? label : label + ": " + shown.unchecked.joined(separator: ", "))
+        }
+        if parts.isEmpty { parts.append("contains") }
+        return "Validation: " + parts.joined(separator: ". ") + (more ? ", and more" : "") + ". "
     }
 
     /// The 16-hex token of a line that starts with a begin marker, else nil.

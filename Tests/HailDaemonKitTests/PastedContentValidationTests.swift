@@ -74,13 +74,18 @@ import Testing
     }
 
     /// A budget that runs out on the paste body is not a match; on the spoken part it still fails closed.
+    /// #635 review round 2: a paste whose rules all time out is delivered, but says it was not fully checked, so it
+    /// never looks like a clean, checked paste.
     @Test func aGuardTimeoutOnThePasteIsNotAHitButOnTheSpokenPartItIs() async throws {
         let ready = try await readySession()
-        let clean = await GuardBudgetClock.$current.withValue(.expiring()) {
+        let unchecked = await GuardBudgetClock.$current.withValue(.expiring()) {
             await ready.session.receive(paste("", "Synthetic lunch notes.", ready))
         }
-        #expect(clean.frames.isEmpty)
-        #expect(await ready.adapter.deliveries.first?.text.contains("Validation:") == false)
+        #expect(unchecked.frames.isEmpty)
+        let delivered = try #require(await ready.adapter.deliveries.first?.text)
+        #expect(delivered.contains(" Validation: not fully checked"))
+        #expect(!delivered.contains("Validation: contains"))
+        #expect(delivered.utf8.count <= PayloadLimits.maxTextBytes)
         let spoken = await GuardBudgetClock.$current.withValue(.expiring()) {
             await ready.session.receive(paste("summarise this", "Synthetic lunch notes.", ready))
         }
@@ -135,14 +140,33 @@ import Testing
     /// The note sits after the begin marker, outside the body, and a rule name cannot add markup or shell syntax.
     @Test func theValidationNoteIsPlainWordsOutsideTheBody() throws {
         let framed = try PastedContentTests.frame(spoken: "", pasted: "body")
-        let flagged = PastedContent.flagged(framed, ["delete", #"x"; touch PWNED $(y) <z>"#, ""])
+        let flagged = PastedContent.flagged(framed, (["delete", #"x"; touch PWNED $(y) <z>"#, ""], []))
         let begin = PastedContent.begin(PastedContentTests.token)
         #expect(flagged.hasPrefix(begin + " Validation: contains delete, x touch PWNED y z. "))
         #expect(try PastedContentTests.hostAddedTextIsInert(flagged))
         #expect(PastedContent.parts(of: flagged)?.body == "body")
-        #expect(PastedContent.flagged(framed, []) == framed)
-        let many = PastedContent.flagged(framed, (1...60).map { "rule number \($0)" })
+        #expect(PastedContent.flagged(framed, ([], [])) == framed)
+        let many = PastedContent.flagged(framed, ((1...60).map { "rule number \($0)" }, []))
         #expect(many.utf8.count - framed.utf8.count <= PastedContent.validationReserve)
         #expect(many.contains(", and more. "))
+    }
+
+    /// Matched and timed-out rules are both named; the note stays inert and within the reserve, and a very long rule
+    /// name is cut to 40 characters rather than crowding out the note.
+    @Test func theNoteNamesUncheckedRulesAndStaysWithinTheReserve() throws {
+        let framed = try PastedContentTests.frame(spoken: "", pasted: "body")
+        let begin = PastedContent.begin(PastedContentTests.token)
+        let both = PastedContent.flagged(framed, (["sudo"], ["delete", "disk write"]))
+        #expect(both.hasPrefix(begin + " Validation: contains sudo. Not fully checked: delete, disk write. "))
+        #expect(try PastedContentTests.hostAddedTextIsInert(both))
+        let long = String(repeating: "x", count: 300)
+        let crowded = PastedContent.flagged(framed, ([long], (1...40).map { "slow rule \($0)" }))
+        #expect(crowded.utf8.count - framed.utf8.count <= PastedContent.validationReserve)
+        #expect(crowded.contains(String(repeating: "x", count: 40) + ". "))
+        #expect(crowded.contains("Not fully checked: slow rule 1"))
+        #expect(!crowded.contains("contains , and more"))
+        // A timed-out rule whose name filters away entirely still marks the paste unchecked.
+        let nameless = PastedContent.flagged(framed, ([], ["<>"]))
+        #expect(nameless.hasPrefix(begin + " Validation: not fully checked. "))
     }
 }
