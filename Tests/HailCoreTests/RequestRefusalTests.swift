@@ -13,8 +13,8 @@ import Testing
 
     @Test func theSharedSetIsTheOnlyNonFatalCodes() {
         #expect(RequestRefusals.capability == "request_refusals")
-        #expect(RequestRefusals.codes == [.pasteRefused])
-        #expect(ErrorCode.pasteRefused.isRequestRefusal)
+        #expect(RequestRefusals.codes == [.pasteRefused, .voiceRouteRefused])
+        #expect(ErrorCode.pasteRefused.isRequestRefusal && ErrorCode.voiceRouteRefused.isRequestRefusal)
         for code in [ErrorCode.unauthorized, .unknownTarget, .notAllowed, .lockdown, .rateLimited, .protocolVersion,
                      .malformed, .unknown("paste_refused_later")] {
             #expect(!code.isRequestRefusal)

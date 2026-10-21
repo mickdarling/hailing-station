@@ -91,6 +91,27 @@ import Testing
         #expect(await rig.adapter.deliveries.isEmpty)
     }
 
+    /// A device that advertised `request_refusals` (#665) gets `voice_route_refused` for every route refusal, a paste's
+    /// too (a refusal at the routing step is the route's, not the paste gate's), so its connection stays; an older
+    /// device keeps the codes above.
+    @Test func aDeviceThatTakesRequestRefusalsGetsTheVoiceRouteCode() async throws {
+        let rig = try await VoiceRouteRig.make()
+        let authorizer = PersonalTerminalAuthorizer().naming(try VoiceRouteRig.routes())
+        let session = HostSession(host: rig.host, authorizer: authorizer, hostName: "mac-test")
+        _ = await session.receive(helloFrame(capabilities: [RequestRefusals.capability]))
+        _ = await session.receive(sessionFrame(payload: .control(.select(targetID: VoiceRouteRig.scratch))))
+        let pasted = sessionFrame(target: VoiceRouteRig.scratch, payload: .text(TextPayload(
+            text: "Voice Work:", pasted: PastedText(text: "synthetic pasted notes")
+        )))
+        let frames = ["Voice Work, run the tests", "Deck", "Hailing Scratcher, hello"].map { VoiceRouteRig.tap($0) }
+        for frame in frames + [pasted] {
+            let result = await session.receive(frame)
+            guard case .error(let code, _) = try onlyControl(result) else { throw TestSupportError.expectedOneControl }
+            #expect(code == .voiceRouteRefused && result.disposition == .keepOpen)
+        }
+        #expect(await rig.adapter.deliveries.isEmpty)
+    }
+
     /// During lockdown nothing is routed: a named request meets the lockdown refusal as it is, never "offline".
     @Test func lockdownRefusesANamedRequestAsLockdown() async throws {
         let rig = try await VoiceRouteRig.make()

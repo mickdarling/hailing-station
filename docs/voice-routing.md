@@ -135,8 +135,9 @@ route: "Deck, add a slide on pricing".
   | A name alone | `malformed`: "voice route: nothing to send to Deck" |
   | A near miss (`unclear`) | `not_allowed`: "voice route: which session? Nothing was sent" |
 
-  The current app still treats any non-ambient error frame as fatal and reconnects. Slice 5 makes `voice route:`
-  refusals non-fatal, and spoken.
+  A device that advertises `request_refusals` (#665) gets `voice_route_refused` for each of these instead, which ends
+  the request and keeps the connection. An older app treats any non-ambient error frame as fatal and reconnects.
+  Showing the refusal on the device is slice 5b.
 - **The reply comes back.** A delivered routed request makes this connection that route's last input device (#370),
   on its current selection generation. The selection *covers* a target when it is the selected target, or when both
   it and the selected target are routes. The reply checks (`holds`, request records, `recordOwner`, `selects`) use
