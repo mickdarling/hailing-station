@@ -254,7 +254,9 @@ extension HostSession {
     /// keeps its own permit and lease, re-checked on every frame as before.
     func dropUncommitted(_ id: UUID) {
         replyRequests[id] = nil
-        guard let evicted = evictedForHandoff.removeValue(forKey: id), replyRequests[evicted.id] == nil,
+        // A closed session keeps its generation, so readiness is checked as well (key review on #731).
+        guard let evicted = evictedForHandoff.removeValue(forKey: id), case .ready = state,
+              replyRequests[evicted.id] == nil,
               evicted.request.generation == selectionGeneration, evicted.request.isCurrent(at: requestClock()),
               replyRequests.count < HostReplyRequest.capacity else { return }
         replyRequests[evicted.id] = evicted.request
