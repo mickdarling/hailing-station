@@ -70,7 +70,8 @@ import Testing
         let rig = try await LegacyReferenceRig.make()
         let session = await rig.session()
         let expiring = try #require(try await LegacyReferenceRig.dispatch(session, reference: UUID()))
-        rig.clock.advance(120_000)
+        // An unanswered reference outlives the ordinary two minutes only up to the late-answer bound (#430).
+        rig.clock.advance(Int64(HostReplyRequest.lateAnswerBound.components.seconds) * 1_000)
         #expect(!(await session.acceptsHostReply(recipientText(referenceDescriptor(expiring)))))
         let reselected = try #require(try await LegacyReferenceRig.dispatch(session, reference: UUID()))
         _ = await session.receive(sessionFrame(payload: .control(.select(targetID: LegacyReferenceRig.other))))

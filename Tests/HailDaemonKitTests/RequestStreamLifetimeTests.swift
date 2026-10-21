@@ -33,11 +33,12 @@ import Testing
         #expect(await stream(session, rig, reply, count: 136, final: true) == 136)
     }
 
-    @Test func theFirstFrameStillHasTheOrdinaryTwoMinutes() async throws {
+    /// An answer not yet started has the late-answer bound (#430), not the ordinary two minutes.
+    @Test func theFirstFrameHasTheLateAnswerBound() async throws {
         let rig = try await RecipientTestRig.make()
         let session = await rig.session()
         let reply = recipientDescriptor(try await rig.submit(on: session), audio: true)
-        rig.clock.advance(120_000)
+        rig.clock.advance(Int64(HostReplyRequest.lateAnswerBound.components.seconds) * 1_000)
         #expect(!(await session.acceptsHostReply(recipientText(reply))))
     }
 

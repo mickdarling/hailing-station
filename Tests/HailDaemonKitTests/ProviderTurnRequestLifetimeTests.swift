@@ -98,14 +98,15 @@ import Testing
         await listener.stop(reason: "synthetic test complete")
     }
 
-    @Test func withoutATurnEndSourceAProviderRequestKeepsTheOrdinaryTwoMinutes() async throws {
+    /// Not a running turn: past the ordinary two minutes only the late-answer bound holds it (`LateAnswerRequestTests`).
+    @Test func withoutATurnEndSourceAProviderRequestKeepsTheOrdinaryBounds() async throws {
         let rig = try await RecipientTestRig.make()
         let session = await rig.session()
         let context = try await rig.submit(on: session)
         let frame = recipientText(recipientDescriptor(context))
-        rig.clock.advance(2 * Self.minute - 1_000)
-        #expect(await session.replyPublicationStatus(frame) == .ready)
-        rig.clock.advance(2_000)
+        rig.clock.advance(2 * Self.minute + 1_000)
+        #expect(await session.answersLate(frame))
+        rig.clock.advance(28 * Self.minute)
         #expect(await session.replyPublicationStatus(frame) == .absent)
     }
 

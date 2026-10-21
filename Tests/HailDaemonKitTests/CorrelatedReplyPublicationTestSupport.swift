@@ -1,5 +1,6 @@
 import Foundation
 import Synchronization
+@testable import HailDaemonKit
 
 /// A synthetic admission boundary; advances causally between status and actual enqueue, not by sleeping.
 final class PublicationExpiryClock: Sendable {
@@ -13,6 +14,7 @@ final class PublicationExpiryClock: Sendable {
             remaining = reads - 1
             return false
         }
-        return expired ? origin.advanced(by: .seconds(120)) : origin
+        // Past the late-answer bound too (#430): an unanswered request outlives the ordinary lifetime until then.
+        return expired ? origin.advanced(by: HostReplyRequest.lateAnswerBound) : origin
     }
 }

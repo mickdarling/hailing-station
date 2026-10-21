@@ -169,9 +169,11 @@ extension HostSession {
         guard selects(context.binding.targetID, generation: generation), var request = replyRequests[context.id] else {
             return .unowned("request destination changed")
         }
-        request.committed = true
+        // Checked while still uncommitted, so a handoff held past the ordinary lifetime is refused rather than
+        // revived by the late-answer bound or a provider turn's bound (#430), which only a committed record gets.
         guard request.withAuthority({
             guard request.isCurrent(at: requestClock()) else { return false }
+            request.committed = true
             replyRequests[context.id] = request
             return true
         }) == true else {
@@ -246,6 +248,7 @@ extension HostSession {
         guard case .ready = state, generation == selectionGeneration, covers(target) else {
             throw HostError.denied(.notAllowed(target))
         }
+        if replyRequests.count >= HostReplyRequest.capacity { evictOldestLateRequest() }
         guard replyRequests.count < HostReplyRequest.capacity else { throw ProviderContractError.capacityExceeded }
         guard replyRequests[context.id] == nil else { throw HostError.denied(.notAllowed(target)) }
         var request = HostReplyRequest(

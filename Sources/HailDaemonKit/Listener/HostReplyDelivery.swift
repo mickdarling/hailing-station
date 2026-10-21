@@ -22,6 +22,11 @@ struct HostReplyRequest {
     /// (30 minutes of audio). Only frames this request accepted count, never refused ones.
     static let streamIdleGap: Duration = .seconds(60)
     static let streamCap: Duration = .seconds(35 * 60)
+    /// #430: a committed request whose answer has not started stays answerable this long, so an agent that works
+    /// for more than `lifetime` before replying still reaches the device that asked. Every other check is unchanged:
+    /// the same connection (this session), the same selection generation, the same binding and a current permit.
+    /// Once its first frame is accepted, the streaming rules apply instead.
+    static let lateAnswerBound: Duration = .seconds(30 * 60)
     /// 3,000 paced frames (the CLI's limit for 30 minutes) plus the text and the terminal marker, with margin.
     static let frameLimit = 3_072
     let context: ProviderTurnContext
@@ -54,9 +59,22 @@ struct HostReplyRequest {
     func isCurrent(at timestamp: ContinuousClock.Instant) -> Bool {
         let elapsed = createdAt.duration(to: timestamp)
         guard elapsed >= .zero else { return false }
-        guard isProviderTurn else { return elapsed < Self.lifetime || isStreaming(at: timestamp) }
+        guard isProviderTurn else {
+            return elapsed < Self.lifetime || isStreaming(at: timestamp) || awaitsLateAnswer(elapsed: elapsed)
+        }
         if let ended = providerTurnEndedAt { return ended.duration(to: timestamp) < Self.lifetime }
         return elapsed < Self.providerTurnBound
+    }
+
+    /// Committed, nothing accepted yet, and inside the late-answer bound (#430).
+    private func awaitsLateAnswer(elapsed: Duration) -> Bool {
+        committed && firstFrameAt == nil && elapsed < Self.lateAnswerBound
+    }
+
+    /// Past the ordinary lifetime with no answer started: held only by the late-answer bound (#430). Such a record
+    /// gives up its capacity slot to a new request rather than refusing it.
+    func isLate(at timestamp: ContinuousClock.Instant) -> Bool {
+        !isProviderTurn && firstFrameAt == nil && createdAt.duration(to: timestamp) >= Self.lifetime
     }
 
     /// A flowing reply (#467): its last accepted frame is recent and its first is within the cap.
@@ -218,6 +236,23 @@ extension HostSession {
         replyRequests = replyRequests.filter {
             $0.value.isCurrent(at: timestamp) && $0.value.withAuthority { true } == true
         }
+    }
+
+    /// At capacity, a request held only by the late-answer bound (#430) yields its slot, oldest first: before that
+    /// bound existed it would already have expired. A running provider turn or a flowing reply is never evicted.
+    func evictOldestLateRequest() {
+        let now = requestClock()
+        guard let oldest = replyRequests.filter({ $0.value.isLate(at: now) })
+            .min(by: { $0.value.createdAt < $1.value.createdAt })?.key else { return }
+        replyRequests[oldest] = nil
+    }
+
+    /// For the route audit only (#430): the frame answers a request past its ordinary lifetime. Not authority.
+    func answersLate(_ frame: Frame) -> Bool {
+        guard let requestID = replyDescriptor(frame)?.requestID, let request = replyRequests[requestID] else {
+            return false
+        }
+        return request.isLate(at: requestClock())
     }
 
     /// A side-effect-free admission snapshot, not publication authority. Media is checked on a copy;
@@ -466,12 +501,13 @@ extension WebSocketListener {
         }
         // This refusal has made zero enqueue attempts. Only this code permits bounded same-frame retry.
         guard status == .ready else { throw LocalReplyRefusal.requestPending }
+        let late = await peer.session.answersLate(validated)
         // The snapshot may already be stale. Final synchronous gates decide; later send completion
         // failure is ambiguous and must never be treated as a safe pre-publication retry.
         guard await peer.deliverHostReply(validated) else { throw LocalReplyRefusal.publicationFailed }
         ambient?.observeReply(validated) // Own-voice rejection for ambient requests (#269).
         if let peerID = peers.first(where: { $0.value === peer })?.key {
-            noteRoute(validated, to: peerID, path: "request")
+            noteRoute(validated, to: peerID, path: late ? "request_late" : "request")
         }
         return 1
     }

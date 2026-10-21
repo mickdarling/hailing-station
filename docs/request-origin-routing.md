@@ -95,7 +95,7 @@ The reference is a routing handle, not an origin claim:
   it, and they are unchanged.
 - The connection's own `HostSession` records it in `replyRequests`. The record goes through the same ingress path
   as any request: authorizer, selection generation, exact listed binding, host reply permit, 64-request capacity
-  and 120-second lifetime. It is committed only after a successful complete handoff. A reference already held is
+  and 120-second lifetime (30 minutes for an answer not yet started, #430). It is committed only after a successful complete handoff. A reference already held is
   never overwritten.
 - The reply path trusts only that host-side record. A reply naming the reference reaches exactly the connection
   that owns the record, while it still selects that target on the same selection generation, with the same media
@@ -167,8 +167,8 @@ target, from any connection, replaces it.
 Steps 2 and 3 need `--single-terminal-reply-fallback` (set by `scripts/host.sh` from `host.json`). Without the
 flag, request-less replies are still refused `noRecipient`, as before.
 
-**Lifetime: 10 minutes.** A reply to a long task can arrive minutes after the input, so the 120-second request
-lifetime is too short. Ten minutes covers a long turn, while a device left selecting a target overnight does not keep
+**Lifetime: 10 minutes.** A request-less reply to a long task can arrive minutes after the input, well past the
+120-second request lifetime. (A reply that names its request has the 30-minute late-answer bound instead, #430.) Ten minutes covers a long turn, while a device left selecting a target overnight does not keep
 receiving its replies by default. Expiry is not a refusal: it hands the reply to the single-selector rule. The entry
 ends sooner when its connection disconnects or changes selection.
 
@@ -177,7 +177,8 @@ selection (64 most recent replies). Its later frames go only there, even if anot
 and are refused `noRecipient` rather than moved when that device is gone or selected away. This applies to replies
 the single-selector rule started too.
 
-**Audit.** The listener log records `reply_routed` once per reply, with `path=request`, `path=last_input`,
+**Audit.** The listener log records `reply_routed` once per reply, with `path=request`, `path=request_late` (a
+request answered past its 120 seconds, #430), `path=last_input`,
 `path=single_selector` or `path=ambient_owner` (#230; withheld while a take-over or stream end is still queued). The event
 carries only the listener connection id that `session_connected` already logs. No text, target binding or device
 name is added.

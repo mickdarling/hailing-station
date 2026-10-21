@@ -81,7 +81,7 @@ binding lease, host reply permit, capacity, lifetime and selection generation, t
 commit only after a successful complete handoff. The pinned binding is checked once before the listing
 inside the session and again inside `HailHost.send` (`expectedBinding`), so a rebind between the two
 listings refuses too. A dispatched request then lives exactly like a spoken one: 120 seconds from
-admission, cleared when the connection selects another target, pruned on disconnect, and never revived
+admission (30 minutes while its answer has not started, #430), cleared when the connection selects another target, pruned on disconnect, and never revived
 by reselecting or restoring authority.
 
 The dispatch is bound to the peer's own lifecycle (ended, closing, or retired transport) at both ends of

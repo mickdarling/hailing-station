@@ -76,7 +76,8 @@ import Testing
         #expect(refused.disposition == .keepOpen)
         #expect(await rig.adapter.contexts.count == 64)
         #expect(await session.acceptsHostReply(recipientText(recipientDescriptor(contexts[0]))))
-        rig.clock.advance(120_000)
+        // Unanswered records are held to the late-answer bound (#430); the answered one went quiet long before.
+        rig.clock.advance(Int64(HostReplyRequest.lateAnswerBound.components.seconds) * 1_000)
         _ = try await rig.submit(on: session)
         #expect(await rig.adapter.contexts.count == 65)
         #expect(!(await session.acceptsHostReply(recipientText(recipientDescriptor(contexts[1])))))

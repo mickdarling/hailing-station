@@ -37,9 +37,16 @@ configured and the migration is tested.
 ## Lifetime and media
 
 Each connection retains at most 64 requests for 120 seconds from admission and
-at most 1,024 frame IDs per request. Capacity is refused before target dispatch;
-expired or permanently revoked admission tickets are reclaimed before a new
-handoff, even when no reply was attempted during revocation. Restored authority
+at most 1,024 frame IDs per request. A committed request whose answer has not
+started stays answerable for up to 30 minutes (#430), so an agent that works
+longer than two minutes still reaches the device that asked; every other check
+here still applies to it, and once its first frame is accepted the streaming
+rules govern it. Capacity is refused before target dispatch; expired or
+permanently revoked admission tickets are reclaimed before a new handoff, even
+when no reply was attempted during revocation, and at capacity the oldest
+request past its 120 seconds with no answer started gives way to the new one. A
+running provider turn, a request inside its 120 seconds and a reply that has
+started are never evicted. Restored authority
 can serve a fresh request without stale records exhausting the capacity, but can
 never revive the old tickets. Admission and expiry use `ContinuousClock`,
 separate from wall-clock wire timestamps. Clock adjustments cannot extend or
