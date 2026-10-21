@@ -2,7 +2,8 @@ public import Foundation
 
 /// What the host does with a submitted update (#609).
 public enum SessionUpdateDecision: Sendable, Equatable {
-    /// Speak it now on this listening device. Not held: if delivery fails, the caller passes it to `hold(_:at:)`.
+    /// Speak it now on this listening device. Not held: if delivery fails, the caller passes it to
+    /// `hold(_:audience:at:)`, which decides the push afresh.
     case speak(SessionUpdate, device: UUID)
     /// Held for a later drain; `push` names the device to send a push notification to, if any.
     case held(push: UUID?)
@@ -37,7 +38,9 @@ public enum SessionUpdateDrainTrigger: Sendable, Equatable {
 ///   and pushed to the target device, except under quiet, which holds it without a push.
 /// - Drains: asking always delivers. An interaction delivers unless quiet is on. A natural pause delivers unless
 ///   quiet or media mode is on.
-/// - Each session has its own budget per window; refusals do not spend it.
+/// - Each session has its own budget per window; refusals do not spend it. The session name is the budget key and
+///   the speaker label, so the caller must take it from an authenticated source (the registry's target id), never
+///   from text the caller supplied.
 public struct SessionUpdateQueue: Sendable, Equatable {
     public typealias Instant = ContinuousClock.Instant
 
@@ -57,15 +60,27 @@ public struct SessionUpdateQueue: Sendable, Equatable {
             spend(update.session, at: now)
             return .speak(update, device: device)
         }
-        guard hold(update, at: now) else { return .refused(.full) }
+        guard keep(update, now: now) else { return .refused(.full) }
         spend(update.session, at: now)
-        guard update.priority == .action, !audience.quiet else { return .held(push: nil) }
-        return .held(push: audience.target)
+        return .held(push: Self.push(update, audience: audience))
     }
 
-    /// Holds an update without spending budget, for example one whose immediate delivery failed. False when full.
-    @discardableResult
-    public mutating func hold(_ update: SessionUpdate, at now: Instant) -> Bool {
+    /// Holds an update without spending budget, for one whose immediate speech failed. The push follows the same
+    /// rule as `submit`, from the audience now: an `action` is pushed to the target unless quiet is on. Holding the
+    /// same update twice keeps one copy.
+    public mutating func hold(
+        _ update: SessionUpdate, audience: SessionUpdateAudience, at now: Instant
+    ) -> SessionUpdateDecision {
+        guard policy.enabled else { return .refused(.disabled) }
+        guard keep(update, now: now) else { return .refused(.full) }
+        return .held(push: Self.push(update, audience: audience))
+    }
+
+    private static func push(_ update: SessionUpdate, audience: SessionUpdateAudience) -> UUID? {
+        update.priority == .action && !audience.quiet ? audience.target : nil
+    }
+
+    private mutating func keep(_ update: SessionUpdate, now: Instant) -> Bool {
         expire(now: now)
         guard !held.contains(where: { $0.id == update.id }) else { return true }
         if held.count >= max(policy.capacity, 0) {
@@ -77,7 +92,8 @@ public struct SessionUpdateQueue: Sendable, Equatable {
         return true
     }
 
-    /// The held updates to deliver now, `action` first and then oldest first, removed from the queue. Empty when
+    /// The held updates to deliver now, `action` first and then by submit time (not hold time, so a failed `action`
+    /// held again keeps its place), removed from the queue. Empty when
     /// the trigger is not allowed under the audience's quiet or media state.
     public mutating func drain(
         _ trigger: SessionUpdateDrainTrigger, audience: SessionUpdateAudience, now: Instant
@@ -88,7 +104,11 @@ public struct SessionUpdateQueue: Sendable, Equatable {
         case .interaction: guard !audience.quiet else { return [] }
         case .naturalPause: guard !audience.quiet, !audience.media else { return [] }
         }
-        let ordered = held.filter { $0.priority == .action } + held.filter { $0.priority == .info }
+        let ordered = held.enumerated().sorted { left, right in
+            let (lhs, rhs) = (left.element, right.element)
+            if lhs.priority != rhs.priority { return lhs.priority == .action }
+            return lhs.submitted != rhs.submitted ? lhs.submitted < rhs.submitted : left.offset < right.offset
+        }.map(\.element)
         held.removeAll()
         return ordered
     }

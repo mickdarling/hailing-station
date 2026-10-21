@@ -17,6 +17,8 @@ public protocol HostReplyPublishing: Sendable {
     func dispatch(_ request: LocalDispatchRequest) async throws -> UUID?
     /// `haild ambient reload|status` (#405): restarts or describes the active ambient stream's child.
     func ambient(_ request: LocalAmbientRequest) async -> LocalAmbientReport
+    /// `haild notify` (#609): applies the session update policy; the update's text is never logged.
+    func sessionUpdate(_ request: LocalSessionUpdateRequest) async -> LocalSessionUpdateReport
 }
 
 extension HostReplyPublishing {
@@ -28,6 +30,11 @@ extension HostReplyPublishing {
     /// A destination without ambient wiring touches nothing.
     public func ambient(_ request: LocalAmbientRequest) async -> LocalAmbientReport {
         LocalAmbientReport(outcome: .notEnabled)
+    }
+
+    /// A destination without session updates holds and speaks nothing.
+    public func sessionUpdate(_ request: LocalSessionUpdateRequest) async -> LocalSessionUpdateReport {
+        LocalSessionUpdateReport(outcome: .notEnabled)
     }
 }
 
@@ -51,6 +58,8 @@ public struct LocalReplyResponse: Codable, Equatable, Sendable {
     public private(set) var isDispatch = false
     /// Ambient answers (#405) only; every other response omits the key, byte for byte as before.
     public var ambient: LocalAmbientReport?
+    /// Session update answers (#609) only; every other response omits the key.
+    public var update: LocalSessionUpdateReport?
 
     public init(delivered: Int, error: String? = nil, code: LocalReplyRefusal? = nil) {
         self.delivered = delivered
@@ -72,7 +81,13 @@ public struct LocalReplyResponse: Codable, Equatable, Sendable {
         return response
     }
 
-    private enum CodingKeys: String, CodingKey { case delivered, error, code, request, ambient }
+    public static func update(_ report: LocalSessionUpdateReport) -> Self {
+        var response = Self(delivered: 0)
+        response.update = report
+        return response
+    }
+
+    private enum CodingKeys: String, CodingKey { case delivered, error, code, request, ambient, update }
 
     public init(from decoder: any Decoder) throws {
         let container = try decoder.container(keyedBy: CodingKeys.self)
@@ -82,6 +97,7 @@ public struct LocalReplyResponse: Codable, Equatable, Sendable {
         isDispatch = container.contains(.request)
         request = try container.decodeIfPresent(UUID.self, forKey: .request)
         ambient = try container.decodeIfPresent(LocalAmbientReport.self, forKey: .ambient)
+        update = try container.decodeIfPresent(LocalSessionUpdateReport.self, forKey: .update)
     }
 
     public func encode(to encoder: any Encoder) throws {
@@ -91,6 +107,7 @@ public struct LocalReplyResponse: Codable, Equatable, Sendable {
         try container.encodeIfPresent(code, forKey: .code)
         if isDispatch { try container.encode(request, forKey: .request) }
         try container.encodeIfPresent(ambient, forKey: .ambient)
+        try container.encodeIfPresent(update, forKey: .update)
     }
 }
 
@@ -208,7 +225,7 @@ extension LocalReplyEndpoint {
     }
 
     func submit(_ data: Data, from client: LocalReplyConnection) async {
-        // Only the exact `dispatch` and `ambient` kinds leave the reply path; a frame or any other shape is a reply.
+        // Only the exact `dispatch`, `ambient` and `update` kinds leave the reply path; anything else is a reply.
         let kind = (try? JSONDecoder().decode(LocalRequestKind.self, from: data))?.kind
         let isDispatch = kind == LocalDispatchRequest.kind
         // A reply frame keeps the pre-#200 line cap and answer; only a dispatch may use the larger line.
@@ -226,6 +243,7 @@ extension LocalReplyEndpoint {
         limiter.record(bucket, at: now)
         if isDispatch { return await submitDispatch(data, from: client) }
         if kind == LocalAmbientRequest.kind { return await submitAmbient(data, from: client) }
+        if kind == LocalSessionUpdateRequest.kind { return await submitSessionUpdate(data, from: client) }
         await submitReply(data, from: client)
     }
 

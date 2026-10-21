@@ -48,7 +48,7 @@ extension HostSession {
         case .untargetedText:
             return failure(.notAllowed, "select the destination before speaking", close: false, version: version)
         case .refusedPaste(let reason):
-            return failure(.malformed, reason, close: false, version: version)
+            return failure(pasteRefusal(.malformed), reason, close: false, version: version)
         case .audio(let audio, let target):
             return await ambient(audio, target: target, version: version)
         case .unsupported:
@@ -77,18 +77,25 @@ extension HostSession {
     }
 
     private func deliver(_ input: consuming AuthorizedInput, version: Int) async -> HostSessionResult {
+        // A refused request that carried a paste (#608) is answered with `paste_refused` to a device that takes request
+        // refusals, so it ends that request and keeps the connection; the message is the plain reason. Spoken text
+        // alone, and any device without the capability, is answered as before.
+        let pasteCode = input.carriesPaste ? pasteRefusal(.notAllowed) : nil
+        let refusal: (ErrorCode) -> ErrorCode = { code in pasteCode == .pasteRefused ? .pasteRefused : code }
         // A phone's own final text frame (tap-to-talk) is input from this device (#370).
         switch await deliver(input, recordsLastInput: true) {
         case .delivered:
             return HostSessionResult(frames: [])
         case .confirmationRequired:
-            return failure(.notAllowed, "target requires confirmation at the Mac", close: false, version: version)
+            let message = "target requires confirmation at the Mac"
+            return failure(refusal(.notAllowed), message, close: false, version: version)
         case .selectionChanged:
-            return failure(.notAllowed, "request destination changed", close: false, version: version)
+            return failure(refusal(.notAllowed), "request destination changed", close: false, version: version)
         case .unowned(let message):
+            // Handed off, but with no reply owner: not a refusal of the request, answered as for spoken text.
             return failure(.notAllowed, message, close: false, version: version)
         case .refused(let code, let message):
-            return failure(code, message, close: false, version: version)
+            return failure(refusal(code), message, close: false, version: version)
         }
     }
 
@@ -301,6 +308,11 @@ extension HostSession {
 
     private func deliveryFailure(_ error: any Error, version: Int) -> HostSessionResult {
         failure(deliveryCode(error), "target action was refused", close: false, version: version)
+    }
+
+    /// `paste_refused` for a device that advertised `request_refusals`; `code` otherwise, as before (#608).
+    private func pasteRefusal(_ code: ErrorCode) -> ErrorCode {
+        peerCapabilities.contains(RequestRefusals.capability) ? .pasteRefused : code
     }
 
     private func deliveryCode(_ error: any Error) -> ErrorCode {
