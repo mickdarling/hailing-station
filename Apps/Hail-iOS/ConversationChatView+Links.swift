@@ -27,7 +27,7 @@ extension ConversationChatView {
         ForEach(Array(zip(urls, MessageLinks.titles(urls)).enumerated()), id: \.offset) { _, link in
             let (url, site) = link
             Button("Copy Link: \(site)", systemImage: "link") {
-                UIPasteboard.general.url = url
+                StationPlatform.copy(url)
             }
             ShareLink(item: url) { Label("Share Link: \(site)", systemImage: "square.and.arrow.up.on.square") }
         }
