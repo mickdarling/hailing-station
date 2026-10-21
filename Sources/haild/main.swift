@@ -342,7 +342,7 @@ do {
     case "reply": try await reply(arguments.dropFirst())
     case "ambient": try await ambient(arguments.dropFirst())
     case "coaching" where arguments.dropFirst().first == "trust-app":
-        try CoachingParentTrust.trustApp(Array(arguments.dropFirst(2)))
+        try await CoachingParentTrust.trustApp(Array(arguments.dropFirst(2)))
     case "coaching": try await CoachingCommand.run(Array(arguments.dropFirst()))
     case "rightyo": try await rightyo(arguments.dropFirst())
     case "audit": try audit(arguments.dropFirst())
@@ -396,6 +396,10 @@ do {
     fail("device diagnostics refused: \(error); the log directory must be yours and closed to others")
 } catch ReplyCommandError.usage {
     usage()
+} catch is CoachingParentRefusal {
+    // Distinct from a configuration refusal (64), so the parent gate is testable end to end (#645).
+    note("private coaching refused: not the pinned Hailing Station app, or not its own socketpair")
+    exit(77)
 } catch is CoachingCommandError {
     CoachingTerminal.reportRefusal()
     exit(64)

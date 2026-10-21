@@ -1,74 +1,26 @@
 import Darwin
 import Foundation
+import HailDaemonKit
 import Security
 
-/// The app allowed to drive `haild coaching --parent-control` (#645). The owner records it with
-/// `haild coaching trust-app <path-to-app>`. An ad-hoc build is pinned by bundle identifier plus cdhash, so every
-/// rebuild needs a fresh trust-app. A team-signed build is pinned by team and identifier, and must also run with
-/// the hardened runtime and without `get-task-allow`.
-struct CoachingTrustedApp: Codable, Equatable {
-    let identifier: String
-    let cdhash: String?
-    let teamID: String?
+/// A gate refusal, distinct from a configuration refusal so callers and tests can tell them apart (exit 77).
+/// The pinned app and its file live in CoachingParentTrust+Pin.swift.
+enum CoachingParentRefusal: Error, Equatable { case unverified }
 
-    static let fileName = "coaching-trusted-app.json"
-
-    /// Only plain characters reach the requirement language, so a pin cannot widen its own requirement.
-    var requirement: String? {
-        guard Self.plain(identifier, allowed: Self.identifierCharacters, length: 1...128) else { return nil }
-        switch (cdhash, teamID) {
-        case let (hash?, nil):
-            guard [40, 64].contains(hash.count), Self.plain(hash, allowed: Self.hex, length: 40...64) else {
-                return nil
-            }
-            return "identifier \"\(identifier)\" and cdhash H\"\(hash)\""
-        case let (nil, team?):
-            guard Self.plain(team, allowed: Self.teamCharacters, length: 10...10) else { return nil }
-            return "anchor apple generic and certificate leaf[subject.OU] = \"\(team)\""
-                + " and identifier \"\(identifier)\""
-        default: return nil
-        }
-    }
-
-    private static let identifierCharacters = Set("ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789.-")
-    private static let teamCharacters = Set("ABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789")
-    private static let hex = Set("0123456789abcdef")
-    private static func plain(_ value: String, allowed: Set<Character>, length: ClosedRange<Int>) -> Bool {
-        length.contains(value.count) && value.allSatisfy(allowed.contains)
-    }
-}
-
-/// Every refusal is `localControlRequired`, raised before any coaching configuration is parsed.
+/// Every refusal is `CoachingParentRefusal.unverified`, raised before any coaching configuration is parsed.
 enum CoachingParentTrust {
-    /// Always the account's own `~/.config/hail`, from the password database. The environment is ignored: the
-    /// spawner controls it, so `HAIL_CONFIG_DIR` or `HOME` must not be able to point haild at a pin it wrote.
-    /// Tests inject another file only through the `pinFile:` parameters below.
-    static func pinFile() -> URL {
-        guard let entry = getpwuid(getuid()), let home = entry.pointee.pw_dir else {
-            return URL(fileURLWithPath: "/nonexistent/\(CoachingTrustedApp.fileName)")
-        }
-        return URL(fileURLWithPath: String(cString: home), isDirectory: true)
-            .appendingPathComponent(".config/hail", isDirectory: true)
-            .appendingPathComponent(CoachingTrustedApp.fileName)
-    }
-
-    /// For `haild doctor` and the Mac card: which app is pinned, so a rewritten pin is noticeable.
-    static func pinSummary(pinFile: URL = pinFile()) -> String {
-        guard FileManager.default.fileExists(atPath: pinFile.path) else { return "none pinned" }
-        guard let pin = try? loadPin(pinFile) else { return "pin file refused (not private or malformed)" }
-        if let team = pin.teamID { return "\(pin.identifier), team \(team)" }
-        return "\(pin.identifier), cdhash \(pin.cdhash.map { String($0.prefix(12)) } ?? "?")"
-    }
-
-    /// The control socket's peer is the process that created the socketpair. Its audit token is fixed then, so a
-    /// reused PID cannot stand in for it. A pipe, FIFO or terminal has no peer token and is refused.
-    static func verifyPeer(of descriptor: Int32, pinFile: URL = pinFile()) throws {
+    /// The control socket must be an unnamed socketpair end whose peer is this process's parent, and that peer's
+    /// audit token (fixed when the pair was made, so a reused PID cannot stand in) must satisfy the pin. A pipe,
+    /// FIFO, terminal, or a connection to a named socket someone else listens on is refused. `parent` is a test seam.
+    static func verifyPeer(of descriptor: Int32, pinFile: URL = pinFile(), parent: pid_t = getppid()) throws {
         var details = stat()
-        guard fstat(descriptor, &details) == 0, details.st_mode & S_IFMT == S_IFSOCK else { throw refused }
+        guard fstat(descriptor, &details) == 0, details.st_mode & S_IFMT == S_IFSOCK,
+              unnamed(descriptor, peer: false), unnamed(descriptor, peer: true) else { throw refused }
         var token = audit_token_t()
         var length = socklen_t(MemoryLayout<audit_token_t>.size)
         guard getsockopt(descriptor, SOL_LOCAL, LOCAL_PEERTOKEN, &token, &length) == 0,
-              length == socklen_t(MemoryLayout<audit_token_t>.size) else { throw refused }
+              length == socklen_t(MemoryLayout<audit_token_t>.size),
+              parent > 1, token.val.5 == UInt32(bitPattern: parent) else { throw refused } // val.5 is the pid.
         let pin = try loadPin(pinFile)
         guard let text = pin.requirement else { throw refused }
         var requirement: SecRequirement?, code: SecCode?
@@ -83,30 +35,14 @@ enum CoachingParentTrust {
         }
     }
 
-    /// Same rules as the listener profile: no symlink or FIFO, a small regular file owned by this user, owner-only
-    /// mode bits and no extended ACL. Errors never echo the path or contents.
-    static func loadPin(_ url: URL) throws -> CoachingTrustedApp {
-        let fd = open(url.path, O_RDONLY | O_NOFOLLOW | O_NONBLOCK)
-        guard fd >= 0 else { throw refused }
-        defer { close(fd) }
-        var details = stat()
-        guard fstat(fd, &details) == 0, details.st_mode & S_IFMT == S_IFREG, details.st_uid == getuid(),
-              details.st_mode & 0o077 == 0, (1...1_024).contains(details.st_size),
-              CoachingConfiguration.hasNoExtendedACL(fd) else { throw refused }
-        var buffer = [UInt8](repeating: 0, count: 1_025)
-        let count = buffer.withUnsafeMutableBytes { read(fd, $0.baseAddress, $0.count) }
-        guard count > 0, count <= 1_024,
-              let pin = try? JSONDecoder().decode(CoachingTrustedApp.self, from: Data(buffer.prefix(count))),
-              pin.requirement != nil else { throw refused }
-        return pin
-    }
-
     /// Reads the app's own signature. An ad-hoc signature becomes a cdhash pin; a team signature must already
     /// carry the hardened runtime and no `get-task-allow`.
     static func pin(for code: SecStaticCode) throws -> CoachingTrustedApp {
         guard SecStaticCodeCheckValidity(code, [], nil) == errSecSuccess, let information = signing(code),
               let identifier = information[kSecCodeInfoIdentifier as String] as? String,
-              let unique = information[kSecCodeInfoUnique as String] as? Data else { throw refused }
+              let unique = information[kSecCodeInfoUnique as String] as? Data,
+              // OS binaries (zsh, osascript, TextEdit) are never the coaching app.
+              (information[kSecCodeInfoPlatformIdentifier as String] as? Int ?? 0) == 0 else { throw refused }
         let pin: CoachingTrustedApp
         if let team = information[kSecCodeInfoTeamIdentifier as String] as? String {
             guard hardened(information) else { throw refused }
@@ -119,37 +55,51 @@ enum CoachingParentTrust {
         return pin
     }
 
-    /// `haild coaching trust-app <path>`: owner-run from a terminal only. Writes 0600 in the 0700 config directory.
-    static func trustApp(_ arguments: [String], pinFile: URL = pinFile()) throws {
-        guard isatty(STDIN_FILENO) == 1, arguments.count == 1, let path = arguments.first, path.hasPrefix("/") else {
-            throw refused
+    /// `haild coaching trust-app <path>`: owner-run from a terminal only, and only for a signed Hailing Station
+    /// `.app` (an ad-hoc "Sign to Run Locally" build is fine; a linker-signed-only build is refused). Writes 0600 in
+    /// the 0700 config directory, then records `coaching_app_pinned` in the audit log when it is free.
+    static func trustApp(_ arguments: [String], pinFile: URL = pinFile()) async throws {
+        guard isatty(STDIN_FILENO) == 1, arguments.count == 1, let path = arguments.first else { throw refused }
+        let pin = try hailPin(atPath: path)
+        try write(pin, to: pinFile)
+        let summary = pin.teamID.map { "team \($0)" } ?? "cdhash \(pin.cdhash.map { String($0.prefix(12)) } ?? "?")"
+        var message = "haild: trusted \(pin.identifier) (\(summary)) for private coaching\n"
+        do {
+            _ = try await AuditLog(directory: AuditHistory.standard().directory)
+                .record(.coachingAppPinned(identifier: pin.identifier, pin: summary))
+        } catch {
+            // The running daemon holds the audit writer; `haild doctor` and the Mac card still show the pin.
+            message += "haild: audit log busy or unavailable; the pin is shown by `haild doctor`\n"
         }
+        FileHandle.standardError.write(Data(message.utf8))
+    }
+
+    /// Only a `.app` bundle at an absolute path whose signature names Hail's fixed bundle identifier.
+    static func hailPin(atPath path: String) throws -> CoachingTrustedApp {
+        let url = URL(fileURLWithPath: path).standardizedFileURL
+        guard path.hasPrefix("/"), url.pathExtension == "app" else { throw refused }
         var code: SecStaticCode?
-        guard SecStaticCodeCreateWithPath(URL(fileURLWithPath: path) as CFURL, [], &code) == errSecSuccess,
-              let code else { throw refused }
-        try write(try pin(for: code), to: pinFile)
-        FileHandle.standardError.write(Data("haild: trusted the app for private coaching\n".utf8))
+        guard SecStaticCodeCreateWithPath(url as CFURL, [], &code) == errSecSuccess, let code else { throw refused }
+        let pin = try pin(for: code)
+        guard pin.identifier == CoachingTrustedApp.hailBundleIdentifier else { throw refused }
+        return pin
     }
 
-    static func write(_ pin: CoachingTrustedApp, to url: URL) throws {
-        let directory = url.deletingLastPathComponent()
-        try? FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true,
-                                                 attributes: [.posixPermissions: 0o700])
-        var details = stat()
-        guard lstat(directory.path, &details) == 0, details.st_mode & S_IFMT == S_IFDIR,
-              details.st_uid == getuid(), details.st_mode & 0o077 == 0 else { throw refused }
-        let data = try JSONEncoder().encode(pin)
-        let temporary = directory.appendingPathComponent(".\(CoachingTrustedApp.fileName).\(UUID().uuidString)")
-        let fd = open(temporary.path, O_WRONLY | O_CREAT | O_EXCL | O_NOFOLLOW, 0o600)
-        guard fd >= 0 else { throw refused }
-        let written = data.withUnsafeBytes { Darwin.write(fd, $0.baseAddress, $0.count) }
-        close(fd)
-        guard written == data.count, rename(temporary.path, url.path) == 0 else {
-            unlink(temporary.path); throw refused
+    static var refused: CoachingParentRefusal { .unverified }
+
+    /// A socketpair end has no path on either side; a connection accepted on a named socket does.
+    private static func unnamed(_ descriptor: Int32, peer: Bool) -> Bool {
+        var address = sockaddr_un()
+        var length = socklen_t(MemoryLayout<sockaddr_un>.size)
+        let result = withUnsafeMutablePointer(to: &address) { pointer in
+            pointer.withMemoryRebound(to: sockaddr.self, capacity: 1) {
+                peer ? getpeername(descriptor, $0, &length) : getsockname(descriptor, $0, &length)
+            }
         }
+        guard result == 0, address.sun_family == sa_family_t(AF_UNIX) else { return false }
+        let pathStart = MemoryLayout<sockaddr_un>.offset(of: \.sun_path) ?? 2
+        return Int(length) <= pathStart || address.sun_path.0 == 0
     }
-
-    private static var refused: CoachingCommandError { .localControlRequired }
 
     private static func signing(_ code: SecStaticCode) -> [String: Any]? {
         var information: CFDictionary?
