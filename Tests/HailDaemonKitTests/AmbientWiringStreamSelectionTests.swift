@@ -47,5 +47,43 @@ import Testing
         try await recipientSocketSend(sessionFrame(target: LegacyReferenceRig.target, payload: .audio(segment)),
                                       on: pair.sockets[0])
     }
+
+    /// A reload (#405) swaps the stream's child mid-stream: the new child keeps the selection the stream opened on. It
+    /// dispatches while that selection holds, and nothing once the owner has selected away and back.
+    @Test(arguments: [false, true])
+    func aReloadedChildKeepsTheSelectionItsStreamOpenedOn(_ awayAndBack: Bool) async throws {
+        let fake = try FakeRightyo("/bin/cat > v1-audio.bin")
+        defer { fake.cleanUp() }
+        try fake.install(fixture: "tool-events.jsonl")
+        let env = try await ambientRig(fake, timing: .init(eofGrace: 2, termGrace: 2))
+        let pair = try await FallbackSocketPair.connect(port: env.port, selecting: [RecipientTestRig.target])
+        defer { pair.close() }
+        do {
+            let stream = UUID()
+            try await reloadSend(ambientSegment(stream: stream, sequence: 0), on: pair)
+            try await pair.barrier()
+            // The old child is running its own behaviour before the new install is written.
+            #expect(await eventually { fakeFileSize(fake, "v1-audio.bin") == 3_200 })
+            try rewriteFake(fake, ambientEchoAtEOF)
+            #expect(await env.router.reload() == .reloaded)
+            if awayAndBack {
+                try await pair.select("recipient:other", on: 0)
+                try await pair.select(RecipientTestRig.target, on: 0)
+            }
+            try await reloadSend(ambientSegment(stream: stream, sequence: 1, isFinal: true), on: pair)
+            try await pair.barrier()
+            await settle(env.router, step: "reloaded run")
+            #expect(await env.rig.adapter.contexts.count == (awayAndBack ? 0 : 1))
+        } catch {
+            await env.listener.stop(reason: "synthetic test failed")
+            throw error
+        }
+        await env.listener.stop(reason: "synthetic test complete")
+    }
+
+    private func reloadSend(_ segment: AudioPayload, on pair: FallbackSocketPair) async throws {
+        try await recipientSocketSend(sessionFrame(target: RecipientTestRig.target, payload: .audio(segment)),
+                                      on: pair.sockets[0])
+    }
 }
 #endif
