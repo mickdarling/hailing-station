@@ -64,9 +64,10 @@ extension HostSession {
         guard let gate = authorizer.ambientAudio else {
             return failure(.unauthorized, "terminal action is not authorized", close: false, version: version)
         }
+        // A stream this segment opens keeps the selection generation it opened on (#636).
+        let selection = AmbientSelection(target: selectedTarget, generation: selectionGeneration)
         switch await gate.admission(
-            audio, frameTarget: target, selectedTarget: selectedTarget, connection: connectionID,
-            device: peerDeviceKind
+            audio, frameTarget: target, selection: selection, connection: connectionID, device: peerDeviceKind
         ) {
         case .admitted:
             return HostSessionResult(frames: [])
@@ -133,6 +134,9 @@ extension HostSession {
                 if let owner { replyRequests[owner.context.id] = nil }
                 return .confirmationRequired
             }
+        } catch AdapterError.deliveryFailed(let message) where message == PastedContent.agentOnlyRefusal {
+            // The tmux pane was not running an agent (#608): said plainly, as a paste refusal the device keeps.
+            return .refused(.notAllowed, PastedContent.agentOnlyRefusal)
         } catch {
             return .refused(deliveryCode(error), "target action was refused")
         }

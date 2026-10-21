@@ -18,7 +18,7 @@ struct VoiceRouteRig {
         let adapter = FakeAdapter(kind: "tmux", targets: [
             AdapterTarget(name: "scratch", binding: "s"), AdapterTarget(name: "deck", binding: "d"),
             AdapterTarget(name: "other", binding: "o"), AdapterTarget(name: "rogue", binding: "r")
-        ])
+        ], refusesFramedPastes: true) // its panes are not agents: a framed paste is refused in the adapter (#675)
         let agentAdapter = FakeAdapter(kind: "codex-owned", targets: [AdapterTarget(name: "agent", binding: "a")])
         let registry = Registry()
         try await registry.register(adapter)
