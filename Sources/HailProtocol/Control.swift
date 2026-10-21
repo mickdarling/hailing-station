@@ -66,12 +66,17 @@ public struct HelloInfo: Codable, Sendable, Equatable {
 /// Closed set of error codes. Unknown strings decode to `.unknown` so a newer peer's code is kept, not lost.
 public enum ErrorCode: Sendable, Equatable, Codable {
     case unauthorized, unknownTarget, notAllowed, lockdown, rateLimited, protocolVersion, malformed
+    /// A request that carried a paste (#608) was refused: that request is over, the connection is not.
+    case pasteRefused
     case unknown(String)
+
+    /// Codes that end one request, never the connection (`RequestRefusals`). Every other code ends the connection.
+    public var isRequestRefusal: Bool { RequestRefusals.codes.contains(self) }
 
     private static let names: [String: ErrorCode] = [
         "unauthorized": .unauthorized, "unknown_target": .unknownTarget, "not_allowed": .notAllowed,
         "lockdown": .lockdown, "rate_limited": .rateLimited, "protocol_version": .protocolVersion,
-        "malformed": .malformed
+        "malformed": .malformed, "paste_refused": .pasteRefused
     ]
 
     public var rawValue: String {
@@ -463,6 +468,15 @@ extension ControlPayload: Codable {
             try container.encodeIfPresent(expires, forKey: .expires)
         }
     }
+}
+
+/// Request refusals (#608): an `error` whose code is one of `codes` ends the request it answers, never the
+/// connection. The device advertises `capability` in its `hello`; a host sends these codes only to a device that did,
+/// and otherwise answers as before, because an older device treats every `error` as the end of the connection. The
+/// set is shared: a feature adds its own code here (a voice route refusal, say), never a message prefix.
+public enum RequestRefusals {
+    public static let capability = "request_refusals"
+    public static let codes: [ErrorCode] = [.pasteRefused]
 }
 
 /// Session update cards (#609): a local session's unsolicited update, shown in the thread with the session that sent

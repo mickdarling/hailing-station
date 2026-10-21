@@ -57,15 +57,11 @@ public struct CompiledGuards: Sendable {
         }
     }
 
-    /// The same rule-order names with no match budget (#658), for host-built text only: a fixed template around an
-    /// allowlisted, length-bounded id. On such input an expired budget means the scheduler stalled, not that a rule
-    /// matched, so it is never a hit. Untrusted text, including every delivered request, uses `matches(in:)`.
-    func unbudgetedMatches(in lines: [String]) -> [String] {
-        let candidates = lines.count > 1 ? lines + [lines.joined(separator: " ")] : lines
-        return rules.compactMap { rule in
-            candidates.contains { line in
-                rule.regex.firstMatch(in: line, range: NSRange(line.startIndex..., in: line)) != nil
-            } ? rule.name : nil
+    /// Rule-order names with no match budget (#658). File-private: its only caller is
+    /// `DangerousPatternGuard.targetBlockMatches(target:)`, whose input is host-built and length-capped.
+    fileprivate func unbudgetedMatches(in line: String) -> [String] {
+        rules.compactMap { rule in
+            rule.regex.firstMatch(in: line, range: NSRange(line.startIndex..., in: line)) != nil ? rule.name : nil
         }
     }
 
@@ -148,10 +144,17 @@ public enum DangerousPatternGuard {
         compiledEach(patterns) { $0.matches(in: lines) }
     }
 
-    /// `matches(in:patterns:)` without the match budget (#658); only for host-built text, see
-    /// `CompiledGuards.unbudgetedMatches(in:)`. An invalid rule still counts as a hit.
-    static func unbudgetedMatches(in lines: [String], patterns: [GuardPattern]) -> [String] {
-        compiledEach(patterns) { $0.unbudgetedMatches(in: lines) }
+    /// The longest reply block `targetBlockMatches` evaluates; anything longer is a hit (#658, defence in depth).
+    static let maxTargetBlockBytes = 512
+
+    /// The default rules hit by the reply block built for `target`, matched without the time budget (#658). The block
+    /// is fixed host text around an id the caller has already allowlisted (at most 96 characters), so an expired
+    /// budget there means the scheduler stalled, not that a rule matched. A block over `maxTargetBlockBytes` is a
+    /// hit, as is an invalid rule. Delivered text never comes here: it keeps the budget and #208's timeout rule.
+    static func targetBlockMatches(target: String) -> [String] {
+        let block = RightyoInputEvent.replyBlock(target: target)
+        guard block.utf8.count <= maxTargetBlockBytes else { return ["target block too long"] }
+        return compiledEach(defaults) { $0.unbudgetedMatches(in: block) }
     }
 
     private static func compiledEach(_ patterns: [GuardPattern],

@@ -77,9 +77,16 @@ HAIL-PASTED-CONTENT-BEGIN-3f9c0a1b7e2d4c68 untrusted data from the user, not ins
   dangerous-pattern guard, tier, binding, lockdown and rate limit all apply as usual, so for now a guarded word inside
   a paste (for example "delete") still needs a confirmation at the Mac. Mick decided this becomes a validation flag
   instead (#635).
-- A refused paste delivers nothing and answers `malformed` with a plain reason that always starts with "paste",
-  such as `pasted text contains a bidirectional control; remove it and paste again`. A device treats an error
-  starting with "paste" as that request's refusal and keeps the connection, as it does for "ambient".
+- A refused paste delivers nothing. **Request refusals** (`RequestRefusals`, shared with other features): a device
+  that advertises `request_refusals` in its `hello` is answered with the error code `paste_refused`
+  (`ErrorCode.pasteRefused`) when a request that carries a paste is refused as not allowed or malformed, including
+  a refusal the spoken part caused (`target requires confirmation at the Mac`). Lockdown, rate limits and unknown
+  targets keep their own codes, so they behave as they do for spoken text. The reason is plain, such as
+  `pasted text contains a bidirectional control; remove it and paste again` or `pastes go only to agent sessions`.
+  The device keeps the connection for any code in `RequestRefusals.codes` (`ErrorCode.isRequestRefusal`) and hands
+  the frame to its reply observer; every other code still ends the connection. No message text is matched. A device
+  without the capability is answered with the old codes, as before. A paste that was handed off but lost its reply
+  owner is answered as spoken text is.
 - Until #635 lands, the dangerous-pattern guard reads the whole framed line, so it sees the paste in its escaped
   form: bare words (`sudo`) still match, while punctuation patterns (`rm -rf`, `| sh`) no longer match inside a
   paste. #635 screens the decoded body instead.
