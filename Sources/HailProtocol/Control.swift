@@ -66,12 +66,17 @@ public struct HelloInfo: Codable, Sendable, Equatable {
 /// Closed set of error codes. Unknown strings decode to `.unknown` so a newer peer's code is kept, not lost.
 public enum ErrorCode: Sendable, Equatable, Codable {
     case unauthorized, unknownTarget, notAllowed, lockdown, rateLimited, protocolVersion, malformed
+    /// A request that carried a paste (#608) was refused: that request is over, the connection is not.
+    case pasteRefused
     case unknown(String)
+
+    /// Codes that end one request, never the connection (`RequestRefusals`). Every other code ends the connection.
+    public var isRequestRefusal: Bool { RequestRefusals.codes.contains(self) }
 
     private static let names: [String: ErrorCode] = [
         "unauthorized": .unauthorized, "unknown_target": .unknownTarget, "not_allowed": .notAllowed,
         "lockdown": .lockdown, "rate_limited": .rateLimited, "protocol_version": .protocolVersion,
-        "malformed": .malformed
+        "malformed": .malformed, "paste_refused": .pasteRefused
     ]
 
     public var rawValue: String {
@@ -142,6 +147,7 @@ public enum ControlPayload: Sendable, Equatable {
     /// `priority` (one of `SessionUpdateCard.priorities`), the short line `text` that is or will be spoken, and an
     /// optional `card` body shown, never spoken. `update` identifies it, so a device shows a resent update once. Sent
     /// only to a device that advertises `SessionUpdateCard.capability`. It grants no authority and selects nothing.
+    /// The host fills `session` from the live registry target the update was submitted for, never from caller text.
     case sessionUpdate(update: UUID, session: String, priority: String, text: String, card: String? = nil)
     /// Device to host (#614): ask for the host's health summary. Only `command`; sent only to a host that advertises
     /// `HostHealth.capability`.
@@ -463,6 +469,15 @@ extension ControlPayload: Codable {
             try container.encodeIfPresent(expires, forKey: .expires)
         }
     }
+}
+
+/// Request refusals (#608): an `error` whose code is one of `codes` ends the request it answers, never the
+/// connection. The device advertises `capability` in its `hello`; a host sends these codes only to a device that did,
+/// and otherwise answers as before, because an older device treats every `error` as the end of the connection. The
+/// set is shared: a feature adds its own code here (a voice route refusal, say), never a message prefix.
+public enum RequestRefusals {
+    public static let capability = "request_refusals"
+    public static let codes: [ErrorCode] = [.pasteRefused]
 }
 
 /// Session update cards (#609): a local session's unsolicited update, shown in the thread with the session that sent
@@ -1042,7 +1057,7 @@ extension Schema {
             "additionalProperties": .bool(false),
             "properties": .object([
                 "command": .object([:]),
-                "update": .object(["type": .string("string"), "minLength": .integer(1)]),
+                "update": .object(["type": .string("string"), "format": .string("uuid")]),
                 // The decoder is stricter: printable only and untrimmed refused, as for a guest's name.
                 "session": .object([
                     "type": .string("string"), "minLength": .integer(1),
