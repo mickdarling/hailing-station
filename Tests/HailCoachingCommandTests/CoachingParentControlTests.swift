@@ -75,8 +75,9 @@ import Testing
     }
 
     @Test func parentControlIsRefusedBeforeAnyConfigurationIsRead() async {
-        // Test stdin is never a socket from a pinned app, so even unparseable arguments fail on the parent check.
-        await #expect(throws: CoachingCommandError.localControlRequired) {
+        // Test stdin is never a socket from a pinned app, so even unparseable arguments fail on the parent check,
+        // with the gate's own error (exit 77), not the configuration refusal (64).
+        await #expect(throws: CoachingParentRefusal.unverified) {
             try await CoachingCommand.run(["--parent-control", "--not-a-flag"])
         }
     }
