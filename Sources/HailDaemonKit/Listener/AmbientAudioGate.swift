@@ -97,10 +97,14 @@ public actor AmbientAudioGate {
         let device: String?
         var lastSequence: Int
         var lastActivity: ContinuousClock.Instant
+        /// The session's selection generation when the stream opened (#636), nil from a caller that tracks none.
+        var selection: UUID?
     }
 
     /// The single target an ambient stream may feed; the session's selection must also name it.
     public nonisolated let target: String
+    /// Ends a stream opened before the owner selected away and back (#636).
+    static let reselectedMessage = "ambient stopped: the destination was selected again"
     private let sink: any AmbientAudioSink
     /// Each live connection's last reported input route kind (rightyo#164), dropped when it disconnects.
     private var inputRoutes: [UUID: String] = [:]
@@ -296,6 +300,13 @@ extension AmbientAudioGate {
             guard let current = active, audio.sequence > current.lastSequence else {
                 return refuse(.malformed, "ambient sequence must increase", connection: connection)
             }
+            // The owner selected away and back since it opened (#636): nothing it hears now could be delivered, so it
+            // ends here, ahead of the rate budget, rather than letting RightyO acknowledge a turn the host will refuse.
+            // The device reads an "ambient stopped:" refusal as transient and, after its recovery backoff, opens a
+            // fresh stream on the new selection. Only a stream opened and continued with no generation skips this.
+            guard current.selection == selection.generation else {
+                return refuse(.notAllowed, Self.reselectedMessage, connection: connection)
+            }
             guard spend(audio.bytes.count) else { return overRate(audio, connection: connection) }
         }
         active?.lastSequence = audio.sequence
@@ -326,7 +337,8 @@ extension AmbientAudioGate {
             moved.removeFirst(max(0, moved.count - Self.movedStreamCapacity))
         }
         end(.superseded)
-        active = Stream(id: stream, connection: connection, device: device, lastSequence: -1, lastActivity: clock())
+        active = Stream(id: stream, connection: connection, device: device, lastSequence: -1, lastActivity: clock(),
+                        selection: selection)
         sink.ambientAudio(.started(stream: stream, connection: connection, selection: selection))
         startSweeper()
         return nil
