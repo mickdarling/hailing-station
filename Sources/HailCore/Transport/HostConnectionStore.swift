@@ -178,8 +178,7 @@ public final class HostConnectionStore {
         guard tokens[event.endpointID] == token else { return }
         if receiveAmbientNotice(event) { return }
         replyFrames.append(event)
-        conversation.noteReply(event, selected: selectedTargets[event.endpointID],
-                               targets: snapshots[event.endpointID]?.targets ?? [])
+        conversation.noteReply(event, selected: selectedTargets[event.endpointID])
         onReplyFrame?(event)
         if replyFrames.count > Self.replyFrameLimit {
             replyFrames.removeFirst(replyFrames.count - Self.replyFrameLimit)
@@ -212,7 +211,8 @@ extension HostConnectionStore {
         case .control(.ambientMovedHere(let from)):
             onAmbientMovedHere?(event.endpointID, from)
         case .control(.ambientHeard(let targetID, let text)):
-            conversation.noteSent(text, endpointID: event.endpointID, targetID: targetID)
+            conversation.noteSent(text, endpointID: event.endpointID, targetID: targetID,
+                                  targets: snapshots[event.endpointID]?.targets ?? [])
         case .control(.ambientOverheard(let targetID, let text, let speaker, let name)):
             conversation.noteOverheard(
                 text, owner: speaker == "owner", name: name, endpointID: event.endpointID, targetID: targetID
@@ -317,7 +317,7 @@ extension HostConnectionStore {
     public func sendFinalText(_ text: String, host id: HostEndpoint.Identifier, targetID: String) async throws {
         guard let connection = connections[id] else { throw HostConnectionFailure.notReady }
         try await connection.sendFinalText(text, to: targetID)
-        conversation.noteSent(text, endpointID: id, targetID: targetID)
+        conversation.noteSent(text, endpointID: id, targetID: targetID, targets: snapshots[id]?.targets ?? [])
     }
     public func sendEscape(host id: HostEndpoint.Identifier, targetID: String) async throws {
         guard let connection = connections[id] else { throw HostConnectionFailure.notReady }

@@ -18,14 +18,14 @@ public struct ConversationEntry: Identifiable, Equatable, Sendable {
     /// The known guest who said an overheard turn (#434), from the host's `name`; nil shows "Someone". Never the
     /// owner's, never logged.
     public var name: String?
-    /// A reply from a session other than the one selected when it arrived, such as one the user addressed by name
-    /// (#636): that session's listed name, shown as the reply's label. Nil for every other entry.
+    /// A reply from another session that answers a request the user addressed to it by name from the thread it
+    /// arrived in (#636): that session's listed name, shown as the reply's label. Nil for every other entry.
     public var source: String?
-    /// The target selected when that reply arrived, so it shows in the thread the user was in. Nil otherwise.
+    /// The thread such a reply shows in, besides its own. Nil otherwise.
     public var shownIn: String?
 
-    /// Whether the entry shows in one destination's thread: its own target's entries, plus a reply from another
-    /// session that arrived there (`shownIn`). The one place a thread's membership is decided.
+    /// Whether the entry shows in one destination's thread: its own target's entries, plus a reply that answers a
+    /// request addressed from it to another session (`shownIn`). The one place a thread's membership is decided.
     public func belongs(endpointID: HostEndpoint.Identifier, targetID: String) -> Bool {
         self.endpointID == endpointID && (self.targetID == targetID || shownIn == targetID)
     }
@@ -40,24 +40,33 @@ public final class ConversationLog {
     public static let limit = 200
 
     public private(set) var entries: [ConversationEntry] = []
+    /// Requests the user addressed by name to another session (#636), each open for `addressLifetime`; newest last.
+    @ObservationIgnored private var addressed: [AddressedRequest] = []
     @ObservationIgnored private let now: @Sendable () -> Date
 
     public init(now: @escaping @Sendable () -> Date = { Date() }) {
         self.now = now
     }
 
-    /// Entries for one destination, oldest first, with replies from other sessions that arrived while it was selected.
+    /// Entries for one destination, oldest first, with replies to requests addressed from it to other sessions.
     public func entries(endpointID: HostEndpoint.Identifier, targetID: String) -> [ConversationEntry] {
         entries.filter { $0.belongs(endpointID: endpointID, targetID: targetID) }
     }
 
-    func noteSent(_ text: String, endpointID: HostEndpoint.Identifier, targetID: String) {
+    /// A request the user sent, or (#318) one the ambient stream heard and sent. When it opens with another listed
+    /// session's name and a mark ("Deck, …"), that session's replies show in this thread for `addressLifetime`.
+    func noteSent(_ text: String, endpointID: HostEndpoint.Identifier, targetID: String, targets: [TargetInfo] = []) {
         let trimmed = text.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !trimmed.isEmpty else { return }
         append(ConversationEntry(
             id: "you|\(UUID().uuidString.lowercased())", speaker: .you, text: trimmed,
             endpointID: endpointID, targetID: targetID, date: now()
         ))
+        guard let named = AddressedRequest.target(addressedIn: trimmed, among: targets), named.id != targetID else {
+            return
+        }
+        addressed.append(AddressedRequest(endpointID: endpointID, thread: targetID, target: named, at: now()))
+        if addressed.count > AddressedRequest.limit { addressed.removeFirst(addressed.count - AddressedRequest.limit) }
     }
 
     /// A turn the ambient stream heard but did not send (#398), as the owner's or someone else's, with a known
@@ -77,9 +86,9 @@ public final class ConversationLog {
     }
 
     /// A reply's text frame. The id matches `ReplyPresentation.id`, so the chat can show that reply's playback. A reply
-    /// from a target other than `selected` (#636) is labelled with that target's name in `targets`, or its id, and
-    /// shown in the selected thread. Its label is fixed when its first text arrives.
-    func noteReply(_ event: HostReplyEvent, selected: String? = nil, targets: [TargetInfo] = []) {
+    /// from another session shows in the `selected` thread, labelled, only while a request addressed to it from that
+    /// thread is open (#636); any other stays in its own thread alone. Its placement is fixed at its first text.
+    func noteReply(_ event: HostReplyEvent, selected: String? = nil) {
         guard case .text(let payload) = event.frame.payload, let reply = payload.reply else { return }
         let id = "\(event.endpointID)|\(reply.id.uuidString.lowercased())"
         if let index = entries.firstIndex(where: { $0.id == id }) {
@@ -90,9 +99,12 @@ public final class ConversationLog {
             id: id, speaker: .haili, text: payload.text,
             endpointID: event.endpointID, targetID: reply.targetID, date: now()
         )
-        if let selected, selected != reply.targetID {
-            entry.shownIn = selected
-            entry.source = targets.first { $0.id == reply.targetID }?.name ?? reply.targetID
+        let cutoff = now().addingTimeInterval(-AddressedRequest.addressLifetime)
+        addressed.removeAll { $0.at < cutoff }
+        if let selected, selected != reply.targetID, let request = addressed.last(where: {
+            $0.endpointID == event.endpointID && $0.thread == selected && $0.target.id == reply.targetID
+        }) {
+            (entry.shownIn, entry.source) = (selected, request.target.name)
         }
         append(entry)
     }
