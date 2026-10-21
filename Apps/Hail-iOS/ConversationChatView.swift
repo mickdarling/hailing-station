@@ -38,7 +38,7 @@ struct ConversationChatView: View {
             }
             ScrollViewReader { reader in
                 ScrollView {
-                    LazyVStack(spacing: 10) {
+                    VStack(spacing: 10) { // Not lazy (#428): the log holds at most 200 messages.
                         if entries.isEmpty {
                             Text("Tap to talk. What you say and Haili's replies appear here.")
                                 .font(.subheadline)
