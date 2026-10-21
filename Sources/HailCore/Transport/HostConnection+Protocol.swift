@@ -1,6 +1,9 @@
 import Foundation
 public import HailProtocol
 
+// The frame dispatch and its ambient and request-refusal cases stay together with negotiation.
+// swiftlint:disable file_length
+
 extension HostConnection {
     func negotiate(
         on opened: any WebSocketTransport, token: UInt64
@@ -179,8 +182,10 @@ extension HostConnection {
             await self?.pongTimedOut(nonce: nonce, generation: token)
         }
     }
+
     func pongTimedOut(nonce: String, generation token: UInt64) async {
-        guard isCurrent(token), wantsConnection, pendingPings.removeValue(forKey: nonce) != nil else { return }
+        guard isCurrent(token), wantsConnection,
+              pendingPings.removeValue(forKey: nonce) != nil else { return }
         await replaceLoop()
     }
 
