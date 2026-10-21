@@ -20,9 +20,23 @@ actor DiagnosticSyntheticPublisher {
         }
         try await withCheckedThrowingContinuation { waiting[reply.requestID] = $0 }
     }
-    func waitForCount(_ count: Int) async {
+    /// Waits for `count` replies, or records an issue and returns after `limit`, so a refused request fails its
+    /// test instead of holding the lane until its 300 s stall stop (#745).
+    func waitForCount(_ count: Int, within limit: Duration = .seconds(15)) async {
         if replies.count >= count { return }
+        let timer = Task { [weak self] in
+            try await Task.sleep(for: limit)
+            await self?.giveUpWaiting(for: count, after: limit)
+        }
         await withCheckedContinuation { arrival = (count, $0) }
+        timer.cancel()
+    }
+
+    private func giveUpWaiting(for count: Int, after limit: Duration) {
+        guard let arrival else { return }
+        self.arrival = nil
+        Issue.record("only \(replies.count) of \(count) synthetic replies within \(limit)")
+        arrival.1.resume()
     }
     func complete(_ request: UUID, failing: Bool = false) {
         let continuation = waiting.removeValue(forKey: request)

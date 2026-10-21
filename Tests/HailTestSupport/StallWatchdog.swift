@@ -39,7 +39,9 @@ public enum StallWatchdog {
 
     private static func report(pool: Duration, main: Duration) {
         let pid = String(ProcessInfo.processInfo.processIdentifier)
-        let stacks = output(of: "/usr/bin/sample", [pid, "1"]).map(callGraph)
+        // `sample` suspends the process at each interval; its default 1 ms meant about 1000 suspensions, enough to
+        // run out wall-clock budgets in the very tests it watched (#745). Five, 200 ms apart, still name the holders.
+        let stacks = output(of: "/usr/bin/sample", [pid, "1", "200"]).map(callGraph)
             ?? output(of: "/bin/ps", ["-M", "-p", pid]) ?? "neither sample nor ps -M ran\n"
         let text = "=== #704 stall watchdog in pid \(pid): heartbeats pool \(pool) old, main actor \(main) old ===\n"
             + stacks + "=== end #704 stall watchdog ===\n"
