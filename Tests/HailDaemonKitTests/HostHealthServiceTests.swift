@@ -100,9 +100,9 @@ import Testing
         })
         #expect(await service.current() == Self.report)
         clock.withLock { $0 += .seconds(31) }
-        let started = ContinuousClock.now
-        #expect(await service.current() == Self.report) // stale, at once, though the refresh is stuck
-        #expect(ContinuousClock.now - started < .seconds(1))
+        // The refresh is stuck until `release` is signalled below and the deadline is 30 s, so this answer can only be
+        // the stale cached one. No wall-clock bound: a loaded runner says nothing about the cache (#690 CI).
+        #expect(await service.current() == Self.report)
         release.signal()
         #expect(await eventually { await service.current() == fresh })
         #expect(calls.withLock { $0 } == 2)
