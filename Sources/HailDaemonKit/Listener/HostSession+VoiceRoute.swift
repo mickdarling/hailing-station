@@ -77,17 +77,17 @@ extension HostSession {
         case .nothingToSay(let route) where text.pasted != nil || route.target == target:
             named = route
         case .nothingToSay(let route):
-            return .refused(.malformed, "voice route: nothing to send to \(route.name)")
+            return .refused(routeRefusal(.malformed), "voice route: nothing to send to \(route.name)")
         case .unclear:
-            return .refused(.notAllowed, "voice route: which session? Nothing was sent")
+            return .refused(routeRefusal(.notAllowed), "voice route: which session? Nothing was sent")
         }
         guard named.target != target else { return .deliver(frame, routed: nil) }
         // A policy that cannot be read lists nothing; that is not the route being offline.
         guard await host.refreshedPolicy() != nil, let listed = try? await policyFilteredTargets() else {
-            return .refused(.malformed, "voice route: the target list is unavailable; nothing was sent")
+            return .refused(routeRefusal(.malformed), "voice route: the target list is unavailable; nothing was sent")
         }
         guard listed.contains(where: { $0.id == named.target && $0.alive }) else {
-            return .refused(.unknownTarget, "voice route: \(named.name) is offline; nothing was sent")
+            return .refused(routeRefusal(.unknownTarget), "voice route: \(named.name) is offline; nothing was sent")
         }
         var routed = frame
         routed.target = named.target
@@ -95,5 +95,13 @@ extension HostSession {
         #else
         return .deliver(frame, routed: nil)
         #endif
+    }
+}
+
+extension HostSession {
+    /// `voice_route_refused` for a device that advertised `request_refusals`, so the request ends and the connection
+    /// stays (#665); `code` otherwise, as before, because an older device ends the connection on any `error`.
+    func routeRefusal(_ code: ErrorCode) -> ErrorCode {
+        peerCapabilities.contains(RequestRefusals.capability) ? .voiceRouteRefused : code
     }
 }

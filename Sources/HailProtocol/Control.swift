@@ -68,6 +68,9 @@ public enum ErrorCode: Sendable, Equatable, Codable {
     case unauthorized, unknownTarget, notAllowed, lockdown, rateLimited, protocolVersion, malformed
     /// A request that carried a paste (#608) was refused: that request is over, the connection is not.
     case pasteRefused
+    /// A request that named a voice route (#636) was not sent: the route is offline, the name came alone, or it was
+    /// misheard. That request is over, the connection is not.
+    case voiceRouteRefused
     case unknown(String)
 
     /// Codes that end one request, never the connection (`RequestRefusals`). Every other code ends the connection.
@@ -76,7 +79,7 @@ public enum ErrorCode: Sendable, Equatable, Codable {
     private static let names: [String: ErrorCode] = [
         "unauthorized": .unauthorized, "unknown_target": .unknownTarget, "not_allowed": .notAllowed,
         "lockdown": .lockdown, "rate_limited": .rateLimited, "protocol_version": .protocolVersion,
-        "malformed": .malformed, "paste_refused": .pasteRefused
+        "malformed": .malformed, "paste_refused": .pasteRefused, "voice_route_refused": .voiceRouteRefused
     ]
 
     public var rawValue: String {
@@ -477,7 +480,7 @@ extension ControlPayload: Codable {
 /// set is shared: a feature adds its own code here (a voice route refusal, say), never a message prefix.
 public enum RequestRefusals {
     public static let capability = "request_refusals"
-    public static let codes: [ErrorCode] = [.pasteRefused]
+    public static let codes: [ErrorCode] = [.pasteRefused, .voiceRouteRefused]
 }
 
 /// Session update cards (#609): a local session's unsolicited update, shown in the thread with the session that sent
