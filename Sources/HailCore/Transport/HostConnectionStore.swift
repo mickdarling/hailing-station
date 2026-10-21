@@ -324,7 +324,7 @@ extension HostConnectionStore {
     /// A paste request the Mac refused (#608): the pending pasted turn is marked refused with the reason, and the
     /// station can put the paste back.
     func receivePasteRefusal(_ event: HostReplyEvent) -> Bool {
-        guard case .control(.error(_, let message)) = event.frame.payload, message.hasPrefix("paste") else {
+        guard case .control(.error(.pasteRefused, let message)) = event.frame.payload else {
             return false
         }
         if let refused = conversation.notePasteRefused(message, endpointID: event.endpointID) {

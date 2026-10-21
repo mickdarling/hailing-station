@@ -47,6 +47,8 @@ extension HostSession {
             return failure(.malformed, "only final text can be delivered", close: false, version: version)
         case .untargetedText:
             return failure(.notAllowed, "select the destination before speaking", close: false, version: version)
+        case .refusedPaste(let reason):
+            return failure(pasteRefusal(.malformed), reason, close: false, version: version)
         case .audio(let audio, let target):
             return await ambient(audio, target: target, version: version)
         case .unsupported:
@@ -75,18 +77,28 @@ extension HostSession {
     }
 
     private func deliver(_ input: consuming AuthorizedInput, version: Int) async -> HostSessionResult {
+        // A request that carried a paste (#608) and was refused as not allowed or malformed is answered with
+        // `paste_refused` to a device that takes request refusals, so it ends that request and keeps the connection;
+        // the message is the plain reason. Lockdown, rate limits and unknown targets keep their own codes, as for
+        // spoken text. Spoken text alone, and any device without the capability, is answered as before.
+        let pasteCode = input.carriesPaste ? pasteRefusal(.notAllowed) : nil
+        let refusal: (ErrorCode) -> ErrorCode = { code in
+            pasteCode == .pasteRefused && (code == .notAllowed || code == .malformed) ? .pasteRefused : code
+        }
         // A phone's own final text frame (tap-to-talk) is input from this device (#370).
         switch await deliver(input, recordsLastInput: true) {
         case .delivered:
             return HostSessionResult(frames: [])
         case .confirmationRequired:
-            return failure(.notAllowed, "target requires confirmation at the Mac", close: false, version: version)
+            let message = "target requires confirmation at the Mac"
+            return failure(refusal(.notAllowed), message, close: false, version: version)
         case .selectionChanged:
-            return failure(.notAllowed, "request destination changed", close: false, version: version)
+            return failure(refusal(.notAllowed), "request destination changed", close: false, version: version)
         case .unowned(let message):
+            // Handed off, but with no reply owner: not a refusal of the request, answered as for spoken text.
             return failure(.notAllowed, message, close: false, version: version)
         case .refused(let code, let message):
-            return failure(code, message, close: false, version: version)
+            return failure(refusal(code), message, close: false, version: version)
         }
     }
 
@@ -163,15 +175,17 @@ extension HostSession {
     }
 
     private func send(_ input: borrowing AuthorizedInput, owner: HostReplyOwnership?) async throws -> SendOutcome {
+        let (text, target, device) = (input.text, input.target, input.device)
+        let expectedBinding = owner?.context.binding.sessionID ?? input.expectedBinding
         do {
-            if let owner, owner.contextual {
-                return try await host.send(input.text, context: owner.context, from: input.device)
+            // A framed paste (#608) gets the paste line cap; every other gate is the same.
+            return try await HailHost.$pastedIngress.withValue(input.carriesPaste) {
+                if let owner, owner.contextual {
+                    return try await host.send(text, context: owner.context, from: device)
+                }
+                // Legacy generic input. An unleased ambient record (#230) pins the exact binding it was minted for.
+                return try await host.send(text, to: target, from: device, expectedBinding: expectedBinding)
             }
-            // Legacy generic input. An unleased ambient record (#230) pins the exact binding it was minted for.
-            return try await host.send(
-                input.text, to: input.target, from: input.device,
-                expectedBinding: owner?.context.binding.sessionID ?? input.expectedBinding
-            )
         } catch {
             if let owner { replyRequests[owner.context.id] = nil }
             throw error
@@ -294,6 +308,11 @@ extension HostSession {
 
     private func deliveryFailure(_ error: any Error, version: Int) -> HostSessionResult {
         failure(deliveryCode(error), "target action was refused", close: false, version: version)
+    }
+
+    /// `paste_refused` for a device that advertised `request_refusals`; `code` otherwise, as before (#608).
+    private func pasteRefusal(_ code: ErrorCode) -> ErrorCode {
+        peerCapabilities.contains(RequestRefusals.capability) ? .pasteRefused : code
     }
 
     private func deliveryCode(_ error: any Error) -> ErrorCode {
