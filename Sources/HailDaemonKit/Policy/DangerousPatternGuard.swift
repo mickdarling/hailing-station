@@ -47,41 +47,62 @@ public struct CompiledGuards: Sendable {
     /// once. The joined form catches a command split across lines (a trailing backslash continuation
     /// under a split policy would otherwise put `rm \` and `-rf /` on different Enters).
     public func matches(in lines: [String]) -> [String] {
+        outcomes(in: lines).compactMap { $0.outcome == .none ? nil : $0.name }
+    }
+
+    /// Pasted text's screening (#608), never a gate: the rules that match, and the rules that ran out of budget
+    /// before deciding (`unchecked`), so the note can say the paste was not fully checked rather than look clean.
+    func flags(in lines: [String]) -> (matched: [String], unchecked: [String]) {
+        let results = outcomes(in: lines)
+        return (results.filter { $0.outcome == .match }.map(\.name),
+                results.filter { $0.outcome == .timeout }.map(\.name))
+    }
+
+    enum Outcome { case match, timeout, none }
+
+    /// Each rule's outcome over every candidate line: a match anywhere wins; otherwise a budget that ran out on any
+    /// line is a timeout; otherwise none.
+    private func outcomes(in lines: [String]) -> [(name: String, outcome: Outcome)] {
         let candidates = lines.count > 1 ? lines + [lines.joined(separator: " ")] : lines
         let clock = GuardBudgetClock.current
-        return rules.compactMap { rule in
+        return rules.map { rule in
             let deadline = clock.now() + matchBudget
-            return candidates.contains { line in
-                boundedMatch(rule.regex, in: line, clock: clock, deadline: deadline)
-            } ? rule.name : nil
+            var timedOut = false
+            for line in candidates {
+                switch boundedMatch(rule.regex, in: line, clock: clock, deadline: deadline) {
+                case .match: return (rule.name, .match)
+                case .timeout: timedOut = true
+                case .none: continue
+                }
+            }
+            return (rule.name, timedOut ? .timeout : .none)
         }
     }
 
-    /// The same rule-order names with no match budget (#658), for host-built text only: a fixed template around an
-    /// allowlisted, length-bounded id. On such input an expired budget means the scheduler stalled, not that a rule
-    /// matched, so it is never a hit. Untrusted text, including every delivered request, uses `matches(in:)`.
-    func unbudgetedMatches(in lines: [String]) -> [String] {
-        let candidates = lines.count > 1 ? lines + [lines.joined(separator: " ")] : lines
-        return rules.compactMap { rule in
-            candidates.contains { line in
-                rule.regex.firstMatch(in: line, range: NSRange(line.startIndex..., in: line)) != nil
-            } ? rule.name : nil
+    /// Rule-order names with no match budget (#658). File-private: its only caller is
+    /// `DangerousPatternGuard.targetBlockMatches(target:)`, whose input is host-built and length-capped.
+    fileprivate func unbudgetedMatches(in line: String) -> [String] {
+        rules.compactMap { rule in
+            rule.regex.firstMatch(in: line, range: NSRange(line.startIndex..., in: line)) != nil ? rule.name : nil
         }
     }
 
-    /// ICU progress callbacks bound custom expressions; exceeding the budget is a guard hit, never a bypass.
+    /// ICU progress callbacks bound custom expressions; for the guard a timeout counts as a hit, never a bypass.
     private func boundedMatch(
         _ regex: NSRegularExpression, in line: String, clock: GuardBudgetClock, deadline: ContinuousClock.Instant
-    ) -> Bool {
-        var hit = false
+    ) -> Outcome {
+        var outcome = Outcome.none
         let range = NSRange(line.startIndex..., in: line)
         regex.enumerateMatches(in: line, options: .reportProgress, range: range) { result, _, stop in
-            if result != nil || clock.now() >= deadline {
-                hit = true
+            if result != nil {
+                outcome = .match
+                stop.pointee = true
+            } else if clock.now() >= deadline {
+                outcome = .timeout
                 stop.pointee = true
             }
         }
-        return hit
+        return outcome
     }
 }
 
@@ -148,10 +169,17 @@ public enum DangerousPatternGuard {
         compiledEach(patterns) { $0.matches(in: lines) }
     }
 
-    /// `matches(in:patterns:)` without the match budget (#658); only for host-built text, see
-    /// `CompiledGuards.unbudgetedMatches(in:)`. An invalid rule still counts as a hit.
-    static func unbudgetedMatches(in lines: [String], patterns: [GuardPattern]) -> [String] {
-        compiledEach(patterns) { $0.unbudgetedMatches(in: lines) }
+    /// The longest reply block `targetBlockMatches` evaluates; anything longer is a hit (#658, defence in depth).
+    static let maxTargetBlockBytes = 512
+
+    /// The default rules hit by the reply block built for `target`, matched without the time budget (#658). The block
+    /// is fixed host text around an id the caller has already allowlisted (at most 96 characters), so an expired
+    /// budget there means the scheduler stalled, not that a rule matched. A block over `maxTargetBlockBytes` is a
+    /// hit, as is an invalid rule. Delivered text never comes here: it keeps the budget and #208's timeout rule.
+    static func targetBlockMatches(target: String) -> [String] {
+        let block = RightyoInputEvent.replyBlock(target: target)
+        guard block.utf8.count <= maxTargetBlockBytes else { return ["target block too long"] }
+        return compiledEach(defaults) { $0.unbudgetedMatches(in: block) }
     }
 
     private static func compiledEach(_ patterns: [GuardPattern],
