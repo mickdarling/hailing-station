@@ -96,7 +96,9 @@ Targets that are not routes are listed exactly as before.
 **What the listing exposes.** The personal-terminal listener has no authentication (#7, #21). Any peer that
 completes its handshake receives the target list, so with `--voice-routes` it sees every configured route's id and
 name, offline routes and routes the policy does not allow included. Before routes, it saw only allowed targets.
-Keep the listener on a trusted network, as for everything else it carries. The device's remembered selection matches on id and name,
-so renaming a target forgets it once and the owner picks it again.
+Keep the listener on a trusted network, as for everything else it carries.
+
+The device's remembered selection matches on id and name, so renaming a target forgets it once and the owner picks
+it again.
 
 Verification is synthetic only (`VoiceRouteListingTests`, `VoiceRouteOptionsTests`).

@@ -72,8 +72,9 @@ public struct VoiceRoutes: Sendable, Equatable {
     }
 
     /// `{"version": 1, "default": "tmux:a", "routes": [{"target": "tmux:a", "name": "Scratch", "aliases": [...]}]}`,
-    /// with no other keys; nil when the file does not exist (routing is then off). The file decides where a spoken
-    /// name's request goes, so it is trusted exactly as the destinations file is (`VoiceDestinations.trustedPath`).
+    /// with no other keys; nil when the file does not exist (the daemon then refuses to start). The file decides where
+    /// a spoken name's request goes, so it is trusted exactly as the destinations file is
+    /// (`VoiceDestinations.trustedPath`).
     public static func load(_ url: URL) throws -> VoiceRoutes? {
         var info = stat()
         guard url.isFileURL, url.path.hasPrefix("/") else { throw LoadError.unsafe }

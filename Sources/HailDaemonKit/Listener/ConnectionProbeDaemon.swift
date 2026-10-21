@@ -212,10 +212,17 @@ extension ConnectionProbeDaemon {
             guard let routes = try VoiceRoutes.load(file) else { throw VoiceRoutes.LoadError.missing }
             log(.init(event: "voice_routes", detail: "count=\(routes.routes.count)"))
             return routes
-        } catch {
+        } catch let error as VoiceRoutes.LoadError {
             log(.init(event: "voice_routes", detail: "error=\(error)"))
-            throw error
+            throw VoiceRoutesStartupError(path: file.path, reason: error)
         }
+    }
+
+    /// A routes file that stopped startup, named so the operator can find it: `--voice-routes <path>: missing`.
+    public struct VoiceRoutesStartupError: Error, Equatable, CustomStringConvertible {
+        public let path: String
+        public let reason: VoiceRoutes.LoadError
+        public var description: String { "--voice-routes \(path): \(reason)" }
     }
 
     /// A note input (#552) left behind when a haild exited during its Shortcut: removed at the next start, once older

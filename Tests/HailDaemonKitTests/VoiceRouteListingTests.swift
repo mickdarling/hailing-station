@@ -97,12 +97,16 @@ import Testing
         let log: @Sendable (WebSocketListenerEvent) -> Void = { event in
             events.withLock { $0.append("\(event.event) \(event.detail ?? "")") }
         }
-        #expect(throws: VoiceRoutes.LoadError.missing) { try ConnectionProbeDaemon.voiceRoutes(file, log: log) }
+        let missing = ConnectionProbeDaemon.VoiceRoutesStartupError(path: file.path, reason: .missing)
+        #expect(throws: missing) { try ConnectionProbeDaemon.voiceRoutes(file, log: log) }
+        #expect(missing.description == "--voice-routes \(file.path): missing")
         try Data(#"{"version": 1, "default": "tmux:a", "routes": [{"target": "tmux:a", "name": "A"}]}"#.utf8)
             .write(to: file)
         #expect(try ConnectionProbeDaemon.voiceRoutes(file, log: log).defaultTarget == "tmux:a")
         try Data("not json".utf8).write(to: file)
-        #expect(throws: VoiceRoutes.LoadError.malformed) { try ConnectionProbeDaemon.voiceRoutes(file, log: log) }
+        #expect(throws: ConnectionProbeDaemon.VoiceRoutesStartupError(path: file.path, reason: .malformed)) {
+            try ConnectionProbeDaemon.voiceRoutes(file, log: log)
+        }
         #expect(events.withLock { $0 } == ["voice_routes error=missing", "voice_routes count=1",
                                            "voice_routes error=malformed"])
     }
@@ -127,11 +131,22 @@ import Testing
             return try await ConnectionProbeDaemon.compose(options, host: rig.host, hostName: "mac-test",
                                                            audit: audit, log: { _ in }).0
         }
-        await #expect(throws: VoiceRoutes.LoadError.missing) { _ = try await compose() }
+        await #expect(throws: ConnectionProbeDaemon.VoiceRoutesStartupError(path: file.path, reason: .missing)) {
+            _ = try await compose()
+        }
         try Data(#"{"version": 1, "default": "tmux:a", "routes": [{"target": "tmux:a", "name": "A"}]}"#.utf8)
             .write(to: file)
         let listener = try await compose()
         #expect(await listener.authorizer.voiceRoutes?.defaultTarget == "tmux:a")
+        // Routes on any other authorizer are a wiring fault: refused, never silently skipped (key review on #686).
+        var probe = try ConnectionProbeDaemon.options(Self.base + ["--connection-probe"])
+        (probe.port, probe.voiceRoutes) = (0, file)
+        await #expect(throws: WebSocketListenerError.invalidArguments) {
+            _ = try await ConnectionProbeDaemon.compose(
+                probe, host: rig.host, hostName: "mac-test",
+                audit: AuditLog(directory: scratch.appendingPathComponent("audit-probe")), log: { _ in }
+            )
+        }
     }
 }
 #endif
