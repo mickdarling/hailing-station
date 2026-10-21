@@ -35,5 +35,8 @@ func doctor() -> Never {
         print("\(mark)  \(check.name.padding(toLength: width, withPad: " ", startingAt: 0))  \(check.detail)")
         if let fix = check.fix { print("      fix: \(fix)") }
     }
+    // Informational, never a failure: the app `haild coaching --parent-control` accepts (#645).
+    print("info  \("coaching app".padding(toLength: width, withPad: " ", startingAt: 0))  "
+          + CoachingParentTrust.pinSummary())
     exit(report.healthy ? 0 : 1)
 }
