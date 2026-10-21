@@ -1,0 +1,1 @@
+{"id":"0B0B0B0B-0000-4000-8000-0000000002F3","payload":{"command":"health_report","report":{"version":"0.1.0","build":"/Users/x/haild","checks":[{"name":"daemon_running","ok":true}]}},"source":"host","ts":1,"type":"control","v":1}

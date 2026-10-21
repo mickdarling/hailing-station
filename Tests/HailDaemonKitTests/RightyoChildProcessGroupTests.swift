@@ -7,7 +7,7 @@ import Testing
 /// The child leads its own process group and the whole group is supervised (#297): a wrapper that exits or is
 /// killed alone, leaving descendants holding the stdio pipes, still ends the stream promptly, and the descendants
 /// are ended with it. The name keeps the suite in verify.sh's serial timing lane (`RightyoChildProcess`).
-@Suite(.serialized, .timeLimit(.minutes(1))) struct RightyoChildProcessGroupTests {
+@Suite(.serialized, .timeLimit(.minutes(1)), .frozenGuardBudget) struct RightyoChildProcessGroupTests {
     /// A grandchild that outlives its wrapper while holding stdout; its pid is in `grandchild.txt` before `ready`.
     static let orphaning = "/bin/sleep 60 &\necho $! > grandchild.txt\necho ready"
     static let quick = RightyoChildProcess.Timing(eofGrace: 0.5, termGrace: 0.5)

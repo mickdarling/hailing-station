@@ -57,6 +57,18 @@ public struct CompiledGuards: Sendable {
         }
     }
 
+    /// The same rule-order names with no match budget (#658), for host-built text only: a fixed template around an
+    /// allowlisted, length-bounded id. On such input an expired budget means the scheduler stalled, not that a rule
+    /// matched, so it is never a hit. Untrusted text, including every delivered request, uses `matches(in:)`.
+    func unbudgetedMatches(in lines: [String]) -> [String] {
+        let candidates = lines.count > 1 ? lines + [lines.joined(separator: " ")] : lines
+        return rules.compactMap { rule in
+            candidates.contains { line in
+                rule.regex.firstMatch(in: line, range: NSRange(line.startIndex..., in: line)) != nil
+            } ? rule.name : nil
+        }
+    }
+
     /// ICU progress callbacks bound custom expressions; exceeding the budget is a guard hit, never a bypass.
     private func boundedMatch(
         _ regex: NSRegularExpression, in line: String, clock: GuardBudgetClock, deadline: ContinuousClock.Instant
@@ -133,9 +145,20 @@ public enum DangerousPatternGuard {
     /// Convenience for tests and tools: compiles, then matches. A rule that does not compile counts as a
     /// hit under its own name, so a broken rule fails closed rather than silently disappearing.
     public static func matches(in lines: [String], patterns: [GuardPattern]) -> [String] {
+        compiledEach(patterns) { $0.matches(in: lines) }
+    }
+
+    /// `matches(in:patterns:)` without the match budget (#658); only for host-built text, see
+    /// `CompiledGuards.unbudgetedMatches(in:)`. An invalid rule still counts as a hit.
+    static func unbudgetedMatches(in lines: [String], patterns: [GuardPattern]) -> [String] {
+        compiledEach(patterns) { $0.unbudgetedMatches(in: lines) }
+    }
+
+    private static func compiledEach(_ patterns: [GuardPattern],
+                                     _ match: (CompiledGuards) -> [String]) -> [String] {
         patterns.compactMap { pattern in
             guard let compiled = try? CompiledGuards([pattern]) else { return "\(pattern.name) (invalid rule)" }
-            return compiled.matches(in: lines).first
+            return match(compiled).first
         }
     }
 }

@@ -18,6 +18,8 @@ public struct ConversationEntry: Identifiable, Equatable, Sendable {
     /// The known guest who said an overheard turn (#434), from the host's `name`; nil shows "Someone". Never the
     /// owner's, never logged.
     public var name: String?
+    /// A reply's unspoken Markdown (#606), shown beside its spoken `text` through `MessageMarkdown`; never spoken.
+    public var metadata: String?
 }
 
 /// The session's conversation, in the order things happened: each request as it is sent, each reply as its text
@@ -71,12 +73,15 @@ public final class ConversationLog {
         let id = "\(event.endpointID)|\(reply.id.uuidString.lowercased())"
         if let index = entries.firstIndex(where: { $0.id == id }) {
             entries[index].text = payload.text
+            entries[index].metadata = payload.metadata
             return
         }
-        append(ConversationEntry(
+        var entry = ConversationEntry(
             id: id, speaker: .haili, text: payload.text,
             endpointID: event.endpointID, targetID: reply.targetID, date: now()
-        ))
+        )
+        entry.metadata = payload.metadata
+        append(entry)
     }
 
     private func append(_ entry: ConversationEntry) {

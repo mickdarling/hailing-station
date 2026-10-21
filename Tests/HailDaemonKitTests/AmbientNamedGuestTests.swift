@@ -7,7 +7,7 @@ import Testing
 
 /// Named guests (#434): an overheard turn by an enrolled guest RightyO bound (rightyo#171) carries their display name
 /// to a device that can show it; anything uncertain, invalid or the owner's stays unnamed. Synthetic only.
-@Suite(.serialized, .timeLimit(.minutes(1))) struct AmbientWiringNamedGuestTests {
+@Suite(.serialized, .timeLimit(.minutes(1)), .frozenGuardBudget) struct AmbientWiringNamedGuestTests {
     @Test(arguments: ["Ben", "Zoë", "李雷", "Ben O'Neil", "José-María", "R2-D2", "Ben 🎸"])
     func aPrintableNameIsShown(_ name: String) {
         #expect(AmbientOverheardRelay.guestName(.string(name)) == name)
