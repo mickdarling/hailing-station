@@ -1,6 +1,9 @@
 import Foundation
 public import HailProtocol
 
+// The frame dispatch and its ambient and request-refusal cases stay together with negotiation.
+// swiftlint:disable file_length
+
 extension HostConnection {
     func negotiate(
         on opened: any WebSocketTransport, token: UInt64
@@ -10,7 +13,8 @@ extension HostConnection {
                 versions: VersionNegotiation.supported,
                 capabilities: ["connectivity_lab", PlaybackStop.capability, AmbientTakeOver.capability,
                                AmbientHeard.capability, AmbientOverheard.capability, ReplyMute.capability,
-                               AmbientOverheard.namesCapability, OwnerVoice.capability],
+                               AmbientOverheard.namesCapability, OwnerVoice.capability, MediaMode.capability,
+                               RequestRefusals.capability],
                 // The device's class only (#366), so a host can say "moved to iPad"; never its name.
                 deviceName: deviceName, deviceKind: AmbientHandoff.localDeviceKind
             )),
@@ -40,8 +44,10 @@ extension HostConnection {
         }
         switch frame.payload {
         case .control(.stopPlayback), .control(.setReplyMute), .control(.ambientMovedHere), .control(.ambientHeard),
-             .control(.ambientOverheard), .control(.ownerVoice):
-            // Like reply frames, needing no reply capability (#309, #404, #366, #318, rightyo#164).
+             .control(.ambientOverheard), .control(.ownerVoice), .control(.mediaMode):
+            // Like reply frames, needing no reply capability (#309, #404, #366, #318, rightyo#164, #612).
+            await replyObserver(HostReplyEvent(endpointID: snapshot.id, frame: frame))
+        case .control(.error(let code, _)) where code.isRequestRefusal: // #608: that request is over, not the link
             await replyObserver(HostReplyEvent(endpointID: snapshot.id, frame: frame))
         case .control(let control):
             try await process(control)

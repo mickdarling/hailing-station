@@ -12,7 +12,9 @@ import Testing
         let target: String
     }
 
-    private func readySession(kind: String = "codex-owned") async throws -> Ready {
+    private func readySession(
+        kind: String = "codex-owned", deviceCapabilities: [String] = [RequestRefusals.capability]
+    ) async throws -> Ready {
         let adapter = FakeAdapter(kind: kind, targets: [AdapterTarget(name: "a", binding: "binding-a")])
         let registry = Registry()
         try await registry.register(adapter)
@@ -21,7 +23,7 @@ import Testing
         try policy.allow(target, binding: "binding-a", tier: .open)
         let host = try HailHost(registry: registry, store: InMemoryPolicyStore(policy))
         let session = HostSession(host: host, authorizer: PersonalTerminalAuthorizer())
-        let hello = await session.receive(helloFrame())
+        let hello = await session.receive(helloFrame(capabilities: deviceCapabilities))
         guard case .hello(let info) = try onlyControl(hello) else { throw TestSupportError.expectedOneControl }
         #expect(info.capabilities.contains(PastedText.capability))
         _ = await session.receive(sessionFrame(payload: .control(.select(targetID: target))))
@@ -47,7 +49,8 @@ import Testing
         #expect(result.frames.isEmpty)
         let framed = try PastedContent.frame(spoken: "compare this", pasted: pasted)
         #expect(framed.count > 2_000)
-        #expect(await adapter.deliveries.map(\.text) == [framed])
+        let delivered = await adapter.deliveries.map { PastedContentTests.masked($0.text) }
+        #expect(delivered == [PastedContentTests.masked(framed)])
     }
 
     /// Jarvis and the #628 review: a raw shell pane must never receive a paste. tmux panes, and any kind not known to
@@ -58,7 +61,7 @@ import Testing
         let (session, adapter, target) = (ready.session, ready.adapter, ready.target)
         let result = await session.receive(pasteFrame("compare this", "notes", to: target))
         let refused = try #require(try refusal(result))
-        #expect(refused.0 == .malformed)
+        #expect(refused.0 == .pasteRefused)
         #expect(refused.1 == "pastes go only to agent sessions")
         #expect(await adapter.deliveries.isEmpty)
         // Spoken text alone still goes to that target as before.
@@ -74,7 +77,7 @@ import Testing
         let (session, adapter, target) = (ready.session, ready.adapter, ready.target)
         let note = String(repeating: "Synthetic line of notes.\n", count: 500) // about 12 KB
         let refused = try #require(try refusal(await session.receive(pasteFrame("", note, to: target))))
-        #expect(refused.0 == .malformed)
+        #expect(refused.0 == .pasteRefused)
         #expect(refused.1.hasPrefix("pasted text is too large for this destination"))
         #expect(refused.1.hasSuffix("the limit is \(PayloadLimits.maxTextBytes)"))
         #expect(await adapter.deliveries.isEmpty)
@@ -85,7 +88,7 @@ import Testing
         let (session, adapter, target) = (ready.session, ready.adapter, ready.target)
         let result = await session.receive(pasteFrame("compare", "abc\u{202E}def", to: target))
         let refused = try #require(try refusal(result))
-        #expect(refused.0 == .malformed)
+        #expect(refused.0 == .pasteRefused)
         #expect(refused.1 == "pasted text contains a bidirectional control; remove it and paste again")
         #expect(await adapter.deliveries.isEmpty)
     }
@@ -100,8 +103,30 @@ import Testing
             ))
         }
         let refused = try #require(try refusal(result))
-        #expect(refused.0 == .notAllowed)
+        // Answered as this paste request's refusal (`paste_refused`), which a device keeps the connection for.
+        #expect(refused.0 == .pasteRefused)
+        #expect(refused.1 == "target requires confirmation at the Mac")
         #expect(await adapter.deliveries.isEmpty)
+        // The same refusal for spoken text alone is answered as before.
+        let spoken = await GuardBudgetClock.$current.withValue(.frozen) {
+            await session.receive(sessionFrame(target: target, payload: .text(TextPayload(text: "delete it"))))
+        }
+        let spokenRefusal = try #require(try refusal(spoken))
+        #expect(spokenRefusal.0 == .notAllowed)
+        #expect(spokenRefusal.1 == "target requires confirmation at the Mac")
+    }
+
+    /// A device that did not advertise `request_refusals` is answered with the old codes, as before (#608).
+    @Test func aDeviceWithoutRequestRefusalsGetsTheOldCodes() async throws {
+        let ready = try await readySession(deviceCapabilities: ["probe"])
+        let refused = try #require(try refusal(await ready.session.receive(
+            pasteFrame("compare", "abc\u{202E}def", to: ready.target)
+        )))
+        #expect(refused.0 == .malformed)
+        let guarded = try #require(try refusal(await GuardBudgetClock.$current.withValue(.frozen) {
+            await ready.session.receive(pasteFrame("delete it", "notes", to: ready.target))
+        }))
+        #expect(guarded.0 == .notAllowed)
     }
 
     @Test func spokenTextAloneKeepsTheSpokenCap() async throws {

@@ -56,8 +56,9 @@ import Testing
         ]
         for error in errors {
             let message = PastedContent.refusal(error)
-            #expect(message.contains("paste"))
+            #expect(message.hasPrefix("paste"))
             #expect(message.utf8.count <= ControlLimits.maxErrorMessage)
         }
+        #expect(PastedContent.agentOnlyRefusal.hasPrefix("paste"))
     }
 }

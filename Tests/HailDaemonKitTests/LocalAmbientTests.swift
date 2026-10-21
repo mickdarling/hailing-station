@@ -5,7 +5,7 @@ import Testing
 @testable import HailDaemonKit
 
 /// #405 over the owner-only socket: the `ambient` kind reloads and reports, audited, with no content.
-@Suite(.serialized, .timeLimit(.minutes(1))) struct AmbientWiringLocalSocketTests {
+@Suite(.serialized, .timeLimit(.minutes(1)), .frozenGuardBudget) struct AmbientWiringLocalSocketTests {
     @Test func theSocketReloadsAndReportsWithoutContent() async throws {
         let fake = try FakeRightyo("exec /bin/sleep 60")
         defer { fake.cleanUp() }
