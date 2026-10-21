@@ -22,6 +22,8 @@ struct PasteRefusalHandling {
 /// takes pastes, but an attached paste always stays visible with Remove, and it never follows a destination change.
 /// When the Mac refuses a sent paste, it comes back attached with the reason.
 extension TranscriptionLabView {
+    var attachedPaste: PastedDraft? { pastes.attached }
+
     var pasteControl: some View {
         VStack(alignment: .leading, spacing: 8) {
             if let attachedPaste {
@@ -44,17 +46,17 @@ extension TranscriptionLabView {
         }
         .frame(maxWidth: .infinity, alignment: .leading)
         .onChange(of: destinationID) { _, _ in
-            attachedPaste = nil
+            pastes.attach(nil)
             pasteProblem = nil
         }
         .onChange(of: pasteOffer.refusal) { _, refusal in
             // Only a new refusal of the request this station is waiting on, to this destination: an old one seen
             // again after switching away and back never brings a paste back.
-            guard let refusal, refusal.id != pasteRefusalHandling.handledID, pendingSendID != nil,
+            guard let refusal, refusal.id != pasteRefusalHandling.handledID, let refused = pendingSendID,
                   pendingDestinationID == destinationID,
                   let restored = try? PastedDraft(refusal.pasted) else { return }
             pasteRefusalHandling.handledID = refusal.id
-            attachedPaste = restored
+            pastes.restore(restored, refusing: refused)
             pasteProblem = PastedDraft.Problem.refusedByHost(refusal.message).message
             // That request is over: no reply will come for it, so its reply wait ends and the status leaves
             // "Waiting for reply". The new status is not spoken: the shared request refusal (#692) already adds
@@ -85,9 +87,11 @@ extension TranscriptionLabView {
                     Task { await send("", failurePrefix: "Send failed") }
                 }
                 .buttonStyle(.borderedProminent)
+                // Already on its way with a send whose write has not returned (#636): it never goes twice.
+                .disabled(pastes.isCarried)
                 .accessibilityIdentifier("station.paste.send")
                 Button("Remove", systemImage: "xmark", role: .destructive) {
-                    attachedPaste = nil
+                    pastes.attach(nil)
                     pasteProblem = nil
                 }
                 .buttonStyle(.bordered)
@@ -115,7 +119,7 @@ extension TranscriptionLabView {
     @MainActor
     func attach(_ text: String) {
         do {
-            attachedPaste = try PastedDraft(text)
+            pastes.attach(try PastedDraft(text))
             pasteProblem = nil
         } catch {
             pasteProblem = error.message

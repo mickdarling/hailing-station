@@ -5,7 +5,8 @@ import Testing
 /// #628 review: a framed paste must run nothing in a real shell, whatever quoting the spoken part brings. Pastes go
 /// only to agent sessions; this pins the defence in depth. Every delivered line is run by `bash` and `zsh` in an
 /// empty temporary directory with only `/usr/bin:/bin` on PATH. The canaries live only in the paste, so a created
-/// file, or `PWNED` in the output, would mean paste content ran. Synthetic text only.
+/// file, or `PWNED` in the output, would mean paste content ran. The shells run off the cooperative pool (#704), each
+/// killed if it outlives `deadline`. Synthetic text only.
 @Suite struct PastedContentShellTests {
     private static let pastes = [
         "notes x'; echo PWNED-$((6*7)); touch PWNED #",
@@ -24,11 +25,16 @@ import Testing
         "zq #", "zq \\", "zq ${", "zq <<"
     ]
 
+    private static let deadline = 10.0
+
     private struct Run {
         let status: Int32
         let output: String
     }
 
+    /// Blocks until the shell exits, so only from a body on `HeavyTestExecutor`. A shell still running at `deadline` is
+    /// killed with its whole process group (the shell leads its own), so a child holding the pipe open dies too, the
+    /// read and the wait end, and the test fails.
     private func run(_ shell: String, _ arguments: [String], in directory: URL) throws -> Run {
         let process = Process()
         process.executableURL = URL(fileURLWithPath: shell)
@@ -40,12 +46,22 @@ import Testing
         process.standardOutput = output
         process.standardError = output
         try process.run()
+        let pid = process.processIdentifier
+        let overdue = DispatchWorkItem { _ = Darwin.kill(-pid, SIGKILL) }
+        DispatchQueue.global().asyncAfter(deadline: .now() + Self.deadline, execute: overdue)
         let data = output.fileHandleForReading.readDataToEndOfFile()
         process.waitUntilExit()
+        overdue.cancel()
+        #expect(process.terminationReason == .exit,
+                "\(shell) ended on signal \(process.terminationStatus); one running at \(Self.deadline) s is killed")
         return Run(status: process.terminationStatus, output: String(bytes: data, encoding: .utf8) ?? "")
     }
 
-    @Test func noPasteRunsInBashOrZshWhateverTheSpokenPartQuotes() throws {
+    @Test func noPasteRunsInBashOrZshWhateverTheSpokenPartQuotes() async throws {
+        try await withTaskExecutorPreference(HeavyTestExecutor.shared) { try everyFramedLineIsInertInBothShells() }
+    }
+
+    private func everyFramedLineIsInertInBothShells() throws {
         let shells = [("/bin/bash", ["--norc", "--noprofile", "-c"]), ("/bin/zsh", ["-f", "-c"])]
         var runs = 0
         for paste in Self.pastes {
@@ -68,7 +84,11 @@ import Testing
     }
 
     /// Positive control: the harness does see a canary run. The #628 review's probe, unframed, creates the file.
-    @Test func theHarnessDetectsAPasteThatRuns() throws {
+    @Test func theHarnessDetectsAPasteThatRuns() async throws {
+        try await withTaskExecutorPreference(HeavyTestExecutor.shared) { try harnessSeesTheCanary() }
+    }
+
+    private func harnessSeesTheCanary() throws {
         let directory = FileManager.default.temporaryDirectory
             .appendingPathComponent("hail-paste-control-\(UUID().uuidString)")
         try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: false)
@@ -81,7 +101,11 @@ import Testing
 
     /// With no spoken part, the framed line is one plain simple command to both shells' parsers: no quote, no
     /// substitution, no separator, nothing left open.
-    @Test func aPasteOnItsOwnParsesAsOneSimpleCommand() throws {
+    @Test func aPasteOnItsOwnParsesAsOneSimpleCommand() async throws {
+        try await withTaskExecutorPreference(HeavyTestExecutor.shared) { try everyPasteParsesAsOneCommand() }
+    }
+
+    private func everyPasteParsesAsOneCommand() throws {
         let directory = FileManager.default.temporaryDirectory
             .appendingPathComponent("hail-paste-parse-\(UUID().uuidString)")
         try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: false)
