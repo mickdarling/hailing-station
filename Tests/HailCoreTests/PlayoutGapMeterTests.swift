@@ -67,6 +67,18 @@ import Testing
         #expect(meter.take() == PlayoutGapMeter.Gaps())
     }
 
+    @Test func newAudioAfterAPauseNobodyResumedStillCounts() {
+        // The player resumes its meter whenever new audio has to start the node, so a pause followed by a fresh reply
+        // (the controller supersedes the pause without resuming the player) leaves nothing paused.
+        var meter = PlayoutGapMeter()
+        meter.scheduled(.milliseconds(500), at: at(0), startsReply: true)
+        meter.paused(at: at(2_000))
+        meter.resumed(at: at(5_000))
+        meter.scheduled(.milliseconds(500), at: at(5_000), startsReply: true)
+        meter.scheduled(.milliseconds(500), at: at(5_800), startsReply: false) // dry at 5500: 300 ms gap
+        #expect(meter.take().milliseconds == 300)
+    }
+
     @MainActor
     @Test func playbackEndCarriesTheGapsHeardSinceItBegan() async throws {
         let suite = "hail-playout-gaps-\(UUID().uuidString)"
@@ -77,7 +89,10 @@ import Testing
             clock: { [clock] in clock.now() }
         )
         log.setEnabled(true)
-        let player = GapReportingPlayer(gaps: PlayoutGapMeter.Gaps(count: 2, total: .milliseconds(350)))
+        let player = GapReportingPlayer(gaps: [
+            PlayoutGapMeter.Gaps(count: 5, total: .milliseconds(900)), // counted while muted: dropped at the start
+            PlayoutGapMeter.Gaps(count: 1, total: .milliseconds(350))
+        ])
         let playback = ReplyPlaybackController(player: player)
         log.watch(playback)
         let reply = ReplyDescriptor(id: UUID(), hostID: "main-mac", targetID: "tmux:codex", audioStreamID: UUID())
@@ -95,16 +110,18 @@ import Testing
             clock.advance(by: .seconds(60))
         }
         let end = try #require(events.first { $0.name == .replyPlaybackEnd })
-        #expect(end.fields == [.count: .integer(2), .ms: .integer(350)])
+        #expect(end.fields == [.count: .integer(1), .ms: .integer(350)])
+        #expect(player.takes == 2, "taken at the start, dropping gaps nobody heard, and again at the end")
     }
 }
 
 @MainActor
 private final class GapReportingPlayer: ReplyAudioPlaying, PlayoutGapReporting {
-    private let gaps: PlayoutGapMeter.Gaps
+    private var gaps: [PlayoutGapMeter.Gaps]
     private var played: (@MainActor @Sendable () -> Void)?
+    private(set) var takes = 0
 
-    init(gaps: PlayoutGapMeter.Gaps) { self.gaps = gaps }
+    init(gaps: [PlayoutGapMeter.Gaps]) { self.gaps = gaps }
 
     func schedule(_ payload: AudioPayload, onPlayed: (@MainActor @Sendable () -> Void)?) throws { played = onPlayed }
     func cancel() {}
@@ -112,6 +129,9 @@ private final class GapReportingPlayer: ReplyAudioPlaying, PlayoutGapReporting {
     func resume() {}
     func setMuted(_ muted: Bool) {}
     func replaceQueue(with payloads: [AudioPayload], onPlayed: (@MainActor @Sendable () -> Void)?) {}
-    func takePlayoutGaps() -> PlayoutGapMeter.Gaps { gaps }
+    func takePlayoutGaps() -> PlayoutGapMeter.Gaps {
+        takes += 1
+        return gaps.isEmpty ? PlayoutGapMeter.Gaps() : gaps.removeFirst()
+    }
     func finish() { played?() }
 }

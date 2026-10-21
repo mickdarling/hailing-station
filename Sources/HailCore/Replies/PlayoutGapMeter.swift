@@ -2,7 +2,9 @@
 /// no reserve, so a frame that arrives after the queued audio ran out leaves silence mid-reply. This counts those
 /// gaps against the wall clock: each scheduled buffer extends when the queue runs dry, and a buffer scheduled after
 /// that point, within a reply, is a gap of the difference. A reply's first audio never counts, and a gap shorter
-/// than `threshold` is scheduling noise, not something heard.
+/// than `threshold` is scheduling noise, not something heard. Wall-clock bounds: audio queued into an empty player
+/// starts at its next render cycle, so a frame arriving in that window can read as a gap near the threshold; a
+/// gap already under way when playback pauses is not counted; a hiccup on the audio thread itself is invisible.
 public struct PlayoutGapMeter: Equatable, Sendable {
     public struct Gaps: Equatable, Sendable {
         public var count = 0

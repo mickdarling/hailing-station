@@ -41,6 +41,8 @@ public final class PCM16AudioPlayer: ReplyAudioPlaying {
         let buffers = try PCM16PlaybackBuffers.forPayload(payload)
         try prepare()
         schedule(buffers, onPlayed: onPlayed)
+        // New audio plays the node even after a pause the controller never resumed (a reply arriving while paused).
+        if !node.isPlaying { gapMeter.resumed(at: .now) }
         gapMeter.scheduled(Self.duration(of: buffers), at: .now, startsReply: payload.sequence == 0)
         if !node.isPlaying { node.play() }
     }
