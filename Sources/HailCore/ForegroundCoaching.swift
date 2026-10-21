@@ -14,6 +14,9 @@ public final class ForegroundCoaching {
     public typealias AudioFactory = (PrivateCoachingSession.Hooks) throws -> any ForegroundCoachingAudio
 
     public internal(set) var status = ForegroundCoachingStatus.off
+    /// Why the latest run ended, recorded only when the private audio ended a starting or active run (#645).
+    /// A local Off leaves it nil. Content-free; cleared by the next enable.
+    public internal(set) var endReason: PrivateCoachingEndReason?
     let makeTransport: TransportFactory
     let makeAudio: AudioFactory
     let speech: any ForegroundCoachingSpeech
@@ -53,7 +56,7 @@ public final class ForegroundCoaching {
     public func enable(participantAwareness: Bool) throws {
         guard status == .off, !startupInFlight else { throw ForegroundCoachingError.busy }
         guard participantAwareness else { throw ForegroundCoachingError.awarenessRequired }
-        epoch = UUID()
+        epoch = UUID(); endReason = nil
         let id = epoch, sessionID = UUID(), destinationID = UUID()
         status = .starting; startupInFlight = true
         defer { startupInFlight = false; finishRetirement() }
@@ -68,7 +71,7 @@ public final class ForegroundCoaching {
                   starting(id) else { throw ForegroundCoachingError.transportFailed }
             let owner = try makeAudio(PrivateCoachingSession.Hooks(
                 buffer: { [weak self] in self?.forward($0, lease: $1, epoch: id) },
-                suspended: { [weak self] _, _ in self?.off(epoch: id) }
+                suspended: { [weak self] _, reason in self?.audioEnded(reason, epoch: id) }
             ))
             let startedAt = clock.now()
             guard starting(id) else { owner.stop(); throw ForegroundCoachingError.startupLost }
@@ -95,4 +98,12 @@ public final class ForegroundCoaching {
     /// Disable, participant-awareness loss, profile mutation and permission loss share immediate retirement.
     /// No implicit renewal/restart or retained conversation state survives this boundary.
     public func off() { off(epoch: epoch) }
+
+    /// A local Off reaches here while already retiring, so it records nothing; only an audio-side end is named.
+    func audioEnded(_ reason: CoachingSuspension, epoch id: UUID) {
+        if epoch == id, status == .starting || status == .active, endReason == nil {
+            endReason = PrivateCoachingEndReason(reason)
+        }
+        off(epoch: id)
+    }
 }

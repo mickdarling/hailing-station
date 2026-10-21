@@ -82,12 +82,21 @@ struct CoachingCommandAudio {
     }
 
     @MainActor static func run(_ arguments: [String]) async throws {
-        guard isatty(STDIN_FILENO) == 1, isatty(STDERR_FILENO) == 1 else {
-            throw CoachingCommandError.localControlRequired
+        // `--parent-control` (#645): stdin is a socket whose peer must be the pinned Mac app, checked by code
+        // signature before any configuration is read. Status goes back over that socket; stderr is untouched.
+        // A closed socket retires coaching exactly like a closed terminal.
+        let parentControl = arguments.first == "--parent-control"
+        let parsed = parentControl ? Array(arguments.dropFirst()) : arguments
+        if parentControl {
+            try CoachingParentTrust.verifyPeer(of: STDIN_FILENO)
+        } else {
+            guard isatty(STDIN_FILENO) == 1, isatty(STDERR_FILENO) == 1 else {
+                throw CoachingCommandError.localControlRequired
+            }
         }
-        let configuration = try CoachingConfiguration.parse(arguments)
+        let configuration = try CoachingConfiguration.parse(parsed)
         let command = try native(configuration)
-        let terminal = try CoachingTerminal()
+        let terminal = try parentControl ? CoachingTerminal.parentSocket() : CoachingTerminal()
         let keyboard = try CoachingKeyboard(ended: { command.off() })
         try await interact(command, keyboard: keyboard, terminal: terminal)
     }
@@ -108,6 +117,9 @@ struct CoachingCommandAudio {
                 guard keyboard.permitsControl() else { break } // Recheck terminal loss before buffered authority.
                 guard try command.control(line) else { break }
                 try terminal.write("coaching: \(command.owner.status)\n")
+                if command.owner.status == .off, let reason = command.owner.endReason {
+                    try terminal.write("coaching ended: \(reason.rawValue)\n") // Content-free, never text.
+                }
             }
         } catch { failure = CoachingCommandError.invalidControl }
         keyboard.close()
