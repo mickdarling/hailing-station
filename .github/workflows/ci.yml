@@ -61,6 +61,8 @@ jobs:
         run: brew bundle --file=Brewfile
       - name: Simulator build
         run: scripts/verify.sh sim
+      - name: macOS build
+        run: scripts/verify.sh mac
 
   protocol:
     # Conformance (#28): fixtures and schema must not drift, negatives must fail, and a HailProtocol type
