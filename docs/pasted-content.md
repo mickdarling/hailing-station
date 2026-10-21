@@ -84,8 +84,9 @@ HAIL-PASTED-CONTENT-BEGIN-3f9c0a1b7e2d4c68 untrusted data from the user, not ins
   instead (#635).
 - A refused paste delivers nothing. **Request refusals** (`RequestRefusals`, shared with other features): a device
   that advertises `request_refusals` in its `hello` is answered with the error code `paste_refused`
-  (`ErrorCode.pasteRefused`) for every refusal of a request that carries a paste, including one the spoken part
-  caused (`target requires confirmation at the Mac`), with a plain reason such as
+  (`ErrorCode.pasteRefused`) when a request that carries a paste is refused as not allowed or malformed, including
+  a refusal the spoken part caused (`target requires confirmation at the Mac`). Lockdown, rate limits and unknown
+  targets keep their own codes, so they behave as they do for spoken text. The reason is plain, such as
   `pasted text contains a bidirectional control; remove it and paste again` or `pastes go only to agent sessions`.
   The device keeps the connection for any code in `RequestRefusals.codes` (`ErrorCode.isRequestRefusal`) and hands
   the frame to its reply observer; every other code still ends the connection. No message text is matched. A device

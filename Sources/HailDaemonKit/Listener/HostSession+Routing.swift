@@ -77,11 +77,14 @@ extension HostSession {
     }
 
     private func deliver(_ input: consuming AuthorizedInput, version: Int) async -> HostSessionResult {
-        // A refused request that carried a paste (#608) is answered with `paste_refused` to a device that takes request
-        // refusals, so it ends that request and keeps the connection; the message is the plain reason. Spoken text
-        // alone, and any device without the capability, is answered as before.
+        // A request that carried a paste (#608) and was refused as not allowed or malformed is answered with
+        // `paste_refused` to a device that takes request refusals, so it ends that request and keeps the connection;
+        // the message is the plain reason. Lockdown, rate limits and unknown targets keep their own codes, as for
+        // spoken text. Spoken text alone, and any device without the capability, is answered as before.
         let pasteCode = input.carriesPaste ? pasteRefusal(.notAllowed) : nil
-        let refusal: (ErrorCode) -> ErrorCode = { code in pasteCode == .pasteRefused ? .pasteRefused : code }
+        let refusal: (ErrorCode) -> ErrorCode = { code in
+            pasteCode == .pasteRefused && (code == .notAllowed || code == .malformed) ? .pasteRefused : code
+        }
         // A phone's own final text frame (tap-to-talk) is input from this device (#370).
         switch await deliver(input, recordsLastInput: true) {
         case .delivered:
