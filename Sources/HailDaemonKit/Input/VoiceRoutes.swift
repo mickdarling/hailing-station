@@ -56,11 +56,13 @@ public struct VoiceRoutes: Sendable, Equatable {
     }
 
     /// Shown and spoken, so short and free of controls; and sayable as the matcher hears it: one to three of its
-    /// words, separated by whitespace alone, the first not a greeting it skips ("Okay Deck" could never be said).
+    /// words, separated by whitespace alone, the first not a greeting it skips ("Okay Deck" could never be said), and
+    /// each wholly ASCII letters, digits and apostrophes, so no letter is dropped when keyed ("Café" would key "caf").
     private static func isName(_ spelling: String) -> Bool {
         let words = VoiceDestinations.words(spelling)
         return (1...maxNameLength).contains(spelling.count) && (1...3).contains(words.count)
             && windowKey(spelling, words, 0, words.count) != nil && !VoiceMute.greetings.contains(words[0].text)
+            && words.allSatisfy { $0.key == $0.text.replacingOccurrences(of: "'", with: "") }
             && !spelling.unicodeScalars.contains { CharacterSet.controlCharacters.contains($0) }
     }
 
