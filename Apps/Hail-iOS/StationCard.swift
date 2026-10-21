@@ -195,6 +195,9 @@ struct AmbientListeningCard: View {
         // From the controller, not a view update, so the flag stays right in the background (#282).
         controller.onListeningChange = { [connections] listening in connections.ambientStreaming = listening }
         controller.onUnexpectedStop = { AmbientStopNotifier.post($0) }
+        #if os(macOS)
+        controller.exclusion = .shared // Never alongside private coaching (#645); iOS keeps nil.
+        #endif
         _controller = State(initialValue: controller)
     }
 
@@ -208,6 +211,10 @@ struct AmbientListeningCard: View {
                     .font(.headline)
             }
             .accessibilityIdentifier("station.ambient-toggle")
+            #if os(macOS)
+            // Private coaching and ambient capture never run together (#645).
+            .disabled(!controller.isOn && PrivateListeningExclusion.shared.coachingHoldsAudio)
+            #endif
             Toggle("Mask mic while speaking", isOn: $masksDuringReplies)
                 .font(.subheadline)
                 .accessibilityHint("Sends silence while a reply plays, instead of relying on echo cancellation")
@@ -238,6 +245,9 @@ struct AmbientListeningCard: View {
                 AmbientMovedAwayView(handoff: handoff) {
                     Task { await controller.turnOn(for: binding) }
                 }
+                #if os(macOS)
+                .disabled(PrivateListeningExclusion.shared.coachingHoldsAudio) // The controller also refuses.
+                #endif
             } else if let paused = controller.pausedReason {
                 // Another app has the microphone (#445): still on, and it resumes by itself.
                 Label(paused, systemImage: "pause.circle.fill")

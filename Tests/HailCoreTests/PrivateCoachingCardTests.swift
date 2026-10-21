@@ -125,6 +125,11 @@ struct PrivateCoachingCardTests {
         #expect(!PrivateCoachingConsentText.participantAwareness.isEmpty)
         #expect(PrivateCoachingConsentText.hostedProvider.contains("hosted"))
         #expect(!PrivateCoachingConsentText.headphoneCheck.isEmpty)
+        // Until then every displayed sentence carries the visible marker (also what VoiceOver reads).
+        typealias Shown = PrivateCoachingConsentText.Shown
+        let shown = [Shown.participantAwareness, Shown.hostedProvider, Shown.hostedSpeech, Shown.headphoneCheck]
+        #expect(shown.allSatisfy { $0.hasSuffix(PrivateCoachingConsentText.marker) })
+        #expect(PrivateCoachingConsentText.marker == "(placeholder wording)")
     }
 
     private func live() -> PrivateCoachingCardModel {
