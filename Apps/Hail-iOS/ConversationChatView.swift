@@ -5,6 +5,9 @@ import SwiftUI
 /// message. The reply that owns the player shows its status and Pause, Replay and Mute.
 struct ConversationChatView: View {
     let allEntries: [ConversationEntry]
+    /// The target whose thread this is: another session's reply placed here is labelled (#636), the same reply in
+    /// its own session's thread is not.
+    let threadTargetID: String?
     @Bindable var playback: ReplyPlaybackController
     /// Overheard remarks (#398) appear only when the user chose to show them.
     @AppStorage(OverheardSettingsView.showKey) private var showsOverheard = false
@@ -12,8 +15,9 @@ struct ConversationChatView: View {
     @State private var selecting: ConversationEntry? // The message open for selecting part of it (#412).
     @State private var links = MessageSegmentCache() // Each message's links, parsed once per text (#641 review).
 
-    init(entries: [ConversationEntry], playback: ReplyPlaybackController) {
+    init(entries: [ConversationEntry], threadTargetID: String? = nil, playback: ReplyPlaybackController) {
         allEntries = entries
+        self.threadTargetID = threadTargetID
         self.playback = playback
     }
 
@@ -95,7 +99,7 @@ struct ConversationChatView: View {
                         .font(.caption2.weight(.semibold))
                         .foregroundStyle(.secondary)
                         .accessibilityHidden(true) // The bubble's own label says it.
-                } else if let source = entry.source {
+                } else if let source = Self.placedSource(entry, thread: threadTargetID) {
                     // Another session answered a request addressed to it from this thread (#636).
                     Label(source, systemImage: "arrow.turn.down.right")
                         .font(.caption2.weight(.semibold))
@@ -124,7 +128,7 @@ struct ConversationChatView: View {
                 detailsActions(entry, segments: segments)
             }
             .accessibilityElement(children: .contain)
-            .accessibilityLabel(Self.youSaid(entry) ?? Self.accessibilityLabel(entry))
+            .accessibilityLabel(Self.youSaid(entry) ?? Self.accessibilityLabel(entry, thread: threadTargetID))
             if !isYou { Spacer(minLength: 48) }
         }
     }

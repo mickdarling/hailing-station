@@ -126,6 +126,7 @@ extension RootView {
                 entries: connections.conversation.entries(
                     endpointID: destination.hostID, targetID: destination.target.id, addressed: true
                 ),
+                threadTargetID: destination.target.id,
                 playback: playback
             )
         } else if let reply = playback.latest {
