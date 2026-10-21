@@ -17,17 +17,22 @@ struct AddressedRequest: Sendable {
     let thread: String
     let target: TargetInfo
     let at: Date
+    /// The connection and selection it was sent on (`HostConnectionStore.addressScope`). The host retires its reply
+    /// claim on any reselection or reconnect, so a reply under another scope never matches.
+    let scope: String
 
     /// The listed target `text` opens by addressing: after an optional greeting, a target's listed name (letters
-    /// and digits, case-folded) followed by a mark and then a space or the end. Nil for anything else.
+    /// and digits, case-folded) followed by a mark and then a space or the end. Every mark is tried as the end of
+    /// the name, so a name containing one ("claude-hail, …") still matches. Nil for anything else.
     static func target(addressedIn text: String, among targets: [TargetInfo]) -> TargetInfo? {
-        guard let mark = text.firstIndex(where: { marks.contains($0) }),
-              text[text.index(after: mark)...].first?.isWhitespace ?? true else { return nil }
-        var words = text[..<mark].split(whereSeparator: \.isWhitespace).map { key(String($0)) }
-        if let first = words.first, greetings.contains(first) { words.removeFirst() }
-        let spoken = words.joined()
-        guard !spoken.isEmpty else { return nil }
-        return targets.first { key($0.name) == spoken }
+        for mark in text.indices where marks.contains(text[mark])
+            && text[text.index(after: mark)...].first?.isWhitespace ?? true {
+            var words = text[..<mark].split(whereSeparator: \.isWhitespace).map { key(String($0)) }
+            if let first = words.first, greetings.contains(first) { words.removeFirst() }
+            let spoken = words.joined()
+            if !spoken.isEmpty, let target = targets.first(where: { key($0.name) == spoken }) { return target }
+        }
+        return nil
     }
 
     private static func key(_ text: String) -> String {

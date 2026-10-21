@@ -55,17 +55,21 @@ public final class ConversationLog {
 
     /// A request the user sent, or (#318) one the ambient stream heard and sent. When it opens with another listed
     /// session's name and a mark ("Deck, …"), that session's replies show in this thread for `addressLifetime`.
-    func noteSent(_ text: String, endpointID: HostEndpoint.Identifier, targetID: String, targets: [TargetInfo] = []) {
+    /// `scope` binds the address to the connection and selection it was sent on; without one nothing is recorded.
+    func noteSent(
+        _ text: String, endpointID: HostEndpoint.Identifier, targetID: String, targets: [TargetInfo] = [],
+        scope: String? = nil
+    ) {
         let trimmed = text.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !trimmed.isEmpty else { return }
         append(ConversationEntry(
             id: "you|\(UUID().uuidString.lowercased())", speaker: .you, text: trimmed,
             endpointID: endpointID, targetID: targetID, date: now()
         ))
-        guard let named = AddressedRequest.target(addressedIn: trimmed, among: targets), named.id != targetID else {
-            return
-        }
-        addressed.append(AddressedRequest(endpointID: endpointID, thread: targetID, target: named, at: now()))
+        guard let scope, let named = AddressedRequest.target(addressedIn: trimmed, among: targets),
+              named.id != targetID else { return }
+        addressed.append(AddressedRequest(endpointID: endpointID, thread: targetID, target: named, at: now(),
+                                          scope: scope))
         if addressed.count > AddressedRequest.limit { addressed.removeFirst(addressed.count - AddressedRequest.limit) }
     }
 
@@ -88,7 +92,7 @@ public final class ConversationLog {
     /// A reply's text frame. The id matches `ReplyPresentation.id`, so the chat can show that reply's playback. A reply
     /// from another session shows in the `selected` thread, labelled, only while a request addressed to it from that
     /// thread is open (#636); any other stays in its own thread alone. Its placement is fixed at its first text.
-    func noteReply(_ event: HostReplyEvent, selected: String? = nil) {
+    func noteReply(_ event: HostReplyEvent, selected: String? = nil, scope: String? = nil) {
         guard case .text(let payload) = event.frame.payload, let reply = payload.reply else { return }
         let id = "\(event.endpointID)|\(reply.id.uuidString.lowercased())"
         if let index = entries.firstIndex(where: { $0.id == id }) {
@@ -103,6 +107,7 @@ public final class ConversationLog {
         addressed.removeAll { $0.at < cutoff }
         if let selected, selected != reply.targetID, let request = addressed.last(where: {
             $0.endpointID == event.endpointID && $0.thread == selected && $0.target.id == reply.targetID
+                && $0.scope == scope
         }) {
             (entry.shownIn, entry.source) = (selected, request.target.name)
         }

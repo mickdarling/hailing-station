@@ -11,7 +11,8 @@ import Testing
     private static let targets = [
         TargetInfo(id: "tmux:scratch", kind: "tmux", name: "Hailing Scratch", alive: true),
         TargetInfo(id: "tmux:deck", kind: "tmux", name: "Deck", alive: true),
-        TargetInfo(id: "tmux:voice", kind: "tmux", name: "Voice Work", alive: true)
+        TargetInfo(id: "tmux:voice", kind: "tmux", name: "Voice Work", alive: true),
+        TargetInfo(id: "tmux:claude-hail", kind: "tmux", name: "claude-hail", alive: true)
     ]
 
     private final class Clock: @unchecked Sendable {
@@ -28,9 +29,9 @@ import Testing
     @Test func aReplyToARequestAddressedFromThisThreadShowsHereLabelled() {
         let log = ConversationLog()
         log.noteSent("Deck, add a slide on pricing", endpointID: "mac", targetID: "tmux:scratch",
-                     targets: Self.targets)
-        log.noteReply(reply("Added it.", from: "tmux:deck"), selected: "tmux:scratch")
-        log.noteReply(reply("Done here too.", from: "tmux:scratch"), selected: "tmux:scratch")
+                     targets: Self.targets, scope: "s1")
+        log.noteReply(reply("Added it.", from: "tmux:deck"), selected: "tmux:scratch", scope: "s1")
+        log.noteReply(reply("Done here too.", from: "tmux:scratch"), selected: "tmux:scratch", scope: "s1")
         let thread = log.entries(endpointID: "mac", targetID: "tmux:scratch")
         #expect(thread.map(\.text) == ["Deck, add a slide on pricing", "Added it.", "Done here too."])
         #expect(thread.map(\.source) == [nil, "Deck", nil], "the selected session's own reply needs no label")
@@ -41,12 +42,13 @@ import Testing
     /// Unsolicited, late or someone else's replies from another session never pile into the open thread.
     @Test func aReplyNobodyAddressedFromThisThreadStaysInItsOwn() {
         let log = ConversationLog()
-        log.noteReply(reply("Unrelated.", from: "tmux:deck"), selected: "tmux:scratch")
+        log.noteReply(reply("Unrelated.", from: "tmux:deck"), selected: "tmux:scratch", scope: "s1")
         log.noteSent("Voice Work, run the tests", endpointID: "mac", targetID: "tmux:scratch",
-                     targets: Self.targets)
-        log.noteReply(reply("Still unrelated.", from: "tmux:deck"), selected: "tmux:scratch")
-        log.noteSent("Deck, add a slide", endpointID: "other", targetID: "tmux:scratch", targets: Self.targets)
-        log.noteReply(reply("Wrong endpoint.", from: "tmux:deck"), selected: "tmux:scratch")
+                     targets: Self.targets, scope: "s1")
+        log.noteReply(reply("Still unrelated.", from: "tmux:deck"), selected: "tmux:scratch", scope: "s1")
+        log.noteSent("Deck, add a slide", endpointID: "other", targetID: "tmux:scratch",
+                     targets: Self.targets, scope: "s1")
+        log.noteReply(reply("Wrong endpoint.", from: "tmux:deck"), selected: "tmux:scratch", scope: "s1")
         #expect(log.entries(endpointID: "mac", targetID: "tmux:scratch").map(\.text) == ["Voice Work, run the tests"])
         #expect(log.entries.filter { $0.speaker == .haili }.allSatisfy { $0.shownIn == nil && $0.source == nil })
     }
@@ -54,28 +56,44 @@ import Testing
     @Test func anAddressExpiresWithTheHostsClaim() {
         let clock = Clock()
         let log = ConversationLog(now: { clock.date })
-        log.noteSent("Deck: add a slide", endpointID: "mac", targetID: "tmux:scratch", targets: Self.targets)
+        log.noteSent("Deck: add a slide", endpointID: "mac", targetID: "tmux:scratch",
+                     targets: Self.targets, scope: "s1")
         clock.date += AddressedRequest.addressLifetime - 1
-        log.noteReply(reply("In time.", from: "tmux:deck"), selected: "tmux:scratch")
+        log.noteReply(reply("In time.", from: "tmux:deck"), selected: "tmux:scratch", scope: "s1")
         clock.date += 2
-        log.noteReply(reply("Too late.", from: "tmux:deck"), selected: "tmux:scratch")
+        log.noteReply(reply("Too late.", from: "tmux:deck"), selected: "tmux:scratch", scope: "s1")
         let thread = log.entries(endpointID: "mac", targetID: "tmux:scratch").map(\.text)
         #expect(thread == ["Deck: add a slide", "In time."])
+    }
+
+    /// The host retires its reply claim on any reselection or reconnect, so an address under another scope, or none,
+    /// never places a reply (Codex review on #666).
+    @Test func anAddressOnlyHoldsForTheConnectionAndSelectionItWasSentOn() {
+        let log = ConversationLog()
+        log.noteSent("Deck, add a slide", endpointID: "mac", targetID: "tmux:scratch", targets: Self.targets)
+        log.noteReply(reply("No scope.", from: "tmux:deck"), selected: "tmux:scratch", scope: "s1")
+        log.noteSent("Deck, add a slide", endpointID: "mac", targetID: "tmux:scratch", targets: Self.targets,
+                     scope: "s1")
+        log.noteReply(reply("Reselected.", from: "tmux:deck"), selected: "tmux:scratch", scope: "s2")
+        log.noteReply(reply("Same scope.", from: "tmux:deck"), selected: "tmux:scratch", scope: "s1")
+        let thread = log.entries(endpointID: "mac", targetID: "tmux:scratch").filter { $0.speaker == .haili }
+        #expect(thread.map(\.text) == ["Same scope."])
     }
 
     @Test func thePlacementIsFixedAtTheFirstText() {
         let log = ConversationLog()
         let id = UUID()
-        log.noteSent("Deck, status?", endpointID: "mac", targetID: "tmux:scratch", targets: Self.targets)
-        log.noteReply(reply("First.", id: id, from: "tmux:deck"), selected: "tmux:scratch")
-        log.noteReply(reply("First, then more.", id: id, from: "tmux:deck"), selected: "tmux:voice")
+        log.noteSent("Deck, status?", endpointID: "mac", targetID: "tmux:scratch", targets: Self.targets, scope: "s1")
+        log.noteReply(reply("First.", id: id, from: "tmux:deck"), selected: "tmux:scratch", scope: "s1")
+        log.noteReply(reply("First, then more.", id: id, from: "tmux:deck"), selected: "tmux:voice", scope: "s1")
         #expect(log.entries.last?.text == "First, then more." && log.entries.last?.shownIn == "tmux:scratch")
     }
 
     @Test(arguments: [
         ("Deck, add a slide", "tmux:deck"), ("hey deck - status", "tmux:deck"), ("Voice Work: run it", "tmux:voice"),
         ("Okay hailing scratch, hi", "tmux:scratch"), ("Deck", nil), ("Deck is stopped, check it", nil),
-        ("Deck-building is next", nil), ("Can Deck, add a slide", nil), ("Sales, how are we?", nil)
+        ("Deck-building is next", nil), ("Can Deck, add a slide", nil), ("Sales, how are we?", nil),
+        ("claude-hail, status", "tmux:claude-hail"), ("Hey claude-hail - status", "tmux:claude-hail")
     ])
     func onlyAListedNameAndAMarkAtTheStartAddressASession(_ text: String, _ target: String?) {
         #expect(AddressedRequest.target(addressedIn: text, among: Self.targets)?.id == target)
@@ -102,6 +120,30 @@ extension HostConnectionStoreAmbientBindingTests {
         try await waitUntil { await MainActor.run { store.conversation.entries.count == 2 } }
         let thread = store.conversation.entries(endpointID: endpoint.id, targetID: "tmux:a")
         #expect(thread.map(\.text) == ["Deck, add a slide", "Added it."] && thread.last?.source == "Deck")
+        await store.disconnect(endpoint.id)
+    }
+
+    /// Selecting away and back retires the address, as the host retires its reply claim.
+    @Test func reselectingRetiresAnAddressedRequest() async throws {
+        let ready = try await readyStore(capabilities: ["ping", "select_target", "receive_replies", "send_text"])
+        let (store, endpoint, socket) = (ready.store, ready.endpoint, ready.socket)
+        try await socket.push(.targets([
+            TargetInfo(id: "tmux:a", kind: "tmux", name: "Hailing Scratch", alive: true),
+            TargetInfo(id: "tmux:deck", kind: "tmux", name: "Deck", alive: true)
+        ]))
+        try await waitUntil { await MainActor.run { store.snapshots[endpoint.id]?.targets.count == 2 } }
+        try await select("tmux:a", on: ready)
+        try await store.sendFinalText("Deck, add a slide", host: endpoint.id, targetID: "tmux:a")
+        try await select("tmux:deck", on: ready)
+        try await select("tmux:a", on: ready)
+        let reply = ReplyDescriptor(id: UUID(), hostID: "mac", targetID: "tmux:deck")
+        try await socket.push(FrameCoding.encode(Frame(
+            timestamp: 2, target: "tmux:deck", source: "mac",
+            payload: .text(TextPayload(text: "Late.", isFinal: true, reply: reply))
+        )))
+        try await waitUntil { await MainActor.run { store.conversation.entries.count == 2 } }
+        let thread = store.conversation.entries(endpointID: endpoint.id, targetID: "tmux:a")
+        #expect(thread.map(\.text) == ["Deck, add a slide"])
         await store.disconnect(endpoint.id)
     }
 }
