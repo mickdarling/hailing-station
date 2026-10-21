@@ -315,20 +315,31 @@ extension WebSocketListener {
     /// session is still on it, so nothing a stream heard reaches a target after the owner selected another
     /// destination, even after selecting this one again. A stream without one dispatches nothing: the current
     /// selection is never assumed.
+    ///
+    /// `routedFrom` (#636) is the stream's own target, set only when its consumer addressed one of the owner's voice
+    /// routes instead. The route is bound for this dispatch on the stream's `selection`, so the session admits it
+    /// only while that exact selection of the stream's target holds. A dispatch that starts under an inherited route
+    /// is refused. Every other ambient request, and the local socket's `dispatch` kind, binds none and stays limited
+    /// to the selected target.
     func dispatchAmbient(
-        _ request: LocalDispatchRequest, reference: UUID? = nil, selection: UUID?
+        _ request: LocalDispatchRequest, reference: UUID? = nil, selection: UUID?, routedFrom: String? = nil
     ) async throws -> UUID? {
-        guard let selection else { throw LocalDispatchRefusal.notAuthorized }
+        // Never under a route some other delivery bound: a task it spawned inherits the task-local (#636, #688 review).
+        guard HostSession.voiceRouted == nil, let selection else { throw LocalDispatchRefusal.notAuthorized }
         guard let peer = peers.first(where: { $0.value.session.connectionID == request.connection }) else {
             throw LocalDispatchRefusal.unknownConnection
         }
         var named = request
         named.connection = peer.key
+        // The route is pinned to the selection generation the stream opened on, as the dispatch itself is.
+        let routed = routedFrom.map { HostSession.VoiceRouted(from: $0, to: request.target, generation: selection) }
         // The streaming device's own input (#370): a delivered handoff makes it the target's last input device.
         return try await HostSession.$ambientInputDispatch.withValue(true) {
-            guard let reference else { return try await dispatch(named, generation: selection) }
-            return try await HostSession.$ambientReplyReference.withValue(reference) {
-                try await dispatch(named, generation: selection)
+            try await HostSession.$voiceRouted.withValue(routed) {
+                guard let reference else { return try await dispatch(named, generation: selection) }
+                return try await HostSession.$ambientReplyReference.withValue(reference) {
+                    try await dispatch(named, generation: selection)
+                }
             }
         }
     }
@@ -939,9 +950,10 @@ extension AmbientRightyoRouter {
         (settings.onOwnerVoice, settings.environment) = (ownerVoice(on: connection, listener: listener),
                                                          childEnvironment(for: connection))
         return try RightyoAmbientPipeline(configuration: settings,
-                                          dispatcher: AmbientListenerDispatcher(listener: listener,
-                                                                                audit: configuration.audit,
-                                                                                selection: selection))
+                                          dispatcher: AmbientListenerDispatcher(
+                                              listener: listener, audit: configuration.audit,
+                                              selection: selection, streamTarget: configuration.target
+                                          ))
     }
 
     /// Registers a run for `pipeline` under the caller's lock and returns its id. The task is created under the lock,
@@ -1267,8 +1279,18 @@ struct AmbientListenerDispatcher: RightyoAmbientDispatching {
     let audit: AuditLog?
     /// The selection generation the stream opened on (#636); every request it dispatches is pinned to it.
     var selection: UUID?
-    /// The reply reference (#230) is written first, so the fail-closed audit record carries the final prompt size.
+    /// The stream's own target (#636). A request its consumer routed to another target is dispatched bound to that
+    /// route from this target; nil binds none.
+    var streamTarget: String?
+
     func dispatch(_ request: LocalDispatchRequest) async throws -> UUID? {
+        try await dispatch(request, routed: false)
+    }
+
+    /// The reply reference (#230) is written first, so the fail-closed audit record carries the final prompt size.
+    /// Only a `routed` request to a target other than the stream's is bound as a voice route; any other request to
+    /// another target binds nothing, so the session refuses it.
+    func dispatch(_ request: LocalDispatchRequest, routed: Bool) async throws -> UUID? {
         let (prepared, reference) = await listener.referenceAmbient(request)
         if let audit {
             do {
@@ -1276,7 +1298,9 @@ struct AmbientListenerDispatcher: RightyoAmbientDispatching {
                                                    bytes: prepared.text.utf8.count))
             } catch { throw LocalReplyRefusal.auditFailure }
         }
-        return try await listener.dispatchAmbient(prepared, reference: reference, selection: selection)
+        let from = streamTarget.flatMap { routed && $0 != prepared.target ? $0 : nil }
+        return try await listener.dispatchAmbient(prepared, reference: reference, selection: selection,
+                                                  routedFrom: from)
     }
 }
 extension AmbientRightyoRouter {

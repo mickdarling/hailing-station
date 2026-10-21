@@ -10,9 +10,10 @@ once is out of scope.
 | Slice | State |
 | --- | --- |
 | 1. Allow-list file and the opening-name parser (`VoiceRoutes`) | Merged (#646). Not deployed. |
-| 2. Host listing: route names, offline routes and `--voice-routes` | Merged (#678); startup hardening in #686. Not deployed: `host.sh` does not pass the flag yet (slice 8). |
-| 3. Tap-to-talk routing and reply return (route group) | In review. Not deployed. |
-| 4–8. Ambient routing, refusals, spoken and visual labels (7a model merged in #666), app selector | Proposed; see the [plan on #636](https://github.com/mickdarling/hailing-station/issues/636). |
+| 2. Host listing: route names, offline routes and `--voice-routes` | Merged (#678, #686). Not deployed: `host.sh` does not pass the flag yet (slice 8). |
+| 3. Tap-to-talk routing and reply return (route group) | Merged (#688). Not deployed. |
+| 4a. Ambient dispatch may address a covered route (host authority) | In review. No consumer routes yet (4b). Not deployed. |
+| 4b–8. Ambient routing by the owner's voice, refusals, spoken and visual labels (7a model merged in #666), app selector | Proposed; see the [plan on #636](https://github.com/mickdarling/hailing-station/issues/636). |
 
 Nothing below changes the running daemon or installed builds until a later slice wires it in and it is deployed.
 
@@ -163,3 +164,23 @@ When the host refuses one request and sends nothing (any `ErrorCode.isRequestRef
 This is the only chat line and the only announcement for any refusal code. Feature-specific UI, such as a paste kept
 attached with its reason, adds neither. Verification is synthetic only (`RequestRefusalNoticeTests`), plus the iOS
 Simulator build.
+
+## Ambient dispatch authority (slice 4a)
+
+The listener's ambient delivery step (`AmbientListenerDispatcher`) knows its stream's own target and the selection
+generation the stream opened on (#695). Only a request the consumer's own route match chose
+(`dispatch(_:routed: true)`) is dispatched bound to that route from the stream's target (`HostSession.voiceRouted`),
+on that same generation. A request to another target without that decision binds nothing and is refused.
+
+- **Pinned to the stream.** The session admits a routed request only while the stream's target is still exactly what
+  the connection selects, on the generation the stream opened on. If the owner selects Deck mid-stream, or selects
+  away and back, nothing from the old stream is admitted, routed or not.
+- **No inherited route.** A dispatch that starts while a route is already bound, for example in a task an earlier
+  routed delivery spawned, is refused (`notAuthorized`). The local socket's `dispatch` kind (`haild rightyo
+  --reply-to`) always runs with no route bound, so it stays limited to the selected target.
+- **Nothing else changes.** A target that is not a route is refused `targetNotSelected`. Every other local-dispatch
+  check (exact binding, policy, sanitizer) is unchanged. A plain tmux route still gets its host-minted reply
+  reference (#230) and last-input record (#370), so its reply comes back to the streaming device.
+
+No ambient request addresses a route yet. Slice 4b makes the RightyO consumer choose a route from the owner's own
+turn on an enrolled session. Verification is synthetic only (`VoiceRouteAmbientAuthorityTests`, `VoiceRouteRaceTests`).

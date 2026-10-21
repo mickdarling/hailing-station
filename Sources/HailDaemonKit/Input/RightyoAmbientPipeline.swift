@@ -12,6 +12,16 @@ import Synchronization
 /// `WebSocketListener.dispatch(_:)`; tests supply a fake. Implementations must not retry.
 public protocol RightyoAmbientDispatching: Sendable {
     func dispatch(_ request: LocalDispatchRequest) async throws -> UUID?
+    /// `routed` (#636) says the consumer's own route match chose this request's target: the owner named one of their
+    /// voice routes. Only that decision may carry a request to a target other than the stream's own; without it, a
+    /// different target is just refused. The default dispatches it un-routed.
+    func dispatch(_ request: LocalDispatchRequest, routed: Bool) async throws -> UUID?
+}
+
+extension RightyoAmbientDispatching {
+    public func dispatch(_ request: LocalDispatchRequest, routed: Bool) async throws -> UUID? {
+        try await dispatch(request)
+    }
 }
 
 /// Adapts the consumer's delivery step to a named-connection dispatch. A refusal that follows a completed
