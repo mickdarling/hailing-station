@@ -133,3 +133,37 @@ extension RightyoInputConsumerTests {
         #expect(RightyoVoiceRouting.Refusal.unclear.token == "reason=unclear")
     }
 }
+
+#if os(macOS)
+extension RightyoInputConsumerTests {
+    /// End to end through the listener (#636, review gate on #691): only the owner's own "Deck, …" reaches Deck,
+    /// chosen by the host's own route match. A guest's is typed, un-routed, into the stream's own target; and words
+    /// sent to Deck without the owner's routing decision are refused, with nothing typed.
+    @Test func onlyTheOwnersNamedRequestReachesTheRouteThroughTheListener() async throws {
+        let rig = try await VoiceRouteRig.make()
+        let routes = try VoiceRouteRig.routes()
+        let host = try await rig.session(routes: routes)
+        _ = await rig.listener.installFallbackSyntheticPeers([host])
+        let connection = await host.connectionID
+        let stream = AmbientListenerDispatcher(listener: rig.listener, audit: nil,
+                                               selection: await host.selectionGeneration,
+                                               streamTarget: VoiceRouteRig.scratch)
+        let routing = RightyoVoiceRouting(routes: routes) { await rig.listener.voiceRouteBinding($0) }
+        let consumer = try RightyoInputConsumer(
+            host: nil, target: VoiceRouteRig.scratch, binding: "s", session: session, allowSynthetic: true,
+            dispatcher: RightyoAmbientDispatchStep(connection: connection, dispatcher: stream), routing: routing
+        )
+        _ = try await consumer.consume(start(speakers: "enrolled"))
+        #expect(try await consumer.consume(request(consumer, 0, saying: "Deck, add a slide.", role: "participant")))
+        #expect(await rig.adapter.deliveries.map(\.target) == ["scratch"])
+        #expect(try await consumer.consume(request(consumer, 1, saying: "Deck, add a slide on pricing.")))
+        #expect(await rig.adapter.deliveries.map(\.target) == ["scratch", "deck"])
+        let unrouted = VoiceRouteAmbientAuthorityTests.request(connection, to: VoiceRouteRig.deck, binding: "d")
+        await #expect(throws: LocalDispatchRefusal.targetNotSelected) {
+            try await stream.dispatch(unrouted, routed: false)
+        }
+        #expect(await rig.adapter.deliveries.count == 2)
+        await rig.listener.stop(reason: "synthetic test complete")
+    }
+}
+#endif
