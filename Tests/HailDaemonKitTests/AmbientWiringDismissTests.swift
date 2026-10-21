@@ -6,7 +6,7 @@ import Testing
 
 /// Natural dismissal (rightyo#98) through the ambient pipeline and wiring: an admitted `dismiss` is reported as a
 /// content-free diagnostic and the stream keeps listening.
-@Suite(.serialized, .timeLimit(.minutes(1))) struct AmbientWiringDismissTests {
+@Suite(.serialized, .timeLimit(.minutes(1)), .frozenGuardBudget) struct AmbientWiringDismissTests {
     /// Emits RightyO's dismissal fixture under the given session except its `stopped`, reads stdin to EOF, then
     /// emits `stopped`, as `rightyo listen --mode stdin` does. Argument 7 is the session id.
     static let fixtureUntilEOF = """

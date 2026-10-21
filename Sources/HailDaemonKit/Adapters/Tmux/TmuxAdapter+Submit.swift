@@ -131,8 +131,8 @@ extension TmuxAdapter {
     func attemptSubmit(
         _ session: Session, target: String, tail: PayloadTail, acceptance: TmuxSubmitProbe.Acceptance
     ) async throws -> TmuxSubmitOutcome {
-        let enter = ["send-keys", "-t", session.paneID, "Enter"]
-        try await tmux(enter, failure: AdapterError.deliveryFailed)
+        // After a framed paste (#608) the Enter goes only to a pane still running an agent.
+        try await pressEnter(session.paneID)
         let observe: TmuxSubmitProbe.Observe = { await self.observePane(session.paneID) }
         let before: PaneObservation?
         switch acceptance {
@@ -168,7 +168,7 @@ extension TmuxAdapter {
         case .holding(let seen): steady = seen
         }
         _ = try await verified(target, binding: session.binding)
-        try await tmux(["send-keys", "-t", session.paneID, "Enter"], failure: AdapterError.deliveryFailed)
+        try await pressEnter(session.paneID)
         let reaction = await TmuxSubmitProbe.reaction(
             submitTiming, tail: tail, before: steady, wasHolding: true, observe: observe
         )

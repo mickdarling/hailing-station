@@ -7,7 +7,7 @@ import Testing
 
 /// Own-voice rejection (#269 stage 1): an ambient request that repeats a reply still playing, or just finished,
 /// is the assistant hearing itself and is dropped; Mick's own words, and short commands, are not.
-@Suite struct RecentSpokenRepliesTests {
+@Suite(.frozenGuardBudget) struct RecentSpokenRepliesTests {
     final class Clock: Sendable {
         private let instant = Mutex(ContinuousClock.now)
         var now: ContinuousClock.Instant { instant.withLock { $0 } }

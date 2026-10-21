@@ -21,7 +21,7 @@ import Testing
     }
 
     private var starts: [UUID] {
-        sink.events.compactMap { if case .started(_, let connection) = $0 { connection } else { nil } }
+        sink.events.compactMap { if case .started(_, let connection, _) = $0 { connection } else { nil } }
     }
 
     @Test func aNewStreamFromAnotherDeviceEndsTheFirstAsSupersededAndStartsTheSecond() async {

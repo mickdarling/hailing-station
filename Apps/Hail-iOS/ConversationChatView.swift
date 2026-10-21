@@ -46,7 +46,7 @@ struct ConversationChatView: View {
                                 .frame(maxWidth: .infinity, alignment: .leading)
                         }
                         ForEach(entries) { entry in
-                            bubble(entry).id(entry.id)
+                            if entry.notice { notice(entry).id(entry.id) } else { bubble(entry).id(entry.id) }
                         }
                     }
                     .padding(.vertical, 4)
@@ -66,13 +66,22 @@ struct ConversationChatView: View {
         .accessibilityIdentifier("station.chat")
         // The entry's current text, so a reply still streaming in keeps growing in the sheet.
         .sheet(item: $selecting) { entry in
-            SelectableTextSheet(text: allEntries.first { $0.id == entry.id }?.text ?? entry.text)
+            SelectableTextSheet(text: Self.copyable(allEntries.first { $0.id == entry.id } ?? entry))
         }
     }
 
     /// The reply the player controls now, else the newest reply.
     private var controlledReplyID: String? {
-        playback.presentationForControls?.id ?? entries.last { $0.speaker == .haili }?.id
+        playback.presentationForControls?.id ?? entries.last { $0.speaker == .haili && !$0.notice }?.id
+    }
+
+    /// A host's refusal of one request (#608, #636): a system line, not a message. The store announces it once.
+    private func notice(_ entry: ConversationEntry) -> some View {
+        Label(entry.text, systemImage: "exclamationmark.bubble")
+            .font(.footnote)
+            .foregroundStyle(.secondary)
+            .frame(maxWidth: .infinity, alignment: .center)
+            .accessibilityLabel("Not sent. \(entry.text)")
     }
 
     @ViewBuilder
@@ -87,10 +96,8 @@ struct ConversationChatView: View {
                         .foregroundStyle(.secondary)
                         .accessibilityHidden(true) // The bubble's own label says it.
                 }
-                Text(Self.linked(segments))
-                    .foregroundStyle(entry.overheard ? Color.secondary : isYou ? Color.white : Color.primary)
-                    .tint(isYou ? Color.white : Color.accentColor)
-                    .italic(entry.overheard)
+                messageContent(entry, segments: segments, isYou: isYou)
+                replyDetails(entry)
                 if entry.speaker == .haili, entry.id == controlledReplyID {
                     replyControls
                 }
@@ -104,23 +111,15 @@ struct ConversationChatView: View {
             )
             // Copy, Share or select part of any message (#412).
             .contextMenu {
-                Button("Copy", systemImage: "doc.on.doc") { StationPlatform.copy(entry.text) }
-                ShareLink(item: entry.text)
+                Button("Copy", systemImage: "doc.on.doc") { StationPlatform.copy(Self.copyable(entry)) }
+                ShareLink(item: Self.copyable(entry))
                 Button("Select Text", systemImage: "selection.pin.in.out") { selecting = entry }
-                linkActions(segments)
+                pasteActions(entry)
+                detailsActions(entry, segments: segments)
             }
             .accessibilityElement(children: .contain)
-            .accessibilityLabel(Self.accessibilityLabel(entry))
+            .accessibilityLabel(Self.youSaid(entry) ?? Self.accessibilityLabel(entry))
             if !isYou { Spacer(minLength: 48) }
-        }
-    }
-
-    private static func accessibilityLabel(_ entry: ConversationEntry) -> String {
-        switch (entry.speaker, entry.overheard) {
-        case (.you, false): "You said"
-        case (.you, true): "You said, heard but not sent"
-        case (.someone, _): "\(entry.name ?? "Someone") said, heard but not sent"
-        case (.haili, _): "Haili replied"
         }
     }
 

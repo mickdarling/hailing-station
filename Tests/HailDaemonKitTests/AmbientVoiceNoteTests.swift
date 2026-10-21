@@ -7,7 +7,7 @@ import Testing
 
 /// The owner's spoken note (#552) end to end through the listener: its handler saves the words, and
 /// only then does the device hear whether it saved. Synthetic only: a fake `shortcuts` or a temporary file.
-@Suite(.serialized, .timeLimit(.minutes(1))) struct AmbientVoiceNoteTests {
+@Suite(.serialized, .timeLimit(.minutes(1)), .frozenGuardBudget) struct AmbientVoiceNoteTests {
     static let saved = AmbientAckClip(pcm: Data(repeating: 7, count: 480), sampleRate: 24_000, text: "Saved.")
     static let notSaved = AmbientAckClip(pcm: Data(repeating: 8, count: 480), sampleRate: 24_000,
                                          text: "That didn't save.")
