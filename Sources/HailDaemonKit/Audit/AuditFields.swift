@@ -38,14 +38,18 @@ extension AuditChain {
         case .doctorFailed(let check, let reason):
             builder.own("check", .string(AuditField.clean(check)))
             builder.external("reason", reason)
-        case .delivered, .deliveryRefused, .captured, .pushed:
+        case .delivered, .deliveryRefused, .captured, .pushed, .coachingAppPinned:
             deliveryFields(for: event, into: &builder)
         }
         return (builder.fields, builder.untrusted.sorted())
     }
 
+    /// Deliveries, plus the coaching app pin (#645), split out only to keep each switch small.
     private func deliveryFields(for event: AuditEvent, into builder: inout FieldBuilder) {
         switch event {
+        case .coachingAppPinned(let identifier, let pin):
+            builder.external("identifier", identifier)
+            builder.own("pin", .string(AuditField.clean(pin)))
         case .delivered(let target, let device, let text, let confirmed, let guardHits, let stripped):
             builder.external("target", target)
             builder.device(device)

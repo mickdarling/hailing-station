@@ -38,11 +38,15 @@ public enum AuditEvent: Sendable, Equatable {
     case pushed(tool: String, target: String, bytes: Int)
     case lockdown(on: Bool, reason: String)
     case doctorFailed(check: String, reason: String)
+    /// `haild coaching trust-app` (#645): the app `--parent-control` will accept. `identifier` comes from the
+    /// app's signature, so it is external; `pin` is this daemon's short form ("cdhash <12 hex>" or "team <ID>").
+    case coachingAppPinned(identifier: String, pin: String)
 
     /// Every kind a v1 record may carry; `verify` refuses any other.
     public static let kinds: Set<String> = [
         "chain_opened", "paired", "revoked", "rotated", "connected", "disconnected", "allowed", "denied",
-        "tier_changed", "delivered", "delivery_refused", "captured", "pushed", "lockdown", "doctor_failed"
+        "tier_changed", "delivered", "delivery_refused", "captured", "pushed", "lockdown", "doctor_failed",
+        "coaching_app_pinned"
     ]
 
     public var kind: String {
@@ -62,6 +66,7 @@ public enum AuditEvent: Sendable, Equatable {
         case .pushed: return "pushed"
         case .lockdown: return "lockdown"
         case .doctorFailed: return "doctor_failed"
+        case .coachingAppPinned: return "coaching_app_pinned"
         }
     }
 }

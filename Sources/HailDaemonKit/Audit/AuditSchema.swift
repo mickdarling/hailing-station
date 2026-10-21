@@ -13,7 +13,8 @@ extension AuditChain {
         "denied": ["target"], "tier_changed": ["target", "tier"],
         "delivered": ["target", "device", "text_hash", "bytes", "confirmed", "guard_hits", "stripped"],
         "delivery_refused": ["target", "device", "reason"], "captured": ["target", "device"],
-        "pushed": ["tool", "target", "bytes"], "lockdown": ["on", "reason"], "doctor_failed": ["check", "reason"]
+        "pushed": ["tool", "target", "bytes"], "lockdown": ["on", "reason"], "doctor_failed": ["check", "reason"],
+        "coaching_app_pinned": ["identifier", "pin"]
     ]
 
     static func schemaProblem(_ record: AuditRecord) -> String? {
