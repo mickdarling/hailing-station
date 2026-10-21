@@ -90,8 +90,10 @@ HAIL-PASTED-CONTENT-BEGIN-3f9c0a1b7e2d4c68 untrusted data from the user, not ins
   - Rule names are reduced to plain ASCII words (letters, digits, space, `_ . -`), so a policy file cannot add markup
     or shell syntax. The note never exceeds `PastedContent.validationReserve` (160 bytes): names that do not fit
     become ", and more". `frame` keeps that room free, so a flagged line still fits its target's cap.
-  - On the paste body a rule that runs out of its match budget is not reported (a timeout is not a match), so a long
-    benign paste is never blocked by load. On the spoken part a timeout still fails closed.
+  - On the paste body, a rule that runs out of its match budget doesn't block delivery, so load never blocks a long
+    benign paste. The rule is named instead: `Validation: not fully checked: <rules>.` (or `Validation: contains
+    sudo. Not fully checked: delete.`), so an unchecked paste never looks like a checked, clean one. Rule names are
+    cut to 40 characters. On the spoken part, a timeout still fails closed.
   - Rules are matched on the spoken part and on the paste separately, so a command split across them (spoken
     `git push`, pasted `--force origin main`) is not guarded as one. Pastes go only to agent sessions, never to a
     shell, which is what makes that acceptable.

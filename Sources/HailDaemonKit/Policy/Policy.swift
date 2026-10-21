@@ -182,8 +182,9 @@ public struct PolicyEvaluator: Sendable {
         return .deliver
     }
 
-    /// The guard rules that match a paste's lines (#608): reported to the session as a validation flag, never a gate.
-    func pasteFlags(in lines: [String]) -> [String] { guards.flags(in: lines) }
+    /// The guard rules that match a paste's lines, and those that ran out of budget (#608): reported to the session as
+    /// a validation note, never a gate.
+    func pasteFlags(in lines: [String]) -> (matched: [String], unchecked: [String]) { guards.flags(in: lines) }
 
     /// Capture is its own permission (#41 item 5) and never bypasses lockdown or the binding.
     public func mayCapture(target id: String, binding: String?, lockdown: Bool) -> Bool {
