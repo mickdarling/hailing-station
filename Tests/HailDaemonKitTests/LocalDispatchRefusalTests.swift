@@ -93,7 +93,8 @@ import Testing
         _ = try #require(await session.dispatch(dispatchRequest(connection: UUID())))
         let fresh = recipientText(recipientDescriptor(try #require(await rig.adapter.contexts.last)))
         #expect(!(await session.acceptsHostReply(later)))
-        rig.clock.advance(120_000)
+        // An unanswered request outlives the ordinary two minutes only up to the late-answer bound (#430).
+        rig.clock.advance(Int64(HostReplyRequest.lateAnswerBound.components.seconds) * 1_000)
         #expect(!(await session.acceptsHostReply(fresh)))
         await listener.stop(reason: "synthetic test complete")
     }

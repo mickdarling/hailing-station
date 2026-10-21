@@ -95,7 +95,7 @@ The reference is a routing handle, not an origin claim:
   it, and they are unchanged.
 - The connection's own `HostSession` records it in `replyRequests`. The record goes through the same ingress path
   as any request: authorizer, selection generation, exact listed binding, host reply permit, 64-request capacity
-  and 120-second lifetime. It is committed only after a successful complete handoff. A reference already held is
+  and 120-second lifetime (30 minutes for an answer not yet started, #430). It is committed only after a successful complete handoff. A reference already held is
   never overwritten.
 - The reply path trusts only that host-side record. A reply naming the reference reaches exactly the connection
   that owns the record, while it still selects that target on the same selection generation, with the same media

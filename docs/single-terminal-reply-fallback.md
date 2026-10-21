@@ -30,8 +30,8 @@ refused `notUniqueRecipient` only then, and only when none of them owns the acti
 With `haild run … --personal-terminal --single-terminal-reply-fallback` (off by default, and refused
 without `--personal-terminal`), the listener handles a **request-less** reply as follows. Request-less
 means the descriptor carries no `request` at all: the plain `haild reply --say …` shape. A reply that
-carries an explicit `request` which no live connection currently owns (unknown, expired after the
-120-second lifetime, or whose owner disconnected or selected away) is **not** eligible; it keeps today's
+carries an explicit `request` which no live connection currently owns (unknown, expired after its
+lifetime, or whose owner disconnected or selected away) is **not** eligible; it keeps today's
 `noRecipient`. Only the request-less shape may fall back, so a stale reference can never deliver one
 requester's answer to another phone.
 
@@ -53,7 +53,7 @@ requester's answer to another phone.
 4. A correlated refusal of a known request (duplicate frame ID, wrong audio sequence, pinned descriptor
    mismatch) stays `noRecipient`; the fallback never second-guesses it, because the frame carries a
    request reference. That rule holds while the record exists. Records are pruned on new input from the
-   connection, on selecting another target, on disconnect and after the 120-second lifetime, so a late
+   connection, on selecting another target, on disconnect and after their lifetime, so a late
    reply with an explicit reference is refused after pruning too. A late request-less reply after pruning
    may fall back; on a single-terminal host the consequence is the same phone hearing it.
 
