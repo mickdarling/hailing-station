@@ -12,7 +12,7 @@ import Testing
         try fake.install(fixture: "tool-events.jsonl")
         let events = AmbientEventNames()
         let env = try await ambientRig(fake, timing: .init(eofGrace: 1, termGrace: 1), events: events)
-        let pair = try await FallbackSocketPair.connect(port: env.port, selecting: [RecipientTestRig.target])
+        let pair = try await FallbackSocketPair.boundedConnect(port: env.port, selecting: [RecipientTestRig.target])
         defer { pair.close() }
         try await recipientSocketSend(audio(UUID(), 0), on: pair.sockets[0])
         #expect(await eventually { events.all.contains("ambient_ended") })

@@ -12,8 +12,8 @@ import Testing
 
     @Test func anAdmittedRequestPlaysThePersonasClipOnTheOriginatingPhone() async throws {
         let details = try await run(clips: ["rightyo": [Self.clip]]) { socket in
-            let text = try await recipientSocketReceive(on: socket)
-            let audio = try await recipientSocketReceive(on: socket)
+            let text = try await receiveFrame(on: socket, step: "ack words")
+            let audio = try await receiveFrame(on: socket, step: "ack clip")
             guard case .text(let words) = text.payload, case .audio(let clip) = audio.payload else {
                 Issue.record("expected the clip's words, then the clip")
                 return
@@ -32,15 +32,15 @@ import Testing
 
     @Test func theDefaultFolderVoicesAnUnclippedPersona() async throws {
         let details = try await run(clips: ["default": [Self.clip]]) { socket in
-            _ = try await recipientSocketReceive(on: socket)
-            _ = try await recipientSocketReceive(on: socket)
+            _ = try await receiveFrame(on: socket, step: "ack words")
+            _ = try await receiveFrame(on: socket, step: "ack clip")
         }
         #expect(details.contains { $0.hasPrefix("persona=default clip=0 ") && $0.hasSuffix(" outcome=sent") })
     }
 
     @Test func withoutClipsNothingIsSentAndTheSkipIsLogged() async throws {
         let details = try await run(clips: ["jarvis": [Self.clip]]) { socket in
-            try await recipientSocketBarrier(on: socket)
+            try await barrier(on: socket, step: "no clip sent")
         }
         #expect(details.contains("outcome=skipped reason=no_clips"))
     }
@@ -49,7 +49,7 @@ import Testing
     /// phone and the skip is logged with labels and numbers only.
     @Test func aGatedRequestPlaysNothingAndTheSkipIsLogged() async throws {
         let details = try await run(clips: ["rightyo": [Self.clip]], fixture: Self.gatedFixture) { socket in
-            try await recipientSocketBarrier(on: socket)
+            try await barrier(on: socket, step: "gated, no clip sent")
         }
         #expect(details == ["outcome=skipped reason=gated follow_up=false confidence=1.00"])
     }
@@ -68,7 +68,7 @@ import Testing
         let rig = try await RecipientTestRig.make()
         let listener = try fallbackListener(rig: rig, enabled: false)
         let port = try await listener.start()
-        let pair = try await FallbackSocketPair.connect(port: port, selecting: [RecipientTestRig.target])
+        let pair = try await FallbackSocketPair.boundedConnect(port: port, selecting: [RecipientTestRig.target])
         defer { pair.close() }
         let connection = try #require(await listener.ackTestConnectionID())
         var target = RecipientTestRig.target
@@ -80,11 +80,11 @@ import Testing
         let named = expected == "no_connection" ? UUID() : connection
         #expect(await listener.acknowledgeAmbient(connection: named, target: target, clip: Self.clip) == expected)
         if expected == "sent" {
-            _ = try await recipientSocketReceive(on: pair.sockets[0])
-            let audio = try await recipientSocketReceive(on: pair.sockets[0])
+            _ = try await receiveFrame(on: pair.sockets[0], step: "guarded ack words")
+            let audio = try await receiveFrame(on: pair.sockets[0], step: "guarded ack clip")
             #expect(audio.source == "mac-test" && audio.target == RecipientTestRig.target)
         } else {
-            try await pair.barrier() // Nothing reached the phone.
+            try await pair.boundedBarrier(step: "nothing reached the phone")
         }
         await listener.stop(reason: "synthetic test complete")
     }
@@ -105,7 +105,7 @@ import Testing
                 if event.event == "ambient_acknowledged" { details.withLock { $0.append(event.detail ?? "") } }
             }
         )
-        let pair = try await FallbackSocketPair.connect(port: env.port, selecting: [RecipientTestRig.target])
+        let pair = try await FallbackSocketPair.boundedConnect(port: env.port, selecting: [RecipientTestRig.target])
         defer { pair.close() }
         let stream = UUID()
         try await recipientSocketSend(audio(stream, 0), on: pair.sockets[0])

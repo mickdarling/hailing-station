@@ -62,11 +62,52 @@ func receiveFrame(
     }
 }
 
-/// `recipientSocketBarrier` with a bound: a ping, then its pong within `within`, else an issue naming `step`.
+/// `recipientSocketBarrier` with a bound: a ping, then its pong within `within`, else an issue naming `step`. A stray
+/// reply fails the test there, as it does unbounded.
 func barrier(on socket: URLSessionWebSocketTask, step: String, within: Duration = .seconds(15)) async throws {
     let nonce = UUID().uuidString
     try await recipientSocketSend(sessionFrame(payload: .control(.ping(nonce: nonce))), on: socket)
-    #expect(try await receiveFrame(on: socket, step: step, within: within).payload == .control(.pong(nonce: nonce)))
+    let received = try await receiveFrame(on: socket, step: step, within: within).payload
+    try #require(received == .control(.pong(nonce: nonce)), "Unexpected payload at \(step): \(received)")
+}
+
+/// The pair's waits with a bound (#636): `URLSessionWebSocketTask.receive()` ignores task cancellation, so a suite's
+/// time limit cannot end a wait for a frame that never comes. Each wait records an issue naming its step instead.
+extension FallbackSocketPair {
+    /// `connect`, with each hello reply and setup barrier bounded.
+    static func boundedConnect(
+        port: UInt16, selecting targets: [String?], capabilities: [String] = ["probe"]
+    ) async throws -> Self {
+        var pair = Self(sessions: [], sockets: [])
+        do {
+            for target in targets {
+                let (session, socket) = try recipientSocket(port: port)
+                pair = Self(sessions: pair.sessions + [session], sockets: pair.sockets + [socket])
+                try await recipientSocketSend(helloFrame(capabilities: capabilities), on: socket)
+                _ = try await receiveFrame(on: socket, step: "connection hello")
+                if let target {
+                    let select = sessionFrame(payload: .control(.select(targetID: target)))
+                    try await recipientSocketSend(select, on: socket)
+                }
+                try await HailDaemonKitTests.barrier(on: socket, step: "connection setup")
+            }
+        } catch {
+            pair.close()
+            throw error
+        }
+        return pair
+    }
+
+    /// `barrier`: every socket idle within the bound; a stray reply is a failure, never a timing inference.
+    func boundedBarrier(step: String) async throws {
+        for socket in sockets { try await HailDaemonKitTests.barrier(on: socket, step: step) }
+    }
+
+    /// `select`, with its barrier bounded.
+    func boundedSelect(_ target: String, on index: Int) async throws {
+        try await recipientSocketSend(sessionFrame(payload: .control(.select(targetID: target))), on: sockets[index])
+        try await HailDaemonKitTests.barrier(on: sockets[index], step: "select \(target)")
+    }
 }
 
 /// Waits, at most `within`, for every router run to return (#378); otherwise records an issue naming `step`, so a
@@ -97,9 +138,12 @@ func eventually(_ condition: @Sendable () async -> Bool) async -> Bool {
     return false
 }
 
-/// The next frame must be an `ambient`-prefixed, connection-keeping error; returns its message.
-func ambientError(on socket: URLSessionWebSocketTask, code expected: ErrorCode = .notAllowed) async throws -> String {
-    let frame = try await recipientSocketReceive(on: socket)
+/// The next frame, within the bound `receiveFrame` keeps, must be an `ambient`-prefixed, connection-keeping error;
+/// returns its message.
+func ambientError(
+    on socket: URLSessionWebSocketTask, step: String, code expected: ErrorCode = .notAllowed
+) async throws -> String {
+    let frame = try await receiveFrame(on: socket, step: step)
     guard case .control(.error(let code, let message)) = frame.payload else {
         Issue.record("expected an error frame, got \(frame.payload)")
         return ""

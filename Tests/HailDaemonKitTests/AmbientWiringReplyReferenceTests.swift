@@ -24,7 +24,7 @@ import Testing
             singleTerminalReplyFallback: true, ambient: router
         )
         let port = try await listener.start()
-        let pair = try await FallbackSocketPair.connect(
+        let pair = try await FallbackSocketPair.boundedConnect(
             port: port, selecting: [LegacyReferenceRig.target, LegacyReferenceRig.target]
         )
         defer { pair.close() }
@@ -46,7 +46,7 @@ import Testing
             try await recipientSocketSend(sessionFrame(target: LegacyReferenceRig.target, payload: .audio(segment)),
                                           on: pair.sockets[0])
         }
-        try await pair.barrier()
+        try await pair.boundedBarrier(step: "three segments")
         await router.settle()
         let deliveries = await rig.adapter.deliveries
         try #require(deliveries.count == 1)
@@ -59,14 +59,14 @@ import Testing
         let reply = referenceDescriptor(reference, audio: true)
         for frame in [recipientText(reply), recipientAudio(reply, sequence: 0, final: true)] {
             #expect(try await listener.publish(frame) == 1)
-            #expect(try await recipientSocketReceive(on: pair.sockets[0]) == frame)
+            #expect(try await receiveFrame(on: pair.sockets[0], step: "referenced reply") == frame)
         }
-        try await pair.barrier()
+        try await pair.boundedBarrier(step: "referenced reply only")
         // Without the reference the reply goes to the streaming device, the target's last input device (#370).
         let requestless = recipientText(referenceDescriptor(nil))
         #expect(try await listener.publish(requestless) == 1)
-        #expect(try await recipientSocketReceive(on: pair.sockets[0]) == requestless)
-        try await pair.barrier()
+        #expect(try await receiveFrame(on: pair.sockets[0], step: "requestless reply") == requestless)
+        try await pair.boundedBarrier(step: "requestless reply only")
     }
 }
 #endif

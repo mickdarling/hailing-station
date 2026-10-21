@@ -18,17 +18,17 @@ import Testing
             let replaced = (event.detail ?? "").hasPrefix("replaced ")
             order.withLock { $0.append(event.event + (replaced ? "(replaced)" : "")) }
         }
-        let pair = try await FallbackSocketPair.connect(port: env.port, selecting: [RecipientTestRig.target])
+        let pair = try await FallbackSocketPair.boundedConnect(port: env.port, selecting: [RecipientTestRig.target])
         defer { pair.close() }
         try await recipientSocketSend(audio(UUID(), 0), on: pair.sockets[0])
-        try await pair.barrier()
+        try await pair.boundedBarrier(step: "first segment")
         // A host pong does not prove that the child has opened the original behavior script.
         let started = await eventually { (try? fake.recorded("original-started")) == "ready" }
         if !started { await env.listener.stop(reason: "authored child did not start") }
         try #require(started)
         try rewriteFake(fake, "exit 0")
         #expect(await env.router.reload() == .reloaded)
-        #expect(try await ambientError(on: pair.sockets[0]).hasPrefix("ambient stopped: "))
+        #expect(try await ambientError(on: pair.sockets[0], step: "failed new child").hasPrefix("ambient stopped: "))
         await settle(env.router, step: "failed reload")
         let events = order.withLock { $0 }.filter { $0 != "ambient_ended(replaced)" }
         let reloaded = try #require(events.firstIndex(of: "ambient_reloaded"))
@@ -41,11 +41,11 @@ import Testing
         let fake = try FakeRightyo("/bin/cat > v1-audio.bin")
         defer { fake.cleanUp() }
         let env = try await ambientRig(fake, timing: .init(eofGrace: 0.5, termGrace: 0.5))
-        let pair = try await FallbackSocketPair.connect(port: env.port, selecting: [RecipientTestRig.target])
+        let pair = try await FallbackSocketPair.boundedConnect(port: env.port, selecting: [RecipientTestRig.target])
         defer { pair.close() }
         let stream = UUID()
         try await recipientSocketSend(audio(stream, 0), on: pair.sockets[0])
-        try await pair.barrier()
+        try await pair.boundedBarrier(step: "first segment")
         // A missing config is refused before anything launches.
         let moved = fake.directory.appendingPathComponent("config.moved")
         try FileManager.default.moveItem(at: fake.config, to: moved)
@@ -58,7 +58,7 @@ import Testing
         #expect(reason == "child unsafeConfig")
         #expect(env.router.liveRuns == 1)
         try await recipientSocketSend(audio(stream, 1), on: pair.sockets[0])
-        try await pair.barrier()
+        try await pair.boundedBarrier(step: "segment after the refusal")
         #expect(await eventually { fakeFileSize(fake, "v1-audio.bin") == 6_400 })
         #expect(await env.gate.activeStream == stream)
         await env.listener.stop(reason: "synthetic test complete")
@@ -69,17 +69,17 @@ import Testing
         let fake = try FakeRightyo("trap '' TERM\nexec /bin/sleep 60")
         defer { fake.cleanUp() }
         let env = try await ambientRig(fake, timing: .init(eofGrace: 0.2, termGrace: 0.2))
-        let pair = try await FallbackSocketPair.connect(port: env.port, selecting: [RecipientTestRig.target])
+        let pair = try await FallbackSocketPair.boundedConnect(port: env.port, selecting: [RecipientTestRig.target])
         defer { pair.close() }
         let stream = UUID()
         try await recipientSocketSend(audio(stream, 0), on: pair.sockets[0])
-        try await pair.barrier()
+        try await pair.boundedBarrier(step: "first segment")
         #expect(await env.router.reload() == .reloaded)
         #expect(await env.router.reload() == .busy)
         #expect(env.router.status().liveChildren == 2)
         #expect(await eventually { env.router.status().liveChildren == 1 })
         #expect(await env.router.reload() == .reloaded)
-        try await pair.barrier()
+        try await pair.boundedBarrier(step: "after the second reload")
         #expect(await env.gate.activeStream == stream)
         await env.listener.stop(reason: "synthetic test complete")
     }
