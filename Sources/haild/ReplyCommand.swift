@@ -114,6 +114,8 @@ private struct PCMReplyContext {
     /// process group) keeps main's per-job frame budget, with the terminal frame reserved: unpaced, a long one is
     /// refused whole or ends with an accepted final marker, never cut off mid-stream. Nil for a detached reply.
     var frameLimit: Int?
+    /// A spoken reply's delivery timing (#737), logged once when it ends.
+    var timing: ReplyTimingRecorder?
 }
 
 func reply(_ arguments: ArraySlice<String>) async throws {
@@ -325,6 +327,11 @@ private func sendPCMFile(
 private func streamVBSay(
     _ text: String, outputRoot: URL, context: PCMReplyContext
 ) async throws -> (frames: Int, deliveries: Int) {
+    var context = context
+    let timing = ReplyTimingRecorder()
+    context.timing = timing
+    var outcome = "failed"
+    defer { timing.log(outcome: outcome) }
     let renderer = try OwnedReplyRenderer(
         text: text, outputRoot: outputRoot, environment: ProcessInfo.processInfo.environment
     )
@@ -335,6 +342,7 @@ private func streamVBSay(
             renderer.cancel()
         }
         renderer.retire(cancel: false)
+        outcome = "played"
         try await renderer.waitForCleanup()
         return result
     } catch {
@@ -459,10 +467,14 @@ private func sendStreamedPCM(_ bytes: Data, sequence: Int, context: PCMReplyCont
         codec: .pcm16, sampleRate: context.sampleRate, channels: 1, sequence: sequence,
         streamID: context.streamID, isFinal: false, bytes: Data(bytes), reply: context.descriptor
     )
-    return try await submitSpeechAudio(Frame(
+    let sentAt = ContinuousClock.now
+    let delivered = try await submitSpeechAudio(Frame(
         timestamp: replyTimestamp(), target: context.descriptor.targetID, source: context.descriptor.hostID,
         payload: .audio(payload)
     ), socketURL: context.socket)
+    let audio = ReplyStreamPacer.seconds(pcm16Bytes: bytes.count, sampleRate: context.sampleRate)
+    context.timing?.sent(audio: .seconds(audio), at: sentAt, acknowledgedAfter: .now - sentAt)
+    return delivered
 }
 
 /// `paced: false` when a stream is being given up: its terminal marker goes at once, while its request is current.
