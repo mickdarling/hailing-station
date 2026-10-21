@@ -21,9 +21,8 @@ struct ConnectivityLabView: View {
             Section("Add or edit a Mac") {
                 TextField("Name", text: $name)
                 TextField("WebSocket URL", text: $url)
-                    .textInputAutocapitalization(.never)
+                    .stationURLInput()
                     .autocorrectionDisabled()
-                    .keyboardType(.URL)
                 if !validation.isEmpty { Text(validation).foregroundStyle(.red) }
                 Button(editingID == nil ? "Add Mac" : "Save Mac") { Task { await save() } }
                     .disabled(name.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty)

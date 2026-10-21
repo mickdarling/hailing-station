@@ -9,8 +9,8 @@ struct ConversationChatView: View {
     /// Overheard remarks (#398) appear only when the user chose to show them.
     @AppStorage(OverheardSettingsView.showKey) private var showsOverheard = false
     @AppStorage(OverheardSettingsView.whoseKey) private var overheardWhose = "owner"
-    /// The message whose text is open for selecting part of it (#412).
-    @State private var selecting: ConversationEntry?
+    @State private var selecting: ConversationEntry? // The message open for selecting part of it (#412).
+    @State private var links = MessageSegmentCache() // Each message's links, parsed once per text (#641 review).
 
     init(entries: [ConversationEntry], playback: ReplyPlaybackController) {
         allEntries = entries
@@ -77,7 +77,7 @@ struct ConversationChatView: View {
 
     @ViewBuilder
     private func bubble(_ entry: ConversationEntry) -> some View {
-        let (isYou, segments) = (entry.speaker == .you, MessageLinks.segments(entry.text))
+        let (isYou, segments) = (entry.speaker == .you, links.segments(for: entry))
         HStack {
             if isYou { Spacer(minLength: 48) }
             VStack(alignment: .leading, spacing: 8) {
@@ -104,7 +104,7 @@ struct ConversationChatView: View {
             )
             // Copy, Share or select part of any message (#412).
             .contextMenu {
-                Button("Copy", systemImage: "doc.on.doc") { UIPasteboard.general.string = entry.text }
+                Button("Copy", systemImage: "doc.on.doc") { StationPlatform.copy(entry.text) }
                 ShareLink(item: entry.text)
                 Button("Select Text", systemImage: "selection.pin.in.out") { selecting = entry }
                 linkActions(segments)
@@ -174,27 +174,9 @@ private struct SelectableTextSheet: View {
             SelectableText(text: text)
                 .padding()
                 .navigationTitle("Select Text")
-                .navigationBarTitleDisplayMode(.inline)
+                .stationInlineTitle()
                 .toolbar { ToolbarItem(placement: .confirmationAction) { Button("Done") { dismiss() } } }
         }
         .presentationDetents([.medium, .large])
     }
-}
-
-/// A non-editable, selectable `UITextView`: SwiftUI's `Text` selects only the whole string on iOS.
-private struct SelectableText: UIViewRepresentable {
-    let text: String
-
-    func makeUIView(context: Context) -> UITextView {
-        let view = UITextView()
-        view.isEditable = false
-        view.isSelectable = true
-        view.font = .preferredFont(forTextStyle: .body)
-        view.textColor = .label // Dynamic, so it stays readable in Dark Mode over the clear background.
-        view.adjustsFontForContentSizeCategory = true
-        view.backgroundColor = .clear
-        return view
-    }
-
-    func updateUIView(_ view: UITextView, context: Context) { view.text = text }
 }

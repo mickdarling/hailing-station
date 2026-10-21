@@ -32,10 +32,18 @@ optional `metadata` is Markdown shown beside them and never spoken: links, PR an
 tables and status. It is a compatible v1 extension: older decoders ignore the key, and a reply without it is
 unchanged on the wire.
 
-- `metadata` is a non-empty string of at most 16 KiB of UTF-8 (`PayloadLimits.maxMetadataBytes`).
+- `metadata` is a non-empty string of at most 16 KiB of UTF-8 (`PayloadLimits.maxMetadataBytes`). Absent means no
+  metadata; `"metadata": null` is invalid, as is an empty string.
 - It is only valid beside a `reply` descriptor. The decoder and the schema refuse it on any other text payload.
+- The whole frame must still fit the frame cap (`PayloadLimits.defaultMaxFrameBytes`). JSON escaping can grow
+  text and metadata within their byte caps past it: a control character is six bytes on the wire.
 - It is untrusted content. A client renders it through its safe Markdown model (no raw HTML, no remote images,
   links shown with their real destination), keeps a raw-text fallback, and never passes it to speech.
+- `haild reply` sends it with `--metadata <markdown>` or `--metadata-file <path>`, on the text frame of a reply
+  sent with `--text` or `--say`. The file must be a regular UTF-8 file: a symlink, pipe, device or directory is
+  refused, and there is no `-` for standard input. Without `--text` or `--say`, over the cap, or when the encoded
+  text frame would exceed the frame cap, the reply is refused before anything is sent. A daemon that predates
+  this field decodes the frame without it and delivers the reply with the metadata dropped.
 
 ## Which device a reply reaches (#370)
 
@@ -184,3 +192,19 @@ The host answers on the same connection:
 The doctor's free-text detail and fix never cross the wire, because they can name paths, ports and identities. The device words each check itself and points to `haild doctor` on the Mac for the detail.
 
 The report is read-only and grants no authority. The decoder and the schema refuse any other key or value. Only the decoder checks that a name appears once.
+
+### Media mode state (#612)
+
+Media mode (#551) is the owner's spoken "media mode" / "done watching": while it is on, RightyO attends only to the
+owner naming the assistant, so replies stop. It lives on the host, so a device needs to be told, or replies just seem
+to stop.
+
+`{"command": "media_mode", "on": true | false, "reason"?: "voice" | "timeout", "expires"?: <Unix ms>}` is sent by a
+host to the device whose ambient stream it is, each time the mode changes for that stream. `reason` says why: `voice`
+when the owner said so, `timeout` when an on mode turned itself off. `expires` comes only with `on: true`: when the
+mode will turn itself off, in Unix milliseconds like a frame's `ts`. It is sent only to a device that advertised
+`media_mode` (`MediaMode.capability`), because an older device refuses an unknown command. It shows state only: it
+grants no authority, and a device cannot change the mode with it.
+
+The decoder refuses any other key, an unknown `reason`, a non-positive `expires`, or `expires` with `on: false`; the
+schema refuses all but the last, which only the decoder can check.
