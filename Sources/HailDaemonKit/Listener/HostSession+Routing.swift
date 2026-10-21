@@ -64,9 +64,10 @@ extension HostSession {
         guard let gate = authorizer.ambientAudio else {
             return failure(.unauthorized, "terminal action is not authorized", close: false, version: version)
         }
+        // A stream this segment opens keeps the selection generation it opened on (#636).
+        let selection = AmbientSelection(target: selectedTarget, generation: selectionGeneration)
         switch await gate.admission(
-            audio, frameTarget: target, selectedTarget: selectedTarget, connection: connectionID,
-            device: peerDeviceKind
+            audio, frameTarget: target, selection: selection, connection: connectionID, device: peerDeviceKind
         ) {
         case .admitted:
             return HostSessionResult(frames: [])
