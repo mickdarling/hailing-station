@@ -43,9 +43,10 @@ extension TranscriptionLabView {
             guard let refusal, let restored = try? PastedDraft(refusal.pasted) else { return }
             attachedPaste = restored
             pasteProblem = PastedDraft.Problem.refusedByHost(refusal.message).message
-            // That request is over: no reply will come for it.
+            // That request is over: no reply will come for it. The host's reason is announced once, by the
+            // conversation's request-refusal line (Part 11), so the status here stays neutral.
             clearPendingSend()
-            status = "Paste not taken"
+            status = "Ready"
         }
     }
 
