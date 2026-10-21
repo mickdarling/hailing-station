@@ -118,9 +118,9 @@ Exit codes: 0 when held or for status; 75 when rate limited; 1 for other refusal
 
 ## Keep speech real-time when the Mac is busy (#737)
 
-Spoken replies are rendered on this Mac as they play, so heavy work here can make them choppy. That happened on 2026-10-21, with load around 40, swap 93% full and a VM using 3+ cores.
+Spoken replies are rendered on this Mac as they play, so heavy work here can make them choppy. That happened on 2026-10-21, with swap 93% full and a VM using 3+ cores. Load was about 10 when the choppy replies were heard, and about 40 later that day.
 
-The voice path's own processes already ask for interactive scheduling: `haild` and `vbstreamd` use `ProcessType Interactive`, which `launchctl print` shows as `spawn type = interactive (4)`. `launchd.plist(5)` prefers `ProcessType` to `Nice`. So the lever is running everything else in the background.
+The voice path's own processes already ask for interactive scheduling: `haild` (with its RightyO child) and `vbstreamd` use `ProcessType Interactive`, which `launchctl print` shows as `spawn type = interactive (4)`. `launchd.plist(5)` prefers `ProcessType` to `Nice`. So the lever is running everything else in the background.
 
 **Check:** compare the scheduling priority (`pri`, higher wins) of the voice processes with the heavy ones. It prints nothing useful if none of them is running.
 
@@ -131,12 +131,12 @@ ps -o pid,pri,nice,%cpu,rss,command -p "$(pgrep -d, -f 'haild run|vbstreamd|Virt
 `pri` moves from moment to moment, so read it as a snapshot. On 10-21, `vbstreamd` and `haild` sat in the 30s, while a VM's `com.apple.Virtualization.VirtualMachine` service held **55**, even after `renice +10`. `renice` doesn't lower that service.
 
 **Run heavy work in the background.** `taskpolicy -b` sets `PRIO_DARWIN_BG`: CPU priority drops to about 4, disk and new network I/O are throttled, and the children inherit it.
-- **A running VM:** `taskpolicy -b -p <pid of its VirtualMachine service>`, then run the check to confirm its `pri` dropped. `taskpolicy -B -p <pid>` undoes it.
+- **A running VM:** `taskpolicy -b -p <pid of its VirtualMachine service>`, then run the check to confirm its `pri` dropped. With several VMs, pick the busy service by `%cpu`; not every one runs at 55. `taskpolicy -B -p <pid>` undoes it.
   - It's **untested on that service so far**.
   - Expect the guest to slow sharply, close to stalling when the host is loaded.
   - It's lost when the VM restarts. The service is spawned by launchd, not by the tool that starts the VM, so starting that tool under `taskpolicy` probably doesn't reach it. Re-apply `-p` after each VM start.
-- **Builds and test lanes:** these are children of your shell, so the policy reaches them: `taskpolicy -b scripts/verify.sh all`, `taskpolicy -b swift build`, `taskpolicy -b xcodebuild …`. For work that should still make progress, a softer limit is `taskpolicy -c utility <command>` (a QoS clamp, at launch only).
-- **Time Machine:** `backupd` already runs at background CPU priority, and `debug.lowpri_throttle_enabled` (1 by default, and 1 on 10-21) throttles its disk I/O. Never set it to 0 on this Mac. To pause a backup during a voice session: `tmutil stopbackup`.
+- **Builds and test lanes:** the compilers and `swift test` are children of your shell, so the policy reaches them: `taskpolicy -b scripts/verify.sh all`, `taskpolicy -b swift build`, `taskpolicy -b xcodebuild …`. Simulators and the test runners `xcodebuild` launches are started by launchd, so they escape it, like the VM service. For work that should still make progress, a softer limit is `taskpolicy -c utility <command>` (a QoS clamp, at launch only).
+- **Time Machine:** `backupd` is usually at pri 4, but a running backup can be higher. On 10-21 a backup in its Copying phase showed pri 46, above both voice processes. Check it, and if it's above them during a voice session, `tmutil stopbackup`. `debug.lowpri_throttle_enabled` (1 by default, and 1 on 10-21) throttles low-priority disk I/O. Never set it to 0 on this Mac.
 
 **Memory matters as much as CPU.** With swap nearly full, the TTS model and audio buffers page out, whatever their priority. Check `sysctl vm.swapusage`, and give VMs less memory or stop one before a long voice session. Keeping the voice path resident is #737's next step.
 
