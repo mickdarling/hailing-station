@@ -118,29 +118,34 @@ Exit codes: 0 when held or for status; 75 when rate limited; 1 for other refusal
 
 ## Keep speech real-time when the Mac is busy (#737)
 
-Spoken replies are rendered on this Mac as they play, so heavy work here can make them choppy. That happened on 2026-10-21, with load around 40, swap 93% full and a VM using 3+ cores. The voice path's own processes already run at the highest priority a user LaunchAgent can ask for: `haild` and `vbstreamd` use `ProcessType Interactive`, which `launchctl print` shows as `spawn type = interactive (4)`. Negative `nice` needs root. So keeping speech real-time means running everything else in the background.
+Spoken replies are rendered on this Mac as they play, so heavy work here can make them choppy. That happened on 2026-10-21, with load around 40, swap 93% full and a VM using 3+ cores.
 
-**Check:** compare the scheduling priority (`pri`, higher wins) of the voice processes with the heavy ones:
+The voice path's own processes already ask for interactive scheduling: `haild` and `vbstreamd` use `ProcessType Interactive`, which `launchctl print` shows as `spawn type = interactive (4)`. `launchd.plist(5)` prefers `ProcessType` to `Nice`. So the lever is running everything else in the background.
+
+**Check:** compare the scheduling priority (`pri`, higher wins) of the voice processes with the heavy ones. It prints nothing useful if none of them is running.
 
 ```sh
 ps -o pid,pri,nice,%cpu,rss,command -p "$(pgrep -d, -f 'haild run|vbstreamd|Virtualization.VirtualMachine|backupd$')"
 ```
 
-On 10-21 `vbstreamd` was at 31 and `haild` at 37, while a VM's `com.apple.Virtualization.VirtualMachine` service was at **55**, even after `renice +10`. `renice` doesn't lower that service.
+`pri` moves from moment to moment, so read it as a snapshot. On 10-21, `vbstreamd` and `haild` sat in the 30s, while a VM's `com.apple.Virtualization.VirtualMachine` service held **55**, even after `renice +10`. `renice` doesn't lower that service.
 
-**Run heavy work in the background.** `taskpolicy -b` sets `PRIO_DARWIN_BG`, which throttles both CPU and disk I/O, and the children inherit it:
-- **A running VM:** `taskpolicy -b -p <pid of its VirtualMachine service>`; `taskpolicy -B -p <pid>` undoes it. It slows everything inside the VM, and it's lost when the VM restarts, so start a VM tool under `taskpolicy -b` where it can be launched from a shell.
-- **Builds and test lanes:** `taskpolicy -b scripts/verify.sh all`, `taskpolicy -b swift build`, `taskpolicy -b xcodebuild …`. A softer limit for work that should still make progress: `taskpolicy -c utility <command>` (a QoS clamp, at launch only).
-- **Time Machine:** `backupd` runs throttled while `sysctl debug.lowpri_throttle_enabled` is `1`, the default, and it was 1 on 10-21. Never set it to 0 on this Mac. To pause a backup during a voice session: `tmutil stopbackup`.
+**Run heavy work in the background.** `taskpolicy -b` sets `PRIO_DARWIN_BG`: CPU priority drops to about 4, disk and new network I/O are throttled, and the children inherit it.
+- **A running VM:** `taskpolicy -b -p <pid of its VirtualMachine service>`, then run the check to confirm its `pri` dropped. `taskpolicy -B -p <pid>` undoes it.
+  - It's **untested on that service so far**.
+  - Expect the guest to slow sharply, close to stalling when the host is loaded.
+  - It's lost when the VM restarts. The service is spawned by launchd, not by the tool that starts the VM, so starting that tool under `taskpolicy` probably doesn't reach it. Re-apply `-p` after each VM start.
+- **Builds and test lanes:** these are children of your shell, so the policy reaches them: `taskpolicy -b scripts/verify.sh all`, `taskpolicy -b swift build`, `taskpolicy -b xcodebuild …`. For work that should still make progress, a softer limit is `taskpolicy -c utility <command>` (a QoS clamp, at launch only).
+- **Time Machine:** `backupd` already runs at background CPU priority, and `debug.lowpri_throttle_enabled` (1 by default, and 1 on 10-21) throttles its disk I/O. Never set it to 0 on this Mac. To pause a backup during a voice session: `tmutil stopbackup`.
 
 **Memory matters as much as CPU.** With swap nearly full, the TTS model and audio buffers page out, whatever their priority. Check `sysctl vm.swapusage`, and give VMs less memory or stop one before a long voice session. Keeping the voice path resident is #737's next step.
 
-**What the measurements show** (#737 step 1):
-- `log show --last 1h --predicate 'subsystem == "com.mickdarling.hailing-station" && category == "reply-timing"'` gives one line per spoken reply.
-  - A `min_lead_ms` below about −100 means the Mac fell behind real time, and the device very likely ran dry.
+**What the measurements show** (#737 step 1; the first two arrive with #743 and #741):
+- **Reply timing**, from a `haild` that includes #743: `log show --last 1h --predicate 'subsystem == "com.mickdarling.hailing-station" && category == "reply-timing"'` gives one line per spoken reply.
+  - A `min_lead_ms` below about −100 means the Mac fell behind real time, and the device very likely ran dry, unless it was still playing an earlier reply or was paused.
   - `ack_max_ms` and `ack_p95_ms` are the endpoint's per-frame acknowledgement times, and `resends` counts the retry waits inside them.
-- Device diagnostics (`deviceDiagnostics` in `host.json`): each `reply_playback_end` carries `count` and `ms`, the gaps heard during that playback.
-- `~/Library/Logs/vbstreamd/vbstreamd.log` gives TTS's per-line realtime factor. `steady` below 1x means generation fell behind playback.
+- **Playback gaps**, from a station build that includes #741: with `deviceDiagnostics` on in `host.json` and diagnostics on in the station app, each `reply_playback_end` in `~/.config/hail/diagnostics/diagnostics.jsonl` (see [device diagnostics](device-diagnostics.md)) carries `count` and `ms`, the gaps heard during that playback.
+- **TTS speed:** `~/Library/Logs/vbstreamd/vbstreamd.log` gives TTS's per-line realtime factor. `steady` below 1x means generation fell behind playback. This needs voicebox-friday-kit #33 live, which takes a vbstreamd restart.
 
 ## Rollback
 
