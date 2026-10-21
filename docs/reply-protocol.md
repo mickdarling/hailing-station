@@ -25,6 +25,18 @@ version defines their semantics.
 Frame `id` remains the identity of one transmitted frame; it is deliberately not reused as reply or stream
 identity. Multiple segments from one reply therefore keep unique frame IDs while sharing reply and stream IDs.
 
+## Spoken words and metadata (#606)
+
+A reply's text payload has two layers. `text` is the exact words spoken aloud, the same words TTS renders. The
+optional `metadata` is Markdown shown beside them and never spoken: links, PR and issue references, file paths,
+tables and status. It is a compatible v1 extension: older decoders ignore the key, and a reply without it is
+unchanged on the wire.
+
+- `metadata` is a non-empty string of at most 16 KiB of UTF-8 (`PayloadLimits.maxMetadataBytes`).
+- It is only valid beside a `reply` descriptor. The decoder and the schema refuse it on any other text payload.
+- It is untrusted content. A client renders it through its safe Markdown model (no raw HTML, no remote images,
+  links shown with their real destination), keeps a raw-text fallback, and never passes it to speech.
+
 ## Which device a reply reaches (#370)
 
 Tap-to-talk and ambient listening are two ways into one pipeline. haild keeps, for each target, its **last input
