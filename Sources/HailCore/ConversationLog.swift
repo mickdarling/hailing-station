@@ -19,7 +19,16 @@ public struct ConversationEntry: Identifiable, Equatable, Sendable {
     /// owner's, never logged.
     public var name: String?
     /// A reply's unspoken Markdown (#606), shown beside its spoken `text` through `MessageMarkdown`; never spoken.
-    public var metadata: String?
+    public var metadata: String? {
+        didSet {
+            guard metadata != oldValue else { return } // A repeated text frame with the same details is not re-parsed.
+            metadataBlocks = metadata.map(MessageMarkdown.blocks) ?? []
+        }
+    }
+    /// `metadata` parsed once when it is set, not on every redraw or context menu.
+    public private(set) var metadataBlocks: [MarkdownBlock] = []
+    /// The reply has audio (#606), so its `text` is the words spoken aloud: the chat shows it in a speech style.
+    public var spoken = false
     /// A reply from another session that answers a request the user addressed to it by name from the thread it
     /// arrived in (#636): that session's listed name, shown as the reply's label. Nil for every other entry.
     public var source: String?
@@ -132,6 +141,7 @@ public final class ConversationLog {
         if let index = entries.firstIndex(where: { $0.id == id }) {
             entries[index].text = payload.text
             entries[index].metadata = payload.metadata
+            entries[index].spoken = reply.audioStreamID != nil
             return
         }
         var entry = ConversationEntry(
@@ -154,6 +164,7 @@ public final class ConversationLog {
             }
         }
         entry.metadata = payload.metadata
+        entry.spoken = reply.audioStreamID != nil
         append(entry)
     }
 
