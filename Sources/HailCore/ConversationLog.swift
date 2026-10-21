@@ -90,12 +90,14 @@ public final class ConversationLog {
     /// A request the user sent, or (#318) one the ambient stream heard and sent. When it opens with another listed
     /// session's name and a mark ("Deck, …"), that session's replies show in this thread for `addressLifetime`.
     /// `scope` binds the address to the connection and selection it was sent on; without one nothing is recorded.
+    /// Returns the entry's id, so a send that fails after it was noted can take it back (`retractSent`).
+    @discardableResult
     func noteSent(
         _ text: String, pasted: String? = nil, endpointID: HostEndpoint.Identifier, targetID: String,
         targets: [TargetInfo] = [], scope: String? = nil
-    ) {
+    ) -> String? {
         let trimmed = text.trimmingCharacters(in: .whitespacesAndNewlines)
-        guard !trimmed.isEmpty || pasted != nil else { return }
+        guard !trimmed.isEmpty || pasted != nil else { return nil }
         var entry = ConversationEntry(
             id: "you|\(UUID().uuidString.lowercased())", speaker: .you, text: trimmed,
             endpointID: endpointID, targetID: targetID, date: now()
@@ -105,6 +107,29 @@ public final class ConversationLog {
         entry.pasteState = pasted == nil ? nil : .pending
         append(entry)
         address(trimmed, endpointID: endpointID, targetID: targetID, targets: targets, scope: scope)
+        return entry.id
+    }
+
+    /// Takes back a request noted before its send, when that send reported a failure (#636): the chat shows no
+    /// request the device could not confirm it sent.
+    func retractSent(_ id: String?) {
+        guard let id else { return }
+        entries.removeAll { $0.id == id }
+    }
+
+    /// The replies that answer one thread, among `replies` (#636): its own target's, plus, with `addressed`, a reply
+    /// another session sent to a request addressed from it (`shownIn`). The talk control's arrival tracking reads
+    /// these, so a reply shown in the thread also ends that thread's pending send.
+    public func threadReplyIDs(
+        endpointID: HostEndpoint.Identifier, targetID: String, among replies: [ReplyPresentation],
+        addressed: Bool = false
+    ) -> Set<String> {
+        let placed = addressed ? Set(entries.lazy.filter {
+            $0.endpointID == endpointID && $0.shownIn == targetID
+        }.map(\.id)) : []
+        return Set(replies.lazy.filter {
+            ($0.endpointID == endpointID && $0.target == targetID) || placed.contains($0.id)
+        }.map(\.id))
     }
 
     /// The Mac refused the latest pending paste for `endpointID` (#608); returns that turn. Refusals carry no request

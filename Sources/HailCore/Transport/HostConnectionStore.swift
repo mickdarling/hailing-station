@@ -361,9 +361,12 @@ extension HostConnectionStore {
         _ text: String, pasted: PastedDraft? = nil, host id: HostEndpoint.Identifier, targetID: String
     ) async throws {
         guard let connection = connections[id] else { throw HostConnectionFailure.notReady }
-        // The address is recorded under the scope the request goes out on, before the send can suspend (#636).
+        // The address and the request's own entry are recorded under the scope the request goes out on, before the
+        // send can suspend (#636): a reply that comes back first is placed, and shows after its request. Both are taken
+        // back if the send fails.
         let address = conversation.address(text, endpointID: id, targetID: targetID,
                                            targets: snapshots[id]?.targets ?? [], scope: addressScope(id))
+        let sent = conversation.noteSent(text, pasted: pasted?.text, endpointID: id, targetID: targetID)
         do {
             if let pasted {
                 try await connection.sendFinalText(text, pasted: pasted, to: targetID)
@@ -372,9 +375,9 @@ extension HostConnectionStore {
             }
         } catch {
             conversation.retractAddress(address)
+            conversation.retractSent(sent)
             throw error
         }
-        conversation.noteSent(text, pasted: pasted?.text, endpointID: id, targetID: targetID)
     }
 
     /// Whether the destination takes pasted text (#608): the Mac advertises `pasted_text` and the target is of a kind
