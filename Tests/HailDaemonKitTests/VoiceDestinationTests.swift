@@ -5,7 +5,7 @@ import Testing
 @testable import HailDaemonKit
 
 /// The owner's spoken note to an allowlisted destination (#552, slice 1). Synthetic only; no real Shortcut runs.
-@Suite(.serialized, .timeLimit(.minutes(1))) struct VoiceDestinationTests {
+@Suite(.serialized, .timeLimit(.minutes(1)), .frozenGuardBudget) struct VoiceDestinationTests {
     static let names: Set<String> = ["jarvis", "rightyo"]
     static func destinations() throws -> VoiceDestinations {
         try VoiceDestinations(["Notes": .shortcut("Hail to Notes"),
