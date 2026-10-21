@@ -248,7 +248,10 @@ extension HostSession {
         guard case .ready = state, generation == selectionGeneration, covers(target) else {
             throw HostError.denied(.notAllowed(target))
         }
-        if replyRequests.count >= HostReplyRequest.capacity { evictOldestLateRequest() }
+        // A duplicate is refused below, so it must not first evict another request's late record (#430).
+        if replyRequests.count >= HostReplyRequest.capacity, replyRequests[context.id] == nil {
+            evictOldestLateRequest()
+        }
         guard replyRequests.count < HostReplyRequest.capacity else { throw ProviderContractError.capacityExceeded }
         guard replyRequests[context.id] == nil else { throw HostError.denied(.notAllowed(target)) }
         var request = HostReplyRequest(

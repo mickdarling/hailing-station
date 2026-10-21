@@ -136,3 +136,20 @@ import Testing
         #expect(try onlyControl(refused) == .error(code: .rateLimited, message: "target action was refused"))
     }
 }
+
+/// #430 follow-up: at capacity, a refused duplicate reference never first evicts another request's late record.
+@Suite struct LateAnswerEvictionOrderTests {
+    @Test func aDuplicateAtCapacityEvictsNothing() async throws {
+        let rig = try await LegacyReferenceRig.make()
+        let session = await rig.session()
+        var references: [UUID] = []
+        for _ in 0..<HostReplyRequest.capacity {
+            let reference = UUID()
+            references.append(try #require(try await LegacyReferenceRig.dispatch(session, reference: reference)))
+            rig.clock.advance(1)
+        }
+        rig.clock.advance(5 * 60_000)
+        _ = try? await LegacyReferenceRig.dispatch(session, reference: references[5])
+        #expect(Set(await session.replyRequests.keys) == Set(references))
+    }
+}
