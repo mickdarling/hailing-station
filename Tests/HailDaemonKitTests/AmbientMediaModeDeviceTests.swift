@@ -28,10 +28,10 @@ import Testing
         try await recipientSocketSend(sessionFrame(payload: .control(.hello(HelloInfo(
             versions: [1], capabilities: capabilities, deviceName: "test"
         )))), on: socket)
-        _ = try await recipientSocketReceive(on: socket)
+        _ = try await receiveFrame(on: socket, step: "host hello")
         try await recipientSocketSend(sessionFrame(payload: .control(.select(targetID: RecipientTestRig.target))),
                                       on: socket)
-        try await recipientSocketBarrier(on: socket)
+        try await barrier(on: socket, step: "selection")
         let stream = UUID()
         let before = Int64(Date().timeIntervalSince1970 * 1_000)
         try await recipientSocketSend(audio(stream, 0), on: socket)
@@ -76,10 +76,10 @@ import Testing
         try await recipientSocketSend(sessionFrame(payload: .control(.hello(HelloInfo(
             versions: [1], capabilities: [], deviceName: "test"
         )))), on: socket)
-        _ = try await recipientSocketReceive(on: socket)
+        _ = try await receiveFrame(on: socket, step: "host hello")
         try await recipientSocketSend(sessionFrame(payload: .control(.select(targetID: RecipientTestRig.target))),
                                       on: socket)
-        try await recipientSocketBarrier(on: socket)
+        try await barrier(on: socket, step: "selection")
         let stream = UUID()
         try await recipientSocketSend(audio(stream, 0), on: socket)
         #expect(await eventually { device.withLock { $0.count == 1 } })
