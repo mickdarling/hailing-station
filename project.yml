@@ -5,6 +5,7 @@ options:
   bundleIdPrefix: com.mickdarling
   deploymentTarget:
     iOS: "18.0"
+    macOS: "15.0"
   createIntermediateGroups: true
 settings:
   base:
@@ -50,6 +51,28 @@ targets:
     entitlements:
       path: Apps/Hail-iOS/Hail.entitlements
       properties: {}
+  # The same station views, built for the Mac (#266). Direct builds only: no signing team, sandbox or distribution.
+  Hail-macOS:
+    type: application
+    platform: macOS
+    sources:
+      - path: Apps/Hail-iOS
+        # The iOS Info.plist, and the routing spike (#22), which probes the iOS audio session.
+        excludes: [Info.plist, RoutingProbe.swift, RoutingSpikeView.swift]
+    settings:
+      base:
+        TARGETED_DEVICE_FAMILY: ""
+        # XcodeGen would otherwise point INFOPLIST_FILE at the iOS plist found in the shared sources, merging
+        # UIBackgroundModes, UILaunchScreen and orientation keys into the Mac app.
+        INFOPLIST_FILE: ""
+        GENERATE_INFOPLIST_FILE: YES
+        INFOPLIST_KEY_CFBundleDisplayName: Hailing Station
+        INFOPLIST_KEY_LSApplicationCategoryType: public.app-category.productivity
+        INFOPLIST_KEY_NSMicrophoneUsageDescription: Hailing Station captures speech to send it to a host you choose. While ambient listening is on, it may also send room audio to that host.
+        INFOPLIST_KEY_NSSpeechRecognitionUsageDescription: Hailing Station transcribes speech on this Mac.
+    dependencies:
+      - package: Hail
+        products: [HailCore, HailProtocol]
   Hail-iOSUITests:
     type: bundle.ui-testing
     platform: iOS
@@ -73,3 +96,9 @@ schemes:
       config: Debug
       targets:
         - Hail-iOSUITests
+  Hail-macOS:
+    build:
+      targets:
+        Hail-macOS: all
+    run:
+      config: Debug

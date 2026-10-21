@@ -69,7 +69,10 @@ struct MarkdownBlockParser {
     let lines: [String]
     var index = 0
     var blocks: [MarkdownBlock] = []
+    /// Each block's first line, so blocks past the cap go back to the text they came from.
+    var starts: [Int] = []
     var paragraph: [String] = []
+    var paragraphStart = 0
 
     init(lines: [String]) { self.lines = lines }
 
@@ -85,11 +88,11 @@ struct MarkdownBlockParser {
                 code(fence)
             } else if let heading = Self.heading(trimmed) {
                 flushParagraph()
-                blocks.append(.heading(level: heading.level, text: MessageMarkdown.inline(heading.text)))
+                add(.heading(level: heading.level, text: MessageMarkdown.inline(heading.text)), from: index)
                 index += 1
             } else if Self.isRule(trimmed) {
                 flushParagraph()
-                blocks.append(.rule)
+                add(.rule, from: index)
                 index += 1
             } else if trimmed.hasPrefix(">") {
                 flushParagraph()
@@ -101,21 +104,38 @@ struct MarkdownBlockParser {
                 flushParagraph()
                 table()
             } else {
+                if paragraph.isEmpty { paragraphStart = index }
                 paragraph.append(trimmed)
                 index += 1
             }
         }
         flushParagraph()
-        if index < lines.count {
-            // Past the block cap the rest stays readable as plain text rather than disappearing.
-            blocks.append(.paragraph(AttributedString(lines[index...].joined(separator: "\n"))))
+        return finish()
+    }
+
+    private mutating func finish() -> [MarkdownBlock] {
+        // Past the block cap the rest stays readable as plain text rather than disappearing, from the first line of
+        // the first block over it. A step may finish a block or two over the cap; they rejoin the text here.
+        var rest = index
+        if blocks.count > MessageMarkdown.maxBlocks {
+            rest = starts[MessageMarkdown.maxBlocks]
+            blocks.removeLast(blocks.count - MessageMarkdown.maxBlocks)
+        }
+        let leftover = lines[min(rest, lines.count)...].joined(separator: "\n")
+        if !leftover.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
+            blocks.append(.paragraph(AttributedString(leftover)))
         }
         return blocks
     }
 
+    mutating func add(_ block: MarkdownBlock, from line: Int) {
+        blocks.append(block)
+        starts.append(line)
+    }
+
     private mutating func flushParagraph() {
         guard !paragraph.isEmpty else { return }
-        blocks.append(.paragraph(MessageMarkdown.inline(paragraph.joined(separator: "\n"))))
+        add(.paragraph(MessageMarkdown.inline(paragraph.joined(separator: "\n"))), from: paragraphStart)
         paragraph = []
     }
 
@@ -133,6 +153,7 @@ struct MarkdownBlockParser {
     }
 
     private mutating func code(_ fence: (marker: String, language: String?)) {
+        let start = index
         index += 1
         var body: [String] = []
         while index < lines.count {
@@ -141,7 +162,7 @@ struct MarkdownBlockParser {
             if trimmed.hasPrefix(fence.marker), trimmed.allSatisfy({ $0 == fence.marker.first }) { break }
             body.append(lines[index - 1])
         }
-        blocks.append(.code(language: fence.language, text: body.joined(separator: "\n")))
+        add(.code(language: fence.language, text: body.joined(separator: "\n")), from: start)
     }
 
     // MARK: Headings, rules, quotes
@@ -164,6 +185,7 @@ struct MarkdownBlockParser {
     }
 
     private mutating func quote() {
+        let start = index
         var body: [String] = []
         while index < lines.count {
             let trimmed = lines[index].trimmingCharacters(in: .whitespaces)
@@ -171,6 +193,6 @@ struct MarkdownBlockParser {
             body.append(trimmed.dropFirst().trimmingCharacters(in: .whitespaces))
             index += 1
         }
-        blocks.append(.quote(MessageMarkdown.inline(body.joined(separator: "\n"))))
+        add(.quote(MessageMarkdown.inline(body.joined(separator: "\n"))), from: start)
     }
 }

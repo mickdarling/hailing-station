@@ -46,7 +46,7 @@ struct ConversationChatView: View {
                                 .frame(maxWidth: .infinity, alignment: .leading)
                         }
                         ForEach(entries) { entry in
-                            bubble(entry).id(entry.id)
+                            if entry.notice { notice(entry).id(entry.id) } else { bubble(entry).id(entry.id) }
                         }
                     }
                     .padding(.vertical, 4)
@@ -72,7 +72,16 @@ struct ConversationChatView: View {
 
     /// The reply the player controls now, else the newest reply.
     private var controlledReplyID: String? {
-        playback.presentationForControls?.id ?? entries.last { $0.speaker == .haili }?.id
+        playback.presentationForControls?.id ?? entries.last { $0.speaker == .haili && !$0.notice }?.id
+    }
+
+    /// A host's refusal of one request (#608, #636): a system line, not a message. The store announces it once.
+    private func notice(_ entry: ConversationEntry) -> some View {
+        Label(entry.text, systemImage: "exclamationmark.bubble")
+            .font(.footnote)
+            .foregroundStyle(.secondary)
+            .frame(maxWidth: .infinity, alignment: .center)
+            .accessibilityLabel("Not sent. \(entry.text)")
     }
 
     @ViewBuilder
@@ -90,7 +99,9 @@ struct ConversationChatView: View {
                 Text(Self.linked(segments))
                     .foregroundStyle(entry.overheard ? Color.secondary : isYou ? Color.white : Color.primary)
                     .tint(isYou ? Color.white : Color.accentColor)
-                    .italic(entry.overheard)
+                    // The words Haili spoke aloud are in a speech style, set apart from the unspoken details (#606).
+                    .italic(entry.overheard || (entry.speaker == .haili && entry.spoken))
+                replyDetails(entry)
                 if entry.speaker == .haili, entry.id == controlledReplyID {
                     replyControls
                 }
@@ -107,20 +118,11 @@ struct ConversationChatView: View {
                 Button("Copy", systemImage: "doc.on.doc") { StationPlatform.copy(entry.text) }
                 ShareLink(item: entry.text)
                 Button("Select Text", systemImage: "selection.pin.in.out") { selecting = entry }
-                linkActions(segments)
+                detailsActions(entry, segments: segments)
             }
             .accessibilityElement(children: .contain)
             .accessibilityLabel(Self.accessibilityLabel(entry))
             if !isYou { Spacer(minLength: 48) }
-        }
-    }
-
-    private static func accessibilityLabel(_ entry: ConversationEntry) -> String {
-        switch (entry.speaker, entry.overheard) {
-        case (.you, false): "You said"
-        case (.you, true): "You said, heard but not sent"
-        case (.someone, _): "\(entry.name ?? "Someone") said, heard but not sent"
-        case (.haili, _): "Haili replied"
         }
     }
 

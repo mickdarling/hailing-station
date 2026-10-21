@@ -4,25 +4,12 @@ import HailProtocol
 /// Pasted text (#608) made into one inert line for an agent session: the user's own data, framed as untrusted and
 /// never as instructions.
 ///
-/// The line is the paste block first, then the spoken request:
-///
-///     HAIL-PASTED-CONTENT-BEGIN-<token> <notice> Content: <body> HAIL-PASTED-CONTENT-END-<token> User request: <spoken>
-///
-/// `<token>` is 16 random hex digits per delivery, named in the notice, so a paste cannot predict the end marker.
-///
-/// **Shell-inert by construction (#628 review).** Every character the host adds (markers, notice, body) is a letter,
-/// a digit, a space or one of `. , : / _ + @ % -`; `-` and `:` appear only in the host's own words. In the body,
-/// every other ASCII character, every combining mark, U+2028/2029 and the fullwidth and small-form `<`/`>` lookalikes
-/// are written as JSON backslash-u escapes, so a backslash in the body is always followed by `u` and four hex digits.
-/// None of these characters can close or open a quote, start an expansion or substitution, separate or pipe commands,
-/// redirect, glob, expand history or braces, or continue a line, in bash or zsh, whatever quoting state came before.
-/// The block comes first, so its first word is the command position and the spoken request's own quoting cannot
-/// reach back into it. Pastes still go only to agent sessions (`acceptsPaste(targetKind:)`); this is defence in depth.
-///
-/// Before escaping, the paste gets the same treatment as spoken text (`Sanitizer`): the byte cap first, then NFC,
-/// then hidden characters are refused rather than stripped, then terminal escape sequences and every other C0 and C1
-/// control are removed and unusual spaces folded. `frame` refuses any line the host's own sanitizer would change, so
-/// the body always decodes back exactly. Nothing here, or anywhere in the host, opens a link inside a paste.
+/// `HAIL-PASTED-CONTENT-BEGIN-<token> <notice> Content: <body> HAIL-PASTED-CONTENT-END-<token> User request: <spoken>`,
+/// with a random per-delivery token, shell-inert by construction (#628 review): everything up to the spoken request
+/// is letters, digits, spaces, `. , : / _ + @ %`, the host's own hyphens and the body's backslash-u escapes, which
+/// no bash or zsh quoting state can turn into syntax. The paste is cleaned like spoken text first, and `frame` refuses
+/// any line the host's sanitizer would change. Pastes go only to agent sessions; nothing in the host opens a link
+/// inside one. Full rules: docs/pasted-content.md.
 public enum PastedContent {
     /// The largest framed line, and the line cap `HailHost` applies to a paste.
     public static let maxFramedBytes = 48 * 1024
@@ -55,24 +42,32 @@ public enum PastedContent {
     public static let agentOnlyRefusal = "pastes go only to agent sessions"
 
     /// Whether a target of adapter `kind` may receive a paste: only a known agent session. The Codex app-server
-    /// adapter starts an agent by construction. A tmux pane may be a raw shell, and no adapter here says otherwise
-    /// yet, so tmux and every unknown kind are refused (fail closed).
+    /// adapter starts an agent by construction. A tmux pane may be a raw shell, so the tmux adapter pastes only when
+    /// the pane's foreground command is a known agent, checked in the same tmux command as the paste
+    /// (`TmuxAdapter.pasteToAgent`). Every other kind is refused (fail closed).
     public static func acceptsPaste(targetKind kind: String) -> Bool {
-        kind == "codex-owned"
+        kind == "codex-owned" || kind == "tmux"
     }
 
-    /// The largest framed line a target of adapter `kind` takes. Every kind that takes a paste today (the Codex
-    /// app-server adapter) takes one text item of at most `PayloadLimits.maxTextBytes`.
+    /// The largest framed line a target of adapter `kind` takes: tmux pastes through a buffer in chunks and takes up to
+    /// `maxFramedBytes`; the Codex app-server adapter takes one text item of at most `PayloadLimits.maxTextBytes`.
     public static func maxFramedBytes(forTargetKind kind: String) -> Int {
-        PayloadLimits.maxTextBytes
+        kind == "tmux" ? maxFramedBytes : PayloadLimits.maxTextBytes
     }
 
     /// The single line a target receives for `pasted` with `spoken` (may be empty), at most `limit` bytes, marked
     /// with `token` (a fresh random one unless a test names it).
     public static func frame(
-        spoken: String, pasted: String, limit: Int = maxFramedBytes, token: String? = nil
+        spoken: String, pasted: String, limit: Int = maxFramedBytes
     ) throws(SanitizeError) -> String {
-        let token = token ?? newToken()
+        try frame(spoken: spoken, pasted: pasted, limit: limit, token: newToken())
+    }
+
+    /// As above with a named token, for tests only; anything but 16 lowercase hex digits is replaced by a fresh one.
+    static func frame(
+        spoken: String, pasted: String, limit: Int = maxFramedBytes, token: String
+    ) throws(SanitizeError) -> String {
+        let token = token.count == 16 && token.allSatisfy({ $0.isHexDigit && !$0.isUppercase }) ? token : newToken()
         let bytes = pasted.utf8.count
         guard bytes <= PayloadLimits.maxPastedTextBytes else {
             throw .tooManyBytes(bytes: bytes, limit: PayloadLimits.maxPastedTextBytes)
@@ -93,9 +88,9 @@ public enum PastedContent {
         guard kept.contains(where: { !$0.properties.isWhitespace }) else { throw .empty }
         var framed = [begin(token), notice(token), body(kept), end(token)].joined(separator: " ")
         if !spokenLine.isEmpty { framed += " \(request) \(spokenLine)" }
-        guard framed.utf8.count <= min(limit, maxFramedBytes) else {
-            throw .tooManyBytes(bytes: framed.utf8.count, limit: min(limit, maxFramedBytes))
-        }
+        // Room stays free for the validation note `screen` may add, so a flagged line is still within the cap.
+        let cap = min(limit, maxFramedBytes) - validationReserve
+        guard framed.utf8.count <= cap else { throw .tooManyBytes(bytes: framed.utf8.count, limit: cap) }
         // The host sanitises the whole line again. Scalar for scalar, that must be a no-op: one line, nothing dropped.
         guard let resanitized = try? Sanitizer.sanitize(framed, policy: lineCap), resanitized.count == 1,
               resanitized[0].unicodeScalars.elementsEqual(framed.unicodeScalars) else {
@@ -104,9 +99,8 @@ public enum PastedContent {
         return framed
     }
 
-    /// The plain sentence a device shows when its paste is refused; under `ControlLimits.maxErrorMessage`. Every one
-    /// starts with "paste", like `agentOnlyRefusal`, so a device can treat it as this request's refusal and keep the
-    /// connection, as it does for an "ambient" refusal.
+    /// The plain sentence a device shows when its paste is refused; under `ControlLimits.maxErrorMessage`. It is sent
+    /// with the `paste_refused` code, which is what tells the device this request is over and the connection is not.
     public static func refusal(_ error: SanitizeError) -> String {
         switch error {
         case .empty: "pasted text is empty"
@@ -159,15 +153,5 @@ public enum PastedContent {
     /// JSON's backslash-u form, as a surrogate pair above the Basic Multilingual Plane.
     private static func hexEscape(_ scalar: Unicode.Scalar) -> String {
         String(scalar).utf16.map { String(format: "\\u%04x", $0) }.joined()
-    }
-}
-
-extension SanitizePolicy {
-    /// This policy with the larger of its own and `cap`'s length caps; the newline rule and line count stay.
-    func widened(to cap: SanitizePolicy) -> SanitizePolicy {
-        var policy = self
-        policy.maxCharacters = max(maxCharacters, cap.maxCharacters)
-        policy.maxUTF8Bytes = max(maxUTF8Bytes, cap.maxUTF8Bytes)
-        return policy
     }
 }

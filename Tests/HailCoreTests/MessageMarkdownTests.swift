@@ -134,6 +134,26 @@ import Testing
         #expect(text(rest).hasSuffix("- item 449\nTAIL"))
     }
 
+    /// A paragraph closed by a heading at the cap: the heading and the rest rejoin the text, never past the cap.
+    @Test func blocksFinishedPastTheCapRejoinTheText() throws {
+        let headings = (0..<(MessageMarkdown.maxBlocks - 1)).map { "# h\($0)" }
+        let blocks = MessageMarkdown.blocks((headings + ["last paragraph", "# over", "tail"]).joined(separator: "\n"))
+        #expect(blocks.count == MessageMarkdown.maxBlocks + 1)
+        #expect(blocks[MessageMarkdown.maxBlocks - 1] == .paragraph(AttributedString("last paragraph")))
+        guard case .paragraph(let rest) = try #require(blocks.last) else {
+            Issue.record("no remainder paragraph")
+            return
+        }
+        #expect(text(rest) == "# over\ntail")
+    }
+
+    @Test func onlyBlankLinesPastTheCapLeaveNoEmptyBlock() {
+        let items = (0..<MessageMarkdown.maxBlocks).map { "- item \($0)" }.joined(separator: "\n")
+        let blocks = MessageMarkdown.blocks(items + "\n\n   \n")
+        #expect(blocks.count == MessageMarkdown.maxBlocks)
+        #expect(blocks.allSatisfy { if case .listItem = $0 { true } else { false } })
+    }
+
     @Test func aLinkTargetOver2048BytesIsNotALink() {
         let target = "https://example.com/" + String(repeating: "a", count: 2_048)
         let shown = MessageMarkdown.inline("[long](\(target))")
