@@ -116,8 +116,9 @@ struct RootView: View {
     private func restoreHostsOnce() async {
         guard !didRestoreHosts else { return }
         didRestoreHosts = true
-        guard let data = UserDefaults.standard.data(forKey: Self.savedHostsKey),
-              let endpoints = try? JSONDecoder().decode([HostEndpoint].self, from: data) else { return }
+        let saved = UserDefaults.standard.data(forKey: Self.savedHostsKey)
+            .flatMap { try? JSONDecoder().decode([HostEndpoint].self, from: $0) }
+        guard let endpoints = await withLocalHost(saved) else { return }
         let remembered = await selectionStore.load()
         var normalized: [HostEndpoint] = []
         for endpoint in endpoints {
