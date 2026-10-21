@@ -7,7 +7,7 @@ import Testing
 
 /// Reply control (rightyo#124): the phone's own playback reports, from its admitted diagnostics, reach that
 /// connection's RightyO child on fd 3; nothing reaches it when reply control is off.
-@Suite(.serialized, .timeLimit(.minutes(1))) struct AmbientWiringReplyControlTests {
+@Suite(.serialized, .timeLimit(.minutes(1)), .frozenGuardBudget) struct AmbientWiringReplyControlTests {
     /// Copies fd 3 (when present) to control.txt and drains stdin until EOF.
     static let script = """
         if [ "$#" -ge 2 ] && [ "${@: -2:1}" = "--control-fd" ]; then /bin/cat <&3 > control.txt & fi

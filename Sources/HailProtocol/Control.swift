@@ -1,3 +1,4 @@
+public import Foundation
 // The control command set and the diagnostic event vocabulary (#234) it carries stay together, so every
 // bound a peer can send is visible in one file.
 // swiftlint:disable file_length
@@ -142,6 +143,17 @@ public enum ControlPayload: Sendable, Equatable {
     /// diagnostic `route` tokens (`usb_audio`, `car_audio`, ...), never a port name. Sent only to a host that
     /// advertises `AmbientInput.capability`, so speaker-ID results can be attributed to an input chain.
     case ambientInput(route: String)
+    /// Host to device (#609): an unsolicited update from the local session named `session` (#371), with its
+    /// `priority` (one of `SessionUpdateCard.priorities`), the short line `text` that is or will be spoken, and an
+    /// optional `card` body shown, never spoken. `update` identifies it, so a device shows a resent update once. Sent
+    /// only to a device that advertises `SessionUpdateCard.capability`. It grants no authority and selects nothing.
+    case sessionUpdate(update: UUID, session: String, priority: String, text: String, card: String? = nil)
+    /// Device to host (#614): ask for the host's health summary. Only `command`; sent only to a host that advertises
+    /// `HostHealth.capability`.
+    case health
+    /// Host to device (#614): the answer to `health`, closed and bounded (`HostHealth`). It grants no authority.
+    case healthReport(HostHealth)
+
     /// Host to device (#612): whether the owner's spoken media mode (#551) is on for this device's ambient stream, why
     /// it last changed (one of `MediaMode.reasons`), and while on, when it turns itself off (Unix milliseconds). Sent
     /// only to a device that advertises `MediaMode.capability`. It shows state only and grants no authority.
@@ -151,7 +163,7 @@ public enum ControlPayload: Sendable, Equatable {
 extension ControlPayload: Codable {
     private enum CodingKeys: String, CodingKey {
         case command, hello, targets, targetID = "target", nonce, code, message, events, from, text, speaker, scope
-        case muted, name, state, route, on, reason, expires
+        case muted, name, state, route, update, session, priority, card, on, reason, expires, report
     }
 
     private enum Command: String, Codable {
@@ -159,6 +171,8 @@ extension ControlPayload: Codable {
         case diagnostic, stopPlayback = "stop_playback", ambientMovedHere = "ambient_moved_here"
         case ambientHeard = "ambient_heard", ambientOverheard = "ambient_overheard", overheardScope = "overheard_scope"
         case setReplyMute = "set_reply_mute", ownerVoice = "owner_voice", ambientInput = "ambient_input"
+        case sessionUpdate = "session_update"
+        case health, healthReport = "health_report"
         case mediaMode = "media_mode"
     }
 
@@ -202,8 +216,40 @@ extension ControlPayload: Codable {
         case .setReplyMute: self = try Self.setReplyMute(from: decoder)
         case .ownerVoice: self = try Self.ownerVoice(from: decoder)
         case .ambientInput: self = try Self.ambientInput(from: decoder)
+        case .sessionUpdate: self = try Self.sessionUpdate(from: decoder)
+        case .health, .healthReport: self = try Self.health(from: decoder)
         case .mediaMode: self = try Self.mediaMode(from: decoder)
         }
+    }
+
+    /// Strict (#614): `health` carries only `command`; `health_report` only `command` and a closed `report`.
+    private static func health(from decoder: any Decoder) throws -> ControlPayload {
+        let container = try decoder.container(keyedBy: CodingKeys.self)
+        guard try container.decode(Command.self, forKey: .command) == .healthReport else {
+            try requireOnly(["command"], "health", decoder)
+            return .health
+        }
+        try requireOnly(["command", "report"], "health_report", decoder)
+        return .healthReport(try container.decode(HostHealth.self, forKey: .report))
+    }
+
+    /// Strict (#609): only `command`, `update`, a `session` name `SessionUpdateCard.session` accepts, a known
+    /// `priority`, non-empty `text`, and an optional non-empty `card`, each text within the text payload's byte cap.
+    private static func sessionUpdate(from decoder: any Decoder) throws -> ControlPayload {
+        try requireOnly(["command", "update", "session", "priority", "text", "card"], "session_update", decoder)
+        let container = try decoder.container(keyedBy: CodingKeys.self)
+        let update = try container.decode(UUID.self, forKey: .update)
+        let text = try container.decode(String.self, forKey: .text)
+        try requireRange(text.utf8.count, in: 1...PayloadLimits.maxTextBytes, "text", decoder)
+        // Present means a string: an explicit null is refused like any other wrong type.
+        let card = container.contains(.card) ? try container.decode(String.self, forKey: .card) : nil
+        if let card { try requireRange(card.utf8.count, in: 1...PayloadLimits.maxTextBytes, "card", decoder) }
+        guard let session = SessionUpdateCard.session(try container.decode(String.self, forKey: .session)),
+              let priority = SessionUpdateCard.priority(try container.decode(String.self, forKey: .priority)) else {
+            throw DecodingError.dataCorrupted(.init(codingPath: decoder.codingPath,
+                                                    debugDescription: "invalid session_update session or priority"))
+        }
+        return .sessionUpdate(update: update, session: session, priority: priority, text: text, card: card)
     }
 
     /// Strict (#612): only `command`, the boolean `on`, an optional `reason` from `MediaMode.reasons` and, only while
@@ -396,6 +442,19 @@ extension ControlPayload: Codable {
         case .ambientInput(let route):
             try container.encode(Command.ambientInput, forKey: .command)
             try container.encode(try Self.closed(AmbientInput.route(route), route, encoder), forKey: .route)
+        case .health: try container.encode(Command.health, forKey: .command)
+        case .healthReport(let report):
+            try container.encode(Command.healthReport, forKey: .command)
+            try container.encode(report, forKey: .report)
+        case .sessionUpdate(let update, let session, let priority, let text, let card):
+            try container.encode(Command.sessionUpdate, forKey: .command)
+            try container.encode(update, forKey: .update)
+            try container.encode(try Self.closed(SessionUpdateCard.session(session), session, encoder),
+                                 forKey: .session)
+            try container.encode(try Self.closed(SessionUpdateCard.priority(priority), priority, encoder),
+                                 forKey: .priority)
+            try container.encode(text, forKey: .text)
+            try container.encodeIfPresent(card, forKey: .card)
         case .mediaMode(let on, let reason, let expires):
             try container.encode(Command.mediaMode, forKey: .command)
             try container.encode(on, forKey: .on)
@@ -418,6 +477,23 @@ extension ControlPayload: Codable {
 public enum RequestRefusals {
     public static let capability = "request_refusals"
     public static let codes: [ErrorCode] = [.pasteRefused]
+}
+
+/// Session update cards (#609): a local session's unsolicited update, shown in the thread with the session that sent
+/// it (#371). The device advertises `capability` in its `hello`; a host never sends `session_update` to a device
+/// without it, because an older device refuses an unknown command as malformed.
+public enum SessionUpdateCard {
+    public static let capability = "session_update"
+    public static let priorities = ["info", "action"]
+
+    /// `value` when it is exactly one of `priorities`, else nil.
+    public static func priority(_ value: String?) -> String? {
+        value.flatMap { value in priorities.first { DiagnosticLimits.sameBytes($0, value) } }
+    }
+
+    /// `value` when it is a name a device may show as the speaker, by the guest display-name rule
+    /// (`AmbientOverheard.name`): 1 to 64 printable scalars, no surrounding whitespace. Else nil.
+    public static func session(_ value: String?) -> String? { AmbientOverheard.name(value) }
 }
 
 /// Reply playback stop (#309). The device advertises the capability in its `hello`; a host never sends
@@ -931,6 +1007,70 @@ extension Schema {
             "additionalProperties": .bool(false),
             "properties": .object([
                 "command": .object([:]), "route": .object(["enum": .array(AmbientInput.routes.map(JSONValue.string))])
+            ])
+        ])
+    ])
+
+    /// `health` carries only `command` (#614).
+    static let healthPayloadRule: JSONValue = .object([
+        "if": .object(["properties": .object(["command": .object(["const": .string("health")])])]),
+        "then": .object(["additionalProperties": .bool(false), "properties": .object(["command": .object([:])])])
+    ])
+
+    /// `health_report` carries `command` and a closed `report` (#614): a version, an optional 16-hex build and 1–16
+    /// known checks. That each name appears once is checked by the decoder.
+    static let healthReportPayloadRule: JSONValue = .object([
+        "if": .object(["properties": .object(["command": .object(["const": .string("health_report")])])]),
+        "then": .object([
+            "additionalProperties": .bool(false),
+            "properties": .object([
+                "command": .object([:]),
+                "report": .object([
+                    "type": .string("object"), "required": .array([.string("version"), .string("checks")]),
+                    "additionalProperties": .bool(false),
+                    "properties": .object([
+                        "version": .object(["type": .string("string"), "pattern": .string("^[0-9A-Za-z.+-]{1,32}$")]),
+                        "build": .object(["type": .string("string"), "pattern": .string("^[0-9a-f]{16}$")]),
+                        "checks": .object([
+                            "type": .string("array"), "minItems": .integer(1),
+                            "maxItems": .integer(Int64(HostHealth.maxChecks)),
+                            "items": .object([
+                                "type": .string("object"), "required": .array([.string("name"), .string("ok")]),
+                                "additionalProperties": .bool(false),
+                                "properties": .object([
+                                    "name": .object(["enum": .array(HostHealth.checkNames.map(JSONValue.string))]),
+                                    "ok": .object(["type": .string("boolean")])
+                                ])
+                            ])
+                        ])
+                    ])
+                ])
+            ])
+        ])
+    ])
+
+    /// `session_update` carries `command`, `update`, `session`, `priority`, `text` and an optional `card` (#609).
+    static let sessionUpdatePayloadRule: JSONValue = .object([
+        "if": .object(["properties": .object(["command": .object(["const": .string("session_update")])])]),
+        "then": .object([
+            "additionalProperties": .bool(false),
+            "properties": .object([
+                "command": .object([:]),
+                "update": .object(["type": .string("string"), "minLength": .integer(1)]),
+                // The decoder is stricter: printable only and untrimmed refused, as for a guest's name.
+                "session": .object([
+                    "type": .string("string"), "minLength": .integer(1),
+                    "maxLength": .integer(Int64(AmbientOverheard.maxNameScalars))
+                ]),
+                "priority": .object(["enum": .array(SessionUpdateCard.priorities.map(JSONValue.string))]),
+                "text": .object([
+                    "type": .string("string"), "minLength": .integer(1),
+                    "maxLength": .integer(Int64(PayloadLimits.maxTextBytes))
+                ]),
+                "card": .object([
+                    "type": .string("string"), "minLength": .integer(1),
+                    "maxLength": .integer(Int64(PayloadLimits.maxTextBytes))
+                ])
             ])
         ])
     ])
