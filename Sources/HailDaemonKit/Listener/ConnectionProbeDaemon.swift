@@ -68,6 +68,9 @@ public enum ConnectionProbeDaemon {
         /// `--session-updates` (#609), only with `--personal-terminal`: sessions may send unsolicited updates
         /// through `haild notify`. Off by default.
         var sessionUpdates = false
+        /// `--host-health` (#614), only with `--personal-terminal`: answer a device's `health` with the doctor
+        /// summary. Without the flag `host_health` is not advertised and the request is refused.
+        var health = false
         /// `--voice-routes` (#636), only with `--personal-terminal`: the owner's named routes file, an absolute path.
         /// A file that is missing or does not load refuses startup, so a request naming a session never goes
         /// elsewhere because the routes were silently off.
@@ -97,7 +100,7 @@ public enum ConnectionProbeDaemon {
             case "--reply-socket": replySocket = try path(from: &rest)
             case "--voice-routes" where voiceRoutes == nil: voiceRoutes = try path(from: &rest, absolute: true)
             case "--single-terminal-reply-fallback", "--device-diagnostics",
-                 "--ambient-reply-control", "--session-updates": switches.insert(flag)
+                 "--ambient-reply-control", "--session-updates", "--host-health": switches.insert(flag)
             case "--ambient-rightyo", "--ambient-rightyo-config", "--ambient-target", "--ambient-ack-clips",
                  "--ambient-destinations":
                 try parseAmbient(flag, from: &rest, into: &ambient)
@@ -115,7 +118,7 @@ public enum ConnectionProbeDaemon {
             singleTerminalReplyFallback: switches.contains("--single-terminal-reply-fallback"),
             ambient: try ambientOptions(ambient, switches),
             diagnostics: switches.contains("--device-diagnostics") ? DiagnosticLog.standardDirectory() : nil,
-            sessionUpdates: switches.contains("--session-updates"),
+            sessionUpdates: switches.contains("--session-updates"), health: switches.contains("--host-health"),
             voiceRoutes: voiceRoutes
         )
     }
@@ -142,6 +145,12 @@ extension ConnectionProbeDaemon {
             let diagnostics = DiagnosticLog(directory: directory)
             await ambient?.observe(diagnostics) // The phone's playback reports, for reply control (rightyo#124).
             authorizer = PersonalTerminalAuthorizer(ambientAudio: authorizer.ambientAudio, diagnostics: diagnostics)
+        }
+        // Personal terminal only, checked again here as well as in `options` (#614 review).
+        if options.health, options.personalTerminal != nil {
+            authorizer = PersonalTerminalAuthorizer(ambientAudio: authorizer.ambientAudio,
+                                                    diagnostics: authorizer.diagnostics,
+                                                    health: HostHealthService().current)
         }
         #if os(macOS)
         if let file = options.voiceRoutes {
