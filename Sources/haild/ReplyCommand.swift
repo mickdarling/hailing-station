@@ -332,7 +332,7 @@ private func streamVBSay(
     context.timing = timing
     // "played" once the renderer's audio is all sent, even if its cleanup then fails the command.
     var outcome = "failed"
-    defer { timing.log(outcome: outcome, resends: ReplyResends.total) }
+    defer { timing.log(outcome: outcome) }
     let renderer = try OwnedReplyRenderer(
         text: text, outputRoot: outputRoot, environment: ProcessInfo.processInfo.environment
     )
@@ -347,7 +347,11 @@ private func streamVBSay(
         try await renderer.waitForCleanup()
         return result
     } catch {
-        if outcome == "failed", error is CancellationError { outcome = "cancelled" }
+        if ReplyBackground.isSuperseded {
+            outcome = "superseded"
+        } else if error is CancellationError || Task.isCancelled || error as? OwnedReplyRendererError == .cancelled {
+            outcome = "cancelled"
+        }
         renderer.retire(cancel: true)
         await renderer.waitForCancellationSignals()
         // The CLI must remain alive to retain reaping/cleanup ownership. This async suspension is not
@@ -469,13 +473,14 @@ private func sendStreamedPCM(_ bytes: Data, sequence: Int, context: PCMReplyCont
         codec: .pcm16, sampleRate: context.sampleRate, channels: 1, sequence: sequence,
         streamID: context.streamID, isFinal: false, bytes: Data(bytes), reply: context.descriptor
     )
-    let sentAt = ContinuousClock.now
+    let (sentAt, resendsBefore) = (ContinuousClock.now, ReplyResends.total)
     let delivered = try await submitSpeechAudio(Frame(
         timestamp: replyTimestamp(), target: context.descriptor.targetID, source: context.descriptor.hostID,
         payload: .audio(payload)
     ), socketURL: context.socket)
     let audio = ReplyStreamPacer.seconds(pcm16Bytes: bytes.count, sampleRate: context.sampleRate)
-    context.timing?.sent(audio: .seconds(audio), at: sentAt, acknowledgedAfter: .now - sentAt)
+    let resends = ReplyResends.total - resendsBefore
+    context.timing?.sent(audio: .seconds(audio), at: sentAt, acknowledgedAfter: .now - sentAt, resends: resends)
     return delivered
 }
 
@@ -592,10 +597,10 @@ enum ReplyClient {
                 throw failure.error
             }
             if response.code == .requestPending, response.delivered == 0 {
-                ReplyResends.note()
                 guard try await retryWindow.waitForRetry(after: attempt) else {
                     throw ReplyClientError.refused("reply request did not become ready within the retry budget")
                 }
+                ReplyResends.note()
                 continue
             }
             if let error = response.error { throw ReplyClientError.refused(error) }
@@ -929,15 +934,15 @@ extension ReplyBackground {
                 } else {
                     extendBound(by: .seconds(2)) // waiting on others' traffic is not the stream's own time
                 }
-                ReplyResends.note()
                 try await Task.sleep(for: .seconds(2))
+                ReplyResends.note()
             }
         }
     }
 }
 
-/// Resends this job made after a refusal that promises nothing was published (#737). Each wait falls inside a frame's
-/// acknowledgement time, so the reply's timing line names how many there were. One job is one reply.
+/// Resend waits this job made after a refusal that promises nothing was published (#737). Each audio frame takes the
+/// difference across its own send, so the timing line counts only the waits inside the frames it times.
 enum ReplyResends {
     private static let count = Mutex(0)
 

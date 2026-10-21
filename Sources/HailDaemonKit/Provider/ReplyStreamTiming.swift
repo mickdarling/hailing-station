@@ -9,7 +9,7 @@ private let timingLogger = Logger(subsystem: "com.mickdarling.hailing-station", 
 /// likely ran dry because the Mac fell behind real time (TTS starved of CPU or memory), unless it was still playing
 /// an earlier reply or was paused, which hold a reply back. Gaps the device counts while the lead stayed positive
 /// point at transport or the device instead. A frame's acknowledgement time covers the endpoint's audit write and
-/// publication, and any resend waits after a `rate limited` or `requestPending` refusal, which the log line counts.
+/// publication, and any resend waits after a `rate limited` or `requestPending` refusal, which it counts.
 package struct ReplyStreamTiming: Sendable, Equatable {
     package struct Summary: Sendable, Equatable {
         package var frames = 0
@@ -18,6 +18,8 @@ package struct ReplyStreamTiming: Sendable, Equatable {
         package var minimumLead: Duration?
         package var slowestAcknowledgement: Duration = .zero
         package var acknowledgementP95: Duration = .zero
+        /// Resend waits inside the audio frames' acknowledgement times.
+        package var resends = 0
         package var wall: Duration = .zero
     }
 
@@ -26,13 +28,17 @@ package struct ReplyStreamTiming: Sendable, Equatable {
     private var audio: Duration = .zero
     private var minimumLead: Duration?
     private var acknowledgements: [Duration] = []
+    private var resends = 0
 
     package init(startedAt started: ContinuousClock.Instant) { self.started = started }
 
-    /// A frame of `audio` was sent at `sentAt` and acknowledged `acknowledgedAfter` later, when the device has it.
+    /// A frame of `audio` was sent at `sentAt` and acknowledged `acknowledgedAfter` later, when the device has it,
+    /// after `resends` waits on refusals.
     package mutating func sent(
-        audio frameAudio: Duration, at sentAt: ContinuousClock.Instant, acknowledgedAfter acknowledgement: Duration
+        audio frameAudio: Duration, at sentAt: ContinuousClock.Instant, acknowledgedAfter acknowledgement: Duration,
+        resends frameResends: Int = 0
     ) {
+        resends += frameResends
         let acknowledged = sentAt + acknowledgement
         if let firstAcknowledged {
             let lead = audio - (acknowledged - firstAcknowledged)
@@ -50,7 +56,7 @@ package struct ReplyStreamTiming: Sendable, Equatable {
         return Summary(
             frames: acknowledgements.count, audio: audio, firstAudio: firstAcknowledged.map { $0 - started },
             minimumLead: minimumLead, slowestAcknowledgement: sorted.last ?? .zero, acknowledgementP95: p95,
-            wall: end - started
+            resends: resends, wall: end - started
         )
     }
 }
@@ -61,7 +67,7 @@ extension ReplyStreamTiming.Summary {
         func ms(_ value: Duration?) -> String { value.map { String(Int64($0 / .milliseconds(1))) } ?? "none" }
         return "reply audio: frames=\(frames) audio_ms=\(ms(audio)) first_audio_ms=\(ms(firstAudio)) "
             + "min_lead_ms=\(ms(minimumLead)) ack_max_ms=\(ms(slowestAcknowledgement)) "
-            + "ack_p95_ms=\(ms(acknowledgementP95)) wall_ms=\(ms(wall))"
+            + "ack_p95_ms=\(ms(acknowledgementP95)) resends=\(resends) wall_ms=\(ms(wall))"
     }
 }
 
@@ -73,17 +79,16 @@ package final class ReplyTimingRecorder: Sendable {
         timing = Mutex(ReplyStreamTiming(startedAt: started))
     }
 
-    package func sent(audio: Duration, at sentAt: ContinuousClock.Instant, acknowledgedAfter: Duration) {
-        timing.withLock { $0.sent(audio: audio, at: sentAt, acknowledgedAfter: acknowledgedAfter) }
+    package func sent(audio: Duration, at sentAt: ContinuousClock.Instant, acknowledgedAfter: Duration, resends: Int) {
+        timing.withLock { $0.sent(audio: audio, at: sentAt, acknowledgedAfter: acknowledgedAfter, resends: resends) }
     }
 
     /// Logs the summary to the unified log (`log show --predicate 'category == "reply-timing"'`). `line` is built
     /// from numbers only, and `outcome` is one of a few fixed words, so both are public. A reply that sent its audio
     /// some other way (vbsay's file mode) measured nothing and says so.
-    package func log(outcome: String, resends: Int, at end: ContinuousClock.Instant = .now) {
+    package func log(outcome: String, at end: ContinuousClock.Instant = .now) {
         let summary = timing.withLock { $0.summary(at: end) }
         let outcome = outcome == "played" && summary.frames == 0 ? "played_unmeasured" : outcome
-        let line = summary.line
-        timingLogger.notice("\(line, privacy: .public) resends=\(resends) outcome=\(outcome, privacy: .public)")
+        timingLogger.notice("\(summary.line, privacy: .public) outcome=\(outcome, privacy: .public)")
     }
 }
