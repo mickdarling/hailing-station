@@ -32,10 +32,18 @@ optional `metadata` is Markdown shown beside them and never spoken: links, PR an
 tables and status. It is a compatible v1 extension: older decoders ignore the key, and a reply without it is
 unchanged on the wire.
 
-- `metadata` is a non-empty string of at most 16 KiB of UTF-8 (`PayloadLimits.maxMetadataBytes`).
+- `metadata` is a non-empty string of at most 16 KiB of UTF-8 (`PayloadLimits.maxMetadataBytes`). Absent means no
+  metadata; `"metadata": null` is invalid, as is an empty string.
 - It is only valid beside a `reply` descriptor. The decoder and the schema refuse it on any other text payload.
+- The whole frame must still fit the frame cap (`PayloadLimits.defaultMaxFrameBytes`). JSON escaping can grow
+  text and metadata within their byte caps past it: a control character is six bytes on the wire.
 - It is untrusted content. A client renders it through its safe Markdown model (no raw HTML, no remote images,
   links shown with their real destination), keeps a raw-text fallback, and never passes it to speech.
+- `haild reply` sends it with `--metadata <markdown>` or `--metadata-file <path>`, on the text frame of a reply
+  sent with `--text` or `--say`. The file must be a regular UTF-8 file: a symlink, pipe, device or directory is
+  refused, and there is no `-` for standard input. Without `--text` or `--say`, over the cap, or when the encoded
+  text frame would exceed the frame cap, the reply is refused before anything is sent. A daemon that predates
+  this field decodes the frame without it and delivers the reply with the metadata dropped.
 
 ## Which device a reply reaches (#370)
 
@@ -168,6 +176,24 @@ diagnostic `route` tokens (`built_in_mic`, `usb_audio`, `car_audio`, `bluetooth_
 or device name. The host logs it with the stream so a speaker-ID mismatch can be attributed to an input chain.
 
 The decoder and the schema refuse any other key or value in either command.
+
+## Session update cards (#609)
+
+A local session can give the user an update without a pending request: finished work, a decision it needs, or a
+failure. The host decides when to speak it (see `SessionUpdateQueue`); this command is how a device shows it.
+
+`{"command": "session_update", "update": "<uuid>", "session": "<name>", "priority": "info" | "action", "text": "<line>",
+"card": "<detail>"}` is sent by a host to a device that advertised `session_update` (`SessionUpdateCard.capability`),
+because an older device refuses an unknown command.
+- `session` is the speaking session's name (#371), the target id or its display name: 1 to 64 printable scalars with no
+  surrounding whitespace, by the same rule as a guest's name.
+- `text` is the short line that is or will be spoken.
+- `card` is optional detail (links, PR numbers) that is shown and never spoken. It is a plain string for now. If the
+  reply metadata field from #606 lands, the card body may move to it.
+- `update` identifies the update, so a device shows a resent one once.
+
+The command selects nothing and grants no authority. The decoder refuses any other key, an unknown priority, an
+explicit null or empty card, and text over the text payload cap. The schema checks the shape and lengths.
 
 ### Media mode state (#612)
 
