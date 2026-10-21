@@ -120,7 +120,8 @@ import Testing
             text: "Deck:", pasted: PastedText(text: "synthetic pasted notes")
         )))
         let refused = await onAgent.receive(toDeck)
-        #expect(try onlyControl(refused) == .error(code: .malformed, message: PastedContent.agentOnlyRefusal))
+        // The tmux adapter's own agent gate refuses it (#675); this device does not take request refusals.
+        #expect(try onlyControl(refused) == .error(code: .notAllowed, message: PastedContent.agentOnlyRefusal))
         #expect(await rig.adapter.deliveries.isEmpty)
     }
 
