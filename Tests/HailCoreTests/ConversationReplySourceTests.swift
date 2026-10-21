@@ -80,6 +80,17 @@ import Testing
         #expect(thread.map(\.text) == ["Same scope."])
     }
 
+    /// One address places one reply (Codex review on #666): a second reply from that session stays in its own thread.
+    @Test func anAddressPlacesOnlyItsFirstReply() {
+        let log = ConversationLog()
+        log.noteSent("Deck, add a slide", endpointID: "mac", targetID: "tmux:scratch", targets: Self.targets,
+                     scope: "s1")
+        log.noteReply(reply("Added it.", from: "tmux:deck"), selected: "tmux:scratch", scope: "s1")
+        log.noteReply(reply("Unrelated update.", from: "tmux:deck"), selected: "tmux:scratch", scope: "s1")
+        let thread = log.entries(endpointID: "mac", targetID: "tmux:scratch").filter { $0.speaker == .haili }
+        #expect(thread.map(\.text) == ["Added it."])
+    }
+
     @Test func thePlacementIsFixedAtTheFirstText() {
         let log = ConversationLog()
         let id = UUID()

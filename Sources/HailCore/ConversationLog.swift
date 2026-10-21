@@ -91,7 +91,8 @@ public final class ConversationLog {
 
     /// A reply's text frame. The id matches `ReplyPresentation.id`, so the chat can show that reply's playback. A reply
     /// from another session shows in the `selected` thread, labelled, only while a request addressed to it from that
-    /// thread is open (#636); any other stays in its own thread alone. Its placement is fixed at its first text.
+    /// thread is open (#636), and each address places one reply; any other stays in its own thread alone. Its
+    /// placement is fixed at its first text.
     func noteReply(_ event: HostReplyEvent, selected: String? = nil, scope: String? = nil) {
         guard case .text(let payload) = event.frame.payload, let reply = payload.reply else { return }
         let id = "\(event.endpointID)|\(reply.id.uuidString.lowercased())"
@@ -105,11 +106,13 @@ public final class ConversationLog {
         )
         let cutoff = now().addingTimeInterval(-AddressedRequest.addressLifetime)
         addressed.removeAll { $0.at < cutoff }
-        if let selected, selected != reply.targetID, let request = addressed.last(where: {
+        // One address places one reply: its first text takes the record, so a later reply from that session (its
+        // later text frames update this entry in place above) stays in its own thread.
+        if let selected, selected != reply.targetID, let index = addressed.lastIndex(where: {
             $0.endpointID == event.endpointID && $0.thread == selected && $0.target.id == reply.targetID
                 && $0.scope == scope
         }) {
-            (entry.shownIn, entry.source) = (selected, request.target.name)
+            (entry.shownIn, entry.source) = (selected, addressed.remove(at: index).target.name)
         }
         append(entry)
     }
