@@ -8,6 +8,14 @@ struct PasteOffer: Equatable {
     var refusal: PasteRefusal?
 }
 
+/// How the station handled the Mac's paste refusals (#639 review).
+struct PasteRefusalHandling {
+    /// The refusal already handled, so the same one never puts a paste back twice.
+    var handledID: UUID?
+    /// A status set without being spoken, because the shared request refusal already announced the event once.
+    var quietStatus: String?
+}
+
 /// Paste text into the conversation (#608). The system Paste button reads the clipboard only when tapped, so there is
 /// no paste-permission prompt and nothing is read in the background. The paste rides with the next spoken request, or
 /// goes on its own with Send Paste. Links in it are never opened or fetched. Paste is offered only when the destination
@@ -40,13 +48,19 @@ extension TranscriptionLabView {
             pasteProblem = nil
         }
         .onChange(of: pasteOffer.refusal) { _, refusal in
-            guard let refusal, let restored = try? PastedDraft(refusal.pasted) else { return }
+            // Only a new refusal of the request this station is waiting on, to this destination: an old one seen
+            // again after switching away and back never brings a paste back.
+            guard let refusal, refusal.id != pasteRefusalHandling.handledID, pendingSendID != nil,
+                  pendingDestinationID == destinationID,
+                  let restored = try? PastedDraft(refusal.pasted) else { return }
+            pasteRefusalHandling.handledID = refusal.id
             attachedPaste = restored
             pasteProblem = PastedDraft.Problem.refusedByHost(refusal.message).message
-            // That request is over: no reply will come for it, so its reply wait ends. The status is left alone,
-            // because any status change is spoken; the shared request refusal (#692) already adds the one line and
-            // the one announcement.
+            // That request is over: no reply will come for it, so its reply wait ends and the status leaves
+            // "Waiting for reply". The new status is not spoken: the shared request refusal (#692) already adds
+            // the one line and the one announcement.
             clearPendingSend()
+            if status != "Ready" { (pasteRefusalHandling.quietStatus, status) = ("Ready", "Ready") }
         }
     }
 
@@ -86,6 +100,16 @@ extension TranscriptionLabView {
         .background(.quaternary, in: RoundedRectangle(cornerRadius: 14, style: .continuous))
         .accessibilityElement(children: .contain)
         .accessibilityLabel("Pasted text attached")
+    }
+
+    /// Speaks a status change, except the one status a host paste refusal set quietly.
+    @MainActor
+    func announceStatusUnlessQuiet(_ current: String) {
+        guard current != pasteRefusalHandling.quietStatus else {
+            pasteRefusalHandling.quietStatus = nil
+            return
+        }
+        announceStatusIfNeeded(current)
     }
 
     @MainActor
