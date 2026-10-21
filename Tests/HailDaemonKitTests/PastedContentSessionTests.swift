@@ -55,7 +55,7 @@ import Testing
 
     /// Jarvis and the #628 review: a raw shell pane must never receive a paste. tmux panes, and any kind not known to
     /// be an agent session, are refused with a plain reason and nothing is delivered.
-    @Test(arguments: ["tmux", "tmux-reply", "diagnostic-reply", "unknown"])
+    @Test(arguments: ["tmux-reply", "diagnostic-reply", "unknown"])
     func aPasteToATargetNotKnownToBeAnAgentIsRefused(kind: String) async throws {
         let ready = try await readySession(kind: kind)
         let (session, adapter, target) = (ready.session, ready.adapter, ready.target)

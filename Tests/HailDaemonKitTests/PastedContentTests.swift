@@ -157,7 +157,9 @@ import Testing
 
     @Test func onlyAgentSessionsTakeAPaste() {
         #expect(PastedContent.acceptsPaste(targetKind: "codex-owned"))
-        for kind in ["tmux", "tmux-reply", "diagnostic-reply", "", "codex"] {
+        // tmux is accepted here and gated pane by pane in the adapter (`TmuxPasteAgentTests`).
+        #expect(PastedContent.acceptsPaste(targetKind: "tmux"))
+        for kind in ["tmux-reply", "diagnostic-reply", "", "codex"] {
             #expect(!PastedContent.acceptsPaste(targetKind: kind))
         }
         #expect(PastedContent.maxFramedBytes(forTargetKind: "codex-owned") == PayloadLimits.maxTextBytes)

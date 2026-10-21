@@ -135,8 +135,9 @@ route: "Deck, add a slide on pricing".
   | A name alone | `malformed`: "voice route: nothing to send to Deck" |
   | A near miss (`unclear`) | `not_allowed`: "voice route: which session? Nothing was sent" |
 
-  The current app still treats any non-ambient error frame as fatal and reconnects. Slice 5 makes `voice route:`
-  refusals non-fatal, and spoken.
+  A device that advertises `request_refusals` (#665) gets `voice_route_refused` for each of these instead, which ends
+  the request and keeps the connection. An older app treats any non-ambient error frame as fatal and reconnects.
+  Showing the refusal on the device is slice 5b.
 - **The reply comes back.** A delivered routed request makes this connection that route's last input device (#370),
   on its current selection generation. The selection *covers* a target when it is the selected target, or when both
   it and the selected target are routes. The reply checks (`holds`, request records, `recordOwner`, `selects`) use
@@ -148,3 +149,17 @@ route: "Deck, add a slide on pricing".
 Verification is synthetic only (`VoiceRouteDeliveryTests`): a fake tmux-kind adapter and never-started transports.
 It is not device hearing, and the app does not yet show a routed reply in the selected destination's thread
 (slice 7).
+
+## Showing a refused request (slice 5b)
+
+When the host refuses one request and sends nothing (any `ErrorCode.isRequestRefusal`, from #665's
+`RequestRefusals.codes`: `paste_refused` and `voice_route_refused`), the app:
+
+- keeps the connection, as #665 already does;
+- adds the host's message as one system line in the thread selected when it arrived (`ConversationLog.noteRefusal`,
+  shown with an exclamation-bubble icon, never as a reply); and
+- announces it once through VoiceOver (`HostConnectionStore.onRequestRefusal`, wired in `RootView`).
+
+This is the only chat line and the only announcement for any refusal code. Feature-specific UI, such as a paste kept
+attached with its reason, adds neither. Verification is synthetic only (`RequestRefusalNoticeTests`), plus the iOS
+Simulator build.

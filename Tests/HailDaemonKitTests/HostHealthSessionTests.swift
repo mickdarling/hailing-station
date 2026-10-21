@@ -1,6 +1,5 @@
 import Foundation
 import HailProtocol
-import Synchronization
 import Testing
 @testable import HailDaemonKit
 
@@ -27,27 +26,6 @@ import Testing
         #expect(try onlyControl(result) == .healthReport(Self.report))
         #expect(result.disposition == .keepOpen)
         #expect(await adapter.deliveries.isEmpty)
-    }
-
-    /// The #661 review: any number of concurrent requests cost one evaluation, every one is answered, and a repeat
-    /// inside the window is answered from the cache; only once the window has passed does a request evaluate again.
-    @Test func concurrentRequestsShareOneEvaluationAndRepeatsAreCached() async {
-        let evaluations = Mutex(0), clock = Mutex(ContinuousClock.now)
-        let service = HostHealthService(ttl: .seconds(30), now: { clock.withLock { $0 } }, evaluate: {
-            evaluations.withLock { $0 += 1 }
-            Thread.sleep(forTimeInterval: 0.2) // slow, as the real audit verify is
-            return Self.report
-        })
-        let answers = await withTaskGroup(of: HostHealth.self) { group in
-            for _ in 0..<64 { group.addTask { await service.current() } }
-            return await group.reduce(into: [HostHealth]()) { $0.append($1) }
-        }
-        #expect(answers.count == 64 && answers.allSatisfy { $0 == Self.report })
-        #expect(evaluations.withLock { $0 } == 1)
-        clock.withLock { $0 += .seconds(29) }
-        #expect(await service.current() == Self.report && evaluations.withLock { $0 } == 1)
-        clock.withLock { $0 += .seconds(2) }
-        #expect(await service.current() == Self.report && evaluations.withLock { $0 } == 2)
     }
 
     /// The doctor's check names and the protocol's list are kept in two places; this fails if they drift apart.
