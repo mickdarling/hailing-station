@@ -209,7 +209,7 @@ extension AmbientAudioEvent {
     /// The stream every event names.
     var stream: UUID {
         switch self {
-        case .started(let stream, _), .segment(let stream, _, _), .ended(let stream, _): stream
+        case .started(let stream, _, _), .segment(let stream, _, _), .ended(let stream, _): stream
         }
     }
 }
@@ -310,7 +310,15 @@ extension WebSocketListener {
     /// `reference` (#230) is the one `referenceAmbient` minted and wrote into this request's reply block; the
     /// session binds it, host-side, to this connection, its selection generation and the exact target binding
     /// (`HostSession.ambientReplyReference`). Nil dispatches exactly as before.
-    func dispatchAmbient(_ request: LocalDispatchRequest, reference: UUID? = nil) async throws -> UUID? {
+    ///
+    /// `selection` (#636) is the selection generation the stream opened on: the request is delivered only while the
+    /// session is still on it, so nothing a stream heard reaches a target after the owner selected another
+    /// destination, even after selecting this one again. A stream without one dispatches nothing: the current
+    /// selection is never assumed.
+    func dispatchAmbient(
+        _ request: LocalDispatchRequest, reference: UUID? = nil, selection: UUID?
+    ) async throws -> UUID? {
+        guard let selection else { throw LocalDispatchRefusal.notAuthorized }
         guard let peer = peers.first(where: { $0.value.session.connectionID == request.connection }) else {
             throw LocalDispatchRefusal.unknownConnection
         }
@@ -318,8 +326,10 @@ extension WebSocketListener {
         named.connection = peer.key
         // The streaming device's own input (#370): a delivered handoff makes it the target's last input device.
         return try await HostSession.$ambientInputDispatch.withValue(true) {
-            guard let reference else { return try await dispatch(named) }
-            return try await HostSession.$ambientReplyReference.withValue(reference) { try await dispatch(named) }
+            guard let reference else { return try await dispatch(named, generation: selection) }
+            return try await HostSession.$ambientReplyReference.withValue(reference) {
+                try await dispatch(named, generation: selection)
+            }
         }
     }
 
@@ -557,12 +567,12 @@ public final class AmbientRightyoRouter: AmbientAudioSink, AmbientListenerWiring
     public func ambientAudio(_ event: AmbientAudioEvent) {
         let queued = state.withLock { state -> Bool in
             switch event {
-            case .started(let stream, let connection): state.latest[connection] = stream
+            case .started(let stream, let connection, _): state.latest[connection] = stream
             // Taken over (#366): the old stream's late failure is not reported to its device as a stop.
             case .ended(let stream, .superseded): state.latest = state.latest.filter { $0.value != stream }
             default: break
             }
-            if case .started(let stream, _) = event { state.newestStart = stream }
+            if case .started(let stream, _, _) = event { state.newestStart = stream }
             // Shutting down: nothing more is queued (starts are refused inline as stopping).
             if state.shuttingDown { return false }
             // While a reload builds its child (#405), events queue too: the worker waits for the reload, so a start
@@ -689,12 +699,14 @@ extension AmbientRightyoRouter {
         var gateEnd: AmbientStreamEndReason?
         var task: Task<Void, Never>?
     }
-    /// The stream whose child is fed audio now: its run, and when the stream itself started (kept across reloads).
+    /// The stream whose child is fed audio now: its run, when the stream itself started and the selection generation
+    /// it opened on (#636), both kept across reloads.
     fileprivate struct Active {
         let stream: UUID
         let run: UUID
         let pipeline: RightyoAmbientPipeline
         let since: Date
+        let selection: UUID?
     }
 }
 
@@ -721,8 +733,8 @@ extension AmbientRightyoRouter {
     /// The gate's events, in order: spawn, feed, retire.
     fileprivate func handle(_ event: AmbientAudioEvent) {
         switch event {
-        case .started(let stream, let connection):
-            start(stream, connection: connection)
+        case .started(let stream, let connection, let selection):
+            start(stream, connection: connection, selection: selection)
         case .segment(let stream, _, let bytes):
             let pipeline = state.withLock { $0.active?.stream == stream ? $0.active?.pipeline : nil }
             // Overload drops the oldest audio; it never blocks the gate. Refused input means the child is gone
@@ -759,7 +771,7 @@ extension AmbientRightyoRouter {
     /// final segment, is skipped: it neither forces a child out nor spawns. The newest makes room first, then
     /// every event is handled as it would be inline.
     private func work(_ event: AmbientAudioEvent) async {
-        if case .started(let stream, _) = event {
+        if case .started(let stream, _, _) = event {
             guard isLive(stream) else { return }
             await makeRoom(for: stream)
             guard isLive(stream) else { return }
@@ -784,7 +796,7 @@ extension AmbientRightyoRouter {
     fileprivate static func enqueue(_ event: AmbientAudioEvent, into state: inout State) {
         switch event {
         case .started:
-            let dead = Set(state.queue.compactMap { if case .started(let stream, _) = $0 { stream } else { nil } })
+            let dead = Set(state.queue.compactMap { if case .started(let stream, _, _) = $0 { stream } else { nil } })
             state.queue.removeAll { dead.contains($0.stream) }
         case .segment(let stream, _, _):
             guard stream == state.newestStart else { return }
@@ -877,7 +889,7 @@ extension AmbientRightyoRouter {
         return state.withLock { $0.runs.isEmpty }
     }
 
-    fileprivate func start(_ stream: UUID, connection: UUID) {
+    fileprivate func start(_ stream: UUID, connection: UUID, selection: UUID?) {
         let (listener, refusal) = state.withLock { state -> (WebSocketListener?, String?) in
             if state.shuttingDown { return (nil, "stopping") }
             if Self.full(state) { return (nil, "busy") }
@@ -887,13 +899,14 @@ extension AmbientRightyoRouter {
             return refuse(stream, connection: connection, reason: refusal ?? "stopping")
         }
         let pipeline: RightyoAmbientPipeline
-        do { pipeline = try makePipeline(connection: connection, listener: listener) } catch {
+        do { pipeline = try makePipeline(connection: connection, selection: selection, listener: listener) } catch {
             return refuse(stream, connection: connection, reason: Self.describe(error))
         }
         let admitted = state.withLock { state -> Bool in
             guard !state.shuttingDown else { return false }
             let id = register(pipeline, stream: stream, connection: connection, in: &state)
-            state.active = Active(stream: stream, run: id, pipeline: pipeline, since: Date())
+            state.active = Active(stream: stream, run: id, pipeline: pipeline, since: Date(),
+                                  selection: selection)
             return true
         }
         guard admitted else {
@@ -903,8 +916,10 @@ extension AmbientRightyoRouter {
     }
 
     /// One child for `connection`'s stream, launched now; a refusal launches nothing. Shared by a start and a
-    /// reload (#405), so a reloaded child is configured exactly as a fresh one.
-    fileprivate func makePipeline(connection: UUID, listener: WebSocketListener) throws -> RightyoAmbientPipeline {
+    /// reload (#405), so a reloaded child is configured exactly as a fresh one, on the stream's `selection` (#636).
+    fileprivate func makePipeline(
+        connection: UUID, selection: UUID?, listener: WebSocketListener
+    ) throws -> RightyoAmbientPipeline {
         var settings = RightyoAmbientPipeline.Configuration(
             executable: configuration.executable, config: configuration.config, target: configuration.target,
             binding: configuration.binding, connection: connection,
@@ -925,7 +940,8 @@ extension AmbientRightyoRouter {
                                                          childEnvironment(for: connection))
         return try RightyoAmbientPipeline(configuration: settings,
                                           dispatcher: AmbientListenerDispatcher(listener: listener,
-                                                                                audit: configuration.audit))
+                                                                                audit: configuration.audit,
+                                                                                selection: selection))
     }
 
     /// Registers a run for `pipeline` under the caller's lock and returns its id. The task is created under the lock,
@@ -1195,7 +1211,7 @@ extension AmbientRightyoRouter {
         }
         defer { state.withLock { $0.reloading = false } }
         let pipeline: RightyoAmbientPipeline
-        do { pipeline = try makePipeline(connection: connection, listener: listener) } catch {
+        do { pipeline = try makePipeline(connection: connection, selection: old.selection, listener: listener) } catch {
             let reason = Self.describe(error)
             emit("ambient_reload_refused", detail: reason)
             return .refused(reason)
@@ -1224,7 +1240,8 @@ extension AmbientRightyoRouter {
             state.retirements += 1
             state.runs[old.run]?.retiredAt = state.retirements
             let id = register(pipeline, stream: old.stream, connection: connection, reload: true, in: &state)
-            state.active = Active(stream: old.stream, run: id, pipeline: pipeline, since: old.since)
+            state.active = Active(stream: old.stream, run: id, pipeline: pipeline, since: old.since,
+                                  selection: old.selection)
             return .reloaded
         }
     }
@@ -1248,6 +1265,8 @@ extension AmbientRightyoRouter {
 struct AmbientListenerDispatcher: RightyoAmbientDispatching {
     let listener: WebSocketListener
     let audit: AuditLog?
+    /// The selection generation the stream opened on (#636); every request it dispatches is pinned to it.
+    var selection: UUID?
     /// The reply reference (#230) is written first, so the fail-closed audit record carries the final prompt size.
     func dispatch(_ request: LocalDispatchRequest) async throws -> UUID? {
         let (prepared, reference) = await listener.referenceAmbient(request)
@@ -1257,7 +1276,7 @@ struct AmbientListenerDispatcher: RightyoAmbientDispatching {
                                                    bytes: prepared.text.utf8.count))
             } catch { throw LocalReplyRefusal.auditFailure }
         }
-        return try await listener.dispatchAmbient(prepared, reference: reference)
+        return try await listener.dispatchAmbient(prepared, reference: reference, selection: selection)
     }
 }
 extension AmbientRightyoRouter {

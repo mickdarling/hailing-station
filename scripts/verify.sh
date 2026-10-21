@@ -30,7 +30,7 @@ build() { echo "== build"; swift build ${SWIFT_FLAGS[@]+"${SWIFT_FLAGS[@]}"}; }
 TIMING_SUITES=(
   OwnedReply OwnedStdioChild CodexStdio ProviderObservedSession ProviderInputCoordinator LocalReplyEndpoint
   TmuxDeliveryCommit AmbientWiring RightyoInput RightyoChildProcess SFSpeechRecognizerTranscriber
-  TmuxPrePaste TmuxStaleInput TmuxCursorInput TmuxSubmitConfirmation TmuxIntegration TmuxPasteAgent
+  TmuxPrePaste TmuxStaleInput TmuxCursorInput TmuxSubmitConfirmation TmuxIntegration TmuxPasteAgent TmuxPasteEnter
   CoachingTransportRegression AmbientSharedAudit CoachingStartupEvent
 )
 TIMING_PATTERN="($(IFS='|'; echo "${TIMING_SUITES[*]}"))"
@@ -187,6 +187,13 @@ sim() {
     -destination 'generic/platform=iOS Simulator' CODE_SIGNING_ALLOWED=NO 2>&1 | pretty
 }
 
+mac() {
+  echo "== macOS build (Hail-macOS, #266)"
+  xcodegen generate --quiet
+  xcodebuild build -project HailingStation.xcodeproj -scheme Hail-macOS \
+    -destination 'generic/platform=macOS' CODE_SIGNING_ALLOWED=NO 2>&1 | pretty
+}
+
 pretty() {
   if command -v xcbeautify >/dev/null; then xcbeautify --quiet; else cat; fi
 }
@@ -200,6 +207,7 @@ case "$cmd" in
   lint) lint ;;
   scripts) scripts_ ;;
   sim) sim ;;
+  mac) mac ;;
   all) all ;;
-  *) echo "usage: scripts/verify.sh {tools|build|test|lint|scripts|sim|all}"; exit 2 ;;
+  *) echo "usage: scripts/verify.sh {tools|build|test|lint|scripts|sim|mac|all}"; exit 2 ;;
 esac

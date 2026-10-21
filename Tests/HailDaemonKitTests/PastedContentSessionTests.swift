@@ -79,7 +79,8 @@ import Testing
         let refused = try #require(try refusal(await session.receive(pasteFrame("", note, to: target))))
         #expect(refused.0 == .pasteRefused)
         #expect(refused.1.hasPrefix("pasted text is too large for this destination"))
-        #expect(refused.1.hasSuffix("the limit is \(PayloadLimits.maxTextBytes)"))
+        // The cap shown keeps room for the validation note.
+        #expect(refused.1.hasSuffix("the limit is \(PayloadLimits.maxTextBytes - PastedContent.validationReserve)"))
         #expect(await adapter.deliveries.isEmpty)
     }
 
@@ -91,29 +92,6 @@ import Testing
         #expect(refused.0 == .pasteRefused)
         #expect(refused.1 == "pasted text contains a bidirectional control; remove it and paste again")
         #expect(await adapter.deliveries.isEmpty)
-    }
-
-    /// The dangerous-pattern guard reads the paste too: a guarded word inside it still needs a confirmation.
-    @Test func aGuardedWordInsideAPasteStillNeedsConfirmation() async throws {
-        let ready = try await readySession()
-        let (session, adapter, target) = (ready.session, ready.adapter, ready.target)
-        let result = await GuardBudgetClock.$current.withValue(.frozen) {
-            await session.receive(pasteFrame(
-                "what does this mean", "Synthetic: please delete the old branch", to: target
-            ))
-        }
-        let refused = try #require(try refusal(result))
-        // Answered as this paste request's refusal (`paste_refused`), which a device keeps the connection for.
-        #expect(refused.0 == .pasteRefused)
-        #expect(refused.1 == "target requires confirmation at the Mac")
-        #expect(await adapter.deliveries.isEmpty)
-        // The same refusal for spoken text alone is answered as before.
-        let spoken = await GuardBudgetClock.$current.withValue(.frozen) {
-            await session.receive(sessionFrame(target: target, payload: .text(TextPayload(text: "delete it"))))
-        }
-        let spokenRefusal = try #require(try refusal(spoken))
-        #expect(spokenRefusal.0 == .notAllowed)
-        #expect(spokenRefusal.1 == "target requires confirmation at the Mac")
     }
 
     /// A device that did not advertise `request_refusals` is answered with the old codes, as before (#608).

@@ -11,8 +11,10 @@ public enum AmbientStreamEndReason: Sendable, Equatable {
 }
 
 /// What the gate hands on. `segment` carries raw pcm16 bytes; nothing in this module logs or describes them.
+/// `selection` is the selection generation the connection's session had when the stream opened (#636), nil from a
+/// caller that tracks none.
 public enum AmbientAudioEvent: Sendable, Equatable {
-    case started(stream: UUID, connection: UUID)
+    case started(stream: UUID, connection: UUID, selection: UUID? = nil)
     case segment(stream: UUID, sequence: Int, bytes: Data)
     case ended(stream: UUID, reason: AmbientStreamEndReason)
 }
@@ -23,6 +25,14 @@ enum AmbientAdmission: Sendable, Equatable {
     case admitted
     case tookOver(from: String?)
     case refused(ErrorCode, String)
+}
+
+/// The connection's selection with one segment, as its session sees it (#636): the selected target and its selection
+/// generation. A stream keeps the generation it opened on, so what it heard is never delivered once the owner has
+/// selected another destination, even after selecting this one again.
+struct AmbientSelection: Sendable, Equatable {
+    var target: String?
+    var generation: UUID?
 }
 
 /// The consumer of admitted ambient audio (#203). Called synchronously from the gate's actor, in order, so
@@ -246,13 +256,21 @@ extension AmbientAudioGate {
     func admission(
         _ audio: AudioPayload, frameTarget: String?, selectedTarget: String?, connection: UUID, device: String?
     ) -> AmbientAdmission {
+        admission(audio, frameTarget: frameTarget, selection: AmbientSelection(target: selectedTarget),
+                  connection: connection, device: device)
+    }
+
+    /// The same, with the session's selection generation, which a stream this segment opens keeps (#636).
+    func admission(
+        _ audio: AudioPayload, frameTarget: String?, selection: AmbientSelection, connection: UUID, device: String?
+    ) -> AmbientAdmission {
         expireIdle()
         if let stream = audio.streamID,
            let move = moved.last(where: { $0.stream == stream && $0.connection == connection }) {
             return .refused(.notAllowed, AmbientTakeOver.movedMessage(to: move.to))
         }
         let previous = active.flatMap { $0.connection == connection ? nil : $0 }
-        guard let refusal = check(audio, frameTarget: frameTarget, selectedTarget: selectedTarget,
+        guard let refusal = check(audio, frameTarget: frameTarget, selection: selection,
                                   connection: connection, device: device) else {
             return previous.map { .tookOver(from: $0.device) } ?? .admitted
         }
@@ -260,9 +278,9 @@ extension AmbientAudioGate {
     }
 
     private func check(
-        _ audio: AudioPayload, frameTarget: String?, selectedTarget: String?, connection: UUID, device: String?
+        _ audio: AudioPayload, frameTarget: String?, selection: AmbientSelection, connection: UUID, device: String?
     ) -> (ErrorCode, String)? {
-        guard frameTarget == target, selectedTarget == target else {
+        guard frameTarget == target, selection.target == target else {
             return refuse(.notAllowed, "ambient target is not selected", connection: connection)
         }
         guard audio.codec == .pcm16, audio.sampleRate == Self.sampleRate, audio.channels == 1,
@@ -270,7 +288,8 @@ extension AmbientAudioGate {
             return refuse(.malformed, "ambient segment shape", connection: connection)
         }
         if active?.id != stream {
-            if let refusal = start(stream, audio: audio, connection: connection, device: device) { return refusal }
+            if let refusal = start(stream, audio: audio, connection: connection, device: device,
+                                   selection: selection.generation) { return refusal }
         } else {
             // Another connection's stream id is never continued, and refusing it leaves that stream untouched.
             guard active?.connection == connection else { return (.notAllowed, "ambient stream is not this device's") }
@@ -289,7 +308,9 @@ extension AmbientAudioGate {
     /// Opens a stream only after its first segment is validated and paid for. Only then is the current stream,
     /// this connection's or another's (#366), superseded: a refused start (stale or retried id, rate) announces,
     /// records and disturbs nothing.
-    private func start(_ stream: UUID, audio: AudioPayload, connection: UUID, device: String?) -> (ErrorCode, String)? {
+    private func start(
+        _ stream: UUID, audio: AudioPayload, connection: UUID, device: String?, selection: UUID?
+    ) -> (ErrorCode, String)? {
         guard audio.sequence == 0, !ended.contains(stream) else {
             return (.malformed, "ambient stream must be new and start at sequence 0")
         }
@@ -306,7 +327,7 @@ extension AmbientAudioGate {
         }
         end(.superseded)
         active = Stream(id: stream, connection: connection, device: device, lastSequence: -1, lastActivity: clock())
-        sink.ambientAudio(.started(stream: stream, connection: connection))
+        sink.ambientAudio(.started(stream: stream, connection: connection, selection: selection))
         startSweeper()
         return nil
     }

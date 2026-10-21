@@ -6,7 +6,7 @@ import Testing
 @testable import HailDaemonKit
 
 /// #405: a reload whose new child fails, cannot launch, or finds no free slot. Synthetic only (fake `rightyo`).
-@Suite(.serialized, .timeLimit(.minutes(1))) struct AmbientWiringReloadFailureTests {
+@Suite(.serialized, .timeLimit(.minutes(1)), .frozenGuardBudget) struct AmbientWiringReloadFailureTests {
     /// A new install that dies at once ends the stream as any failed child does, and its failure, not the reload,
     /// is the last ambient event `haild doctor` reads.
     @Test func aNewChildThatFailsAtOnceLeavesItsFailureLast() async throws {

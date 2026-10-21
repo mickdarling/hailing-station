@@ -7,7 +7,7 @@ import Testing
 /// #230 end to end through the listener: phone audio reaches a fake `rightyo`, its admitted request is typed into a
 /// legacy (`tmux`-kind) target with a reply reference in its block, and a reply naming that reference reaches only
 /// the streaming device while a second device selects the same target. Synthetic only; not device hearing.
-@Suite(.serialized, .timeLimit(.minutes(1))) struct AmbientWiringReplyReferenceTests {
+@Suite(.serialized, .timeLimit(.minutes(1)), .frozenGuardBudget) struct AmbientWiringReplyReferenceTests {
     @Test func theStreamingDeviceHearsTheReplyWhileASecondDeviceSelectsTheTarget() async throws {
         let fake = try FakeRightyo(ambientEchoAtEOF)
         defer { fake.cleanUp() }

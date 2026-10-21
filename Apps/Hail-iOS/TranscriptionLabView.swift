@@ -27,7 +27,10 @@ struct TranscriptionLabView: View {
     let onCaptureWillBegin: (@MainActor (UUID) -> Void)?
     let onCaptureDidEnd: (@MainActor (UUID, _ resumingPlayback: Bool) -> Void)?
     let onCaptureTeardownCompleted: (@MainActor (UUID) -> Void)?
-    let onFinalized: (@MainActor (String) async throws -> Void)?
+    /// Sends the spoken request, with the attached paste when there is one (#608).
+    let onFinalized: (@MainActor (String, PastedDraft?) async throws -> Void)?
+    /// Whether the destination takes pasted text, and the latest paste its Mac refused (#608).
+    let pasteOffer: PasteOffer
     let onEscape: (@MainActor () async throws -> Void)?
 
     @State var capture: any AudioCapturing
@@ -59,6 +62,10 @@ struct TranscriptionLabView: View {
     @State var finishTask: Task<Void, Never>?
     @State var finishGeneration: UUID?
     @State var bufferTask: Task<Void, Never>?
+    /// Text pasted to go with the next request, or on its own (#608); never read from the clipboard without a tap.
+    @State var attachedPaste: PastedDraft?
+    @State var pasteProblem: String?
+    @State var pasteRefusalHandling = PasteRefusalHandling()
     @Environment(\.scenePhase) var scenePhase
     @Environment(\.accessibilityReduceMotion) var reduceMotion
 
@@ -77,7 +84,8 @@ struct TranscriptionLabView: View {
         onCaptureWillBegin: (@MainActor (UUID) -> Void)? = nil,
         onCaptureDidEnd: (@MainActor (UUID, _ resumingPlayback: Bool) -> Void)? = nil,
         onCaptureTeardownCompleted: (@MainActor (UUID) -> Void)? = nil,
-        onFinalized: (@MainActor (String) async throws -> Void)? = nil,
+        onFinalized: (@MainActor (String, PastedDraft?) async throws -> Void)? = nil,
+        pasteOffer: PasteOffer = PasteOffer(),
         onEscape: (@MainActor () async throws -> Void)? = nil
     ) {
         self.audioSession = audioSession
@@ -93,6 +101,7 @@ struct TranscriptionLabView: View {
         self.onCaptureDidEnd = onCaptureDidEnd
         self.onCaptureTeardownCompleted = onCaptureTeardownCompleted
         self.onFinalized = onFinalized
+        self.pasteOffer = pasteOffer
         self.onEscape = onEscape
         _capture = State(initialValue: capture)
         _transcriber = State(initialValue: transcriber ?? Self.defaultTranscriber())
@@ -113,6 +122,8 @@ struct TranscriptionLabView: View {
 
             // Below the button, so its appearing never moves Tap to talk under a finishing tap.
             liveTranscript
+
+            pasteControl
 
             if let onEscape {
                 Button(role: .destructive) {
@@ -140,7 +151,7 @@ struct TranscriptionLabView: View {
             noteReplyArrival(previous: previous, current: current)
         }
         .onChange(of: status) { _, current in
-            announceStatusIfNeeded(current)
+            announceStatusUnlessQuiet(current)
         }
         .onChange(of: ownsCaptureSuppression) { wasSuppressed, isSuppressed in
             if wasSuppressed && !isSuppressed { announceDeferredStatusIfNeeded() }
@@ -175,7 +186,7 @@ extension TranscriptionLabView {
     }
 
     private static func defaultTranscriber() -> any Transcriber {
-        if #available(iOS 26.0, *) { return SpeechAnalyzerTranscriber() }
+        if #available(iOS 26.0, macOS 26.0, *) { return SpeechAnalyzerTranscriber() }
         return SFSpeechRecognizerTranscriber()
     }
 }

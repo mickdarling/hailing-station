@@ -7,7 +7,7 @@ import Testing
 
 /// #203 round 1: every ambient failure ends the stream at the gate and tells the phone with an `ambient`-prefixed
 /// error on an open connection; daemon stop is bounded even when a dispatch never returns.
-@Suite(.serialized, .timeLimit(.minutes(1))) struct AmbientWiringFailureTests {
+@Suite(.serialized, .timeLimit(.minutes(1)), .frozenGuardBudget) struct AmbientWiringFailureTests {
     @Test func aRefusedStartEndsTheStreamAndTellsThePeer() async throws {
         let fake = try FakeRightyo("exit 0")
         defer { fake.cleanUp() }
@@ -104,7 +104,7 @@ import Testing
 
 /// #203: a late failure reaches the phone only while no newer stream has started on its connection: a
 /// normally ended stream still dispatching after EOF is reported, a superseded one is not.
-@Suite(.serialized, .timeLimit(.minutes(1))) struct AmbientWiringLateFailureTests {
+@Suite(.serialized, .timeLimit(.minutes(1)), .frozenGuardBudget) struct AmbientWiringLateFailureTests {
     @Test func aSupersededStreamsLateFailureIsNotReportedAgainstTheCurrentStream() async throws {
         // The first child emits a request and idles; every later child just idles.
         let fake = try FakeRightyo("""
