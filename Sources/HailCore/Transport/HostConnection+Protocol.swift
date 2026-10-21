@@ -44,8 +44,8 @@ extension HostConnection {
         }
         switch frame.payload {
         case .control(.stopPlayback), .control(.setReplyMute), .control(.ambientMovedHere), .control(.ambientHeard),
-             .control(.ambientOverheard), .control(.ownerVoice), .control(.mediaMode):
-            // Like reply frames, needing no reply capability (#309, #404, #366, #318, rightyo#164, #612).
+             .control(.ambientOverheard), .control(.ownerVoice), .control(.mediaMode), .control(.healthReport):
+            // Like reply frames, needing no reply capability (#309, #404, #366, #318, rightyo#164, #612, #614).
             await replyObserver(HostReplyEvent(endpointID: snapshot.id, frame: frame))
         case .control(.error(let code, _)) where code.isRequestRefusal: // #608: that request is over, not the link
             await replyObserver(HostReplyEvent(endpointID: snapshot.id, frame: frame))

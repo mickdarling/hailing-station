@@ -72,8 +72,8 @@ public enum ConnectionProbeDaemon {
         /// summary. Without the flag `host_health` is not advertised and the request is refused.
         var health = false
         /// `--voice-routes` (#636), only with `--personal-terminal`: the owner's named routes file, an absolute path.
-        /// A missing file leaves routing off; a file that does not load refuses startup, so a request naming a
-        /// session never goes elsewhere because the routes silently failed.
+        /// A file that is missing or does not load refuses startup, so a request naming a session never goes
+        /// elsewhere because the routes were silently off.
         var voiceRoutes: URL?
     }
 
@@ -153,7 +153,11 @@ extension ConnectionProbeDaemon {
                                                     health: HostHealthService().current)
         }
         #if os(macOS)
-        if let file = options.voiceRoutes, let personal = authorizer as? PersonalTerminalAuthorizer {
+        if let file = options.voiceRoutes {
+            // Options allow routes only with the personal terminal; anything else is a wiring fault, never "off".
+            guard let personal = authorizer as? PersonalTerminalAuthorizer else {
+                throw WebSocketListenerError.invalidArguments
+            }
             authorizer = personal.naming(try voiceRoutes(file, log: log))
         }
         #endif
@@ -208,19 +212,26 @@ extension ConnectionProbeDaemon {
     }
 
     #if os(macOS)
-    /// The owner's voice routes (#636), logged by count only. A missing file leaves routing off; any other failure
-    /// refuses startup rather than letting a named request go to whichever target was chosen before.
+    /// The owner's voice routes (#636), logged by count only. Asked for but missing, or failing to load, they refuse
+    /// startup rather than letting a named request go to whichever target was chosen before.
     static func voiceRoutes(
         _ file: URL, log: @Sendable (WebSocketListenerEvent) -> Void
-    ) throws -> VoiceRoutes? {
+    ) throws -> VoiceRoutes {
         do {
-            let routes = try VoiceRoutes.load(file)
-            log(.init(event: "voice_routes", detail: routes.map { "count=\($0.routes.count)" } ?? "missing"))
+            guard let routes = try VoiceRoutes.load(file) else { throw VoiceRoutes.LoadError.missing }
+            log(.init(event: "voice_routes", detail: "count=\(routes.routes.count)"))
             return routes
-        } catch {
+        } catch let error as VoiceRoutes.LoadError {
             log(.init(event: "voice_routes", detail: "error=\(error)"))
-            throw error
+            throw VoiceRoutesStartupError(path: file.path, reason: error)
         }
+    }
+
+    /// A routes file that stopped startup, named so the operator can find it: `--voice-routes <path>: missing`.
+    public struct VoiceRoutesStartupError: Error, Equatable, CustomStringConvertible {
+        public let path: String
+        public let reason: VoiceRoutes.LoadError
+        public var description: String { "--voice-routes \(path): \(reason)" }
     }
 
     /// A note input (#552) left behind when a haild exited during its Shortcut: removed at the next start, once older

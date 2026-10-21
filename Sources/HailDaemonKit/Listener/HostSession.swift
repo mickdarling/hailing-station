@@ -20,9 +20,11 @@ public protocol HostSessionAuthorizing: Sendable {
     /// The host's read-only health summary when haild runs with `--host-health` (#614); nil otherwise.
     var health: (@Sendable () async -> HostHealth)? { get }
     #if os(macOS)
-    /// The owner's named voice routes when haild runs with `--voice-routes` and the file exists (#636); nil otherwise.
+    /// The owner's named voice routes when haild runs with `--voice-routes` (#636), which requires the file; nil otherwise.
     var voiceRoutes: VoiceRoutes? { get }
     #endif
+    /// Must be free of side effects and give the same answer for the same frame: the session may ask about one frame
+    /// more than once (voice routing asks about the frame as sent, then as delivered, #636).
     func authorize(_ frame: Frame) async -> HostSessionAuthorization
 }
 
@@ -142,8 +144,9 @@ struct AuthorizedInput: ~Copyable, Sendable {
     }
 }
 
-/// One authorizer decision per frame, taken exactly once. The allowed frame is classified here so routing
-/// answers each shape exactly as before without consulting the authorizer again.
+/// One admitting authorizer decision per frame. The allowed frame is classified here so routing answers each shape
+/// exactly as before without consulting the authorizer again. (Voice routing, #636, also asks the authorizer about
+/// the frame as sent before choosing a route, so `authorize` must have no side effects.)
 enum AdmittedFrame: ~Copyable, Sendable {
     case control(ControlPayload)
     case input(AuthorizedInput)
@@ -151,6 +154,8 @@ enum AdmittedFrame: ~Copyable, Sendable {
     case untargetedText
     /// A paste `PastedContent` refused (#608), with the plain reason for the device; nothing is delivered.
     case refusedPaste(String)
+    /// A paste while the host is in lockdown (#665 review): answered as lockdown, before any framing, as speech is.
+    case lockedDownPaste
     /// An ambient segment the authorizer allowed; the gate still checks shape, target, sequence and rate.
     case audio(AudioPayload, target: String?)
     case unsupported
@@ -166,9 +171,10 @@ public struct HostSessionResult: Sendable, Equatable {
     }
 }
 
-/// One peer's protocol state. Every path to `HailHost.send` runs through this session's authorizer exactly
-/// once per frame and through its captured selection: `deliver` accepts only an `AuthorizedInput`, which
-/// only the authorizer's own allow decision on that frame can produce.
+/// One peer's protocol state. Every path to `HailHost.send` runs through this session's authorizer and its captured
+/// selection: `deliver` accepts only an `AuthorizedInput`, which only the authorizer's own allow decision on that
+/// (possibly voice-routed) frame can produce. `authorize` must be free of side effects: a frame to a selected voice
+/// route is asked about twice, once as sent and once as delivered (#636).
 public actor HostSession {
     enum State: Sendable, Equatable {
         case awaitingHello
@@ -243,30 +249,19 @@ public actor HostSession {
             guard frame.version == version else {
                 return failure(.protocolVersion, "frame version does not match the session", close: true)
             }
-            // The phone is attributed by its negotiated Hello name, never by the frame's own `source`.
-            guard let admitted = await admit(frame, version: version, device: peerName) else {
-                return failure(.unauthorized, "terminal action is not authorized", close: false, version: version)
+            // A named route (#636) is chosen before authorization, so the authorizer sees the frame delivered.
+            switch await voiceRoute(frame) {
+            case .refused(let code, let message):
+                return failure(code, message, close: false, version: version)
+            case .deliver(let frame, let routed):
+                return await Self.$voiceRouted.withValue(routed) {
+                    await receiveReady(frame, version: version)
+                }
             }
-            // Diagnostics (#234) are stored and never answered: no error, no selection or delivery change.
-            if case .control(.diagnostic(let events)) = frame.payload, let sink = authorizer.diagnostics {
-                await sink.record(events, session: connectionID, device: peerName)
-                return HostSessionResult(frames: [])
-            }
-            // A closed route kind (rightyo#164), never a port name: noted for attribution and never answered either.
-            if case .control(.ambientInput(let route)) = frame.payload, let gate = authorizer.ambientAudio {
-                await gate.noteInputRoute(route, connection: connectionID)
-                return HostSessionResult(frames: [])
-            }
-            // The host's read-only health summary (#614): always answered, from the shared cached result, on this
-            // connection only, never logged. A refusal here would end an older device's connection.
-            if case .control(.health) = frame.payload, let health = authorizer.health {
-                return HostSessionResult(frames: [response(.healthReport(await health()), version: version)])
-            }
-            return await route(admitted, version: version)
         }
     }
 
-    /// The single authorizer call for `frame`. An allowed final targeted text frame becomes the only
+    /// The admitting authorizer call for `frame`. An allowed final targeted text frame becomes the only
     /// `AuthorizedInput` that frame will ever yield; `deliver` accepts nothing else. `device` is the
     /// session's attribution of the sender and is supplied by the session, not read from the frame.
     private func admit(_ frame: Frame, version: Int, device: String) async -> AdmittedFrame? {
@@ -281,24 +276,31 @@ public actor HostSession {
                     text: text.text, target: target, frame: frame, device: device, version: version
                 ))
             }
-            // The paste is framed here, once, so the authorized text is exactly the line the host sanitises, and
-            // within what the target's adapter takes (the id's kind prefix), so an oversized paste says so. Only a known
-            // agent session takes a paste: a raw shell pane never does, and an unknown kind is refused (#628 review).
-            let kind = String(target.prefix { $0 != ":" })
-            guard PastedContent.acceptsPaste(targetKind: kind) else {
-                return .refusedPaste(PastedContent.agentOnlyRefusal)
-            }
-            let limit = PastedContent.maxFramedBytes(forTargetKind: kind)
-            do {
-                return .input(AuthorizedInput(
-                    text: try PastedContent.frame(spoken: text.text, pasted: pasted.text, limit: limit),
-                    target: target, frame: frame, device: device, version: version, carriesPaste: true
-                ))
-            } catch {
-                return .refusedPaste(PastedContent.refusal(error))
-            }
+            return await admitPaste(pasted, spoken: text.text, frame: frame, device: device, version: version)
         case .audio(let audio): return .audio(audio, target: frame.target)
         default: return .unsupported
+        }
+    }
+
+    /// A final text frame with a paste (#608). Lockdown is checked first, so a paste during lockdown hears lockdown,
+    /// never a paste-specific reason. The paste is framed here, once, so the authorized text is exactly the line the
+    /// host sanitises, and within what the target's adapter takes (the id's kind prefix), so an oversized paste says
+    /// so. Only a known agent session takes a paste: a raw shell pane never does, and an unknown kind is refused.
+    private func admitPaste(
+        _ pasted: PastedText, spoken: String, frame: Frame, device: String, version: Int
+    ) async -> AdmittedFrame {
+        guard let target = frame.target else { return .untargetedText }
+        if await host.currentLockdown.isOn { return .lockedDownPaste }
+        let kind = String(target.prefix { $0 != ":" })
+        guard PastedContent.acceptsPaste(targetKind: kind) else { return .refusedPaste(PastedContent.agentOnlyRefusal) }
+        do {
+            let limit = PastedContent.maxFramedBytes(forTargetKind: kind)
+            return .input(AuthorizedInput(
+                text: try PastedContent.frame(spoken: spoken, pasted: pasted.text, limit: limit),
+                target: target, frame: frame, device: device, version: version, carriesPaste: true
+            ))
+        } catch {
+            return .refusedPaste(PastedContent.refusal(error))
         }
     }
 
@@ -351,5 +353,31 @@ public actor HostSession {
             frames: [response(.error(code: code, message: message), version: version)],
             disposition: close ? .close : .keepOpen
         )
+    }
+}
+
+/// The ready-state body of `receive`, kept out of the actor body (#636 adds the voice-route step before it).
+extension HostSession {
+    fileprivate func receiveReady(_ frame: Frame, version: Int) async -> HostSessionResult {
+        // The phone is attributed by its negotiated Hello name, never by the frame's own `source`.
+        guard let admitted = await admit(frame, version: version, device: peerName) else {
+            return failure(.unauthorized, "terminal action is not authorized", close: false, version: version)
+        }
+        // Diagnostics (#234) are stored and never answered: no error, no selection or delivery change.
+        if case .control(.diagnostic(let events)) = frame.payload, let sink = authorizer.diagnostics {
+            await sink.record(events, session: connectionID, device: peerName)
+            return HostSessionResult(frames: [])
+        }
+        // A closed route kind (rightyo#164), never a port name: noted for attribution and never answered either.
+        if case .control(.ambientInput(let route)) = frame.payload, let gate = authorizer.ambientAudio {
+            await gate.noteInputRoute(route, connection: connectionID)
+            return HostSessionResult(frames: [])
+        }
+        // The host's read-only health summary (#614): always answered, from the shared cached result, on this
+        // connection only, never logged. A refusal here would end an older device's connection.
+        if case .control(.health) = frame.payload, let health = authorizer.health {
+            return HostSessionResult(frames: [response(.healthReport(await health()), version: version)])
+        }
+        return await route(admitted, version: version)
     }
 }

@@ -55,6 +55,25 @@ import Testing
         #expect(await ready.adapter.deliveries.isEmpty)
     }
 
+    /// #665 review: lockdown is checked before framing, so even a paste that framing would refuse hears lockdown.
+    @Test func lockdownComesBeforeThePastesOwnRefusals() async throws {
+        let ready = try await ready()
+        _ = await ready.host.engageLockdown(reason: "synthetic test")
+        #expect(try code(await ready.session.receive(paste("look", "a\u{202E}b"))) == .lockdown)
+    }
+
+    /// #665 review: a rate limit (a full request table, `capacityExceeded`) keeps its code on a paste request.
+    @Test func everyCodeButNotAllowedAndMalformedPassesThrough() {
+        let collapsed: Set<String> = ["not_allowed", "malformed"]
+        for code in [ErrorCode.notAllowed, .malformed, .rateLimited, .lockdown, .unknownTarget, .unauthorized,
+                     .protocolVersion] {
+            let answered = HostSession.refusalCode(code, carriesPaste: true, takesRequestRefusals: true)
+            #expect(answered == (collapsed.contains(code.rawValue) ? .pasteRefused : code))
+            #expect(HostSession.refusalCode(code, carriesPaste: false, takesRequestRefusals: true) == code)
+            #expect(HostSession.refusalCode(code, carriesPaste: true, takesRequestRefusals: false) == code)
+        }
+    }
+
     @Test func anUnknownTargetStaysUnknownTarget() async throws {
         let ready = try await ready()
         await ready.adapter.setTargets([])
