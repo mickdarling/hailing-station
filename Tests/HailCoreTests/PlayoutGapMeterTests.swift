@@ -79,6 +79,37 @@ import Testing
         #expect(meter.take().milliseconds == 300)
     }
 
+    @Test func silenceWhileMutedIsNeverAGapButTheHeardPartBeforeMutingIs() {
+        var meter = PlayoutGapMeter()
+        meter.scheduled(.milliseconds(500), at: at(0), startsReply: true)
+        meter.muteChanged(true, at: at(700)) // dry at 500: 200 ms heard before muting
+        meter.muteChanged(false, at: at(3_000))
+        meter.scheduled(.milliseconds(500), at: at(3_100), startsReply: false) // 100 ms heard after unmuting
+        let gaps = meter.take()
+        #expect(gaps.count == 2)
+        #expect(gaps.milliseconds == 300)
+    }
+
+    @Test func audioArrivingWhileMutedCountsNothing() {
+        var meter = PlayoutGapMeter()
+        meter.scheduled(.milliseconds(500), at: at(0), startsReply: true)
+        meter.muteChanged(true, at: at(400))
+        meter.scheduled(.milliseconds(500), at: at(2_000), startsReply: false)
+        #expect(meter.take() == PlayoutGapMeter.Gaps())
+    }
+
+    @Test func aRestartAfterAnInterruptionStartsAfreshButAfterAPauseKeepsTheQueue() {
+        var meter = PlayoutGapMeter()
+        meter.scheduled(.milliseconds(500), at: at(0), startsReply: true)
+        meter.restarted(at: at(60_000)) // the system stopped the player for a call: not a gap
+        meter.scheduled(.milliseconds(500), at: at(60_000), startsReply: false)
+        #expect(meter.take() == PlayoutGapMeter.Gaps())
+        meter.paused(at: at(60_100)) // 400 ms still queued
+        meter.restarted(at: at(70_000))
+        meter.scheduled(.milliseconds(500), at: at(70_200), startsReply: false)
+        #expect(meter.take() == PlayoutGapMeter.Gaps(), "the queue kept through the pause covers 70.2 s")
+    }
+
     @MainActor
     @Test func playbackEndCarriesTheGapsHeardSinceItBegan() async throws {
         let suite = "hail-playout-gaps-\(UUID().uuidString)"

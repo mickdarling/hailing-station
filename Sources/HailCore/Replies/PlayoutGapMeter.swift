@@ -17,12 +17,13 @@ public struct PlayoutGapMeter: Equatable, Sendable {
     public private(set) var gaps = Gaps()
     private var queuedUntil: ContinuousClock.Instant?
     private var pausedWith: Duration?
+    private var muted = false
 
     public init() {}
 
     /// `duration` of audio was queued at `now`; `startsReply` for a reply's first audio.
     public mutating func scheduled(_ duration: Duration, at now: ContinuousClock.Instant, startsReply: Bool) {
-        if !startsReply, pausedWith == nil, let queuedUntil, now - queuedUntil >= Self.threshold {
+        if !startsReply, !muted, pausedWith == nil, let queuedUntil, now - queuedUntil >= Self.threshold {
             gaps.count += 1
             gaps.total += now - queuedUntil
         }
@@ -44,6 +45,27 @@ public struct PlayoutGapMeter: Equatable, Sendable {
         guard let remaining = pausedWith else { return }
         pausedWith = nil
         queuedUntil = now + remaining
+    }
+
+    /// New audio is starting a player that was not playing: after this meter's own pause, what was queued still
+    /// plays; after anything else (a system interruption, a stopped engine) the queue starts afresh, so time the
+    /// player could not be heard is never a gap.
+    public mutating func restarted(at now: ContinuousClock.Instant) {
+        if pausedWith != nil { resumed(at: now) } else { cleared() }
+    }
+
+    /// Muting or unmuting at `now`. Silence is only heard unmuted: muting closes a gap already under way at its heard
+    /// length, nothing counts while muted, and unmuting starts any silence from now.
+    public mutating func muteChanged(_ isMuted: Bool, at now: ContinuousClock.Instant) {
+        guard isMuted != muted else { return }
+        if pausedWith == nil, let queuedUntil, now > queuedUntil {
+            if isMuted, now - queuedUntil >= Self.threshold {
+                gaps.count += 1
+                gaps.total += now - queuedUntil
+            }
+            self.queuedUntil = now
+        }
+        muted = isMuted
     }
 
     /// The queue was dropped (a stop, or a new queue): the next audio starts afresh.
