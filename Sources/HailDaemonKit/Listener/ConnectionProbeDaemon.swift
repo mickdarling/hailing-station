@@ -65,6 +65,9 @@ public enum ConnectionProbeDaemon {
         /// `--device-diagnostics` (#234), only with `--personal-terminal`: where accepted diagnostics are
         /// stored. Without the flag the capability is not advertised and nothing is written.
         var diagnostics: URL?
+        /// `--session-updates` (#609), only with `--personal-terminal`: sessions may send unsolicited updates
+        /// through `haild notify`. Off by default.
+        var sessionUpdates = false
     }
 
     // Each accepted flag is an explicit branch; combinations are validated after parsing.
@@ -91,7 +94,7 @@ public enum ConnectionProbeDaemon {
                 guard let path = rest.popFirst(), !path.isEmpty else { throw WebSocketListenerError.invalidArguments }
                 replySocket = URL(fileURLWithPath: path)
             case "--single-terminal-reply-fallback", "--device-diagnostics",
-                 "--ambient-reply-control": switches.insert(flag)
+                 "--ambient-reply-control", "--session-updates": switches.insert(flag)
             case "--ambient-rightyo", "--ambient-rightyo-config", "--ambient-target", "--ambient-ack-clips",
                  "--ambient-destinations":
                 try parseAmbient(flag, from: &rest, into: &ambient)
@@ -108,7 +111,8 @@ public enum ConnectionProbeDaemon {
             personalTerminal: personalTerminal ? (replySocket ?? LocalReplyEndpoint.standardSocket()) : nil,
             singleTerminalReplyFallback: switches.contains("--single-terminal-reply-fallback"),
             ambient: try ambientOptions(ambient, switches),
-            diagnostics: switches.contains("--device-diagnostics") ? DiagnosticLog.standardDirectory() : nil
+            diagnostics: switches.contains("--device-diagnostics") ? DiagnosticLog.standardDirectory() : nil,
+            sessionUpdates: switches.contains("--session-updates")
         )
     }
 }
@@ -140,6 +144,7 @@ extension ConnectionProbeDaemon {
             authorizer: authorizer, hostName: hostName,
             singleTerminalReplyFallback: options.singleTerminalReplyFallback, ambient: ambient, log: log
         )
+        if options.sessionUpdates { await listener.enableSessionUpdates() }
         let replyEndpoint = try options.personalTerminal.map { socket in
             try LocalReplyEndpoint(socketURL: socket, destination: listener, audit: audit)
         }
