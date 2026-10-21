@@ -71,6 +71,8 @@ extension HostConnectionStoreAmbientBindingTests {
         #expect(scratch == [Self.entryID(placed, on: endpoint), Self.entryID(own, on: endpoint)])
         #expect(log.threadReplyIDs(endpointID: endpoint, targetID: "tmux:a", among: replies)
                 == [Self.entryID(own, on: endpoint)])
+        // Only the thread that shows it: another thread on the same Mac gets nothing.
+        #expect(log.threadReplyIDs(endpointID: endpoint, targetID: "tmux:b", among: replies, addressed: true).isEmpty)
         #expect(log.threadReplyIDs(endpointID: "mac-b", targetID: "tmux:a", among: replies,
                                    addressed: true).isEmpty)
     }

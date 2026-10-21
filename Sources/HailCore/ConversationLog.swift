@@ -110,7 +110,8 @@ public final class ConversationLog {
         return entry.id
     }
 
-    /// Takes back a request noted before its send, when that send failed (#636): nothing went, so nothing shows.
+    /// Takes back a request noted before its send, when that send reported a failure (#636): the chat shows no
+    /// request the device could not confirm it sent.
     func retractSent(_ id: String?) {
         guard let id else { return }
         entries.removeAll { $0.id == id }
