@@ -112,4 +112,33 @@ import Testing
                                  checks: [.ok("a_future_check", "x")])
         #expect(HostHealthSummary.summary(of: empty).checks == [.init(name: "daemon_running", ok: true)])
     }
+
+    #if os(macOS)
+    /// With `--voice-routes` (#636) as well, the composed authorizer keeps both: health is wired before the routes are
+    /// named, so rebuilding the authorizer for health never drops the owner's routes.
+    @Test func hostHealthAndVoiceRoutesComposeTogether() async throws {
+        let scratch = FileManager.default.temporaryDirectory
+            .appendingPathComponent("hh-\(UUID().uuidString.prefix(8))", isDirectory: true)
+        try FileManager.default.createDirectory(at: scratch, withIntermediateDirectories: true,
+                                                attributes: [.posixPermissions: 0o700])
+        defer { try? FileManager.default.removeItem(at: scratch) }
+        let routes = scratch.appendingPathComponent("routes.json")
+        try Data(#"{"version": 1, "default": "tmux:a", "routes": [{"target": "tmux:a", "name": "A"}]}"#.utf8)
+            .write(to: routes)
+        var options = try ConnectionProbeDaemon.options(Self.base + [
+            "--personal-terminal", "--reply-socket", scratch.appendingPathComponent(LocalReplyEndpoint.socketName).path,
+            "--host-health", "--voice-routes", routes.path
+        ])
+        options.port = 0
+        let rig = try await RecipientTestRig.make()
+        let (listener, _) = try await ConnectionProbeDaemon.compose(
+            options, host: rig.host, hostName: "mac-test",
+            audit: AuditLog(directory: scratch.appendingPathComponent("audit", isDirectory: true)), log: { _ in }
+        )
+        let composed = await listener.authorizer
+        let authorizer = try #require(composed as? PersonalTerminalAuthorizer)
+        #expect(authorizer.health != nil && authorizer.capabilities.contains(HostHealth.capability))
+        #expect(authorizer.voiceRoutes?.defaultTarget == "tmux:a")
+    }
+    #endif
 }
