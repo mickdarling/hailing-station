@@ -142,3 +142,16 @@ extension RootView {
         }
     }
 }
+
+#if os(macOS)
+/// The Mac's private coaching slot (#645). Opt-in: nothing shows until `coaching.mac.enabled` is set, for example
+/// with `defaults write <bundle-id> coaching.mac.enabled -bool YES`.
+struct MacCoachingSlot: View {
+    let playback: ReplyPlaybackController
+    @AppStorage("coaching.mac.enabled") private var enabled = false
+
+    var body: some View {
+        if enabled { MacCoachingCard(playback: playback) }
+    }
+}
+#endif

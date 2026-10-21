@@ -23,6 +23,7 @@ final class MacCoachingController {
     var state: PrivateCoachingCardState { model.state }
 
     @ObservationIgnored private let exclusion: PrivateListeningExclusion
+    @ObservationIgnored private var claim: UUID?
     @ObservationIgnored private var process: Process?
     @ObservationIgnored private var control: Int32 = -1
     @ObservationIgnored private var reader: Task<Void, Never>?
@@ -35,7 +36,8 @@ final class MacCoachingController {
 
     /// Awareness and any consent (inside `arguments`) were confirmed in the card just before this call.
     func start(executable: String, arguments: [String], playback: ReplyPlaybackController) {
-        guard state.canStart, process == nil, exclusion.claimCoaching() else { return }
+        guard state.canStart, process == nil, let claim = exclusion.claimCoaching() else { return }
+        self.claim = claim
         model.startRequested()
         let token = UUID()
         suppression = (token, playback)
@@ -45,6 +47,8 @@ final class MacCoachingController {
         var one: Int32 = 1
         _ = setsockopt(ends[0], SOL_SOCKET, SO_NOSIGPIPE, &one, socklen_t(MemoryLayout<Int32>.size))
         _ = fcntl(ends[0], F_SETFD, FD_CLOEXEC)
+        // Writes never block the main actor: a stalled haild drops a poll, and Stop's watchdog still ends it.
+        _ = fcntl(ends[0], F_SETFL, fcntl(ends[0], F_GETFL) | O_NONBLOCK)
         let child = Process()
         child.executableURL = URL(fileURLWithPath: executable)
         child.arguments = arguments
@@ -87,8 +91,11 @@ final class MacCoachingController {
         Thread.detachNewThread {
             var buffer = [UInt8](repeating: 0, count: 256)
             while true {
+                // The descriptor is nonblocking for writes, so wait here rather than spin on EAGAIN.
+                var ready = pollfd(fd: duplicate, events: Int16(POLLIN), revents: 0)
+                if Darwin.poll(&ready, 1, -1) < 0 { if errno == EINTR { continue } else { break } }
                 let count = buffer.withUnsafeMutableBytes { Darwin.read(duplicate, $0.baseAddress, $0.count) }
-                if count < 0, errno == EINTR { continue }
+                if count < 0, errno == EINTR || errno == EAGAIN { continue }
                 guard count > 0 else { break }
                 continuation.yield(Data(buffer.prefix(count)))
             }
@@ -123,6 +130,7 @@ final class MacCoachingController {
         guard control >= 0 else { return }
         let bytes = Data((word + "\n").utf8)
         let written = bytes.withUnsafeBytes { Darwin.write(control, $0.baseAddress, $0.count) }
+        if written < 0, errno == EAGAIN { return } // Stalled, not gone: Stop's watchdog covers it.
         if written != bytes.count { Darwin.shutdown(control, SHUT_WR) } // The child is gone; EOF ends the run.
     }
 
@@ -156,7 +164,8 @@ final class MacCoachingController {
             CapturePlaybackSuppression.end(token, using: playback, resuming: true)
         }
         suppression = nil
-        exclusion.releaseCoaching()
+        if let claim { exclusion.releaseCoaching(claim) }
+        claim = nil
     }
 }
 #endif

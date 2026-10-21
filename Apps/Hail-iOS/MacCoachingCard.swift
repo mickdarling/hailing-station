@@ -1,18 +1,8 @@
 #if os(macOS)
 import Foundation
 import HailCore
+import Security
 import SwiftUI
-
-/// The Mac's private coaching slot (#645). Opt-in: nothing shows until `coaching.mac.enabled` is set, for example
-/// with `defaults write <bundle-id> coaching.mac.enabled -bool YES`.
-struct MacCoachingSlot: View {
-    let playback: ReplyPlaybackController
-    @AppStorage("coaching.mac.enabled") private var enabled = false
-
-    var body: some View {
-        if enabled { MacCoachingCard(playback: playback) }
-    }
-}
 
 /// Start, Stop, the explicit device choice and the consent steps for one coaching run. Choices are held by device
 /// UID, never by the reusable numeric ID. Awareness and consents are cleared when a run ends, so each Start asks
@@ -55,6 +45,9 @@ struct MacCoachingCard: View {
                         .disabled(!controller.state.canStart)
                 }
                 .buttonStyle(.bordered)
+                Text(MacCoachingTrustedAppSummary.current())
+                    .font(.footnote).foregroundStyle(.secondary)
+                    .accessibilityIdentifier("station.coaching-trusted-app")
                 if let hint = feedback ?? hint(gate.blocker) {
                     Text(hint).font(.footnote).foregroundStyle(.secondary)
                         .fixedSize(horizontal: false, vertical: true)
@@ -174,6 +167,34 @@ struct MacCoachingCard: View {
             return
         }
         controller.start(executable: setup.haild, arguments: arguments, playback: playback)
+    }
+}
+/// Shows which app haild will accept (#645), so a rewritten pin is noticeable. Display only: haild decides.
+enum MacCoachingTrustedAppSummary {
+    private struct Pin: Decodable { let identifier: String; let cdhash: String?; let teamID: String? }
+
+    static func current() -> String {
+        guard let entry = getpwuid(getuid()), let home = entry.pointee.pw_dir else { return "Trusted app: unknown" }
+        let file = URL(fileURLWithPath: String(cString: home))
+            .appending(path: ".config/hail/coaching-trusted-app.json")
+        guard let data = try? Data(contentsOf: file), data.count <= 1_024,
+              let pin = try? JSONDecoder().decode(Pin.self, from: data) else {
+            return "Trusted app: none. Run `haild coaching trust-app` with this app's path."
+        }
+        let short = pin.teamID.map { "team \($0)" } ?? "cdhash \(String((pin.cdhash ?? "?").prefix(12)))"
+        let mine = ownCDHash().map { pin.cdhash?.hasPrefix($0.prefix(40)) == true } ?? false
+        let match = pin.teamID != nil ? "" : (mine ? ", this build" : ", not this build: run trust-app again")
+        return "Trusted app: \(pin.identifier) (\(short)\(match))"
+    }
+
+    private static func ownCDHash() -> String? {
+        var code: SecCode?, staticCode: SecStaticCode?, information: CFDictionary?
+        guard SecCodeCopySelf([], &code) == errSecSuccess, let code,
+              SecCodeCopyStaticCode(code, [], &staticCode) == errSecSuccess, let staticCode,
+              SecCodeCopySigningInformation(staticCode, SecCSFlags(rawValue: kSecCSSigningInformation),
+                                            &information) == errSecSuccess,
+              let unique = (information as? [String: Any])?[kSecCodeInfoUnique as String] as? Data else { return nil }
+        return unique.map { String(format: "%02x", $0) }.joined()
     }
 }
 #endif
