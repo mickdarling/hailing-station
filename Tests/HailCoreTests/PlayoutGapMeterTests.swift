@@ -93,7 +93,8 @@ import Testing
             PlayoutGapMeter.Gaps(count: 5, total: .milliseconds(900)), // counted while muted: dropped at the start
             PlayoutGapMeter.Gaps(count: 1, total: .milliseconds(350))
         ])
-        let playback = ReplyPlaybackController(player: player)
+        // Wrapped by the echo guard, as the app's reply player always is: its counts still reach the diagnostics.
+        let playback = ReplyPlaybackController(player: AmbientReplyEchoGuard().guarding(player))
         log.watch(playback)
         let reply = ReplyDescriptor(id: UUID(), hostID: "main-mac", targetID: "tmux:codex", audioStreamID: UUID())
         playback.ingest(HostReplyEvent(endpointID: "main", frame: Frame(
