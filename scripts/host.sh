@@ -37,6 +37,7 @@ usage: scripts/host.sh <install|plist|restart|deploy|status> [options]
 
 host.json: {"bind": "127.0.0.1", "port": 8765, "hostID": "optional", "singleTerminalReplyFallback": true,
             "deviceDiagnostics": false,
+            "voiceRoutes": "/abs/optional-routes.json",
             "ambient": {"rightyo": "/abs/path", "config": "/abs/path", "target": "tmux:name",
                         "ackClips": "/abs/optional-clip-folder", "replyControl": false,
                         "destinations": "/abs/optional-destinations.json"}}
@@ -46,6 +47,8 @@ acknowledgement clips played on each admitted request; missing clips leave ackno
 reply playback start and end to RightyO, which times conversation follow-ups from the end of the spoken reply.
 "destinations" (optional) allowlists the Shortcuts the enrolled owner's spoken notes may run (#552); it is read at
 start, so a new or changed file needs a restart.
+"voiceRoutes" (optional) names the sessions a request can be addressed to ("Deck, ...") and the default (#636).
+It only names targets; each still needs its policy entry. It is read at start, so a change needs a restart.
 USAGE
 }
 
@@ -125,6 +128,15 @@ load_daemon_arguments() {
   fi
   local diagnostics=false
   if read_flag deviceDiagnostics; then diagnostics=true; DAEMON_ARGS+=(--device-diagnostics); fi
+  # The owner's named voice routes (#636): a named file that is missing or does not load makes the daemon refuse to
+  # start (and deploy rolls back); a relative path is refused here. It needs no ambient settings: tap-to-talk routes
+  # too. Without the key no flag is passed and routing stays off.
+  local voice_routes
+  read_string voiceRoutes; voice_routes="$VALUE"
+  if [[ -n "$voice_routes" ]]; then
+    [[ "$voice_routes" == /* ]] || fail "\"voiceRoutes\" must be an absolute path"
+    DAEMON_ARGS+=(--voice-routes "$voice_routes")
+  fi
   read_string ambient.rightyo; rightyo="$VALUE"
   read_string ambient.config; rightyo_config="$VALUE"
   read_string ambient.target; target="$VALUE"

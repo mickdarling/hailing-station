@@ -10,12 +10,14 @@ once is out of scope.
 | Slice | State |
 | --- | --- |
 | 1. Allow-list file and the opening-name parser (`VoiceRoutes`) | Merged (#646). Not deployed. |
-| 2. Host listing: route names, offline routes and `--voice-routes` | Merged (#678, #686). Not deployed: `host.sh` does not pass the flag yet (slice 8). |
+| 2. Host listing: route names, offline routes and `--voice-routes` | Merged (#678, #686). Not deployed: `host.sh` passes the flag from slice 8. |
 | 3. Tap-to-talk routing and reply return (route group) | Merged (#688). Not deployed. |
 | 4a. Ambient dispatch may address a covered route (host authority) | Merged (#691). Not deployed. |
 | 4b. Ambient routing by the owner's own turn (RightyO consumer) | Merged (#707). Not deployed; needs route names in RightyO `addressing.names`. |
-| 6. Spoken label in `haild reply` | In review. Not deployed. |
-| 5, 7–8. Refusals, visual label (7a model merged in #666), app selector | Proposed or in review; see the [plan on #636](https://github.com/mickdarling/hailing-station/issues/636). |
+| 5a–5b. Route refusal code and its display in the app | Merged (#701, #692). Not deployed. |
+| 6. Spoken label in `haild reply` | Merged (#709). Not deployed. |
+| 8. `host.json` `voiceRoutes` passed as `--voice-routes` | In review. Not deployed: turning it on is an operator step with the owner listening. |
+| 5c, 7. Ambient refusals told to the owner, visual label (7a model merged in #666) and app selector | Proposed; see the [plan on #636](https://github.com/mickdarling/hailing-station/issues/636). |
 
 Nothing below changes the running daemon or installed builds until a later slice wires it in and it is deployed.
 
@@ -229,7 +231,9 @@ events and a recording dispatcher, plus one test end to end through the listener
 name: "Deck: Added the slide." The owner hears which session answered. The text frame is unchanged; the app labels
 it itself (slice 7).
 
-- The name is the owner's, looked up by the exact target id. It is never text the caller supplies.
+- The name is looked up by the exact target id in the routes file under the caller's `HAIL_CONFIG_DIR` (default
+  `~/.config/hail`). A local caller can already say anything in `--say`, so the label is a convenience for the owner,
+  not proof of who sent the reply.
 - The default route, and any target that is not a route, speak as before.
 - A missing file means no label. An unreadable file means no label plus a note on stderr. The reply itself still
   goes either way.
@@ -239,3 +243,26 @@ the boundary. So a session that runs `haild reply tmux:deck` speaks as Deck. It 
 the reply-routing rules above.
 
 Verification is synthetic only (`VoiceRouteSpokenLabelTests`).
+
+## Turning it on (operator, slice 8)
+
+Nothing here is enabled by a merge. With the owner listening:
+
+1. Write `~/.config/hail/routes.json` (mode 0600), with one route per session and the usual session as `default`.
+2. Allow each route target at its current binding: `haild targets allow tmux:<session> --tier open`. A route
+   without a policy entry is listed as offline and is never sent to. `open` is needed because the phone cannot
+   send to a `confirm` target, so every route can then be sent to from the phone without a read-back; the guard
+   still escalates guarded words.
+3. For ambient routing, add each route's spoken name to RightyO's `addressing.names`.
+4. Add `"voiceRoutes": "/Users/<you>/.config/hail/routes.json"` to `host.json`. `scripts/host.sh` passes it as
+   `--voice-routes`. It refuses a relative path or one starting with `-`, and needs no ambient settings.
+5. `scripts/host.sh deploy`, then check `haild.err.log` for `{"detail":"count=N","event":"voice_routes"}`. A routes
+   file that is missing or does not load refuses startup (`"event":"voice_routes"` with `error=…`), and `host.sh`
+   restores the previous agent; the failed run's log is then `haild.err.log.failed`.
+
+`haild reply` reads `~/.config/hail/routes.json` for its spoken label, without any flag. Keep `voiceRoutes` at that
+path so the daemon's routes and the spoken label agree. The label is added after the reply's own checks. Only the
+speech grows, by the route's name and ": " (at most 50 characters, about three seconds). A `haild reply --say` runs
+detached, with no frame budget, so the longer speech is paced, never cut off. In the foreground
+(`HAILD_REPLY_FOREGROUND=1`, which the owned reply publisher sets; nothing constructs it yet) it keeps the endpoint's
+frame budget (120 frames a minute), and a reply that reaches it ends early with a final marker.
