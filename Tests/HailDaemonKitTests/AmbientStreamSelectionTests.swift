@@ -73,5 +73,63 @@ import Testing
         #expect(await rig.adapter.deliveries.map(\.target) == ["scratch"])
         await rig.listener.stop(reason: "synthetic test complete")
     }
+
+    /// A stream whose start carried no selection dispatches nothing: the current selection is never assumed.
+    @Test func aStreamWithoutASelectionDispatchesNothing() async throws {
+        let rig = try await VoiceRouteRig.make()
+        let session = try await rig.session()
+        await rig.listener.installFallbackSyntheticPeers([session])
+        let stream = AmbientListenerDispatcher(listener: rig.listener, audit: nil, selection: nil)
+        await #expect(throws: LocalDispatchRefusal.notAuthorized) {
+            try await stream.dispatch(Self.request(await session.connectionID))
+        }
+        #expect(await rig.adapter.deliveries.isEmpty)
+        await rig.listener.stop(reason: "synthetic test complete")
+    }
+
+    /// The device reconnects mid-stream and selects the same target: the old stream's request names a connection that
+    /// is gone, and its selection never carries over to the new connection.
+    @Test func aStreamsSelectionDoesNotSurviveAReconnect() async throws {
+        let rig = try await VoiceRouteRig.make()
+        let (old, new) = (try await rig.session(), try await rig.session())
+        await rig.listener.installFallbackSyntheticPeers([new])
+        let stream = AmbientListenerDispatcher(listener: rig.listener, audit: nil,
+                                               selection: await old.selectionGeneration)
+        await #expect(throws: LocalDispatchRefusal.unknownConnection) {
+            try await stream.dispatch(Self.request(await old.connectionID))
+        }
+        await #expect(throws: LocalDispatchRefusal.selectionChanged) {
+            try await stream.dispatch(Self.request(await new.connectionID))
+        }
+        #expect(await rig.adapter.deliveries.isEmpty)
+        await rig.listener.stop(reason: "synthetic test complete")
+    }
+
+    /// Two streams on one connection, either side of an away-and-back reselection: each keeps its own selection, so
+    /// only the newer stream's request is delivered.
+    @Test func twoStreamsOnOneConnectionEachKeepTheirOwnSelection() async throws {
+        let rig = try await VoiceRouteRig.make()
+        let sink = RecordingAmbientSink()
+        let gate = ambientGate(target: VoiceRouteRig.scratch, sink: sink, clock: AmbientTestClock())
+        let session = HostSession(host: rig.host, authorizer: PersonalTerminalAuthorizer(ambientAudio: gate),
+                                  hostName: "mac-test")
+        _ = await session.receive(helloFrame())
+        await Self.select(VoiceRouteRig.scratch, on: session)
+        await rig.listener.installFallbackSyntheticPeers([session])
+        _ = await session.receive(Self.audio(UUID()))
+        await Self.select(VoiceRouteRig.other, on: session)
+        await Self.select(VoiceRouteRig.scratch, on: session)
+        _ = await session.receive(Self.audio(UUID()))
+        let streams = sink.events.compactMap { event -> AmbientListenerDispatcher? in
+            guard case .started(_, _, let selection) = event else { return nil }
+            return AmbientListenerDispatcher(listener: rig.listener, audit: nil, selection: selection)
+        }
+        try #require(streams.count == 2)
+        let request = Self.request(await session.connectionID)
+        await #expect(throws: LocalDispatchRefusal.selectionChanged) { try await streams[0].dispatch(request) }
+        _ = try await streams[1].dispatch(request)
+        #expect(await rig.adapter.deliveries.map(\.target) == ["scratch"])
+        await rig.listener.stop(reason: "synthetic test complete")
+    }
 }
 #endif
