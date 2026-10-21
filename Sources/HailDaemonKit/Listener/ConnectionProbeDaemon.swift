@@ -115,8 +115,7 @@ public enum ConnectionProbeDaemon {
             singleTerminalReplyFallback: switches.contains("--single-terminal-reply-fallback"),
             ambient: try ambientOptions(ambient, switches),
             diagnostics: switches.contains("--device-diagnostics") ? DiagnosticLog.standardDirectory() : nil,
-            sessionUpdates: switches.contains("--session-updates"),
-            health: switches.contains("--host-health")
+            sessionUpdates: switches.contains("--session-updates"), health: switches.contains("--host-health")
         )
     }
 }
