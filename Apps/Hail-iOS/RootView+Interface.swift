@@ -11,9 +11,7 @@ extension RootView {
                 destinationID: ConversationDestinationID(
                     endpointID: destination.hostID, targetID: destination.target.id
                 ),
-                replyIDs: Set(playback.replies.lazy.filter { reply in
-                    reply.endpointID == destination.hostID && reply.target == destination.target.id
-                }.map(\.id)),
+                replyIDs: threadReplyIDs(for: destination),
                 replyPlaybackStatus: replyStatus(for: destination),
                 selectedReplyID: replyPresentation(for: destination)?.id,
                 globalReplyAudioSpeaking: playback.isReplyAudioOutputBusy,
@@ -144,10 +142,16 @@ extension RootView {
 
     var connectionPresentation: StationConnectionPresentation { stationAvailability.badge }
 
+    /// The replies that answer the destination's thread, including another session's reply to a request addressed
+    /// from it (#636): what the talk control's arrival tracking and the reply status follow, as the chat shows them.
+    func threadReplyIDs(for destination: Destination) -> Set<String> {
+        connections.conversation.threadReplyIDs(endpointID: destination.hostID, targetID: destination.target.id,
+                                                among: playback.replies, addressed: true)
+    }
+
     func replyPresentation(for destination: Destination) -> ReplyPresentation? {
-        let matches: (ReplyPresentation) -> Bool = {
-            $0.endpointID == destination.hostID && $0.target == destination.target.id
-        }
+        let thread = threadReplyIDs(for: destination)
+        let matches: (ReplyPresentation) -> Bool = { thread.contains($0.id) }
         if let current = playback.presentationForControls, matches(current) { return current }
         return playback.replies.last(where: matches)
     }

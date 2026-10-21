@@ -2,12 +2,19 @@ import HailCore
 import SwiftUI
 
 extension ConversationChatView {
-    static func accessibilityLabel(_ entry: ConversationEntry) -> String {
+    /// The session that answered, when its reply shows in another session's thread (#636); nil in its own thread.
+    static func placedSource(_ entry: ConversationEntry, thread: String?) -> String? {
+        guard let thread, entry.targetID != thread else { return nil }
+        return entry.source
+    }
+
+    static func accessibilityLabel(_ entry: ConversationEntry, thread: String? = nil) -> String {
         switch (entry.speaker, entry.overheard) {
         case (.you, false): "You said"
         case (.you, true): "You said, heard but not sent"
         case (.someone, _): "\(entry.name ?? "Someone") said, heard but not sent"
-        case (.haili, _): entry.spoken ? "Haili said" : "Haili replied" // spoken aloud, or text only (#606)
+        // Spoken aloud, or text only (#606); from another session addressed by name, that session (#636).
+        case (.haili, _): "\(placedSource(entry, thread: thread) ?? "Haili") \(entry.spoken ? "said" : "replied")"
         }
     }
 

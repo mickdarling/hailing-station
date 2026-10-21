@@ -122,9 +122,11 @@ extension RootView {
     var chatSurface: some View {
         if let destination {
             ConversationChatView(
+                // With another session's reply to a request addressed from this thread, labelled (#636).
                 entries: connections.conversation.entries(
-                    endpointID: destination.hostID, targetID: destination.target.id
+                    endpointID: destination.hostID, targetID: destination.target.id, addressed: true
                 ),
+                threadTargetID: destination.target.id,
                 playback: playback
             )
         } else if let reply = playback.latest {
