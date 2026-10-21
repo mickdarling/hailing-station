@@ -42,7 +42,7 @@ import Testing
         let replyEndpoint = try #require(endpoint)
         let port = try await listener.start()
         try await replyEndpoint.start()
-        let pair = try await FallbackSocketPair.connect(port: port, selecting: [RecipientTestRig.target])
+        let pair = try await FallbackSocketPair.boundedConnect(port: port, selecting: [RecipientTestRig.target])
         defer { pair.close() }
         let wiring = await listener.ambient
         let router = try #require(wiring as? AmbientRightyoRouter)
@@ -50,7 +50,7 @@ import Testing
         let stream = UUID()
         try await recipientSocketSend(audio(stream, 0), on: pair.sockets[0])
         try await recipientSocketSend(audio(stream, 1, final: true), on: pair.sockets[0])
-        try await pair.barrier()
+        try await pair.boundedBarrier(step: "ambient stream audited")
         await router.settle()
         #expect(await rig.adapter.contexts.count == 1)
 
