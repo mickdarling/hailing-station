@@ -193,6 +193,24 @@ The doctor's free-text detail and fix never cross the wire, because they can nam
 
 The report is read-only and grants no authority. The decoder and the schema refuse any other key or value. Only the decoder checks that a name appears once.
 
+## Session update cards (#609)
+
+A local session can give the user an update without a pending request: finished work, a decision it needs, or a
+failure. The host decides when to speak it (see `SessionUpdateQueue`); this command is how a device shows it.
+
+`{"command": "session_update", "update": "<uuid>", "session": "<name>", "priority": "info" | "action", "text": "<line>",
+"card": "<detail>"}` is sent by a host to a device that advertised `session_update` (`SessionUpdateCard.capability`),
+because an older device refuses an unknown command.
+- `session` is the speaking session's name (#371), the target id or its display name: 1 to 64 printable scalars with no
+  surrounding whitespace, by the same rule as a guest's name.
+- `text` is the short line that is or will be spoken.
+- `card` is optional detail (links, PR numbers) that is shown and never spoken. It is a plain string for now. If the
+  reply metadata field from #606 lands, the card body may move to it.
+- `update` identifies the update, so a device shows a resent one once.
+
+The command selects nothing and grants no authority. The decoder refuses any other key, an unknown priority, an
+explicit null or empty card, and text over the text payload cap. The schema checks the shape and lengths.
+
 ### Media mode state (#612)
 
 Media mode (#551) is the owner's spoken "media mode" / "done watching": while it is on, RightyO attends only to the

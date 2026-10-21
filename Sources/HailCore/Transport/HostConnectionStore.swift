@@ -35,6 +35,9 @@ public final class HostConnectionStore {
     /// Each host's last doctor summary (#614), asked for when its connection reaches ready and on request from Mac
     /// Setup; kept until the host is removed, so a host that drops still shows what it last reported.
     public private(set) var health: [HostEndpoint.Identifier: HostHealthReading] = [:]
+    /// Each host's last `media_mode` for this device's stream (#612). A host keeps media mode per connection, so it
+    /// is forgotten whenever that connection stops being ready or the host is removed.
+    public private(set) var mediaMode: [HostEndpoint.Identifier: MediaModeStatus] = [:]
     /// This device's current input route kind for `ambient_input` (rightyo#164); replaceable in tests.
     @ObservationIgnored var inputRoute: @MainActor () async -> String? = { HostConnectionStore.currentInputRoute() }
 
@@ -156,21 +159,9 @@ public final class HostConnectionStore {
         if let barrier { retiredBarriers[id] = barrier }
         (snapshots[id], health[id]) = (nil, nil)
         ownerVoiceUnrecognized.remove(id)
+        mediaMode[id] = nil
         order.removeAll { $0 == id }
     }
-    /// The station's connection check (#385) for `ids` only: as `sceneBecameActive`, a ready host is pinged and one
-    /// trying to recover skips its backoff. A host disconnected in Mac Setup stays disconnected.
-    public func checkConnection(_ ids: [HostEndpoint.Identifier]) async {
-        for id in ids { await connections[id]?.foregrounded() }
-    }
-
-    /// Active hosts are pinged; hosts already trying to recover skip their backoff and reconnect now.
-    public func sceneBecameActive() async {
-        for id in order {
-            await connections[id]?.foregrounded()
-        }
-    }
-
     /// Every selection change, endpoint change or removal invalidates outstanding bindings for the host.
     private func forgetSelection(_ id: HostEndpoint.Identifier) {
         selectionSerials[id, default: 0] &+= 1
@@ -183,6 +174,7 @@ public final class HostConnectionStore {
         snapshots[snapshot.id] = snapshot
         recordDiagnostics(from: previous, to: snapshot.state)
         if snapshot.state == .ready, previous != .ready { hostBecameReady(snapshot.id) }
+        if snapshot.state != .ready { mediaMode[snapshot.id] = nil }
     }
 
     private func receive(_ event: HostReplyEvent, token: UUID) {
@@ -213,6 +205,22 @@ extension HostConnectionStore {
     }
 }
 
+/// Reconnect nudges: the station's connection check (#385) and scene activation.
+extension HostConnectionStore {
+    /// The station's connection check (#385) for `ids` only: as `sceneBecameActive`, a ready host is pinged and one
+    /// trying to recover skips its backoff. A host disconnected in Mac Setup stays disconnected.
+    public func checkConnection(_ ids: [HostEndpoint.Identifier]) async {
+        for id in ids { await connections[id]?.foregrounded() }
+    }
+
+    /// Active hosts are pinged; hosts already trying to recover skip their backoff and reconnect now.
+    public func sceneBecameActive() async {
+        for id in order {
+            await connections[id]?.foregrounded()
+        }
+    }
+}
+
 /// Ambient notices are not replies: neither joins the reply list.
 extension HostConnectionStore {
     /// True when `event` was an ambient notice, now handled. A take-over notice (#366) goes to ambient listening; the
@@ -230,6 +238,8 @@ extension HostConnectionStore {
         case .control(.healthReport(let report)):
             let generation = snapshots[event.endpointID]?.connectionGeneration
             health[event.endpointID] = HostHealthReading(report: report, connectionGeneration: generation)
+        case .control(.mediaMode(let on, let reason, let expires)):
+            mediaMode[event.endpointID] = MediaModeStatus(on: on, reason: reason, expiresMilliseconds: expires)
         case .control(.ownerVoice(let state)):
             if state == "unrecognized" {
                 ownerVoiceUnrecognized.insert(event.endpointID)

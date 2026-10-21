@@ -10,7 +10,7 @@ extension HostConnection {
                 versions: VersionNegotiation.supported,
                 capabilities: ["connectivity_lab", PlaybackStop.capability, AmbientTakeOver.capability,
                                AmbientHeard.capability, AmbientOverheard.capability, ReplyMute.capability,
-                               AmbientOverheard.namesCapability, OwnerVoice.capability],
+                               AmbientOverheard.namesCapability, OwnerVoice.capability, MediaMode.capability],
                 // The device's class only (#366), so a host can say "moved to iPad"; never its name.
                 deviceName: deviceName, deviceKind: AmbientHandoff.localDeviceKind
             )),
@@ -40,8 +40,8 @@ extension HostConnection {
         }
         switch frame.payload {
         case .control(.stopPlayback), .control(.setReplyMute), .control(.ambientMovedHere), .control(.ambientHeard),
-             .control(.ambientOverheard), .control(.ownerVoice), .control(.healthReport):
-            // Like reply frames, needing no reply capability (#309, #404, #366, #318, rightyo#164, #614).
+             .control(.ambientOverheard), .control(.ownerVoice), .control(.mediaMode), .control(.healthReport):
+            // Like reply frames, needing no reply capability (#309, #404, #366, #318, rightyo#164, #612, #614).
             await replyObserver(HostReplyEvent(endpointID: snapshot.id, frame: frame))
         case .control(let control):
             try await process(control)
