@@ -153,7 +153,7 @@ It is not device hearing, and the app does not yet show a routed reply in the se
 ## Showing a refused request (slice 5b)
 
 When the host refuses one request and sends nothing (any `ErrorCode.isRequestRefusal`, from #665's
-`RequestRefusals.codes`: a paste refusal today, `voice_route_refused` once slice 5a lands), the app:
+`RequestRefusals.codes`: `paste_refused` and `voice_route_refused`), the app:
 
 - keeps the connection, as #665 already does;
 - adds the host's message as one system line in the thread selected when it arrived (`ConversationLog.noteRefusal`,
