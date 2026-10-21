@@ -72,6 +72,25 @@ import Testing
         #expect(!(await session.acceptsHostReply(recipientAudio(descriptor, sequence: 0))))
     }
 
+    @Test(arguments: [false, true])
+    func aHandoffHeldPastTheOrdinaryLifetimeIsStillRefused(providerTurnEndsReported: Bool) async throws {
+        let rig = try await RecipientTestRig.make()
+        let session = await rig.session(providerTurnEndsReported: providerTurnEndsReported)
+        await rig.adapter.holdHandoff()
+        let delivery = Task {
+            await session.receive(sessionFrame(
+                target: RecipientTestRig.target, payload: .text(TextPayload(text: "synthetic input"))
+            ))
+        }
+        await rig.adapter.waitForHandoff()
+        let context = try #require(await rig.adapter.contexts.last)
+        rig.clock.advance(5 * Self.minute)
+        await rig.adapter.releaseHandoff()
+        #expect(!(await delivery.value).frames.isEmpty)
+        #expect(!(await session.replyRequests.keys.contains(context.id)))
+        #expect(await session.replyPublicationStatus(recipientText(recipientDescriptor(context))) == .absent)
+    }
+
     @Test func atCapacityTheOldestLateRequestGivesWay() async throws {
         let rig = try await RecipientTestRig.make()
         let session = await rig.session()
@@ -85,6 +104,25 @@ import Testing
         #expect(await session.replyPublicationStatus(recipientText(recipientDescriptor(next))) == .ready)
         #expect(await session.replyPublicationStatus(recipientText(recipientDescriptor(contexts[0]))) == .absent)
         #expect(await session.replyPublicationStatus(recipientText(recipientDescriptor(contexts[1]))) == .ready)
+    }
+
+    @Test func atCapacityAStartedReplyIsNeverEvicted() async throws {
+        let rig = try await RecipientTestRig.make()
+        let session = await rig.session()
+        var contexts: [ProviderTurnContext] = []
+        for _ in 0..<HostReplyRequest.capacity {
+            contexts.append(try await rig.submit(on: session))
+            rig.clock.advance(1)
+        }
+        rig.clock.advance(4 * Self.minute)
+        // The oldest record's answer has started and is still flowing; the next oldest is only late.
+        let started = recipientDescriptor(contexts[0], audio: true)
+        #expect(await session.acceptsHostReply(recipientText(started)))
+        rig.clock.advance(Self.minute / 2) // inside the stream's idle gap
+        let next = try await rig.submit(on: session)
+        #expect(await session.replyPublicationStatus(recipientText(recipientDescriptor(next))) == .ready)
+        #expect(await session.acceptsHostReply(recipientAudio(started, sequence: 0)))
+        #expect(await session.replyPublicationStatus(recipientText(recipientDescriptor(contexts[1]))) == .absent)
     }
 
     @Test func atCapacityRequestsInsideTheirLifetimeAreStillRefused() async throws {

@@ -167,8 +167,8 @@ target, from any connection, replaces it.
 Steps 2 and 3 need `--single-terminal-reply-fallback` (set by `scripts/host.sh` from `host.json`). Without the
 flag, request-less replies are still refused `noRecipient`, as before.
 
-**Lifetime: 10 minutes.** A reply to a long task can arrive minutes after the input, so the 120-second request
-lifetime is too short. Ten minutes covers a long turn, while a device left selecting a target overnight does not keep
+**Lifetime: 10 minutes.** A request-less reply to a long task can arrive minutes after the input, well past the
+120-second request lifetime. (A reply that names its request has the 30-minute late-answer bound instead, #430.) Ten minutes covers a long turn, while a device left selecting a target overnight does not keep
 receiving its replies by default. Expiry is not a refusal: it hands the reply to the single-selector rule. The entry
 ends sooner when its connection disconnects or changes selection.
 
@@ -177,7 +177,8 @@ selection (64 most recent replies). Its later frames go only there, even if anot
 and are refused `noRecipient` rather than moved when that device is gone or selected away. This applies to replies
 the single-selector rule started too.
 
-**Audit.** The listener log records `reply_routed` once per reply, with `path=request`, `path=last_input`,
+**Audit.** The listener log records `reply_routed` once per reply, with `path=request`, `path=request_late` (a
+request answered past its 120 seconds, #430), `path=last_input`,
 `path=single_selector` or `path=ambient_owner` (#230; withheld while a take-over or stream end is still queued). The event
 carries only the listener connection id that `session_connected` already logs. No text, target binding or device
 name is added.
