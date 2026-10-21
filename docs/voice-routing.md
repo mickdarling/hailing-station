@@ -17,7 +17,8 @@ once is out of scope.
 | 5a–5b. Route refusal code and its display in the app | Merged (#701, #692). Not deployed. |
 | 6. Spoken label in `haild reply` | Merged (#709). Not deployed. |
 | 8. `host.json` `voiceRoutes` passed as `--voice-routes` | In review. Not deployed: turning it on is an operator step with the owner listening. |
-| 5c, 7. Ambient refusals told to the owner, visual label (7a model merged in #666) and app selector | Proposed; see the [plan on #636](https://github.com/mickdarling/hailing-station/issues/636). |
+| 5c. Ambient route refusals told to the owner | In review. Not deployed. |
+| 7. Visual label (7a model merged in #666) and app selector | Proposed; see the [plan on #636](https://github.com/mickdarling/hailing-station/issues/636). |
 
 Nothing below changes the running daemon or installed builds until a later slice wires it in and it is deployed.
 
@@ -209,8 +210,9 @@ and at the binding the policy allows).
   `lastRouteRefusal`. Nothing is typed anywhere and the stream goes on. So does a routed dispatch the host refuses
   before its handoff (rebound or offline, policy, lockdown, rate), logged as `not_delivered`. Any other failure of a
   routed dispatch (audit, size, cancellation, listener stop) ends the stream, as it would for the ambient target. The
-  listener logs `ambient_voice_route_refused` with `reason=not_delivered|nothing_to_say|unclear` only, never the name
-  or the words. Slice 5 tells the owner. A refusal for the ambient target itself still ends the stream, as before.
+  listener logs `ambient_voice_route_refused` with `reason=not_delivered|nothing_to_say|unclear` and the outcomes
+  below only, never the name or the words. The owner is told (slice 5c, below). A refusal for the ambient target
+  itself still ends the stream, as before.
   The ambient target's own name alone ("Hailing Scratch.") is typed there, as before routing and as tap-to-talk
   delivers it.
 - **Announced only once sent.** A routed request is shown to the device (#318) and acknowledged only after its
@@ -223,6 +225,25 @@ and at the binding the policy allows).
 Verification is synthetic only: `RightyoInputVoiceRouteTests` and `RightyoInputVoiceRouteOwnerTests` (synthetic RightyO
 events and a recording dispatcher, plus one test end to end through the listener), `RightyoAmbientRoutedAnnounceTests`,
 `VoiceRouteAmbientAuditTests` and `VoiceRouteBindingTests`.
+
+## Telling the owner about an ambient refusal (slice 5c)
+
+When an ambient request the owner addressed to a route sends nothing (offline or refused before its handoff, a
+route's name alone, or a near miss), the device that said it is told, in the order said:
+
+- **One refusal line.** A device that advertised `request_refusals` (#665) gets `voice_route_refused` with
+  tap-to-talk's wording ("voice route: Deck couldn't take it; nothing was sent", "voice route: nothing to send to
+  Deck", "voice route: which session? Nothing was sent"). It shows that as one chat line and one announcement
+  (#692), and the stream goes on. An older device is told nothing this way, since it ends its connection on any
+  error.
+- **One spoken clip.** When the acknowledgement library has a reserved `confirm-not-sent/` folder ("Nothing was
+  sent."), one clip plays through the acknowledgement path, to that device only. Like the other confirmations it is
+  then held as a host phrase, so hearing it back is echo.
+- **The log.** `ambient_voice_route_refused` carries `reason=…`, `shown=sent|unsupported|failed|no_connection` and
+  `confirm=<folder>/<index>:<outcome>` (or `no_clips`), never the route's name or the words. The route's name goes
+  only to the owner's own device.
+
+Verification is synthetic only (`AmbientVoiceRouteRefusalTests`, `VoiceRouteRefusalMessageTests`).
 
 ## The spoken label (slice 6)
 
