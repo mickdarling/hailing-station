@@ -1,6 +1,8 @@
 import Foundation
 import HailCore
 import HailProtocol
+import Synchronization
+import Testing
 
 enum SocketTestError: Error, Sendable {
     case closed, unavailable
@@ -92,6 +94,8 @@ actor ScriptedConnector: WebSocketConnecting {
     }
 
     func open(url: URL, subprotocol: String) async throws -> any WebSocketTransport {
+        let opened = Open(at: .now, test: Test.current?.id)
+        Self.openLog.withLock { $0 = Array(($0 + [opened]).suffix(Self.openLogLimit)) }
         opens.append((url, subprotocol))
         guard var steps = stepsByURL[url], !steps.isEmpty else { throw SocketTestError.unavailable }
         let step = steps.removeFirst()
@@ -103,6 +107,22 @@ actor ScriptedConnector: WebSocketConnecting {
     }
 
     func openCount(for url: URL) -> Int { opens.count { $0.0 == url } }
+
+    /// Every scripted open in the process (#704), newest `openLogLimit`, with the test it ran for (a task-local that
+    /// the connection's unstructured tasks inherit): whether a test's connection opening tasks ran at all.
+    private struct Open { let at: ContinuousClock.Instant; let test: Test.ID? }
+    private static let openLogLimit = 4096
+    private static let openLog = Mutex<[Open]>([])
+
+    /// The opens since `start` for the current test, then for the whole process: "this test 0, process 41", or
+    /// "this test 1 (first after 0.2 seconds), process 41". The process count alone says nothing about this test.
+    static func opens(since start: ContinuousClock.Instant) -> String {
+        let since = openLog.withLock { $0.filter { $0.at >= start } }
+        let test = Test.current?.id
+        let mine = since.filter { $0.test != nil && $0.test == test }
+        let first = mine.first.map { " (first after \($0.at - start))" } ?? ""
+        return "this test \(mine.count)\(first), process \(since.count)"
+    }
 }
 
 actor SnapshotRecorder {
@@ -170,22 +190,6 @@ func endpoint(_ id: String = "mac-1", _ url: String = "ws://127.0.0.1:8765") thr
 private func requireURL(_ value: String) -> URL {
     guard let url = URL(string: value) else { preconditionFailure("invalid test URL") }
     return url
-}
-
-// Fixture scheduling watchdog; protocol deadlines use injected clocks and separate assertions.
-func waitUntil(
-    timeout: Duration = .seconds(10),
-    file: String = #fileID,
-    line: Int = #line,
-    _ condition: @escaping @Sendable () async throws -> Bool
-) async throws {
-    let clock = ContinuousClock()
-    let deadline = clock.now.advanced(by: timeout)
-    while clock.now < deadline {
-        if try await condition() { return }
-        try await Task.sleep(for: .milliseconds(5))
-    }
-    throw SocketTestError.conditionTimedOut(file: file, line: line)
 }
 
 func hostHello(version: Int = ProtocolVersion.current) -> ControlPayload {
