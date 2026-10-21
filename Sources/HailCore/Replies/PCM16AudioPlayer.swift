@@ -9,6 +9,7 @@ public enum ReplyAudioPlayerError: Error, Equatable, Sendable {
 }
 
 extension PCM16AudioPlayer: CaptureRoutedReplies {}
+extension PCM16AudioPlayer: PlayoutGapReporting {}
 
 /// AVAudioEngine renderer for the raw signed 16-bit, mono stream produced by the current vbsay bridge.
 @MainActor
@@ -19,6 +20,7 @@ public final class PCM16AudioPlayer: ReplyAudioPlaying {
     private var engine: AVAudioEngine
     private let node = AVAudioPlayerNode()
     private let sourceFormat: AVAudioFormat
+    private var gapMeter = PlayoutGapMeter()
     #if os(iOS)
     private var didConfigureAudioSession = false
     #endif
@@ -39,21 +41,33 @@ public final class PCM16AudioPlayer: ReplyAudioPlaying {
         let buffers = try PCM16PlaybackBuffers.forPayload(payload)
         try prepare()
         schedule(buffers, onPlayed: onPlayed)
+        gapMeter.scheduled(Self.duration(of: buffers), at: .now, startsReply: payload.sequence == 0)
         if !node.isPlaying { node.play() }
     }
 
     public func pause() {
         node.pause()
+        gapMeter.paused(at: .now)
     }
 
     public func cancel() {
         node.stop()
         node.reset()
+        gapMeter.cleared()
     }
 
     public func resume() throws {
         try prepare()
         node.play()
+        gapMeter.resumed(at: .now)
+    }
+
+    public func takePlayoutGaps() -> PlayoutGapMeter.Gaps { gapMeter.take() }
+
+    private static func duration(of buffers: [AVAudioPCMBuffer]) -> Duration {
+        buffers.reduce(.zero) { total, buffer in
+            total + .seconds(Double(buffer.frameLength) / buffer.format.sampleRate)
+        }
     }
 
     public func setMuted(_ muted: Bool) {
@@ -65,10 +79,13 @@ public final class PCM16AudioPlayer: ReplyAudioPlaying {
     ) throws {
         node.stop()
         node.reset()
+        gapMeter.cleared()
         try prepare()
         for (index, payload) in payloads.enumerated() {
             let completion = index == payloads.indices.last ? onPlayed : nil
-            schedule(try PCM16PlaybackBuffers.forPayload(payload), onPlayed: completion)
+            let buffers = try PCM16PlaybackBuffers.forPayload(payload)
+            schedule(buffers, onPlayed: completion)
+            gapMeter.scheduled(Self.duration(of: buffers), at: .now, startsReply: index == 0)
         }
         node.play()
     }
@@ -93,6 +110,7 @@ public final class PCM16AudioPlayer: ReplyAudioPlaying {
         let target = capture ?? ownEngine
         guard target !== engine else { return }
         node.stop()
+        gapMeter.cleared()
         engine.detach(node)
         if engine === ownEngine { ownEngine.stop() }
         target.attach(node)
@@ -105,6 +123,7 @@ public final class PCM16AudioPlayer: ReplyAudioPlaying {
     func captureEngineRestarted(_ capture: AVAudioEngine) {
         guard engine === capture else { return }
         node.stop()
+        gapMeter.cleared()
     }
 
     /// True while replies play through a capture engine's echo canceller.

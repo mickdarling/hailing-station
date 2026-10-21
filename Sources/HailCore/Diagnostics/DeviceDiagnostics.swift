@@ -271,7 +271,13 @@ extension DeviceDiagnostics {
             }
         }
         if busy != lastPlayback.busy {
-            record(busy ? .replyPlaybackStart : .replyPlaybackEnd)
+            if busy {
+                record(.replyPlaybackStart)
+            } else {
+                // Gaps heard since playback began (#737): how many, and their total length.
+                let gaps = (playback.player as? any PlayoutGapReporting)?.takePlayoutGaps() ?? PlayoutGapMeter.Gaps()
+                record(.replyPlaybackEnd, [.count: .integer(Int64(gaps.count)), .ms: .integer(gaps.milliseconds)])
+            }
             let tail = Int64(AmbientReplyEchoGuard.defaultTail / .milliseconds(1))
             record(.echoGuard, busy ? [.on: .boolean(true)] : [.on: .boolean(false), .ms: .integer(tail)])
         }
