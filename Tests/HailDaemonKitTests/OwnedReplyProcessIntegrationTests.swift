@@ -112,7 +112,12 @@ import Testing
             try await PublisherFixture.until { publisher.diagnostics().failed == 4 }
             let queued = Task { try await publisher.publish(fixture.reply(5)) }
             tasks.append(queued)
-            try await PublisherFixture.until { publisher.diagnostics().failed == 5 }
+            // A queued deadline records the failure and resumes its caller before leaving the queue, under a separate
+            // lock (#748), so wait for both counters rather than reading `queued` right after `failed`.
+            try await PublisherFixture.until {
+                let status = publisher.diagnostics()
+                return status.failed == 5 && status.queued == 0
+            }
             await #expect(throws: OwnedReplyPublisherError.deadline) { try await queued.value }
             #expect(publisher.diagnostics().retained == 4 && publisher.diagnostics().queued == 0)
             #expect(try FileManager.default.contentsOfDirectory(atPath: fixture.root.path).count == 4)
