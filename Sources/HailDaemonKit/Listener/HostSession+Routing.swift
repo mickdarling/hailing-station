@@ -124,14 +124,14 @@ extension HostSession {
             // Legacy generic input has no retained record, so the captured selection is checked here and
             // again after the handoff; a caller outside the peer's serialized receive loop can race `select`.
             guard selects(input.target, generation: generation) else {
-                if let owner { replyRequests[owner.context.id] = nil }
+                if let owner { dropUncommitted(owner.context.id) }
                 return .selectionChanged
             }
             switch try await send(input, owner: owner) {
             case .delivered:
                 return handedOff(input.target, owner: owner, generation: generation, recordsInput: recordsInput)
             case .needsConfirmation:
-                if let owner { replyRequests[owner.context.id] = nil }
+                if let owner { dropUncommitted(owner.context.id) }
                 return .confirmationRequired
             }
         } catch AdapterError.deliveryFailed(let message) where message == PastedContent.agentOnlyRefusal {
@@ -167,6 +167,7 @@ extension HostSession {
 
     private func commit(_ context: ProviderTurnContext, generation: UUID) -> HostDeliveryOutcome {
         guard selects(context.binding.targetID, generation: generation), var request = replyRequests[context.id] else {
+            dropUncommitted(context.id)
             return .unowned("request destination changed")
         }
         // Checked while still uncommitted, so a handoff held past the ordinary lifetime is refused rather than
@@ -177,9 +178,10 @@ extension HostSession {
             replyRequests[context.id] = request
             return true
         }) == true else {
-            replyRequests[context.id] = nil
+            dropUncommitted(context.id)
             return .unowned("reply authority changed")
         }
+        evictedForHandoff[context.id] = nil // Committed: the eviction stands.
         return .delivered(request: context.id)
     }
 
@@ -196,7 +198,7 @@ extension HostSession {
                 return try await host.send(text, to: target, from: device, expectedBinding: expectedBinding)
             }
         } catch {
-            if let owner { replyRequests[owner.context.id] = nil }
+            if let owner { dropUncommitted(owner.context.id) }
             throw error
         }
     }
@@ -250,7 +252,7 @@ extension HostSession {
         }
         // A duplicate is refused below, so it must not first evict another request's late record (#430).
         if replyRequests.count >= HostReplyRequest.capacity, replyRequests[context.id] == nil {
-            evictOldestLateRequest()
+            evictOldestLateRequest(admitting: context.id)
         }
         guard replyRequests.count < HostReplyRequest.capacity else { throw ProviderContractError.capacityExceeded }
         guard replyRequests[context.id] == nil else { throw HostError.denied(.notAllowed(target)) }

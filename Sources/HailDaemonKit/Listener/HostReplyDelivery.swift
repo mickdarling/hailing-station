@@ -240,11 +240,26 @@ extension HostSession {
 
     /// At capacity, a request held only by the late-answer bound (#430) yields its slot, oldest first: before that
     /// bound existed it would already have expired. A running provider turn or a flowing reply is never evicted.
-    func evictOldestLateRequest() {
+    /// The evicted record is kept for `admitting` until its handoff commits or is refused (#723).
+    func evictOldestLateRequest(admitting: UUID) {
         let now = requestClock()
-        guard let oldest = replyRequests.filter({ $0.value.isLate(at: now) })
-            .min(by: { $0.value.createdAt < $1.value.createdAt })?.key else { return }
+        guard let (oldest, record) = replyRequests.filter({ $0.value.isLate(at: now) })
+            .min(by: { $0.value.createdAt < $1.value.createdAt }) else { return }
         replyRequests[oldest] = nil
+        evictedForHandoff[admitting] = (oldest, record)
+    }
+
+    /// Drops a request refused before it committed and gives back the late record its admission evicted (#723),
+    /// only while that record is still on this selection, still current and its slot is free. The restored record
+    /// keeps its own permit and lease, re-checked on every frame as before.
+    func dropUncommitted(_ id: UUID) {
+        replyRequests[id] = nil
+        // A closed session keeps its generation, so readiness is checked as well (key review on #731).
+        guard let evicted = evictedForHandoff.removeValue(forKey: id), case .ready = state,
+              replyRequests[evicted.id] == nil,
+              evicted.request.generation == selectionGeneration, evicted.request.isCurrent(at: requestClock()),
+              replyRequests.count < HostReplyRequest.capacity else { return }
+        replyRequests[evicted.id] = evicted.request
     }
 
     /// For the route audit only (#430): the frame answers a request past its ordinary lifetime. Not authority.

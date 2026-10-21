@@ -209,6 +209,9 @@ public actor HostSession {
     let connectionID = UUID()
     var selectionGeneration = UUID()
     var replyRequests: [UUID: HostReplyRequest] = [:]
+    /// The late record each uncommitted request evicted at capacity (#430), keyed by that request, so a refusal
+    /// before commit can give it back (#723). An entry lives only while its handoff is in flight.
+    var evictedForHandoff: [UUID: (id: UUID, request: HostReplyRequest)] = [:]
     /// The listener's last-input ledger (#370), written only at an admitted, delivered handoff; nil records nothing.
     var lastInputLedger: LastInputLedger?
 
