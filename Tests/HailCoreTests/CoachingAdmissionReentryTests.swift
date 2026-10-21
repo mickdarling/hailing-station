@@ -24,13 +24,16 @@ import Testing
         consumer.stop()
     }
 
-    @Test func finalObserverReentryCannotExceedTheLastRequestSlot() throws {
+    /// Filling the ledger is about 2 s of main-actor decoding on CI; yield between admissions so it never holds the
+    /// main actor in one block (#704 watchdog capture on #731).
+    @Test func finalObserverReentryCannotExceedTheLastRequestSlot() async throws {
         let rig = CoachingTestHarness()
         let consumer = try coachingConsumer(rig)
         let lease = try rig.begin()
         try consumer.register(lease)
         for _ in 1..<CoachingAdviceConsumer.requestLimit {
             _ = try consumer.admit(coachingWireData(lease))
+            await Task.yield()
         }
         let nestedWire = try coachingWireData(lease)
         let outerWire = try coachingWireData(lease)
