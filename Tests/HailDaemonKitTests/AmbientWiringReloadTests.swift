@@ -18,7 +18,7 @@ func fakeFileSize(_ fake: FakeRightyo, _ name: String) -> Int {
 
 /// #405: `haild ambient reload` restarts the active stream's RightyO child host-side. The phone is never told: its
 /// stream stays open at the gate and its audio reaches the new child. Synthetic only (fake `rightyo`, loopback).
-@Suite(.serialized, .timeLimit(.minutes(1))) struct AmbientWiringReloadTests {
+@Suite(.serialized, .timeLimit(.minutes(1)), .frozenGuardBudget) struct AmbientWiringReloadTests {
     @Test func reloadSwapsToTheNewInstallWithoutTellingThePhone() async throws {
         // The old install records its audio, then exits non-zero once its input closes.
         let fake = try FakeRightyo("/bin/cat > v1-audio.bin\nexit 3")

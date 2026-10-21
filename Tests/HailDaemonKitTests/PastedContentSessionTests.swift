@@ -47,7 +47,8 @@ import Testing
         #expect(result.frames.isEmpty)
         let framed = try PastedContent.frame(spoken: "compare this", pasted: pasted)
         #expect(framed.count > 2_000)
-        #expect(await adapter.deliveries.map(\.text) == [framed])
+        let delivered = await adapter.deliveries.map { PastedContentTests.masked($0.text) }
+        #expect(delivered == [PastedContentTests.masked(framed)])
     }
 
     /// Jarvis and the #628 review: a raw shell pane must never receive a paste. tmux panes, and any kind not known to

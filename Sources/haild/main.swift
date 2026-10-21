@@ -32,8 +32,8 @@ func makeHost(sanitizing: SanitizePolicy = .init()) async throws -> HailHost {
     return try HailHost(registry: registry, sanitizing: sanitizing, store: PolicyFile.standard())
 }
 
-func usage() -> Never {
-    standardError.write(Data("""
+/// The full `haild` help text, kept outside `usage()` so the function body stays short.
+let usageText = """
     usage: haild targets
            haild targets allow <target-id> [--tier open|confirm|locked] [--capture]
            haild targets deny <target-id>
@@ -49,6 +49,7 @@ func usage() -> Never {
            haild status [--json]
            haild ambient reload|status [--socket <path>]
       (reload restarts the active ambient stream's RightyO child; never starts listening)
+    \(NotifyText.usage)
            haild coaching --rightyo <absolute-path> --rightyo-config <absolute-path>
       --listener-profile <private-absolute-path> --listener <id> --private-output <local-device-id>
       --room-microphone <distinct-local-device-id> --renderer-output-root <private-absolute-directory>
@@ -71,7 +72,10 @@ func usage() -> Never {
            haild run ... --personal-terminal --device-diagnostics
       (opt-in device diagnostics log: enumerated events only, owner-only, capped at 5 MiB)
 
-    """.utf8))
+    """
+
+func usage() -> Never {
+    standardError.write(Data(usageText.utf8))
     exit(64)
 }
 
@@ -341,6 +345,7 @@ do {
     case "doctor" where arguments.count == 1: doctor()
     case "reply": try await reply(arguments.dropFirst())
     case "ambient": try await ambient(arguments.dropFirst())
+    case "notify": try await notify(arguments.dropFirst())
     case "coaching": try await CoachingCommand.run(Array(arguments.dropFirst()))
     case "rightyo": try await rightyo(arguments.dropFirst())
     case "audit": try audit(arguments.dropFirst())

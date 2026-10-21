@@ -6,7 +6,7 @@ import Testing
 
 /// #366: a retired ambient child can be made to give way at once with short, explicit graces, whatever its own
 /// (long) timing says. Real processes, so serialized like the other child suites.
-@Suite(.serialized, .timeLimit(.minutes(1))) struct RightyoChildProcessForcedStopTests {
+@Suite(.serialized, .timeLimit(.minutes(1)), .frozenGuardBudget) struct RightyoChildProcessForcedStopTests {
     @Test func shortGracesKillAChildThatIgnoresEOFAndSIGTERMWithinThem() async throws {
         let fake = try FakeRightyo("trap '' TERM\necho ready\nexec /bin/sleep 60")
         defer { fake.cleanUp() }
