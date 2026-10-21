@@ -31,9 +31,10 @@ TIMING_SUITES=(
   OwnedReply OwnedStdioChild CodexStdio ProviderObservedSession ProviderInputCoordinator LocalReplyEndpoint
   TmuxDeliveryCommit AmbientWiring RightyoInput RightyoChildProcess SFSpeechRecognizerTranscriber
   TmuxPrePaste TmuxStaleInput TmuxCursorInput TmuxSubmitConfirmation TmuxIntegration TmuxPasteAgent TmuxPasteEnter
-  CoachingTransportRegression AmbientSharedAudit CoachingStartupEvent
+  CoachingTransportRegression AmbientSharedAudit CoachingStartupEvent DiagnosticComposition
 )
 TIMING_PATTERN="($(IFS='|'; echo "${TIMING_SUITES[*]}"))"
+CORE_PATTERN='^HailCoreTests\.'
 
 # A lane whose Swift Testing event stream stays silent this long is stalled (#449): it is stopped and fails at once,
 # naming the tests that started and never ended, instead of hanging until the CI job's timeout. The event stream is
@@ -138,8 +139,13 @@ test_() {
   # Tests are built once, before the lanes, so each lane's event stream starts with the tests, not a build (#449).
   echo "== build tests"
   swift build --build-tests ${SWIFT_FLAGS[@]+"${SWIFT_FLAGS[@]}"}
-  echo "== test (parallel)"
-  run_captured swift test --skip-build --parallel --skip "$TIMING_PATTERN"
+  # HailCoreTests' waiters run in a process of their own (#704): the other targets' start-up burst once held every
+  # cooperative thread, so a 5 ms poll overslept by 10-13 s. Every test still runs once, and a failing half stops the
+  # script (set -e) before the next.
+  echo "== test (parallel, HailCoreTests, #704)"
+  run_captured swift test --skip-build --parallel --filter "$CORE_PATTERN" --skip "$TIMING_PATTERN"
+  echo "== test (parallel, other targets)"
+  run_captured swift test --skip-build --parallel --skip "$CORE_PATTERN" --skip "$TIMING_PATTERN"
   echo "== test (timing suites, serial, #208)"
   run_captured swift test --skip-build --no-parallel --filter "$TIMING_PATTERN"
 }

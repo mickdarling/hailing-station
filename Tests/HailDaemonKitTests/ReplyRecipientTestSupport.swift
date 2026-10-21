@@ -3,6 +3,7 @@ import HailProtocol
 import Synchronization
 import Testing
 @testable import HailDaemonKit
+import HailTestSupport
 
 /// Invented input and PCM only. No terminal, process, device or provider endpoint is accessed.
 actor RecipientContextAdapter: ProviderContextDelivering, ProviderReplyBindingLeasing {
@@ -86,6 +87,7 @@ struct RecipientTestRig {
     static let target = "recipient:reply"
 
     static func make() async throws -> Self {
+        _ = StallWatchdog.started // #704: names what stalls the pool, on CI only
         let adapter = RecipientContextAdapter()
         let registry = Registry()
         try await registry.register(adapter)

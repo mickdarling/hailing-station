@@ -66,7 +66,7 @@ struct TranscriptionLabView: View {
     @State var finishGeneration: UUID?
     @State var bufferTask: Task<Void, Never>?
     /// Text pasted to go with the next request, or on its own (#608); never read from the clipboard without a tap.
-    @State var attachedPaste: PastedDraft?
+    @State var pastes = PasteHandoff()
     @State var pasteProblem: String?
     @State var pasteRefusalHandling = PasteRefusalHandling()
     @Environment(\.scenePhase) var scenePhase

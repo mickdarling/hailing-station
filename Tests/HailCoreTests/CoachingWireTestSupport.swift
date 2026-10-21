@@ -2,12 +2,15 @@ import Foundation
 import Testing
 @testable import HailCore
 
-func coachingWireFixture() throws -> [Data] {
+/// Read once per process: ledger-filling tests ask for 128 wires each, on the main actor (#704).
+private let coachingWireFixtureLines = Result { () throws -> [Data] in
     let root = URL(fileURLWithPath: #filePath).deletingLastPathComponent()
         .deletingLastPathComponent().deletingLastPathComponent()
     let source = try String(contentsOf: root.appendingPathComponent("fixtures/coaching-wire-v1.jsonl"), encoding: .utf8)
     return source.split(separator: "\n").map { Data($0.utf8) }
 }
+
+func coachingWireFixture() throws -> [Data] { try coachingWireFixtureLines.get() }
 
 func coachingWireObject() throws -> [String: Any] {
     let fixture = try coachingWireFixture()
