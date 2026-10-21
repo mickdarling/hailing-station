@@ -2,6 +2,7 @@ import Foundation
 import HailCore
 import HailProtocol
 import Synchronization
+import Testing
 
 enum SocketTestError: Error, Sendable {
     case closed, unavailable
@@ -93,7 +94,8 @@ actor ScriptedConnector: WebSocketConnecting {
     }
 
     func open(url: URL, subprotocol: String) async throws -> any WebSocketTransport {
-        Self.openTimes.withLock { $0 = Array(($0 + [ContinuousClock.now]).suffix(256)) }
+        let opened = Open(at: .now, test: Test.current?.id)
+        Self.openLog.withLock { $0 = Array(($0 + [opened]).suffix(Self.openLogLimit)) }
         opens.append((url, subprotocol))
         guard var steps = stepsByURL[url], !steps.isEmpty else { throw SocketTestError.unavailable }
         let step = steps.removeFirst()
@@ -106,14 +108,20 @@ actor ScriptedConnector: WebSocketConnecting {
 
     func openCount(for url: URL) -> Int { opens.count { $0.0 == url } }
 
-    /// Every scripted open in the process (#704), newest 256: whether connection opening tasks ran at all.
-    private static let openTimes = Mutex<[ContinuousClock.Instant]>([])
+    /// Every scripted open in the process (#704), newest `openLogLimit`, with the test it ran for (a task-local that
+    /// the connection's unstructured tasks inherit): whether a test's connection opening tasks ran at all.
+    private struct Open { let at: ContinuousClock.Instant; let test: Test.ID? }
+    private static let openLogLimit = 4096
+    private static let openLog = Mutex<[Open]>([])
 
-    /// The opens since `start`, as a count and the first offset: "0", or "3, first after 0.2 seconds".
+    /// The opens since `start` for the current test, then for the whole process: "this test 0, process 41", or
+    /// "this test 1 (first after 0.2 seconds), process 41". The process count alone says nothing about this test.
     static func opens(since start: ContinuousClock.Instant) -> String {
-        let since = openTimes.withLock { $0.filter { $0 >= start } }
-        guard let first = since.first else { return "0" }
-        return "\(since.count), first after \(first - start)"
+        let since = openLog.withLock { $0.filter { $0.at >= start } }
+        let test = Test.current?.id
+        let mine = since.filter { $0.test != nil && $0.test == test }
+        let first = mine.first.map { " (first after \($0.at - start))" } ?? ""
+        return "this test \(mine.count)\(first), process \(since.count)"
     }
 }
 
