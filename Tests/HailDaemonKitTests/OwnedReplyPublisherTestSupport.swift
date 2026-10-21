@@ -50,11 +50,24 @@ struct PublisherFixture: Sendable {
         try FileManager.default.removeItem(at: base)
     }
 
-    static func until(_ condition: @Sendable () async -> Bool) async throws {
-        let deadline = ContinuousClock.now.advanced(by: .seconds(4))
+    /// A `.watchdog` names its call site and whether the process stalled (#740): a couple of polls with a long sleep
+    /// overshoot is a stall, hundreds of polls with a false condition is a real wait that never came true.
+    static func until(
+        timeout: Duration = .seconds(4), _ condition: @Sendable () async -> Bool,
+        fileID: String = #fileID, line: Int = #line
+    ) async throws {
+        let started = ContinuousClock.now
+        let deadline = started.advanced(by: timeout)
+        var polls = 0, overshoot = Duration.zero
         while !(await condition()) {
-            guard ContinuousClock.now < deadline else { throw PublisherFixtureFailure.watchdog }
+            polls += 1
+            guard ContinuousClock.now < deadline else {
+                throw PublisherFixtureFailure.watchdog(at: "\(fileID):\(line)", elapsed: started.duration(to: .now),
+                                                       polls: polls, longestOvershoot: overshoot)
+            }
+            let slept = ContinuousClock.now
             try await Task.sleep(for: .milliseconds(10))
+            overshoot = max(overshoot, slept.duration(to: .now) - .milliseconds(10))
         }
     }
 
@@ -111,7 +124,9 @@ struct PublisherFixture: Sendable {
     """
 }
 
-enum PublisherFixtureFailure: Error { case watchdog }
+enum PublisherFixtureFailure: Error {
+    case watchdog(at: String, elapsed: Duration, polls: Int, longestOvershoot: Duration)
+}
 
 final class PublisherCheckpoint: Sendable {
     private let ready = Mutex(false)
