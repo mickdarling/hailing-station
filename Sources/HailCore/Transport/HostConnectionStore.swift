@@ -154,9 +154,8 @@ public final class HostConnectionStore {
         let connection = connections.removeValue(forKey: id)
         let barrier = connection.map(drainingTransportBarrier(for:)) ?? retiredBarriers[id]
         if let barrier { retiredBarriers[id] = barrier }
-        snapshots[id] = nil
+        (snapshots[id], health[id]) = (nil, nil)
         ownerVoiceUnrecognized.remove(id)
-        health[id] = nil
         order.removeAll { $0 == id }
     }
     /// The station's connection check (#385) for `ids` only: as `sceneBecameActive`, a ready host is pinged and one
