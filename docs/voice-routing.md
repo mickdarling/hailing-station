@@ -217,5 +217,6 @@ and at the binding the policy allows).
   change, made only with Mick listening. The owner's own voice commands still come first: "Deck, mute." is the
   owner's mute (#404), not a request routed to Deck.
 
-Verification is synthetic only: `RightyoInputVoiceRouteTests` (synthetic RightyO events and a recording dispatcher, plus
-one test end to end through the listener), `RightyoAmbientRoutedAnnounceTests` and `VoiceRouteAmbientAuditTests`.
+Verification is synthetic only: `RightyoInputVoiceRouteTests` and `RightyoInputVoiceRouteOwnerTests` (synthetic RightyO
+events and a recording dispatcher, plus one test end to end through the listener), `RightyoAmbientRoutedAnnounceTests`,
+`VoiceRouteAmbientAuditTests` and `VoiceRouteBindingTests`.

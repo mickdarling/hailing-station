@@ -14,13 +14,14 @@ public protocol RightyoAmbientDispatching: Sendable {
     func dispatch(_ request: LocalDispatchRequest) async throws -> UUID?
     /// `routed` (#636) says the consumer's own route match chose this request's target: the owner named one of their
     /// voice routes. Only that decision may carry a request to a target other than the stream's own; without it, a
-    /// different target is just refused. The default dispatches it un-routed.
+    /// different target is just refused. The default dispatches an un-routed request and refuses a routed one.
     func dispatch(_ request: LocalDispatchRequest, routed: Bool) async throws -> UUID?
 }
 
 extension RightyoAmbientDispatching {
     public func dispatch(_ request: LocalDispatchRequest, routed: Bool) async throws -> UUID? {
-        try await dispatch(request)
+        guard !routed else { throw LocalDispatchRefusal.notAuthorized }
+        return try await dispatch(request)
     }
 }
 
