@@ -12,7 +12,7 @@ once is out of scope.
 | 1. Allow-list file and the opening-name parser (`VoiceRoutes`) | Merged (#646). Not deployed. |
 | 2. Host listing: route names, offline routes and `--voice-routes` | Merged (#678, #686). Not deployed: `host.sh` does not pass the flag yet (slice 8). |
 | 3. Tap-to-talk routing and reply return (route group) | Merged (#688). Not deployed. |
-| 4a. Ambient dispatch may address a covered route (host authority) | In review. No consumer routes yet (4b). Not deployed. |
+| 4a. Ambient dispatch may address a covered route (host authority) | Merged (#691). Not deployed. |
 | 4b. Ambient routing by the owner's own turn (RightyO consumer) | In review. Not deployed; needs route names in RightyO `addressing.names`. |
 | 5–8. Refusals, spoken and visual labels (7a model merged in #666), app selector | Proposed; see the [plan on #636](https://github.com/mickdarling/hailing-station/issues/636). |
 
@@ -183,8 +183,8 @@ on that same generation. A request to another target without that decision binds
   check (exact binding, policy, sanitizer) is unchanged. A plain tmux route still gets its host-minted reply
   reference (#230) and last-input record (#370), so its reply comes back to the streaming device.
 
-No ambient request addresses a route yet. Slice 4b makes the RightyO consumer choose a route from the owner's own
-turn on an enrolled session. Verification is synthetic only (`VoiceRouteAmbientAuthorityTests`, `VoiceRouteRaceTests`).
+Slice 4b, below, makes the RightyO consumer choose a route from the owner's own turn on an enrolled session.
+Verification is synthetic only (`VoiceRouteAmbientAuthorityTests`, `VoiceRouteRaceTests`).
 
 ## Ambient routing by the owner's voice (slice 4b)
 
@@ -194,20 +194,28 @@ and at the binding the policy allows).
 
 - **Owner only.** Only a request whose turn both the transcript and the attention record call the owner's, on an
   enrolled session, can name a route. That is the same rule as spoken notes (#552). Anyone else's "Deck, …", and
-  every turn on an anonymous session, is an ordinary request to the ambient target.
+  every turn on an anonymous session, is an ordinary request to the ambient target, exactly as before routing: every
+  request RightyO forwards is typed there, whoever spoke. The routing decision comes only from the host's own
+  `VoiceRoutes.match` on that owner turn, never from a field of RightyO's output. Only a dispatcher that binds the
+  route (the listener's ambient step) carries a routed request; any other refuses it.
 - **Only from a route.** Routing applies only while the ambient target is itself a route.
 - **The prompt.** A routed request is typed into the named route with that route's own reply block, so its answer
   names that route. A plain tmux route gets a reply reference (#230) and a last-input record (#370) through slice
   4a, so the reply comes back to the streaming device.
-- **No silent fallback.** An offline route, a name alone or a near miss is held back in `lastRouteRefusal`. Nothing
-  is typed anywhere and the stream goes on. So does a routed dispatch refused before its handoff, for example a
-  route rebound between addressing and dispatch. The listener logs `ambient_voice_route_refused` with
-  `reason=not_delivered|nothing_to_say|unclear` only, never the name or the words. Slice 5 tells the owner. A
-  refusal for the ambient target itself still ends the stream, as before.
+- **No silent fallback.** An offline route, another route's name alone or a near miss is held back in
+  `lastRouteRefusal`. Nothing is typed anywhere and the stream goes on. So does a routed dispatch the host refuses
+  before its handoff (rebound or offline, policy, lockdown, rate), logged as `not_delivered`. Any other failure of a
+  routed dispatch (audit, size, cancellation, listener stop) ends the stream, as it would for the ambient target. The
+  listener logs `ambient_voice_route_refused` with `reason=not_delivered|nothing_to_say|unclear` only, never the name
+  or the words. Slice 5 tells the owner. A refusal for the ambient target itself still ends the stream, as before.
+  The ambient target's own name alone ("Hailing Scratch.") is typed there, as before routing and as tap-to-talk
+  delivers it.
 - **Announced only once sent.** A routed request is shown to the device (#318) and acknowledged only after its
   handoff, so a route that refuses it never looks sent. The stream's own requests still announce before typing.
 - **RightyO must forward the turn.** RightyO forwards only turns addressed to the system. Because "Jarvis, Deck,
   …" never re-routes, each route's spoken name must also be in RightyO's `addressing.names`. That is a live config
-  change, made only with Mick listening.
+  change, made only with Mick listening. The owner's own voice commands still come first: "Deck, mute." is the
+  owner's mute (#404), not a request routed to Deck.
 
-Verification is synthetic only (`RightyoInputVoiceRouteTests`): synthetic RightyO events and a recording dispatcher.
+Verification is synthetic only: `RightyoInputVoiceRouteTests` (synthetic RightyO events and a recording dispatcher, plus
+one test end to end through the listener), `RightyoAmbientRoutedAnnounceTests` and `VoiceRouteAmbientAuditTests`.

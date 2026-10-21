@@ -29,9 +29,11 @@ extension RightyoAmbientDispatching {
 struct RightyoAmbientDispatchStep: RightyoDispatching {
     let connection: UUID
     let dispatcher: any RightyoAmbientDispatching
-    /// Acknowledges the admitted request (rightyo#105) before it is typed; never awaited, never throws.
+    /// Acknowledges the admitted request (rightyo#105) before it is typed, or, for a routed one (#636), once it is
+    /// handed off; never awaited, never throws.
     var acknowledge: (@Sendable () -> Void)?
-    /// Shows the speaking device what it said (#318); awaited, so it precedes the acknowledgement and the typing.
+    /// Shows the speaking device what it said (#318); awaited, so it precedes the acknowledgement, and the typing
+    /// too unless the request is routed.
     var heard: (@Sendable () async -> Void)?
     func dispatch(text: String, target: String, binding: String) async throws -> RightyoDispatchReceipt {
         try await dispatch(text: text, target: target, binding: binding, routed: false)

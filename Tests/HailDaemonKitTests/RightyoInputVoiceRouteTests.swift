@@ -3,7 +3,7 @@ import Testing
 @testable import HailDaemonKit
 
 /// Records what the consumer dispatches, or refuses every dispatch with `refusal`.
-private actor VoiceRouteRecordingDispatcher: RightyoDispatching {
+actor VoiceRouteRecordingDispatcher: RightyoDispatching {
     struct Call {
         let target: String
         let binding: String
@@ -38,7 +38,7 @@ extension RightyoInputConsumerTests {
         return RightyoVoiceRouting(routes: routes) { target in target == "tmux:deck" ? "deck-binding" : nil }
     }
 
-    private func routingRig(
+    func routingRig(
         target: String = "tmux:demo", speakers: String = "enrolled"
     ) async throws -> (RightyoInputConsumer, VoiceRouteRecordingDispatcher) {
         let dispatcher = VoiceRouteRecordingDispatcher()
@@ -50,15 +50,17 @@ extension RightyoInputConsumerTests {
     }
 
     /// Transcript, attention and request for one turn saying `text`; `index` keeps ids, sequences and times apart.
-    private func request(
-        _ consumer: RightyoInputConsumer, _ index: Int, saying text: String, role: String? = "owner"
+    /// `attentionRole` is the attention record's role when it differs from the transcript's (`.some(nil)`: none).
+    func request(
+        _ consumer: RightyoInputConsumer, _ index: Int, saying text: String, role: String? = "owner",
+        attentionRole: String?? = .none
     ) async throws -> RightyoInputEvent {
         let (id, sequence, end) = ("r\(index)", 2 + index * 3, 10_000 * (index + 1))
         var final = roleTurn(id, role: role, start: end - 800, end: end)
         final["text"] = text
         var decision: [String: Any] = ["label": "attend", "recipient_kind": "system", "confidence": 0.9,
                                        "provider": "authored", "model": "fake-v1"]
-        if let role { decision["role"] = role }
+        if let decided = attentionRole ?? role { decision["role"] = decided }
         _ = try await consumer.consume(event("transcript", sequence: sequence,
                                              extra: ["turn": final, "emitted_at_ms": end + 100]))
         _ = try await consumer.consume(event("attention", sequence: sequence + 1, extra: [

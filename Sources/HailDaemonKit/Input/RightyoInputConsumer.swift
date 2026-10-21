@@ -211,7 +211,8 @@ final class HostPhrases: Sendable {
 public protocol RightyoDispatching: Sendable {
     func dispatch(text: String, target: String, binding: String) async throws -> RightyoDispatchReceipt
     /// `routed` (#636): the consumer's own route match chose `target`, a voice route the owner named. The default
-    /// delivers it as any other request.
+    /// delivers an un-routed request as any other and refuses a routed one: only a dispatcher that binds the route
+    /// (the listener's ambient step) may carry it, so a route never reaches its target unbound.
     func dispatch(text: String, target: String, binding: String, routed: Bool) async throws -> RightyoDispatchReceipt
 }
 
@@ -219,7 +220,8 @@ extension RightyoDispatching {
     public func dispatch(
         text: String, target: String, binding: String, routed: Bool
     ) async throws -> RightyoDispatchReceipt {
-        try await dispatch(text: text, target: target, binding: binding)
+        guard !routed else { throw LocalDispatchRefusal.notAuthorized }
+        return try await dispatch(text: text, target: target, binding: binding)
     }
 }
 /// The direct path: `HailHost.send` from the fixed `rightyo-local` device with the pinned binding. A
@@ -379,6 +381,9 @@ public actor RightyoInputConsumer {
             // counts; anyone else's is a request like any other. On an anonymous one any voice counts (see
             // `VoiceMute`): the mute is device-local and reversible.
             if let turn = event.turn, holdsVoiceCommand(turn) { return false }
+            // Busy from addressing on: the route's binding lookup suspends, and no event may enter meanwhile.
+            busy = true
+            defer { busy = false }
             guard let address = await address(event.turn) else { return false }
             return try await deliver(event, to: address, with: dispatcher)
         } catch {
@@ -584,7 +589,8 @@ extension RightyoInputConsumer {
 /// The owner's voice routes for ambient requests (#636), and how to read a route's current binding: listed, alive and
 /// at the binding its policy allows, or nil. The routes only name targets; the host still checks each delivery.
 public struct RightyoVoiceRouting: Sendable {
-    /// Why a request the owner addressed to a route was not sent. Nothing went anywhere; the owner is told.
+    /// Why a request the owner addressed to a route was not sent. Nothing went anywhere; the listener logs the reason
+    /// only, and slice 5 tells the owner.
     public enum Refusal: Sendable, Equatable {
         /// The route is offline, or refused the request before it was handed off. Carries the route's name.
         case notDelivered(String)
@@ -613,8 +619,9 @@ extension RightyoInputConsumer {
 
     /// The owner's own turn on an enrolled session may name another route (#636), while `target` is itself a route;
     /// every other turn goes to `target`. Speaker labels decide nothing else here: anyone else's "Deck, …" is a
-    /// request to `target` like any other. A route that is offline, a name alone and a near miss are held back in
-    /// `lastRouteRefusal` (nil), so nothing is sent anywhere and the stream goes on.
+    /// request to `target` like any other. A route that is offline, another route's name alone and a near miss are
+    /// held back in `lastRouteRefusal` (nil), so nothing is sent anywhere and the stream goes on; the stream's own
+    /// route named alone is typed to `target`, as before routing and as tap-to-talk delivers it.
     func address(_ turn: RightyoInputEvent.Turn?) async -> Address? {
         let own = Address(target: target, binding: binding, route: nil)
         guard let routing, let turn, speakers == "enrolled", owners.contains(turn.utteranceId),
@@ -630,6 +637,8 @@ extension RightyoInputConsumer {
                 return nil
             }
             return Address(target: route.target, binding: pinned, route: route)
+        case .nothingToSay(let route) where route.target == target:
+            return own
         case .nothingToSay(let route):
             lastRouteRefusal = .nothingToSay(route.name)
             return nil
@@ -639,13 +648,12 @@ extension RightyoInputConsumer {
         }
     }
 
-    /// Types the prompt, its reply block naming `address.target`. A routed request refused before its handoff is a
-    /// route refusal that ends nothing; any other failure ends the consumer, as before.
+    /// Types the prompt, its reply block naming `address.target`. A routed request the host refuses before its
+    /// handoff (any `LocalDispatchRefusal`: offline, rebound, policy, lockdown, rate) is a route refusal that ends
+    /// nothing; any other failure (audit, size, cancellation, listener stop) ends the consumer, as before.
     func deliver(
         _ event: RightyoInputEvent, to address: Address, with dispatcher: any RightyoDispatching
     ) async throws -> Bool {
-        busy = true
-        defer { busy = false }
         do {
             try Task.checkCancellation()
             lastReceipt = try await dispatcher.dispatch(
