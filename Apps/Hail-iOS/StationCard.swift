@@ -3,7 +3,6 @@ import AVFAudio
 import HailCore
 import Speech
 import SwiftUI
-import UIKit
 import UserNotifications
 
 extension View {
@@ -36,7 +35,9 @@ struct CaptureSafeLabsView: View {
                     )
                 }
             }
+            #if os(iOS)
             NavigationLink("Routing spike") { RoutingSpikeView() }
+            #endif
         }
         .navigationTitle("Labs")
     }
@@ -119,11 +120,7 @@ extension TranscriptionLabView {
 
 /// TCC invokes these callbacks on arbitrary queues, so this bridge must not inherit the view's MainActor.
 private func requestHailPermissions() async -> Bool {
-    let microphone = await withCheckedContinuation(isolation: nil) { continuation in
-        AVAudioApplication.requestRecordPermission { @Sendable granted in
-            continuation.resume(returning: granted)
-        }
-    }
+    let microphone = await StationPlatform.requestMicrophone()
     guard microphone else { return false }
 
     return await withCheckedContinuation(isolation: nil) { continuation in
@@ -188,7 +185,7 @@ struct AmbientListeningCard: View {
             makeStreamer: { send in
                 try await audioSession.activate()
                 // Headphones keep their A2DP route only without voice processing (#343).
-                let capture = try echoGuard.ambientCapture(mode: AmbientCaptureModeResolver.currentMode())
+                let capture = try echoGuard.ambientCapture(mode: StationPlatform.ambientCaptureMode)
                 return AmbientAudioStreamer(capture: capture, send: send)
             },
             releaseSession: { await audioSession.deactivate() },
@@ -261,6 +258,9 @@ struct AmbientListeningCard: View {
             if controller.isListening, connections.ownerVoiceUnrecognized.contains(binding.hostID) {
                 OwnerVoiceUnrecognizedView()
             }
+            if controller.isListening, let media = connections.mediaMode[binding.hostID] {
+                MediaModeStatusView(status: media)
+            }
             if controller.isListening, let handoff = controller.handoff, case .movedHere = handoff {
                 // This device took listening over (#366): a brief, calm confirmation.
                 Label(handoff.status, systemImage: "checkmark.circle.fill")
@@ -318,6 +318,30 @@ struct OwnerVoiceUnrecognizedView: View {
         }
         .accessibilityElement(children: .combine)
         .accessibilityIdentifier("station.ambient-owner-voice")
+    }
+}
+
+/// The owner's spoken media mode (#612): while it is on, replies stop because RightyO hears only the assistant's
+/// name, so the card says so and how it ends. Read-only: whether the device may turn it off is Mick's call.
+struct MediaModeStatusView: View {
+    let status: MediaModeStatus
+
+    var body: some View {
+        // Re-checked each minute, so a mode past its end stops showing even if the host's "off" never arrives.
+        TimelineView(.everyMinute) { context in
+            if let detail = status.detail(now: context.date) {
+                VStack(alignment: .leading, spacing: 4) {
+                    Label("Media mode is on", systemImage: "tv")
+                        .font(.subheadline.weight(.semibold))
+                        .foregroundStyle(.indigo)
+                    Text(detail)
+                        .font(.footnote)
+                        .foregroundStyle(.secondary)
+                }
+                .accessibilityElement(children: .combine)
+                .accessibilityIdentifier("station.ambient-media-mode")
+            }
+        }
     }
 }
 
@@ -396,7 +420,7 @@ enum AmbientStopNotifier {
     }
 
     static func post(_ reason: String) {
-        guard UIApplication.shared.applicationState != .active else { return }
+        guard !StationPlatform.isActive else { return }
         let content = UNMutableNotificationContent()
         content.title = "Hailing Station stopped listening"
         content.body = reason
@@ -445,11 +469,7 @@ struct DiagnosticsLoggingCard: View {
 
 /// TCC invokes the callback on an arbitrary queue, so this bridge must not inherit the view's MainActor.
 private func requestMicrophonePermission() async -> Bool {
-    await withCheckedContinuation(isolation: nil) { continuation in
-        AVAudioApplication.requestRecordPermission { @Sendable granted in
-            continuation.resume(returning: granted)
-        }
-    }
+    await StationPlatform.requestMicrophone()
 }
 
 @MainActor
