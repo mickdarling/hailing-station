@@ -13,7 +13,8 @@ import Testing
         TargetInfo(id: "tmux:deck", kind: "tmux", name: "Deck", alive: true),
         TargetInfo(id: "tmux:voice", kind: "tmux", name: "Voice Work", alive: true),
         TargetInfo(id: "tmux:claude-hail", kind: "tmux", name: "claude-hail", alive: true),
-        TargetInfo(id: "tmux:cafe", kind: "tmux", name: "Café", alive: true)
+        TargetInfo(id: "tmux:cafe", kind: "tmux", name: "Café", alive: true),
+        TargetInfo(id: "tmux:sales", kind: "tmux", name: "Sales!", alive: true)
     ]
 
     private final class Clock: @unchecked Sendable {
@@ -33,14 +34,24 @@ import Testing
                      targets: Self.targets, scope: "s1")
         log.noteReply(reply("Added it.", from: "tmux:deck"), selected: "tmux:scratch", scope: "s1")
         log.noteReply(reply("Done here too.", from: "tmux:scratch"), selected: "tmux:scratch", scope: "s1")
-        let thread = log.entries(endpointID: "mac", targetID: "tmux:scratch")
+        let thread = log.entries(endpointID: "mac", targetID: "tmux:scratch", addressed: true)
         #expect(thread.map(\.text) == ["Deck, add a slide on pricing", "Added it.", "Done here too."])
         #expect(thread.map(\.source) == [nil, "Deck", nil], "the selected session's own reply needs no label")
-        #expect(log.entries(endpointID: "mac", targetID: "tmux:deck").map(\.text) == ["Added it."])
-        #expect(log.entries(endpointID: "other", targetID: "tmux:scratch").isEmpty)
+        #expect(log.entries(endpointID: "mac", targetID: "tmux:deck", addressed: true).map(\.text) == ["Added it."])
+        #expect(log.entries(endpointID: "other", targetID: "tmux:scratch", addressed: true).isEmpty)
     }
 
     /// Unsolicited, late or someone else's replies from another session never pile into the open thread.
+    /// Until the app shows the label (#636 slice 7b), its default thread view is unchanged (Codex review on #666).
+    @Test func theDefaultThreadViewLeavesAddressedRepliesInTheirOwnThread() {
+        let log = ConversationLog()
+        log.noteSent("Deck, add a slide", endpointID: "mac", targetID: "tmux:scratch", targets: Self.targets,
+                     scope: "s1")
+        log.noteReply(reply("Added it.", from: "tmux:deck"), selected: "tmux:scratch", scope: "s1")
+        #expect(log.entries(endpointID: "mac", targetID: "tmux:scratch").map(\.text) == ["Deck, add a slide"])
+        #expect(log.entries(endpointID: "mac", targetID: "tmux:deck").map(\.text) == ["Added it."])
+    }
+
     @Test func aReplyNobodyAddressedFromThisThreadStaysInItsOwn() {
         let log = ConversationLog()
         log.noteReply(reply("Unrelated.", from: "tmux:deck"), selected: "tmux:scratch", scope: "s1")
@@ -50,7 +61,8 @@ import Testing
         log.noteSent("Deck, add a slide", endpointID: "other", targetID: "tmux:scratch",
                      targets: Self.targets, scope: "s1")
         log.noteReply(reply("Wrong endpoint.", from: "tmux:deck"), selected: "tmux:scratch", scope: "s1")
-        #expect(log.entries(endpointID: "mac", targetID: "tmux:scratch").map(\.text) == ["Voice Work, run the tests"])
+        let thread = log.entries(endpointID: "mac", targetID: "tmux:scratch", addressed: true)
+        #expect(thread.map(\.text) == ["Voice Work, run the tests"])
         #expect(log.entries.filter { $0.speaker == .haili }.allSatisfy { $0.shownIn == nil && $0.source == nil })
     }
 
@@ -63,7 +75,7 @@ import Testing
         log.noteReply(reply("In time.", from: "tmux:deck"), selected: "tmux:scratch", scope: "s1")
         clock.date += 2
         log.noteReply(reply("Too late.", from: "tmux:deck"), selected: "tmux:scratch", scope: "s1")
-        let thread = log.entries(endpointID: "mac", targetID: "tmux:scratch").map(\.text)
+        let thread = log.entries(endpointID: "mac", targetID: "tmux:scratch", addressed: true).map(\.text)
         #expect(thread == ["Deck: add a slide", "In time."])
     }
 
@@ -77,7 +89,8 @@ import Testing
                      scope: "s1")
         log.noteReply(reply("Reselected.", from: "tmux:deck"), selected: "tmux:scratch", scope: "s2")
         log.noteReply(reply("Same scope.", from: "tmux:deck"), selected: "tmux:scratch", scope: "s1")
-        let thread = log.entries(endpointID: "mac", targetID: "tmux:scratch").filter { $0.speaker == .haili }
+        let thread = log.entries(endpointID: "mac", targetID: "tmux:scratch", addressed: true)
+            .filter { $0.speaker == .haili }
         #expect(thread.map(\.text) == ["Same scope."])
     }
 
@@ -88,7 +101,8 @@ import Testing
                      scope: "s1")
         log.noteReply(reply("Added it.", from: "tmux:deck"), selected: "tmux:scratch", scope: "s1")
         log.noteReply(reply("Unrelated update.", from: "tmux:deck"), selected: "tmux:scratch", scope: "s1")
-        let thread = log.entries(endpointID: "mac", targetID: "tmux:scratch").filter { $0.speaker == .haili }
+        let thread = log.entries(endpointID: "mac", targetID: "tmux:scratch", addressed: true)
+            .filter { $0.speaker == .haili }
         #expect(thread.map(\.text) == ["Added it."])
     }
 
@@ -105,7 +119,8 @@ import Testing
         #expect(failed != nil)
         log.retractAddress(failed)
         log.noteReply(reply("Not for a failed send.", from: "tmux:deck"), selected: "tmux:scratch", scope: "s1")
-        let placed = log.entries(endpointID: "mac", targetID: "tmux:scratch").filter { $0.speaker == .haili }
+        let placed = log.entries(endpointID: "mac", targetID: "tmux:scratch", addressed: true)
+            .filter { $0.speaker == .haili }
         #expect(placed.map(\.text) == ["Fast."] && placed.first?.source == "Deck")
     }
 
@@ -116,9 +131,9 @@ import Testing
                                   targets: Self.targets, scope: "s1")
         log.noteReply(reply("Older reply.", from: "tmux:deck"), selected: "tmux:scratch", scope: "s1")
         log.retractAddress(address)
-        #expect(log.entries(endpointID: "mac", targetID: "tmux:scratch").isEmpty)
+        #expect(log.entries(endpointID: "mac", targetID: "tmux:scratch", addressed: true).isEmpty)
         #expect(log.entries.first?.source == nil && log.entries.first?.shownIn == nil)
-        #expect(log.entries(endpointID: "mac", targetID: "tmux:deck").map(\.text) == ["Older reply."])
+        #expect(log.entries(endpointID: "mac", targetID: "tmux:deck", addressed: true).map(\.text) == ["Older reply."])
     }
 
     @Test func thePlacementIsFixedAtTheFirstText() {
@@ -133,9 +148,9 @@ import Testing
     @Test(arguments: [
         ("Deck, add a slide", "tmux:deck"), ("hey deck - status", "tmux:deck"), ("Voice Work: run it", "tmux:voice"),
         ("Okay hailing scratch, hi", "tmux:scratch"), ("Deck", nil), ("Deck is stopped, check it", nil),
-        ("Deck-building is next", nil), ("Can Deck, add a slide", nil), ("Sales, how are we?", nil),
+        ("Deck-building is next", nil), ("Can Deck, add a slide", nil),
         ("claude-hail, status", nil), ("Voice, Work, status", nil), ("Hey, Deck, add a slide", "tmux:deck"),
-        ("Café, hi", nil), ("' Deck, hi", nil)
+        ("Café, hi", "tmux:cafe"), ("' Deck, hi", nil), ("DECK!, status", nil), ("Sales, how is it?", "tmux:sales")
     ])
     func onlyAListedNameAndAMarkAtTheStartAddressASession(_ text: String, _ target: String?) {
         #expect(AddressedRequest.target(addressedIn: text, among: Self.targets)?.id == target)

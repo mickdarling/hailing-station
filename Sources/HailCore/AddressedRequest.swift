@@ -23,36 +23,62 @@ struct AddressedRequest: Sendable {
     /// claim on any reselection or reconnect, so a reply under another scope never matches.
     let scope: String
 
-    /// The listed target `text` opens by addressing, by the host's own word rules: after an optional greeting, one to
-    /// three plain words (ASCII letters, digits and apostrophes) separated by whitespace alone, spelling a target's
-    /// listed name, then a mark and a space or the end. A word carrying a mark ends the search, so "Voice, Work, …"
-    /// can address "Voice" but never "Voice Work"; a name that is not plain words, which no route can have, never
-    /// matches. Nil for anything else.
+    /// The listed target `text` opens by addressing, by the host's own rules (`VoiceRoutes.match`): after an optional
+    /// greeting, the longest run of one to three words that spells a target's listed name, then a mark and a space or
+    /// the end. Words are runs of letters, digits and apostrophes keyed as the host keys them (case-folded ASCII
+    /// letters and digits); a run counts only when its words are separated by whitespace alone and each keys to
+    /// something. So "Voice, Work, …" can address "Voice" but never "Voice Work", and "DECK!" is the name "Deck".
+    /// Nil for anything else, including a name with nothing after it.
     static func target(addressedIn text: String, among targets: [TargetInfo]) -> TargetInfo? {
-        for mark in text.indices where marks.contains(text[mark])
-            && text[text.index(after: mark)...].first?.isWhitespace ?? true {
-            var words = text[..<mark].split(whereSeparator: \.isWhitespace)
-            if let first = words.first, greetings.contains(key(first)) { words.removeFirst() }
-            guard (1...3).contains(words.count), words.allSatisfy(isPlainWord) else { continue }
-            let spoken = words.map(key).joined()
-            if let target = targets.first(where: { name(of: $0) == spoken }) { return target }
+        let words = words(text)
+        let start = words.first.map { greetings.contains($0.key) } == true ? 1 : 0
+        for width in stride(from: 3, through: 1, by: -1) where start + width <= words.count {
+            let window = words[start..<start + width]
+            guard let spoken = key(text, window), let last = window.last,
+                  let target = targets.first(where: { name(of: $0) == spoken }) else { continue }
+            let rest = text[last.range.upperBound...].drop { $0.isWhitespace }
+            guard let mark = rest.first, marks.contains(mark), rest.dropFirst().first?.isWhitespace ?? true else {
+                return nil
+            }
+            return target
         }
         return nil
     }
 
-    /// A target's name as one key, or nil unless it is one to three plain words.
+    private struct Word {
+        let key: String
+        let range: Range<String.Index>
+    }
+
+    /// A target's listed name as one key, by the same rules; nil when the host could never hear it.
     private static func name(of target: TargetInfo) -> String? {
-        let words = target.name.split(whereSeparator: \.isWhitespace)
-        guard (1...3).contains(words.count), words.allSatisfy(isPlainWord) else { return nil }
-        return words.map(key).joined()
+        let words = words(target.name)
+        return (1...3).contains(words.count) ? key(target.name, words[...]) : nil
     }
 
-    /// ASCII letters, digits and apostrophes, with at least one letter or digit, as a host word must key to something.
-    private static func isPlainWord(_ word: Substring) -> Bool {
-        word.allSatisfy { ($0.isASCII && ($0.isLetter || $0.isNumber)) || $0 == "'" } && !key(word).isEmpty
+    /// The window's joined key, or nil when a word keys to nothing or a gap between its words is not whitespace.
+    private static func key(_ text: String, _ window: ArraySlice<Word>) -> String? {
+        guard window.allSatisfy({ !$0.key.isEmpty }) else { return nil }
+        for (left, right) in zip(window, window.dropFirst())
+        where !text[left.range.upperBound..<right.range.lowerBound].allSatisfy(\.isWhitespace) {
+            return nil
+        }
+        return window.map(\.key).joined()
     }
 
-    private static func key(_ word: Substring) -> String {
-        String(word.lowercased().filter { $0.isASCII && ($0.isLetter || $0.isNumber) })
+    /// Runs of letters, digits and apostrophes in `text`, each keyed, with where it sits.
+    private static func words(_ text: String) -> [Word] {
+        var found: [Word] = [], start: String.Index?
+        for index in text.indices + [text.endIndex] {
+            let character = index < text.endIndex ? text[index] : " "
+            let inWord = character.isLetter || character.isNumber || character == "'"
+            if inWord, start == nil { start = index }
+            if !inWord, let begin = start {
+                let key = String(text[begin..<index].lowercased().filter { $0.isASCII && ($0.isLetter || $0.isNumber) })
+                found.append(Word(key: key, range: begin..<index))
+                start = nil
+            }
+        }
+        return found
     }
 }

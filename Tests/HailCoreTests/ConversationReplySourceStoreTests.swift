@@ -21,7 +21,7 @@ extension HostConnectionStoreAmbientBindingTests {
             payload: .text(TextPayload(text: "Added it.", isFinal: true, reply: reply))
         )))
         try await waitUntil { await MainActor.run { store.conversation.entries.count == 2 } }
-        let thread = store.conversation.entries(endpointID: endpoint.id, targetID: "tmux:a")
+        let thread = store.conversation.entries(endpointID: endpoint.id, targetID: "tmux:a", addressed: true)
         #expect(thread.map(\.text) == ["Deck, add a slide", "Added it."] && thread.last?.source == "Deck")
         await store.disconnect(endpoint.id)
     }
@@ -45,7 +45,7 @@ extension HostConnectionStoreAmbientBindingTests {
             payload: .text(TextPayload(text: "Late.", isFinal: true, reply: reply))
         )))
         try await waitUntil { await MainActor.run { store.conversation.entries.count == 2 } }
-        let thread = store.conversation.entries(endpointID: endpoint.id, targetID: "tmux:a")
+        let thread = store.conversation.entries(endpointID: endpoint.id, targetID: "tmux:a", addressed: true)
         #expect(thread.map(\.text) == ["Deck, add a slide"])
         await store.disconnect(endpoint.id)
     }

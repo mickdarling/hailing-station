@@ -24,10 +24,11 @@ public struct ConversationEntry: Identifiable, Equatable, Sendable {
     /// The thread such a reply shows in, besides its own. Nil otherwise.
     public var shownIn: String?
 
-    /// Whether the entry shows in one destination's thread: its own target's entries, plus a reply that answers a
-    /// request addressed from it to another session (`shownIn`). The one place a thread's membership is decided.
-    public func belongs(endpointID: HostEndpoint.Identifier, targetID: String) -> Bool {
-        self.endpointID == endpointID && (self.targetID == targetID || shownIn == targetID)
+    /// Whether the entry shows in one destination's thread: its own target's entries, plus, with `addressed`, a reply
+    /// that answers a request addressed from it to another session (`shownIn`). The one place a thread's membership
+    /// is decided.
+    public func belongs(endpointID: HostEndpoint.Identifier, targetID: String, addressed: Bool = false) -> Bool {
+        self.endpointID == endpointID && (self.targetID == targetID || (addressed && shownIn == targetID))
     }
 }
 
@@ -50,9 +51,13 @@ public final class ConversationLog {
         self.now = now
     }
 
-    /// Entries for one destination, oldest first, with replies to requests addressed from it to other sessions.
-    public func entries(endpointID: HostEndpoint.Identifier, targetID: String) -> [ConversationEntry] {
-        entries.filter { $0.belongs(endpointID: endpointID, targetID: targetID) }
+    /// Entries for one destination, oldest first. With `addressed`, also replies to requests addressed from it to other
+    /// sessions. The app opts in only together with showing their `source` label and tracking their arrival (#636
+    /// slice 7b); until then its threads are unchanged, so no reply appears unlabelled where it did not before.
+    public func entries(
+        endpointID: HostEndpoint.Identifier, targetID: String, addressed: Bool = false
+    ) -> [ConversationEntry] {
+        entries.filter { $0.belongs(endpointID: endpointID, targetID: targetID, addressed: addressed) }
     }
 
     /// A request the user sent, or (#318) one the ambient stream heard and sent. When it opens with another listed
