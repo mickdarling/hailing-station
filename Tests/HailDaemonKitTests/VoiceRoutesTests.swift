@@ -63,6 +63,17 @@ import Testing
         #expect(routes.match("Sales, how is the week?", names: Self.names) == .routed(sales, text: "how is the week?"))
     }
 
+    /// A word window never crosses a mark (Codex review on #646): with routes "Voice" and "Voice Work", "Voice, …" is
+    /// Voice addressed, and only "Voice Work, …" is Voice Work.
+    @Test func aShorterRouteMarkedBeforeALongerOnesWordsIsTheOneAddressed() throws {
+        let voice = VoiceRoutes.Route(target: "tmux:v", name: "Voice")
+        let routes = try VoiceRoutes(defaultTarget: Self.voice.target, routes: [Self.voice, voice])
+        #expect(routes.match("Voice, Work is blocked") == .routed(voice, text: "Work is blocked"))
+        #expect(routes.match("Voice, Work, status") == .routed(voice, text: "Work, status"))
+        #expect(routes.match("Voice Work, status") == .routed(Self.voice, text: "status"))
+        #expect(routes.match("Okay voice: status") == .routed(voice, text: "status"))
+    }
+
     @Test func anAddressingNameIsNeverANearMiss() throws {
         #expect(try Self.routes().match("Voice Word, run it", names: ["voiceword"]) == .unaddressed)
     }
@@ -95,6 +106,9 @@ import Testing
         ([VoiceRoutes.Route(target: "tmux:deck", name: "One two three four")], "tmux:deck", .invalidName),
         ([VoiceRoutes.Route(target: "tmux:deck", name: "!!")], "tmux:deck", .invalidName),
         ([VoiceRoutes.Route(target: "tmux:deck", name: "Hey")], "tmux:deck", .invalidName),
+        ([VoiceRoutes.Route(target: "tmux:deck", name: "Okay Deck")], "tmux:deck", .invalidName),
+        ([VoiceRoutes.Route(target: "tmux:deck", name: "One-Two-Three-Four")], "tmux:deck", .invalidName),
+        ([VoiceRoutes.Route(target: "tmux:deck", name: "Voice-Work")], "tmux:deck", .invalidName),
         ([VoiceRoutes.Route(target: "tmux:deck", name: "De\nck")], "tmux:deck", .invalidName),
         ([], "tmux:deck", .malformed)
     ])

@@ -55,9 +55,12 @@ public struct VoiceRoutes: Sendable, Equatable {
         self.keyed = keyed
     }
 
-    /// Shown and spoken, so short, at most three words, and free of controls.
+    /// Shown and spoken, so short and free of controls; and sayable as the matcher hears it: one to three of its
+    /// words, separated by whitespace alone, the first not a greeting it skips ("Okay Deck" could never be said).
     private static func isName(_ spelling: String) -> Bool {
-        (1...maxNameLength).contains(spelling.count) && spelling.split(separator: " ").count <= 3
+        let words = VoiceDestinations.words(spelling)
+        return (1...maxNameLength).contains(spelling.count) && (1...3).contains(words.count)
+            && windowKey(spelling, words, 0, words.count) != nil && !VoiceMute.greetings.contains(words[0].text)
             && !spelling.unicodeScalars.contains { CharacterSet.controlCharacters.contains($0) }
     }
 

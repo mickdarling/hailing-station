@@ -34,8 +34,9 @@ The example is synthetic.
 - **Strict.** `version` is 1. No other keys are allowed at the top level or in a route. There are 1 to 16 routes.
   Each `target` is an exact `kind:name` id that `haild rightyo` accepts (`RightyoInputConsumer.validateTarget`).
   Targets are unique, and `default` must be one of them.
-- **Names.** A `name` and each of up to eight `aliases` is 1–48 characters, at most three words, with no control
-  characters. Names are compared as `RightyoAddressing.key` (case-folded ASCII letters and digits), so "Voice Work"
+- **Names.** A `name` and each of up to eight `aliases` is 1–48 characters with no control characters. It must also
+  be sayable as the parser hears it: one to three of its words (runs of letters, digits and apostrophes), separated
+  by whitespace alone, the first not a greeting. So "Voice-Work", "One-Two-Three-Four" and "Okay Deck" are refused. Names are compared as `RightyoAddressing.key` (case-folded ASCII letters and digits), so "Voice Work"
   and "voicework" are the same spelling. Every spelling must be unique across routes and must not be a greeting
   ("hey", "ok", "okay").
 - **Trust.** The file decides where the owner's spoken requests go, so it is trusted exactly as `destinations.json`
@@ -50,6 +51,8 @@ The example is synthetic.
 2. The request must then open with a route's name or alias of up to three words, longest first, followed by `,`,
    `:` or `-` and then a space or the end. So "Deck: add a slide" and "Voice Work, check the build" route. "Deck is
    still stopped", "Deck-building is next" and "deck.md needs work" do not: without the mark a name is just a word.
+   A name's words never span a mark either: with routes "Voice" and "Voice Work", "Voice, Work, status" addresses
+   Voice, and only "Voice Work, status" addresses Voice Work.
 3. A request that opens with an addressing name from RightyO's advertised names (e.g. "Jarvis") is addressed to
    that name, and nothing after it re-routes it. "Jarvis, Deck, add a slide" goes where "Jarvis" goes, and
    "Jarvis, deck is stopped" stays a request. A route may still use an addressing name as its own spelling, because

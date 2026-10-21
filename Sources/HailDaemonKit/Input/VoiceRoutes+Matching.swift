@@ -32,7 +32,7 @@ extension VoiceRoutes {
         let start = words.first.map { VoiceMute.greetings.contains($0.text) } == true ? 1 : 0
         if let found = named(heard, words, at: start) { return found }
         let addressed = (1...3).contains { width in
-            start + width <= words.count && names.contains(words[start..<start + width].map(\.key).joined())
+            Self.windowKey(heard, words, start, width).map(names.contains) == true
         }
         return !addressed && nearMiss(heard, words, at: start) ? .unclear : .unaddressed
     }
@@ -41,7 +41,7 @@ extension VoiceRoutes {
     /// spelling found is not followed by a mark or the end.
     private func named(_ heard: String, _ words: [VoiceDestinations.Word], at start: Int) -> Match? {
         for width in stride(from: 3, through: 1, by: -1) where start + width <= words.count {
-            guard let route = keyed[words[start..<start + width].map(\.key).joined()] else { continue }
+            guard let route = Self.windowKey(heard, words, start, width).flatMap({ keyed[$0] }) else { continue }
             let rest = heard[words[start + width - 1].range.upperBound...].drop { $0.isWhitespace }
             if let mark = rest.first, Self.marks.contains(mark), rest.dropFirst().first?.isWhitespace ?? true {
                 let text = rest.dropFirst().trimmingCharacters(in: .whitespacesAndNewlines)
@@ -60,11 +60,23 @@ extension VoiceRoutes {
             guard start + width <= words.count else { return false }
             let end = words[start + width - 1].range.upperBound
             guard end < heard.endIndex, heard[end] == "," else { return false }
-            let spoken = words[start..<start + width].map(\.key).joined()
+            guard let spoken = Self.windowKey(heard, words, start, width) else { return false }
             return keyed.keys.contains { key in
                 key.count >= 5 && Self.distance(spoken, key, within: key.count / 4) <= key.count / 4
             }
         }
+    }
+
+    /// The joined key of `width` words at `start`, or nil past the end or when the words are not separated by
+    /// whitespace alone: a window never crosses a mark, so "Voice, Work, …" is "Voice" addressed, never "Voice Work".
+    static func windowKey(_ heard: String, _ words: [VoiceDestinations.Word], _ start: Int, _ width: Int) -> String? {
+        guard start + width <= words.count else { return nil }
+        let window = words[start..<start + width]
+        for (left, right) in zip(window, window.dropFirst())
+        where !heard[left.range.upperBound..<right.range.lowerBound].allSatisfy(\.isWhitespace) {
+            return nil
+        }
+        return window.map(\.key).joined()
     }
 
     /// Levenshtein distance between two keys, stopping early once it exceeds `limit` (then any larger value).
