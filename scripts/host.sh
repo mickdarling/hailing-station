@@ -128,8 +128,9 @@ load_daemon_arguments() {
   fi
   local diagnostics=false
   if read_flag deviceDiagnostics; then diagnostics=true; DAEMON_ARGS+=(--device-diagnostics); fi
-  # The owner's named voice routes (#636): a missing file leaves routing off in the daemon, an unloadable one refuses
-  # to start (and rolls back); a relative path is refused here. It needs no ambient settings: tap-to-talk routes too.
+  # The owner's named voice routes (#636): a named file that is missing or does not load makes the daemon refuse to
+  # start (and deploy rolls back); a relative path is refused here. It needs no ambient settings: tap-to-talk routes
+  # too. Without the key no flag is passed and routing stays off.
   local voice_routes
   read_string voiceRoutes; voice_routes="$VALUE"
   if [[ -n "$voice_routes" ]]; then

@@ -250,14 +250,19 @@ Nothing here is enabled by a merge. With the owner listening:
 
 1. Write `~/.config/hail/routes.json` (mode 0600), with one route per session and the usual session as `default`.
 2. Allow each route target at its current binding: `haild targets allow tmux:<session> --tier open`. A route
-   without a policy entry is listed as offline and is never sent to.
+   without a policy entry is listed as offline and is never sent to. `open` is needed because the phone cannot
+   send to a `confirm` target, so every route can then be sent to from the phone without a read-back; the guard
+   still escalates guarded words.
 3. For ambient routing, add each route's spoken name to RightyO's `addressing.names`.
 4. Add `"voiceRoutes": "/Users/<you>/.config/hail/routes.json"` to `host.json`. `scripts/host.sh` passes it as
    `--voice-routes`. It refuses a relative path or one starting with `-`, and needs no ambient settings.
-5. `scripts/host.sh deploy`, then check the log for `voice_routes count=N`. A routes file that does not load
-   refuses startup, and `host.sh` restores the previous agent.
+5. `scripts/host.sh deploy`, then check `haild.err.log` for `{"detail":"count=N","event":"voice_routes"}`. A routes
+   file that is missing or does not load refuses startup (`"event":"voice_routes"` with `error=…`), and `host.sh`
+   restores the previous agent; the failed run's log is then `haild.err.log.failed`.
 
 `haild reply` reads `~/.config/hail/routes.json` for its spoken label, without any flag. Keep `voiceRoutes` at that
 path so the daemon's routes and the spoken label agree. The label is added after the reply's own checks. Only the
-speech grows, by the route's name (at most 48 characters). A spoken reply always runs detached, with no frame budget,
-so the longer speech is paced, never cut off.
+speech grows, by the route's name and ": " (at most 50 characters, about three seconds). A `haild reply --say` runs
+detached, with no frame budget, so the longer speech is paced, never cut off. In the foreground
+(`HAILD_REPLY_FOREGROUND=1`, which the owned reply publisher sets; nothing constructs it yet) it keeps the endpoint's
+frame budget (120 frames a minute), and a reply that reaches it ends early with a final marker.

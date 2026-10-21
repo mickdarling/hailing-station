@@ -179,6 +179,16 @@ bad_config "target that is a flag" \
     "ambient": {"rightyo": "/r", "config": "/c", "target": "--reply-socket"}}'
 bad_config "relative voice routes path" '{"bind": "127.0.0.1", "port": 8765, "voiceRoutes": "routes.json"}'
 bad_config "voice routes that is a flag" '{"bind": "127.0.0.1", "port": 8765, "voiceRoutes": "--port"}'
+bad_config "voice routes with a newline" '{"bind": "127.0.0.1", "port": 8765, "voiceRoutes": "/r\n--port"}'
+
+# A voice routes path with a space stays one argument, right after its flag.
+printf '%s\n' '{"bind": "127.0.0.1", "port": 8765, "voiceRoutes": "/my routes.json"}' > "$HAIL_CONFIG_DIR/host.json"
+"$host" plist > "$scratch/agent.plist"
+count="$(plutil -extract ProgramArguments raw -o - "$scratch/agent.plist")"
+spaced=()
+for (( i = 0; i < count; i++ )); do spaced+=("$(plutil -extract "ProgramArguments.$i" raw -o - "$scratch/agent.plist")"); done
+[[ "${spaced[count - 2]}" == --voice-routes && "${spaced[count - 1]}" == "/my routes.json" ]] \
+  || fail "voice routes path was split or moved: ${spaced[*]}"
 
 # A full config becomes exactly these daemon arguments, with the host ID in the environment.
 printf '%s\n' "{\"bind\": \"127.0.0.1\", \"port\": 8765, \"hostID\": \"studio.local\",
