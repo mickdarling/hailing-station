@@ -49,6 +49,17 @@ import Testing
         #expect(try FrameCoding.encode(frame).count <= PayloadLimits.defaultMaxFrameBytes)
     }
 
+    /// A paste request's refusal has its own code, so a device need not read the message to keep its connection.
+    @Test func aPasteRefusalHasItsOwnErrorCode() throws {
+        let frame = Frame(timestamp: 1, source: "haild", payload: .control(.error(
+            code: .pasteRefused, message: "pastes go only to agent sessions"
+        )))
+        let data = try FrameCoding.encode(frame)
+        #expect(try #require(String(bytes: data, encoding: .utf8)).contains(#""code":"paste_refused""#))
+        #expect(try FrameCoding.decode(data) == frame)
+        #expect(ErrorCode.pasteRefused.rawValue == "paste_refused")
+    }
+
     @Test func everyInvalidPastedFixtureIsRefusedByTheDecoder() throws {
         let directory = URL(fileURLWithPath: #filePath).deletingLastPathComponent()
             .appendingPathComponent("../../fixtures/invalid").standardized

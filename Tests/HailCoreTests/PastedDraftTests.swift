@@ -99,29 +99,6 @@ import Testing
         #expect(try await socket.sentFrames().count == before)
         await connection.disconnect()
     }
-
-    /// #637 review: a Mac's refusal of a paste request ends that request, never the connection. It reaches the reply
-    /// observer as an event; any other host error still ends the connection as before.
-    @Test func aPasteRefusalKeepsTheConnection() async throws {
-        let mac = try endpoint()
-        let socket = ScriptedSocket()
-        let connector = ScriptedConnector()
-        let events = PasteEvents()
-        await connector.enqueue(.socket(socket), for: mac.url)
-        let connection = HostConnection(endpoint: mac, connector: connector, replyObserver: { await events.append($0) })
-        await connection.connect()
-        try await waitUntil { await connection.currentSnapshot().state == .negotiating }
-        try await socket.push(.hello(HelloInfo(
-            versions: [ProtocolVersion.current], capabilities: ["send_text", PastedText.capability], deviceName: "Mac"
-        )))
-        try await waitUntil { await connection.currentSnapshot().state == .ready }
-        try await socket.push(.error(code: .malformed, message: "pastes go only to agent sessions"))
-        try await waitUntil { await events.values.count == 1 }
-        #expect(await connection.currentSnapshot().state == .ready)
-        try await socket.push(.error(code: .notAllowed, message: "target requires confirmation at the Mac"))
-        try await waitUntil { await connection.currentSnapshot().state != .ready }
-        await connection.disconnect()
-    }
 }
 
 @MainActor @Suite struct PasteConversationStateTests {
@@ -148,7 +125,23 @@ import Testing
     }
 }
 
-private actor PasteEvents {
-    private(set) var values: [HostReplyEvent] = []
-    func append(_ event: HostReplyEvent) { values.append(event) }
+/// #637 review: a refused paste is shown, not lost. `paste_refused` marks the pending pasted turn refused with the
+/// Mac's reason and publishes the paste so the station can give it back; any other code is not a paste refusal.
+@MainActor @Suite struct PasteRefusalStoreTests {
+    private func refusal(_ code: ErrorCode) -> HostReplyEvent {
+        HostReplyEvent(endpointID: "mac", frame: Frame(timestamp: 1, source: "haild", payload: .control(.error(
+            code: code, message: "pastes go only to agent sessions"
+        ))))
+    }
+
+    @Test func aPasteRefusalMarksTheTurnAndOffersThePasteBack() {
+        let store = HostConnectionStore()
+        store.conversation.noteSent("look", pasted: "synthetic notes", endpointID: "mac", targetID: "tmux:a")
+        #expect(!store.receivePasteRefusal(refusal(.notAllowed)))
+        #expect(store.conversation.entries.last?.pasteState == .pending)
+        #expect(store.receivePasteRefusal(refusal(.pasteRefused)))
+        #expect(store.conversation.entries.last?.pasteState == .refused("pastes go only to agent sessions"))
+        #expect(store.lastPasteRefusal?.pasted == "synthetic notes")
+        #expect(store.lastPasteRefusal?.message == "pastes go only to agent sessions")
+    }
 }
