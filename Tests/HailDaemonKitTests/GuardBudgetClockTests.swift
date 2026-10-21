@@ -82,7 +82,9 @@ extension RightyoInputConsumerTests {
         #expect(GuardBudgetClock.current.now() == GuardBudgetClock.frozen.now())
     }
 
-    @Test func guardTimeoutStillRefusesARightyoDeliveryAndTargetValidation() async throws {
+    /// Delivered text keeps the #208 rule: an expired budget is a hit. Target validation (#658) matches fixed host
+    /// text without the budget, so an expiring clock refuses only an id a rule really matches.
+    @Test func guardTimeoutStillRefusesARightyoDeliveryButNotABenignTarget() async throws {
         let (consumer, adapter) = try await rig()
         _ = try await consumer.consume(start())
         let attended = try await lateRequest(consumer, role: nil, decisionRole: "unknown")
@@ -90,11 +92,21 @@ extension RightyoInputConsumerTests {
             try await GuardBudgetClock.$current.withValue(.expiring()) { try await consumer.consume(attended) }
         }
         #expect(await adapter.deliveries.isEmpty)
-        #expect(throws: RightyoTargetError.self) {
-            try GuardBudgetClock.$current.withValue(.expiring()) {
-                try RightyoInputConsumer.validateTarget("tmux:demo")
+        try GuardBudgetClock.$current.withValue(.expiring()) {
+            try RightyoInputConsumer.validateTarget("tmux:demo")
+            #expect(throws: RightyoTargetError.guarded(["sudo"])) {
+                try RightyoInputConsumer.validateTarget("tmux:sudo")
             }
         }
-        try RightyoInputConsumer.validateTarget("tmux:demo")
+    }
+
+    @Test func unbudgetedMatchingIgnoresTheClockButBudgetedMatchingStillFailsClosed() throws {
+        let guards = try CompiledGuards(DangerousPatternGuard.defaults)
+        let block = RightyoInputEvent.replyBlock(target: RecipientTestRig.target)
+        GuardBudgetClock.$current.withValue(.expiring()) {
+            #expect(guards.unbudgetedMatches(in: [block]).isEmpty)
+            #expect(!guards.matches(in: [GuardBudgetClockTests.benign]).isEmpty)
+            #expect(guards.unbudgetedMatches(in: ["sudo rm -rf /"]) == ["rm -rf", "sudo"])
+        }
     }
 }

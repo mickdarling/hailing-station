@@ -327,15 +327,17 @@ public actor RightyoInputConsumer {
     /// for the id is then matched against the default guard rules, so an authorized name carrying a guarded word
     /// (`tmux:sudo`) is refused here with a diagnostic instead of turning every request into
     /// `confirmationRequired`; a daemon policy with custom guard patterns can still require confirmation, which
-    /// the consumer refuses per request as before.
+    /// the consumer refuses per request as before. The block is fixed host text around the allowlisted id, so it is
+    /// matched without the guard's time budget (#658): a stalled scheduler at login or stream start must not refuse a
+    /// benign id. Delivered requests keep the budget and its timeout-is-a-hit rule (#208).
     public static func validateTarget(_ target: String) throws {
         let alphanumeric = Set("ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789")
         guard let first = target.first, alphanumeric.contains(first), target.count <= 96,
               target.allSatisfy({ alphanumeric.contains($0) || "._:-".contains($0) }) else {
             throw RightyoTargetError.unsafeIdentifier
         }
-        let hits = DangerousPatternGuard.matches(in: [RightyoInputEvent.replyBlock(target: target)],
-                                                 patterns: DangerousPatternGuard.defaults)
+        let hits = DangerousPatternGuard.unbudgetedMatches(in: [RightyoInputEvent.replyBlock(target: target)],
+                                                           patterns: DangerousPatternGuard.defaults)
         guard hits.isEmpty else { throw RightyoTargetError.guarded(hits) }
     }
     /// True means handled: guarded delivery, or validation only when initialized with no host. An admitted `dismiss`

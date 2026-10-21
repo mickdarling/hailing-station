@@ -123,28 +123,6 @@ import Testing
         }
     }
 
-    /// #658: startup validates the fixed rig target against the default guards, whose 20 ms budget fails closed
-    /// (#208). A preempted runner once refused `recipient:reply` with "(shell)" or "(delete)"; an expired budget
-    /// reproduces that here, so these suites bind the frozen clock and only a real regex match can refuse.
-    @Test func anExpiredGuardBudgetRefusesTheFixedTargetAndTheFrozenSuiteClockDoesNot() async throws {
-        #expect(GuardBudgetClock.current.now() == GuardBudgetClock.frozen.now())
-        let rig = try await RecipientTestRig.make()
-        let fake = try FakeRightyo("exit 0")
-        defer { fake.cleanUp() }
-        let options = ConnectionProbeDaemon.AmbientOptions(
-            executable: fake.executable, config: fake.config, target: RecipientTestRig.target
-        )
-        do {
-            _ = try await GuardBudgetClock.$current.withValue(.expiring()) {
-                try await ConnectionProbeDaemon.ambientRouter(options, host: rig.host, log: { _ in })
-            }
-            Issue.record("an expired guard budget must refuse startup")
-        } catch let error as RightyoTargetError {
-            #expect(error.description.hasPrefix("target name would trigger the content guard ("))
-        }
-        _ = try await ConnectionProbeDaemon.ambientRouter(options, host: rig.host, log: { _ in })
-    }
-
     /// Clips load once at startup (rightyo#105); missing or empty clips turn acknowledgements off, never startup.
     @Test func ackClipsLoadAtStartupAndMissingOnesLeaveAcknowledgementsOff() async throws {
         let rig = try await RecipientTestRig.make()
