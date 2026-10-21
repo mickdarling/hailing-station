@@ -45,8 +45,8 @@ struct StationMenuListeningPublisher: ViewModifier {
         content
             .onAppear(perform: attach)
             .onChange(of: binding) { _, _ in attach() }
-            .onChange(of: controller.isOn) { _, isOn in
-                if let token { status?.updateListening(isOn, token: token) }
+            .onChange(of: Self.phase(controller)) { _, phase in
+                if let token { status?.updateListening(phase, token: token) }
             }
             .onDisappear {
                 if let token { status?.detachListening(token: token) }
@@ -57,9 +57,18 @@ struct StationMenuListeningPublisher: ViewModifier {
     private func attach() {
         guard let status else { return }
         let (controller, binding) = (controller, binding)
-        token = status.attachListening(isOn: controller.isOn) { on in
+        token = status.attachListening(Self.phase(controller)) { on in
             if on { AmbientStopNotifier.requestAuthorization() }
             Task { on ? await controller.turnOn(for: binding) : await controller.turnOff() }
         }
+    }
+
+    /// The same order the card checks: listening, then paused, then moved to another device.
+    @MainActor
+    private static func phase(_ controller: AmbientListeningController) -> StationMenuStatus.Listening {
+        if controller.isListening { return .listening }
+        if controller.isOn { return controller.pausedReason == nil ? .starting : .paused }
+        if case .movedAway = controller.handoff { return .elsewhere }
+        return .off
     }
 }
