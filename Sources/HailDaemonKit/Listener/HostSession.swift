@@ -121,6 +121,8 @@ enum AdmittedFrame: ~Copyable, Sendable {
     case untargetedText
     /// A paste `PastedContent` refused (#608), with the plain reason for the device; nothing is delivered.
     case refusedPaste(String)
+    /// A paste while the host is in lockdown (#665 review): answered as lockdown, before any framing, as speech is.
+    case lockedDownPaste
     /// An ambient segment the authorizer allowed; the gate still checks shape, target, sequence and rate.
     case audio(AudioPayload, target: String?)
     case unsupported
@@ -246,24 +248,31 @@ public actor HostSession {
                     text: text.text, target: target, frame: frame, device: device, version: version
                 ))
             }
-            // The paste is framed here, once, so the authorized text is exactly the line the host sanitises, and
-            // within what the target's adapter takes (the id's kind prefix), so an oversized paste says so. Only a known
-            // agent session takes a paste: a raw shell pane never does, and an unknown kind is refused (#628 review).
-            let kind = String(target.prefix { $0 != ":" })
-            guard PastedContent.acceptsPaste(targetKind: kind) else {
-                return .refusedPaste(PastedContent.agentOnlyRefusal)
-            }
-            let limit = PastedContent.maxFramedBytes(forTargetKind: kind)
-            do {
-                return .input(AuthorizedInput(
-                    text: try PastedContent.frame(spoken: text.text, pasted: pasted.text, limit: limit),
-                    target: target, frame: frame, device: device, version: version, carriesPaste: true
-                ))
-            } catch {
-                return .refusedPaste(PastedContent.refusal(error))
-            }
+            return await admitPaste(pasted, spoken: text.text, frame: frame, device: device, version: version)
         case .audio(let audio): return .audio(audio, target: frame.target)
         default: return .unsupported
+        }
+    }
+
+    /// A final text frame with a paste (#608). Lockdown is checked first, so a paste during lockdown hears lockdown,
+    /// never a paste-specific reason. The paste is framed here, once, so the authorized text is exactly the line the
+    /// host sanitises, and within what the target's adapter takes (the id's kind prefix), so an oversized paste says
+    /// so. Only a known agent session takes a paste: a raw shell pane never does, and an unknown kind is refused.
+    private func admitPaste(
+        _ pasted: PastedText, spoken: String, frame: Frame, device: String, version: Int
+    ) async -> AdmittedFrame {
+        guard let target = frame.target else { return .untargetedText }
+        if await host.currentLockdown.isOn { return .lockedDownPaste }
+        let kind = String(target.prefix { $0 != ":" })
+        guard PastedContent.acceptsPaste(targetKind: kind) else { return .refusedPaste(PastedContent.agentOnlyRefusal) }
+        do {
+            let limit = PastedContent.maxFramedBytes(forTargetKind: kind)
+            return .input(AuthorizedInput(
+                text: try PastedContent.frame(spoken: spoken, pasted: pasted.text, limit: limit),
+                target: target, frame: frame, device: device, version: version, carriesPaste: true
+            ))
+        } catch {
+            return .refusedPaste(PastedContent.refusal(error))
         }
     }
 
