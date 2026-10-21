@@ -52,7 +52,8 @@ struct TmuxPasteAgentTests {
         _ = try await runner.run("tmux", create("shell", "/bin/sh"))
         var failure: (any Error)?
         do {
-            try await exercise(TmuxAdapter(runner: runner, socket: socket, pollInterval: nil))
+            let adapter = TmuxAdapter(runner: runner, socket: socket, pollInterval: nil)
+            try await exercise(adapter, runner: runner, socket: socket)
         } catch {
             failure = error
         }
@@ -62,8 +63,31 @@ struct TmuxPasteAgentTests {
         if let failure { throw failure }
     }
 
-    private func exercise(_ adapter: TmuxAdapter) async throws {
-        try await Task.sleep(for: .milliseconds(300))
+    /// Polls to a 10 s deadline instead of sleeping a fixed time, so a loaded runner is not a failure (#208).
+    private func eventually(_ condition: () async throws -> Bool) async throws -> Bool {
+        let deadline = ContinuousClock.now + .seconds(10)
+        while ContinuousClock.now < deadline {
+            if try await condition() { return true }
+            try await Task.sleep(for: .milliseconds(50))
+        }
+        return try await condition()
+    }
+
+    private func exercise(_ adapter: TmuxAdapter, runner: ProcessCommandRunner, socket: String) async throws {
+        // Each pane has exec'd its command before the paste, so the agent check reads the real one.
+        // macOS's /bin/sh may report as `sh` or as the shell it runs (`bash`).
+        let expected: [(String, Set<String>)] = [("agent", ["claude"]), ("plain", ["cat"]), ("shell", ["sh", "bash"])]
+        for (session, commands) in expected {
+            var seen = ""
+            let running = try await eventually {
+                let look = ["-L", socket, "display-message", "-p", "-t", session, "#{pane_current_command}"]
+                let result = try await runner.run("tmux", look)
+                seen = result.stdout.debugDescription
+                let first = result.stdout.split(whereSeparator: \.isNewline).first.map(String.init)
+                return first.map(commands.contains) == true
+            }
+            try #require(running, "pane \(session) showed \(seen), not one of \(commands)")
+        }
         let framed = try PastedContent.frame(spoken: "summarise this", pasted: "x'; touch PWNED #\nsecond line")
         for refused in ["plain", "shell"] {
             await #expect(throws: AdapterError.deliveryFailed(PastedContent.agentOnlyRefusal)) {
@@ -74,9 +98,8 @@ struct TmuxPasteAgentTests {
         // The refusal pasted nothing, so the pane stays usable for spoken text.
         try await adapter.deliver("echo still-usable", to: "plain", binding: nil)
         try await adapter.deliver(framed, to: "agent", binding: nil)
-        try await Task.sleep(for: .milliseconds(400))
-        #expect(try await adapter.capture("agent").contains(PastedContent.begin("")))
-        #expect(try await adapter.capture("plain").contains("still-usable"))
+        #expect(try await eventually { try await adapter.capture("agent").contains(PastedContent.begin("")) })
+        #expect(try await eventually { try await adapter.capture("plain").contains("still-usable") })
     }
 }
 
