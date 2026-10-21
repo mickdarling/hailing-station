@@ -475,12 +475,16 @@ extension PastedContent {
     /// unnamed rules", "not fully checked"), so a matched or unchecked rule never leaves the paste looking clean.
     static func flagged(_ line: String, _ flags: (matched: [String], unchecked: [String])) -> String {
         guard !flags.matched.isEmpty || !flags.unchecked.isEmpty, let token = token(of: line) else { return line }
+        // Plain words: allowed characters only, runs of spaces collapsed (a name left as spaces counts as unnamed).
         let plain = { (names: [String]) in
-            names.map { String(String($0.unicodeScalars.filter(isPlainNameScalar).map(Character.init)).prefix(40)) }
-                .filter { !$0.isEmpty }
+            names.map { name in
+                let kept = String(name.unicodeScalars.filter(isPlainNameScalar).map(Character.init))
+                return String(kept.split(separator: " ").joined(separator: " ").prefix(40))
+                    .trimmingCharacters(in: .whitespaces)
+            }.filter { !$0.isEmpty }
         }
         let names = NoteNames(matched: plain(flags.matched), unchecked: plain(flags.unchecked),
-                              anyMatched: !flags.matched.isEmpty, anyUnchecked: !flags.unchecked.isEmpty)
+                              matchedCount: flags.matched.count, uncheckedCount: flags.unchecked.count)
         var shown = names
         (shown.matched, shown.unchecked) = ([], [])
         for (index, name) in (names.matched + names.unchecked).enumerated() {
@@ -496,22 +500,26 @@ extension PastedContent {
     struct NoteNames {
         var matched: [String]
         var unchecked: [String]
-        var anyMatched: Bool
-        var anyUnchecked: Bool
+        /// Every rule in the clause, named or not, so an unnamed one still counts towards "and more".
+        var matchedCount: Int
+        var uncheckedCount: Int
     }
 
     /// `shown` out of `all`: each clause lists its shown names and ends in its own "and more" when it holds any back.
     private static func note(_ shown: NoteNames, of all: NoteNames) -> String {
-        func list(_ names: [String], of total: [String], none: String) -> String {
-            guard !total.isEmpty else { return none }
+        func list(_ names: [String], named: [String], count: Int, none: String) -> String {
+            guard !named.isEmpty else { return none }
             let shown = names.isEmpty ? "rules" : names.joined(separator: ", ")
-            return shown + (names.count < total.count ? ", and more" : "")
+            return shown + (names.count < count ? ", and more" : "")
         }
         var parts: [String] = []
-        if shown.anyMatched { parts.append("contains " + list(shown.matched, of: all.matched, none: "unnamed rules")) }
-        if shown.anyUnchecked {
+        if all.matchedCount > 0 {
+            parts.append("contains " + list(shown.matched, named: all.matched, count: all.matchedCount,
+                                            none: "unnamed rules"))
+        }
+        if all.uncheckedCount > 0 {
             let label = parts.isEmpty ? "not fully checked" : "Not fully checked"
-            let names = list(shown.unchecked, of: all.unchecked, none: "")
+            let names = list(shown.unchecked, named: all.unchecked, count: all.uncheckedCount, none: "")
             parts.append(all.unchecked.isEmpty ? label : label + ": " + names)
         }
         return "Validation: " + parts.joined(separator: ". ") + ". "

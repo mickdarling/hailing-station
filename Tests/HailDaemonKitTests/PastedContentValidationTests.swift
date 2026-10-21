@@ -142,7 +142,8 @@ import Testing
         let framed = try PastedContentTests.frame(spoken: "", pasted: "body")
         let flagged = PastedContent.flagged(framed, (["delete", #"x"; touch PWNED $(y) <z>"#, ""], []))
         let begin = PastedContent.begin(PastedContentTests.token)
-        #expect(flagged.hasPrefix(begin + " Validation: contains delete, x touch PWNED y z. "))
+        // The empty third name is an unnamed rule, so the clause says "and more" (#689 review).
+        #expect(flagged.hasPrefix(begin + " Validation: contains delete, x touch PWNED y z, and more. "))
         #expect(try PastedContentTests.hostAddedTextIsInert(flagged))
         #expect(PastedContent.parts(of: flagged)?.body == "body")
         #expect(PastedContent.flagged(framed, ([], [])) == framed)
