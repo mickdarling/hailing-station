@@ -133,6 +133,25 @@ public enum Fixtures {
                 )
             ))
         )),
+        // #606: a reply's spoken words in `text`, its unspoken Markdown in `metadata`.
+        Example(name: "text-reply-metadata", frame: Frame(
+            id: id(26), timestamp: 1_758_200_040_020, target: "tmux:codex-hail", source: "mac-main",
+            payload: .text(TextPayload(
+                text: "The build is green and the pull request is ready.",
+                reply: ReplyDescriptor(
+                    id: id(104), hostID: "mac-main", targetID: "tmux:codex-hail"
+                ),
+                metadata: """
+                ## Build
+                - PR: [#1](https://example.invalid/pull/1)
+                - File: `Sources/Example.swift`
+
+                | Check | Result |
+                | --- | --- |
+                | tests | passed |
+                """
+            ))
+        )),
         Example(name: "reply-ziggy-audio", frame: Frame(
             id: id(24), timestamp: 1_758_200_040_017, target: "tmux:codex-hail", source: "ziggy",
             payload: .audio(AudioPayload(

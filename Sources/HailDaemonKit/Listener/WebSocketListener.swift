@@ -37,7 +37,7 @@ public actor WebSocketListener {
     private let bindAddress: String
     private let queue: DispatchQueue
     private let networkListener: NWListener
-    private let host: HailHost
+    let host: HailHost
     let authorizer: any HostSessionAuthorizing
     let hostName: String
     /// Opt-in single-terminal bridge (#188): uncorrelated replies may reach the one connection selecting
@@ -59,6 +59,8 @@ public actor WebSocketListener {
     let ambient: (any AmbientListenerWiring)?
     /// Per target, the connection that most recently sent it admitted input (#370). Host-side only.
     let lastInput = LastInputLedger()
+    /// Sessions' unsolicited updates (#609): off unless `--session-updates`. The quiet switch lasts until restart.
+    var sessionUpdates = SessionUpdateQueue(), sessionUpdatesQuiet = false
 
     public init(
         bindAddress: String, port: UInt16, host: HailHost,
@@ -234,6 +236,8 @@ public protocol AmbientListenerWiring: AnyObject, Sendable {
     /// The connection whose ambient stream feeds the active child, or nil (#230): the device the user is listening on,
     /// the recipient of last resort for a reply with no request reference. The default has none.
     func activeConnection() -> UUID?
+    /// Whether the owner's spoken media mode (#551) is on for `connection`. The default has none.
+    func mediaMode(connection: UUID) -> Bool
 }
 
 extension AmbientListenerWiring {
@@ -249,6 +253,7 @@ extension AmbientListenerWiring {
     public func reload() async -> AmbientReloadOutcome { .refused("unsupported") }
     public func status() -> AmbientRouterStatus { AmbientRouterStatus() }
     public func activeConnection() -> UUID? { nil }
+    public func mediaMode(connection: UUID) -> Bool { false }
 }
 
 /// What `haild ambient reload` did (#405). `refused` carries a content-free rule name.
@@ -653,6 +658,7 @@ public final class AmbientRightyoRouter: AmbientAudioSink, AmbientListenerWiring
     }
 
     var peakQueue: Int { state.withLock { $0.peakQueue } }
+    public func mediaMode(connection: UUID) -> Bool { state.withLock { $0.media[connection] != nil } }
 
     /// Waits (at most 30 s) for queued events to be handled, then for every current run to return (tests).
     func settle() async {
