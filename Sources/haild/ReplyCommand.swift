@@ -347,9 +347,10 @@ private func streamVBSay(
         try await renderer.waitForCleanup()
         return result
     } catch {
-        if ReplyBackground.isSuperseded {
+        if outcome == "failed", ReplyBackground.isSuperseded {
             outcome = "superseded"
-        } else if error is CancellationError || Task.isCancelled || error as? OwnedReplyRendererError == .cancelled {
+        } else if outcome == "failed",
+                  error is CancellationError || Task.isCancelled || error as? OwnedReplyRendererError == .cancelled {
             outcome = "cancelled"
         }
         renderer.retire(cancel: true)
