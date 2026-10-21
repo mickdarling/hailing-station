@@ -46,7 +46,10 @@ permanently revoked admission tickets are reclaimed before a new handoff, even
 when no reply was attempted during revocation, and at capacity the oldest
 request past its 120 seconds with no answer started gives way to the new one. A
 running provider turn, a request inside its 120 seconds and a reply that has
-started are never evicted. Restored authority
+started are never evicted. The eviction stands only once the new request commits:
+if it is refused before then (a failed handoff, a confirmation request or a
+changed selection), the evicted record is given back while it is still current
+and on the same selection (#723). Restored authority
 can serve a fresh request without stale records exhausting the capacity, but can
 never revive the old tickets. Admission and expiry use `ContinuousClock`,
 separate from wall-clock wire timestamps. Clock adjustments cannot extend or
