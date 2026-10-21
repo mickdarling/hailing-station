@@ -42,6 +42,7 @@ func usage() -> Never {
            haild reply <target-id> [--host <host-id>] [--text <text>] [--pcm16 <path>|--say <text>]
       [--request <opaque-request-UUID>] [--sample-rate <hz>] [--socket <path>]
       [--renderer-output-root <private-existing-directory>]
+      [--metadata <markdown>|--metadata-file <path>]  (shown beside the reply, never spoken; needs --text or --say)
            haild rightyo <target-id> --session <producer-session-id> [--allow-synthetic]
       [--reply-to <connection-UUID>] [--socket <path>]
            haild rightyo --session <producer-session-id> --dry-run  (JSONL on stdin)

@@ -272,6 +272,14 @@ public enum Fixtures {
                 .init(name: "listener_ready", ok: true), .init(name: "ambient_listening", ok: false)
             ])))
         )),
+        Example(name: "control-media-mode", frame: Frame(
+            id: id(230), timestamp: 1_758_200_051_000, source: "host",
+            payload: .control(.mediaMode(on: true, reason: "voice", expires: 1_758_210_851_000))
+        )),
+        Example(name: "control-media-mode-off", frame: Frame(
+            id: id(231), timestamp: 1_758_200_051_100, source: "host",
+            payload: .control(.mediaMode(on: false, reason: "timeout"))
+        )),
         Example(name: "control-ambient-input", frame: Frame(
             id: id(212), timestamp: 1_758_200_050_900, source: "terminal",
             payload: .control(.ambientInput(route: "usb_audio"))

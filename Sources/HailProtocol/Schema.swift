@@ -177,7 +177,7 @@ public enum Schema {
                     "hello", "list_targets", "targets", "select", "subscribe", "unsubscribe", "escape", "ping", "pong",
                     "error", "diagnostic", "stop_playback", "ambient_moved_here", "ambient_heard",
                     "ambient_overheard", "overheard_scope", "set_reply_mute", "owner_voice", "ambient_input",
-                    "health", "health_report"
+                    "health", "health_report", "media_mode"
                 ]
                     .map(JSONValue.string)
             )]),
@@ -226,6 +226,7 @@ public enum Schema {
             commandRule("owner_voice", requires: ["state"]),
             commandRule("ambient_input", requires: ["route"]),
             commandRule("health_report", requires: ["report"]),
+            commandRule("media_mode", requires: ["on"]),
             diagnosticPayloadRule,
             stopPlaybackPayloadRule,
             ambientMovedHerePayloadRule,
@@ -236,7 +237,8 @@ public enum Schema {
             ownerVoicePayloadRule,
             ambientInputPayloadRule,
             healthPayloadRule,
-            healthReportPayloadRule
+            healthReportPayloadRule,
+            mediaModePayloadRule
         ])
     ])
 }
