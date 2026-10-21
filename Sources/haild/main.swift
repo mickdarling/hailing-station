@@ -32,8 +32,8 @@ func makeHost(sanitizing: SanitizePolicy = .init()) async throws -> HailHost {
     return try HailHost(registry: registry, sanitizing: sanitizing, store: PolicyFile.standard())
 }
 
-func usage() -> Never {
-    standardError.write(Data("""
+/// The usage text, outside `usage()` so the command list can grow without a long function body.
+private let usageText = """
     usage: haild targets
            haild targets allow <target-id> [--tier open|confirm|locked] [--capture]
            haild targets deny <target-id>
@@ -72,7 +72,10 @@ func usage() -> Never {
       (opt-in device diagnostics log: enumerated events only, owner-only, capped at 5 MiB)
            haild run ... --personal-terminal --host-health  (opt-in: doctor check names and outcomes to the device)
 
-    """.utf8))
+    """
+
+func usage() -> Never {
+    standardError.write(Data(usageText.utf8))
     exit(64)
 }
 
