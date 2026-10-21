@@ -120,15 +120,15 @@ extension TranscriptionLabView {
         pendingSendID = sendID
         pendingDestinationID = destinationAtSend
         status = "Sending…"
-        // Not a paste an earlier send still carries: a reply placed during that write (#636) lets this send start first.
+        // Not a paste an earlier send still carries: a reply placed during that write (#636) lets this one start.
         let paste = pastes.take(for: sendID)
         do {
             try await onFinalized(text, paste)
             // Handed to the Mac with this request (#608), so it is cleared whatever happened meanwhile. If the Mac
             // refuses it, it comes back attached with the reason (`pasteOffer.refusal`) and stays; so does a paste
             // attached while this one was in flight.
-            pastes.finish(sendID, delivered: true)
-            if paste != nil, attachedPaste == nil { pasteProblem = nil }
+            // Only its own paste's problem: a newer paste's problem stays.
+            if pastes.finish(sendID, delivered: true) { pasteProblem = nil }
             let answered = answeredEarly(sendID, at: destinationAtSend)
             guard answered || (pendingSendID == sendID && pendingDestinationID == destinationAtSend) else { return }
             if answered {

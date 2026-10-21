@@ -5,14 +5,15 @@ public import Foundation
 /// back early; the paste in flight must not go a second time, and it is cleared when its write returns, whatever the
 /// station did in between. Each attachment has its own identity, so the same text attached again is a new paste.
 public struct PasteHandoff: Equatable, Sendable {
-    private var attachment: (id: UUID, paste: PastedDraft)?
+    private struct Attachment: Equatable, Sendable {
+        let id = UUID()
+        let paste: PastedDraft
+    }
+
+    private var attachment: Attachment?
     private var carried: [UUID: UUID] = [:]
 
     public init() {}
-
-    public static func == (lhs: Self, rhs: Self) -> Bool {
-        lhs.attachment?.id == rhs.attachment?.id && lhs.carried == rhs.carried
-    }
 
     public var attached: PastedDraft? { attachment?.paste }
 
@@ -20,7 +21,7 @@ public struct PasteHandoff: Equatable, Sendable {
     public var isCarried: Bool { attachment.map { carried.values.contains($0.id) } ?? false }
 
     /// Attaches a new paste, or removes the attached one with nil.
-    public mutating func attach(_ paste: PastedDraft?) { attachment = paste.map { (UUID(), $0) } }
+    public mutating func attach(_ paste: PastedDraft?) { attachment = paste.map { Attachment(paste: $0) } }
 
     /// The paste a new send carries: the attached one, unless a send still being written already carries it.
     public mutating func take(for send: UUID) -> PastedDraft? {
@@ -30,9 +31,12 @@ public struct PasteHandoff: Equatable, Sendable {
     }
 
     /// The send's write returned. Delivered, the paste it carried went with it; failed, it stays for the next request.
-    public mutating func finish(_ send: UUID, delivered: Bool) {
-        guard let id = carried.removeValue(forKey: send), delivered, attachment?.id == id else { return }
+    /// True when this cleared the attached paste.
+    @discardableResult
+    public mutating func finish(_ send: UUID, delivered: Bool) -> Bool {
+        guard let id = carried.removeValue(forKey: send), delivered, attachment?.id == id else { return false }
         attachment = nil
+        return true
     }
 
     /// The Mac refused the paste that `send` carried: it comes back attached, and that send no longer carries it.

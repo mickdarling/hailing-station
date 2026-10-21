@@ -75,4 +75,44 @@ import Testing
         handoff.finish(first, delivered: false)
         #expect(handoff.attached == nil)
     }
+
+    @Test func onlyTheWriteThatClearsThePasteSaysSo() throws {
+        var handoff = PasteHandoff()
+        handoff.attach(try PastedDraft("note"))
+        let first = UUID()
+        _ = handoff.take(for: first)
+        handoff.attach(try PastedDraft("newer"))
+        let clearedByOld = handoff.finish(first, delivered: true)
+        let second = UUID()
+        _ = handoff.take(for: second)
+        let (cleared, clearedAgain) = (handoff.finish(second, delivered: true), handoff.finish(second, delivered: true))
+        #expect(!clearedByOld)
+        #expect(cleared)
+        #expect(!clearedAgain)
+    }
+
+    @Test func aRefusalAfterTheWriteReturnedPutsThePasteBack() throws {
+        var handoff = PasteHandoff()
+        handoff.attach(try PastedDraft("note"))
+        let first = UUID()
+        _ = handoff.take(for: first)
+        handoff.finish(first, delivered: true)
+        let restored = try PastedDraft("note")
+        handoff.restore(restored, refusing: first)
+        #expect(handoff.attached == restored)
+        #expect(!handoff.isCarried)
+    }
+
+    @Test func aRefusalOfAnotherSendLeavesTheCarriedPasteCarried() throws {
+        var handoff = PasteHandoff()
+        handoff.attach(try PastedDraft("note"))
+        let (first, other) = (UUID(), UUID())
+        _ = handoff.take(for: first)
+        let restored = try PastedDraft("old")
+        handoff.restore(restored, refusing: other)
+        #expect(handoff.attached == restored)
+        #expect(!handoff.isCarried)
+        handoff.finish(first, delivered: true)
+        #expect(handoff.attached == restored)
+    }
 }
