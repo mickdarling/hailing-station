@@ -46,12 +46,13 @@ import Testing
         #expect(await adapter.isReaped)
     }
 
-    @Test func anAcceptedInterruptWithoutATerminalIsNotSuccess() async throws {
-        let started = ContinuousClock.now
+    /// The silent child never sends a terminal, so only the grace expiring can return; a hang hits the time limit.
+    /// No wall-clock bound: it also counted child spawn and teardown, and failed on a stalled CI runner (#208).
+    @Test(.timeLimit(.minutes(1)))
+    func anAcceptedInterruptWithoutATerminalIsNotSuccess() async throws {
         let (adapter, _) = try await Self.withActiveTurn(interrupt: "silent", terminal: false) { adapter in
             #expect(await adapter.interruptActiveTurn(grace: .milliseconds(300)) == false)
         }
-        #expect(ContinuousClock.now - started < .seconds(10))
         #expect(await adapter.isReaped)
     }
 
