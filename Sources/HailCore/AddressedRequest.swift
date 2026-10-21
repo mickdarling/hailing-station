@@ -47,8 +47,9 @@ struct AddressedRequest: Sendable {
         return words.map(key).joined()
     }
 
+    /// ASCII letters, digits and apostrophes, with at least one letter or digit, as a host word must key to something.
     private static func isPlainWord(_ word: Substring) -> Bool {
-        word.allSatisfy { ($0.isASCII && ($0.isLetter || $0.isNumber)) || $0 == "'" }
+        word.allSatisfy { ($0.isASCII && ($0.isLetter || $0.isNumber)) || $0 == "'" } && !key(word).isEmpty
     }
 
     private static func key(_ word: Substring) -> String {

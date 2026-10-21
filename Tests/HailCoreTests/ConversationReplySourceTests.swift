@@ -109,6 +109,18 @@ import Testing
         #expect(placed.map(\.text) == ["Fast."] && placed.first?.source == "Deck")
     }
 
+    /// A reply placed by an address whose send then fails goes back to its own thread (Codex review on #666).
+    @Test func aFailedSendUndoesThePlacementItsAddressMade() {
+        let log = ConversationLog()
+        let address = log.address("Deck, add a slide", endpointID: "mac", targetID: "tmux:scratch",
+                                  targets: Self.targets, scope: "s1")
+        log.noteReply(reply("Older reply.", from: "tmux:deck"), selected: "tmux:scratch", scope: "s1")
+        log.retractAddress(address)
+        #expect(log.entries(endpointID: "mac", targetID: "tmux:scratch").isEmpty)
+        #expect(log.entries.first?.source == nil && log.entries.first?.shownIn == nil)
+        #expect(log.entries(endpointID: "mac", targetID: "tmux:deck").map(\.text) == ["Older reply."])
+    }
+
     @Test func thePlacementIsFixedAtTheFirstText() {
         let log = ConversationLog()
         let id = UUID()
@@ -123,7 +135,7 @@ import Testing
         ("Okay hailing scratch, hi", "tmux:scratch"), ("Deck", nil), ("Deck is stopped, check it", nil),
         ("Deck-building is next", nil), ("Can Deck, add a slide", nil), ("Sales, how are we?", nil),
         ("claude-hail, status", nil), ("Voice, Work, status", nil), ("Hey, Deck, add a slide", "tmux:deck"),
-        ("Café, hi", nil)
+        ("Café, hi", nil), ("' Deck, hi", nil)
     ])
     func onlyAListedNameAndAMarkAtTheStartAddressASession(_ text: String, _ target: String?) {
         #expect(AddressedRequest.target(addressedIn: text, among: Self.targets)?.id == target)

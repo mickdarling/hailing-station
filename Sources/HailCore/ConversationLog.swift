@@ -42,6 +42,8 @@ public final class ConversationLog {
     public private(set) var entries: [ConversationEntry] = []
     /// Requests the user addressed by name to another session (#636), each open for `addressLifetime`; newest last.
     @ObservationIgnored private var addressed: [AddressedRequest] = []
+    /// Which entry each recent address placed (address id to entry id), so a send that then fails can undo it.
+    @ObservationIgnored private var placements: [(address: UUID, entry: String)] = []
     @ObservationIgnored private let now: @Sendable () -> Date
 
     public init(now: @escaping @Sendable () -> Date = { Date() }) {
@@ -84,8 +86,17 @@ public final class ConversationLog {
         return request.id
     }
 
+    /// Takes back an address whose send failed, and undoes any placement it already made: a reply that arrived
+    /// during the send goes back to its own thread alone.
     func retractAddress(_ id: UUID?) {
+        guard let id else { return }
         addressed.removeAll { $0.id == id }
+        for placement in placements where placement.address == id {
+            if let index = entries.firstIndex(where: { $0.id == placement.entry }) {
+                (entries[index].shownIn, entries[index].source) = (nil, nil)
+            }
+        }
+        placements.removeAll { $0.address == id }
     }
 
     /// A turn the ambient stream heard but did not send (#398), as the owner's or someone else's, with a known
@@ -127,7 +138,12 @@ public final class ConversationLog {
             $0.endpointID == event.endpointID && $0.thread == selected && $0.target.id == reply.targetID
                 && $0.scope == scope
         }) {
-            (entry.shownIn, entry.source) = (selected, addressed.remove(at: index).target.name)
+            let address = addressed.remove(at: index)
+            (entry.shownIn, entry.source) = (selected, address.target.name)
+            placements.append((address.id, entry.id))
+            if placements.count > AddressedRequest.limit {
+                placements.removeFirst(placements.count - AddressedRequest.limit)
+            }
         }
         append(entry)
     }
