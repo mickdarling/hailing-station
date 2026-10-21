@@ -301,9 +301,10 @@ extension AmbientAudioGate {
                 return refuse(.malformed, "ambient sequence must increase", connection: connection)
             }
             // The owner selected away and back since it opened (#636): nothing it hears now could be delivered, so it
-            // ends here rather than letting RightyO acknowledge a turn the host will refuse. The device reads an
-            // "ambient stopped:" refusal as transient and opens a fresh stream, on the new selection, at once.
-            guard current.selection == nil || current.selection == selection.generation else {
+            // ends here, ahead of the rate budget, rather than letting RightyO acknowledge a turn the host will refuse.
+            // The device reads an "ambient stopped:" refusal as transient and, after its recovery backoff, opens a
+            // fresh stream on the new selection. Only a stream opened and continued with no generation skips this.
+            guard current.selection == selection.generation else {
                 return refuse(.notAllowed, Self.reselectedMessage, connection: connection)
             }
             guard spend(audio.bytes.count) else { return overRate(audio, connection: connection) }

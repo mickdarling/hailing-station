@@ -11,11 +11,13 @@ import Testing
     let connection = UUID()
 
     func admit(
-        _ gate: AmbientAudioGate, _ stream: UUID, _ sequence: Int, generation: UUID
+        _ gate: AmbientAudioGate, _ stream: UUID, _ sequence: Int, generation: UUID?, from: UUID? = nil,
+        bytes: Int = 3_200
     ) async -> AmbientAdmission {
         await gate.admission(
-            ambientSegment(stream: stream, sequence: sequence), frameTarget: "tmux:a",
-            selection: AmbientSelection(target: "tmux:a", generation: generation), connection: connection, device: nil
+            ambientSegment(stream: stream, sequence: sequence, bytes: bytes), frameTarget: "tmux:a",
+            selection: AmbientSelection(target: "tmux:a", generation: generation), connection: from ?? connection,
+            device: nil
         )
     }
 
@@ -43,6 +45,43 @@ import Testing
         #expect(await gate.admit(ambientSegment(stream: stream, sequence: 0), connection: connection) == nil)
         #expect(await gate.admit(ambientSegment(stream: stream, sequence: 1), connection: connection) == nil)
         #expect(sink.endings.isEmpty)
+    }
+
+    /// Another connection's segment on this stream id is refused as not its own, before any selection check, and
+    /// leaves the stream running.
+    @Test func anotherConnectionsSegmentIsNotTakenForAReselection() async throws {
+        let sink = RecordingAmbientSink()
+        let gate = ambientGate(sink: sink, clock: AmbientTestClock())
+        let (stream, opened) = (UUID(), UUID())
+        #expect(await admit(gate, stream, 0, generation: opened) == .admitted)
+        #expect(await admit(gate, stream, 1, generation: UUID(), from: UUID())
+            == .refused(.notAllowed, "ambient stream is not this device's"))
+        #expect(sink.endings.isEmpty)
+        #expect(await gate.activeStream == stream)
+    }
+
+    /// Over its rate budget, a stale stream's segment is still refused and ended, not dropped silently.
+    @Test func aReselectionIsRefusedAheadOfTheRateBudget() async throws {
+        let sink = RecordingAmbientSink()
+        let gate = ambientGate(sink: sink, clock: AmbientTestClock())
+        let (stream, opened) = (UUID(), UUID())
+        let max = AmbientAudioGate.maxSegmentBytes
+        for sequence in 0..<(AmbientAudioGate.burstBytes / max) {
+            #expect(await admit(gate, stream, sequence, generation: opened, bytes: max) == .admitted)
+        }
+        let next = AmbientAudioGate.burstBytes / max
+        #expect(await admit(gate, stream, next, generation: UUID(), bytes: max)
+            == .refused(.notAllowed, AmbientAudioGate.reselectedMessage))
+        #expect(sink.endings == [.notAllowed])
+    }
+
+    /// A stream opened with no generation that later carries one is refused: it fails closed.
+    @Test func aGenerationAppearingMidStreamEndsIt() async throws {
+        let gate = ambientGate(sink: RecordingAmbientSink(), clock: AmbientTestClock())
+        let stream = UUID()
+        #expect(await admit(gate, stream, 0, generation: nil) == .admitted)
+        #expect(await admit(gate, stream, 1, generation: UUID())
+            == .refused(.notAllowed, AmbientAudioGate.reselectedMessage))
     }
 
     /// End to end on the session: away and back with no segment between, then the stream's next segment.

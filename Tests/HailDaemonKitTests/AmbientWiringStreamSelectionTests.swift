@@ -34,7 +34,7 @@ import Testing
             // The same stream's next segment: the gate ends it and tells the device why (#636), and only now does the
             // child, at EOF, dispatch what it heard.
             try await send(ambientSegment(stream: stream, sequence: 1, isFinal: true), on: pair)
-            #expect(try await recipientSocketReceive(on: pair.sockets[0]).payload == Self.reselected)
+            #expect(try await receiveFrame(on: pair.sockets[0], step: "reselected end").payload == Self.reselected)
             try await pair.barrier()
             await router.settle()
             #expect(await rig.adapter.deliveries.isEmpty)
@@ -85,7 +85,7 @@ import Testing
             try await reloadSend(ambientSegment(stream: stream, sequence: 1, isFinal: true), on: pair)
             let delivers = reselection == .none || reselection == .twoReloads
             if !delivers {
-                #expect(try await recipientSocketReceive(on: pair.sockets[0]).payload == Self.reselected)
+                #expect(try await receiveFrame(on: pair.sockets[0], step: "reselected end").payload == Self.reselected)
             }
             try await pair.barrier()
             await settle(env.router, step: "reloaded run")
