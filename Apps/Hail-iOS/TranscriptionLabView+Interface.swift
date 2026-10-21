@@ -1,3 +1,4 @@
+import HailCore
 import SwiftUI
 
 extension TranscriptionLabView {
@@ -118,9 +119,14 @@ extension TranscriptionLabView {
         pendingSendID = sendID
         pendingDestinationID = destinationAtSend
         status = "Sending…"
+        let paste = attachedPaste
         do {
-            try await onFinalized(text)
+            try await onFinalized(text, paste)
+            // Handed to the Mac with this request (#608). If the Mac refuses it, it comes back attached with the
+            // reason (`pasteOffer.refusal`); a paste attached while this one was in flight stays for the next request.
+            // A refusal that ended this send already put the paste back, so it is left alone.
             guard pendingSendID == sendID, pendingDestinationID == destinationAtSend else { return }
+            if paste != nil, attachedPaste == paste { (attachedPaste, pasteProblem) = (nil, nil) }
             if let destinationAtSend, Self.uncorrelatedDestinations.contains(destinationAtSend) {
                 clearPendingSend()
                 status = "Sent — reply turn unverified"
@@ -130,9 +136,13 @@ extension TranscriptionLabView {
             scheduleReplyTimeout(sendID: sendID, destinationID: destinationAtSend)
         } catch {
             guard pendingSendID == sendID, pendingDestinationID == destinationAtSend else { return }
-            if let destinationAtSend { Self.uncorrelatedDestinations.insert(destinationAtSend) }
+            // A paste refused here was never sent, so the destination's reply correlation is unaffected (#608).
+            let problem = (error as? PastedDraft.Problem)?.message
+            if problem == nil, let destinationAtSend { Self.uncorrelatedDestinations.insert(destinationAtSend) }
             clearPendingSend()
-            status = "\(failurePrefix): \(error.localizedDescription)"
+            // A refused paste stays attached, with the reason, so it can be fixed or removed (#608).
+            if let problem { pasteProblem = problem }
+            status = "\(failurePrefix): \(problem ?? error.localizedDescription)"
         }
     }
     @MainActor

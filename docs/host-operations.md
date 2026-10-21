@@ -85,6 +85,26 @@ After a RightyO reinstall, run `haild ambient reload`. It restarts the RightyO c
 
 `haild ambient status` shows whether a stream is active, the device class, target, when the stream and its current child started, the RightyO install time (flagged when it is newer than the running child), and the live child count. Neither command prints transcript text. Both use the owner-only reply socket (`--socket <path>` to choose another) and are audited as `local-ambient`. The running daemon must include #409; an older one answers `refused: ... (the daemon may predate ...)`.
 
+## Session updates (opt-in, #609)
+
+A session can tell you about finished work, a needed decision or a failure without a pending request:
+
+```sh
+haild notify tmux:work --say "The deck is built" --card "PR #123"
+haild notify tmux:work --say "The build failed and needs you" --action
+haild notify status
+haild notify quiet on
+```
+
+It is off unless `haild run` gets `--personal-terminal --session-updates`. The target must be a live target from `haild targets`. That target is also the name the update is shown under and the key for its rate limit. Any local process can name any live target, so these limits are cooperative, not a security boundary.
+- **For now every update is held. Nothing is spoken yet:** speaking waits for haild to deliver to the device it chose itself, and held updates are not yet delivered to a device. That comes with the update card and drain work.
+- An `--action` update that a device could be told about prints `push: suggested`, so the session can raise its own notification. Quiet suppresses it.
+- `haild notify quiet on` turns on do-not-disturb until haild restarts. A session cannot turn it off; that is the user's own control.
+
+Each session may send 6 updates an hour and have 5 held. At most 20 are held in all, for up to 4 hours. These defaults are placeholders pending Mick's decision.
+
+Exit codes: 0 when held or for status; 75 when rate limited; 1 for other refusals (`unknown_target`, `full`, `not enabled`). Output gives counts and reasons only, never the words. Requests are audited as `local-update` with the action only.
+
 ## When replies stop arriving
 
 1. Run `haild doctor`, then `scripts/host.sh status`. Exit code 3 means one of these:

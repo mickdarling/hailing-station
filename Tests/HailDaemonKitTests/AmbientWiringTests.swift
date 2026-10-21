@@ -8,7 +8,7 @@ import Testing
 
 /// Loopback proof of #203 wiring: phone audio frames reach a fake `rightyo` child, its admitted request is
 /// dispatched in process on behalf of the streaming peer, and teardown reaps the child without cancelling a run.
-@Suite(.serialized, .timeLimit(.minutes(1))) struct AmbientWiringTests {
+@Suite(.serialized, .timeLimit(.minutes(1)), .frozenGuardBudget) struct AmbientWiringTests {
     @Test func audioReachesTheChildItsRequestIsDispatchedForThatPeerAndRepliesReachIt() async throws {
         let fake = try FakeRightyo(ambientEchoAtEOF)
         defer { fake.cleanUp() }

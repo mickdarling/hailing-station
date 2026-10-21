@@ -7,7 +7,7 @@ import Testing
 
 /// rightyo#164 / rightyo#172: RightyO says when the owner's voice is not recognised on this input; haild opts the child
 /// in, passes the device's route kind, and shows the status only on the device whose stream it is. Synthetic only.
-@Suite(.serialized, .timeLimit(.minutes(1))) struct AmbientWiringOwnerVoiceTests {
+@Suite(.serialized, .timeLimit(.minutes(1)), .frozenGuardBudget) struct AmbientWiringOwnerVoiceTests {
     private static func line(_ fields: String, sequence: Int = 2) throws -> RightyoInputEvent {
         let prefix = #"{"schema_version": 1, "session_id": "s", "sequence": \#(sequence), "emitted_at_ms": 0, "#
         return try RightyoInputEvent.decode(Data((prefix + fields + "}").utf8))

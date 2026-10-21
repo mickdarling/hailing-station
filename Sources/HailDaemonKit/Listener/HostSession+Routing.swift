@@ -47,6 +47,10 @@ extension HostSession {
             return failure(.malformed, "only final text can be delivered", close: false, version: version)
         case .untargetedText:
             return failure(.notAllowed, "select the destination before speaking", close: false, version: version)
+        case .lockedDownPaste:
+            return failure(.lockdown, "target action was refused", close: false, version: version)
+        case .refusedPaste(let reason):
+            return failure(pasteRefusal(.malformed), reason, close: false, version: version)
         case .audio(let audio, let target):
             return await ambient(audio, target: target, version: version)
         case .unsupported:
@@ -60,9 +64,10 @@ extension HostSession {
         guard let gate = authorizer.ambientAudio else {
             return failure(.unauthorized, "terminal action is not authorized", close: false, version: version)
         }
+        // A stream this segment opens keeps the selection generation it opened on (#636).
+        let selection = AmbientSelection(target: selectedTarget, generation: selectionGeneration)
         switch await gate.admission(
-            audio, frameTarget: target, selectedTarget: selectedTarget, connection: connectionID,
-            device: peerDeviceKind
+            audio, frameTarget: target, selection: selection, connection: connectionID, device: peerDeviceKind
         ) {
         case .admitted:
             return HostSessionResult(frames: [])
@@ -75,18 +80,28 @@ extension HostSession {
     }
 
     private func deliver(_ input: consuming AuthorizedInput, version: Int) async -> HostSessionResult {
+        // A request that carried a paste (#608) and was refused as not allowed or malformed is answered with
+        // `paste_refused` to a device that takes request refusals, so it ends that request and keeps the connection;
+        // the message is the plain reason. Lockdown, rate limits and unknown targets keep their own codes, as for
+        // spoken text. Spoken text alone, and any device without the capability, is answered as before.
+        let carriesPaste = input.carriesPaste, takesRefusals = peerCapabilities.contains(RequestRefusals.capability)
+        let refusal: (ErrorCode) -> ErrorCode = { code in
+            Self.refusalCode(code, carriesPaste: carriesPaste, takesRequestRefusals: takesRefusals)
+        }
         // A phone's own final text frame (tap-to-talk) is input from this device (#370).
         switch await deliver(input, recordsLastInput: true) {
         case .delivered:
             return HostSessionResult(frames: [])
         case .confirmationRequired:
-            return failure(.notAllowed, "target requires confirmation at the Mac", close: false, version: version)
+            let message = "target requires confirmation at the Mac"
+            return failure(refusal(.notAllowed), message, close: false, version: version)
         case .selectionChanged:
-            return failure(.notAllowed, "request destination changed", close: false, version: version)
+            return failure(refusal(.notAllowed), "request destination changed", close: false, version: version)
         case .unowned(let message):
+            // Handed off, but with no reply owner: not a refusal of the request, answered as for spoken text.
             return failure(.notAllowed, message, close: false, version: version)
         case .refused(let code, let message):
-            return failure(code, message, close: false, version: version)
+            return failure(refusal(code), message, close: false, version: version)
         }
     }
 
@@ -100,7 +115,7 @@ extension HostSession {
     /// the captured selection. A refused, unconfirmed or ownerless handoff records nothing.
     func deliver(_ input: consuming AuthorizedInput, recordsLastInput: Bool = false) async -> HostDeliveryOutcome {
         let recordsInput = recordsLastInput || Self.ambientInputDispatch
-        guard input.target == selectedTarget else {
+        guard admitsInput(to: input.target) else {
             return .refused(.notAllowed, "select the destination before speaking")
         }
         do {
@@ -119,6 +134,9 @@ extension HostSession {
                 if let owner { replyRequests[owner.context.id] = nil }
                 return .confirmationRequired
             }
+        } catch AdapterError.deliveryFailed(let message) where message == PastedContent.agentOnlyRefusal {
+            // The tmux pane was not running an agent (#608): said plainly, as a paste refusal the device keeps.
+            return .refused(.notAllowed, PastedContent.agentOnlyRefusal)
         } catch {
             return .refused(deliveryCode(error), "target action was refused")
         }
@@ -140,10 +158,11 @@ extension HostSession {
         return outcome
     }
 
-    /// The captured selection authority: still negotiated, same selection generation, same target.
+    /// The captured selection authority: still negotiated, same selection generation, and a target the selection
+    /// covers (the selected target, or a voice route while a route is selected, #636).
     private func selects(_ target: String, generation: UUID) -> Bool {
         guard case .ready = state else { return false }
-        return generation == selectionGeneration && selectedTarget == target
+        return generation == selectionGeneration && covers(target)
     }
 
     private func commit(_ context: ProviderTurnContext, generation: UUID) -> HostDeliveryOutcome {
@@ -163,15 +182,17 @@ extension HostSession {
     }
 
     private func send(_ input: borrowing AuthorizedInput, owner: HostReplyOwnership?) async throws -> SendOutcome {
+        let (text, target, device) = (input.text, input.target, input.device)
+        let expectedBinding = owner?.context.binding.sessionID ?? input.expectedBinding
         do {
-            if let owner, owner.contextual {
-                return try await host.send(input.text, context: owner.context, from: input.device)
+            // A framed paste (#608) gets the paste line cap; every other gate is the same.
+            return try await HailHost.$pastedIngress.withValue(input.carriesPaste) {
+                if let owner, owner.contextual {
+                    return try await host.send(text, context: owner.context, from: device)
+                }
+                // Legacy generic input. An unleased ambient record (#230) pins the exact binding it was minted for.
+                return try await host.send(text, to: target, from: device, expectedBinding: expectedBinding)
             }
-            // Legacy generic input. An unleased ambient record (#230) pins the exact binding it was minted for.
-            return try await host.send(
-                input.text, to: input.target, from: input.device,
-                expectedBinding: owner?.context.binding.sessionID ?? input.expectedBinding
-            )
         } catch {
             if let owner { replyRequests[owner.context.id] = nil }
             throw error
@@ -222,7 +243,7 @@ extension HostSession {
     ) throws {
         let target = context.binding.targetID
         pruneReplyRequests()
-        guard case .ready = state, generation == selectionGeneration, selectedTarget == target else {
+        guard case .ready = state, generation == selectionGeneration, covers(target) else {
             throw HostError.denied(.notAllowed(target))
         }
         guard replyRequests.count < HostReplyRequest.capacity else { throw ProviderContractError.capacityExceeded }
@@ -258,7 +279,8 @@ extension HostSession {
 
     private func listTargets(version: Int) async -> HostSessionResult {
         do {
-            return HostSessionResult(frames: [response(.targets(try await policyFilteredTargets()), version: version)])
+            return HostSessionResult(frames: [response(.targets(named(try await policyFilteredTargets())),
+                                                       version: version)])
         } catch {
             return failure(.malformed, "target listing unavailable", close: false, version: version)
         }
@@ -296,6 +318,18 @@ extension HostSession {
         failure(deliveryCode(error), "target action was refused", close: false, version: version)
     }
 
+    /// The code a refused request is answered with (#608): `paste_refused` in place of `not_allowed` or `malformed` for
+    /// a request that carried a paste, from a device that takes request refusals. Every other code, lockdown and
+    /// rate limits included, and every other request, keeps its own.
+    static func refusalCode(_ code: ErrorCode, carriesPaste: Bool, takesRequestRefusals: Bool) -> ErrorCode {
+        carriesPaste && takesRequestRefusals && (code == .notAllowed || code == .malformed) ? .pasteRefused : code
+    }
+
+    /// `paste_refused` for a device that advertised `request_refusals`; `code` otherwise, as before (#608).
+    private func pasteRefusal(_ code: ErrorCode) -> ErrorCode {
+        peerCapabilities.contains(RequestRefusals.capability) ? .pasteRefused : code
+    }
+
     private func deliveryCode(_ error: any Error) -> ErrorCode {
         switch error {
         case HostError.unknownTarget: .unknownTarget
@@ -306,7 +340,29 @@ extension HostSession {
         }
     }
 
-    private func policyFilteredTargets() async throws -> [TargetInfo] {
+    /// The owner's voice routes (#636) over the policy-filtered listing: a listed route shows its name, and a route
+    /// that is not listed, allowed and bound shows as offline (`alive: false`) so the device can say so rather than
+    /// hide it. Names change only what is shown. Ids, policy and selection are untouched, and `select` reads the
+    /// unnamed listing, so an offline route cannot be selected.
+    private func named(_ targets: [TargetInfo]) -> [TargetInfo] {
+        #if os(macOS)
+        guard let routes = authorizer.voiceRoutes else { return targets }
+        var named = targets.map { target in
+            var target = target
+            if let route = routes.route(for: target.id) { target.name = route.name }
+            return target
+        }
+        for route in routes.routes where !targets.contains(where: { $0.id == route.target }) {
+            let kind = route.target.prefix { $0 != ":" }
+            named.append(TargetInfo(id: route.target, kind: String(kind), name: route.name, alive: false))
+        }
+        return named.sorted { $0.id < $1.id }
+        #else
+        return targets
+        #endif
+    }
+
+    func policyFilteredTargets() async throws -> [TargetInfo] {
         let listing = try await host.registry.listing()
         guard let policy = await host.refreshedPolicy() else { return [] }
         return listing.compactMap { listed in

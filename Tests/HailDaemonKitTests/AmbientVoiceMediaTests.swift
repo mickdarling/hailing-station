@@ -7,7 +7,7 @@ import Testing
 
 /// The owner's spoken media mode (#551): recognised by the host, never typed to the agent, sent to RightyO over the
 /// control descriptor (rightyo#195), and turned off again by voice or by its timeout. Synthetic only.
-@Suite(.serialized, .timeLimit(.minutes(1))) struct AmbientVoiceMediaTests {
+@Suite(.serialized, .timeLimit(.minutes(1)), .frozenGuardBudget) struct AmbientVoiceMediaTests {
     static let names: Set<String> = ["jarvis", "rightyo"]
     static let mediaOn = AmbientAckClip(pcm: Data(repeating: 6, count: 480), sampleRate: 24_000,
                                         text: "Media mode on.")
