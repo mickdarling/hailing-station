@@ -1,5 +1,6 @@
 #if os(macOS)
 import Foundation
+import Synchronization
 import Testing
 @testable import HailDaemonKit
 
@@ -56,6 +57,18 @@ import Testing
         #expect(await adapter.isReaped)
     }
 
+    /// The waiter is armed with exactly the caller's grace (#727), seen through the sleep seam, not wall clock.
+    @Test(.timeLimit(.minutes(1)))
+    func theTerminalWaiterIsArmedWithTheRequestedGrace() async throws {
+        let armed = GraceRecorder()
+        let (adapter, _) = try await Self.withActiveTurn(interrupt: "silent", terminal: false) { adapter in
+            await adapter.useGraceSleep { grace in armed.record(grace); try await Task.sleep(for: .milliseconds(10)) }
+            #expect(await adapter.interruptActiveTurn(grace: .milliseconds(300)) == false)
+        }
+        #expect(armed.values == [.milliseconds(300)])
+        #expect(await adapter.isReaped)
+    }
+
     @Test func aRefusedInterruptIsNotSuccess() async throws {
         let (adapter, _) = try await Self.withActiveTurn(interrupt: "refuse", terminal: false) { adapter in
             #expect(await adapter.interruptActiveTurn() == false)
@@ -108,5 +121,14 @@ import Testing
         }
         #expect(await adapter.isReaped)
     }
+}
+private final class GraceRecorder: Sendable {
+    private let armed = Mutex<[Duration]>([])
+    var values: [Duration] { armed.withLock { $0 } }
+    func record(_ grace: Duration) { armed.withLock { $0.append(grace) } }
+}
+
+private extension CodexAppServerAdapter {
+    func useGraceSleep(_ sleep: @escaping @Sendable (Duration) async throws -> Void) { graceSleep = sleep }
 }
 #endif

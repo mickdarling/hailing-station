@@ -105,8 +105,13 @@ import Testing
     }
 
     /// A small deterministic fuzz over the characters that matter: every paste that frames must reach the adapter
-    /// unchanged, as one line with one block, inert up to the request, and decode back.
-    @Test func fuzzedPastesFrameStablyOrAreRefused() throws {
+    /// unchanged, as one line with one block, inert up to the request, and decode back. Seconds of CPU on CI, so off
+    /// the cooperative pool (#704).
+    @Test func fuzzedPastesFrameStablyOrAreRefused() async throws {
+        try await withTaskExecutorPreference(HeavyTestExecutor.shared) { try fuzzFraming() }
+    }
+
+    private func fuzzFraming() throws {
         let alphabet: [Unicode.Scalar] = [
             "a", "n", "t", "u", "0", " ", "<", ">", "\"", "\\", "/", "\n", "\r", "\t", "\u{0B}", "\u{1B}", "[", "]",
             "\u{07}", "\u{85}", "\u{2028}", "\u{2029}", "\u{0301}", "\u{0338}", "\u{0327}", "\u{00A0}", "\u{3000}",

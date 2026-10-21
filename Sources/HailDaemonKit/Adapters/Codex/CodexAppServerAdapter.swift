@@ -49,7 +49,7 @@ actor CodexAppServerAdapter: ProviderContextDelivering, ProviderSessionObserving
     private var transport: CodexStdioTransport?
     private var terminalWaiter: CodexTerminalWaiter?
     private var interrupting = false // Reserved before the request await: one interrupt at a time.
-
+    var graceSleep: @Sendable (Duration) async throws -> Void = { try await Task.sleep(for: $0) } // Test seam, #727
     private let workspace: String
     /// Real launches re-run every workspace check at the actual child launch; nil only for the synthetic seam.
     private let setup: CodexLaunchSetup?
@@ -180,7 +180,7 @@ extension CodexAppServerAdapter {
         let token = UUID(); let interrupted = await withTaskCancellationHandler {
             await withCheckedContinuation { done in
                 // A cancelled sleep means the waiter was already resolved; only this exact waiter can expire.
-                let timer = Task { if (try? await Task.sleep(for: grace)) != nil { self.expire(token) } }
+                let timer = Task { [sleep = graceSleep] in if (try? await sleep(grace)) != nil { self.expire(token) } }
                 terminalWaiter = CodexTerminalWaiter(turn: turn, token: token, done: done, timer: timer)
             }
         } onCancel: { Task { await self.expire(token) } }

@@ -120,16 +120,17 @@ extension TranscriptionLabView {
         pendingSendID = sendID
         pendingDestinationID = destinationAtSend
         status = "Sending…"
-        let paste = attachedPaste
+        // Not a paste an earlier send still carries: a reply placed during that write (#636) lets this one start.
+        let paste = pastes.take(for: sendID)
         do {
             try await onFinalized(text, paste)
-            // Handed to the Mac with this request (#608). If the Mac refuses it, it comes back attached with the
-            // reason (`pasteOffer.refusal`); a paste attached while this one was in flight stays for the next request.
-            // A refusal that ended this send already put the paste back, so it is left alone. A reply placed while
-            // this send was still going (#636) already ended the wait, but the paste went with the request all the same.
+            // Handed to the Mac with this request (#608), so it is cleared whatever happened meanwhile. If the Mac
+            // refuses it, it comes back attached with the reason (`pasteOffer.refusal`) and stays; so does a paste
+            // attached while this one was in flight.
+            // Only its own paste's problem: a newer paste's problem stays.
+            if pastes.finish(sendID, delivered: true) { pasteProblem = nil }
             let answered = answeredEarly(sendID, at: destinationAtSend)
             guard answered || (pendingSendID == sendID && pendingDestinationID == destinationAtSend) else { return }
-            if paste != nil, attachedPaste == paste { (attachedPaste, pasteProblem) = (nil, nil) }
             if answered {
                 answeredSendID = nil
                 return
@@ -142,6 +143,7 @@ extension TranscriptionLabView {
             status = "Waiting for reply…"
             scheduleReplyTimeout(sendID: sendID, destinationID: destinationAtSend)
         } catch {
+            pastes.finish(sendID, delivered: false)
             // A reply that arrived during this send (#636) does not hide its failure: the store took that reply back.
             let answered = answeredEarly(sendID, at: destinationAtSend)
             guard answered || (pendingSendID == sendID && pendingDestinationID == destinationAtSend) else { return }
