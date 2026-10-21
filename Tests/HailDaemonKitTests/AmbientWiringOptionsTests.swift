@@ -5,7 +5,7 @@ import Testing
 
 /// `haild run` ambient flags (#203): all three or none, and only on the personal terminal with the
 /// single-terminal reply fallback.
-@Suite struct AmbientWiringOptionsTests {
+@Suite(.frozenGuardBudget) struct AmbientWiringOptionsTests {
     static let base = ["--bind", "127.0.0.1", "--port", "4100"]
     static let personal = ["--personal-terminal", "--single-terminal-reply-fallback"]
     static let ambient = ["--ambient-rightyo", "/opt/rightyo/bin/rightyo", "--ambient-rightyo-config",
@@ -92,7 +92,7 @@ import Testing
 }
 
 #if os(macOS)
-@Suite(.timeLimit(.minutes(1))) struct AmbientWiringStartupValidationTests {
+@Suite(.timeLimit(.minutes(1)), .frozenGuardBudget) struct AmbientWiringStartupValidationTests {
     @Test func startupPinsTheListedBindingAndRefusesUnknownTargetsAndUnsafeExecutables() async throws {
         let rig = try await RecipientTestRig.make()
         let fake = try FakeRightyo("exit 0")
