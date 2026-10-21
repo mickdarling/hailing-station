@@ -116,6 +116,7 @@ extension TranscriptionLabView {
         replyTimeoutTask = nil
         let sendID = UUID()
         let destinationAtSend = destinationID
+        answeredSendID = nil
         pendingSendID = sendID
         pendingDestinationID = destinationAtSend
         status = "Sending…"
@@ -124,9 +125,15 @@ extension TranscriptionLabView {
             try await onFinalized(text, paste)
             // Handed to the Mac with this request (#608). If the Mac refuses it, it comes back attached with the
             // reason (`pasteOffer.refusal`); a paste attached while this one was in flight stays for the next request.
-            // A refusal that ended this send already put the paste back, so it is left alone.
-            guard pendingSendID == sendID, pendingDestinationID == destinationAtSend else { return }
+            // A refusal that ended this send already put the paste back, so it is left alone. A reply placed while
+            // this send was still going (#636) already ended the wait, but the paste went with the request all the same.
+            let answered = answeredEarly(sendID, at: destinationAtSend)
+            guard answered || (pendingSendID == sendID && pendingDestinationID == destinationAtSend) else { return }
             if paste != nil, attachedPaste == paste { (attachedPaste, pasteProblem) = (nil, nil) }
+            if answered {
+                answeredSendID = nil
+                return
+            }
             if let destinationAtSend, Self.uncorrelatedDestinations.contains(destinationAtSend) {
                 clearPendingSend()
                 status = "Sent — reply turn unverified"
@@ -135,7 +142,10 @@ extension TranscriptionLabView {
             status = "Waiting for reply…"
             scheduleReplyTimeout(sendID: sendID, destinationID: destinationAtSend)
         } catch {
-            guard pendingSendID == sendID, pendingDestinationID == destinationAtSend else { return }
+            // A reply that arrived during this send (#636) does not hide its failure: the store took that reply back.
+            let answered = answeredEarly(sendID, at: destinationAtSend)
+            guard answered || (pendingSendID == sendID && pendingDestinationID == destinationAtSend) else { return }
+            answeredSendID = nil
             // A paste refused here was never sent, so the destination's reply correlation is unaffected (#608).
             let problem = (error as? PastedDraft.Problem)?.message
             if problem == nil, let destinationAtSend { Self.uncorrelatedDestinations.insert(destinationAtSend) }
@@ -145,6 +155,13 @@ extension TranscriptionLabView {
             status = "\(failurePrefix): \(problem ?? error.localizedDescription)"
         }
     }
+    /// A reply that arrived while `sendID` was still going ended its wait (#636), and nothing has happened since on
+    /// that destination: no new send, capture or Escape has changed the status from "Reply received".
+    @MainActor
+    func answeredEarly(_ sendID: UUID, at destination: ConversationDestinationID?) -> Bool {
+        answeredSendID == sendID && pendingSendID == nil && destinationID == destination && status == "Reply received"
+    }
+
     @MainActor
     func discardCapture() async {
         capture.stop()

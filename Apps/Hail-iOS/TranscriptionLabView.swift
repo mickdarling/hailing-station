@@ -49,6 +49,9 @@ struct TranscriptionLabView: View {
     @State var captureOwnerID = UUID()
     @State var pendingSendID: UUID?
     @State var pendingDestinationID: ConversationDestinationID?
+    /// The send a reply arrival ended while it was still in flight (#636): a placed reply can beat its request's send,
+    /// so if that send then fails, its failure still shows rather than the arrival's "Reply received".
+    @State var answeredSendID: UUID?
     @State var destinationGeneration = UUID()
     @State var replyTimeoutTask: Task<Void, Never>?
     @State var ownsCaptureSuppression = false
@@ -100,9 +103,8 @@ struct TranscriptionLabView: View {
         self.onCaptureWillBegin = onCaptureWillBegin
         self.onCaptureDidEnd = onCaptureDidEnd
         self.onCaptureTeardownCompleted = onCaptureTeardownCompleted
-        self.onFinalized = onFinalized
+        (self.onFinalized, self.onEscape) = (onFinalized, onEscape)
         self.pasteOffer = pasteOffer
-        self.onEscape = onEscape
         _capture = State(initialValue: capture)
         _transcriber = State(initialValue: transcriber ?? Self.defaultTranscriber())
     }
