@@ -47,6 +47,8 @@ extension HostSession {
             return failure(.malformed, "only final text can be delivered", close: false, version: version)
         case .untargetedText:
             return failure(.notAllowed, "select the destination before speaking", close: false, version: version)
+        case .lockedDownPaste:
+            return failure(.lockdown, "target action was refused", close: false, version: version)
         case .refusedPaste(let reason):
             return failure(pasteRefusal(.malformed), reason, close: false, version: version)
         case .audio(let audio, let target):
@@ -81,9 +83,9 @@ extension HostSession {
         // `paste_refused` to a device that takes request refusals, so it ends that request and keeps the connection;
         // the message is the plain reason. Lockdown, rate limits and unknown targets keep their own codes, as for
         // spoken text. Spoken text alone, and any device without the capability, is answered as before.
-        let pasteCode = input.carriesPaste ? pasteRefusal(.notAllowed) : nil
+        let carriesPaste = input.carriesPaste, takesRefusals = peerCapabilities.contains(RequestRefusals.capability)
         let refusal: (ErrorCode) -> ErrorCode = { code in
-            pasteCode == .pasteRefused && (code == .notAllowed || code == .malformed) ? .pasteRefused : code
+            Self.refusalCode(code, carriesPaste: carriesPaste, takesRequestRefusals: takesRefusals)
         }
         // A phone's own final text frame (tap-to-talk) is input from this device (#370).
         switch await deliver(input, recordsLastInput: true) {
@@ -310,6 +312,13 @@ extension HostSession {
 
     private func deliveryFailure(_ error: any Error, version: Int) -> HostSessionResult {
         failure(deliveryCode(error), "target action was refused", close: false, version: version)
+    }
+
+    /// The code a refused request is answered with (#608): `paste_refused` in place of `not_allowed` or `malformed` for
+    /// a request that carried a paste, from a device that takes request refusals. Every other code, lockdown and
+    /// rate limits included, and every other request, keeps its own.
+    static func refusalCode(_ code: ErrorCode, carriesPaste: Bool, takesRequestRefusals: Bool) -> ErrorCode {
+        carriesPaste && takesRequestRefusals && (code == .notAllowed || code == .malformed) ? .pasteRefused : code
     }
 
     /// `paste_refused` for a device that advertised `request_refusals`; `code` otherwise, as before (#608).
