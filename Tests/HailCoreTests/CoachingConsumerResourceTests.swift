@@ -4,7 +4,8 @@ import Testing
 
 /// #269: bounded correlation fails closed instead of evicting replay protection or reviving old work.
 @Suite @MainActor struct CoachingConsumerResourceTests {
-    @Test func requestLedgerExhaustionStopsOwnedLifetime() throws {
+    /// Yields between admissions so filling the ledger never holds the main actor in one block (#704).
+    @Test func requestLedgerExhaustionStopsOwnedLifetime() async throws {
         let rig = CoachingTestHarness()
         let consumer = try coachingConsumer(rig)
         let lease = try rig.begin()
@@ -13,6 +14,7 @@ import Testing
         for _ in 0..<CoachingAdviceConsumer.requestLimit {
             let advice = try consumer.admit(coachingWireData(lease))
             if first == nil { first = advice }
+            await Task.yield()
         }
         #expect(throws: CoachingWireError.ledgerFull) { try consumer.admit(coachingWireData(lease)) }
         #expect(rig.session.current() == nil && rig.capture.stopCount == 1)
