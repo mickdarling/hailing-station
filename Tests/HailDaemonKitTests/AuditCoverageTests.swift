@@ -17,7 +17,8 @@ import Testing
         .delivered(target: "tmux:a", device: "ipad", text: "ls", confirmed: true, guardHits: ["sudo"], stripped: 2),
         .deliveryRefused(target: "tmux:a", device: "ipad", reason: "locked"),
         .captured(target: "tmux:a", device: "ipad"), .pushed(tool: "vbsay", target: "tmux:a", bytes: 12),
-        .lockdown(on: true, reason: "five failed handshakes"), .doctorFailed(check: "bind", reason: "0.0.0.0")
+        .lockdown(on: true, reason: "five failed handshakes"), .doctorFailed(check: "bind", reason: "0.0.0.0"),
+        .coachingAppPinned(identifier: "com.example.authored", pin: "cdhash abababababab")
     ]
 
     @Test func everyEventTypeProducesARecordThatVerifies() throws {
@@ -36,7 +37,8 @@ import Testing
         #expect(kinds.count == Self.everyEvent.count, "kinds are distinct")
         #expect(kinds == [
             "chain_opened", "paired", "revoked", "rotated", "connected", "disconnected", "allowed", "denied",
-            "tier_changed", "delivered", "delivery_refused", "captured", "pushed", "lockdown", "doctor_failed"
+            "tier_changed", "delivered", "delivery_refused", "captured", "pushed", "lockdown", "doctor_failed",
+            "coaching_app_pinned"
         ])
     }
 
