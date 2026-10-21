@@ -34,9 +34,15 @@ public actor HailHost {
     /// keeps the host's `sanitizing` policy. Only the cap changes: newline rule, guard, tier, lockdown,
     /// binding and rate limit run exactly as on any other send.
     @TaskLocal static var localDispatchIngress = false
+    /// The line cap for a phone request that carries a paste (#608): the whole framed line from `PastedContent`.
+    public static let pastedSanitizing = PastedContent.lineCap
+    /// Bound to true only by `HostSession` for a phone request whose text `PastedContent` framed, so that send alone
+    /// sanitises under `pasteSanitizing`. As with a dispatch, only the cap changes.
+    @TaskLocal static var pastedIngress = false
     public let registry: Registry
     private let sanitizing: SanitizePolicy
     private let dispatchSanitizing: SanitizePolicy
+    private let pasteSanitizing: SanitizePolicy
     private let store: any PolicyStore
     private let clock = ContinuousClock()
     private let window: Duration
@@ -54,11 +60,9 @@ public actor HailHost {
     ) throws {
         self.registry = registry
         self.sanitizing = sanitizing
-        // The host's own newline rule stands; a dispatch only gets the local-prompt length caps.
-        var dispatch = sanitizing
-        dispatch.maxCharacters = max(sanitizing.maxCharacters, Self.localPromptSanitizing.maxCharacters)
-        dispatch.maxUTF8Bytes = max(sanitizing.maxUTF8Bytes, Self.localPromptSanitizing.maxUTF8Bytes)
-        dispatchSanitizing = dispatch
+        // The host's own newline rule stands; a dispatch or a paste only gets its own length caps.
+        dispatchSanitizing = sanitizing.widened(to: Self.localPromptSanitizing)
+        pasteSanitizing = sanitizing.widened(to: Self.pastedSanitizing)
         self.store = store
         window = confirmationWindow
         var loaded = Policy()
@@ -118,18 +122,15 @@ public actor HailHost {
     private func dispatch(_ text: String, request dispatch: DispatchRequest) async throws -> SendOutcome {
         let id = dispatch.target
         try requireSendPreflight()
-        let lines: [String]
-        do {
-            let policy = Self.localDispatchIngress ? dispatchSanitizing : sanitizing
-            lines = try Sanitizer.sanitize(text, policy: policy)
-        } catch let error as SanitizeError {
-            throw HostError.refused(error)
-        }
+        var lines = try sanitizedLines(text)
         let listed = try await dispatchListing(dispatch, lineCount: lines.count)
         // Commit the first dispatch attempt after policy I/O, before consuming one-shot confirmation.
         // No further cancellation observation occurs before its adapter handoff; later lines may stop.
         try Task.checkCancellation()
-        var request = DeliveryRequest(target: id, binding: listed.binding, lines: lines, device: dispatch.device)
+        let guardLines = try screenPaste(&lines)
+        var request = DeliveryRequest(
+            target: id, binding: listed.binding, lines: lines, device: dispatch.device, guardLines: guardLines
+        )
         // No suspension from here to the first evaluation: the consumed token cannot go stale in between.
         let confirmed = consume(dispatch.confirmedHash, for: request)
         let confirmedRevision = policyRevision
@@ -389,5 +390,152 @@ extension HailHost {
     func revokeAuthority() {
         replyPublicationAuthority.invalidate()
         (pending, policyRevision) = ([:], UUID())
+    }
+
+    /// The sanitized lines under this ingress's caps: a local dispatch's, a framed paste's, or the host's own.
+    private func sanitizedLines(_ text: String) throws -> [String] {
+        do {
+            let policy = Self.localDispatchIngress ? dispatchSanitizing
+                : Self.pastedIngress ? pasteSanitizing : sanitizing
+            return try Sanitizer.sanitize(text, policy: policy)
+        } catch let error as SanitizeError {
+            throw HostError.refused(error)
+        }
+    }
+
+    /// A framed paste (#608) is screened, not guarded: the guard reads only its spoken part (returned), and the paste
+    /// body's matches become a validation flag on the block, under the policy this dispatch evaluates. Nil otherwise.
+    private func screenPaste(_ lines: inout [String]) throws -> [String]? {
+        guard Self.pastedIngress else { return nil }
+        let screened = try PastedContent.screen(lines, with: evaluator, spoken: sanitizing)
+        lines = screened.lines
+        return screened.guardLines
+    }
+}
+
+extension SanitizePolicy {
+    /// This policy with the larger of its own and `cap`'s length caps; the newline rule and line count stay.
+    func widened(to cap: SanitizePolicy) -> SanitizePolicy {
+        var policy = self
+        policy.maxCharacters = max(maxCharacters, cap.maxCharacters)
+        policy.maxUTF8Bytes = max(maxUTF8Bytes, cap.maxUTF8Bytes)
+        return policy
+    }
+}
+
+/// Mick's decision (#608): a paste is screened, not guarded. Guarded words inside it do not stop delivery. They are
+/// named in an advisory validation note right after the begin marker, outside the body, so the receiving session
+/// knows what the paste contains. The spoken request is still guarded exactly as on its own. A paste is never
+/// executed or treated as a command: it reaches only agent sessions, as shell-inert data inside its block.
+extension PastedContent {
+    struct Screened: Equatable {
+        /// The framed line, with the validation note when anything matched.
+        var lines: [String]
+        /// The spoken request's sanitized lines, for the guard; empty for a paste on its own.
+        var guardLines: [String]
+    }
+
+    /// Bytes every framed line keeps free for the validation note (#635 review), which `flagged` never exceeds.
+    static let validationReserve = 160
+
+    /// Splits the one sanitized framed line into its spoken part and paste body, guards the former's sanitized form
+    /// under `spoken`, and screens the latter. Anything that does not parse as a frame from `frame` is refused.
+    static func screen(_ lines: [String], with evaluator: PolicyEvaluator, spoken: SanitizePolicy) throws -> Screened {
+        guard lines.count == 1, let parts = parts(of: lines[0]) else {
+            throw HostError.refused(.hiddenCharacters("unreadable paste frame"))
+        }
+        let guardLines: [String]
+        do {
+            guardLines = parts.spoken.isEmpty ? [] : try Sanitizer.sanitize(parts.spoken, policy: spoken)
+        } catch let error as SanitizeError {
+            throw HostError.refused(error)
+        }
+        let body = parts.body.split(omittingEmptySubsequences: true, whereSeparator: \.isNewline).map(String.init)
+        return Screened(lines: [flagged(lines[0], evaluator.pasteFlags(in: body))], guardLines: guardLines)
+    }
+
+    /// The decoded body and the spoken request of a line from `frame`. The body ends at the first end marker after
+    /// the notice: it holds no raw `-`, so it cannot contain one.
+    static func parts(of line: String) -> (spoken: String, body: String)? {
+        guard let token = token(of: line), let start = line.range(of: " " + notice(token) + " "),
+              let stop = line.range(of: " " + end(token), range: start.upperBound..<line.endIndex) else { return nil }
+        let inner = String(line[start.upperBound..<stop.lowerBound])
+        guard let body = try? JSONDecoder().decode(String.self, from: Data("\"\(inner)\"".utf8)) else { return nil }
+        let rest = line[stop.upperBound...]
+        if rest.isEmpty { return ("", body) }
+        guard rest.hasPrefix(" \(request) ") else { return nil }
+        return (String(rest.dropFirst(request.count + 2)), body)
+    }
+
+    /// The line with a validation note after the begin marker: `Validation: contains <rules>.` for rules that match,
+    /// and `Validation: not fully checked: <rules>.` for rules that ran out of budget, so an unchecked paste never
+    /// looks like a clean one (#635 review). Rule names are reduced to plain ASCII words of at most 40 characters, so
+    /// a policy file cannot add markup or shell syntax, and the note stays within `validationReserve`. A clause whose
+    /// names do not all fit ends in its own "and more"; a clause with no printable name still appears ("contains
+    /// unnamed rules", "not fully checked"), so a matched or unchecked rule never leaves the paste looking clean.
+    static func flagged(_ line: String, _ flags: (matched: [String], unchecked: [String])) -> String {
+        guard !flags.matched.isEmpty || !flags.unchecked.isEmpty, let token = token(of: line) else { return line }
+        // Plain words: allowed characters only, runs of spaces collapsed (a name left as spaces counts as unnamed).
+        let plain = { (names: [String]) in
+            names.map { name in
+                let kept = String(name.unicodeScalars.filter(isPlainNameScalar).map(Character.init))
+                return String(kept.split(separator: " ").joined(separator: " ").prefix(40))
+                    .trimmingCharacters(in: .whitespaces)
+            }.filter { !$0.isEmpty }
+        }
+        let names = NoteNames(matched: plain(flags.matched), unchecked: plain(flags.unchecked),
+                              matchedCount: flags.matched.count, uncheckedCount: flags.unchecked.count)
+        var shown = names
+        (shown.matched, shown.unchecked) = ([], [])
+        for (index, name) in (names.matched + names.unchecked).enumerated() {
+            var next = shown
+            if index < names.matched.count { next.matched.append(name) } else { next.unchecked.append(name) }
+            guard note(next, of: names).utf8.count <= validationReserve else { break }
+            shown = next
+        }
+        let begin = begin(token)
+        return begin + " " + note(shown, of: names) + line.dropFirst(begin.count + 1)
+    }
+
+    struct NoteNames {
+        var matched: [String]
+        var unchecked: [String]
+        /// Every rule in the clause, named or not, so an unnamed one still counts towards "and more".
+        var matchedCount: Int
+        var uncheckedCount: Int
+    }
+
+    /// `shown` out of `all`: each clause lists its shown names and ends in its own "and more" when it holds any back.
+    private static func note(_ shown: NoteNames, of all: NoteNames) -> String {
+        func list(_ names: [String], named: [String], count: Int, none: String) -> String {
+            guard !named.isEmpty else { return none }
+            let shown = names.isEmpty ? "rules" : names.joined(separator: ", ")
+            return shown + (names.count < count ? ", and more" : "")
+        }
+        var parts: [String] = []
+        if all.matchedCount > 0 {
+            parts.append("contains " + list(shown.matched, named: all.matched, count: all.matchedCount,
+                                            none: "unnamed rules"))
+        }
+        if all.uncheckedCount > 0 {
+            let label = parts.isEmpty ? "not fully checked" : "Not fully checked"
+            let names = list(shown.unchecked, named: all.unchecked, count: all.uncheckedCount, none: "")
+            parts.append(all.unchecked.isEmpty ? label : label + ": " + names)
+        }
+        return "Validation: " + parts.joined(separator: ". ") + ". "
+    }
+
+    /// The 16-hex token of a line that starts with a begin marker, else nil.
+    static func token(of line: String) -> String? {
+        let prefix = begin("")
+        guard line.hasPrefix(prefix) else { return nil }
+        let token = line.dropFirst(prefix.count).prefix(17)
+        guard token.count == 17, token.last == " ", token.dropLast().allSatisfy(\.isHexDigit) else { return nil }
+        return String(token.dropLast())
+    }
+
+    private static func isPlainNameScalar(_ scalar: Unicode.Scalar) -> Bool {
+        scalar.isASCII && (scalar.properties.isAlphabetic || ("0"..."9").contains(scalar) || " _.-".unicodeScalars
+            .contains(scalar))
     }
 }

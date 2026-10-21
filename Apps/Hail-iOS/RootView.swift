@@ -48,6 +48,7 @@ struct RootView: View {
         NavigationStack {
             content
         }
+        .modifier(StationMenuStatusPublisher(connections: connections, destination: destination?.label))
         .onChange(of: scenePhase) { _, phase in
             scenePhaseRevision &+= 1
             selectionRevision &+= 1
@@ -87,6 +88,8 @@ struct RootView: View {
             // Directly from the store, not a view update, so replies also play in the background (#282).
             let playback = playback
             connections.onReplyFrame = { playback.ingest($0) }
+            // One announcement per refused request, whatever its code (#608, #636); the chat shows it too.
+            connections.onRequestRefusal = { StationPlatform.announce($0) }
             let keepalive = keepalive
             // Releases a session left active for an audible reply once that reply ends (#354).
             keepalive.follow(playback)
@@ -114,8 +117,9 @@ struct RootView: View {
     private func restoreHostsOnce() async {
         guard !didRestoreHosts else { return }
         didRestoreHosts = true
-        guard let data = UserDefaults.standard.data(forKey: Self.savedHostsKey),
-              let endpoints = try? JSONDecoder().decode([HostEndpoint].self, from: data) else { return }
+        let saved = UserDefaults.standard.data(forKey: Self.savedHostsKey)
+            .flatMap { try? JSONDecoder().decode([HostEndpoint].self, from: $0) }
+        guard let endpoints = await withLocalHost(saved) else { return }
         let remembered = await selectionStore.load()
         var normalized: [HostEndpoint] = []
         for endpoint in endpoints {

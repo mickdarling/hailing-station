@@ -5,7 +5,7 @@ import Testing
 @testable import HailDaemonKit
 
 /// The child's reply-control descriptor (rightyo#124): opt-in, fd 3 only, one atomic JSON line per report.
-@Suite(.serialized, .timeLimit(.minutes(1))) struct RightyoChildControlTests {
+@Suite(.serialized, .timeLimit(.minutes(1)), .frozenGuardBudget) struct RightyoChildControlTests {
     @Test func replyControlAddsTheControlArgumentAndOnlyThen() {
         let config = URL(fileURLWithPath: "/tmp/prototype.json")
         let off = RightyoChildProcess.arguments(session: "hail-test", config: config)

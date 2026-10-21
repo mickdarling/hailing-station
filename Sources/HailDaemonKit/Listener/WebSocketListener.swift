@@ -37,7 +37,7 @@ public actor WebSocketListener {
     private let bindAddress: String
     private let queue: DispatchQueue
     private let networkListener: NWListener
-    private let host: HailHost
+    let host: HailHost
     let authorizer: any HostSessionAuthorizing
     let hostName: String
     /// Opt-in single-terminal bridge (#188): uncorrelated replies may reach the one connection selecting
@@ -59,6 +59,8 @@ public actor WebSocketListener {
     let ambient: (any AmbientListenerWiring)?
     /// Per target, the connection that most recently sent it admitted input (#370). Host-side only.
     let lastInput = LastInputLedger()
+    /// Sessions' unsolicited updates (#609): off unless `--session-updates`. The quiet switch lasts until restart.
+    var sessionUpdates = SessionUpdateQueue(), sessionUpdatesQuiet = false
 
     public init(
         bindAddress: String, port: UInt16, host: HailHost,
@@ -207,7 +209,7 @@ extension AmbientAudioEvent {
     /// The stream every event names.
     var stream: UUID {
         switch self {
-        case .started(let stream, _), .segment(let stream, _, _), .ended(let stream, _): stream
+        case .started(let stream, _, _), .segment(let stream, _, _), .ended(let stream, _): stream
         }
     }
 }
@@ -234,6 +236,8 @@ public protocol AmbientListenerWiring: AnyObject, Sendable {
     /// The connection whose ambient stream feeds the active child, or nil (#230): the device the user is listening on,
     /// the recipient of last resort for a reply with no request reference. The default has none.
     func activeConnection() -> UUID?
+    /// Whether the owner's spoken media mode (#551) is on for `connection`. The default has none.
+    func mediaMode(connection: UUID) -> Bool
 }
 
 extension AmbientListenerWiring {
@@ -249,6 +253,7 @@ extension AmbientListenerWiring {
     public func reload() async -> AmbientReloadOutcome { .refused("unsupported") }
     public func status() -> AmbientRouterStatus { AmbientRouterStatus() }
     public func activeConnection() -> UUID? { nil }
+    public func mediaMode(connection: UUID) -> Bool { false }
 }
 
 /// What `haild ambient reload` did (#405). `refused` carries a content-free rule name.
@@ -305,7 +310,15 @@ extension WebSocketListener {
     /// `reference` (#230) is the one `referenceAmbient` minted and wrote into this request's reply block; the
     /// session binds it, host-side, to this connection, its selection generation and the exact target binding
     /// (`HostSession.ambientReplyReference`). Nil dispatches exactly as before.
-    func dispatchAmbient(_ request: LocalDispatchRequest, reference: UUID? = nil) async throws -> UUID? {
+    ///
+    /// `selection` (#636) is the selection generation the stream opened on: the request is delivered only while the
+    /// session is still on it, so nothing a stream heard reaches a target after the owner selected another
+    /// destination, even after selecting this one again. A stream without one dispatches nothing: the current
+    /// selection is never assumed.
+    func dispatchAmbient(
+        _ request: LocalDispatchRequest, reference: UUID? = nil, selection: UUID?
+    ) async throws -> UUID? {
+        guard let selection else { throw LocalDispatchRefusal.notAuthorized }
         guard let peer = peers.first(where: { $0.value.session.connectionID == request.connection }) else {
             throw LocalDispatchRefusal.unknownConnection
         }
@@ -313,8 +326,10 @@ extension WebSocketListener {
         named.connection = peer.key
         // The streaming device's own input (#370): a delivered handoff makes it the target's last input device.
         return try await HostSession.$ambientInputDispatch.withValue(true) {
-            guard let reference else { return try await dispatch(named) }
-            return try await HostSession.$ambientReplyReference.withValue(reference) { try await dispatch(named) }
+            guard let reference else { return try await dispatch(named, generation: selection) }
+            return try await HostSession.$ambientReplyReference.withValue(reference) {
+                try await dispatch(named, generation: selection)
+            }
         }
     }
 
@@ -528,6 +543,8 @@ public final class AmbientRightyoRouter: AmbientAudioSink, AmbientListenerWiring
     fileprivate let log: @Sendable (WebSocketListenerEvent) -> Void
     /// Wakes the worker; signals coalesce, the events themselves are in `State.queue`.
     fileprivate let wake: AsyncStream<Void>.Continuation
+    /// Media mode state for devices (#612), sent one at a time in the order the mode changed.
+    fileprivate let mediaNotices = SerialTaskChain()
 
     public init(configuration: Configuration, log: @escaping @Sendable (WebSocketListenerEvent) -> Void = { _ in }) {
         (self.configuration, self.log) = (configuration, log)
@@ -550,12 +567,12 @@ public final class AmbientRightyoRouter: AmbientAudioSink, AmbientListenerWiring
     public func ambientAudio(_ event: AmbientAudioEvent) {
         let queued = state.withLock { state -> Bool in
             switch event {
-            case .started(let stream, let connection): state.latest[connection] = stream
+            case .started(let stream, let connection, _): state.latest[connection] = stream
             // Taken over (#366): the old stream's late failure is not reported to its device as a stop.
             case .ended(let stream, .superseded): state.latest = state.latest.filter { $0.value != stream }
             default: break
             }
-            if case .started(let stream, _) = event { state.newestStart = stream }
+            if case .started(let stream, _, _) = event { state.newestStart = stream }
             // Shutting down: nothing more is queued (starts are refused inline as stopping).
             if state.shuttingDown { return false }
             // While a reload builds its child (#405), events queue too: the worker waits for the reload, so a start
@@ -651,6 +668,7 @@ public final class AmbientRightyoRouter: AmbientAudioSink, AmbientListenerWiring
     }
 
     var peakQueue: Int { state.withLock { $0.peakQueue } }
+    public func mediaMode(connection: UUID) -> Bool { state.withLock { $0.media[connection] != nil } }
 
     /// Waits (at most 30 s) for queued events to be handled, then for every current run to return (tests).
     func settle() async {
@@ -681,12 +699,14 @@ extension AmbientRightyoRouter {
         var gateEnd: AmbientStreamEndReason?
         var task: Task<Void, Never>?
     }
-    /// The stream whose child is fed audio now: its run, and when the stream itself started (kept across reloads).
+    /// The stream whose child is fed audio now: its run, when the stream itself started and the selection generation
+    /// it opened on (#636), both kept across reloads.
     fileprivate struct Active {
         let stream: UUID
         let run: UUID
         let pipeline: RightyoAmbientPipeline
         let since: Date
+        let selection: UUID?
     }
 }
 
@@ -713,8 +733,8 @@ extension AmbientRightyoRouter {
     /// The gate's events, in order: spawn, feed, retire.
     fileprivate func handle(_ event: AmbientAudioEvent) {
         switch event {
-        case .started(let stream, let connection):
-            start(stream, connection: connection)
+        case .started(let stream, let connection, let selection):
+            start(stream, connection: connection, selection: selection)
         case .segment(let stream, _, let bytes):
             let pipeline = state.withLock { $0.active?.stream == stream ? $0.active?.pipeline : nil }
             // Overload drops the oldest audio; it never blocks the gate. Refused input means the child is gone
@@ -751,7 +771,7 @@ extension AmbientRightyoRouter {
     /// final segment, is skipped: it neither forces a child out nor spawns. The newest makes room first, then
     /// every event is handled as it would be inline.
     private func work(_ event: AmbientAudioEvent) async {
-        if case .started(let stream, _) = event {
+        if case .started(let stream, _, _) = event {
             guard isLive(stream) else { return }
             await makeRoom(for: stream)
             guard isLive(stream) else { return }
@@ -776,7 +796,7 @@ extension AmbientRightyoRouter {
     fileprivate static func enqueue(_ event: AmbientAudioEvent, into state: inout State) {
         switch event {
         case .started:
-            let dead = Set(state.queue.compactMap { if case .started(let stream, _) = $0 { stream } else { nil } })
+            let dead = Set(state.queue.compactMap { if case .started(let stream, _, _) = $0 { stream } else { nil } })
             state.queue.removeAll { dead.contains($0.stream) }
         case .segment(let stream, _, _):
             guard stream == state.newestStart else { return }
@@ -869,7 +889,7 @@ extension AmbientRightyoRouter {
         return state.withLock { $0.runs.isEmpty }
     }
 
-    fileprivate func start(_ stream: UUID, connection: UUID) {
+    fileprivate func start(_ stream: UUID, connection: UUID, selection: UUID?) {
         let (listener, refusal) = state.withLock { state -> (WebSocketListener?, String?) in
             if state.shuttingDown { return (nil, "stopping") }
             if Self.full(state) { return (nil, "busy") }
@@ -879,13 +899,14 @@ extension AmbientRightyoRouter {
             return refuse(stream, connection: connection, reason: refusal ?? "stopping")
         }
         let pipeline: RightyoAmbientPipeline
-        do { pipeline = try makePipeline(connection: connection, listener: listener) } catch {
+        do { pipeline = try makePipeline(connection: connection, selection: selection, listener: listener) } catch {
             return refuse(stream, connection: connection, reason: Self.describe(error))
         }
         let admitted = state.withLock { state -> Bool in
             guard !state.shuttingDown else { return false }
             let id = register(pipeline, stream: stream, connection: connection, in: &state)
-            state.active = Active(stream: stream, run: id, pipeline: pipeline, since: Date())
+            state.active = Active(stream: stream, run: id, pipeline: pipeline, since: Date(),
+                                  selection: selection)
             return true
         }
         guard admitted else {
@@ -895,8 +916,10 @@ extension AmbientRightyoRouter {
     }
 
     /// One child for `connection`'s stream, launched now; a refusal launches nothing. Shared by a start and a
-    /// reload (#405), so a reloaded child is configured exactly as a fresh one.
-    fileprivate func makePipeline(connection: UUID, listener: WebSocketListener) throws -> RightyoAmbientPipeline {
+    /// reload (#405), so a reloaded child is configured exactly as a fresh one, on the stream's `selection` (#636).
+    fileprivate func makePipeline(
+        connection: UUID, selection: UUID?, listener: WebSocketListener
+    ) throws -> RightyoAmbientPipeline {
         var settings = RightyoAmbientPipeline.Configuration(
             executable: configuration.executable, config: configuration.config, target: configuration.target,
             binding: configuration.binding, connection: connection,
@@ -917,7 +940,8 @@ extension AmbientRightyoRouter {
                                                          childEnvironment(for: connection))
         return try RightyoAmbientPipeline(configuration: settings,
                                           dispatcher: AmbientListenerDispatcher(listener: listener,
-                                                                                audit: configuration.audit))
+                                                                                audit: configuration.audit,
+                                                                                selection: selection))
     }
 
     /// Registers a run for `pipeline` under the caller's lock and returns its id. The task is created under the lock,
@@ -1187,7 +1211,7 @@ extension AmbientRightyoRouter {
         }
         defer { state.withLock { $0.reloading = false } }
         let pipeline: RightyoAmbientPipeline
-        do { pipeline = try makePipeline(connection: connection, listener: listener) } catch {
+        do { pipeline = try makePipeline(connection: connection, selection: old.selection, listener: listener) } catch {
             let reason = Self.describe(error)
             emit("ambient_reload_refused", detail: reason)
             return .refused(reason)
@@ -1216,7 +1240,8 @@ extension AmbientRightyoRouter {
             state.retirements += 1
             state.runs[old.run]?.retiredAt = state.retirements
             let id = register(pipeline, stream: old.stream, connection: connection, reload: true, in: &state)
-            state.active = Active(stream: old.stream, run: id, pipeline: pipeline, since: old.since)
+            state.active = Active(stream: old.stream, run: id, pipeline: pipeline, since: old.since,
+                                  selection: old.selection)
             return .reloaded
         }
     }
@@ -1240,6 +1265,8 @@ extension AmbientRightyoRouter {
 struct AmbientListenerDispatcher: RightyoAmbientDispatching {
     let listener: WebSocketListener
     let audit: AuditLog?
+    /// The selection generation the stream opened on (#636); every request it dispatches is pinned to it.
+    var selection: UUID?
     /// The reply reference (#230) is written first, so the fail-closed audit record carries the final prompt size.
     func dispatch(_ request: LocalDispatchRequest) async throws -> UUID? {
         let (prepared, reference) = await listener.referenceAmbient(request)
@@ -1249,7 +1276,7 @@ struct AmbientListenerDispatcher: RightyoAmbientDispatching {
                                                    bytes: prepared.text.utf8.count))
             } catch { throw LocalReplyRefusal.auditFailure }
         }
-        return try await listener.dispatchAmbient(prepared, reference: reference)
+        return try await listener.dispatchAmbient(prepared, reference: reference, selection: selection)
     }
 }
 extension AmbientRightyoRouter {
@@ -1322,7 +1349,7 @@ extension AmbientRightyoRouter {
     /// while that timeout is still the current one. The children are written under the lock (a write never blocks),
     /// so a child `register` adds at the same moment either is written here or sees the new state.
     @discardableResult
-    fileprivate func setMedia(_ on: Bool, connection: UUID, reason: String, expected: UUID? = nil) -> Int {
+    func setMedia(_ on: Bool, connection: UUID, reason: String, expected: UUID? = nil) -> Int {
         let token = UUID(), timeout = configuration.mediaTimeout
         let reported = state.withLock { state -> Int? in
             if let expected, state.media[connection]?.token != expected { return nil }
@@ -1335,7 +1362,21 @@ extension AmbientRightyoRouter {
                 }
                 state.media[connection] = AmbientMediaTimer(token: token, timer: timer)
             }
-            return state.runs.values.filter { $0.connection == connection && $0.pipeline.reportMedia(on) }.count
+            let reported = state.runs.values.filter { $0.connection == connection && $0.pipeline.reportMedia(on) }.count
+            // The device sees on only once a child took it, so it never shows a mode not in force; off always (#612).
+            // Queued under the same lock as the change, so a timeout's off and a spoken on reach the device in the
+            // order the mode changed (the chain takes only its own lock).
+            if !on || reported > 0 {
+                let expires = on ? Int64((Date().timeIntervalSince1970 + timeout) * 1_000) : nil
+                let listener = state.listener?.value
+                mediaNotices.enqueue { [weak self, weak listener] in
+                    let sent = await listener?.showMediaMode(on, reason: reason, expires: expires,
+                                                             connection: connection)
+                    self?.emit("ambient_media_device", connection: connection,
+                               detail: "on=\(on) device=\(sent ?? "no_connection")")
+                }
+            }
+            return reported
         }
         guard let reported else { return 0 }
         emit("ambient_media", connection: connection, detail: "on=\(on) reason=\(reason) reported=\(reported)")

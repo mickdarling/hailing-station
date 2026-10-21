@@ -36,6 +36,32 @@ import Testing
         #expect(log.entries.map(\.text) == ["Partial, then complete.", "Next"])
     }
 
+    /// #606: a reply keeps its spoken words in `text` and its unspoken Markdown apart, in `metadata`.
+    @Test func aReplyKeepsItsMetadataApartFromItsSpokenText() {
+        let log = ConversationLog()
+        let id = UUID()
+        let reply = ReplyDescriptor(id: id, hostID: "host", targetID: "tmux:a")
+        let payload = TextPayload(text: "Done.", reply: reply, metadata: "- [#1](https://example.invalid/pull/1)")
+        let frame = Frame(timestamp: 0, source: "host", payload: .text(payload))
+        log.noteReply(HostReplyEvent(endpointID: "mac", frame: frame))
+        #expect(log.entries.map(\.text) == ["Done."])
+        #expect(log.entries.map(\.metadata) == ["- [#1](https://example.invalid/pull/1)"])
+        #expect(log.entries.first?.metadataBlocks == MessageMarkdown.blocks("- [#1](https://example.invalid/pull/1)"))
+        log.noteReply(replyEvent("Done, updated.", id: id))
+        #expect(log.entries.map(\.metadata) == [nil])
+        #expect(log.entries.first?.metadataBlocks == [])
+    }
+
+    /// #606: only a reply with audio was spoken aloud; a text-only reply is not shown as speech.
+    @Test func aReplyIsSpokenOnlyWhenItHasAudio() {
+        let log = ConversationLog()
+        log.noteReply(replyEvent("Text only.", id: UUID()))
+        let reply = ReplyDescriptor(id: UUID(), hostID: "host", targetID: "tmux:a", audioStreamID: UUID())
+        let frame = Frame(timestamp: 0, source: "host", payload: .text(TextPayload(text: "Spoken.", reply: reply)))
+        log.noteReply(HostReplyEvent(endpointID: "mac", frame: frame))
+        #expect(log.entries.map(\.spoken) == [false, true])
+    }
+
     @Test func blankSendsAndNonTextFramesAreIgnored() {
         let log = ConversationLog()
         log.noteSent("   ", endpointID: "mac", targetID: "tmux:a")
@@ -64,5 +90,29 @@ import Testing
             log.noteOverheard("Sounds good.", owner: owner, name: name, endpointID: "mac", targetID: "tmux:a")
         }
         #expect(log.entries.map(\.name) == ["Ben", nil, nil, nil])
+    }
+
+    /// #428: overheard remarks build up in order and stay, interleaved with sends and a reply whose text streams in
+    /// place, even when one says the same words as another. None replaces another.
+    @Test func overheardRemarksAccumulateAndStayInOrder() {
+        let log = ConversationLog()
+        let reply = UUID()
+        log.noteOverheard("Pass the salt.", owner: false, endpointID: "mac", targetID: "tmux:a")
+        log.noteOverheard("Pass the salt.", owner: false, endpointID: "mac", targetID: "tmux:a")
+        log.noteOverheard("Is it raining?", owner: true, endpointID: "mac", targetID: "tmux:a")
+        log.noteSent("What changed?", endpointID: "mac", targetID: "tmux:a")
+        log.noteReply(replyEvent("The build", id: reply))
+        log.noteOverheard("Okay.", owner: false, name: "Ben", endpointID: "mac", targetID: "tmux:a")
+        log.noteReply(replyEvent("The build passed.", id: reply))
+        log.noteOverheard("Later.", owner: false, endpointID: "mac", targetID: "tmux:a")
+
+        let entries = log.entries(endpointID: "mac", targetID: "tmux:a")
+        #expect(entries.map(\.text) == [
+            "Pass the salt.", "Pass the salt.", "Is it raining?", "What changed?", "The build passed.",
+            "Okay.", "Later."
+        ])
+        #expect(entries.map(\.overheard) == [true, true, true, false, false, true, true])
+        #expect(entries.map(\.speaker) == [.someone, .someone, .you, .you, .haili, .someone, .someone])
+        #expect(Set(entries.map(\.id)).count == entries.count)
     }
 }
