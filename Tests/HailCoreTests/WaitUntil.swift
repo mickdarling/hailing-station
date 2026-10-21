@@ -1,5 +1,6 @@
 import Foundation
 import Testing
+import HailTestSupport
 
 // Fixture scheduling watchdog; protocol deadlines use injected clocks and separate assertions. A timeout records
 // how the wait went (#704): its polls, the longest single condition check, and the longest overshoot of a 5 ms

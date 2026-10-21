@@ -5,11 +5,12 @@ import Synchronization
 /// pool and on the main actor stamp the time every 100 ms; a plain thread, which neither can starve, checks them. When
 /// either is more than 2 s stale it samples this process once (`/usr/bin/sample`, else `ps -M`) and writes the stacks
 /// to stderr, so the next stall names what holds the threads. Only with `CI=true`, or `HAIL_STALL_WATCHDOG=1` locally;
-/// once per process.
-enum StallWatchdog {
+/// once per process. Shared by the test targets (#704), so each `swift test` process of the split parallel lane watches
+/// its own pool.
+public enum StallWatchdog {
     private static let beats = Mutex((pool: ContinuousClock.now, main: ContinuousClock.now))
 
-    static let started: Void = {
+    public static let started: Void = {
         let environment = ProcessInfo.processInfo.environment
         guard environment["CI"] == "true" || environment["HAIL_STALL_WATCHDOG"] == "1" else { return }
         beats.withLock { $0 = (.now, .now) }

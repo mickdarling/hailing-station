@@ -4,6 +4,7 @@ import Foundation
 import HailProtocol
 import Synchronization
 @testable import HailDaemonKit
+import HailTestSupport
 
 struct PublisherFixture: Sendable {
     let base: URL
@@ -13,6 +14,7 @@ struct PublisherFixture: Sendable {
     let environment: [String: String]
 
     init(mode: String = "normal", cli: Bool = false) throws {
+        _ = StallWatchdog.started // #704: names what stalls the pool, on CI only
         base = FileManager.default.temporaryDirectory.appendingPathComponent("rp-\(UUID().uuidString.prefix(8))")
         root = base.appendingPathComponent("output"); record = base.appendingPathComponent("record")
         try FileManager.default.createDirectory(at: base, withIntermediateDirectories: false,
@@ -48,13 +50,36 @@ struct PublisherFixture: Sendable {
         try FileManager.default.removeItem(at: base)
     }
 
-    static func until(_ condition: @Sendable () async -> Bool) async throws {
-        let deadline = ContinuousClock.now.advanced(by: .seconds(4))
+    /// A `.watchdog` names its call site and whether the process stalled (#740): a couple of polls with a long sleep
+    /// overshoot is a stall, hundreds of polls with a false condition is a real wait that never came true.
+    ///
+    /// The budget is stall-tolerant (#740 step 2): each poll spends at most `pollCharge` of it, however long the poll
+    /// really took, so a CI process stall (#704) cannot use it up. A condition that never comes true still fails after
+    /// about `timeout / pollCharge` polls. `wallCap` bounds a run of repeated stalls; a process frozen for good is the
+    /// lane-silence detector's (#449). The thrown watchdog names the limit that tripped.
+    static func until(
+        timeout: Duration = .seconds(4), wallCap: Duration = .seconds(60), _ condition: @Sendable () async -> Bool,
+        fileID: String = #fileID, line: Int = #line
+    ) async throws {
+        let started = ContinuousClock.now
+        var polls = 0, spent = Duration.zero, overshoot = Duration.zero
+        var pollStarted = started
         while !(await condition()) {
-            guard ContinuousClock.now < deadline else { throw PublisherFixtureFailure.watchdog }
+            polls += 1
+            spent += min(pollStarted.duration(to: .now), pollCharge)
+            let elapsed = started.duration(to: .now)
+            if spent >= timeout || elapsed >= wallCap {
+                throw PublisherFixtureFailure.watchdog(
+                    at: "\(fileID):\(line)", limit: spent >= timeout ? "poll budget" : "wall cap", elapsed: elapsed,
+                    polls: polls, longestOvershoot: overshoot)
+            }
+            pollStarted = .now
             try await Task.sleep(for: .milliseconds(10))
+            overshoot = max(overshoot, pollStarted.duration(to: .now) - .milliseconds(10))
         }
     }
+
+    static let pollCharge: Duration = .milliseconds(20)
 
     static let job = """
     #!/usr/bin/perl
@@ -109,7 +134,9 @@ struct PublisherFixture: Sendable {
     """
 }
 
-enum PublisherFixtureFailure: Error { case watchdog }
+enum PublisherFixtureFailure: Error {
+    case watchdog(at: String, limit: String, elapsed: Duration, polls: Int, longestOvershoot: Duration)
+}
 
 final class PublisherCheckpoint: Sendable {
     private let ready = Mutex(false)
