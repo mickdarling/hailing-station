@@ -15,6 +15,36 @@ import Testing
         try CoachingParentTrust.verifyPeer(of: pair.child, pinFile: fixture.pin)
     }
 
+    /// Review of #667: the spawner controls the environment, so HAIL_CONFIG_DIR must not choose the pin. This is
+    /// the reported exploit: a pin of the caller's own signature in a directory it names.
+    @Test func hailConfigDirCannotChooseThePinThatVerifyPeerUses() throws {
+        let fixture = try Fixture()
+        try CoachingParentTrust.write(try selfPin(), to: fixture.pin)
+        let account = String(cString: try #require(getpwuid(getuid())?.pointee.pw_dir))
+        let expected = URL(fileURLWithPath: account).appendingPathComponent(".config/hail/coaching-trusted-app.json")
+        let previous = getenv("HAIL_CONFIG_DIR").map { String(cString: $0) }
+        setenv("HAIL_CONFIG_DIR", fixture.root.path, 1)
+        defer { if let previous { setenv("HAIL_CONFIG_DIR", previous, 1) } else { unsetenv("HAIL_CONFIG_DIR") } }
+        #expect(CoachingParentTrust.pinFile() == expected)
+        #expect(!CoachingParentTrust.pinFile().path.hasPrefix(fixture.root.path))
+        let pair = try SocketPair()
+        defer { pair.close() }
+        #expect(throws: CoachingCommandError.localControlRequired) {
+            try CoachingParentTrust.verifyPeer(of: pair.child) // The default path: the account's own pin.
+        }
+    }
+
+    @Test func pinSummaryNamesThePinnedAppForDoctorAndTheCard() throws {
+        let fixture = try Fixture()
+        #expect(CoachingParentTrust.pinSummary(pinFile: fixture.pin) == "none pinned")
+        let pin = CoachingTrustedApp(identifier: "com.example.authored", cdhash: String(repeating: "ab", count: 20),
+                                     teamID: nil)
+        try CoachingParentTrust.write(pin, to: fixture.pin)
+        #expect(CoachingParentTrust.pinSummary(pinFile: fixture.pin) == "com.example.authored, cdhash abababababab")
+        try FileManager.default.setAttributes([.posixPermissions: 0o644], ofItemAtPath: fixture.pin.path)
+        #expect(CoachingParentTrust.pinSummary(pinFile: fixture.pin).hasPrefix("pin file refused"))
+    }
+
     @Test func aPlainPipeOrFIFOIsRefusedEvenWithAMatchingPin() throws {
         let fixture = try Fixture()
         try CoachingParentTrust.write(try selfPin(), to: fixture.pin)

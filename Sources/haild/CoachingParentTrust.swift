@@ -1,6 +1,5 @@
 import Darwin
 import Foundation
-import HailDaemonKit
 import Security
 
 /// The app allowed to drive `haild coaching --parent-control` (#645). The owner records it with
@@ -41,8 +40,24 @@ struct CoachingTrustedApp: Codable, Equatable {
 
 /// Every refusal is `localControlRequired`, raised before any coaching configuration is parsed.
 enum CoachingParentTrust {
-    static func pinFile(environment: [String: String] = ProcessInfo.processInfo.environment) -> URL {
-        PolicyFile.standard(environment: environment).directory.appendingPathComponent(CoachingTrustedApp.fileName)
+    /// Always the account's own `~/.config/hail`, from the password database. The environment is ignored: the
+    /// spawner controls it, so `HAIL_CONFIG_DIR` or `HOME` must not be able to point haild at a pin it wrote.
+    /// Tests inject another file only through the `pinFile:` parameters below.
+    static func pinFile() -> URL {
+        guard let entry = getpwuid(getuid()), let home = entry.pointee.pw_dir else {
+            return URL(fileURLWithPath: "/nonexistent/\(CoachingTrustedApp.fileName)")
+        }
+        return URL(fileURLWithPath: String(cString: home), isDirectory: true)
+            .appendingPathComponent(".config/hail", isDirectory: true)
+            .appendingPathComponent(CoachingTrustedApp.fileName)
+    }
+
+    /// For `haild doctor` and the Mac card: which app is pinned, so a rewritten pin is noticeable.
+    static func pinSummary(pinFile: URL = pinFile()) -> String {
+        guard FileManager.default.fileExists(atPath: pinFile.path) else { return "none pinned" }
+        guard let pin = try? loadPin(pinFile) else { return "pin file refused (not private or malformed)" }
+        if let team = pin.teamID { return "\(pin.identifier), team \(team)" }
+        return "\(pin.identifier), cdhash \(pin.cdhash.map { String($0.prefix(12)) } ?? "?")"
     }
 
     /// The control socket's peer is the process that created the socketpair. Its audit token is fixed then, so a
