@@ -243,7 +243,19 @@ private func replyOptions(_ arguments: ArraySlice<String>) throws -> ReplyOption
         throw ReplyCommandError.invalid("vbsay output is fixed at 24000 Hz")
     }
     if options.rendererOutputRoot != nil, options.say == nil { throw ReplyCommandError.usage }
+    if let say = options.say { options.say = labelled(say, from: options.target) }
     return options
+}
+
+/// The owner's voice routes (#636) name the session that answered, in speech only; the text frame is unchanged.
+/// Unreadable routes leave the reply unlabelled, and say so: the reply itself still goes.
+private func labelled(_ say: String, from target: String) -> String {
+    do {
+        return try VoiceRoutes.load(VoiceRoutes.standardFile())?.spoken(say, from: target) ?? say
+    } catch {
+        note("voice routes unreadable (\(error)); reply not labelled")
+        return say
+    }
 }
 
 private func sendPCM(

@@ -138,3 +138,20 @@ import Testing
     }
 }
 #endif
+
+/// The spoken label of a reply (#636, slice 6): a route other than the default speaks its name first.
+@Suite(.frozenGuardBudget) struct VoiceRouteSpokenLabelTests {
+    @Test func aRouteOtherThanTheDefaultSpeaksItsNameFirst() throws {
+        let routes = try VoiceRoutesTests.routes()
+        #expect(routes.spoken("Added the slide.", from: "tmux:deck") == "Deck: Added the slide.")
+        #expect(routes.spoken("Tests pass.", from: "tmux:voicework11") == "Voice Work: Tests pass.")
+        #expect(routes.spoken("Hello.", from: "tmux:hailing-test") == "Hello.", "the default speaks as before")
+        #expect(routes.spoken("Hello.", from: "tmux:other") == "Hello.", "so does a target that is no route")
+    }
+
+    @Test func theFileSitsBesideThePolicy() {
+        #expect(VoiceRoutes.standardFile(environment: ["HAIL_CONFIG_DIR": "/tmp/hail-x"]).path
+            == "/tmp/hail-x/routes.json")
+        #expect(VoiceRoutes.standardFile(environment: [:]).path.hasSuffix("/.config/hail/routes.json"))
+    }
+}

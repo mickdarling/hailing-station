@@ -13,8 +13,9 @@ once is out of scope.
 | 2. Host listing: route names, offline routes and `--voice-routes` | Merged (#678, #686). Not deployed: `host.sh` does not pass the flag yet (slice 8). |
 | 3. Tap-to-talk routing and reply return (route group) | Merged (#688). Not deployed. |
 | 4a. Ambient dispatch may address a covered route (host authority) | Merged (#691). Not deployed. |
-| 4b. Ambient routing by the owner's own turn (RightyO consumer) | In review. Not deployed; needs route names in RightyO `addressing.names`. |
-| 5–8. Refusals, spoken and visual labels (7a model merged in #666), app selector | Proposed; see the [plan on #636](https://github.com/mickdarling/hailing-station/issues/636). |
+| 4b. Ambient routing by the owner's own turn (RightyO consumer) | Merged (#707). Not deployed; needs route names in RightyO `addressing.names`. |
+| 6. Spoken label in `haild reply` | In review. Not deployed. |
+| 5, 7–8. Refusals, visual label (7a model merged in #666), app selector | Proposed or in review; see the [plan on #636](https://github.com/mickdarling/hailing-station/issues/636). |
 
 Nothing below changes the running daemon or installed builds until a later slice wires it in and it is deployed.
 
@@ -139,7 +140,7 @@ route: "Deck, add a slide on pricing".
 
   A device that advertises `request_refusals` (#665) gets `voice_route_refused` for each of these instead, which ends
   the request and keeps the connection. An older app treats any non-ambient error frame as fatal and reconnects.
-  Showing the refusal on the device is slice 5b.
+  The app shows the refusal as one chat line and one announcement (slice 5b, #692, below).
 - **The reply comes back.** A delivered routed request makes this connection that route's last input device (#370),
   on its current selection generation. The selection *covers* a target when it is the selected target, or when both
   it and the selected target are routes. The reply checks (`holds`, request records, `recordOwner`, `selects`) use
@@ -220,3 +221,21 @@ and at the binding the policy allows).
 Verification is synthetic only: `RightyoInputVoiceRouteTests` and `RightyoInputVoiceRouteOwnerTests` (synthetic RightyO
 events and a recording dispatcher, plus one test end to end through the listener), `RightyoAmbientRoutedAnnounceTests`,
 `VoiceRouteAmbientAuditTests` and `VoiceRouteBindingTests`.
+
+## The spoken label (slice 6)
+
+`haild reply <target> --say '…'` reads `routes.json` from the policy directory (`~/.config/hail`, or
+`HAIL_CONFIG_DIR`). When `<target>` is a route other than the default, the spoken audio starts with the route's
+name: "Deck: Added the slide." The owner hears which session answered. The text frame is unchanged; the app labels
+it itself (slice 7).
+
+- The name is the owner's, looked up by the exact target id. It is never text the caller supplies.
+- The default route, and any target that is not a route, speak as before.
+- A missing file means no label. An unreadable file means no label plus a note on stderr. The reply itself still
+  goes either way.
+
+`haild reply` trusts its local caller for the target it names, as it always has. The owner-only reply socket is
+the boundary. So a session that runs `haild reply tmux:deck` speaks as Deck. It still reaches a device only under
+the reply-routing rules above.
+
+Verification is synthetic only (`VoiceRouteSpokenLabelTests`).
