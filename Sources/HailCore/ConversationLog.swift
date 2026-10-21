@@ -18,6 +18,8 @@ public struct ConversationEntry: Identifiable, Equatable, Sendable {
     /// The known guest who said an overheard turn (#434), from the host's `name`; nil shows "Someone". Never the
     /// owner's, never logged.
     public var name: String?
+    /// A reply's unspoken Markdown (#606), shown beside its spoken `text` through `MessageMarkdown`; never spoken.
+    public var metadata: String?
     /// A reply from another session that answers a request the user addressed to it by name from the thread it
     /// arrived in (#636): that session's listed name, shown as the reply's label. Nil for every other entry.
     public var source: String?
@@ -129,6 +131,7 @@ public final class ConversationLog {
         let id = "\(event.endpointID)|\(reply.id.uuidString.lowercased())"
         if let index = entries.firstIndex(where: { $0.id == id }) {
             entries[index].text = payload.text
+            entries[index].metadata = payload.metadata
             return
         }
         var entry = ConversationEntry(
@@ -150,6 +153,7 @@ public final class ConversationLog {
                 placements.removeFirst(placements.count - AddressedRequest.limit)
             }
         }
+        entry.metadata = payload.metadata
         append(entry)
     }
 

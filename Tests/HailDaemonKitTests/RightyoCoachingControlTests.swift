@@ -11,7 +11,7 @@ private final class CoachingControlFailures: Sendable {
     var total: Int { value.withLock { $0 } }
 }
 
-@Suite(.serialized, .timeLimit(.minutes(1))) struct RightyoCoachingControlTests {
+@Suite(.serialized, .timeLimit(.minutes(1)), .frozenGuardBudget) struct RightyoCoachingControlTests {
     private struct Channel {
         let writer: RightyoCoachingControlWriter
         let readEnd: Int32

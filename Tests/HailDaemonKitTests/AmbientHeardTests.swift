@@ -7,7 +7,7 @@ import Testing
 
 /// The user's own ambient request in the thread (#318): the speaking device is told what it said, once per delivered
 /// request, before the acknowledgement and before the request is typed, and the words are never logged.
-@Suite(.serialized, .timeLimit(.minutes(1))) struct AmbientWiringHeardTests {
+@Suite(.serialized, .timeLimit(.minutes(1)), .frozenGuardBudget) struct AmbientWiringHeardTests {
     static let heard = "Rightyo, check our discussion."
     static let clip = AmbientAckClip(pcm: Data(repeating: 1, count: 480), sampleRate: 24_000, text: "On it.")
     static let capable = ["probe", AmbientHeard.capability]
