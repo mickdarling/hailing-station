@@ -20,7 +20,10 @@ public struct ConversationEntry: Identifiable, Equatable, Sendable {
     public var name: String?
     /// A reply's unspoken Markdown (#606), shown beside its spoken `text` through `MessageMarkdown`; never spoken.
     public var metadata: String? {
-        didSet { metadataBlocks = metadata.map(MessageMarkdown.blocks) ?? [] }
+        didSet {
+            guard metadata != oldValue else { return } // A repeated text frame with the same details is not re-parsed.
+            metadataBlocks = metadata.map(MessageMarkdown.blocks) ?? []
+        }
     }
     /// `metadata` parsed once when it is set, not on every redraw or context menu.
     public private(set) var metadataBlocks: [MarkdownBlock] = []

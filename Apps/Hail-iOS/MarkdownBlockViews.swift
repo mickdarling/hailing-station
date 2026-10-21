@@ -18,7 +18,7 @@ struct CodeBlockView: View {
         }
         .background(.quinary, in: RoundedRectangle(cornerRadius: 8, style: .continuous))
         .contextMenu {
-            Button("Copy Code", systemImage: "doc.on.doc") { UIPasteboard.general.string = code }
+            Button("Copy Code", systemImage: "doc.on.doc") { StationPlatform.copy(code) }
         }
         .accessibilityElement(children: .combine)
         .accessibilityLabel(language.map { "\($0) code" } ?? "Code")

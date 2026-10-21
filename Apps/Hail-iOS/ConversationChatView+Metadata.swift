@@ -26,7 +26,7 @@ extension ConversationChatView {
     @ViewBuilder
     func detailsActions(_ entry: ConversationEntry, segments: [MessageSegment]) -> some View {
         if let metadata = entry.metadata {
-            Button("Copy Details", systemImage: "doc.plaintext") { UIPasteboard.general.string = metadata }
+            Button("Copy Details", systemImage: "doc.plaintext") { StationPlatform.copy(metadata) }
         }
         linkActions(segments)
         linkActions(Self.metadataLinks(entry.metadataBlocks))
