@@ -54,7 +54,7 @@ extension MarkdownBlockParser {
                 index = item.line // The rest of the list, from this item on, is kept as plain text by `parse`.
                 return
             }
-            blocks.append(.listItem(depth: depth, marker: item.marker, text: MessageMarkdown.inline(item.text)))
+            add(.listItem(depth: depth, marker: item.marker, text: MessageMarkdown.inline(item.text)), from: item.line)
         }
     }
 
@@ -94,6 +94,7 @@ extension MarkdownBlockParser {
     }
 
     mutating func table() {
+        let start = index
         let allHeader = Self.cells(lines[index])
         let header = Array(allHeader.prefix(MessageMarkdown.maxColumns))
         var truncated = allHeader.count > header.count
@@ -113,6 +114,6 @@ extension MarkdownBlockParser {
         }
         var table = MarkdownTable(header: header.map(MessageMarkdown.inline), rows: rows)
         table.truncated = truncated
-        blocks.append(.table(table))
+        add(.table(table), from: start)
     }
 }
