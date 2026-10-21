@@ -50,24 +50,34 @@ struct PublisherFixture: Sendable {
 
     /// A `.watchdog` names its call site and whether the process stalled (#740): a couple of polls with a long sleep
     /// overshoot is a stall, hundreds of polls with a false condition is a real wait that never came true.
+    ///
+    /// The budget is stall-tolerant (#740 step 2): each poll spends at most `pollCharge` of it, however long the poll
+    /// really took, so a CI process stall (#704) cannot use it up. A condition that never comes true still fails after
+    /// about `timeout / pollCharge` polls. `wallCap` bounds a run of repeated stalls; a process frozen for good is the
+    /// lane-silence detector's (#449). The thrown watchdog names the limit that tripped.
     static func until(
-        timeout: Duration = .seconds(4), _ condition: @Sendable () async -> Bool,
+        timeout: Duration = .seconds(4), wallCap: Duration = .seconds(60), _ condition: @Sendable () async -> Bool,
         fileID: String = #fileID, line: Int = #line
     ) async throws {
         let started = ContinuousClock.now
-        let deadline = started.advanced(by: timeout)
-        var polls = 0, overshoot = Duration.zero
+        var polls = 0, spent = Duration.zero, overshoot = Duration.zero
+        var pollStarted = started
         while !(await condition()) {
             polls += 1
-            guard ContinuousClock.now < deadline else {
-                throw PublisherFixtureFailure.watchdog(at: "\(fileID):\(line)", elapsed: started.duration(to: .now),
-                                                       polls: polls, longestOvershoot: overshoot)
+            spent += min(pollStarted.duration(to: .now), pollCharge)
+            let elapsed = started.duration(to: .now)
+            if spent >= timeout || elapsed >= wallCap {
+                throw PublisherFixtureFailure.watchdog(
+                    at: "\(fileID):\(line)", limit: spent >= timeout ? "poll budget" : "wall cap", elapsed: elapsed,
+                    polls: polls, longestOvershoot: overshoot)
             }
-            let slept = ContinuousClock.now
+            pollStarted = .now
             try await Task.sleep(for: .milliseconds(10))
-            overshoot = max(overshoot, slept.duration(to: .now) - .milliseconds(10))
+            overshoot = max(overshoot, pollStarted.duration(to: .now) - .milliseconds(10))
         }
     }
+
+    static let pollCharge: Duration = .milliseconds(20)
 
     static let job = """
     #!/usr/bin/perl
@@ -123,7 +133,7 @@ struct PublisherFixture: Sendable {
 }
 
 enum PublisherFixtureFailure: Error {
-    case watchdog(at: String, elapsed: Duration, polls: Int, longestOvershoot: Duration)
+    case watchdog(at: String, limit: String, elapsed: Duration, polls: Int, longestOvershoot: Duration)
 }
 
 final class PublisherCheckpoint: Sendable {
