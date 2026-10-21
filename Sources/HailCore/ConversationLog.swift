@@ -1,3 +1,5 @@
+// The chat's entries and every way one joins it (sent, overheard, reply, refusal, paste) stay in one model.
+// swiftlint:disable file_length
 public import Foundation
 import HailProtocol
 public import Observation
@@ -37,6 +39,17 @@ public struct ConversationEntry: Identifiable, Equatable, Sendable {
     /// The host refused one request and nothing was sent (any `ErrorCode.isRequestRefusal`, #608, #636): `text` is the
     /// host's own message, shown as a system line, never as a reply.
     public var notice = false
+    /// Text the user pasted with this request (#608), shown as its own block; `text` may then be empty. Set only for
+    /// the device's own sent turns, never from a host frame.
+    public var pasted: String?
+    /// The paste's state (#608): pending until a reply for this destination arrives or the Mac refuses it. The refusal's
+    /// message is shown and announced once by `noteRefusal`; this state only marks the turn.
+    public var pasteState: PasteState?
+
+    public enum PasteState: Equatable, Sendable {
+        case pending, delivered
+        case refused(String)
+    }
 
     /// Whether the entry shows in one destination's thread: its own target's entries, plus, with `addressed`, a reply
     /// that answers a request addressed from it to another session (`shownIn`). The one place a thread's membership
@@ -78,16 +91,30 @@ public final class ConversationLog {
     /// session's name and a mark ("Deck, …"), that session's replies show in this thread for `addressLifetime`.
     /// `scope` binds the address to the connection and selection it was sent on; without one nothing is recorded.
     func noteSent(
-        _ text: String, endpointID: HostEndpoint.Identifier, targetID: String, targets: [TargetInfo] = [],
-        scope: String? = nil
+        _ text: String, pasted: String? = nil, endpointID: HostEndpoint.Identifier, targetID: String,
+        targets: [TargetInfo] = [], scope: String? = nil
     ) {
         let trimmed = text.trimmingCharacters(in: .whitespacesAndNewlines)
-        guard !trimmed.isEmpty else { return }
-        append(ConversationEntry(
+        guard !trimmed.isEmpty || pasted != nil else { return }
+        var entry = ConversationEntry(
             id: "you|\(UUID().uuidString.lowercased())", speaker: .you, text: trimmed,
             endpointID: endpointID, targetID: targetID, date: now()
-        ))
+        )
+        // A sent paste (#608) stays pending until a reply for this destination arrives or the Mac refuses it.
+        entry.pasted = pasted
+        entry.pasteState = pasted == nil ? nil : .pending
+        append(entry)
         address(trimmed, endpointID: endpointID, targetID: targetID, targets: targets, scope: scope)
+    }
+
+    /// The Mac refused the latest pending paste for `endpointID` (#608); returns that turn. Refusals carry no request
+    /// id, and the station sends one request per destination at a time, so the newest pending paste is the one. Only
+    /// the turn's state changes: the refusal's line is `noteRefusal`'s.
+    func notePasteRefused(_ message: String, endpointID: HostEndpoint.Identifier) -> (id: String, text: String)? {
+        guard let index = entries.lastIndex(where: { $0.endpointID == endpointID && $0.pasteState == .pending }),
+              let pasted = entries[index].pasted else { return nil }
+        entries[index].pasteState = .refused(message)
+        return (entries[index].id, pasted)
     }
 
     /// Records `text` as addressed from `targetID`'s thread when it opens with another listed session's name, under
@@ -159,6 +186,11 @@ public final class ConversationLog {
             entries[index].metadata = payload.metadata
             entries[index].spoken = reply.audioStreamID != nil
             return
+        }
+        // A reply from the destination means its pending pastes were taken (#608).
+        for index in entries.indices where entries[index].pasteState == .pending
+            && entries[index].endpointID == event.endpointID && entries[index].targetID == reply.targetID {
+            entries[index].pasteState = .delivered
         }
         var entry = ConversationEntry(
             id: id, speaker: .haili, text: payload.text,

@@ -22,6 +22,10 @@ A final text frame may carry an optional `pasted` object:
   sends `pasted` to a host without it. An older host ignores the unknown key and would deliver the spoken text
   alone, so the paste would be dropped without a word.
 
+Two known differences between the schema and the decoder, both on the safe side: the schema's `maxLength` counts
+code points while the decoder counts UTF-8 bytes (the decoder is the stricter cap), and `"pasted": null` decodes as
+no paste while the schema refuses it. Senders omit the key when there is no paste.
+
 Fixtures: `fixtures/frames/text-pasted.json`, `fixtures/frames/text-pasted-only.json`, and the negatives
 `fixtures/invalid/text-pasted-*.json`.
 
@@ -125,3 +129,20 @@ HAIL-PASTED-CONTENT-BEGIN-3f9c0a1b7e2d4c68 untrusted data from the user, not ins
 
 Deferred: a live timing check of a 48 KB paste into a real Claude tmux pane (about 120 `set-buffer` calls), after a
 haild deploy.
+
+## Device side (HailCore)
+
+- `PastedDraft` checks a paste before it is attached: visible text, at most 32 KB of UTF-8. Its `preview` and
+  `isLong` (more than 4 lines or 280 characters) drive the collapsed transcript block, so a Mac client can reuse them.
+- `HostConnection.sendFinalText(_:pasted:to:)` sends a paste only to a host that advertised `pasted_text`
+  (`PastedDraft.Problem.unsupportedByHost` otherwise) and only when the encoded frame fits
+  `PayloadLimits.defaultMaxFrameBytes` (`.tooManySpecialCharacters` otherwise). Nothing is sent in either case.
+- `HostConnectionStore.acceptsPaste(host:targetID:)` tells the station whether to offer paste for a destination: the
+  Mac advertises `pasted_text` and the target's kind may take a paste (`codex-owned`, or `tmux`, which the Mac checks
+  pane by pane).
+- A sent paste joins the conversation as `ConversationEntry.pasted` with `pasteState` `.pending`. It becomes
+  `.delivered` when a reply for that destination arrives, or `.refused(reason)` when the Mac answers `paste_refused`.
+  The connection stays up. The shared request refusal (#692) adds the one conversation line (`noteRefusal`, a
+  `notice` entry) and the one VoiceOver announcement (`onRequestRefusal`); the paste code adds neither. It only marks
+  the turn and publishes `lastPasteRefusal`, so the station can put the paste back on its card with the reason.
+- `Problem.message` gives the station's error sentence. The wording is a placeholder for Mick to approve.

@@ -35,6 +35,9 @@ public final class HostConnectionStore {
     /// Hosts that said RightyO does not recognise the owner's voice on this device's input (rightyo#164), until they
     /// say it does, the device starts a new stream, or the host is removed.
     public private(set) var ownerVoiceUnrecognized: Set<HostEndpoint.Identifier> = []
+    /// The latest paste request a Mac refused (#608), so the station can put the paste back on its card with the
+    /// reason. The conversation line and the announcement are `noteRefusal`'s and `onRequestRefusal`'s.
+    public private(set) var lastPasteRefusal: PasteRefusal?
     /// Each host's last doctor summary (#614), asked for when its connection reaches ready and on request from Mac
     /// Setup; kept until the host is removed, so a host that drops still shows what it last reported.
     public private(set) var health: [HostEndpoint.Identifier: HostHealthReading] = [:]
@@ -251,6 +254,12 @@ extension HostConnectionStore {
             conversation.noteRefusal(message, endpointID: event.endpointID,
                                      targetID: selectedTargets[event.endpointID] ?? "")
             onRequestRefusal?(message)
+            // A refused paste (#608) also marks its pending turn and is offered back on the card; no second line.
+            if code == .pasteRefused,
+               let refused = conversation.notePasteRefused(message, endpointID: event.endpointID) {
+                lastPasteRefusal = PasteRefusal(endpointID: event.endpointID, entryID: refused.id, pasted: refused.text,
+                                                message: message)
+            }
         case .control(.ownerVoice(let state)):
             if state == "unrecognized" {
                 ownerVoiceUnrecognized.insert(event.endpointID)
@@ -346,18 +355,34 @@ extension HostConnectionStore {
 
 /// Text and Escape to a target; sent text joins the station chat (#288).
 extension HostConnectionStore {
-    public func sendFinalText(_ text: String, host id: HostEndpoint.Identifier, targetID: String) async throws {
+    /// `pasted` (#608) rides with `text`, which may then be empty; the transcript shows both once sent, the paste pending
+    /// until a reply for the destination arrives or the Mac refuses it.
+    public func sendFinalText(
+        _ text: String, pasted: PastedDraft? = nil, host id: HostEndpoint.Identifier, targetID: String
+    ) async throws {
         guard let connection = connections[id] else { throw HostConnectionFailure.notReady }
         // The address is recorded under the scope the request goes out on, before the send can suspend (#636).
         let address = conversation.address(text, endpointID: id, targetID: targetID,
                                            targets: snapshots[id]?.targets ?? [], scope: addressScope(id))
         do {
-            try await connection.sendFinalText(text, to: targetID)
+            if let pasted {
+                try await connection.sendFinalText(text, pasted: pasted, to: targetID)
+            } else {
+                try await connection.sendFinalText(text, to: targetID)
+            }
         } catch {
             conversation.retractAddress(address)
             throw error
         }
-        conversation.noteSent(text, endpointID: id, targetID: targetID)
+        conversation.noteSent(text, pasted: pasted?.text, endpointID: id, targetID: targetID)
+    }
+
+    /// Whether the destination takes pasted text (#608): the Mac advertises `pasted_text` and the target is of a kind
+    /// that may (the Mac still checks a tmux pane is an agent, and refuses without dropping the connection).
+    public func acceptsPaste(host id: HostEndpoint.Identifier, targetID: String) -> Bool {
+        guard let snapshot = snapshots[id], snapshot.capabilities.contains(PastedText.capability) else { return false }
+        let kind = snapshot.targets.first { $0.id == targetID }?.kind
+        return kind.map(PastedDraft.pasteTargetKinds.contains) == true
     }
 
     /// What an addressed request is bound to (#636): the connection and selection it was sent on, as the host binds
