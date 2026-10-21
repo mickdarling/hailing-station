@@ -159,6 +159,12 @@ public final class HostConnectionStore {
         health[id] = nil
         order.removeAll { $0 == id }
     }
+    /// The station's connection check (#385) for `ids` only: as `sceneBecameActive`, a ready host is pinged and one
+    /// trying to recover skips its backoff. A host disconnected in Mac Setup stays disconnected.
+    public func checkConnection(_ ids: [HostEndpoint.Identifier]) async {
+        for id in ids { await connections[id]?.foregrounded() }
+    }
+
     /// Active hosts are pinged; hosts already trying to recover skip their backoff and reconnect now.
     public func sceneBecameActive() async {
         for id in order {

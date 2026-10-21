@@ -75,6 +75,11 @@ public enum Schema {
             "text": .object(["type": .string("string"), "maxLength": .integer(Int64(PayloadLimits.maxTextBytes))]),
             "final": .object(["type": .string("boolean")]),
             "reply": .object(["$ref": .string("#/$defs/reply")]),
+            // #606: a reply's unspoken Markdown; only beside `reply`, never empty.
+            "metadata": .object([
+                "type": .string("string"), "minLength": .integer(1),
+                "maxLength": .integer(Int64(PayloadLimits.maxMetadataBytes))
+            ]),
             "pasted": requiring(["text"], [
                 "text": .object([
                     "type": .string("string"), "minLength": .integer(1),
@@ -82,8 +87,12 @@ public enum Schema {
                 ])
             ])
         ]),
-        // #608: a paste rides only on a final frame.
         "allOf": .array([
+            .object([
+                "if": .object(["required": .array([.string("metadata")])]),
+                "then": .object(["required": .array([.string("reply")])])
+            ]),
+            // #608: a paste rides only on a final frame.
             .object([
                 "if": .object(["required": .array([.string("pasted")])]),
                 "then": .object(["properties": .object(["final": .object(["const": .bool(true)])])])
@@ -168,7 +177,7 @@ public enum Schema {
                     "hello", "list_targets", "targets", "select", "subscribe", "unsubscribe", "escape", "ping", "pong",
                     "error", "diagnostic", "stop_playback", "ambient_moved_here", "ambient_heard",
                     "ambient_overheard", "overheard_scope", "set_reply_mute", "owner_voice", "ambient_input",
-                    "health", "health_report"
+                    "health", "health_report", "media_mode"
                 ]
                     .map(JSONValue.string)
             )]),
@@ -217,6 +226,7 @@ public enum Schema {
             commandRule("owner_voice", requires: ["state"]),
             commandRule("ambient_input", requires: ["route"]),
             commandRule("health_report", requires: ["report"]),
+            commandRule("media_mode", requires: ["on"]),
             diagnosticPayloadRule,
             stopPlaybackPayloadRule,
             ambientMovedHerePayloadRule,
@@ -227,7 +237,8 @@ public enum Schema {
             ownerVoicePayloadRule,
             ambientInputPayloadRule,
             healthPayloadRule,
-            healthReportPayloadRule
+            healthReportPayloadRule,
+            mediaModePayloadRule
         ])
     ])
 }

@@ -34,7 +34,7 @@ import HailProtocolFixtures
             "hello", "listTargets", "targets", "select", "subscribe", "unsubscribe", "escape", "ping", "pong",
             "error", "diagnostic", "stopPlayback", "ambientMovedHere", "ambientHeard", "ambientOverheard",
             "overheardScope", "setReplyMute", "ownerVoice", "ambientInput",
-            "health", "healthReport"
+            "health", "healthReport", "mediaMode"
         ]
         #expect(Fixtures.controlCommandsCovered == expected)
     }
