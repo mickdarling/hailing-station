@@ -17,6 +17,8 @@ public enum SessionUpdateRefusal: Sendable, Equatable {
     case rateLimited(retryAfter: Duration)
     /// Every held slot is an `action` update the user has not heard yet.
     case full
+    /// The update is older than the policy's lifetime; it would be dropped unspoken.
+    case expired
 }
 
 /// What offered a drain of the held updates.
@@ -66,12 +68,15 @@ public struct SessionUpdateQueue: Sendable, Equatable {
     }
 
     /// Holds an update without spending budget, for one whose immediate speech failed. The push follows the same
-    /// rule as `submit`, from the audience now: an `action` is pushed to the target unless quiet is on. Holding the
-    /// same update twice keeps one copy.
+    /// rule as `submit`, from the audience now: an `action` is pushed to the target unless quiet is on. Idempotent
+    /// per update id: holding one already held keeps one copy and pushes nothing again. An expired update is refused.
     public mutating func hold(
         _ update: SessionUpdate, audience: SessionUpdateAudience, at now: Instant
     ) -> SessionUpdateDecision {
         guard policy.enabled else { return .refused(.disabled) }
+        expire(now: now)
+        guard update.submitted.duration(to: now) < policy.lifetime else { return .refused(.expired) }
+        guard !held.contains(where: { $0.id == update.id }) else { return .held(push: nil) }
         guard keep(update, now: now) else { return .refused(.full) }
         return .held(push: Self.push(update, audience: audience))
     }
@@ -83,12 +88,25 @@ public struct SessionUpdateQueue: Sendable, Equatable {
     private mutating func keep(_ update: SessionUpdate, now: Instant) -> Bool {
         expire(now: now)
         guard !held.contains(where: { $0.id == update.id }) else { return true }
-        if held.count >= max(policy.capacity, 0) {
-            guard let oldest = held.firstIndex(where: { $0.priority == .info }) else { return false }
-            held.remove(at: oldest)
+        // The session's own cap first, so one session's updates never crowd out another's; then the shared one.
+        if held.count(where: { $0.session == update.session }) >= max(policy.perSessionHeld, 0) {
+            guard evictOldestInfo(where: { $0.session == update.session }) else { return false }
         }
-        guard held.count < policy.capacity else { return false }
+        if held.count >= max(policy.capacity, 0) {
+            guard evictOldestInfo(where: { _ in true }) else { return false }
+        }
+        guard held.count < policy.capacity,
+              held.count(where: { $0.session == update.session }) < policy.perSessionHeld else { return false }
         held.append(update)
+        return true
+    }
+
+    /// Drops the oldest matching `info` by submit time, the earliest held among equals (the drain order). False
+    /// when no `info` matches.
+    private mutating func evictOldestInfo(where matches: (SessionUpdate) -> Bool) -> Bool {
+        guard let oldest = held.indices.filter({ held[$0].priority == .info && matches(held[$0]) })
+            .min(by: { held[$0].submitted < held[$1].submitted }) else { return false }
+        held.remove(at: oldest)
         return true
     }
 
