@@ -318,9 +318,16 @@ extension HostConnectionStore {
 extension HostConnectionStore {
     public func sendFinalText(_ text: String, host id: HostEndpoint.Identifier, targetID: String) async throws {
         guard let connection = connections[id] else { throw HostConnectionFailure.notReady }
-        try await connection.sendFinalText(text, to: targetID)
-        conversation.noteSent(text, endpointID: id, targetID: targetID, targets: snapshots[id]?.targets ?? [],
-                              scope: addressScope(id))
+        // The address is recorded under the scope the request goes out on, before the send can suspend (#636).
+        let address = conversation.address(text, endpointID: id, targetID: targetID,
+                                           targets: snapshots[id]?.targets ?? [], scope: addressScope(id))
+        do {
+            try await connection.sendFinalText(text, to: targetID)
+        } catch {
+            conversation.retractAddress(address)
+            throw error
+        }
+        conversation.noteSent(text, endpointID: id, targetID: targetID)
     }
 
     /// What an addressed request is bound to (#636): the connection and selection it was sent on, as the host binds

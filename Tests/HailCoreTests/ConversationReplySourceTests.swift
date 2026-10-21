@@ -12,7 +12,8 @@ import Testing
         TargetInfo(id: "tmux:scratch", kind: "tmux", name: "Hailing Scratch", alive: true),
         TargetInfo(id: "tmux:deck", kind: "tmux", name: "Deck", alive: true),
         TargetInfo(id: "tmux:voice", kind: "tmux", name: "Voice Work", alive: true),
-        TargetInfo(id: "tmux:claude-hail", kind: "tmux", name: "claude-hail", alive: true)
+        TargetInfo(id: "tmux:claude-hail", kind: "tmux", name: "claude-hail", alive: true),
+        TargetInfo(id: "tmux:cafe", kind: "tmux", name: "Café", alive: true)
     ]
 
     private final class Clock: @unchecked Sendable {
@@ -91,6 +92,23 @@ import Testing
         #expect(thread.map(\.text) == ["Added it."])
     }
 
+    /// Tap-to-talk records the address before sending (Codex review on #666): a reply that arrives before the send
+    /// returns is still placed, and a send that fails takes its address back.
+    @Test func anAddressRecordedBeforeTheSendPlacesAFastReplyAndAFailedSendRetractsIt() {
+        let log = ConversationLog()
+        log.address("Deck, add a slide", endpointID: "mac", targetID: "tmux:scratch", targets: Self.targets,
+                    scope: "s1")
+        log.noteReply(reply("Fast.", from: "tmux:deck"), selected: "tmux:scratch", scope: "s1")
+        log.noteSent("Deck, add a slide", endpointID: "mac", targetID: "tmux:scratch")
+        let failed = log.address("Deck, again", endpointID: "mac", targetID: "tmux:scratch", targets: Self.targets,
+                                 scope: "s1")
+        #expect(failed != nil)
+        log.retractAddress(failed)
+        log.noteReply(reply("Not for a failed send.", from: "tmux:deck"), selected: "tmux:scratch", scope: "s1")
+        let placed = log.entries(endpointID: "mac", targetID: "tmux:scratch").filter { $0.speaker == .haili }
+        #expect(placed.map(\.text) == ["Fast."] && placed.first?.source == "Deck")
+    }
+
     @Test func thePlacementIsFixedAtTheFirstText() {
         let log = ConversationLog()
         let id = UUID()
@@ -104,7 +122,8 @@ import Testing
         ("Deck, add a slide", "tmux:deck"), ("hey deck - status", "tmux:deck"), ("Voice Work: run it", "tmux:voice"),
         ("Okay hailing scratch, hi", "tmux:scratch"), ("Deck", nil), ("Deck is stopped, check it", nil),
         ("Deck-building is next", nil), ("Can Deck, add a slide", nil), ("Sales, how are we?", nil),
-        ("claude-hail, status", "tmux:claude-hail"), ("Hey claude-hail - status", "tmux:claude-hail")
+        ("claude-hail, status", nil), ("Voice, Work, status", nil), ("Hey, Deck, add a slide", "tmux:deck"),
+        ("Café, hi", nil)
     ])
     func onlyAListedNameAndAMarkAtTheStartAddressASession(_ text: String, _ target: String?) {
         #expect(AddressedRequest.target(addressedIn: text, among: Self.targets)?.id == target)

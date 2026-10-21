@@ -66,11 +66,26 @@ public final class ConversationLog {
             id: "you|\(UUID().uuidString.lowercased())", speaker: .you, text: trimmed,
             endpointID: endpointID, targetID: targetID, date: now()
         ))
-        guard let scope, let named = AddressedRequest.target(addressedIn: trimmed, among: targets),
-              named.id != targetID else { return }
-        addressed.append(AddressedRequest(endpointID: endpointID, thread: targetID, target: named, at: now(),
-                                          scope: scope))
+        address(trimmed, endpointID: endpointID, targetID: targetID, targets: targets, scope: scope)
+    }
+
+    /// Records `text` as addressed from `targetID`'s thread when it opens with another listed session's name, under
+    /// `scope`; returns the record's id so a send that fails can take it back (`retractAddress`), or nil when nothing
+    /// was recorded. Tap-to-talk calls it before sending, so a fast reply cannot arrive ahead of its address.
+    @discardableResult
+    func address(
+        _ text: String, endpointID: HostEndpoint.Identifier, targetID: String, targets: [TargetInfo], scope: String?
+    ) -> UUID? {
+        guard let scope, let named = AddressedRequest.target(addressedIn: text, among: targets),
+              named.id != targetID else { return nil }
+        let request = AddressedRequest(endpointID: endpointID, thread: targetID, target: named, at: now(), scope: scope)
+        addressed.append(request)
         if addressed.count > AddressedRequest.limit { addressed.removeFirst(addressed.count - AddressedRequest.limit) }
+        return request.id
+    }
+
+    func retractAddress(_ id: UUID?) {
+        addressed.removeAll { $0.id == id }
     }
 
     /// A turn the ambient stream heard but did not send (#398), as the owner's or someone else's, with a known
