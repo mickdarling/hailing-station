@@ -52,8 +52,23 @@ import Testing
         #expect(await service.current() == Self.minimal)
         #expect(await service.current() == Self.minimal)
         #expect(ContinuousClock.now - started < .seconds(2))
-        #expect(evaluations.withLock { $0 } == 1) // the stuck one stays in flight, never restarted
+        // The stuck one stays in flight and is never restarted. It may not have reached the queue yet on a busy
+        // runner, so this waits for it to start rather than reading the counter once.
+        #expect(await eventually { evaluations.withLock { $0 } == 1 })
         release.signal()
+        #expect(await eventually { await service.current() == Self.report })
+        #expect(evaluations.withLock { $0 } == 1)
+    }
+
+    /// Primed at startup, the first request finds the result instead of waiting for a cold evaluation (#690 review).
+    @Test func aPrimedServiceAnswersTheFirstRequestFromItsResult() async {
+        let evaluations = Mutex(0)
+        let service = HostHealthService(deadline: .milliseconds(1), fallback: Self.minimal, evaluate: {
+            evaluations.withLock { $0 += 1 }
+            return Self.report
+        })
+        service.prime()
+        service.prime() // a second prime never starts a second evaluation
         #expect(await eventually { await service.current() == Self.report })
         #expect(evaluations.withLock { $0 } == 1)
     }

@@ -57,8 +57,10 @@ public enum HostHealthSummary {
 /// evaluation: a result at most `ttl` old is answered as is; an older one is answered at once while a single refresh
 /// runs in the background; with none yet, the request waits at most `deadline`, then gets a minimal report. Each
 /// evaluation runs on its own low-priority queue, never the cooperative pool, and at most one is in flight, shared by
-/// every request, so a stuck one is never restarted. So a cache miss never holds up the connection's other frames
-/// (ambient audio), and any number of devices or repeats cost at most one evaluation per window.
+/// every request, so a stuck one is never restarted. The daemon's service starts its first evaluation when it is
+/// created, so a request after startup normally finds a result; at worst a request waits `deadline`, never longer,
+/// before the connection's other frames (ambient audio) continue. Any number of devices or repeats cost at most one
+/// evaluation per window.
 public final class HostHealthService: Sendable {
     public static let defaultTTL: Duration = .seconds(30)
     public static let defaultDeadline: Duration = .seconds(8)
@@ -81,6 +83,15 @@ public final class HostHealthService: Sendable {
     public convenience init() {
         let build = BuildIdentity.current()
         self.init(fallback: HostHealthSummary.fallback(build: build)) { HostHealthSummary.evaluate(build: build) }
+        prime()
+    }
+
+    /// Starts the first evaluation now, off the cooperative pool, so the first `health` request after startup does
+    /// not wait for a cold one (#690 review).
+    func prime() {
+        state.withLock { state in
+            if state.cached == nil, state.inFlight == nil { state.inFlight = startEvaluation() }
+        }
     }
 
     init(ttl: Duration = defaultTTL, deadline: Duration = defaultDeadline,
