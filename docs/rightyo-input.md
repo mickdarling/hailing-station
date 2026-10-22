@@ -668,7 +668,9 @@ About a minute before the auto-end, `haild` plays a clip from the reserved `conf
 
 - It plays only while that same arming of duck mode is still on and a child of the connection runs.
 - It is armed and cancelled with the auto-end. The spoken exit, entering media mode, a child that cannot take duck mode, or the connection's end before then means no warning. Saying the entry again re-arms both, so the owner hears one warning, a minute before the new end.
-- A timeout of a minute or less (`ambient.duckTimeout` 60) has no warning.
+- A timeout under twice the lead (`ambient.duckTimeout` under 120) has no warning.
+- A warning that comes due with less than half a minute left (the Mac woke near or past the end) is skipped and logged `skipped=late`. The auto-end itself is unaffected.
+- A warning checked just before an exit can still play a few milliseconds after it: the check and the clip's send are not one step.
 
 #### The duck buffer and ask cues (#735 H-3)
 

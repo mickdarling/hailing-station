@@ -25,7 +25,7 @@ extension AmbientRightyoRouter {
     /// The `ambient.duckTimeout` values `haild` accepts, in seconds: a minute to four hours.
     public static let duckTimeoutRange: ClosedRange<TimeInterval> = 60...(4 * 3600)
     /// How long before the auto-end the owner hears `confirm-duck-ending/` (#735 H-4): a minute, enough to say the
-    /// entry again (which re-arms it) or wrap up. A timeout no longer than this has no warning.
+    /// entry again (which re-arms it) or wrap up. A timeout under twice this (two minutes) has no warning.
     static let defaultDuckWarningLead: TimeInterval = 60
 
     /// The owner's spoken duck mode (#735): set for every child of `connection` at once, then confirmed with a
@@ -120,20 +120,36 @@ extension AmbientRightyoRouter {
 }
 
 extension AmbientRightyoRouter {
-    /// The auto-end warning for one arming of duck mode (#735 H-4), or nil when `timeout` is no longer than the lead:
+    /// The auto-end warning for one arming of duck mode (#735 H-4), or nil when `timeout` is under twice the lead:
     /// after `timeout` less the lead it plays `confirm-duck-ending/` on `connection`, only if that same arming is still
     /// on and a child of the connection runs. Cancelled with the auto-end (`AmbientDuckTimer.cancel`), so an exit, a
-    /// re-entry, media mode or the connection's end before then means no warning; a re-entry arms a fresh one.
+    /// re-entry, media mode or the connection's end before then means no warning; a re-entry arms a fresh one. A
+    /// warning that comes due with less than half the lead left (the Mac woke near or past the end) is skipped and
+    /// logged `skipped=late`; the auto-end task is separate and unaffected.
     func duckWarning(connection: UUID, token: UUID, timeout: TimeInterval,
                      listener: WebSocketListener?) -> Task<Void, Never>? {
         let lead = configuration.duckWarningLead
-        guard lead > 0, timeout > lead else { return nil }
+        guard lead > 0, timeout >= 2 * lead else { return nil }
+        let deadline = Date().addingTimeInterval(timeout)
         return Task { [weak self, weak listener] in
             try? await Task.sleep(for: .seconds(timeout - lead))
             guard !Task.isCancelled, let self, duckArmed(connection: connection, token: token) else { return }
+            guard Self.duckWarningDue(deadline: deadline, now: Date(), lead: lead) else {
+                emit("ambient_duck_ending", connection: connection, detail: "skipped=late")
+                return
+            }
+            // A window of a few milliseconds remains: an exit between `duckArmed` above and the clip's send still lets
+            // this warning play just after the exit. Closing it would hold the router's lock across an await; the
+            // cost is one stray "ends in a minute" clip, never a wrong state.
             let confirm = await confirmVoiceMute(AmbientStopConfirmation.duckEnding, on: connection, listener: listener)
             emit("ambient_duck_ending", connection: connection, detail: "confirm=\(confirm)")
         }
+    }
+
+    /// Whether a warning for an arming ending at `deadline` is still worth playing at `now`: at least half the lead
+    /// must remain, so a Mac that slept through most of the last minute does not warn of an end already upon it.
+    static func duckWarningDue(deadline: Date, now: Date, lead: TimeInterval) -> Bool {
+        deadline.timeIntervalSince(now) >= lead / 2
     }
 }
 
