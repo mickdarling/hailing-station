@@ -272,6 +272,10 @@ struct AmbientListeningCard: View {
             if controller.isListening, let media = connections.mediaMode[binding.hostID] {
                 MediaModeStatusView(status: media)
             }
+            // The privacy switch (#735 S-6): only while listening, and only on a host that takes it.
+            if connections.showsPrivacySwitch(binding.hostID, listening: controller.isListening) {
+                PrivacySwitchView(connections: connections, hostID: binding.hostID)
+            }
             if controller.isListening, let handoff = controller.handoff, case .movedHere = handoff {
                 // This device took listening over (#366): a brief, calm confirmation.
                 Label(handoff.status, systemImage: "checkmark.circle.fill")
@@ -330,6 +334,47 @@ struct OwnerVoiceUnrecognizedView: View {
         }
         .accessibilityElement(children: .combine)
         .accessibilityIdentifier("station.ambient-owner-voice")
+    }
+}
+
+/// The privacy switch and indicator (#735 S-6). It shows what the host confirmed, never the tap: PRIVATE only once the
+/// host's notice says so on this live connection; anything unconfirmed (no notice yet, a tap waiting for its notice,
+/// a connection that dropped) reads "Recording may be on". Re-checked each second, so a tap that is never answered
+/// stops waiting and a lapsed notice stops counting.
+struct PrivacySwitchView: View {
+    let connections: HostConnectionStore
+    let hostID: HostEndpoint.Identifier
+
+    var body: some View {
+        TimelineView(.periodic(from: .now, by: 1)) { context in
+            let status = connections.privacySwitch(hostID, now: context.date)
+            VStack(alignment: .leading, spacing: 4) {
+                Toggle(isOn: Binding(get: { status.isPrivate }, set: { on in
+                    Task { try? await connections.setPrivacy(on: on, host: hostID) }
+                })) {
+                    Label(status.title, systemImage: status.isPrivate ? "lock.fill" : "mic.fill")
+                        .font(.subheadline.weight(.semibold))
+                        .foregroundStyle(status.isPrivate ? Color.green : Color.orange)
+                }
+                .disabled(status.pending)
+                .accessibilityLabel("Privacy")
+                .accessibilityValue(status.title)
+                .accessibilityHint("Turns privacy on or off on the Mac. It shows private only once the Mac confirms.")
+                .accessibilityIdentifier("station.privacy-switch")
+                HStack(spacing: 6) {
+                    if status.pending {
+                        ProgressView()
+                            .controlSize(.mini)
+                            .accessibilityIdentifier("station.privacy-pending")
+                    }
+                    Text(status.detail)
+                        .font(.footnote)
+                        .foregroundStyle(.secondary)
+                }
+                .accessibilityElement(children: .combine)
+                .accessibilityIdentifier("station.privacy-status")
+            }
+        }
     }
 }
 
