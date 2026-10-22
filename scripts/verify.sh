@@ -45,6 +45,7 @@ STALL_SECONDS="${HAIL_TEST_STALL_SECONDS:-300}"
   exit 2
 }
 LANE_PID=""
+SAMPLER_PID=""
 # The sampler run on a stalled lane's processes before they are stopped, and how long each run may take before it is
 # killed; the fixtures point it at a fake and shorten the limit.
 STALL_SAMPLER="${HAIL_STALL_SAMPLER:-/usr/bin/sample}"
@@ -75,8 +76,9 @@ stop_tree() {
   kill -KILL "${pids[@]}" 2>/dev/null || :
 }
 
-# Interrupting verify.sh must not leave a test lane running behind it.
+# Interrupting verify.sh must not leave a test lane, or a stall sampler, running behind it.
 stop_lane_and_exit() {
+  [[ -z $SAMPLER_PID ]] || kill -KILL "$SAMPLER_PID" 2>/dev/null || :
   [[ -z $LANE_PID ]] || stop_tree "$LANE_PID"
   exit 130
 }
@@ -96,6 +98,7 @@ sample_stalled() {
     printf '=== stall sample of pid %s: %s ===\n' "$pid" "$(ps -o comm= -p "$pid" 2>/dev/null || echo exited)"
     "$STALL_SAMPLER" "$pid" 1 200 > "$out" 2>&1 &
     sampler=$!
+    SAMPLER_PID=$sampler
     for (( waited = 0; waited < SAMPLE_SECONDS * 10; waited++ )); do
       kill -0 "$sampler" 2>/dev/null || break
       sleep 0.1
@@ -105,6 +108,7 @@ sample_stalled() {
       echo "sampler still running after $SAMPLE_SECONDS s; stopped"
     fi
     wait "$sampler" 2>/dev/null || :
+    SAMPLER_PID=""
     awk '/^Call graph:/ { keep = 1 } /^Total number in stack/ { keep = 0 } keep' "$out" | grep . || tail -n 3 "$out"
   done
   rm -f -- "$out"
