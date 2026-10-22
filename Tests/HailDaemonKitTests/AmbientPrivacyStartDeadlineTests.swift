@@ -13,10 +13,12 @@ import Testing
     @Test func aConfirmedChildOutlivesTheDeadline() async throws {
         let fake = try Gate.fake(Gate.script(advertises: true, delay: "0"))
         defer { fake.cleanUp() }
-        let pipeline = try Gate.pipeline(fake, startPrivate: true, deadline: 0.3)
+        // A 3 s deadline: a cold script launch at background priority (`taskpolicy -b`, #821) can take over a second,
+        // and the confirm must land before it. The wait after it still runs past the deadline.
+        let pipeline = try Gate.pipeline(fake, startPrivate: true, deadline: 3)
         let run = Task { try await pipeline.run() }
         #expect(await eventually { pipeline.hearsAudio })
-        try await Task.sleep(for: .milliseconds(800))
+        try await Task.sleep(for: .milliseconds(3_500))
         #expect(pipeline.send(audio: Gate.chunk(0x55)))
         pipeline.finishInput()
         _ = try await run.value
