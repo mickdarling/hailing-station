@@ -141,6 +141,14 @@ extension RootView {
         diagnostics.record(.captureState, [.state: .token(started ? "tap_to_talk_start" : "tap_to_talk_end")])
     }
 
+    /// A heal dropped `count` capture holds with no live capture behind them (#760): logged as a tap-to-talk end with
+    /// reason `other` and the count, from the existing vocabulary, so older Macs still accept the batch.
+    func captureHoldsHealed(_ count: Int) {
+        diagnostics.record(.captureState, [
+            .state: .token("tap_to_talk_end"), .reason: .token("other"), .count: .integer(Int64(count))
+        ])
+    }
+
     /// Ambient listening (#203) appears only for a confirmed destination whose host advertises `stream_audio`.
     @ViewBuilder
     var ambientListeningSurface: some View {
@@ -474,43 +482,16 @@ private func requestMicrophonePermission() async -> Bool {
     await StationPlatform.requestMicrophone()
 }
 
-@MainActor
-enum CapturePlaybackSuppression {
-    private struct Entry {
-        var cleanupComplete = false
-    }
-
-    private static var entries: [ObjectIdentifier: [UUID: Entry]] = [:]
-
-    static func begin(_ owner: UUID, using playback: ReplyPlaybackController) {
-        let key = ObjectIdentifier(playback)
-        let wasEmpty = entries[key]?.isEmpty != false
-        entries[key, default: [:]][owner] = Entry()
-        if wasEmpty { playback.beginCaptureSuppression() }
-    }
-
-    static func end(_ owner: UUID, using playback: ReplyPlaybackController, resuming: Bool) {
-        let key = ObjectIdentifier(playback)
-        guard entries[key]?.removeValue(forKey: owner) != nil else { return }
-        guard entries[key]?.isEmpty == true else { return }
-        entries[key] = nil
-        playback.endCaptureSuppression(resumingPlayback: resuming)
-    }
-
-    static func markCleanupComplete(_ owner: UUID, using playback: ReplyPlaybackController) {
-        let key = ObjectIdentifier(playback)
-        guard entries[key]?[owner] != nil else { return }
-        entries[key]?[owner]?.cleanupComplete = true
-    }
-
-    static func releaseCompleted(using playback: ReplyPlaybackController) {
-        let key = ObjectIdentifier(playback)
-        let completed = entries[key]?.compactMap { owner, entry in
-            entry.cleanupComplete ? owner : nil
-        } ?? []
-        for owner in completed {
-            end(owner, using: playback, resuming: true)
+extension TranscriptionLabView {
+    /// Takes capture suppression for a new capture (#91), registering whether it is live (#760). An owner still
+    /// holding from an earlier teardown re-arms it, in case a heal dropped that hold meanwhile.
+    @MainActor
+    func takeCaptureExclusivity() {
+        CapturePlaybackSuppression.liveness[captureOwnerID] = { [self] in
+            isStarting || isRecording || isFinalizing || isInterrupting || startTask != nil
         }
+        if ownsCaptureSuppression { onCaptureWillBegin?(captureOwnerID) }
+        beginCaptureExclusivity()
     }
 }
 
