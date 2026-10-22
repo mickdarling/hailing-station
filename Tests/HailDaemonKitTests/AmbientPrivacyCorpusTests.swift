@@ -28,7 +28,16 @@ import Testing
         "could you please stop recording", "can you stop listening please", "stop recording for a minute",
         "Jarvis stop recording right now", "just stop recording", "no no stop recording", "wait, stop listening",
         "alright, go private please", "enable privacy mode", "activate privacy mode", "switch to privacy mode",
-        "Can you stop recording?", "Would you go private for a bit?", "stop recording for a sec", "go private for now"
+        "Can you stop recording?", "Would you go private for a bit?", "stop recording for a sec", "go private for now",
+        // Round 4: discourse words before the command.
+        "Well, stop recording.", "Actually, privacy mode.", "Yeah, stop listening.", "Listen, stop recording.",
+        "Fine, go private.", "Oh, privacy mode.", "And stop recording", "Okay so, stop recording.",
+        "Right, go private.",
+        "Look, stop listening.", "Anyway, privacy mode.", "Yes, stop recording.", "Hmm, go private.",
+        // Round 4: more owner phrasings, and ASR's "?" on a short verb command.
+        "Put yourself in privacy mode.", "Jarvis, put yourself in privacy mode please", "Stop recording everything.",
+        "stop all recording everything", "Jarvis, go private?", "Stop recording?", "Go private?",
+        "stop the recording?", "Hey Jarvis, stop listening?"
     ]
     static let negated = [
         "Don't stop recording.", "Jarvis, do not stop listening.", "Please don't go private.", "never stop recording",
@@ -39,9 +48,9 @@ import Testing
     static let partial = [
         "stop recording, my wife is here", "stop listening to podcasts", "stop listening on 443",
         "go private on github", "stop recording my expenses", "stop recording the meeting", "stop listening to music",
-        "privacy mode settings", "go private with the repo", "stop recording audio", "privacy mode toggle",
-        "stop recording and then send it", "go private and quiet", "privacy mode and media mode",
-        "stop the recording studio booking", "Jarvis, stop recording, the kids are home", "stop_recording returns early"
+        "go private with the repo", "stop recording audio", "stop recording and then send it", "go private and quiet",
+        "stop the recording studio booking", "Jarvis, stop recording, the kids are home",
+        "stop_recording returns early"
     ]
     static let nothing = [
         // Mid-sentence, code dictation included: never held.
@@ -59,13 +68,16 @@ import Testing
         "is privacy mode on", "Is privacy mode on?", "tell me about privacy mode", "privacy mode?",
         "Jarvis, privacy mode?", "explain privacy mode", "what does stop recording do", "if I say stop listening",
         "how do I stop the recording", "are you recording", "Are you listening?", "what happens when you go private",
-        "Stop recording?", "Go private?", "why don't you stop recording", "I never said stop recording",
+        "why don't you stop recording", "I never said stop recording",
         "I can't stop recording now", "what mode am I in", "stop listening to podcasts?",
         // Leaving phrases and states.
         "privacy mode off", "end privacy mode", "turn off privacy mode", "get out of privacy mode",
         "Privacy mode is off.", "no more privacy mode", "done with privacy mode", "privacy mode is over",
         "I'm not in privacy mode", "exit privacy mode", "Jarvis, I'm back", "start listening", "privacy off",
-        "privacy mode was off",
+        "privacy mode was off", "Jarvis, privacy mode on?", "turn on privacy mode?",
+        // Round 4: "privacy mode" followed by more words is a mention, never held.
+        "privacy mode settings", "privacy mode toggle", "privacy mode and media mode",
+        "privacy mode needs a longer timeout", "privacy mode is great", "privacy mode docs are out of date",
         // Negations that are not standalone, and double negations.
         "I don't want you to stop recording", "don't not stop recording", "never not go private",
         "I didn't say stop recording", "without privacy mode", "don't stop", "do not stop the music",
@@ -81,8 +93,7 @@ import Testing
         "The recording is great", "I was listening to the radio", "Privacy matters to me", "Going private equity",
         "She went private last year", "Stop by the store", "Keep recording", "Start recording", "Resume listening",
         "Turn the radio on", "Jarvis, archive the project.", "Rightyo, check our discussion.",
-        "Well, stop recording.", "Actually, privacy mode.", "Yeah, stop listening.", "Listen, stop recording.",
-        "Fine, go private.", "Oh, privacy mode.", "And stop recording", "The privacy mode feature shipped",
+        "The privacy mode feature shipped",
         "Recording stopped at noon", "We stopped listening to that band", "Private mode is on in the browser",
         "He said go private", "Mode: privacy", "Recording mode", "I'll stop listening now", "you should stop recording",
         "please never mind", "Can you play some music?", "Could you check the logs",

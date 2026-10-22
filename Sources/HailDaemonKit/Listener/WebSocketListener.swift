@@ -559,8 +559,6 @@ public final class AmbientRightyoRouter: AmbientAudioSink, AmbientListenerWiring
         var media: [UUID: AmbientMediaTimer] = [:]
         /// Connections whose owner turned duck mode on (#735), kept like `media`. A connection is never in both.
         var duck: [UUID: AmbientDuckTimer] = [:]
-        /// Connections already told "I can't listen privately right now." (#735 S-2b): at most once each.
-        var unavailableTold: Set<UUID> = []
         /// The reply whose final text, the latest this host delivered, ended with a question (rightyo#199); nil
         /// otherwise, and cleared by audio of any other reply (a text-less acknowledgement clip). The phone plays
         /// replies in order and reports one end when its queue drains, so that reply is the one just heard.
@@ -653,8 +651,7 @@ public final class AmbientRightyoRouter: AmbientAudioSink, AmbientListenerWiring
         let streams = state.withLock { state -> [UUID] in
             (state.latest[connection], state.inputRoutes[connection]) = (nil, nil)
             state.media.removeValue(forKey: connection)?.timer.cancel()
-            state.duck.removeValue(forKey: connection)?.timer.cancel()
-            state.unavailableTold.remove(connection)
+            state.duck.removeValue(forKey: connection)?.timer?.cancel()
             if let active = state.active, state.runs[active.run]?.connection == connection { state.active = nil }
             return state.runs.filter { $0.value.connection == connection }.map(\.key)
         }
@@ -1173,9 +1170,8 @@ extension AmbientRightyoRouter {
             let described = Self.describe(error)
             (failure, detail) = (described, described)
             // A child that could not keep privacy (#735 S-2b) was killed and is not admitted; privacy stays on.
-            if error as? RightyoPrivacyError == .unconfirmed {
+            if error as? RightyoPrivacyRefusal == .unconfirmedStart {
                 emit("ambient_privacy_start", connection: connection, detail: "outcome=refused reason=unconfirmed")
-                privacyUnavailable(on: connection)
             }
         }
         // A reload's replaced child (#405) is marked `replaced`, so `haild doctor` does not read its end as a failure.
@@ -1224,7 +1220,7 @@ extension AmbientRightyoRouter {
     fileprivate static func describe(_ error: any Error) -> String {
         switch error {
         case let error as RightyoChildError: "child \(error)"
-        case let error as RightyoPrivacyError: "privacy \(error)"
+        case let error as RightyoPrivacyRefusal: "privacy \(error)"
         case let error as RightyoInputError: "input \(error)"
         case let error as LocalDispatchRefusal: "dispatch \(error.rawValue)"
         case let error as LocalReplyRefusal: "dispatch \(error.rawValue)"
@@ -1380,13 +1376,18 @@ extension AmbientRightyoRouter {
     /// `confirm-media-on/` or `confirm-media-off/` clip when there is one, in the order said. A change no child
     /// took (an older RightyO or a full pipe) is not confirmed, so the owner never hears a mode that is not in force.
     /// Logs tokens only.
-    fileprivate func voiceMedia(on connection: UUID, listener: WebSocketListener) -> @Sendable (Bool) -> Void {
+    /// While private (#735) a media-mode entry is refused, and the owner hears `confirm-privacy-status/` instead.
+    func voiceMedia(on connection: UUID, listener: WebSocketListener) -> @Sendable (Bool) -> Void {
         let chain = SerialTaskChain()
         return { [weak self, weak listener] on in
             let reported = self?.setMedia(on, connection: connection, reason: "voice") ?? 0
+            let refused = on && reported == 0 && self?.duckMode(connection: connection) == true
             chain.enqueue { [weak self, weak listener] in
                 var confirm = "unreported"
-                if reported > 0 {
+                if refused {
+                    confirm = await self?.confirmVoiceMute(AmbientStopConfirmation.privacyStatus, on: connection,
+                                                           listener: listener) ?? "none"
+                } else if reported > 0 {
                     let persona = on ? AmbientStopConfirmation.mediaOn : AmbientStopConfirmation.mediaOff
                     confirm = await self?.confirmVoiceMute(persona, on: connection, listener: listener) ?? "none"
                 }
@@ -1443,18 +1444,20 @@ extension AmbientRightyoRouter {
     /// took leaves duck mode (#735): the two are exclusive.
     @discardableResult
     func setMedia(_ on: Bool, connection: UUID, reason: String, expected: UUID? = nil) -> Int {
-        let changed = state.withLock { state -> (media: Int, duck: Int?)? in
+        let changed = state.withLock { state -> Int?? in
             if let expected, state.media[connection]?.token != expected { return nil }
-            let reported = changeMedia(on, connection: connection, reason: reason, in: &state)
-            let left = on && reported > 0 && state.duck[connection] != nil
-            return (reported, left ? changeDuck(false, connection: connection, reason: "voice", in: &state) : nil)
+            // Privacy wins (#735, Mick round 2): while private, a media-mode entry from any source is refused, and
+            // nothing changes or is queued; media mode never ends privacy.
+            if on, state.duck[connection] != nil { return .some(nil) }
+            return changeMedia(on, connection: connection, reason: reason, in: &state)
         }
         guard let changed else { return 0 }
-        emit("ambient_media", connection: connection, detail: "on=\(on) reason=\(reason) reported=\(changed.media)")
-        if let duck = changed.duck {
-            emit("ambient_duck", connection: connection, detail: "on=false reason=voice reported=\(duck)")
+        guard let reported = changed else {
+            emit("ambient_media", connection: connection, detail: "on=true reason=\(reason) reported=0 refused=private")
+            return 0
         }
-        return changed.media
+        emit("ambient_media", connection: connection, detail: "on=\(on) reason=\(reason) reported=\(reported)")
+        return reported
     }
 
     /// Turns duck mode on or off for `connection` (#735), as `setMedia` does, and returns how many children took it.
@@ -1518,20 +1521,12 @@ extension AmbientRightyoRouter {
             runs.forEach { _ = $0.pipeline.reportDuck(state.duck[connection] != nil) }
             return nil
         }
-        let token = UUID(), timeout = configuration.duckTimeout
-        state.duck.removeValue(forKey: connection)?.timer.cancel()
-        if on {
-            let timer = Task { [weak self] in
-                try? await Task.sleep(for: .seconds(timeout))
-                guard !Task.isCancelled else { return }
-                self?.setDuck(false, connection: connection, reason: "timeout", expected: token)
-            }
-            state.duck[connection] = AmbientDuckTimer(token: token, timer: timer)
-        }
-        let expires = on ? Int64((Date().timeIntervalSince1970 + timeout) * 1_000) : nil
+        state.duck.removeValue(forKey: connection)?.timer?.cancel()
+        // Privacy has no auto-end (Mick, round 2): no timer and no expiry; only the owner's exit ends it.
+        if on { state.duck[connection] = AmbientDuckTimer(token: UUID(), timer: nil) }
         let listener = state.listener?.value
         mediaNotices.enqueue { [weak self, weak listener] in
-            let sent = await listener?.showDuckMode(on, reason: reason, expires: expires, connection: connection)
+            let sent = await listener?.showDuckMode(on, reason: reason, expires: nil, connection: connection)
             self?.emit("ambient_duck_device", connection: connection,
                        detail: "on=\(on) device=\(sent ?? "no_connection")")
         }
@@ -1540,21 +1535,30 @@ extension AmbientRightyoRouter {
 }
 
 extension AmbientRightyoRouter {
-    /// Privacy is on but no child could keep it (#735 S-2b): nothing listens and privacy stays on (no `lost`, no
-    /// off). The owner hears `confirm-privacy-unavailable/` ("I can't listen privately right now.") at most once
-    /// per connection; later refusals only log. Tokens only.
-    func privacyUnavailable(on connection: UUID) {
-        let (first, listener) = state.withLock { state in
-            (state.unavailableTold.insert(connection).inserted, state.listener?.value)
+    /// Reserved for the session-mode auto-stop (#735): `ambient.duckTimeout` and `--ambient-duck-timeout` still set its
+    /// length, but privacy never arms it (Mick, round 2).
+    func duckTimeoutTask(connection: UUID, token: UUID) -> Task<Void, Never> {
+        let timeout = configuration.duckTimeout
+        return Task { [weak self] in
+            try? await Task.sleep(for: .seconds(timeout))
+            guard !Task.isCancelled else { return }
+            self?.setDuck(false, connection: connection, reason: "timeout", expected: token)
         }
-        guard first else {
-            emit("ambient_privacy_unavailable", connection: connection, detail: "confirm=already_told")
+    }
+
+    /// A start refused while private (#735 S-2b: the child could not even launch): nothing listens and privacy stays
+    /// on. The owner hears `confirm-privacy-unavailable/` at most once per connection (`firstUnavailable`, shared with
+    /// a refused child's `unavailable`), logged as `voiceDuck` logs it. Tokens only.
+    func privacyUnavailable(on connection: UUID) {
+        let listener = state.withLock { $0.listener?.value }
+        guard Self.firstUnavailable(on: connection) else {
+            emit("ambient_duck_confirmed", connection: connection, detail: "unavailable repeat confirm=unreported")
             return
         }
         Task { [weak self, weak listener] in
             let confirm = await self?.confirmVoiceMute(AmbientStopConfirmation.privacyUnavailable, on: connection,
                                                        listener: listener) ?? "none"
-            self?.emit("ambient_privacy_unavailable", connection: connection, detail: "confirm=\(confirm)")
+            self?.emit("ambient_duck_confirmed", connection: connection, detail: "unavailable confirm=\(confirm)")
         }
     }
 }

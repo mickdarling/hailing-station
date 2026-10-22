@@ -170,7 +170,6 @@ extension AmbientPrivacyEventTests {
         (configuration.onVoiceDuck, configuration.replyControl) = ({ _ in }, true)
         let pipeline = try RightyoAmbientPipeline(configuration: configuration,
                                                   dispatcher: RecordingAmbientDispatcher())
-        pipeline.reportDuck(true)
         pipeline.finishInput()
         _ = try await pipeline.run()
         return seen.withLock { $0 }
@@ -183,13 +182,9 @@ extension AmbientPrivacyEventTests {
         (2, #"[\"playback\"]"#, #"[\"$7:x\"]"#), (1, #"[\"playback\"]"#, "[]")
     ])
     func anUncitedDismissalEndsTheStream(_ version: Int, _ scope: String, _ ids: String) async {
-        let script = Self.privateStop(version: version, scope: scope, ids: ids)
-        guard version >= 2 else {
-            // A v1 child cannot keep the privacy wished for: refused at `started` (#735 S-2b), before any dismissal.
-            await #expect(throws: RightyoPrivacyError.unconfirmed) { _ = try await dismissals(script) }
-            return
+        await #expect(throws: RightyoInputError.self) {
+            _ = try await dismissals(Self.privateStop(version: version, scope: scope, ids: ids))
         }
-        await #expect(throws: RightyoInputError.self) { _ = try await dismissals(script) }
     }
 }
 #endif

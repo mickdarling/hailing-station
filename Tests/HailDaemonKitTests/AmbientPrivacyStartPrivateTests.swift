@@ -30,7 +30,7 @@ import Testing
     /// Privacy that ended while the child was starting is written off once the child confirms it started private.
     @Test func aConfirmedStartWhosePrivacyEndedIsWrittenOff() {
         let (control, written) = (AmbientDuckControl(startPrivate: true), AmbientDuckControlTests.Written())
-        #expect(!control.report(false, write: written.write))
+        #expect(control.report(false, write: written.write))
         #expect(control.observe(started: Data(Self.confirmed.utf8), write: written.write) == .kept)
         #expect(written.all == [false])
     }
@@ -66,7 +66,7 @@ import Testing
         configuration.onVoiceDuck = { _ in }
         let dispatcher = RecordingAmbientDispatcher()
         let pipeline = try RightyoAmbientPipeline(configuration: configuration, dispatcher: dispatcher)
-        await #expect(throws: RightyoPrivacyError.unconfirmed) { _ = try await pipeline.run() }
+        await #expect(throws: RightyoPrivacyRefusal.unconfirmedStart) { _ = try await pipeline.run() }
         #expect(await dispatcher.requests.isEmpty)
     }
 
@@ -116,7 +116,7 @@ import Testing
         defer { fake.cleanUp() }
         let (pipeline, dispatcher) = try Self.pipeline(fake, startPrivate: true, deadline: 0.3)
         let started = ContinuousClock.now
-        await #expect(throws: RightyoPrivacyError.unconfirmed) { _ = try await pipeline.run() }
+        await #expect(throws: RightyoPrivacyRefusal.unconfirmedStart) { _ = try await pipeline.run() }
         #expect(started.duration(to: .now) < .seconds(8))
         #expect(await dispatcher.requests.isEmpty)
         let pid = try #require(Int32(fake.recorded("child.pid").trimmingCharacters(in: .whitespacesAndNewlines)))
@@ -131,8 +131,8 @@ import Testing
         defer { fake.cleanUp() }
         try fake.install(fixture: "enrolled-formed-request.jsonl")
         let (pipeline, dispatcher) = try Self.pipeline(fake, startPrivate: false)
-        #expect(!pipeline.reportDuck(true))
-        await #expect(throws: RightyoPrivacyError.unconfirmed) { _ = try await pipeline.run() }
+        #expect(pipeline.reportDuck(true))
+        await #expect(throws: RightyoPrivacyRefusal.unsupportedChild) { _ = try await pipeline.run() }
         #expect(await dispatcher.requests.isEmpty)
     }
 
@@ -154,9 +154,9 @@ import Testing
             #expect(await eventually { rig.details("ambient_refused").count >= 1 })
             _ = try await receiveFrame(on: rig.socket, step: "refusal")
         }
-        #expect(await eventually { rig.details("ambient_privacy_unavailable").count == 2 })
-        #expect(rig.details("ambient_privacy_unavailable").sorted()
-                == ["confirm=already_told", "confirm=confirmprivacyunavailable/0:sent"])
+        #expect(await eventually { rig.details("ambient_duck_confirmed").count == 3 })
+        #expect(Array(rig.details("ambient_duck_confirmed").dropFirst()).sorted()
+                == ["unavailable confirm=confirmprivacyunavailable/0:sent", "unavailable repeat confirm=unreported"])
         #expect(rig.env.router.duckMode(connection: connection))
         #expect(rig.details("ambient_duck") == ["on=true reason=voice reported=1"])
         await rig.env.router.settle()
@@ -173,9 +173,9 @@ import Testing
         #expect(await eventually { rig.details("ambient_duck").count == 1 })
         let connection = try #require(rig.connection())
         #expect(await rig.env.router.reload() == .reloaded)
-        #expect(await eventually { rig.details("ambient_ended").contains("privacy unconfirmed") })
+        #expect(await eventually { rig.details("ambient_ended").contains("privacy unconfirmedStart") })
         #expect(await eventually {
-            rig.details("ambient_privacy_unavailable") == ["confirm=confirmprivacyunavailable/0:sent"]
+            rig.details("ambient_duck_confirmed").last == "unavailable confirm=confirmprivacyunavailable/0:sent"
         })
         #expect(rig.env.router.duckMode(connection: connection))
         await rig.finish()

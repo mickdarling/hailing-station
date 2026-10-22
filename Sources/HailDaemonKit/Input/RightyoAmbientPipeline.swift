@@ -111,15 +111,16 @@ public final class RightyoAmbientPipeline: Sendable {
         /// Privacy mode (#735, internally duck), handled like `onVoiceMute`: called once per safety-set command in a
         /// transcript or request (`enter`; `stillRecording` when negated; `refused` from anyone but the owner;
         /// `unverified` from the owner role without a live voiceprint; `hint` for the owner's turn that starts with a
-        /// command and goes on), once per RightyO `privacy` event (`exit`, `status`), and with `lost` (see below). Only
+        /// command and goes on), once per RightyO `privacy` event (`exit`, `status`), and `unavailable` (below). Only
         /// when this is set are these turns privacy turns; then each is held back from the agent, and while privacy is
         /// on (the latest `reportDuck` said so) every request is. Without a control descriptor no child can take
         /// privacy, so an entry is refused, never typed. It must return at once.
         public var onVoiceDuck: (@Sendable (PrivacyCommand) -> Void)?
-        /// Called when this child starts while privacy is on but its `started` did not advertise `duck` version 2 or
-        /// higher (an older RightyO after a reload): it cannot take privacy, so the host must end it, returning true
-        /// when it did. Only then is `onVoiceDuck` called with `lost`, so recording never resumes in silence, and says
-        /// so once per connection. It must return at once.
+        /// Called when this child starts while privacy is wished for but its `started` did not advertise `duck`
+        /// version 2 or higher (an older RightyO after a reload): it cannot keep privacy. The host never ends privacy
+        /// for it (Mick, round 4: only the owner's exit does); it returns true when privacy is still on, and then
+        /// `onVoiceDuck` hears `unavailable` and this child is refused: its run ends with `RightyoPrivacyRefusal`, so
+        /// nothing records. Without this handler the child is refused too. It must return at once.
         public var onDuckUnsupported: (@Sendable () -> Bool)?
         /// The owner's allowlisted note destinations (#552); nil is off. A note to one is handed to
         /// `onVoiceDestination` with its destination key, target and words instead of being typed. It must return
@@ -141,7 +142,7 @@ public final class RightyoAmbientPipeline: Sendable {
         /// Launch the child already private (#735 S-2b), as the host does whenever privacy is on: RightyO's
         /// start-private option, privacy wished for from the first line, and a `started` that must confirm it
         /// (`"duck": {"version": 2 or later, "private": true}`) within `startDeadline`. One that does not is killed
-        /// and the run throws `RightyoPrivacyError.unconfirmed`: it is never admitted.
+        /// and the run throws `RightyoPrivacyRefusal.unconfirmedStart`: it is never admitted.
         public var startPrivate = false
         /// How long a start-private child has to emit `started` before it is killed.
         public var startDeadline: TimeInterval = RightyoAmbientPipeline.defaultStartDeadline
@@ -294,7 +295,7 @@ public final class RightyoAmbientPipeline: Sendable {
             try duck.checkStarted()
         } catch {
             await child.stop()
-            throw duck.expired ? RightyoPrivacyError.unconfirmed : error
+            throw duck.expired ? RightyoPrivacyRefusal.unconfirmedStart : error
         }
         let exit = await child.stop()
         return Summary(delivered: delivered, child: child.counters, exit: exit)
@@ -318,24 +319,29 @@ extension RightyoAmbientPipeline {
         return true
     }
 
-    /// A child whose `started` cannot keep the privacy wished for (#735 S-2b: a start-private child that did not
-    /// confirm it, or one launched before privacy came on that did not advertise `duck` v2) is killed at once (SIGTERM
-    /// then SIGKILL, no grace) and throws `RightyoPrivacyError.unconfirmed`: never admitted, and privacy stays on.
+    /// A child's `started` that cannot keep the privacy wished for (#735): a start-private child (S-2b) that did not
+    /// confirm it, or one launched before privacy came on that did not advertise `duck` v2 while the host is still
+    /// private. It is killed at once (SIGTERM then SIGKILL, no grace), `unavailable` is said, and its run throws
+    /// `RightyoPrivacyRefusal`: never admitted, nothing records, and privacy itself stays on.
     private func observeStarted(_ event: RightyoInputEvent, line: Data) async throws {
         guard event.type == "session", event.phase == "started",
               duck.observe(started: line, write: { [child] on in child.reportDuck(on) }) == .refused else { return }
+        let startedPrivate = startDeadline != nil
+        guard startedPrivate || onDuckUnsupported?() ?? true else { return }
         await child.stop(eofGrace: 0, termGrace: 0)
-        throw RightyoPrivacyError.unconfirmed
+        onVoiceDuck?(.unavailable)
+        throw startedPrivate ? RightyoPrivacyRefusal.unconfirmedStart : RightyoPrivacyRefusal.unsupportedChild
     }
 
-    /// A start-private child that has not emitted `started` within its deadline is killed; the run then throws
-    /// `RightyoPrivacyError.unconfirmed`. Nil (no deadline) for any other child.
+    /// A start-private child that has not emitted `started` within its deadline is killed and `unavailable` is said;
+    /// the run then throws `RightyoPrivacyRefusal.unconfirmedStart`. Nil (no deadline) for any other child.
     private func armStartDeadline() -> Task<Void, Never>? {
         guard let startDeadline else { return nil }
-        return Task { [duck, child] in
+        return Task { [duck, child, onVoiceDuck] in
             try? await Task.sleep(for: .seconds(startDeadline))
             guard !Task.isCancelled, duck.expire() else { return }
             await child.stop(eofGrace: 0, termGrace: 0)
+            onVoiceDuck?(.unavailable)
         }
     }
 
@@ -344,11 +350,10 @@ extension RightyoAmbientPipeline {
     public static let defaultStartDeadline: TimeInterval = 10
 }
 
-/// Why a child was not admitted while privacy is on (#735 S-2b). Content-free.
-public enum RightyoPrivacyError: Error, Sendable, Equatable {
-    /// It could not keep privacy: `started` did not confirm it, or did not come within the deadline.
-    case unconfirmed
-}
+/// A child refused because it cannot keep the privacy the host is in (#735 round 4): its run ends with this.
+/// `unsupportedChild`: no `duck` v2 at `started`; `unconfirmedStart` (S-2b): launched start-private and its `started`
+/// did not confirm `"private": true`, or did not come within the deadline. Content-free.
+public enum RightyoPrivacyRefusal: Error, Sendable, Equatable { case unsupportedChild, unconfirmedStart }
 
 /// The child's stdout as JSONL lines (#203): read on its own thread, always to EOF so the child never wedges on a
 /// full pipe. Each line is capped at `maxLineBytes`, and lines waiting to be taken at `maxQueuedBytes` in total;
@@ -703,12 +708,15 @@ final class AmbientDuckControl: Sendable {
 
     /// Throws `unconfirmed` when the deadline passed: a run that otherwise ended cleanly is still a refusal.
     func checkStarted() throws {
-        if expired { throw RightyoPrivacyError.unconfirmed }
+        if expired { throw RightyoPrivacyRefusal.unconfirmedStart }
     }
 
+    /// Sets the host's wish; true when this child takes it: written now to a child that advertised v2, or kept for
+    /// one not yet started, which takes it at `started` or is refused then (`observe`).
     func report(_ on: Bool, write: (Bool) -> Bool) -> Bool {
         state.withLock { state in
             state.wanted = on
+            guard state.started else { return true }
             return state.advertised && write(on)
         }
     }

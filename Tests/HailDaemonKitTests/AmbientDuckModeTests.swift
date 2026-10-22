@@ -23,17 +23,19 @@ import Testing
         "confirmnotsent": [clip("Nothing was sent.", 5)]
     ])
 
-    @Test func privacyReachesTheChildIsConfirmedAndTimesOut() async throws {
+    /// Round 2: no auto-end; with the reserved timeout short and time past it, privacy is still on.
+    @Test func privacyReachesTheChildIsConfirmedAndNeverTimesOut() async throws {
         let rig = try await DuckRig(saying: "Rightyo, stop recording.", advertises: true, clips: Self.clips,
                                     timeout: 0.5)
         defer { rig.close() }
         #expect(try await rig.confirmation() == "Privacy on. I'm only listening for my name.")
-        #expect(await eventually { rig.details("ambient_duck").count == 2 })
+        let connection = try #require(rig.connection())
+        try await Task.sleep(for: .milliseconds(1_200))
+        #expect(rig.env.router.duckMode(connection: connection))
         await rig.finish()
-        #expect(rig.details("ambient_duck") == ["on=true reason=voice reported=1",
-                                                "on=false reason=timeout reported=1"])
+        #expect(rig.details("ambient_duck") == ["on=true reason=voice reported=1"])
         #expect(rig.details("ambient_duck_confirmed") == ["on=true playback=idle confirm=confirmprivacyon/0:sent"])
-        #expect(try rig.fake.recorded("control.txt") == "{\"duck\":true}\n{\"duck\":false}\n")
+        #expect(try rig.fake.recorded("control.txt") == "{\"duck\":true}\n")
     }
 
     /// A v1 RightyO still transcribes while ducked and an older one would skip the line: privacy is not entered (fail
@@ -99,23 +101,6 @@ import Testing
         ])
         #expect(rig.details("ambient_duck_device") == ["on=true device=sent", "on=false device=sent"])
         #expect(try rig.fake.recorded("control.txt") == "{\"duck\":true}\n{\"duck\":false}\n")
-    }
-
-    /// Entering either mode leaves the other, in the child and in the host's state.
-    @Test func privacyAndMediaModeAreExclusive() async throws {
-        let rig = try await DuckRig(saying: "Rightyo, stop recording.", advertises: true)
-        defer { rig.close() }
-        #expect(await eventually { rig.details("ambient_duck").count == 1 })
-        let connection = try #require(rig.connection()), router = rig.env.router
-        #expect(router.setMedia(true, connection: connection, reason: "voice") == 1)
-        #expect(router.mediaMode(connection: connection) && !router.duckMode(connection: connection))
-        #expect(router.setDuck(true, connection: connection, reason: "voice") == 1)
-        #expect(router.duckMode(connection: connection) && !router.mediaMode(connection: connection))
-        let lines = ["{\"duck\":true}", "{\"media\":true}", "{\"duck\":false}", "{\"duck\":true}", "{\"media\":false}"]
-        #expect(await eventually { (try? rig.fake.recorded("control.txt")) == lines.map { $0 + "\n" }.joined() })
-        #expect(rig.details("ambient_duck") == ["on=true reason=voice reported=1", "on=false reason=voice reported=1",
-                                                "on=true reason=voice reported=1"])
-        await rig.finish()
     }
 }
 
