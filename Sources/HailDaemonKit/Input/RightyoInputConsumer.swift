@@ -317,7 +317,13 @@ public actor RightyoInputConsumer {
     private let binding: String
     private let session: String
     private let streamBudgetMs: Int?
-    private var started = false, terminal = false, busy = false, activationEnabled = false, failed = false
+    private var started = false, terminal = false, activationEnabled = false, failed = false
+    /// An event or a duck summary is in flight (#735 H-5); whoever waits for it is woken as it clears.
+    private var busy = false { didSet { if !busy { wakeDuckWaiters() } } }
+    /// The duck summary holds `busy` (#735 H-5): an event waits for it instead of being refused, and `finish` allows
+    /// it. Tasks waiting for `busy` or this to clear.
+    private var summarizing = false
+    private var duckWaiters: [CheckedContinuation<Void, Never>] = []
     private var sequence = 0, emittedAt = 0
     private var speakers = "anonymous"
     /// The keyed addressing names a voice mute may start with (#404), from the accepted `started`.
@@ -428,11 +434,9 @@ public actor RightyoInputConsumer {
     /// True means handled: guarded delivery, or validation only when initialized with no host. An admitted `dismiss`
     /// delivers nothing and returns false; `lastDismissal` then says what it did.
     public func consume(_ event: RightyoInputEvent) async throws -> Bool {
-        lastReceipt = nil
-        lastDismissal = nil
-        lastVoiceMute = nil
-        (lastVoiceMedia, lastVoiceDestination, lastRouteRefusal, lastVoiceDuck) = (nil, nil, nil, nil)
-        (lastDuckCue, lastDuckSave) = (nil, nil)
+        // A duck summary in flight (#735 H-5) is waited for, so the event never meets its `busy`.
+        await waitOutDuckSummary()
+        clearLastOutcomes()
         do {
             guard try admit(event) else { return false }
             if event.type == "override" { return true }
@@ -515,7 +519,7 @@ public actor RightyoInputConsumer {
         return true
     }
     public func finish() throws {
-        guard terminal, !busy else { throw RightyoInputError.invalidLifecycle }
+        guard terminal, !busy || summarizing else { throw RightyoInputError.invalidLifecycle }
         if failed { throw RightyoInputError.producerFailed }
     }
 }
@@ -642,13 +646,17 @@ extension RightyoInputConsumer {
     /// transcript and attention both said owner), on a stream that sends; the request path already refused an echo
     /// and, on a live-only consumer, any turn not from the live microphone. With nothing held, or anyone else's turn,
     /// it is a request like any other. A save takes the hold, so it is written at most once.
+    /// A save is a command only with an allowlisted `notes` destination; without one, "save that" reaches the agent
+    /// and the hold stays.
     private func holdsDuckHeld(_ turn: RightyoInputEvent.Turn, owner: Bool) -> Bool {
         guard let duckSession, activationEnabled, speakers == "enrolled", owner, duckActive?() != true,
               let cue = DuckHeldCue.cue(in: turn.text, names: voiceNames) else { return false }
         switch cue {
         case .save:
-            guard let held = duckSession.takeHeld() else { return false }
-            lastDuckSave = DuckSave(held)
+            guard let notes = destinations?.destinations[DuckSave.notesKey], let held = duckSession.takeHeld() else {
+                return false
+            }
+            lastDuckSave = DuckSave(held, to: notes)
         case .discard:
             guard let turns = duckSession.discardHeld() else { return false }
             lastDuckCue = .discarded(turns: turns)
@@ -660,29 +668,54 @@ extension RightyoInputConsumer {
     /// through `step` (the pipeline's delivery step, without the acknowledgement: the exit's own clip already played),
     /// so the sanitizer, the guard and the policy apply as for an ask. Nothing is sent on a stream that never sends
     /// (`activation: "disabled"`), off an enrolled session, without a delivery step, or once the stream has ended.
-    /// H-3's refusal split applies: a guard or policy refusal (`keepsListening`) is reported `notSent`; any other
-    /// failure ends the consumer, as it does for a request, so the next event ends the stream. It does not take the
-    /// consumer's `busy`: it is not an event, and events go on being admitted while it is in flight. The hold
-    /// records the summary's state for a later save.
+    /// It is a background step, so no failure ends the stream: a guard or policy refusal (`keepsListening`) is
+    /// reported `notSent`, any other `failed`, and either way the hold says the summary was not sent. It takes the
+    /// consumer's `busy`, as a request does: it waits for an event in flight, and an event arriving meanwhile waits
+    /// for it. Once it holds `busy` it checks that `held` is still the live hold: a "discard that", a new session or
+    /// the stream's retirement before then means nothing is sent.
     func summarizeDuck(_ held: DuckSession.Held, via step: any RightyoDispatching) async -> DuckSummaryOutcome {
+        while busy || summarizing { await waitForDuck() }
+        (busy, summarizing) = (true, true)
+        defer { (summarizing, busy) = (false, false) }
         guard let duckSession, dispatcher != nil, activationEnabled, speakers == "enrolled", !terminal,
+              duckSession.held?.id == held.id,
               let text = try? DuckSession.summaryPrompt(held.copy, speakers: speakers, target: target) else {
+            duckSession?.noteSummary(.notSent, for: held.id)
             return .skipped
         }
-        duckSession.noteSummary(.pending, for: held.id)
         do {
             try Task.checkCancellation()
             let receipt = try await step.dispatch(text: text, target: target, binding: binding)
             duckSession.noteSummary(.sent(receipt.request), for: held.id)
             return .sent(turns: held.copy.turns.count, bytes: held.copy.bytes)
-        } catch let refusal as LocalDispatchRefusal where Self.keepsListening.contains(refusal) {
-            duckSession.noteSummary(.notSent, for: held.id)
-            return .notSent
         } catch {
             duckSession.noteSummary(.notSent, for: held.id)
-            (terminal, failed) = (true, true)
-            return .failed
+            let kept = (error as? LocalDispatchRefusal).map(Self.keepsListening.contains) ?? false
+            return kept ? .notSent : .failed
         }
+    }
+
+    /// Waits while a duck summary holds `busy` (#735 H-5).
+    func waitOutDuckSummary() async {
+        while summarizing { await waitForDuck() }
+    }
+
+    /// What the previous event left (receipts, commands, cues), cleared as each event is consumed.
+    func clearLastOutcomes() {
+        (lastReceipt, lastDismissal, lastVoiceMute) = (nil, nil, nil)
+        (lastVoiceMedia, lastVoiceDestination, lastRouteRefusal, lastVoiceDuck) = (nil, nil, nil, nil)
+        (lastDuckCue, lastDuckSave) = (nil, nil)
+    }
+
+    /// Suspends until `busy` or `summarizing` next clears; callers re-check in a loop.
+    private func waitForDuck() async {
+        await withCheckedContinuation { duckWaiters.append($0) }
+    }
+
+    private func wakeDuckWaiters() {
+        let waiting = duckWaiters
+        duckWaiters = []
+        waiting.forEach { $0.resume() }
     }
 }
 /// Correlation against admitted records lives here so the actor body stays within the type-length limit.

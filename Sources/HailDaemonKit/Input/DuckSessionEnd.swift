@@ -40,47 +40,52 @@ enum DuckCue: Sendable, Equatable {
     }
 
     /// The cue a whole turn says, given the session's keyed addressing `names`; nil for anything else.
-    static func cue(in heard: String, names: Set<String>) -> DuckCue? { phrases[spoken(heard, names: names)] }
+    static func cue(in heard: String, names: Set<String>) -> DuckCue? { phrases[spoken(heard, names: names).words] }
 
-    /// A whole turn's words, lowercased and space-joined, without a greeting, the assistant's name or "please".
-    static func spoken(_ heard: String, names: Set<String>) -> String {
+    /// A whole turn's words, lowercased and space-joined, without a greeting, the assistant's name or "please", and
+    /// whether it named the assistant (`VoiceMute.nameWidth`, the rule `VoiceDuck` uses).
+    static func spoken(_ heard: String, names: Set<String>) -> (words: String, named: Bool) {
         var words = heard.lowercased().split { !$0.isLetter && $0 != "'" }.map(String.init)[...]
         while words.last == "please" { words.removeLast() }
         if let first = words.first, VoiceMute.greetings.contains(first) { words = words.dropFirst() }
-        if let named = VoiceMute.nameWidth(words, names: names) { words = words.dropFirst(named) }
+        let named = VoiceMute.nameWidth(words, names: names)
+        if let named { words = words.dropFirst(named) }
         if words.first == "please" { words = words.dropFirst() }
-        return words.joined(separator: " ")
+        return (words.joined(separator: " "), named != nil)
     }
 }
 
 /// The owner's cues for an ended session's held turns (#735 H-5), trimmed as `DuckCue` trims. Commands only while a
 /// hold lasts; otherwise each is a request like any other, as before duck mode existed.
 enum DuckHeldCue: Sendable, Equatable {
-    /// "Save that" or "save that to notes": the held turns and summary go to the owner's `notes` destination.
+    /// "Save that to notes", named or not, or "<name>, save that": the held turns and summary go to the owner's
+    /// `notes` destination. A bare "save that" is too common a phrase to act on: it stays a request to the agent.
     case save
     /// "Discard that": the held turns and summary go, unsaved.
     case discard
 
-    static let phrases: [String: DuckHeldCue] = ["save that": .save, "save that to notes": .save,
-                                                 "discard that": .discard]
-
     static func cue(in heard: String, names: Set<String>) -> DuckHeldCue? {
-        phrases[DuckCue.spoken(heard, names: names)]
+        let (words, named) = DuckCue.spoken(heard, names: names)
+        switch words {
+        case "save that to notes": return .save
+        case "save that": return named ? .save : nil
+        case "discard that": return .discard
+        default: return nil
+        }
     }
 }
 
-/// What became of an ended session's summary (#735 H-5). `notRequested`: duck mode ended by media mode or a child that
-/// could not take it, so none was asked for. `pending`: being handed to the agent. `notSent`: refused or failed before
-/// handoff. `sent`: handed to the agent as that reply request (nil when the target owns no reply). `captured`: that
-/// reply's spoken text, as the host delivered it. The text is never logged; `token` is.
+/// What became of an ended session's summary (#735 H-5). Every hold asks for one (an exit without a summary discards
+/// the turns instead). `pending`: asked for at the exit, not yet handed off. `notSent`: skipped, refused or failed.
+/// `sent`: handed to the agent as that input request (nil when the target owns no reply). `captured`: that reply's
+/// spoken text, as the host delivered it. The text is never logged; `token` is.
 enum DuckSummaryState: Sendable, Equatable {
-    case notRequested, pending, notSent
+    case pending, notSent
     case sent(UUID?)
     case captured(String)
 
     var token: String {
         switch self {
-        case .notRequested: "none"
         case .pending: "pending"
         case .notSent: "not_sent"
         case .sent: "spoken"
@@ -95,7 +100,6 @@ enum DuckSummaryState: Sendable, Equatable {
         case .sent: "Summary: spoken aloud; its text did not reach the host."
         case .pending: "Summary: still being asked for when this was saved."
         case .notSent: "Summary: none; the request was not sent."
-        case .notRequested: "Summary: none was asked for."
         }
     }
 }
@@ -108,17 +112,22 @@ public enum DuckSummaryOutcome: Sendable, Equatable {
     case notSent, failed, skipped
 }
 
-/// The owner's "save that" (#735 H-5): the note for the `notes` destination, and counts for the log. `text` is the
-/// owner's words and the summary: it goes only to the destination's handler, never to a log.
+/// The owner's "save that" (#735 H-5): the note, the owner's allowlisted `notes` destination it goes to, and counts
+/// for the log. `text` is the owner's words and the summary: it goes only to that destination's handler, never to a
+/// log.
 public struct DuckSave: Sendable, Equatable {
+    /// The one destination a duck save may use, keyed as the destinations file keys it.
+    static let notesKey = RightyoAddressing.key("notes")
+
     let text: String
+    let target: VoiceDestinations.Destination
     public let turns: Int
     public let bytes: Int
     /// `DuckSummaryState.token`.
     public let summary: String
 
-    init(_ held: DuckSession.Held) {
-        text = held.note
+    init(_ held: DuckSession.Held, to target: VoiceDestinations.Destination) {
+        (text, self.target) = (held.note, target)
         (turns, bytes, summary) = (held.copy.turns.count, text.utf8.count, held.summary.token)
     }
 }
@@ -135,7 +144,7 @@ extension DuckSession {
         let id: UUID
         let copy: Snapshot
         let until: Date
-        var summary = DuckSummaryState.notRequested
+        var summary = DuckSummaryState.pending
 
         /// What "save that" writes: a heading with the counts, the summary line, then each turn as said.
         var note: String {

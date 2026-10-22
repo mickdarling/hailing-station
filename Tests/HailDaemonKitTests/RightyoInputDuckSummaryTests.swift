@@ -19,14 +19,17 @@ extension RightyoInputConsumerTests {
         let consumer: RightyoInputConsumer, session: DuckSession, held: DuckSession.Held?, next: Int
     }
 
+    static let notes = VoiceDestinations.Destination.markdown("/synthetic/Notes.md")
+
     func endedDuck(_ words: [String], dispatcher: any RightyoDispatching = RecordingDispatcher(),
-                   activation: String = "finalized-turn") async throws -> EndedDuck {
+                   activation: String = "finalized-turn",
+                   destinations: [String: VoiceDestinations.Destination] = ["Notes": notes]) async throws -> EndedDuck {
         let session = DuckSession(), wish = DuckWish()
         session.begin()
         let consumer = try RightyoInputConsumer(host: nil, target: "tmux:demo", binding: "original",
                                                 session: self.session, allowSynthetic: true, dispatcher: dispatcher,
-                                                mediaCommands: true, duckActive: { wish.active },
-                                                duckSession: session)
+                                                mediaCommands: true, destinations: VoiceDestinations(destinations),
+                                                duckActive: { wish.active }, duckSession: session)
         _ = try await consumer.consume(duckStart(activation: activation))
         let next = try await say(words, to: consumer)
         wish.set(false)
@@ -54,9 +57,8 @@ extension RightyoInputConsumerTests {
         let own = RecordingDispatcher(), request = UUID()
         let step = RecordingDispatcher(receipt: .init(request: request))
         let ended = try await endedDuck(["First synthetic thought.", "Second one."], dispatcher: own)
-        let (consumer, session, held) = (ended.consumer, ended.session, ended.held)
-        let hold = try #require(held)
-        #expect(await consumer.summarizeDuck(hold, via: step) == .sent(turns: 2, bytes: hold.copy.bytes))
+        let hold = try #require(ended.held)
+        #expect(await ended.consumer.summarizeDuck(hold, via: step) == .sent(turns: 2, bytes: hold.copy.bytes))
         let calls = await step.calls
         #expect(calls.count == 1 && calls.first?.target == "tmux:demo" && calls.first?.binding == "original")
         let text = try #require(calls.first?.text)
@@ -64,7 +66,7 @@ extension RightyoInputConsumerTests {
         #expect(text.hasSuffix(block) && text.contains("First synthetic thought.") && text.contains("Second one."))
         // The consumer's own step (the acknowledging one) is never used, and the hold remembers the reply request.
         #expect(await own.calls.isEmpty)
-        #expect(session.held?.summary == .sent(request))
+        #expect(ended.session.held?.summary == .sent(request))
     }
 
     /// A stream that never sends, an anonymous one, a validation-only consumer and an ended stream send nothing.
@@ -82,59 +84,79 @@ extension RightyoInputConsumerTests {
         #expect(await validating.summarizeDuck(hold, via: step) == .skipped)
         let ended = try await endedDuck(["A synthetic thought."])
         _ = try await ended.consumer.consume(event("session", sequence: ended.next, extra: ["phase": "stopped"]))
-        #expect(await ended.consumer.summarizeDuck(hold, via: step) == .skipped)
+        #expect(await ended.consumer.summarizeDuck(try #require(ended.held), via: step) == .skipped)
         #expect(await step.calls.isEmpty)
     }
 
-    /// H-3's refusal split: a guard or policy refusal is `notSent` and the stream goes on; anything else ends it.
+    /// The summary is a background step: no failure ends the stream. A guard or policy refusal is `notSent`, any
+    /// other `failed`; either way a later save says the summary was not sent.
     @Test(arguments: [(LocalDispatchRefusal.confirmationRequired, false), (.capacityExceeded, false),
-                      (.connectionEnded, true), (.targetNotSelected, true)])
-    func aRefusedSummaryKeepsTheStreamOnlyForGuardAndPolicy(_ refusal: LocalDispatchRefusal, _ ends: Bool)
-        async throws {
+                      (.connectionEnded, true), (.sessionNotReady, true), (.targetNotSelected, true)])
+    func aFailedSummaryNeverEndsTheStream(_ refusal: LocalDispatchRefusal, _ failed: Bool) async throws {
         let ended = try await endedDuck(["A synthetic thought."])
-        let (consumer, session, held, next) = (ended.consumer, ended.session, ended.held, ended.next)
-        let outcome = await consumer.summarizeDuck(try #require(held), via: RecordingDispatcher(refusal: refusal))
-        #expect(outcome == (ends ? .failed : .notSent))
-        #expect(session.held?.summary == .notSent)
-        let line = try duckTurn("Another synthetic line.", sequence: next)
-        if ends {
-            await #expect(throws: RightyoInputError.invalidLifecycle) { try await consumer.consume(line) }
-        } else {
-            #expect(try await !consumer.consume(line))
-        }
+        let outcome = await ended.consumer.summarizeDuck(try #require(ended.held),
+                                                         via: RecordingDispatcher(refusal: refusal))
+        #expect(outcome == (failed ? .failed : .notSent))
+        #expect(ended.session.held?.summary == .notSent)
+        #expect(try await !ended.consumer.consume(duckTurn("Another synthetic line.", sequence: ended.next)))
+        #expect(try await !ownerRequest("Rightyo, save that.", to: ended.consumer, at: ended.next + 1))
+        let save = try #require(await ended.consumer.lastDuckSave)
+        #expect(save.summary == "not_sent" && save.text.contains("Summary: none; the request was not sent."))
     }
 
-    /// The owner's "save that" takes the hold, sends nothing and leaves the note for the host; a second is a request.
-    @Test func theOwnersSaveTakesTheHoldOnce() async throws {
+    /// "Save that to notes", named or not, or "<name>, save that": the hold is taken once, nothing is sent, and the
+    /// note goes to the `notes` destination.
+    @Test(arguments: ["Rightyo, save that.", "Save that to notes.", "Hey Rightyo, save that to notes please."])
+    func theOwnersSaveTakesTheHoldOnce(_ cue: String) async throws {
+        let dispatcher = RecordingDispatcher()
+        let ended = try await endedDuck(["A synthetic thought."], dispatcher: dispatcher,
+                                        destinations: ["Notes": Self.notes, "Other": .markdown("/synthetic/Other.md")])
+        #expect(try await !ownerRequest(cue, to: ended.consumer, at: ended.next))
+        let save = try #require(await ended.consumer.lastDuckSave)
+        #expect(save == DuckSave(try #require(ended.held), to: Self.notes))
+        #expect(save.text.contains("- A synthetic thought.") && save.summary == "pending")
+        #expect(await dispatcher.calls.isEmpty && ended.session.held == nil)
+        // Nothing is held any more: the same words are an ordinary request.
+        #expect(try await ownerRequest(cue, to: ended.consumer, at: ended.next + 3))
+        #expect(await consumer(ended).lastDuckSave == nil)
+        #expect(await dispatcher.calls.count == 1)
+    }
+
+    /// A bare "save that" names nobody: it reaches the agent, and the hold stays.
+    @Test func aBareSaveThatIsAnOrdinaryRequest() async throws {
         let dispatcher = RecordingDispatcher()
         let ended = try await endedDuck(["A synthetic thought."], dispatcher: dispatcher)
-        let (consumer, session, held, next) = (ended.consumer, ended.session, ended.held, ended.next)
-        #expect(try await !ownerRequest("Rightyo, save that to notes.", to: consumer, at: next))
-        let save = try #require(await consumer.lastDuckSave)
-        #expect(save == DuckSave(try #require(held)) && save.text.contains("- A synthetic thought."))
-        #expect(await dispatcher.calls.isEmpty && session.held == nil)
-        // Nothing is held any more: the same words are an ordinary request.
-        #expect(try await ownerRequest("Rightyo, save that.", to: consumer, at: next + 3))
-        #expect(await consumer.lastDuckSave == nil)
-        #expect(await dispatcher.calls.count == 1)
+        #expect(try await ownerRequest("Save that.", to: ended.consumer, at: ended.next))
+        #expect(await ended.consumer.lastDuckSave == nil)
+        #expect(await dispatcher.calls.count == 1 && ended.session.held != nil)
+    }
+
+    /// Without an allowlisted `notes` destination (none at all, or only another), a save is not a command: it reaches
+    /// the agent, and the hold stays.
+    @Test(arguments: [[:], ["Other": VoiceDestinations.Destination.markdown("/synthetic/Other.md")]])
+    func withoutANotesDestinationSaveIsAnOrdinaryRequest(_ destinations: [String: VoiceDestinations.Destination])
+        async throws {
+        let dispatcher = RecordingDispatcher()
+        let ended = try await endedDuck(["A synthetic thought."], dispatcher: dispatcher, destinations: destinations)
+        #expect(try await ownerRequest("Rightyo, save that to notes.", to: ended.consumer, at: ended.next))
+        #expect(await ended.consumer.lastDuckSave == nil)
+        #expect(await dispatcher.calls.count == 1 && ended.session.held != nil)
     }
 
     @Test func theOwnersDiscardDropsTheHold() async throws {
         let dispatcher = RecordingDispatcher()
         let ended = try await endedDuck(["One.", "Two."], dispatcher: dispatcher)
-        let (consumer, session, next) = (ended.consumer, ended.session, ended.next)
-        #expect(try await !ownerRequest("Discard that.", to: consumer, at: next))
-        #expect(await consumer.lastDuckCue == .discarded(turns: 2))
-        #expect(await dispatcher.calls.isEmpty && session.held == nil)
+        #expect(try await !ownerRequest("Discard that.", to: ended.consumer, at: ended.next))
+        #expect(await ended.consumer.lastDuckCue == .discarded(turns: 2))
+        #expect(await dispatcher.calls.isEmpty && ended.session.held == nil)
     }
 
-    /// A guest's save is a request like any other, and the hold stays for the owner.
+    /// A guest's save, named, is a request like any other, and the hold stays for the owner.
     @Test func aGuestsSaveIsAnOrdinaryRequest() async throws {
         let dispatcher = RecordingDispatcher()
         let ended = try await endedDuck(["A synthetic thought."], dispatcher: dispatcher)
-        let (consumer, session, next) = (ended.consumer, ended.session, ended.next)
-        #expect(try await ownerRequest("Save that.", to: consumer, at: next, role: "participant"))
-        #expect(await consumer.lastDuckSave == nil && session.held != nil)
+        #expect(try await ownerRequest("Rightyo, save that.", to: ended.consumer, at: ended.next, role: "participant"))
+        #expect(await ended.consumer.lastDuckSave == nil && ended.session.held != nil)
         #expect(await dispatcher.calls.count == 1)
     }
 
@@ -142,12 +164,11 @@ extension RightyoInputConsumerTests {
     @Test func withoutAHoldTheCuesAreOrdinaryRequests() async throws {
         let dispatcher = RecordingDispatcher()
         let ended = try await endedDuck([], dispatcher: dispatcher)
-        let (consumer, next) = (ended.consumer, ended.next)
         #expect(ended.held == nil)
-        #expect(try await ownerRequest("Save that.", to: consumer, at: next))
-        #expect(try await ownerRequest("Discard that.", to: consumer, at: next + 3))
-        #expect(await consumer.lastDuckSave == nil)
-        #expect(await consumer.lastDuckCue == nil)
+        #expect(try await ownerRequest("Rightyo, save that.", to: ended.consumer, at: ended.next))
+        #expect(try await ownerRequest("Discard that.", to: ended.consumer, at: ended.next + 3))
+        #expect(await ended.consumer.lastDuckSave == nil)
+        #expect(await ended.consumer.lastDuckCue == nil)
         #expect(await dispatcher.calls.count == 2)
     }
 
@@ -160,15 +181,18 @@ extension RightyoInputConsumerTests {
         let consumer = try anonymousDuck(session, dispatcher: dispatcher)
         _ = try await consumer.consume(start())
         var body = turn()
-        body["text"] = "Save that."
+        body["text"] = "Rightyo, save that to notes."
         #expect(try await consumer.consume(preparedRequest(consumer, customTurn: body)))
         #expect(await consumer.lastDuckSave == nil && session.held != nil)
         #expect(await dispatcher.calls.count == 1)
     }
 
+    func consumer(_ ended: EndedDuck) -> RightyoInputConsumer { ended.consumer }
+
     func anonymousDuck(_ session: DuckSession, dispatcher: RecordingDispatcher) throws -> RightyoInputConsumer {
         try RightyoInputConsumer(host: nil, target: "tmux:demo", binding: "original", session: self.session,
-                                 allowSynthetic: true, dispatcher: dispatcher, duckActive: { false },
+                                 allowSynthetic: true, dispatcher: dispatcher,
+                                 destinations: VoiceDestinations(["Notes": Self.notes]), duckActive: { false },
                                  duckSession: session)
     }
 }

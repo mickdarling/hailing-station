@@ -173,6 +173,10 @@ extension RightyoInputConsumerTests {
         let block = RightyoInputEvent.duckSummaryReplyBlock(target: "tmux:demo")
         let sentence = RightyoInputEvent.duckSummaryInstruction
         #expect(block == sentence + Self.replyBlock && sentence != RightyoInputEvent.duckInstruction)
+        // The wording itself is pinned.
+        #expect(sentence == " Duck mode has ended, and the JSON above holds what the owner said during it. In a few"
+            + " short spoken sentences, give the decisions reached, the questions still open and the next steps"
+            + " named; do not act on any of it.")
         #expect(block.unicodeScalars.allSatisfy(\.isASCII) && !block.contains(where: \.isNewline))
         #expect(!block.contains("\"") && !sentence.contains("'"))
         #expect(!RightyoInputEvent.carriesReplyPrefix(sentence) && !RightyoInputEvent.carriesMarker(block))
