@@ -168,6 +168,20 @@ bad_config "destinations without ambient" \
 bad_config "relative destinations path" \
   '{"bind": "127.0.0.1", "port": 8765, "singleTerminalReplyFallback": true,
     "ambient": {"rightyo": "/bin/sh", "config": "/etc/hosts", "target": "tmux:t", "destinations": "d.json"}}'
+bad_config "duck timeout without ambient" \
+  '{"bind": "127.0.0.1", "port": 8765, "singleTerminalReplyFallback": true, "ambient": {"duckTimeout": 600}}'
+bad_config "duck timeout under a minute" \
+  '{"bind": "127.0.0.1", "port": 8765, "singleTerminalReplyFallback": true,
+    "ambient": {"rightyo": "/bin/sh", "config": "/etc/hosts", "target": "tmux:t", "duckTimeout": 59}}'
+bad_config "duck timeout over twelve hours" \
+  '{"bind": "127.0.0.1", "port": 8765, "singleTerminalReplyFallback": true,
+    "ambient": {"rightyo": "/bin/sh", "config": "/etc/hosts", "target": "tmux:t", "duckTimeout": 43201}}'
+bad_config "duck timeout as a string" \
+  '{"bind": "127.0.0.1", "port": 8765, "singleTerminalReplyFallback": true,
+    "ambient": {"rightyo": "/bin/sh", "config": "/etc/hosts", "target": "tmux:t", "duckTimeout": "600"}}'
+bad_config "fractional duck timeout" \
+  '{"bind": "127.0.0.1", "port": 8765, "singleTerminalReplyFallback": true,
+    "ambient": {"rightyo": "/bin/sh", "config": "/etc/hosts", "target": "tmux:t", "duckTimeout": 600.5}}'
 bad_config "reply control without ambient" \
   '{"bind": "127.0.0.1", "port": 8765, "singleTerminalReplyFallback": true, "deviceDiagnostics": true,
     "ambient": {"replyControl": true}}'
@@ -194,7 +208,7 @@ for (( i = 0; i < count; i++ )); do spaced+=("$(plutil -extract "ProgramArgument
 printf '%s\n' "{\"bind\": \"127.0.0.1\", \"port\": 8765, \"hostID\": \"studio.local\",
   \"singleTerminalReplyFallback\": true, \"deviceDiagnostics\": true, \"voiceRoutes\": \"/r.json\",
   ${ambient%\}}, \"ackClips\": \"/clips\",
-  \"destinations\": \"/d.json\", \"replyControl\": true}}" \
+  \"destinations\": \"/d.json\", \"replyControl\": true, \"duckTimeout\": 5400}}" \
   > "$HAIL_CONFIG_DIR/host.json"
 "$host" plist > "$scratch/agent.plist"
 plutil -lint -s "$scratch/agent.plist" >/dev/null
@@ -204,7 +218,7 @@ for (( i = 0; i < count; i++ )); do arguments+=("$(plutil -extract "ProgramArgum
 expected=("$(release_dir one)/haild" run --bind 127.0.0.1 --port 8765 --personal-terminal
   --single-terminal-reply-fallback --device-diagnostics --voice-routes /r.json
   --ambient-rightyo /bin/sh --ambient-rightyo-config /etc/hosts --ambient-target tmux:t --ambient-ack-clips /clips
-  --ambient-destinations /d.json --ambient-reply-control)
+  --ambient-destinations /d.json --ambient-duck-timeout 5400 --ambient-reply-control)
 [[ "${arguments[*]}" == "${expected[*]}" ]] || fail "unexpected arguments: ${arguments[*]}"
 [[ "$(plutil -extract EnvironmentVariables.HAIL_HOST_ID raw -o - "$scratch/agent.plist")" == studio.local ]] \
   || fail "host ID not in the environment"

@@ -102,7 +102,7 @@ public enum ConnectionProbeDaemon {
             case "--single-terminal-reply-fallback", "--device-diagnostics",
                  "--ambient-reply-control", "--session-updates", "--host-health": switches.insert(flag)
             case "--ambient-rightyo", "--ambient-rightyo-config", "--ambient-target", "--ambient-ack-clips",
-                 "--ambient-destinations":
+                 "--ambient-destinations", "--ambient-duck-timeout":
                 try parseAmbient(flag, from: &rest, into: &ambient)
             default: throw WebSocketListenerError.invalidArguments
             }
@@ -178,6 +178,8 @@ extension ConnectionProbeDaemon {
         var ackClips: URL? // `--ambient-ack-clips` (rightyo#105); nil or no clips leaves acknowledgements off.
         var replyControl = false // `--ambient-reply-control` (rightyo#124), only with `--device-diagnostics`.
         var destinations: URL? // `--ambient-destinations` (#552); a missing file leaves spoken notes off.
+        /// `--ambient-duck-timeout` (#735): whole seconds in `AmbientRightyoRouter.duckTimeoutRange`; nil is the default.
+        var duckTimeout: TimeInterval?
     }
 
     /// A flag's path: never empty and, when `absolute`, starting at `/`.
@@ -188,12 +190,14 @@ extension ConnectionProbeDaemon {
         return URL(fileURLWithPath: path)
     }
 
-    /// Each ambient flag once, with a value: paths absolute, the target never another option.
+    /// Each ambient flag once, with a value: paths absolute, the target never another option, the duck timeout digits.
     fileprivate static func parseAmbient(
         _ flag: String, from rest: inout ArraySlice<String>, into ambient: inout [String: String]
     ) throws {
+        let digits = { (value: String) in value.count <= 6 && value.allSatisfy { ("0"..."9").contains($0) } }
         guard ambient[flag] == nil, let value = rest.popFirst(), !value.isEmpty, !value.hasPrefix("-"),
-              flag == "--ambient-target" || value.hasPrefix("/") else {
+              flag == "--ambient-duck-timeout" ? digits(value) : flag == "--ambient-target" || value.hasPrefix("/")
+        else {
             throw WebSocketListenerError.invalidArguments
         }
         ambient[flag] = value
@@ -205,10 +209,17 @@ extension ConnectionProbeDaemon {
         guard !ambient.isEmpty else { return nil }
         guard let executable = ambient["--ambient-rightyo"], let config = ambient["--ambient-rightyo-config"],
               let target = ambient["--ambient-target"] else { throw WebSocketListenerError.invalidArguments }
+        let duckTimeout = try ambient["--ambient-duck-timeout"].map { value in
+            guard let seconds = TimeInterval(value), AmbientRightyoRouter.duckTimeoutRange.contains(seconds) else {
+                throw WebSocketListenerError.invalidArguments
+            }
+            return seconds
+        }
         return AmbientOptions(executable: URL(fileURLWithPath: executable), config: URL(fileURLWithPath: config),
                               target: target, ackClips: ambient["--ambient-ack-clips"].map(URL.init(fileURLWithPath:)),
                               replyControl: control,
-                              destinations: ambient["--ambient-destinations"].map(URL.init(fileURLWithPath:)))
+                              destinations: ambient["--ambient-destinations"].map(URL.init(fileURLWithPath:)),
+                              duckTimeout: duckTimeout)
     }
 
     #if os(macOS)
@@ -270,6 +281,7 @@ extension ConnectionProbeDaemon {
             executable: options.executable, config: options.config, target: options.target, binding: binding,
             timing: timing, audit: audit, acknowledgements: clips, replyControl: options.replyControl
         )
+        if let duckTimeout = options.duckTimeout { configuration.duckTimeout = duckTimeout }
         // Spoken notes (#552): a malformed file leaves them off and says so, rather than refusing to start.
         if let file = options.destinations {
             sweepNoteInputs()
