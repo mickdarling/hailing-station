@@ -234,7 +234,9 @@ five-second watchdog scheduling grace.
 
 Only an `attend`/`system` request matching a previously admitted immutable final transcript and attention
 record can submit. Transcript and attention
-events alone do not send. Unknown or overlapping speakers remain context data. Prior turns must finish
+events alone do not send, with one exception: the enrolled owner's duck mode ask cue, a transcript that sends the
+duck buffer while duck mode is on ([duck buffer and ask cues](#the-duck-buffer-and-ask-cues-735-h-3)). It is
+refused, like any request, on an `activation: "disabled"` stream. Unknown or overlapping speakers remain context data. Prior turns must finish
 before the request starts and match previously admitted finalized transcript records; context is never silently truncated. Capabilities must advertise finalized-turn
 activation (or `disabled`), retained context, no partial transcript stream and `speakers` of either
 `anonymous` or `enrolled`; any other speakers value is refused at start. Transcription-only streams
@@ -648,7 +650,47 @@ Duck mode is for thinking out loud: while it is on, RightyO decides nothing and 
 
 `haild` writes `{"duck":true}` to the control descriptor only of a child whose `started` event advertised a top-level `duck` object. An older RightyO would skip the line and go on deciding turns, so it is never written one: duck mode is not entered, `ambient_duck … reported=0 refused=unsupported` is logged, and the owner hears `confirm-not-sent/`. Entering duck mode leaves media mode, and entering media mode leaves duck mode.
 
-Duck mode ends on the spoken exit, after `ambient.duckTimeout` in `host.json` (whole seconds, 60 to 14400; an hour by default, `--ambient-duck-timeout`), or when the connection ends. Saying the entry again while duck mode is on answers "still on" with `confirm-duck-on/` and re-arms the timeout when a child took it. A child that starts during duck mode without advertising `duck` (an older RightyO after a reload) ends duck mode: the timeout is cancelled and the device told off with reason `timeout`, logged as `ambient_duck_unsupported`. A device that advertised `duck_mode` is told each change (`ambient_duck_device`), and sees "on" only once a child took it. The changes are confirmed from the reserved `confirm-duck-on/` and `confirm-duck-off/` folders when they hold clips. Mick records both; `confirm-duck-on/` must be worded as a status ("Duck mode is on."), not "Turning on…", because it also answers an entry said while duck mode is already on.
+Duck mode ends on the spoken exit, after `ambient.duckTimeout` in `host.json` (whole seconds, 60 to 14400; an hour by default, `--ambient-duck-timeout`), or when the connection ends. Saying the entry again while duck mode is on answers "still on" with `confirm-duck-on/` and re-arms the timeout when a child took it. A child that starts during duck mode without advertising `duck` (an older RightyO after a reload) ends duck mode: the timeout is cancelled and the device told off with reason `timeout`, logged as `ambient_duck_unsupported`. A device that advertised `duck_mode` is told each change (`ambient_duck_device`), and sees "on" only once a child took it. The changes are confirmed from the reserved `confirm-duck-on/` and `confirm-duck-off/` folders when they hold clips. Mick records both, and `confirm-discarded/` for the duck buffer below; `confirm-duck-on/` must be worded as a status ("Duck mode is on."), not "Turning on…", because it also answers an entry said while duck mode is already on.
+
+#### The duck buffer and ask cues (#735 H-3)
+
+While duck mode is on, `haild` keeps the enrolled owner's transcript turns in a buffer (`DuckSession`).
+
+- **What enters.** A turn enters only when it is all of these:
+  - the enrolled owner's (`role: owner`);
+  - from the live microphone;
+  - not matched as the assistant's own reply (`isEcho`).
+
+  A guest's turn, an unlabelled one, a turn on an anonymous session and an echo never enter. The same guards decide H-2's spoken exit.
+- **Where it lives.** RAM only, at most 32,000 UTF-8 bytes; the oldest turns drop first. It keeps the time duck mode began and the time of the last turn it took.
+- **When it is discarded.** It is empty again when duck mode turns off by any route (the spoken exit, the auto-end, entering media mode, or a child that cannot take duck mode), when the next duck session begins, when its child is replaced (`haild ambient reload`), and when `haild` exits.
+- **Never logged or written.** Logs carry counts and tokens only.
+- **Transcription-only streams.** On a stream whose `started` said `activation: "disabled"`, nothing enters the buffer and no cue counts, the mute included: such a stream never sends.
+- **Known limit: owner trust is the transcript's role alone.** Under rightyo R-2 no attention record follows a ducked turn to confirm or demote it, so the buffer, the asks, the discard and the mute rest on the transcript's `role: owner`, that is, on RightyO's enrolled diarization. The enrolled owner's voice, as RightyO hears it, is the only voice that can trigger them; a misattributed guest turn would count as the owner's. H-2's spoken exit rests on the same evidence.
+- **A second child.** A second child on the same connection that never advertised `duck` keeps the host's wish, so its owner turns still buffer and cue while it goes on deciding turns. A request for an utterance already carried out as a cue is held back, so an ask is never sent twice.
+
+Cues are whole owner turns, said while ducking, named or not ("what do you think?", "Jarvis, play that back"). RightyO releases them alone while ducking (rightyo#237 `DUCK_CUES`); keep the lists in step.
+
+| Cue | What `haild` does |
+| --- | --- |
+| "what do you think" | Sends the buffer and the cue to the selected session as one request. The ordinary acknowledgement clip plays, and the agent asks one short question or offers one brief thought. |
+| "play that back" | The same, and the agent recaps briefly. |
+| "discard that" | Empties the buffer, sends nothing, and plays `confirm-discarded/` ("Discarded."). Mick records the clip; while the folder is empty, nothing plays. |
+| "mute" (and the other `VoiceMute` phrases) | The spoken mute, as outside duck mode, with `confirm-muted/`. |
+| "are you still listening" | Matched, so it is never buffered or sent. H-4 answers it; for now it plays nothing. |
+
+How an ask is sent:
+
+- The request is the buffer as compact JSON: `{"duck":{"cue":…,"started_at_ms":…,"last_speech_at_ms":…,"turns":[…],"dropped_turns":…},"speakers":"enrolled"}`.
+- Then comes the duck reply block. It is one fixed sentence ("ask, don't solve; recap briefly") followed by the ordinary reply block, byte for byte, so request references (#230) and bridges work unchanged.
+- It goes through the ordinary ambient dispatch, so the sanitizer, the guard, policy, tiers and lockdown all apply. It always goes to the stream's own target; voice routes never apply.
+- The guard sees the whole buffer, so a guarded word said while thinking (for example "delete") refuses the ask. Nothing is sent, the stream goes on, and the buffer stays. The owner hears the ordinary acknowledgement (it plays before the dispatch, as for any request), then `confirm-not-sent/`. Say "discard that" to start clean. Guarding each turn as it enters is #790.
+- Only a guard or policy refusal keeps listening (`confirmationRequired`, `deliveryRefused`, `capacityExceeded`). A connection or selection that is gone ends the stream, as it does for a request.
+- The device is not shown what was sent: an ask does not call `onHeard`, so unlike an ordinary request its words never appear on the device as heard.
+- A timeout exit that lands while an ask is being built still lets that ask go, since it was said while ducking. The buffer is discarded all the same.
+- Each cue logs `ambient_duck_cue` with counts only, for example `cue=ask outcome=sent turns=12 bytes=2048`.
+
+"What was I saying about X" is not a cue yet (#791). RightyO does not release it as a whole turn.
 
 ### Spoken notes to configured destinations (#552)
 
