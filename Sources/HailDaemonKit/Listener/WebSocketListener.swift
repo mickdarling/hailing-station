@@ -58,7 +58,8 @@ public actor WebSocketListener {
     /// Opt-in ambient listening (#203): the sink of the authorizer's `AmbientAudioGate`. Nil by default.
     let ambient: (any AmbientListenerWiring)?
     /// Per target, the connection that most recently sent it admitted input (#370). Host-side only.
-    let lastInput = LastInputLedger()
+    /// `replyHold`: connections whose agent replies are refused while private (#735 S-2c); the ambient router sets it.
+    let (lastInput, replyHold) = (LastInputLedger(), PrivateReplyHold())
     /// Sessions' unsolicited updates (#609): off unless `--session-updates`. The quiet switch lasts until restart.
     var sessionUpdates = SessionUpdateQueue(), sessionUpdatesQuiet = false
 
@@ -654,6 +655,7 @@ public final class AmbientRightyoRouter: AmbientAudioSink, AmbientListenerWiring
             (state.latest[connection], state.inputRoutes[connection]) = (nil, nil)
             state.media.removeValue(forKey: connection)?.timer.cancel()
             state.duck.removeValue(forKey: connection)?.timer?.cancel()
+            state.listener?.value?.replyHold.set(false, connection: connection)
             state.unavailableSaid.remove(connection)
             if let active = state.active, state.runs[active.run]?.connection == connection { state.active = nil }
             return state.runs.filter { $0.value.connection == connection }.map(\.key)
@@ -1528,6 +1530,22 @@ extension AmbientRightyoRouter {
         // Privacy has no auto-end (Mick, round 2): no timer and no expiry; only the owner's exit ends it.
         if on { state.duck[connection] = AmbientDuckTimer(token: UUID(), timer: nil) }
         let listener = state.listener?.value
+        if on {
+            // From now on the agent's replies to this connection are refused (S-2c), then its pending ones dropped.
+            listener?.replyHold.set(true, connection: connection)
+            mediaNotices.enqueue { [weak self, weak listener] in
+                let dropped = await listener?.dropPrivateReplies(connection: connection) ?? 0
+                self?.emit("ambient_privacy_replies", connection: connection, detail: "dropped=\(dropped)")
+            }
+        } else {
+            // Released on the same serial queue as the entry's drop, so the drop has finished first and a reply from
+            // before the entry cannot slip through a fast entry then exit; skipped if privacy came back meanwhile.
+            mediaNotices.enqueue { [weak self, weak listener] in
+                guard self?.duckMode(connection: connection) == false else { return }
+                listener?.replyHold.set(false, connection: connection)
+                self?.emit("ambient_privacy_replies", connection: connection, detail: "released=true")
+            }
+        }
         mediaNotices.enqueue { [weak self, weak listener] in
             let sent = await listener?.showDuckMode(on, reason: reason, expires: nil, connection: connection)
             self?.emit("ambient_duck_device", connection: connection,
