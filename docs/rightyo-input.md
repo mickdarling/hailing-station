@@ -648,33 +648,53 @@ Privacy mode keeps nothing. While it is on, RightyO sends no transcript, attenti
 
 #### Entry: intentional standalone commands (`PrivacyEntry`)
 
-`haild` matches the entry deterministically and locally, with no model. A command counts only when it is the whole turn. It may follow a greeting and an assistant name ("Hey Jarvis, privacy mode."), or a single word set off by a comma ("Computer, stop recording."). Fillers and politeness are allowed at the edges only: "ok", "okay", "um", "uh", "so", "please", "now", "thanks", "thank you". Case and punctuation don't matter. The commands are:
+`haild` matches the entry deterministically and locally, with no model. Mick: "It needs to be really intentional"; "If I say them, they can count for privacy. If other people say them, they should not count."
 
-- "privacy mode", "privacy mode on", "turn on privacy mode", "enter privacy mode" and "start privacy mode";
+A command counts only when it is the whole turn. It may follow a greeting and an assistant name ("Hey Jarvis, privacy mode."), or a single word set off by a comma ("Computer, stop recording."). Case and punctuation don't matter. Only these may surround it:
+
+- **before:** "ok", "okay", "um", "uh", "so", "please", "hey", "now", "just", "alright", "wait", "no", and a polite "can / could / would / will you". The polite form alone may end in "?" ("Can you stop recording?");
+- **after:** "please", "now", "thanks", "thank you", "right now", "for now", "for a minute / bit / while / sec / second", and the assistant's name.
+
+The commands are:
+
+- "privacy mode", "privacy mode on", and "turn on", "enter", "start", "enable", "activate" or "switch to" privacy mode;
 - "go private";
 - "stop recording", "stop listening" and "stop recordings", with up to two determiners in between ("stop the recording", "stop all the recordings");
 - "stop listening to me".
 
-Nothing embedded counts (Mick: "It needs to be really intentional"). That rules out:
+These don't count:
 
-- a phrase mid-sentence ("we should go private");
-- a phrase with an object after it ("stop listening on 443", "go private on github");
-- a question or mention ("what is privacy mode?");
-- any turn ending in "?";
-- a polite question ("can you stop recording");
+- a command mid-sentence, code dictation included ("we should go private", "set the flag to stop listening on 443");
+- a question or mention ("what is privacy mode?"), and any other turn ending in "?";
 - a leaving phrase ("privacy mode off", "end privacy mode").
 
-A standalone negated command ("don't stop recording", "Jarvis, do not go private") changes nothing and plays `confirm-still-recording/` ("Still recording."). A name said alone is no command, so a lone "Jarvis," followed by the command in the next turn enters on the second turn. `AmbientPrivacyCorpusTests` holds the table: over 600 intentional forms, negations, and more than 120 that must not count.
+They reach the agent as ordinary requests.
 
-A matching phrase is checked in transcripts, so entry never waits for a request to be formed, and in requests. The request that carried it is always held back from the agent. Only a live-microphone turn counts, and the assistant's own words heard back (the echo filter) never count.
+A standalone negated command ("don't stop recording", "Jarvis, do not go private") changes nothing and plays `confirm-still-recording/` ("Still recording."). A name said alone is no command, so a lone "Jarvis," followed by the command in the next turn enters on the second turn.
+
+**Partial commands.** An owner turn that starts with a command but goes on ("stop recording, my wife is here", "go private on github") is held back from the agent. It plays `confirm-privacy-hint/` ("To go private, say 'stop recording' on its own."), logged `hint`. A guest's such turn is never held, and goes to the agent as usual.
+
+`AmbientPrivacyCorpusTests` holds the table:
+
+- about 2,000 intentional forms;
+- negations;
+- partial commands;
+- more than 150 turns that must not count.
+
+A matching turn is checked in transcripts, so entry never waits for a request to be formed, and in requests. The request that carried it is always held back from the agent; the request path applies the same owner rule on its own. Only a live-microphone turn counts, and the assistant's own words heard back (the echo filter) never count.
 
 **Owner only.** Mick: "only my registered voice should be able to turn privacy mode on." Entry has the same trust bar as the exit. It needs:
 
 - an enrolled session;
-- a turn RightyO attributed to the owner;
+- a turn RightyO attributed to the owner, in the transcript and, on the request path, in the attention record too;
 - that attribution coming from a live voiceprint, as the transcript's top-level `"role_source": "voiceprint"` says. An inferred or label-configured owner does not qualify.
 
-Anything else is refused: a guest, a TV, an unlabelled turn, a label-only or inferred owner, or an anonymous session. It is held back from the agent with no clip, changes nothing (media mode included), and is logged as `ambient_duck_confirmed on=true refused=not_owner`. Until RightyO sends `role_source`, no entry is confirmed: the host fails closed.
+How a refusal sounds depends on who spoke:
+
+- **The owner role without a live voiceprint** (label-only or inferred) is refused audibly, so the owner never believes privacy is on when it is not. It plays `confirm-privacy-refused/` ("I couldn't turn on privacy."), or `confirm-not-sent/` until that clip is recorded, and is logged `refused=unverified_owner`.
+- **Anyone else** (a guest, a TV, an unlabelled turn, an anonymous session) is refused silently, logged `refused=not_owner`.
+
+Either way the turn is held back from the agent and changes nothing, media mode included. Until RightyO sends `role_source`, every entry is refused: the host fails closed, audibly for the owner.
 
 #### Fail closed against an older RightyO
 
@@ -719,10 +739,12 @@ These reserved folders play nothing until Mick records them:
 | `confirm-privacy-status/` | "Privacy on. I'm only listening for my name." | RightyO's status event while private |
 | `confirm-still-recording/` | "Still recording." | a negated entry |
 | `confirm-not-sent/` | "Nothing was sent." | an entry no child could take |
+| `confirm-privacy-refused/` | "I couldn't turn on privacy." | the owner role's entry without a live voiceprint (falls back to `confirm-not-sent/`) |
+| `confirm-privacy-hint/` | "To go private, say 'stop recording' on its own." | an owner turn that starts with a command and goes on |
 
 They replace H-2's `confirm-duck-on/` and `confirm-duck-off/`. H-2's named duck phrases ("Jarvis, duck mode", "let me think out loud", "done thinking") are gone and reach the agent as ordinary requests.
 
-The microphone hears these clips, so none may contain an entry command ("privacy mode", "stop listening", "go private", "stop recording") or an exit phrase ("I'm back", "start listening", "privacy off"). The host's echo filter (`hostPhrases.isEcho`) covers a clip only partly:
+The microphone hears these clips, so none may be or start with an entry command ("privacy mode", "stop listening", "go private", "stop recording"), and none may contain an exit phrase ("I'm back", "start listening", "privacy off"). The hint names "stop recording" only mid-sentence, which never counts; `AmbientPrivacyCorpusTests` checks every clip's words. The host's echo filter (`hostPhrases.isEcho`) covers a clip only partly:
 
 - the clip has a `<clip>.txt` with its words;
 - its delivery reported `sent`;

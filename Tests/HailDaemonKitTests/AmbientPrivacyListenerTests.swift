@@ -102,7 +102,7 @@ import Testing
         #expect(await eventually { !rig.details("ambient_duck_confirmed").isEmpty })
         #expect(rig.env.router.mediaMode(connection: connection) && !rig.env.router.duckMode(connection: connection))
         await rig.finish()
-        #expect(rig.details("ambient_duck_confirmed") == ["on=true refused=not_owner confirm=unreported"])
+        #expect(rig.details("ambient_duck_confirmed") == ["refused=not_owner confirm=unreported"])
         #expect(rig.details("ambient_duck").isEmpty)
     }
 
@@ -118,6 +118,39 @@ import Testing
         await rig.finish()
         #expect(rig.details("ambient_duck_confirmed").last == "on=false lost confirm=confirmprivacyoff/0:sent")
         #expect(rig.details("ambient_duck").last?.hasPrefix("on=false reason=timeout") == true)
+    }
+
+    /// Round 3 B2: the owner role's entry without a live voiceprint is refused audibly, never in silence: its own clip
+    /// when recorded, else "Nothing was sent.". Privacy stays off and nothing is written to the child.
+    @Test(arguments: [true, false]) func anUnverifiedOwnerHearsTheRefusal(_ recorded: Bool) async throws {
+        var clips = AmbientDuckModeTests.clips
+        if recorded {
+            clips = AmbientAckLibrary(clips: ["confirmprivacyrefused": [AmbientDuckModeTests.clip("I couldn't.", 4)],
+                                              "confirmnotsent": [AmbientDuckModeTests.clip("Nothing was sent.", 5)]])
+        }
+        let rig = try await DuckRig(script: "/bin/cat <&3 > control.txt &\n" + AmbientPrivacyEntryTests.fixture(
+            saying: "Rightyo, stop recording.", advertises: true, roleSource: nil), clips: clips)
+        defer { rig.close() }
+        #expect(try await rig.confirmation() == (recorded ? "I couldn't." : "Nothing was sent."))
+        #expect(await eventually { !rig.details("ambient_duck_confirmed").isEmpty })
+        await rig.finish()
+        let clip = recorded ? "confirmprivacyrefused/0:sent" : "confirmnotsent/0:sent"
+        #expect(rig.details("ambient_duck_confirmed") == ["refused=unverified_owner confirm=\(clip)"])
+        #expect(rig.details("ambient_duck").isEmpty)
+        #expect(try rig.fake.recorded("control.txt") == "")
+    }
+
+    /// Round 3 B3(b): the owner's "stop recording, …" that goes on is held back and answered with the hint clip;
+    /// nothing changes.
+    @Test func theOwnersPartialCommandHearsTheHint() async throws {
+        let rig = try await DuckRig(saying: "Rightyo, stop recording the meeting.", advertises: true,
+                                    clips: AmbientDuckModeTests.clips)
+        defer { rig.close() }
+        #expect(try await rig.confirmation() == "To go private, say stop recording on its own.")
+        #expect(await eventually { !rig.details("ambient_duck_confirmed").isEmpty })
+        await rig.finish()
+        #expect(rig.details("ambient_duck_confirmed") == ["hint confirm=confirmprivacyhint/0:sent"])
+        #expect(rig.details("ambient_duck").isEmpty)
     }
 }
 #endif

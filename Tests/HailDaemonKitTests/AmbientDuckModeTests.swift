@@ -18,6 +18,7 @@ import Testing
         "confirmprivacyoff": [clip("Recording again.", 8)],
         "confirmprivacystatus": [clip("Privacy on. I'm only listening for my name.", 7)],
         "confirmstillrecording": [clip("Still recording.", 6)],
+        "confirmprivacyhint": [clip("To go private, say stop recording on its own.", 3)],
         "confirmnotsent": [clip("Nothing was sent.", 5)]
     ])
 
@@ -62,7 +63,7 @@ import Testing
         #expect(await eventually { !rig.details("ambient_duck_confirmed").isEmpty })
         await rig.finish()
         #expect(rig.details("ambient_duck").isEmpty)
-        #expect(rig.details("ambient_duck_confirmed") == ["on=true refused=not_owner confirm=unreported"])
+        #expect(rig.details("ambient_duck_confirmed") == ["refused=not_owner confirm=unreported"])
         #expect(try rig.fake.recorded("control.txt") == "")
     }
 

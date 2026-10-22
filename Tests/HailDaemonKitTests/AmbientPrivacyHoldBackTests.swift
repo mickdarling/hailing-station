@@ -32,22 +32,7 @@ import Testing
     @Test(arguments: [("Rightyo, go private.", PrivacyCommand.enter),
                       ("Rightyo, do not stop recording.", .stillRecording)])
     func theRequestAloneHoldsItsPhraseBack(_ words: String, _ command: PrivacyCommand) async throws {
-        let edit = #"-e "s/formed-demo/$7/g" -e 's/"phase": "started"/"duck": {"version": 2}, "phase": "started"/'"#
-            + AmbientPrivacyEventTests.voiceprint
-        let script = #"""
-        /usr/bin/sed -n -e '1,5p' events.jsonl | /usr/bin/sed \#(edit) -e 's/Rightyo, archive the project./\#(words)/g'
-        i=0
-        while [ $i -lt 33 ]; do
-          /usr/bin/sed -n -e '4p' events.jsonl | /usr/bin/sed \#(edit) \
-            -e 's/Rightyo, archive the project./go private/g' -e "s/\"sequence\": 4/\"sequence\": $((i + 6))/" \
-            -e "s/\"utterance_id\": \"request\"/\"utterance_id\": \"slip-$i\"/"
-          i=$((i + 1))
-        done
-        /usr/bin/sed -n -e '6p' events.jsonl | /usr/bin/sed \#(edit) -e 's/Rightyo, archive the project./\#(words)/g' \
-          -e 's/"sequence": 6/"sequence": 50/'
-        /bin/cat > /dev/null
-        /usr/bin/sed -n -e '$p' events.jsonl | /usr/bin/sed -e "s/formed-demo/$7/g" -e 's/"sequence": 7/"sequence": 99/'
-        """#
+        let script = Self.evicted(saying: words)
         let (seen, delivered) = try await run(script)
         #expect(seen.count == 35 && seen.first == command && seen.last == command && delivered == 0)
     }
@@ -79,6 +64,89 @@ import Testing
         pipeline.finishInput()
         _ = try await pipeline.run()
         #expect(relayed.withLock { $0 } == (ducking ? [] : ["overheard"]))
+    }
+
+    /// Key 1's M13: the request path's own owner gate, with the transcript's match evicted. A guest's request is
+    /// refused (silent), the owner role's without a voiceprint `unverified` (audible), and neither enters or is typed.
+    @Test(arguments: [(true, true, PrivacyCommand.refused), (false, false, .unverified)])
+    func theRequestPathGatesTheOwner(_ guest: Bool, _ voiceprint: Bool, _ command: PrivacyCommand) async throws {
+        let (seen, delivered) = try await run(Self.evicted(saying: "Rightyo, go private.", guest: guest,
+                                                           voiceprint: voiceprint))
+        #expect(seen.count == 35 && Set(seen) == [command] && delivered == 0)
+    }
+
+    /// Round 3 B3(b): the owner's turn that starts with a command and goes on is held back with a hint; a guest's is an
+    /// ordinary request, since only the owner's commands count.
+    @Test(arguments: [false, true]) func theOwnersPartialCommandIsHeldWithAHint(_ guest: Bool) async throws {
+        let script = AmbientPrivacyEntryTests.fixture(saying: "Rightyo, stop recording the meeting.", guest: guest)
+        let (seen, delivered) = try await run(script)
+        #expect(seen == (guest ? [] : [.hint]) && delivered == (guest ? 1 : 0))
+    }
+
+    /// Key 2's M8: on the request path the owner must be the owner in both records. Here the transcript (owner, from a
+    /// voiceprint) enters, its match is then evicted, and the attention demoted the turn: the request alone is refused.
+    @Test func aDemotedOwnersRequestIsRefused() async throws {
+        let (seen, delivered) = try await run(Self.evicted(saying: "Rightyo, go private.", demoted: true))
+        #expect(seen.count == 35 && seen.first == .enter && seen.last == .refused && delivered == 0)
+    }
+
+    /// Key 2's M12: a transcript heard before privacy, whose attention arrives once privacy is on (the owner's entry
+    /// came between), is never overheard. Without the entry the same transcript is.
+    @Test(arguments: [true, false]) func anAttentionArrivingWhilePrivateIsNotOverheard(_ entry: Bool) async throws {
+        let words = entry ? "Stop recording." : "Rightyo, archive the project."
+        let duck = AmbientPrivacyEventTests.duck(2) + AmbientPrivacyEventTests.voiceprint
+        let fake = try FakeRightyo(#"""
+        /usr/bin/sed -n -e '1,2p' events.jsonl | /usr/bin/sed -e "s/formed-demo/$7/g" \#(duck)
+        /usr/bin/sed -n -e '4p' events.jsonl | /usr/bin/sed -e "s/formed-demo/$7/g" \#(duck) \
+          -e 's/Rightyo, archive the project./\#(words)/g'
+        /usr/bin/sed -n -e '3p' events.jsonl | /usr/bin/sed -e "s/formed-demo/$7/g" \
+          -e 's/"sequence": 3/"sequence": 5/' -e 's/"emitted_at_ms": 500/"emitted_at_ms": 2000/'
+        /bin/cat > /dev/null
+        /usr/bin/sed -n -e '$p' events.jsonl | /usr/bin/sed -e "s/formed-demo/$7/g" -e 's/"sequence": 7/"sequence": 9/'
+        """#)
+        defer { fake.cleanUp() }
+        try fake.install(fixture: "enrolled-formed-request.jsonl")
+        let overheard = Mutex(0), box = Mutex<RightyoAmbientPipeline?>(nil)
+        var configuration = RightyoAmbientPipeline.Configuration(
+            executable: fake.executable, config: fake.config, target: "tmux:demo", binding: "pinned",
+            connection: UUID(), allowSynthetic: true, timing: .init(eofGrace: 20, termGrace: 20)
+        )
+        configuration.onOverheard = { _, _, _ in overheard.withLock { $0 += 1 } }
+        (configuration.onVoiceDuck, configuration.replyControl) = ({ command in
+            if command == .enter { box.withLock { $0 }?.reportDuck(true) }
+        }, true)
+        let pipeline = try RightyoAmbientPipeline(configuration: configuration,
+                                                  dispatcher: RecordingAmbientDispatcher())
+        box.withLock { $0 = pipeline }
+        pipeline.finishInput()
+        _ = try await pipeline.run()
+        box.withLock { $0 = nil }
+        #expect(overheard.withLock { $0 } == (entry ? 0 : 1))
+    }
+
+    /// `started` (v2), the owner's transcript of `words` (from a voiceprint) and its attention, then 33 matching
+    /// transcripts that evict it from the 32 remembered, then its request (with both decisions demoted when `demoted`).
+    static func evicted(saying words: String, demoted: Bool = false, guest: Bool = false,
+                        voiceprint: Bool = true) -> String {
+        let edit = #"-e "s/formed-demo/$7/g" -e 's/"phase": "started"/"duck": {"version": 2}, "phase": "started"/'"#
+            + (voiceprint ? AmbientPrivacyEventTests.voiceprint : "")
+            + (guest ? #" -e 's/"role": "owner"/"role": "participant"/g'"# : "")
+            + (demoted ? #" -e 's/"recipient_kind": "system", "role": "owner"/"#
+                + #""recipient_kind": "system", "role": "participant"/'"# : "")
+        return #"""
+        /usr/bin/sed -n -e '1,5p' events.jsonl | /usr/bin/sed \#(edit) -e 's/Rightyo, archive the project./\#(words)/g'
+        i=0
+        while [ $i -lt 33 ]; do
+          /usr/bin/sed -n -e '4p' events.jsonl | /usr/bin/sed \#(edit) \
+            -e 's/Rightyo, archive the project./go private/g' -e "s/\"sequence\": 4/\"sequence\": $((i + 6))/" \
+            -e "s/\"utterance_id\": \"request\"/\"utterance_id\": \"slip-$i\"/"
+          i=$((i + 1))
+        done
+        /usr/bin/sed -n -e '6p' events.jsonl | /usr/bin/sed \#(edit) -e 's/Rightyo, archive the project./\#(words)/g' \
+          -e 's/"sequence": 6/"sequence": 50/'
+        /bin/cat > /dev/null
+        /usr/bin/sed -n -e '$p' events.jsonl | /usr/bin/sed -e "s/formed-demo/$7/g" -e 's/"sequence": 7/"sequence": 99/'
+        """#
     }
 }
 #endif

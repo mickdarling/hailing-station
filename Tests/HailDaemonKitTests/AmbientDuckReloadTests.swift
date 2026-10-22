@@ -108,6 +108,10 @@ import Testing
         check(.status, 0, true, status, "status on=true")
         check(.status, 0, false, nil, "status on=false")
         check(.stillRecording, 0, false, AmbientStopConfirmation.stillRecording, "negated")
+        check(.refused, 0, false, nil, "refused=not_owner")
+        check(.unverified, 0, false, AmbientStopConfirmation.privacyRefused, "refused=unverified_owner")
+        check(.lost, 0, false, off, "on=false lost")
+        check(.hint, 0, false, AmbientStopConfirmation.privacyHint, "hint")
     }
 }
 #endif

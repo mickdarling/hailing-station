@@ -31,8 +31,12 @@ extension AmbientRightyoRouter {
     ///   device notice and no clip, logged `ambient_privacy exit=ignored state=off`.
     /// - `status`: `confirm-privacy-status/` while privacy is on; nothing otherwise (S-3 answers every mode).
     /// - `stillRecording`: `confirm-still-recording/` only; nothing changes.
-    /// - `refused`: an entry phrase from anyone but the live enrolled owner: nothing changes (media mode included), no
-    ///   clip (S-5 may add one), logged `refused=not_owner`.
+    /// - `refused`: an entry phrase from anyone but the owner: nothing changes (media mode included), no clip (S-5
+    ///   may add one), logged `refused=not_owner`.
+    /// - `unverified`: the owner role's entry without a live voiceprint: nothing changes, but `confirm-privacy-refused/`
+    ///   (or `confirm-not-sent/`) says so, logged `refused=unverified_owner`.
+    /// - `hint`: the owner's turn that starts with a command and goes on: held back, nothing changes, and
+    ///   `confirm-privacy-hint/` ("To go private, say 'stop recording' on its own.") says how, logged `hint`.
     /// - `lost`: privacy already ended by `duckUnsupported` (a reloaded child cannot keep it); `confirm-privacy-off/`
     ///   says so, so recording never resumes in silence.
     /// Nothing reaches the agent. Logs tokens only.
@@ -78,7 +82,9 @@ extension AmbientRightyoRouter {
         case .status: (on ? AmbientStopConfirmation.privacyStatus : nil, "status on=\(on)")
         case .stillRecording: (AmbientStopConfirmation.stillRecording, "negated")
         case .lost: (AmbientStopConfirmation.privacyOff, "on=false lost")
-        case .refused: (nil, "on=true refused=not_owner")
+        case .refused: (nil, "refused=not_owner")
+        case .unverified: (AmbientStopConfirmation.privacyRefused, "refused=unverified_owner")
+        case .hint: (AmbientStopConfirmation.privacyHint, "hint")
         }
     }
 
@@ -86,11 +92,13 @@ extension AmbientRightyoRouter {
     /// cannot take it, and the host never claims a mode a child is not in: privacy ends for `connection`, its timeout
     /// is cancelled and the device told off. The device's reason is `timeout`, the protocol's "it turned itself off":
     /// nobody asked (`voice` and `device` would both say someone did); the host log says why.
-    func duckUnsupported(on connection: UUID) -> @Sendable () -> Void {
+    /// True only when it ended privacy, so `lost` is said once per connection, not once per child that cannot take it.
+    func duckUnsupported(on connection: UUID) -> @Sendable () -> Bool {
         { [weak self] in
-            guard let self, duckMode(connection: connection) else { return }
+            guard let self, duckMode(connection: connection) else { return false }
             emit("ambient_duck_unsupported", connection: connection, detail: "child=unsupported_version")
             setDuck(false, connection: connection, reason: "timeout")
+            return true
         }
     }
 }
