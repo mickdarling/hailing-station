@@ -108,16 +108,19 @@ public final class RightyoAmbientPipeline: Sendable {
         /// Called once per admitted request that is the owner's spoken media mode on (true) or off (#551), handled
         /// like `onVoiceMute`. It must return at once.
         public var onVoiceMedia: (@Sendable (Bool) -> Void)?
-        /// Privacy mode (#735, internally duck), handled like `onVoiceMute`: called once per safety-set entry command
-        /// in a transcript or request (`enter`, `stillRecording` when negated, `refused` from anyone but the live
-        /// enrolled owner), and once per RightyO `privacy` event (`exit`, `status`), or `lost` (see below). Only when this is set are the phrases commands; then each is held back
-        /// from the agent, and while privacy is on (the latest `reportDuck` said so) every request is. Without a
-        /// control descriptor no child can take privacy, so an entry is refused, never typed. It must return at once.
+        /// Privacy mode (#735, internally duck), handled like `onVoiceMute`: called once per safety-set command in a
+        /// transcript or request (`enter`; `stillRecording` when negated; `refused` from anyone but the owner;
+        /// `unverified` from the owner role without a live voiceprint; `hint` for the owner's turn that starts with a
+        /// command and goes on), once per RightyO `privacy` event (`exit`, `status`), and with `lost` (see below). Only
+        /// when this is set are these turns privacy turns; then each is held back from the agent, and while privacy is
+        /// on (the latest `reportDuck` said so) every request is. Without a control descriptor no child can take
+        /// privacy, so an entry is refused, never typed. It must return at once.
         public var onVoiceDuck: (@Sendable (PrivacyCommand) -> Void)?
         /// Called when this child starts while privacy is on but its `started` did not advertise `duck` version 2 or
-        /// higher (an older RightyO after a reload): it cannot take privacy, so the host must end it. `onVoiceDuck` is
-        /// then called with `lost`, so recording never resumes in silence. It must return at once.
-        public var onDuckUnsupported: (@Sendable () -> Void)?
+        /// higher (an older RightyO after a reload): it cannot take privacy, so the host must end it, returning true
+        /// when it did. Only then is `onVoiceDuck` called with `lost`, so recording never resumes in silence, and says
+        /// so once per connection. It must return at once.
+        public var onDuckUnsupported: (@Sendable () -> Bool)?
         /// The owner's allowlisted note destinations (#552); nil is off. A note to one is handed to
         /// `onVoiceDestination` with its destination key, target and words instead of being typed. It must return
         /// at once; the words go only to that destination, never to logs.
@@ -168,7 +171,7 @@ public final class RightyoAmbientPipeline: Sendable {
     private let onVoiceMedia: (@Sendable (Bool) -> Void)?
     private let onVoiceDuck: (@Sendable (PrivacyCommand) -> Void)?
     private let duck: AmbientDuckControl
-    private let onDuckUnsupported: (@Sendable () -> Void)?
+    private let onDuckUnsupported: (@Sendable () -> Bool)?
     private let onVoiceDestination: (@Sendable (String, VoiceDestinations.Destination, String) -> Void)?
     private let onVoiceRouteRefused: (@Sendable (RightyoVoiceRouting.Refusal) -> Void)?
     private let acknowledgement: AmbientAckRelay
@@ -318,8 +321,7 @@ extension RightyoAmbientPipeline {
             await child.stop(eofGrace: 0, termGrace: 0)
             throw RightyoChildError.privacyUnconfirmed
         case .lost:
-            onDuckUnsupported?()
-            onVoiceDuck?(.lost)
+            if onDuckUnsupported?() == true { onVoiceDuck?(.lost) }
         }
     }
 }

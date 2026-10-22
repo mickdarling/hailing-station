@@ -72,7 +72,8 @@ import Testing
     }
 
     /// End to end in one pipeline: the entry asks the child to go private; only a v2 child is written the line and
-    /// reports that it took it, never a v1 one.
+    /// reports that it took it, never a v1 one. The entry's handling is awaited as a signal, not polled for, and the
+    /// teardown graces are short, so a loaded parallel run cannot push it past its time limit.
     @Test(arguments: [true, false]) func onlyAVersionTwoChildTakesPrivacy(_ advertises: Bool) async throws {
         let fake = try FakeRightyo("/bin/cat <&3 > control.txt &\n"
             + AmbientPrivacyEntryTests.fixture(saying: "Rightyo, stop recording.", advertises: true,
@@ -82,19 +83,27 @@ import Testing
         let box = Mutex<RightyoAmbientPipeline?>(nil), took = Mutex<[Bool]>([])
         var configuration = RightyoAmbientPipeline.Configuration(
             executable: fake.executable, config: fake.config, target: "tmux:demo", binding: "pinned",
-            connection: UUID(), allowSynthetic: true, timing: .init(eofGrace: 20, termGrace: 20)
+            connection: UUID(), allowSynthetic: true, timing: .init(eofGrace: 5, termGrace: 5)
         )
+        let (handled, signal) = AsyncStream<Bool>.makeStream()
         configuration.replyControl = true
         configuration.onVoiceDuck = { command in
             guard command == .enter, let pipeline = box.withLock({ $0 }) else { return }
-            took.withLock { $0.append(pipeline.reportDuck(true)) }
+            let taken = pipeline.reportDuck(true)
+            took.withLock { $0.append(taken) }
+            signal.yield(taken)
         }
         let dispatcher = RecordingAmbientDispatcher()
         let pipeline = try RightyoAmbientPipeline(configuration: configuration, dispatcher: dispatcher)
         box.withLock { $0 = pipeline }
         // Input stays open until the entry was handled: closing it closes the control descriptor too.
-        let run = Task { try await pipeline.run().delivered }
-        #expect(await eventually { took.withLock { !$0.isEmpty } })
+        // A run that ends without the entry finishes the signal, so the wait fails instead of hanging.
+        let run = Task {
+            defer { signal.finish() }
+            return try await pipeline.run().delivered
+        }
+        var entries = handled.makeAsyncIterator()
+        #expect(await entries.next() == advertises)
         pipeline.finishInput()
         #expect(try await run.value == 0)
         #expect(took.withLock { $0 } == [advertises])
