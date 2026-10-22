@@ -188,6 +188,9 @@ final class EchoGuardedReplyPlayer: ReplyAudioPlaying {
         self.echoGuard = echoGuard
     }
 
+    /// The guarded player's gap counts (#737), when it keeps them: the app's reply player is always wrapped.
+    var gapReporter: (any PlayoutGapReporting)? { player as? any PlayoutGapReporting }
+
     func schedule(_ payload: AudioPayload, onPlayed: (@MainActor @Sendable () -> Void)?) throws {
         try audible { try player.schedule(payload, onPlayed: onPlayed) }
     }

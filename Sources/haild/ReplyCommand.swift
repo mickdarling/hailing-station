@@ -114,6 +114,8 @@ private struct PCMReplyContext {
     /// process group) keeps main's per-job frame budget, with the terminal frame reserved: unpaced, a long one is
     /// refused whole or ends with an accepted final marker, never cut off mid-stream. Nil for a detached reply.
     var frameLimit: Int?
+    /// A spoken reply's delivery timing (#737), logged once when it ends.
+    var timing: ReplyTimingRecorder?
 }
 
 func reply(_ arguments: ArraySlice<String>) async throws {
@@ -325,6 +327,12 @@ private func sendPCMFile(
 private func streamVBSay(
     _ text: String, outputRoot: URL, context: PCMReplyContext
 ) async throws -> (frames: Int, deliveries: Int) {
+    var context = context
+    let timing = ReplyTimingRecorder()
+    context.timing = timing
+    // "played" once the renderer's audio is all sent, even if its cleanup then fails the command.
+    var outcome = "failed"
+    defer { timing.log(outcome: outcome) }
     let renderer = try OwnedReplyRenderer(
         text: text, outputRoot: outputRoot, environment: ProcessInfo.processInfo.environment
     )
@@ -335,9 +343,16 @@ private func streamVBSay(
             renderer.cancel()
         }
         renderer.retire(cancel: false)
+        outcome = "played"
         try await renderer.waitForCleanup()
         return result
     } catch {
+        if outcome == "failed", ReplyBackground.isSuperseded {
+            outcome = "superseded"
+        } else if outcome == "failed",
+                  error is CancellationError || Task.isCancelled || error as? OwnedReplyRendererError == .cancelled {
+            outcome = "cancelled"
+        }
         renderer.retire(cancel: true)
         await renderer.waitForCancellationSignals()
         // The CLI must remain alive to retain reaping/cleanup ownership. This async suspension is not
@@ -459,10 +474,15 @@ private func sendStreamedPCM(_ bytes: Data, sequence: Int, context: PCMReplyCont
         codec: .pcm16, sampleRate: context.sampleRate, channels: 1, sequence: sequence,
         streamID: context.streamID, isFinal: false, bytes: Data(bytes), reply: context.descriptor
     )
-    return try await submitSpeechAudio(Frame(
+    let (sentAt, resendsBefore) = (ContinuousClock.now, ReplyResends.total)
+    let delivered = try await submitSpeechAudio(Frame(
         timestamp: replyTimestamp(), target: context.descriptor.targetID, source: context.descriptor.hostID,
         payload: .audio(payload)
     ), socketURL: context.socket)
+    let audio = ReplyStreamPacer.seconds(pcm16Bytes: bytes.count, sampleRate: context.sampleRate)
+    let resends = ReplyResends.total - resendsBefore
+    context.timing?.sent(audio: .seconds(audio), at: sentAt, acknowledgedAfter: .now - sentAt, resends: resends)
+    return delivered
 }
 
 /// `paced: false` when a stream is being given up: its terminal marker goes at once, while its request is current.
@@ -581,6 +601,7 @@ enum ReplyClient {
                 guard try await retryWindow.waitForRetry(after: attempt) else {
                     throw ReplyClientError.refused("reply request did not become ready within the retry budget")
                 }
+                ReplyResends.note()
                 continue
             }
             if let error = response.error { throw ReplyClientError.refused(error) }
@@ -915,9 +936,19 @@ extension ReplyBackground {
                     extendBound(by: .seconds(2)) // waiting on others' traffic is not the stream's own time
                 }
                 try await Task.sleep(for: .seconds(2))
+                ReplyResends.note()
             }
         }
     }
+}
+
+/// Resend waits this job made after a refusal that promises nothing was published (#737). Each audio frame takes the
+/// difference across its own send, so the timing line counts only the waits inside the frames it times.
+enum ReplyResends {
+    private static let count = Mutex(0)
+
+    static func note() { count.withLock { $0 += 1 } }
+    static var total: Int { count.withLock { $0 } }
 }
 
 /// #467: a request-bound reply keeps its host-minted request current only while its accepted frames come within the
