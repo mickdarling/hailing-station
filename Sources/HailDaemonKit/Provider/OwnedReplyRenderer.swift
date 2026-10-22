@@ -306,6 +306,8 @@ private final class ReplyRendererLifetime: Sendable {
             let completed: OwnedReplyRendererCleanupDisposition
             if disposition == .pending {
                 completed = self.folder.remove(checkpoint: self.hooks.cleanup) ? .completed : .failed
+            } else if disposition == .deferred {
+                self.folder.removeIfEmpty(); completed = disposition
             } else { self.folder.abandon(); completed = disposition }
             self.reportRetirement(completed)
             self.processExit.setEventHandler {}
@@ -520,6 +522,18 @@ private struct ReplyRendererFolder: Sendable {
         return unlinkat(rootDescriptor, url.lastPathComponent, AT_REMOVEDIR) == 0
     }
     func abandon() { close(rootDescriptor) } // Unknown child ownership: keep files for explicit local recovery.
+
+    /// A deferred cleanup (#800): the child is reaped but its outcome is not trusted, so any content stays for local
+    /// recovery. An empty folder holds nothing to recover, so it goes: `AT_REMOVEDIR` removes only an empty directory,
+    /// and only once the name still names the folder this renderer made.
+    func removeIfEmpty() {
+        defer { close(rootDescriptor) }
+        var current = stat()
+        guard fstatat(rootDescriptor, url.lastPathComponent, &current, AT_SYMLINK_NOFOLLOW) == 0,
+              current.st_dev == identity.device, current.st_ino == identity.inode,
+              current.st_mode & S_IFMT == S_IFDIR else { return }
+        _ = unlinkat(rootDescriptor, url.lastPathComponent, AT_REMOVEDIR)
+    }
 }
 
 extension ReplyRendererFolder {

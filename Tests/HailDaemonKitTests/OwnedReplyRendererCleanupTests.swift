@@ -64,7 +64,9 @@ struct OwnedReplyRendererCleanupTests {
         release.signal()
         await renderer.waitForCancellationSignals()
         try await fixture.until("escalated child reaped") { !renderer.isRunning }
-        #expect(FileManager.default.fileExists(atPath: renderer.outputDirectory.path))
+        // A deferred folder with content is kept for local recovery (#800): only an empty one goes.
+        #expect(FileManager.default.fileExists(atPath: renderer.outputDirectory
+            .appendingPathComponent("synthetic.raw").path))
     }
 
     @Test func checkToDeleteLeafReplacementPreservesUnrelatedContents() async throws {
