@@ -48,11 +48,18 @@ struct ConversationChatView: View {
                             .foregroundStyle(.secondary)
                             .frame(maxWidth: .infinity, alignment: .leading)
                     }
-                    ForEach(entries) { entry in
-                        if entry.notice { notice(entry).id(entry.id) } else { bubble(entry).id(entry.id) }
+                    // A header where each group starts, and each entry's own time on a swipe or hover (#766).
+                    let starts = ChatTimestamps.groupStarts(entries.map(\.date))
+                    ForEach(Array(entries.enumerated()), id: \.element.id) { index, entry in
+                        if starts.contains(index) { ChatGroupHeader(date: entry.date) }
+                        TimedChatRow(date: entry.date) {
+                            if entry.notice { notice(entry) } else { bubble(entry) }
+                        }
+                        .id(entry.id)
                     }
                 }
                 .padding(.vertical, 4)
+                .modifier(ChatTimeRevealGesture())
             }
             .scrollBounceBehavior(.basedOnSize)
             .modifier(ChatOvershootProbe()) // DEBUG UI tests only (#717).
@@ -84,7 +91,7 @@ struct ConversationChatView: View {
             .font(.footnote)
             .foregroundStyle(.secondary)
             .frame(maxWidth: .infinity, alignment: .center)
-            .accessibilityLabel("Not sent. \(entry.text)")
+            .accessibilityLabel("Not sent, \(ChatTimestamps.time(entry.date)). \(entry.text)")
     }
 
     @ViewBuilder
@@ -127,7 +134,7 @@ struct ConversationChatView: View {
                 detailsActions(entry, segments: segments)
             }
             .accessibilityElement(children: .contain)
-            .accessibilityLabel(Self.youSaid(entry) ?? Self.accessibilityLabel(entry, thread: threadTargetID))
+            .accessibilityLabel(Self.timedLabel(entry, thread: threadTargetID))
             if !isYou { Spacer(minLength: 48) }
         }
     }

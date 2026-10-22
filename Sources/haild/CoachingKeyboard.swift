@@ -80,7 +80,8 @@ import Foundation
     private(set) var closed = false
 
     init(input: Int32 = STDIN_FILENO, observeSignals: Bool = true, ended: @escaping () -> Void) throws {
-        let fd = dup(input)
+        // Atomic close-on-exec: the owner's control input must never reach a spawned child.
+        let fd = fcntl(input, F_DUPFD_CLOEXEC, 0)
         guard fd >= 0 else { throw CoachingCommandError.localControlRequired }
         let pair = AsyncThrowingStream<String, any Error>.makeStream(bufferingPolicy: .bufferingOldest(4))
         lines = pair.stream; continuation = pair.continuation; self.ended = ended

@@ -377,6 +377,26 @@ class VerifyTestOutputTests(SuccessfulFixtureCleanup):
             time.sleep(0.1)
         self.assertFalse(alive(child), "an interrupted verify must not leave the lane running")
 
+    def test_interrupting_verify_while_it_samples_a_stall_stops_the_sampler(self):
+        # A sampler that never returns, interrupted mid-sample: neither it nor the lane may outlive verify.
+        pids = self.scratch / "sampler-pids"
+        self.env.update(FAKE_SWIFT_HANG="1", HAIL_TEST_STALL_SECONDS="2", HAIL_STALL_SAMPLE_SECONDS="120",
+                        FAKE_SWIFT_CHILD=str(self.scratch / "child-pid"), FAKE_SAMPLER_HANG="1",
+                        FAKE_SAMPLER_PIDS=str(pids))
+        lane = subprocess.Popen(["bash", str(self.script), "test"], env=self.env,
+                                stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+        deadline = time.monotonic() + 15
+        while time.monotonic() < deadline and not pids.exists():
+            time.sleep(0.1)
+        self.assertTrue(pids.exists(), "the stall was never sampled")
+        lane.terminate()
+        self.assertEqual(lane.wait(timeout=20), 130)
+        for pid in [int(child) for child in pids.read_text().split()] + [int((self.scratch / "child-pid").read_text())]:
+            deadline = time.monotonic() + 10
+            while time.monotonic() < deadline and alive(pid):
+                time.sleep(0.1)
+            self.assertFalse(alive(pid), f"process {pid} outlived the interrupted verify")
+
     def test_a_stall_limit_that_is_not_a_positive_integer_is_refused_before_any_test(self):
         marker = self.scratch / "injected"
         for value in (f"a[$(touch {marker})]", "5m", "0", "-1", "1234567"):
