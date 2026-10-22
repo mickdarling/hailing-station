@@ -148,4 +148,11 @@ extension HostConnection {
         try requireReady(capability: AmbientInput.capability)
         try await send(.ambientInput(route: route), generation: generation)
     }
+
+    /// Turns privacy on or off for this device's stream (#735 S-6). Only to a ready host that advertised
+    /// `set_privacy`: an older host refuses the command. The host answers only with its `duck_mode` notice.
+    public func sendSetPrivacy(on: Bool) async throws {
+        try requireReady(capability: DuckMode.privacySwitchCapability)
+        try await send(.setPrivacy(on: on), generation: generation)
+    }
 }

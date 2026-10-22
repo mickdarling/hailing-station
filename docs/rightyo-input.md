@@ -762,6 +762,14 @@ With ambient listening on, `haild` advertises `set_privacy` (`docs/reply-protoco
 - **Answered only by the notice.** No reply frame; the app shows privacy only once the `duck_mode` notice says so.
 - **Logs:** state tokens only: `ambient_duck on=… reason=device reported=…` and `ambient_duck_confirmed on=… reason=device … confirm=…`.
 
+**The switch on the station card.** It shows only while the device is listening, and only on a host that advertises `set_privacy`; an older host shows no switch. It is bound to the host's `duck_mode` notice for this connection, never to the tap (`station.privacy-switch`, with `station.privacy-status` and `station.privacy-pending`):
+
+- **Private** only while the host has confirmed privacy on, on a ready connection.
+- **Not private** when the host has confirmed it off.
+- **Recording may be on** for everything unconfirmed: no notice yet, a connection that is connecting or dropped, an on notice past its end, or a tap still waiting for its notice. A waiting tap shows a spinner and disables the switch for up to ten seconds; then the switch shows the host's last confirmed state again.
+- **Privacy on · listening unavailable** (`station.privacy-unavailable`) when the host confirmed privacy on and then ended this connection's ambient stream (`not_allowed: ambient stopped:` or `ambient unavailable:`) on the same connection, as it does when no child can keep privacy. Not recording is the host's confirmed fact here. This is the one state in which the switch shows while not listening, so privacy can be turned off; the host takes an off for the connection after its stream ended.
+- A dropped or reconnected connection clears the indicator and any waiting tap.
+
 #### Clips
 
 These reserved folders play nothing until Mick records them:
