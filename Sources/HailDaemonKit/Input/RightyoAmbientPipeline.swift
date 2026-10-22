@@ -121,6 +121,12 @@ public final class RightyoAmbientPipeline: Sendable {
         /// or the status cue. Counts only, never words. Set or not, the buffer and the cues work whenever duck
         /// phrases are commands (`onVoiceDuck` and `replyControl`). It must return at once.
         public var onDuckCue: (@Sendable (DuckCueOutcome) -> Void)?
+        /// Called once per end-of-session summary dispatch (#735 H-5), with what it did; counts only. It must return
+        /// at once.
+        public var onDuckSummary: (@Sendable (DuckSummaryOutcome) -> Void)?
+        /// Called once per owner's "save that" while an ended duck session is held (#735 H-5), with the note for the
+        /// `notes` destination; the words go only there, never to logs. It must return at once.
+        public var onDuckSave: (@Sendable (DuckSave) -> Void)?
         /// The owner's allowlisted note destinations (#552); nil is off. A note to one is handed to
         /// `onVoiceDestination` with its destination key, target and words instead of being typed. It must return
         /// at once; the words go only to that destination, never to logs.
@@ -168,6 +174,7 @@ public final class RightyoAmbientPipeline: Sendable {
     private let duck: AmbientDuckControl
     private let onDuckUnsupported: (@Sendable () -> Void)?
     private let onDuckCue: (@Sendable (DuckCueOutcome) -> Void)?
+    private let duckEnd: AmbientDuckEnd
     private let onVoiceDestination: (@Sendable (String, VoiceDestinations.Destination, String) -> Void)?
     private let onVoiceRouteRefused: (@Sendable (RightyoVoiceRouting.Refusal) -> Void)?
     private let acknowledgement: AmbientAckRelay
@@ -190,6 +197,9 @@ public final class RightyoAmbientPipeline: Sendable {
         let heard = AmbientHeardRelay(onHeard: configuration.onHeard)
         let step = RightyoAmbientDispatchStep(connection: configuration.connection, dispatcher: dispatcher,
                                               acknowledge: { relay.fire() }, heard: { await heard.deliver() })
+        let plain = RightyoAmbientDispatchStep(connection: configuration.connection, dispatcher: dispatcher)
+        duckEnd = AmbientDuckEnd(step: plain, buffer: buffer, onSummary: configuration.onDuckSummary,
+                                 onSave: configuration.onDuckSave)
         consumer = try RightyoInputConsumer(host: nil, target: configuration.target, binding: configuration.binding,
                                             session: session, allowSynthetic: configuration.allowSynthetic,
                                             dispatcher: step, echoFilter: configuration.isEcho,
@@ -229,19 +239,6 @@ public final class RightyoAmbientPipeline: Sendable {
     /// off or the line was dropped. Never blocks.
     @discardableResult public func reportMedia(_ on: Bool) -> Bool { child.reportMedia(on) }
 
-    /// Sets duck mode in this stream's RightyO (#735) over the same control descriptor; true only when the child's
-    /// `started` advertised `duck` and the line was written. An older RightyO skips a line it does not know and keeps
-    /// deciding turns, so it is never written one and this is false: the host then never claims duck mode is on.
-    /// Asked before `started`, the wish is kept and written once a child that advertised it starts. Never blocks.
-    @discardableResult public func reportDuck(_ on: Bool) -> Bool {
-        duck.report(on) { [child] on in child.reportDuck(on) }
-    }
-
-    /// Hands the owner's duck cue the consumer just carried out (#735 H-3), if any, to the host.
-    private func reportDuckCue() async {
-        if let outcome = await consumer.lastDuckCue { onDuckCue?(outcome) }
-    }
-
     /// Ends the audio (EOF after queued audio is written); the child then emits `stopped` and `run` returns.
     public func finishInput() { child.closeInput() }
 
@@ -262,6 +259,8 @@ public final class RightyoAmbientPipeline: Sendable {
     /// the first decode, consumer, dispatch or transport error. Either way the child is stopped and reaped.
     public func run() async throws -> Summary {
         var delivered = 0
+        // The stream is over either way: the owner's duck words, open or held, go with it (#735 H-5).
+        defer { discardDuck() }
         do {
             for try await line in child.lines {
                 let event = try RightyoInputEvent.decode(line)
@@ -286,7 +285,7 @@ public final class RightyoAmbientPipeline: Sendable {
                     onVoiceMedia?(command == .on)
                 }
                 if let command = await consumer.lastVoiceDuck { onVoiceDuck?(command) }
-                await reportDuckCue()
+                await reportDuckOutcomes(event)
                 if event.type == "request", let note = await consumer.lastVoiceDestination {
                     onVoiceDestination?(note.destination, note.target, note.text)
                 }
@@ -301,6 +300,69 @@ public final class RightyoAmbientPipeline: Sendable {
         }
         let exit = await child.stop()
         return Summary(delivered: delivered, child: child.counters, exit: exit)
+    }
+}
+
+/// What a stream needs at duck mode's end (#735 H-5): the summary's delivery step (the stream's own, without the
+/// acknowledgement or the heard relay, since the exit's own clip already answered and the summary is not something the
+/// owner just said), the owner's session for the summary's reply text, and where the outcome and a save go.
+struct AmbientDuckEnd: Sendable {
+    let step: RightyoAmbientDispatchStep
+    let buffer: DuckSession?
+    let onSummary: (@Sendable (DuckSummaryOutcome) -> Void)?
+    let onSave: (@Sendable (DuckSave) -> Void)?
+}
+
+/// Duck mode in this stream (#735): the host's wish, the owner's cues and save, and the end-of-session summary.
+extension RightyoAmbientPipeline {
+    /// Sets duck mode in this stream's RightyO (#735) over the same control descriptor; true only when the child's
+    /// `started` advertised `duck` and the line was written. An older RightyO skips a line it does not know and keeps
+    /// deciding turns, so it is never written one and this is false: the host then never claims duck mode is on.
+    /// Asked before `started`, the wish is kept and written once a child that advertised it starts. Never blocks.
+    /// Turning it off with `summarize` (the spoken exit, the device's end, the auto-end) closes the owner's session
+    /// (#735 H-5): its turns are held for "save that", and one summary of them is sent, in its own task. Without it
+    /// (media mode, a child that cannot take duck mode) the turns are discarded at once.
+    @discardableResult public func reportDuck(_ on: Bool, summarize: Bool = true) -> Bool {
+        let change = duck.change(on, summarize: summarize) { [child] on in child.reportDuck(on) }
+        if summarize, let held = change.closed {
+            Task { [consumer, duckEnd] in
+                let outcome = await consumer.summarizeDuck(held, via: duckEnd.step)
+                duckEnd.onSummary?(outcome)
+            }
+        }
+        return change.written
+    }
+
+    /// Keeps the summary's spoken text (#735 H-5), made inert (`inertSummary`), when `request` is the input request
+    /// its dispatch was handed off as; the kept text's UTF-8 byte count when it was this stream's, nil otherwise.
+    /// Never logged.
+    public func noteDuckReply(request: UUID, text: String) -> Int? {
+        let inert = Self.inertSummary(text)
+        guard duckEnd.buffer?.noteReply(request: request, text: inert) == true else { return nil }
+        return DuckSession.Held.capped(inert, bytes: DuckSession.Held.maxSummaryBytes).utf8.count
+    }
+
+    /// The agent's summary text made inert before it is kept for a note (#735 H-5): a Markdown viewer must never load
+    /// remote content or embed another note from it. `<` (HTML, autolinks) becomes `&lt;`; an image's `![` becomes
+    /// `! [`; an Obsidian embed or wikilink's `[[` becomes `[ [`; and a line starting `---` (front matter, a rule)
+    /// starts `\---` instead. Only the agent's text: the owner's own words are saved as said.
+    static func inertSummary(_ text: String) -> String {
+        var inert = text.replacingOccurrences(of: "<", with: "&lt;").replacingOccurrences(of: "![", with: "! [")
+        while inert.contains("[[") { inert = inert.replacingOccurrences(of: "[[", with: "[ [") }
+        return inert.split(separator: "\n", omittingEmptySubsequences: false).map { line in
+            line.drop { $0 == " " || $0 == "\t" }.hasPrefix("---") ? "\\" + line : String(line)
+        }.joined(separator: "\n")
+    }
+
+    /// Drops the owner's duck words at once, open or held (#735 H-5): this stream is retiring (a reload, a new
+    /// device's stream, the connection's end). The stream's own end (`run`) drops them too.
+    public func discardDuck() { duck.discard() }
+
+    /// Hands the owner's duck cue the consumer just carried out (#735 H-3), and a "save that" request's note (H-5), if
+    /// any, to the host.
+    private func reportDuckOutcomes(_ event: RightyoInputEvent) async {
+        if let outcome = await consumer.lastDuckCue { onDuckCue?(outcome) }
+        if event.type == "request", let save = await consumer.lastDuckSave { duckEnd.onSave?(save) }
     }
 }
 
@@ -633,21 +695,34 @@ final class AmbientOwnerVoiceRelay: Sendable {
 final class AmbientDuckControl: Sendable {
     private struct State { var started = false, advertised = false, wanted = false }
     private let state = Mutex(State())
-    /// The owner's words (#735 H-3): a new session begins when the wish turns on, and ends (discarded) when it turns
-    /// off or this child cannot take it. A repeated wish ("still on", a reload's re-report) changes nothing.
+    /// The owner's words (#735 H-3): a new session begins when the wish turns on. When it turns off with a summary its
+    /// turns are held for the owner's save (H-5); otherwise, and when this child cannot take it, they are discarded. A
+    /// repeated wish ("still on", a reload's re-report) changes nothing.
     private let session: DuckSession?
 
     init(session: DuckSession? = nil) { self.session = session }
 
     var active: Bool { state.withLock { $0.wanted } }
 
-    func report(_ on: Bool, write: (Bool) -> Bool) -> Bool {
+    func report(_ on: Bool, write: (Bool) -> Bool) -> Bool { change(on, summarize: false, write: write).written }
+
+    /// `report`, also returning what turning it off with `summarize` left held (#735 H-5): the closed session's turns,
+    /// or nil when it was not on, held no turn, or this was an on. Turning it off without `summarize` discards them.
+    func change(_ on: Bool, summarize: Bool, write: (Bool) -> Bool) -> (written: Bool, closed: DuckSession.Held?) {
         state.withLock { state in
-            if on, !state.wanted { session?.begin() } else if !on, state.wanted { session?.end() }
+            var closed: DuckSession.Held?
+            if on, !state.wanted {
+                session?.begin()
+            } else if !on, state.wanted {
+                if summarize { closed = session?.close() } else { session?.end() }
+            }
             state.wanted = on
-            return state.advertised && write(on)
+            return (state.advertised && write(on), closed)
         }
     }
+
+    /// Drops the owner's words, open or held, without changing the wish (#735 H-5).
+    func discard() { session?.end() }
 
     /// Records the child's `started`; true when duck mode was wished for and this child cannot take it.
     func observe(started line: Data, write: (Bool) -> Bool) -> Bool {

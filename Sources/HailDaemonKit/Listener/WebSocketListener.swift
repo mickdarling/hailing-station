@@ -513,12 +513,24 @@ public final class AmbientRightyoRouter: AmbientAudioSink, AmbientListenerWiring
         switch frame.payload {
         case .text(let text):
             guard text.isFinal, let reply = text.reply else { return }
+            if let request = reply.requestID { keepDuckSummary(request, text: text.text) }
             let asked = text.text.trimmingCharacters(in: .whitespacesAndNewlines).hasSuffix("?")
             state.withLock { $0.replyAsked = asked ? reply.id : nil }
         case .audio(let audio):
             guard let reply = audio.reply else { return }
             state.withLock { if $0.replyAsked != reply.id { $0.replyAsked = nil } }
         default: return
+        }
+    }
+    /// A delivered reply's final text for the input request `request` (#735 H-5): kept by the stream whose duck
+    /// summary was handed off as that request, and by no other, for a later save, made inert. A reply's text
+    /// is one final text frame (`haild reply` sends it whole), so the first one kept is the summary; a second reply
+    /// naming the same request is ignored. Logs the kept byte count only.
+    func keepDuckSummary(_ request: UUID, text: String) {
+        let runs = state.withLock { $0.runs.values.map { ($0.connection, $0.pipeline) } }
+        for (connection, pipeline) in runs {
+            guard let bytes = pipeline.noteDuckReply(request: request, text: text) else { continue }
+            emit("ambient_duck_summary", connection: connection, detail: "outcome=kept bytes=\(bytes)")
         }
     }
     /// Runs at once, including those whose child is reaped but whose dispatch is still typing. A run stuck in a
@@ -765,6 +777,8 @@ extension AmbientRightyoRouter {
             return run.pipeline
         }
         guard let pipeline else { return }
+        // A retired stream's duck words go now (#735 H-5), not when its child is finally reaped.
+        pipeline.discardDuck()
         pipeline.finishInput()
         Task {
             if let grace { await pipeline.stop(grace: grace) } else { await pipeline.stop() }
@@ -977,6 +991,8 @@ extension AmbientRightyoRouter {
         (settings.onVoiceDuck, settings.onDuckUnsupported) = (voiceDuck(on: connection, listener: listener),
                                                               duckUnsupported(on: connection))
         settings.onDuckCue = duckCue(on: connection, listener: listener)
+        (settings.onDuckSummary, settings.onDuckSave) = (duckSummary(on: connection, listener: listener),
+                                                         duckSave(on: connection, listener: listener))
         if let destinations = configuration.destinations {
             (settings.destinations, settings.onVoiceDestination) = (destinations, voiceNote(on: connection,
                                                                                             listener: listener))
@@ -1444,7 +1460,10 @@ extension AmbientRightyoRouter {
             if let expected, state.media[connection]?.token != expected { return nil }
             let reported = changeMedia(on, connection: connection, reason: reason, in: &state)
             let left = on && reported > 0 && state.duck[connection] != nil
-            return (reported, left ? changeDuck(false, connection: connection, reason: "voice", in: &state) : nil)
+            // Media mode ends duck mode without a summary, discarding the owner's words (#735 H-5): a summary would be
+            // spoken over what is playing.
+            return (reported, left ? changeDuck(false, connection: connection, reason: "voice", summarize: false,
+                                                in: &state) : nil)
         }
         guard let changed else { return 0 }
         emit("ambient_media", connection: connection, detail: "on=\(on) reason=\(reason) reported=\(changed.media)")
@@ -1458,11 +1477,13 @@ extension AmbientRightyoRouter {
     /// Only a child whose RightyO advertised duck mode takes it; when none does (an older RightyO) duck mode is not
     /// entered at all, nothing else changes, and the caller tells the owner. An entry no child took while duck mode is
     /// already on (a reloaded child not started yet) leaves it on, timeout unchanged. Duck mode taken leaves media mode.
+    /// Turning it off sends the owner's session a summary (#735 H-5) unless `summarize` is false.
     @discardableResult
-    func setDuck(_ on: Bool, connection: UUID, reason: String, expected: UUID? = nil) -> Int {
+    func setDuck(_ on: Bool, connection: UUID, reason: String, expected: UUID? = nil, summarize: Bool = true) -> Int {
         let changed = state.withLock { state -> DuckChange? in
             if let expected, state.duck[connection]?.token != expected { return nil }
-            guard let reported = changeDuck(on, connection: connection, reason: reason, in: &state) else {
+            guard let reported = changeDuck(on, connection: connection, reason: reason, summarize: summarize,
+                                            in: &state) else {
                 return DuckChange(duck: 0, media: nil, still: state.duck[connection] != nil)
             }
             let left = on && state.media[connection] != nil
@@ -1508,11 +1529,12 @@ extension AmbientRightyoRouter {
 
     /// Duck mode's change under the caller's lock, as `changeMedia`; nil when it was to turn on and no child took it,
     /// in which case every child's wish is withdrawn and nothing else changes (the fail-safe for an older RightyO).
-    private func changeDuck(_ on: Bool, connection: UUID, reason: String, in state: inout State) -> Int? {
+    private func changeDuck(_ on: Bool, connection: UUID, reason: String, summarize: Bool,
+                            in state: inout State) -> Int? {
         let runs = state.runs.values.filter { $0.connection == connection }
-        let reported = runs.filter { $0.pipeline.reportDuck(on) }.count
+        let reported = runs.filter { $0.pipeline.reportDuck(on, summarize: summarize) }.count
         guard !on || reported > 0 else {
-            runs.forEach { _ = $0.pipeline.reportDuck(state.duck[connection] != nil) }
+            runs.forEach { _ = $0.pipeline.reportDuck(state.duck[connection] != nil, summarize: false) }
             return nil
         }
         let token = UUID(), timeout = configuration.duckTimeout
