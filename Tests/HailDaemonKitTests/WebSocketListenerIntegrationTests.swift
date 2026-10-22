@@ -152,11 +152,7 @@ import Testing
     }
 
     private func receive(on socket: URLSessionWebSocketTask) async throws -> Frame {
-        switch try await socket.receive() {
-        case .data(let data): return try FrameCoding.decode(data)
-        case .string(let string): return try FrameCoding.decode(Data(string.utf8))
-        @unknown default: throw TestSupportError.expectedOneControl
-        }
+        try await recipientSocketReceive(on: socket, step: "listener frame")
     }
 
     private func receiveControl(on socket: URLSessionWebSocketTask) async throws -> ControlPayload {
