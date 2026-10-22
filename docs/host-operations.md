@@ -141,7 +141,7 @@ ps -o pid,pri,nice,%cpu,rss,command -p "$(pgrep -d, -f 'haild run|vbstreamd|Virt
 **Memory matters as much as CPU.** With swap nearly full, the TTS model and audio buffers page out, whatever their priority. Check `sysctl vm.swapusage`, and give VMs less memory or stop one before a long voice session. Keeping the voice path resident is #737's next step.
 
 **What the measurements show** (#737 step 1; the first two arrive with #743 and #741):
-- **Reply timing**, from a `haild` that includes #743: `log show --last 1h --predicate 'subsystem == "com.mickdarling.hailing-station" && category == "reply-timing"'` gives one line per spoken reply.
+- **Reply timing**, from a `haild` that includes #743: `log show --last 1h --predicate 'subsystem == "com.mickdarling.hailing-station" && category == "reply-timing"'` gives one line per spoken reply. A `haild` run from a SwiftPM `.build/` directory, such as the CLI tests in `verify.sh scripts`, logs under `reply-timing-dev` instead, so test runs never read as live replies.
   - A `min_lead_ms` below about −100 means the Mac fell behind real time, and the device very likely ran dry, unless it was still playing an earlier reply or was paused.
   - `ack_max_ms` and `ack_p95_ms` are the endpoint's per-frame acknowledgement times, and `resends` counts the retry waits inside them.
 - **Playback gaps**, from a station build that includes #741: with `deviceDiagnostics` on in `host.json` and diagnostics on in the station app, each `reply_playback_end` in `~/.config/hail/diagnostics/diagnostics.jsonl` (see [device diagnostics](device-diagnostics.md)) carries `count` and `ms`, the gaps heard during that playback.
