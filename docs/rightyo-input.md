@@ -652,6 +652,19 @@ Duck mode is for thinking out loud: while it is on, RightyO decides nothing and 
 
 Duck mode ends on the spoken exit, after `ambient.duckTimeout` in `host.json` (whole seconds, 60 to 14400; an hour by default, `--ambient-duck-timeout`), from the device (below), or when the connection ends. Saying the entry again while duck mode is on answers "still on" with `confirm-duck-on/` and re-arms the timeout when a child took it. A child that starts during duck mode without advertising `duck` (an older RightyO after a reload) ends duck mode: the timeout is cancelled and the device told off with reason `timeout`, logged as `ambient_duck_unsupported`. A device that advertised `duck_mode` is told each change (`ambient_duck_device`), and sees "on" only once a child took it. The changes are confirmed from the reserved `confirm-duck-on/` and `confirm-duck-off/` folders when they hold clips. Mick records both, and `confirm-discarded/` for the duck buffer below; `confirm-duck-on/` must be worded as a status ("Duck mode is on."), not "Turning on…", because it also answers an entry said while duck mode is already on and the status cue below.
 
+#### The duck mode card (#735 H-4)
+
+While listening, the station's ambient card shows duck mode, as it shows media mode:
+
+- **While on:** "Duck mode is on", then "Thinking out loud. Say the assistant's name and "done thinking" to end it. It ends by itself at HH:MM." (`station.ambient-duck-mode`). The card is re-checked each minute, so a mode past its end stops showing even if the host's off never arrives.
+- **End button:** "End duck mode" (`station.ambient-duck-mode-end`), shown only when the host offers `end_duck_mode` (below).
+- **After it ends:** for ten minutes, how it ended (`station.ambient-duck-mode-ended`):
+  - "Duck mode ended when you said so." (`voice`);
+  - "Duck mode ended by itself." (`timeout`, which also covers a child that could not keep duck mode);
+  - "Duck mode ended from this device." (`device`).
+
+The card follows the host: tapping end changes nothing until the host's `duck_mode` off arrives.
+
 #### Ending duck mode from the device (#735 H-4)
 
 With ambient listening on, `haild` advertises `end_duck_mode` (`docs/reply-protocol.md`), and the app's duck mode card has an end button. The device's `end_duck_mode` ends duck mode as the spoken exit does: the children are told, the auto-end and its warning are cancelled, and the device is told `duck_mode` off with `reason: "device"`, logged `ambient_duck on=false reason=device …`. `confirm-duck-off/` plays so the room hears it, logged `ambient_duck_confirmed on=false reason=device confirm=…`, as for the spoken exit only when a child took the end.

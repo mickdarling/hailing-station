@@ -366,6 +366,24 @@ extension HostConnectionStore {
     }
 }
 
+/// Duck mode's end control (#735 H-4): the device may end the owner's duck mode for its own stream, never start it.
+extension HostConnectionStore {
+    /// Whether the station shows the end control for `id`: a ready host that advertised `end_duck_mode` reported duck
+    /// mode on for this device's stream and it has not run out. An older host never offers it.
+    public func canEndDuckMode(_ id: HostEndpoint.Identifier, now: Date = Date()) -> Bool {
+        guard let snapshot = snapshots[id], snapshot.state == .ready,
+              snapshot.capabilities.contains(DuckMode.endCapability) else { return false }
+        return duckMode[id]?.isOn(now: now) == true
+    }
+
+    /// Asks host `id` to end duck mode for this device's stream. The card changes only when the host's `duck_mode`
+    /// off arrives (reason `device`), so the device never claims a state the host does not hold.
+    public func endDuckMode(host id: HostEndpoint.Identifier) async throws {
+        guard let connection = connections[id] else { throw HostConnectionFailure.notReady }
+        try await connection.sendEndDuckMode()
+    }
+}
+
 /// Text and Escape to a target; sent text joins the station chat (#288).
 extension HostConnectionStore {
     /// `pasted` (#608) rides with `text`, which may then be empty; the transcript shows both once sent, the paste pending
@@ -986,33 +1004,4 @@ final class AmbientResumer {
 /// The streamer a send closure belongs to, filled in once it exists (#445).
 private final class StreamerSource: @unchecked Sendable {
     @MainActor weak var streamer: AmbientAudioStreamer?
-}
-
-/// The owner's rubber-duck mode (#735) as a host last reported it for this device's ambient stream. State only: the
-/// device cannot change the mode, and nothing turns it on yet.
-public struct DuckModeStatus: Equatable, Sendable {
-    public let on: Bool
-    /// Why it last changed: `voice`, `timeout` or `device`, or nil when the host did not say.
-    public let reason: String?
-    /// When an on mode turns itself off.
-    public let expires: Date?
-
-    public init(on: Bool, reason: String? = nil, expires: Date? = nil) {
-        self.on = on
-        self.reason = reason
-        self.expires = on ? expires : nil
-    }
-
-    /// From a host's `duck_mode` (Unix milliseconds for `expires`).
-    public init(on: Bool, reason: String?, expiresMilliseconds: Int64?) {
-        self.init(on: on, reason: reason,
-                  expires: expiresMilliseconds.map { Date(timeIntervalSince1970: TimeInterval($0) / 1_000) })
-    }
-
-    /// Whether it is on at `now`: an on mode past its expiry counts as off, even before the host says so.
-    public func isOn(now: Date = Date()) -> Bool {
-        guard on else { return false }
-        guard let expires else { return true }
-        return expires > now
-    }
 }
