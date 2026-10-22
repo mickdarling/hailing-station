@@ -72,9 +72,10 @@ import Testing
         #expect(rig.details("ambient_duck").last == "on=false reason=timeout reported=1")
     }
 
-    /// A timeout no longer than the lead has no warning; without clips the warning plays nothing and says so.
+    /// A timeout under twice the lead has no warning; without clips the warning plays nothing and says so.
     @Test func aShortTimeoutHasNoWarningAndAnUnrecordedFolderPlaysNothing() async throws {
-        let short = try await DuckRig(saying: "Rightyo, duck mode.", advertises: true, timeout: 0.5, lead: 0.5)
+        // Under twice the lead: no warning is armed at all.
+        let short = try await DuckRig(saying: "Rightyo, duck mode.", advertises: true, timeout: 0.9, lead: 0.5)
         defer { short.close() }
         #expect(await eventually { short.details("ambient_duck").count == 2 })
         await short.finish()
@@ -94,6 +95,66 @@ import Testing
             if case .text(let words) = frame.payload { return words.text }
         }
         return nil
+    }
+
+    /// Armed at exactly twice the lead; the late skip needs half the lead left when the warning comes due.
+    @Test func theWarningIsArmedFromTwiceTheLeadAndSkippedWhenLate() async throws {
+        let rig = try await DuckRig(saying: "Rightyo, duck mode.", advertises: true, timeout: 30, lead: 15)
+        defer { rig.close() }
+        #expect(await eventually { rig.details("ambient_duck").count == 1 })
+        let connection = try #require(rig.connection())
+        #expect(rig.env.router.duckTimer(connection: connection)?.warning != nil)
+        await rig.finish()
+        typealias Router = AmbientRightyoRouter
+        let end = Date(timeIntervalSince1970: 1_000)
+        #expect(Router.duckWarningDue(deadline: end, now: end.addingTimeInterval(-60), lead: 60))
+        #expect(Router.duckWarningDue(deadline: end, now: end.addingTimeInterval(-30), lead: 60))
+        #expect(!Router.duckWarningDue(deadline: end, now: end.addingTimeInterval(-29), lead: 60))
+        #expect(!Router.duckWarningDue(deadline: end, now: end.addingTimeInterval(5), lead: 60)) // woke past the end
+    }
+
+    /// M09: the warning comes due after the connection's child has ended (duck mode itself still on): no warning.
+    @Test func noWarningWithoutARunningChild() async throws {
+        let rig = try await DuckRig(saying: "Rightyo, duck mode.", advertises: true, clips: Self.clips,
+                                    timeout: 1.6, lead: 0.8)
+        defer { rig.close() }
+        #expect(try await Self.words(rig) == "Duck mode is on.")
+        let connection = try #require(rig.connection())
+        try await recipientSocketSend(audio(rig.stream, 1, final: true), on: rig.socket)
+        await rig.env.router.settle()
+        #expect(rig.env.router.liveRuns == 0)
+        #expect(rig.env.router.duckMode(connection: connection))
+        try await Task.sleep(for: .seconds(1.2))
+        #expect(rig.details("ambient_duck_ending").isEmpty)
+        await rig.env.listener.stop(reason: "synthetic test complete")
+    }
+
+    /// M08: `duckArmed` holds only for the current arming's token, never a stale one.
+    @Test func onlyTheCurrentArmingCounts() async throws {
+        let rig = try await DuckRig(saying: "Rightyo, duck mode.", advertises: true, timeout: 30, lead: 10)
+        defer { rig.close() }
+        #expect(await eventually { rig.details("ambient_duck").count == 1 })
+        let connection = try #require(rig.connection()), router = rig.env.router
+        let first = try #require(router.duckTimer(connection: connection))
+        #expect(router.duckArmed(connection: connection, token: first.token))
+        #expect(!router.duckArmed(connection: connection, token: UUID()))
+        #expect(router.setDuck(true, connection: connection, reason: "voice") == 1)
+        #expect(!router.duckArmed(connection: connection, token: first.token)) // re-armed: the first is stale
+        #expect(first.warning?.isCancelled == true)
+        await rig.finish()
+    }
+
+    /// M10c: the connection's end cancels the warning task itself, not only the state it would check.
+    @Test func theConnectionsEndCancelsTheWarning() async throws {
+        let rig = try await DuckRig(saying: "Rightyo, duck mode.", advertises: true, timeout: 30, lead: 10)
+        defer { rig.close() }
+        #expect(await eventually { rig.details("ambient_duck").count == 1 })
+        let connection = try #require(rig.connection())
+        let timer = try #require(rig.env.router.duckTimer(connection: connection))
+        let warning = try #require(timer.warning)
+        rig.env.router.stop(connection: connection)
+        #expect(warning.isCancelled && timer.timer.isCancelled)
+        await rig.finish()
     }
 
     @Test func cancellingTheTimerCancelsItsWarning() async {

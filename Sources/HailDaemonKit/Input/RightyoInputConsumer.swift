@@ -581,7 +581,8 @@ extension RightyoInputConsumer {
     /// alone, and so is every turn on a stream whose `started` said `activation: "disabled"`: a transcription-only
     /// stream never sends, so it neither asks, nor buffers words that could only be sent, nor mutes (a mute reaches
     /// the host only as a request, which such a stream refuses). A duck mode phrase is `VoiceDuck`'s. A mute phrase is carried out as `VoiceMute` (`lastVoiceMute`). A cue
-    /// (`DuckCue`) is carried out: an ask sends the buffer, "discard that" empties it, the status cue is left to H-4.
+    /// (`DuckCue`) is carried out: an ask sends the buffer, "discard that" empties it, the status cue is reported for the
+    /// host to answer with `confirm-duck-on/` (H-4).
     /// Every other turn enters the buffer. True only when an ask was handed to the agent.
     func noteDuckTurn(_ turn: RightyoInputEvent.Turn) async throws -> Bool {
         guard let duckSession, activationEnabled, duckActive?() == true, speakers == "enrolled",
