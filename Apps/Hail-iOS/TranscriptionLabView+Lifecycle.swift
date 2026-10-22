@@ -5,7 +5,7 @@ extension TranscriptionLabView {
     func begin() async {
         guard !isRecording, !isStarting, !isFinalizing, !isInterrupting,
               finishTask == nil, interruptTask == nil, pendingSendID == nil else { return }
-        beginCaptureExclusivity()
+        takeCaptureExclusivity()
         isStarting = true
         hasReceivedAudio = false
         finalText = ""
@@ -48,13 +48,8 @@ extension TranscriptionLabView {
 
     @MainActor
     func finish(force: Bool = false) async {
-        if force {
-            isForcedTeardown = true
-            if finishTask != nil, !ownsCaptureSuppression {
-                ownsCaptureSuppression = true
-                onCaptureWillBegin?(captureOwnerID)
-            }
-        }
+        // Never takes suppression (#760): with a finish pending and no hold, the capture is already stopped.
+        if force { isForcedTeardown = true }
         if let pendingFinish = finishTask {
             if force {
                 let generation = UUID()
