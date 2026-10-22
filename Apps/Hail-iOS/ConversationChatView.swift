@@ -53,7 +53,7 @@ struct ConversationChatView: View {
                     ForEach(Array(entries.enumerated()), id: \.element.id) { index, entry in
                         if starts.contains(index) { ChatGroupHeader(date: entry.date) }
                         TimedChatRow(date: entry.date) {
-                            if entry.notice { notice(entry) } else { bubble(entry) }
+                            entryRow(entry, notice: notice, bubble: bubble)
                         }
                         .id(entry.id)
                     }
