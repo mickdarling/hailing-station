@@ -52,7 +52,7 @@ struct FallbackSocketPair {
             sessions.append(session)
             sockets.append(socket)
             try await recipientSocketSend(helloFrame(capabilities: capabilities), on: socket)
-            _ = try await recipientSocketReceive(on: socket)
+            _ = try await recipientSocketReceive(on: socket, step: "connection hello")
             if let target {
                 try await recipientSocketSend(sessionFrame(payload: .control(.select(targetID: target))), on: socket)
             }
@@ -73,7 +73,7 @@ struct FallbackSocketPair {
 
     func select(_ target: String, on index: Int) async throws {
         try await recipientSocketSend(sessionFrame(payload: .control(.select(targetID: target))), on: sockets[index])
-        try await recipientSocketBarrier(on: sockets[index])
+        try await recipientSocketBarrier(on: sockets[index], step: "select \(target)")
     }
 
     func submitInput(on index: Int, rig: RecipientTestRig) async throws -> ProviderTurnContext {
@@ -81,7 +81,7 @@ struct FallbackSocketPair {
         try await recipientSocketSend(sessionFrame(
             target: RecipientTestRig.target, payload: .text(TextPayload(text: "synthetic input"))
         ), on: sockets[index])
-        try await recipientSocketBarrier(on: sockets[index])
+        try await recipientSocketBarrier(on: sockets[index], step: "submit input")
         let contexts = await rig.adapter.contexts
         try #require(contexts.count == before + 1)
         return try #require(contexts.last)

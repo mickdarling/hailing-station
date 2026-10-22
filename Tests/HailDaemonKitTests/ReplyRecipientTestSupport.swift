@@ -152,11 +152,29 @@ func recipientSocketSend(_ frame: Frame, on socket: URLSessionWebSocketTask) asy
     try await socket.send(.data(FrameCoding.encode(frame)))
 }
 
-func recipientSocketReceive(on socket: URLSessionWebSocketTask) async throws -> Frame {
-    switch try await socket.receive() {
-    case .data(let data): try FrameCoding.decode(data)
-    case .string(let string): try FrameCoding.decode(Data(string.utf8))
-    @unknown default: throw TestSupportError.expectedOneControl
+/// The next frame on `socket`. `URLSessionWebSocketTask.receive()` ignores task cancellation, so a frame that never
+/// came held the test, and its whole lane, until the 300 s stall stop (#704). After `within` the socket is cancelled,
+/// which ends the receive, and a recorded issue names `step`. Any other error (a server close a test expects) is
+/// thrown as before, with no issue.
+func recipientSocketReceive(
+    on socket: URLSessionWebSocketTask, step: String = "recipient receive", within: Duration = .seconds(15)
+) async throws -> Frame {
+    let expired = Mutex(false)
+    let timer = Task {
+        try await Task.sleep(for: within)
+        expired.withLock { $0 = true }
+        socket.cancel(with: .goingAway, reason: nil)
+    }
+    defer { timer.cancel() }
+    do {
+        switch try await socket.receive() {
+        case .data(let data): return try FrameCoding.decode(data)
+        case .string(let string): return try FrameCoding.decode(Data(string.utf8))
+        @unknown default: throw TestSupportError.expectedOneControl
+        }
+    } catch {
+        if expired.withLock({ $0 }) { Issue.record("no frame within \(within) at: \(step)") }
+        throw error
     }
 }
 
@@ -165,6 +183,6 @@ func recipientSocketReceive(on socket: URLSessionWebSocketTask) async throws -> 
 func recipientSocketBarrier(on socket: URLSessionWebSocketTask, step: String = "recipient barrier") async throws {
     let nonce = UUID().uuidString
     try await recipientSocketSend(sessionFrame(payload: .control(.ping(nonce: nonce))), on: socket)
-    let received = try await recipientSocketReceive(on: socket).payload
+    let received = try await recipientSocketReceive(on: socket, step: step).payload
     try #require(received == .control(.pong(nonce: nonce)), "Unexpected payload at \(step): \(received)")
 }
