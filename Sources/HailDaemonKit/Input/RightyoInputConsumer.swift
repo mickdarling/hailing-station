@@ -184,17 +184,20 @@ enum PrivacyEntry {
     static func match(_ heard: String, names: Set<String> = []) -> Match? {
         let edges = trimmed(heard, names: names)
         var words = edges.words
-        let asked = heard.trimmingCharacters(in: .whitespacesAndNewlines).hasSuffix("?")
+        let asked = asks(heard, names: names)
         let negation = negations.first { words.starts(with: $0) }
         if let negation { words.removeFirst(negation.count) }
         words = Array(words.drop { leading.contains($0) })
         if isCommand(words) {
-            // A "?" counts only on the polite form, or on a short verb command ASR may punctuate as a question
-            // ("Jarvis, go private?"); "privacy mode?" stays a question.
-            guard !asked || edges.polite || (words.count <= 3 && words.first != "privacy") else { return nil }
+            // A "?" counts only on the polite form ("Can you stop recording?"). Mick: a command said as a question
+            // ("Stop recording?", "So, go private?") is a question, never an entry.
+            guard !asked || edges.polite else { return nil }
             return negation == nil ? .enter : .negated
         }
-        guard negation == nil, !asked, startsWithCommand(words) else { return nil }
+        // A turn that starts with a command and goes on is held unless the whole turn is a question: "Stop recording?
+        // My wife is here." is still held back, as before; "stop listening to podcasts?" is not.
+        let endsAsked = heard.trimmingCharacters(in: .whitespacesAndNewlines).hasSuffix("?")
+        guard negation == nil, !endsAsked, startsWithCommand(words) else { return nil }
         return .partial
     }
 
@@ -222,6 +225,22 @@ enum PrivacyEntry {
             }) { words = words.dropLast(width) }
         }
         return (Array(words), asksPolitely)
+    }
+
+    /// Whether the turn is asked: a "?" (or full-width "？") anywhere, so "Stop recording? Thanks." and "Stop
+    /// recording?!" are questions. A "?" right after a leading name or filler alone is not one (Mick: "Jarvis? Stop
+    /// recording." should turn on privacy), nor after several ("Okay? Jarvis? Go private."); any other "?" is.
+    static func asks(_ heard: String, names: Set<String>) -> Bool {
+        var rest = Substring(heard)
+        while let mark = rest.firstIndex(where: { $0 == "?" || $0 == "\u{FF1F}" }) {
+            let before = words(String(rest[..<mark]))
+            let named = before.drop { leading.contains($0) }
+            let lead = !before.isEmpty
+                && (named.isEmpty || named.count <= 3 && names.contains(named.joined().filter { $0 != "'" }))
+            guard lead else { return true }
+            rest = rest[rest.index(after: mark)...]
+        }
+        return false
     }
 
     /// The single word before the turn's first comma, fillers aside, unless it could start a command.
