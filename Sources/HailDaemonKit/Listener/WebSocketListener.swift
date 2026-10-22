@@ -963,6 +963,7 @@ extension AmbientRightyoRouter {
         settings.onVoiceMedia = voiceMedia(on: connection, listener: listener)
         (settings.onVoiceDuck, settings.onDuckUnsupported) = (voiceDuck(on: connection, listener: listener),
                                                               duckUnsupported(on: connection))
+        settings.onDuckCue = duckCue(on: connection, listener: listener)
         if let destinations = configuration.destinations {
             (settings.destinations, settings.onVoiceDestination) = (destinations, voiceNote(on: connection,
                                                                                             listener: listener))

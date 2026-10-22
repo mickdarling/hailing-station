@@ -67,6 +67,36 @@ extension AmbientRightyoRouter {
     }
 }
 
+extension AmbientRightyoRouter {
+    /// The owner's duck cue (#735 H-3), confirmed in the order said: "discard that" with a `confirm-discarded/` clip,
+    /// an ask nothing could send with `confirm-not-sent/`. A sent ask needs no clip of its own: the ordinary
+    /// acknowledgement already played, and the agent's reply follows. The status cue is H-4's; it plays nothing yet.
+    /// Logs counts and tokens only, never words.
+    func duckCue(on connection: UUID, listener: WebSocketListener) -> @Sendable (DuckCueOutcome) -> Void {
+        let chain = SerialTaskChain()
+        return { [weak self, weak listener] outcome in
+            chain.enqueue { [weak self, weak listener] in
+                let (persona, detail) = Self.duckCueConfirmation(outcome)
+                var confirm = "none"
+                if let persona {
+                    confirm = await self?.confirmVoiceMute(persona, on: connection, listener: listener) ?? "none"
+                }
+                self?.emit("ambient_duck_cue", connection: connection, detail: "\(detail) confirm=\(confirm)")
+            }
+        }
+    }
+
+    /// The clip folder that answers a duck cue, or nil for none, and the log token for what happened.
+    static func duckCueConfirmation(_ outcome: DuckCueOutcome) -> (String?, String) {
+        switch outcome {
+        case .asked(let turns, let bytes): (nil, "cue=ask outcome=sent turns=\(turns) bytes=\(bytes)")
+        case .notSent: (AmbientStopConfirmation.notSent, "cue=ask outcome=not_sent")
+        case .discarded(let turns): (AmbientStopConfirmation.discarded, "cue=discard turns=\(turns)")
+        case .status: (nil, "cue=status outcome=unanswered")
+        }
+    }
+}
+
 extension WebSocketListener {
     /// Sends `duck_mode` (#735) to the connection whose ambient stream it is: `sent`, `unsupported` (it did not
     /// advertise `duck_mode`), `failed` or `no_connection`. Logged by the caller as tokens only.

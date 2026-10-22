@@ -117,6 +117,10 @@ public final class RightyoAmbientPipeline: Sendable {
         /// Called when this child starts while duck mode is on but its `started` did not advertise `duck` (an older
         /// RightyO after a reload): it cannot take duck mode, so the host must end it. It must return at once.
         public var onDuckUnsupported: (@Sendable () -> Void)?
+        /// Called once per owner's duck cue carried out while ducking (#735 H-3): an ask sent or refused, a discard,
+        /// or the status cue. Counts only, never words. Set or not, the buffer and the cues work whenever duck
+        /// phrases are commands (`onVoiceDuck` and `replyControl`). It must return at once.
+        public var onDuckCue: (@Sendable (DuckCueOutcome) -> Void)?
         /// The owner's allowlisted note destinations (#552); nil is off. A note to one is handed to
         /// `onVoiceDestination` with its destination key, target and words instead of being typed. It must return
         /// at once; the words go only to that destination, never to logs.
@@ -163,6 +167,7 @@ public final class RightyoAmbientPipeline: Sendable {
     private let onVoiceDuck: (@Sendable (VoiceDuckCommand) -> Void)?
     private let duck: AmbientDuckControl
     private let onDuckUnsupported: (@Sendable () -> Void)?
+    private let onDuckCue: (@Sendable (DuckCueOutcome) -> Void)?
     private let onVoiceDestination: (@Sendable (String, VoiceDestinations.Destination, String) -> Void)?
     private let onVoiceRouteRefused: (@Sendable (RightyoVoiceRouting.Refusal) -> Void)?
     private let acknowledgement: AmbientAckRelay
@@ -173,21 +178,25 @@ public final class RightyoAmbientPipeline: Sendable {
     /// Validates the target and the executable before launching the child; a refusal launches nothing.
     public init(configuration: Configuration, dispatcher: any RightyoAmbientDispatching) throws {
         let session = "hail-\(UUID().uuidString.lowercased())"
+        // The owner's words while ducking (#735 H-3), only where duck phrases are commands; begun and ended with the
+        // host's duck mode by `AmbientDuckControl`, and gone with this pipeline.
+        let commands = configuration.replyControl && configuration.onVoiceDuck != nil
+        let buffer = commands ? DuckSession() : nil
+        let duck = AmbientDuckControl(session: buffer)
+        let ducking: @Sendable () -> Bool = { duck.active }
+        let duckActive = commands ? ducking : nil
         let relay = AmbientAckRelay(onAcknowledge: configuration.onAcknowledge,
-                                    onSkip: configuration.onAcknowledgementSkipped)
+                                    onSkip: configuration.onAcknowledgementSkipped, ducking: duckActive)
         let heard = AmbientHeardRelay(onHeard: configuration.onHeard)
         let step = RightyoAmbientDispatchStep(connection: configuration.connection, dispatcher: dispatcher,
                                               acknowledge: { relay.fire() }, heard: { await heard.deliver() })
-        let duck = AmbientDuckControl()
-        let ducking: @Sendable () -> Bool = { duck.active }
-        let duckActive = configuration.replyControl && configuration.onVoiceDuck != nil ? ducking : nil
         consumer = try RightyoInputConsumer(host: nil, target: configuration.target, binding: configuration.binding,
                                             session: session, allowSynthetic: configuration.allowSynthetic,
                                             dispatcher: step, echoFilter: configuration.isEcho,
                                             mediaCommands: configuration.replyControl,
                                             destinations: configuration.destinations,
                                             routing: configuration.routing,
-                                            duckActive: duckActive)
+                                            duckActive: duckActive, duckSession: buffer)
         let child = try RightyoChildProcess(executable: configuration.executable, config: configuration.config,
                                             session: session, timing: configuration.timing,
                                             replyControl: configuration.replyControl,
@@ -197,6 +206,7 @@ public final class RightyoAmbientPipeline: Sendable {
         (onVoiceMute, onVoiceMedia) = (configuration.onVoiceMute, configuration.onVoiceMedia)
         onVoiceDuck = configuration.onVoiceDuck
         (self.duck, onDuckUnsupported) = (duck, configuration.onDuckUnsupported)
+        onDuckCue = configuration.onDuckCue
         onVoiceDestination = configuration.onVoiceDestination
         onVoiceRouteRefused = configuration.onVoiceRouteRefused
         acknowledgement = relay
@@ -225,6 +235,11 @@ public final class RightyoAmbientPipeline: Sendable {
     /// Asked before `started`, the wish is kept and written once a child that advertised it starts. Never blocks.
     @discardableResult public func reportDuck(_ on: Bool) -> Bool {
         duck.report(on) { [child] on in child.reportDuck(on) }
+    }
+
+    /// Hands the owner's duck cue the consumer just carried out (#735 H-3), if any, to the host.
+    private func reportDuckCue() async {
+        if let outcome = await consumer.lastDuckCue { onDuckCue?(outcome) }
     }
 
     /// Ends the audio (EOF after queued audio is written); the child then emits `stopped` and `run` returns.
@@ -262,14 +277,16 @@ public final class RightyoAmbientPipeline: Sendable {
                 }
                 // A newly admitted `dismiss` delivers nothing and leaves its receipt; a replayed one leaves none.
                 if event.type == "dismiss", let receipt = await consumer.lastDismissal { onDismiss?(receipt) }
-                // A newly admitted voice mute (#404) is handed to the host instead of being typed.
-                if event.type == "request", let command = await consumer.lastVoiceMute {
+                // A newly admitted voice mute (#404) is handed to the host instead of being typed; while ducking it
+                // comes from the owner's transcript (#735 H-3), since RightyO then sends no request.
+                if ["request", "transcript"].contains(event.type), let command = await consumer.lastVoiceMute {
                     onVoiceMute?(command == .mute)
                 }
                 if event.type == "request", let command = await consumer.lastVoiceMedia {
                     onVoiceMedia?(command == .on)
                 }
                 if let command = await consumer.lastVoiceDuck { onVoiceDuck?(command) }
+                await reportDuckCue()
                 if event.type == "request", let note = await consumer.lastVoiceDestination {
                     onVoiceDestination?(note.destination, note.target, note.text)
                 }
@@ -489,9 +506,12 @@ final class AmbientAckRelay: Sendable {
     private let state = Mutex(State())
     private let onAcknowledge: (@Sendable (AmbientAckRequest) -> Void)?
     private let onSkip: (@Sendable (AmbientAckSkip) -> Void)?
+    /// Whether the owner is ducking (#735 H-3): then a transcript arms too, since an ask cue is sent from one.
+    private let ducking: (@Sendable () -> Bool)?
 
-    init(onAcknowledge: (@Sendable (AmbientAckRequest) -> Void)?, onSkip: (@Sendable (AmbientAckSkip) -> Void)? = nil) {
-        (self.onAcknowledge, self.onSkip) = (onAcknowledge, onSkip)
+    init(onAcknowledge: (@Sendable (AmbientAckRequest) -> Void)?, onSkip: (@Sendable (AmbientAckSkip) -> Void)? = nil,
+         ducking: (@Sendable () -> Bool)? = nil) {
+        (self.onAcknowledge, self.onSkip, self.ducking) = (onAcknowledge, onSkip, ducking)
     }
 
     func observe(_ event: RightyoInputEvent, readAt: ContinuousClock.Instant) {
@@ -501,7 +521,8 @@ final class AmbientAckRelay: Sendable {
                 state.addressing = RightyoAddressing(event.addressing)
                 state.gated = event.acknowledgement != nil
             }
-            if event.type == "request", let turn = event.turn {
+            let cue = event.type == "transcript" && ducking?() == true
+            if event.type == "request" || cue, let turn = event.turn {
                 let skip = state.gated && event.acknowledge == .bool(false)
                     ? AmbientAckSkip(followUp: event.decision?.followUp == true, confidence: event.decision?.confidence)
                     : nil
@@ -612,11 +633,17 @@ final class AmbientOwnerVoiceRelay: Sendable {
 final class AmbientDuckControl: Sendable {
     private struct State { var started = false, advertised = false, wanted = false }
     private let state = Mutex(State())
+    /// The owner's words (#735 H-3): a new session begins when the wish turns on, and ends (discarded) when it turns
+    /// off or this child cannot take it. A repeated wish ("still on", a reload's re-report) changes nothing.
+    private let session: DuckSession?
+
+    init(session: DuckSession? = nil) { self.session = session }
 
     var active: Bool { state.withLock { $0.wanted } }
 
     func report(_ on: Bool, write: (Bool) -> Bool) -> Bool {
         state.withLock { state in
+            if on, !state.wanted { session?.begin() } else if !on, state.wanted { session?.end() }
             state.wanted = on
             return state.advertised && write(on)
         }
@@ -634,6 +661,7 @@ final class AmbientDuckControl: Sendable {
                 return false
             }
             state.wanted = false
+            session?.end()
             return true
         }
     }
