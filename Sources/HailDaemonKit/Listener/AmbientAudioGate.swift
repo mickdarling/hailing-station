@@ -162,11 +162,13 @@ public actor AmbientAudioGate {
         sink.ambientInputRoute(route, connection: connection)
     }
 
-    /// Hands on a device's privacy switch (#735 S-6) for `connection`, the session's own connection id, and only while
-    /// that connection holds the active ambient stream: a device switches only its own privacy, and only while it is
-    /// listening. Otherwise nothing is handed on. Whether privacy already is as asked is the sink's to check.
+    /// Hands on a device's privacy switch (#735 S-6) for `connection`, the session's own connection id, so a device
+    /// switches only its own privacy. On only while that connection holds the active ambient stream. Off also after
+    /// its stream ended (Jarvis: the host stopped listening because no child could keep privacy, and the switch is
+    /// then the way out); the connection's privacy lives until the connection ends. Otherwise nothing is handed on.
+    /// Whether privacy already is as asked is the sink's to check.
     public func setPrivacy(_ on: Bool, connection: UUID) {
-        guard active?.connection == connection else { return }
+        guard !on || active?.connection == connection else { return }
         sink.ambientPrivacy(on, connection: connection)
     }
 

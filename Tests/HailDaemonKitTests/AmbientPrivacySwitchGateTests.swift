@@ -71,6 +71,34 @@ import Testing
         #expect(rig.details("ambient_duck") == ["on=true reason=voice reported=1", "on=false reason=device reported=1"])
     }
 
+    /// Jarvis: after the host stopped the stream while private (no child could keep privacy), the switch still turns
+    /// privacy off for the connection, with the device notice; on stays refused without a stream.
+    @Test func offWorksAfterTheStreamEndedOnDoesNot() async throws {
+        let rig = try await AmbientPrivacySwitchTests.startedRig()
+        defer { rig.close() }
+        let connection = try #require(rig.connection()), router = rig.env.router
+        try await AmbientPrivacySwitchTests.send(true, on: rig.socket)
+        _ = try await AmbientPrivacySwitchTests.untilWords(rig.socket, step: "privacy on")
+        try await recipientSocketSend(audio(rig.stream, 1, final: true), on: rig.socket)
+        #expect(await eventually { rig.details("ambient_ended").count == 1 })
+        _ = try await AmbientPrivacySwitchTests.untilPong(rig.socket, step: "stream ended")
+        #expect(router.duckMode(connection: connection))
+        try await AmbientPrivacySwitchTests.send(false, on: rig.socket)
+        var off: [FramePayload] = []
+        for _ in 0..<20 where !off.contains(.control(.duckMode(on: false, reason: "device"))) {
+            off += try await AmbientPrivacySwitchTests.untilPong(rig.socket, step: "off")
+        }
+        #expect(off.contains(.control(.duckMode(on: false, reason: "device"))))
+        #expect(!router.duckMode(connection: connection))
+        try await AmbientPrivacySwitchTests.send(true, on: rig.socket)
+        #expect(try await AmbientPrivacySwitchTests.untilPong(rig.socket, step: "on without a stream").isEmpty)
+        #expect(!router.duckMode(connection: connection))
+        await rig.env.router.settle()
+        await rig.env.listener.stop(reason: "synthetic test complete")
+        #expect(rig.details("ambient_duck") == ["on=true reason=device reported=1",
+                                                "on=false reason=device reported=0"])
+    }
+
     /// A v1 child cannot take privacy: the switch fails closed. Privacy stays off, the device is told off (reason
     /// `device`) so its switch settles on not private, "Nothing was sent." plays, and playback is left alone.
     @Test func aVersionOneChildRefusesTheSwitch() async throws {
@@ -111,9 +139,9 @@ import Testing
         #expect(await gated.authorize(frame) == .allow)
     }
 
-    /// The gate hands a switch on only for the connection holding the active stream, exactly as given; a sink without
-    /// privacy mode ignores it.
-    @Test func theGateHandsOnOnlyTheStreamHoldersOwnSwitch() async {
+    /// The gate hands an on only for the connection holding the active stream, and an off for the sending connection
+    /// itself, listening or not, exactly as given; a sink without privacy mode ignores it.
+    @Test func theGateHandsOnOnlyTheStreamHoldersOnAndAnyOwnOff() async {
         let sink = SwitchSink(), (holder, other) = (UUID(), UUID())
         let gate = AmbientAudioGate(target: "tmux:a", sink: sink, sweepInterval: nil)
         await gate.setPrivacy(true, connection: holder)
@@ -121,8 +149,9 @@ import Testing
         let segment = ambientSegment(stream: UUID(), sequence: 0)
         #expect(await gate.admit(segment, frameTarget: "tmux:a", selectedTarget: "tmux:a", connection: holder) == nil)
         await gate.setPrivacy(true, connection: other)
-        await gate.setPrivacy(false, connection: holder)
-        #expect(sink.switches.withLock { $0 } == ["false \(holder)"])
+        await gate.setPrivacy(true, connection: holder)
+        await gate.setPrivacy(false, connection: other)
+        #expect(sink.switches.withLock { $0 } == ["true \(holder)", "false \(other)"])
         struct Plain: AmbientAudioSink { func ambientAudio(_ event: AmbientAudioEvent) {} }
         Plain().ambientPrivacy(true, connection: holder)
     }
