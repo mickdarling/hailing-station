@@ -648,33 +648,57 @@ Privacy mode keeps nothing. While it is on, RightyO sends no transcript, attenti
 
 #### Entry: intentional standalone commands (`PrivacyEntry`)
 
-`haild` matches the entry deterministically and locally, with no model. A command counts only when it is the whole turn. It may follow a greeting and an assistant name ("Hey Jarvis, privacy mode."), or a single word set off by a comma ("Computer, stop recording."). Fillers and politeness are allowed at the edges only: "ok", "okay", "um", "uh", "so", "please", "now", "thanks", "thank you". Case and punctuation don't matter. The commands are:
+`haild` matches the entry deterministically and locally, with no model. Mick: "It needs to be really intentional"; "If I say them, they can count for privacy. If other people say them, they should not count."
 
-- "privacy mode", "privacy mode on", "turn on privacy mode", "enter privacy mode" and "start privacy mode";
+A command counts only when it is the whole turn. It may follow a greeting and an assistant name ("Hey Jarvis, privacy mode."), or a single word set off by a comma ("Computer, stop recording."). Case and punctuation don't matter. Only these may surround it:
+
+- **before:** fillers and discourse words, each with or without a comma: "ok", "okay", "um", "uh", "so", "please", "hey", "now", "just", "alright", "wait", "no", "well", "actually", "yeah", "yes", "listen", "fine", "oh", "right", "look", "and", "anyway", "sure", "hmm". A polite "can / could / would / will you" may also come first. Negations ("don't", "never") are never fillers;
+- **after:** "please", "now", "thanks", "thank you", "right now", "for now", "for a minute / bit / while / sec / second", and the assistant's name.
+
+The commands are:
+
+- "privacy mode", "privacy mode on", "turn on", "enter", "start", "enable", "activate" or "switch to" privacy mode, and "put yourself in privacy mode";
 - "go private";
 - "stop recording", "stop listening" and "stop recordings", with up to two determiners in between ("stop the recording", "stop all the recordings");
-- "stop listening to me".
+- "stop listening to me", and "stop recording everything".
 
-Nothing embedded counts (Mick: "It needs to be really intentional"). That rules out:
+These don't count:
 
-- a phrase mid-sentence ("we should go private");
-- a phrase with an object after it ("stop listening on 443", "go private on github");
-- a question or mention ("what is privacy mode?");
-- any turn ending in "?";
-- a polite question ("can you stop recording");
+- a command mid-sentence, code dictation included ("we should go private", "set the flag to stop listening on 443");
+- a question or mention ("what is privacy mode?"). A turn ending in "?" counts only in the polite form ("Can you stop recording?") or as a verb command of three words or fewer, which ASR may punctuate as a question ("Jarvis, go private?"). "Privacy mode?" stays a question;
 - a leaving phrase ("privacy mode off", "end privacy mode").
 
-A standalone negated command ("don't stop recording", "Jarvis, do not go private") changes nothing and plays `confirm-still-recording/` ("Still recording."). A name said alone is no command, so a lone "Jarvis," followed by the command in the next turn enters on the second turn. `AmbientPrivacyCorpusTests` holds the table: over 600 intentional forms, negations, and more than 120 that must not count.
+They reach the agent as ordinary requests.
 
-A matching phrase is checked in transcripts, so entry never waits for a request to be formed, and in requests. The request that carried it is always held back from the agent. Only a live-microphone turn counts, and the assistant's own words heard back (the echo filter) never count.
+A standalone negated command ("don't stop recording", "Jarvis, do not go private") changes nothing and plays `confirm-still-recording/` ("Still recording."). A name said alone is no command, so a lone "Jarvis," followed by the command in the next turn enters on the second turn.
+
+**Partial commands.** An owner *request* (a turn RightyO addressed to the assistant) that starts with an action command but goes on ("stop recording, my wife is here", "go private on github") is held back from the agent. It plays `confirm-privacy-hint/` ("To go private, say 'stop recording' on its own."), logged `hint`.
+
+- Only actions count: "stop recording …", "stop listening …" and "go private …". A turn that starts with "privacy mode" and goes on is a mention ("privacy mode needs a longer timeout") and reaches the agent.
+- A transcript that was never addressed to the assistant gets no hint and is not held, so talk to someone else ("go private with the beta") is untouched.
+- A guest's partial turn is never held.
+
+`AmbientPrivacyCorpusTests` holds the table:
+
+- over 2,000 intentional forms;
+- negations;
+- partial commands;
+- more than 150 turns that must not count.
+
+A matching turn is checked in transcripts, so entry never waits for a request to be formed, and in requests. The request that carried it is always held back from the agent; the request path applies the same owner rule on its own. Only a live-microphone turn counts, and the assistant's own words heard back (the echo filter) never count.
 
 **Owner only.** Mick: "only my registered voice should be able to turn privacy mode on." Entry has the same trust bar as the exit. It needs:
 
 - an enrolled session;
-- a turn RightyO attributed to the owner;
+- a turn RightyO attributed to the owner, in the transcript and, on the request path, in the attention record too;
 - that attribution coming from a live voiceprint, as the transcript's top-level `"role_source": "voiceprint"` says. An inferred or label-configured owner does not qualify.
 
-Anything else is refused: a guest, a TV, an unlabelled turn, a label-only or inferred owner, or an anonymous session. It is held back from the agent with no clip, changes nothing (media mode included), and is logged as `ambient_duck_confirmed on=true refused=not_owner`. Until RightyO sends `role_source`, no entry is confirmed: the host fails closed.
+How a refusal sounds depends on who spoke:
+
+- **The owner role without a live voiceprint** (label-only or inferred) is refused audibly, so the owner never believes privacy is on when it is not. It plays `confirm-privacy-refused/` ("I couldn't turn on privacy."), or `confirm-not-sent/` until that clip is recorded, and is logged `refused=unverified_owner`.
+- **Anyone else** (a guest, a TV, an unlabelled turn, an anonymous session) is refused silently, logged `refused=not_owner`.
+
+Either way the turn is held back from the agent and changes nothing, media mode included. Until RightyO sends `role_source`, every entry is refused: the host fails closed, audibly for the owner.
 
 #### Fail closed against an older RightyO
 
@@ -682,20 +706,20 @@ Anything else is refused: a guest, a TV, an unlabelled turn, a label-only or inf
 
 RightyO does not advertise v2 for a coaching listener, a tool replay, or a session that uses a hosted transcriber or diarizer, since the private audio would still leave the host. These are refused the same way; the host cannot tell which applies.
 
-**Children start private (S-2b).** While privacy is on, every RightyO child `haild` launches for that connection (a new stream, a respawn or a reload) gets RightyO's start-private option, `--start-private`, so it is private before it reads any audio. Until its `started` arrives, its words reach no relay and every request is held. Its `started` must confirm it as `"duck": {"version": 2, "private": true}` (version 2 or later; `private` the boolean `true`, nothing else). Any other `started` (no `duck`, a v1, a v2 without `private: true`) gets the child killed at once (SIGTERM then SIGKILL, no grace) and never admitted:
+**Children start private (S-2b).** While privacy is on, every RightyO child `haild` launches for that connection (a new stream, a respawn or a reload) gets RightyO's start-private option, `--start-private`, so it is private before it reads any audio. Until its `started` arrives, its words reach no relay and every request is held. Its `started` must confirm it as `"duck": {"version": 2, "private": true}` (version 2 or later; `private` the boolean `true`, nothing else), within 10 seconds of launch. This is in-session only: privacy lives in memory, never outlives its connection or a haild restart, and a fresh stream after either starts public.
 
-- the run ends with `child privacyUnconfirmed`, and the device's stream is ended;
-- `ambient_privacy_start outcome=refused reason=unconfirmed` is logged;
-- privacy stays on, with its timeout: nothing plays and the device hears no off.
+**A child that cannot keep privacy never ends it.** Only the owner's voice exit does (Mick, round 4), and later the app's switch (S-6). The child is refused instead. That covers:
 
-The option's name follows rightyo#242 round 2; until RightyO accepts it, a RightyO that rejects the unknown option exits, and one that ignores it does not confirm and is killed: either way the stream fails closed.
+- a start-private child whose `started` says anything else (no `duck`, a v1, a v2 without `private: true`), or that sends no `started` within the deadline: killed at once (SIGTERM then SIGKILL, no grace), its run ends with `privacy unconfirmedStart`, logged `ambient_privacy_start outcome=refused reason=unconfirmed`;
+- a child launched while privacy was off, for which privacy came on before its `started` (an entry while a child is between spawn and `started` is taken by that child), that did not advertise v2: killed the same way, its run ends with `privacy unsupportedChild`, logged `ambient_privacy child=unsupported_version kept=true`. One that did advertise v2 is written `{"duck":true}` at `started`;
+- a start that fails outright while private (the child cannot be launched).
 
-A child launched while privacy was off, for which privacy came on before its `started`, still takes the wish at `started` if it advertised v2. If it did not, privacy ends rather than be claimed:
+Then no stream runs and nothing records:
 
-- the timeout is cancelled;
-- the device is told off with reason `timeout`, the protocol's "it turned itself off";
-- `ambient_duck_unsupported child=unsupported_version` is logged;
-- `confirm-privacy-off/` plays, logged `on=false lost`, so recording never resumes in silence.
+- privacy stays on: no `setDuck(false)`, no off notice, no "Recording again.";
+- `confirm-privacy-unavailable/` ("I can't listen privately right now.") plays at most once per connection, logged `ambient_duck_confirmed unavailable confirm=<token>`; later refusals log `unavailable repeat`.
+
+The option's name follows rightyo#242 round 2. Until RightyO accepts it, a RightyO that rejects the unknown option exits, and one that ignores it does not confirm and is killed: either way the stream fails closed.
 
 #### While private
 
@@ -708,13 +732,13 @@ Only RightyO's content-free events act. Both are admitted only on a session that
   - An exit while privacy is off (a stale one released after the off, or a duplicate) is ignored: no `setDuck`, no device notice and no clip. It is logged as `ambient_privacy exit=ignored state=off`.
 - **Status.** `{"type": "privacy", "action": "status"}`, for "what mode am I in", "are you recording" or "are you listening", from any speaker. It plays `confirm-privacy-status/` while private, and nothing otherwise (S-3 answers every mode).
 
-"Stop" does nothing while private, and RightyO sends no `dismiss` then. A `dismiss` that cites no admitted transcript ends the stream, as it always has. The decoder ignores keys it does not know. A `privacy` event carrying any content field the decoder knows (`turn`, `utterance_id`, `reason`, …), another `action`, or arriving on a session without v2, ends the stream. Only RightyO's `exit`, the auto-end or the connection's end leaves privacy. No stop-like phrase does, even one that slips through.
+"Stop" does nothing while private, and RightyO sends no `dismiss` then. A `dismiss` that cites no admitted transcript ends the stream, as it always has. The decoder ignores keys it does not know. A `privacy` event carrying any content field the decoder knows (`turn`, `utterance_id`, `reason`, …), another `action`, or arriving on a session without v2, ends the stream. Only RightyO's `exit` or the connection's end leaves privacy (later also the app's switch, S-6). No stop-like phrase does, even one that slips through.
 
 #### Playback, lifetime and media mode
 
 When privacy is taken, a reply playing on the connection is stopped first, through the owner's stop path (`stop_playback` to a device that takes it; `playback=` in the log). Only then does the clip play. "Still on" (an entry while already private) silences in the same way, since nothing should be playing while private. A refused entry leaves playback alone. Replies the agent sends later, while private, are not yet dropped; that is a follow-up (S-2c).
 
-Privacy ends on RightyO's exit, after `ambient.duckTimeout` in `host.json` (whole seconds, 60 to 14400; an hour by default, `--ambient-duck-timeout`), or when the connection ends. An entry while already private answers "still on" with `confirm-privacy-on/` and re-arms the timeout. Entering privacy leaves media mode, and entering media mode leaves privacy. A device that advertised `duck_mode` is told each change (`ambient_duck_device`), and sees "on" only once a child took it.
+Privacy ends only on the owner's exit (RightyO's `exit`, or the app's switch, S-6, below), or when the connection ends, since privacy lives in memory for its connection only. **There is no auto-end** (Mick, round 2): no timer runs and the device notice carries no expiry. `ambient.duckTimeout` in `host.json` and `--ambient-duck-timeout` are still accepted but no longer apply to privacy; they are reserved for a future session-mode auto-stop. An entry while already private answers "still on" with `confirm-privacy-on/`. Entering privacy leaves media mode, but **media mode never ends privacy**: while private, a media-mode entry from any source is refused (`ambient_media on=true … refused=private`), nothing changes or reaches the child, and the spoken one hears `confirm-privacy-status/`. A device that advertised `duck_mode` is told each change (`ambient_duck_device`), and sees "on" only once a child took it.
 
 #### The app's privacy switch (#735 S-6)
 
@@ -724,7 +748,7 @@ With ambient listening on, `haild` advertises `set_privacy` (`docs/reply-protoco
 - **On** takes the owner's entry path with reason `device`: privacy is written to every child of the connection (so a respawn or reload starts private), every request is held back, a reply playing is stopped, and only `confirm-privacy-on/` plays. The device is told `duck_mode` on with `reason: "device"`. If no child can take privacy (a v1 or older RightyO), it fails closed: privacy stays off, the device is told off, and `confirm-not-sent/` plays.
 - **Off** takes the owner's exit path with reason `device`: `{"duck":false}` is written to every child of the connection, as for the voice exit, the device is told off, and `confirm-privacy-off/` plays when a child took it. It is the way out when the voice exit cannot be heard, for example from a child respawned start-private that has not bound the owner's voiceprint.
 - **Its own connection only, and only while listening.** The command carries no connection; `haild` uses the sending connection's id, and acts only while that connection holds the active ambient stream.
-- **Only a change.** A switch to the state already held does nothing: nothing is logged, written, played or sent back. A switch applies only to the privacy arming it read, matched under the lock that changes privacy, so if the voice or the auto-end changed it first, the switch does nothing more.
+- **Only a change.** A switch to the state already held does nothing: nothing is logged, written, played or sent back. A switch applies only to the privacy arming it read, matched under the lock that changes privacy, so if the owner's voice changed it first, the switch does nothing more.
 - **Answered only by the notice.** No reply frame; the app shows privacy only once the `duck_mode` notice says so.
 - **Logs:** state tokens only: `ambient_duck on=… reason=device reported=…` and `ambient_duck_confirmed on=… reason=device … confirm=…`.
 
@@ -742,14 +766,17 @@ These reserved folders play nothing until Mick records them:
 | Folder | Words | When |
 | --- | --- | --- |
 | `confirm-privacy-on/` | "Privacy on. I'm only listening for my name." | entry, and re-entry while on (so worded as a status) |
-| `confirm-privacy-off/` | "Recording again." | RightyO's exit, or privacy lost by a child that cannot take it |
+| `confirm-privacy-off/` | "Recording again." | RightyO's exit |
+| `confirm-privacy-unavailable/` | "I can't listen privately right now." | a child that cannot keep privacy was refused (once per connection) |
 | `confirm-privacy-status/` | "Privacy on. I'm only listening for my name." | RightyO's status event while private |
 | `confirm-still-recording/` | "Still recording." | a negated entry |
 | `confirm-not-sent/` | "Nothing was sent." | an entry no child could take |
+| `confirm-privacy-refused/` | "I couldn't turn on privacy." | the owner role's entry without a live voiceprint (falls back to `confirm-not-sent/`) |
+| `confirm-privacy-hint/` | "To go private, say 'stop recording' on its own." | an owner turn that starts with a command and goes on |
 
 They replace H-2's `confirm-duck-on/` and `confirm-duck-off/`. H-2's named duck phrases ("Jarvis, duck mode", "let me think out loud", "done thinking") are gone and reach the agent as ordinary requests.
 
-The microphone hears these clips, so none may contain an entry command ("privacy mode", "stop listening", "go private", "stop recording") or an exit phrase ("I'm back", "start listening", "privacy off"). The host's echo filter (`hostPhrases.isEcho`) covers a clip only partly:
+The microphone hears these clips, so none may be or start with an entry command ("privacy mode", "stop listening", "go private", "stop recording"), and none may contain an exit phrase ("I'm back", "start listening", "privacy off"). The hint names "stop recording" only mid-sentence, which never counts; `AmbientPrivacyCorpusTests` checks every clip's words. The host's echo filter (`hostPhrases.isEcho`) covers a clip only partly:
 
 - the clip has a `<clip>.txt` with its words;
 - its delivery reported `sent`;

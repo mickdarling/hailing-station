@@ -186,6 +186,7 @@ extension AmbientWiringStopConfirmationTests {
     static let reserved: Set<String> = ["confirmstopped", "confirmidle", "confirmmuted", "confirmunmuted",
                                         "confirmmediaon", "confirmmediaoff", "confirmsaved", "confirmnotsaved",
                                         "confirmnotsent", "confirmprivacyon", "confirmprivacyoff",
-                                        "confirmprivacystatus", "confirmstillrecording"]
+                                        "confirmprivacystatus", "confirmstillrecording", "confirmprivacyrefused",
+                                        "confirmprivacyhint", "confirmprivacyunavailable"]
 }
 #endif

@@ -46,18 +46,22 @@ import Testing
         #expect(seen == [.enter] && delivered == 0)
     }
 
-    /// Owner only (Mick, round 2): a guest's, an unlabelled turn's, a label-only or inferred owner's (no voiceprint
-    /// source) and an anonymous session's entry, negated or not, is refused: held back, and nothing else.
+    /// Owner only (Mick, round 2): a guest's, an unlabelled turn's and an anonymous session's entry, negated or not, is
+    /// `refused` (silent). The owner role without a live voiceprint (label-only, or no `role_source` as an inferred
+    /// owner has none) is `unverified` (audible, round 3), though its negation, which changes nothing, is answered.
+    /// Every one is held back.
     @Test(arguments: [
-        ("guest", "Rightyo, stop recording."), ("unlabelled", "privacy mode"), ("label", "go private"),
-        ("inferred", "Stop listening."), ("anonymous", "Rightyo, stop recording."), ("guest", "do not stop recording")
+        ("guest", "Rightyo, stop recording.", PrivacyCommand.refused), ("unlabelled", "privacy mode", .refused),
+        ("anonymous", "Rightyo, stop recording.", .refused), ("guest", "do not stop recording", .refused),
+        ("label", "go private", .unverified), ("inferred", "Stop listening.", .unverified),
+        ("label", "do not stop recording", .stillRecording)
     ])
-    func anyoneElsesEntryIsRefusedAndHeldBack(_ who: String, _ words: String) async throws {
+    func anyoneElsesEntryIsRefusedAndHeldBack(_ who: String, _ words: String, _ command: PrivacyCommand) async throws {
         let script = Self.fixture(saying: words, enrolled: who != "anonymous", guest: who == "guest",
                                   unlabelled: who == "unlabelled",
                                   roleSource: who == "label" ? "label" : who == "inferred" ? nil : "voiceprint")
         let (seen, delivered) = try await run(script, enrolled: who != "anonymous")
-        #expect(seen == [.refused] && delivered == 0)
+        #expect(seen == [command] && delivered == 0)
     }
 
     /// A lone name in one turn, then the phrase in the next.
