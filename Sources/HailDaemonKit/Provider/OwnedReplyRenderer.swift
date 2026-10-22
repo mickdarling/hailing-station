@@ -523,9 +523,12 @@ private struct ReplyRendererFolder: Sendable {
     }
     func abandon() { close(rootDescriptor) } // Unknown child ownership: keep files for explicit local recovery.
 
-    /// A deferred cleanup (#800): the child is reaped but its outcome is not trusted, so any content stays for local
-    /// recovery. An empty folder holds nothing to recover, so it goes: `AT_REMOVEDIR` removes only an empty directory,
-    /// and only once the name still names the folder this renderer made.
+    /// A deferred cleanup (#800): the child (the group leader) is reaped but its outcome is not trusted, so any content
+    /// stays for local recovery. An empty folder holds nothing to recover, so it goes: `AT_REMOVEDIR` removes only an
+    /// empty directory, and only once the name still names the folder this renderer made. An ordinary descendant
+    /// still writing either lands first (the folder is kept) or later fails with ENOENT; nothing is lost or redirected.
+    /// As for `remove`, POSIX has no inode-conditional rmdir, so a same-UID rebind between the check and the removal
+    /// could cost an empty directory, never content. Best effort: `waitForCleanup` may return before it runs.
     func removeIfEmpty() {
         defer { close(rootDescriptor) }
         var current = stat()

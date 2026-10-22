@@ -134,8 +134,10 @@ struct OwnedReplyRendererCleanupTests {
         let fixture = try RendererFixture(mode: "descendant-writer")
         defer { fixture.remove() }
         let renderer = try fixture.start()
+        // Its output, not only its record: a leader stopped between the two leaves an empty folder, removed (#800).
         try await fixture.until("descendant fixture ready") {
-            FileManager.default.fileExists(atPath: fixture.record.path)
+            FileManager.default.fileExists(atPath: renderer.outputDirectory
+                .appendingPathComponent("synthetic.raw").path)
         }
         renderer.retire(cancel: true)
         await #expect(throws: OwnedReplyRendererError.cleanupDeferred) { try await renderer.waitForCleanup() }
