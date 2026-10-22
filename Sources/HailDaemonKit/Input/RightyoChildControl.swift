@@ -72,6 +72,9 @@ final class RightyoControlWriter: Sendable {
     }
     /// Media mode (#551, rightyo#195): a RightyO without it skips the line and attends as before.
     func media(_ on: Bool) -> Bool { write("{\"media\":\(on)}\n") }
+    /// Duck mode (#735, rightyo R-2). An older RightyO skips the line and keeps deciding turns, so the pipeline writes
+    /// it only to a child whose `started` advertised `duck` (`AmbientDuckControl`).
+    func duck(_ on: Bool) -> Bool { write("{\"duck\":\(on)}\n") }
     private func write(_ text: String) -> Bool {
         let line = Array(text.utf8)
         return descriptor.withLock { fd in
@@ -115,6 +118,9 @@ extension RightyoChildProcess {
     }
     /// Sets the child's media mode (#551) the same way; false when it could not be written.
     @discardableResult public func reportMedia(_ on: Bool) -> Bool { control.media(on) }
+    /// Writes the child's duck mode line (#735) the same way; false when it could not be written. Whether the child
+    /// understands it is the caller's to know: `RightyoAmbientPipeline.reportDuck` checks.
+    @discardableResult public func reportDuck(_ on: Bool) -> Bool { control.duck(on) }
 
     /// Trusted coaching controls only: one ASCII JSON object without newline. The receiver validates
     /// the exact envelope. Queue admission is not receipt; original host advice deadlines still apply.

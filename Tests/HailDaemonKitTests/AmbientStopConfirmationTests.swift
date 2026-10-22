@@ -182,9 +182,9 @@ import Testing
 }
 
 extension AmbientWiringStopConfirmationTests {
-    /// Stop (#418), mute (#404), media mode (#551) and spoken notes (#552).
+    /// Stop (#418), mute (#404), media mode (#551), spoken notes (#552), route refusals (#636) and duck mode (#735).
     static let reserved: Set<String> = ["confirmstopped", "confirmidle", "confirmmuted", "confirmunmuted",
                                         "confirmmediaon", "confirmmediaoff", "confirmsaved", "confirmnotsaved",
-                                        "confirmnotsent"]
+                                        "confirmnotsent", "confirmduckon", "confirmduckoff"]
 }
 #endif

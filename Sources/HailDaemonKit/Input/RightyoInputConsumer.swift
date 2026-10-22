@@ -78,15 +78,19 @@ enum VoiceMute {
     static func candidates(_ words: [String], names: Set<String>) -> [ArraySlice<String>] {
         var rest = words[...], found = [rest]
         if let first = rest.first, greetings.contains(first) { rest = rest.dropFirst(); found.append(rest) }
-        let named = (1...3).first { width in
-            width < rest.count && names.contains(String(rest.prefix(width).joined().filter { $0 != "'" }))
-        }
-        if let named {
+        if let named = nameWidth(rest, names: names) {
             rest = rest.dropFirst(named)
             found.append(rest)
         }
         if rest.first == "please" { found.append(rest.dropFirst()) }
         return found
+    }
+
+    /// How many leading words of `rest` (up to three) spell one of the keyed `names`, leaving at least one word after.
+    static func nameWidth(_ rest: ArraySlice<String>, names: Set<String>) -> Int? {
+        (1...3).first { width in
+            width < rest.count && names.contains(String(rest.prefix(width).joined().filter { $0 != "'" }))
+        }
     }
 }
 
@@ -117,13 +121,43 @@ enum VoiceMedia {
     }
 }
 
+/// What the owner's spoken duck mode phrase (#735) asks the host to do: turn it `on` or `off`, or, on a session that
+/// cannot tell the owner's voice apart, `refused` (the phrase is held back and the owner told nothing was sent).
+public enum VoiceDuckCommand: Sendable, Equatable { case on, off, refused }
+
+/// The owner's spoken duck mode (#735, "let me think out loud"): a whole turn that is only an on or off phrase,
+/// trimmed as `VoiceMute` trims, except that it must name the assistant ("Jarvis, done thinking"), for entry as well
+/// as exit, so thinking aloud about ducks never turns it on. The phrases are Mick's to choose (decision 2 of #735):
+/// edit the two sets below. Matched on the heard words only; nothing is logged.
+enum VoiceDuck {
+    static let onPhrases: Set<String> = [
+        "duck mode", "duck mode on", "let me think out loud", "i'm going to think out loud", "think out loud with me"
+    ]
+    static let offPhrases: Set<String> = [
+        "duck mode off", "end duck mode", "done thinking", "i'm done thinking", "done thinking out loud"
+    ]
+
+    /// The command a whole named turn says, given the session's keyed addressing `names`; nil for anything else.
+    static func command(in heard: String, names: Set<String>) -> VoiceDuckCommand? {
+        var words = heard.lowercased().split { !$0.isLetter && $0 != "'" }.map(String.init)[...]
+        while words.last == "please" { words.removeLast() }
+        if let first = words.first, VoiceMute.greetings.contains(first) { words = words.dropFirst() }
+        guard let named = VoiceMute.nameWidth(words, names: names) else { return nil }
+        words = words.dropFirst(named)
+        if words.first == "please" { words = words.dropFirst() }
+        let phrase = words.joined(separator: " ")
+        if onPhrases.contains(phrase) { return .on }
+        return offPhrases.contains(phrase) ? .off : nil
+    }
+}
+
 #if os(macOS)
 /// The spoken confirmation of the owner's stop (#418): a short host-recorded clip, sent like an acknowledgement to the
 /// connection that said stop, with no round trip through the agent session. Clips live in reserved folders of the
 /// acknowledgement directory: `confirm-stopped/` ("Stopped.") and `confirm-idle/` ("Nothing playing, standing by."),
 /// for the owner's spoken mute (#404) `confirm-muted/` ("Muted.") and `confirm-unmuted/` ("Unmuted."), and for media
-/// mode (#551) `confirm-media-on/` and `confirm-media-off/`, and for spoken notes (#552) `confirm-saved/` and
-/// `confirm-not-saved/`.
+/// mode (#551) `confirm-media-on/` and `confirm-media-off/`, for spoken notes (#552) `confirm-saved/` and
+/// `confirm-not-saved/`, and for duck mode (#735) `confirm-duck-on/` and `confirm-duck-off/`.
 enum AmbientStopConfirmation {
     static let stopped = RightyoAddressing.key("confirm-stopped"), idle = RightyoAddressing.key("confirm-idle")
     static let muted = RightyoAddressing.key("confirm-muted"), unmuted = RightyoAddressing.key("confirm-unmuted")
@@ -134,7 +168,12 @@ enum AmbientStopConfirmation {
     static let saved = RightyoAddressing.key("confirm-saved"), notSaved = RightyoAddressing.key("confirm-not-saved")
     /// An ambient request the owner addressed to a voice route that did not take it (#636): "Nothing was sent."
     static let notSent = RightyoAddressing.key("confirm-not-sent")
-    static let reserved: Set<String> = [stopped, idle, muted, unmuted, mediaOn, mediaOff, saved, notSaved, notSent]
+    /// Duck mode (#735): "Thinking out loud. I'm listening." and "Done thinking." A folder Mick has not recorded yet
+    /// plays nothing, as for media mode.
+    static let duckOn = RightyoAddressing.key("confirm-duck-on")
+    static let duckOff = RightyoAddressing.key("confirm-duck-off")
+    static let reserved: Set<String> = [stopped, idle, muted, unmuted, mediaOn, mediaOff, saved, notSaved, notSent,
+                                        duckOn, duckOff]
 
     /// Why a playback stop is not confirmed, as a log token, or nil when it is: only the enrolled owner's stop, and
     /// only on a connection still there to hear it.
@@ -311,6 +350,12 @@ public actor RightyoInputConsumer {
     private(set) var lastVoiceMedia: VoiceMedia.Command?
     /// Whether media phrases are commands (#551): only when the child has a control descriptor to carry them.
     private let mediaCommands: Bool
+    /// The owner's spoken duck mode (#735), held back like `lastVoiceMute`; nil for any other line. Duck phrases are
+    /// commands only with `duckCommands` (a control descriptor and a host that handles them).
+    private(set) var lastVoiceDuck: VoiceDuckCommand?
+    private let duckCommands: Bool
+    /// Utterances whose owner transcript already ended duck mode, so their request is held back without a second off.
+    private var duckExits: [String] = []
     /// The owner's note to an allowlisted destination (#552), held back like `lastVoiceMute`; nil for any other line.
     private(set) var lastVoiceDestination: VoiceDestinations.Command?
     private let destinations: VoiceDestinations?
@@ -327,14 +372,14 @@ public actor RightyoInputConsumer {
                 allowSynthetic: Bool = false, streamBudgetMs: Int? = nil,
                 dispatcher: (any RightyoDispatching)? = nil, echoFilter: (@Sendable (String) -> Bool)? = nil,
                 mediaCommands: Bool = false, destinations: VoiceDestinations? = nil,
-                routing: RightyoVoiceRouting? = nil) throws {
+                routing: RightyoVoiceRouting? = nil, duckCommands: Bool = false) throws {
         guard !binding.isEmpty, RightyoInputEvent.identifier(session), streamBudgetMs.map({ $0 >= 0 }) ?? true else {
             throw RightyoInputError.unavailableBinding
         }
         try Self.validateTarget(target)
         self.dispatcher = dispatcher ?? host.map { RightyoHostDispatcher(host: $0) }
         (self.echoFilter, self.mediaCommands, self.destinations) = (echoFilter, mediaCommands, destinations)
-        self.routing = routing
+        (self.routing, self.duckCommands) = (routing, duckCommands)
         self.allowSynthetic = allowSynthetic
         self.target = target
         self.binding = binding
@@ -366,10 +411,11 @@ public actor RightyoInputConsumer {
         lastReceipt = nil
         lastDismissal = nil
         lastVoiceMute = nil
-        (lastVoiceMedia, lastVoiceDestination, lastRouteRefusal) = (nil, nil, nil)
+        (lastVoiceMedia, lastVoiceDestination, lastRouteRefusal, lastVoiceDuck) = (nil, nil, nil, nil)
         do {
             guard try admit(event) else { return false }
             if event.type == "override" { return true }
+            if event.type == "transcript", let turn = event.turn { noteDuckExit(turn) }
             guard event.type == "request", let requestID = event.requestId else { return false }
             guard try claim(requestID, provenance: event.turn?.provenance) else { return false }
             guard let dispatcher else { return true }
@@ -458,6 +504,7 @@ extension RightyoInputConsumer {
     /// in `lastVoiceDestination`.
     private func holdsVoiceCommand(_ turn: RightyoInputEvent.Turn) -> Bool {
         let owner = owners.contains(turn.utteranceId)
+        if holdsVoiceDuck(turn, owner: owner) { return true }
         if speakers == "enrolled", owner, let note = destinations?.command(in: turn.text, names: voiceNames) {
             lastVoiceDestination = note
             return true
@@ -470,6 +517,34 @@ extension RightyoInputConsumer {
             lastVoiceMedia = command
         }
         return lastVoiceMute != nil || lastVoiceMedia != nil
+    }
+}
+extension RightyoInputConsumer {
+    /// The owner's duck mode phrase (#735) in a request; true when it is held back. Entry and exit are the enrolled
+    /// owner's alone, the destinations rule (#552), not the mute's: a guest's phrase is a request like any other, and
+    /// on an anonymous session, where no voice can be told apart, it is held back as `refused`. An exit its own
+    /// transcript already carried out (`noteDuckExit`) is held back with nothing more to do.
+    private func holdsVoiceDuck(_ turn: RightyoInputEvent.Turn, owner: Bool) -> Bool {
+        guard duckCommands, let command = VoiceDuck.command(in: turn.text, names: voiceNames) else { return false }
+        guard speakers == "enrolled" else {
+            lastVoiceDuck = .refused
+            return true
+        }
+        guard owner else { return false }
+        lastVoiceDuck = duckExits.contains(turn.utteranceId) ? nil : command
+        return true
+    }
+
+    /// The owner's exit phrase in a transcript (#735). While duck mode is on RightyO decides nothing and sends no
+    /// request (rightyo R-2), so "Jarvis, done thinking" arrives only as the enrolled owner's transcript; it is
+    /// carried out from there, at most once per utterance. An echo or a turn not from the live microphone never is.
+    func noteDuckExit(_ turn: RightyoInputEvent.Turn) {
+        guard duckCommands, speakers == "enrolled", owners.contains(turn.utteranceId),
+              allowSynthetic || turn.provenance == "live-microphone", echoFilter?(turn.text) != true,
+              VoiceDuck.command(in: turn.text, names: voiceNames) == .off else { return }
+        lastVoiceDuck = .off
+        duckExits.append(turn.utteranceId)
+        if duckExits.count > 32 { duckExits.removeFirst(duckExits.count - 32) }
     }
 }
 /// Correlation against admitted records lives here so the actor body stays within the type-length limit.

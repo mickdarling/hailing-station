@@ -108,6 +108,11 @@ public final class RightyoAmbientPipeline: Sendable {
         /// Called once per admitted request that is the owner's spoken media mode on (true) or off (#551), handled
         /// like `onVoiceMute`. It must return at once.
         public var onVoiceMedia: (@Sendable (Bool) -> Void)?
+        /// Called once per owner's spoken duck mode phrase (#735), handled like `onVoiceMute`: an entry or exit in a
+        /// request, an exit in the owner's transcript (RightyO sends no request in duck mode), or `refused` on an
+        /// anonymous session. Duck phrases are commands only when this is set and `replyControl` is on. It must
+        /// return at once.
+        public var onVoiceDuck: (@Sendable (VoiceDuckCommand) -> Void)?
         /// The owner's allowlisted note destinations (#552); nil is off. A note to one is handed to
         /// `onVoiceDestination` with its destination key, target and words instead of being typed. It must return
         /// at once; the words go only to that destination, never to logs.
@@ -151,6 +156,8 @@ public final class RightyoAmbientPipeline: Sendable {
     private let onDismiss: (@Sendable (RightyoDismissReceipt) -> Void)?
     private let onVoiceMute: (@Sendable (Bool) -> Void)?
     private let onVoiceMedia: (@Sendable (Bool) -> Void)?
+    private let onVoiceDuck: (@Sendable (VoiceDuckCommand) -> Void)?
+    private let duck: AmbientDuckControl
     private let onVoiceDestination: (@Sendable (String, VoiceDestinations.Destination, String) -> Void)?
     private let onVoiceRouteRefused: (@Sendable (RightyoVoiceRouting.Refusal) -> Void)?
     private let acknowledgement: AmbientAckRelay
@@ -171,14 +178,18 @@ public final class RightyoAmbientPipeline: Sendable {
                                             dispatcher: step, echoFilter: configuration.isEcho,
                                             mediaCommands: configuration.replyControl,
                                             destinations: configuration.destinations,
-                                            routing: configuration.routing)
-        child = try RightyoChildProcess(executable: configuration.executable, config: configuration.config,
-                                        session: session, timing: configuration.timing,
-                                        replyControl: configuration.replyControl,
-                                        env: configuration.environment)
-        self.session = session
+                                            routing: configuration.routing,
+                                            duckCommands: configuration.replyControl
+                                                && configuration.onVoiceDuck != nil)
+        let child = try RightyoChildProcess(executable: configuration.executable, config: configuration.config,
+                                            session: session, timing: configuration.timing,
+                                            replyControl: configuration.replyControl,
+                                            env: configuration.environment)
+        (self.child, self.session) = (child, session)
         onDismiss = configuration.onDismiss
         (onVoiceMute, onVoiceMedia) = (configuration.onVoiceMute, configuration.onVoiceMedia)
+        onVoiceDuck = configuration.onVoiceDuck
+        duck = AmbientDuckControl { on in child.reportDuck(on) }
         onVoiceDestination = configuration.onVoiceDestination
         onVoiceRouteRefused = configuration.onVoiceRouteRefused
         acknowledgement = relay
@@ -200,6 +211,12 @@ public final class RightyoAmbientPipeline: Sendable {
     /// Sets media mode in this stream's RightyO (#551) over the same control descriptor; false when reply control is
     /// off or the line was dropped. Never blocks.
     @discardableResult public func reportMedia(_ on: Bool) -> Bool { child.reportMedia(on) }
+
+    /// Sets duck mode in this stream's RightyO (#735) over the same control descriptor; true only when the child's
+    /// `started` advertised `duck` and the line was written. An older RightyO skips a line it does not know and keeps
+    /// deciding turns, so it is never written one and this is false: the host then never claims duck mode is on.
+    /// Asked before `started`, the wish is kept and written once a child that advertised it starts. Never blocks.
+    @discardableResult public func reportDuck(_ on: Bool) -> Bool { duck.report(on) }
 
     /// Ends the audio (EOF after queued audio is written); the child then emits `stopped` and `run` returns.
     public func finishInput() { child.closeInput() }
@@ -230,6 +247,7 @@ public final class RightyoAmbientPipeline: Sendable {
                 // Only after the consumer admitted the line: an invalid one has already ended the stream.
                 await overheard.observe(event)
                 ownerVoice.observe(event)
+                if event.type == "session", event.phase == "started" { duck.observe(started: line) }
                 // A newly admitted `dismiss` delivers nothing and leaves its receipt; a replayed one leaves none.
                 if event.type == "dismiss", let receipt = await consumer.lastDismissal { onDismiss?(receipt) }
                 // A newly admitted voice mute (#404) is handed to the host instead of being typed.
@@ -239,6 +257,7 @@ public final class RightyoAmbientPipeline: Sendable {
                 if event.type == "request", let command = await consumer.lastVoiceMedia {
                     onVoiceMedia?(command == .on)
                 }
+                if let command = await consumer.lastVoiceDuck { onVoiceDuck?(command) }
                 if event.type == "request", let note = await consumer.lastVoiceDestination {
                     onVoiceDestination?(note.destination, note.target, note.text)
                 }
@@ -577,6 +596,40 @@ final class AmbientOwnerVoiceRelay: Sendable {
 /// RightyO decides the turn. An `attention` that forms no request reports it once; one that names a request, or the
 /// request itself, drops it (that turn is shown as `ambient_heard`). Owner means both records carried `owner`, as the
 /// consumer's own rule. Echo-matched turns (the assistant's own reply heard back) are never reported.
+/// Duck mode in one child (#735): written only once the child's admitted `started` advertised a top-level `duck`
+/// object (rightyo R-2's capability, presence only, as for `conversation`). Until `started`, the latest wish is kept
+/// and written then; a child that did not advertise it is never written a duck line. Under one lock, so a wish and the
+/// `started` that answers it cannot cross.
+final class AmbientDuckControl: Sendable {
+    private struct State { var started = false, advertised = false, wanted = false }
+    private let state = Mutex(State())
+    private let write: @Sendable (Bool) -> Bool
+
+    init(write: @escaping @Sendable (Bool) -> Bool) { self.write = write }
+
+    func report(_ on: Bool) -> Bool {
+        state.withLock { state in
+            state.wanted = on
+            return state.advertised && write(on)
+        }
+    }
+
+    func observe(started line: Data) {
+        let advertised = Self.advertises(line)
+        state.withLock { state in
+            guard !state.started else { return }
+            (state.started, state.advertised) = (true, advertised)
+            if advertised, state.wanted { _ = write(true) }
+        }
+    }
+
+    /// Whether a `started` line carries a top-level `duck` object.
+    static func advertises(_ line: Data) -> Bool {
+        guard let object = (try? JSONSerialization.jsonObject(with: line)) as? [String: Any] else { return false }
+        return object["duck"] is [String: Any]
+    }
+}
+
 /// Named guests (#434): only on a session whose `started` advertised `speaker_names` in its documented shape, a
 /// non-owner transcript's `speaker_name` that `guestName` accepts is held with it, and reported only if the turn is
 /// not the owner's and its decision does not say owner either (records that disagree are uncertain, so unnamed);
