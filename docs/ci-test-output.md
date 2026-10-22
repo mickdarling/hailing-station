@@ -10,7 +10,7 @@ Swift Testing reports test events synchronously, in the same process as the test
 
 ## The fix
 
-`scripts/verify.sh` runs both test lanes (parallel, and the serial timing lane from #208) through `run_captured`:
+`scripts/verify.sh` runs each test lane through `run_captured`. There are three: the parallel lane in two processes, HailCoreTests first and then every other target (#704), and the serial timing lane from #208.
 
 - Output (stdout and stderr together) goes to a private regular file, created with `mktemp` (owner-only), and is printed in full once the lane finishes.
 - Parallelism, test selection, assertions and deadlines are unchanged. There is no live progress while a lane runs.
@@ -21,15 +21,17 @@ Swift Testing reports test events synchronously, in the same process as the test
 - A test failure returns the original non-zero status, even if printing also fails.
 - A printing failure after the tests pass also fails verification.
 - If the capture file cannot be created, the tests do not run.
+- A lane that started no test fails with status 65, naming its command (#704). `swift test` exits 0 when a selection matches nothing, so a renamed target or pattern would otherwise turn a lane silently green.
 - A failed lane keeps its capture and names its path on stderr. That notice is best-effort, so an unwritable stderr cannot mask the status. A successful capture is removed.
 
 ## Tests
 
 `scripts/tests/test_verify_test_output.py` runs `verify.sh test` against a fake `swift`. It checks:
 
-- the capture is an owner-only regular file, and both lanes keep their arguments;
-- both lanes are captured and replayed in full, including output larger than a pipe buffer;
-- a failure stops at the parallel lane;
+- the capture is an owner-only regular file, and each lane keeps its exact arguments (the two parallel halves and the serial lane);
+- every lane is captured and replayed in full, including output larger than a pipe buffer;
+- a failure stops at the first parallel half, and a failing second half after a green first fails with its own status;
+- a lane that starts no test fails;
 - the exact failure status;
 - a printing failure;
 - a capture-creation failure;

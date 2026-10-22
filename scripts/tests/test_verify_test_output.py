@@ -59,6 +59,9 @@ if os.environ.get("FAKE_SWIFT_HANG"):
     with open(os.environ["FAKE_SWIFT_CHILD"], "w") as pid:
         pid.write(str(child.pid))
     time.sleep(600)
+if not os.environ.get("FAKE_SWIFT_EMPTY"):  # a lane whose selection matched nothing starts no test (#704)
+    event("testStarted", "Fake.Suite/runs()/F.swift:1:1")
+    event("testEnded", "Fake.Suite/runs()/F.swift:1:1")
 failing = os.environ.get("FAKE_SWIFT_FAIL_LANE")
 sys.exit(int(os.environ["FAKE_SWIFT_STATUS"]) if failing in (None, lane) else 0)
 '''
@@ -132,6 +135,15 @@ class VerifyTestOutputTests(SuccessfulFixtureCleanup):
         self.assertEqual(result.returncode, 7, result.stderr)
         self.assertEqual((self.scratch / "swift-calls").read_text().split(),
                          ["build", "parallel-core", "parallel-rest"])
+        self.assertEqual(len(list(self.scratch.glob("hailing-swift-tests.*"))), 1)
+
+    def test_a_lane_that_starts_no_test_fails(self):
+        # #704: `swift test` exits 0 when its selection matches nothing; the lane must not pass silently.
+        self.env["FAKE_SWIFT_EMPTY"] = "1"
+        result = self.run_lane()
+        self.assertEqual(result.returncode, 65, result.stderr)
+        self.assertIn("No test started in this lane", result.stderr)
+        self.assertEqual((self.scratch / "swift-calls").read_text().split(), ["build", "parallel-core"])
         self.assertEqual(len(list(self.scratch.glob("hailing-swift-tests.*"))), 1)
 
     def test_reporting_failure_cannot_make_success_look_successful(self):
