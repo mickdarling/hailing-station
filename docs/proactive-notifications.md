@@ -34,8 +34,9 @@ The personal-terminal listener has no TLS and no peer authentication (`docs/secu
 be read, and frames can be injected, by someone on the network path. So a device is never trusted for what it
 claims. It is trusted only for holding a private key the owner approved.
 
-1. **Device key:** on first use the app makes a P-256 key pair in the Secure Enclave (iPhone, iPad) or the Keychain
-   (Mac). The private key never leaves the device.
+1. **Device key:** on first use the app makes a P-256 key pair: in the Secure Enclave on iPhone and iPad, or as a
+   Keychain item protected by the user account on the Mac, which is weaker. The key is this-device-only, never
+   synced, and usable after first unlock with no presence check. The private key never leaves the device.
 2. **Challenge:** haild lists `owner_device` in its hello. When the device has listed it too, haild sends
    `device_challenge {nonce}`, with a fresh random 32-byte nonce, base64 in the frame. The app answers
    `device_proof {key, signature, token?, environment?, name, kind}`. The app proves before it starts any audio, and
@@ -69,17 +70,22 @@ claims. It is trusted only for holding a private key the owner approved.
      and puts the key on a revoked list. A revoked key never becomes pending again.
 7. **Approved connection:** a connection becomes an **approved device** only after a valid proof from an approved key
    on that connection. Proofs from approved keys are never refused for a full pending store.
-   - **One per key:** a newer proof demotes the older connection, which is told `device_state {state: "superseded"}`
-     and not challenged again. haild closes a superseded connection 30 seconds after telling it. If that was not the
-     owner, the app shows that another connection holds the device's key.
+   - **One per key:** a newer proof supersedes every older open connection of that key, including demoted ones.
+     Each is told `device_state {state: "superseded"}`, is not challenged again, and is closed by haild 30 seconds
+     later. Closing ends that connection's voice and replies too. If the new proof was not the owner's, the app shows
+     that another connection holds the device's key.
    - **Re-challenges:** every 10 minutes, and before rules 4 to 6 count the connection for an `action` (the ladder
      below).
    - **Timeout:** a connection that does not answer within 5 seconds is demoted (`device_state {state:
      "unanswered"}`). It is challenged once more 30 seconds later. Only an answer to that new challenge restores it;
      nonces are single-use. A connection that misses that one retry stays demoted until it reconnects. A newer proof
      from the same key cancels the pending retry, and a connection superseded meanwhile stays demoted.
-   - **After `superseded`** the app does not reconnect or re-prove on its own. It shows the state and leaves the
-     next step to the owner, so a relay cannot start a ping-pong with it.
+   - **After `superseded`** the app does not re-prove on its own. It may reconnect for voice and replies, which works
+     unproven as today but receives nothing proactive. It shows the state and leaves the next proof to the owner.
+   - **After `unanswered`** the app answers the retry challenge if it is still connected. A privacy-off sent while
+     the connection is demoted is held by the connection and applied if it is restored.
+   - **No challenge:** if no `device_challenge` arrives within 10 seconds of the hello, the app shows that this host
+     does not offer owner devices and treats itself as unapproved.
    - **Tokens** rotate only with a fresh proof answering a challenge.
 8. **Pending store:** a pending entry exists only while its connection is open.
    - At most 8 at once; a ninth proof from a new key is refused with `device_state {state: "full"}`.
@@ -102,7 +108,12 @@ This is the same rule voice routing follows (`docs/voice-routing.md`): a discove
 - They can forge or replay a privacy report, or relay a proof on a fresh public connection, so privacy set by the
   owner can be cleared this way while the owner's device is online: at once by a forged report, or about 30 seconds
   after a relayed proof, when the owner's superseded private connection is closed (see Clearing).
-- While a relay holds a key's approved connection, the real device gets nothing proactive and no push.
+- While a relay holds a key's approved connection, the real device gets nothing proactive and no push. Each relayed
+  proof also supersedes the real device's connection, which loses its voice session 30 seconds later. If the relay
+  drops the `superseded` frame, the app just sees the connection close, reconnects, and starts public, so a relay can
+  force a reconnect about every 30 seconds.
+- A forged privacy-on drops new updates and purges held ones, so queued agent output is lost. It discloses nothing.
+- A connection that never proves protects only itself: its privacy marks no key.
 - A push APNs has already accepted cannot be recalled if privacy starts before it arrives; its expiry is at most the
   update's 4-hour lifetime.
 - `info` updates and cards drained without an `action` rely on the 10-minute re-challenge. For up to 10 minutes after
@@ -122,15 +133,21 @@ haild keeps, in memory only, each approved key's last privacy report.
 - **Recording:** privacy turned on from any connection that has proven a key marks that key private. Privacy turned
   off counts only from that key's current approved connection.
 - **Clearing:** a key's private report clears only:
-  - when that key turns privacy off;
+  - when that key turns privacy off on its current approved connection;
   - when that key is revoked;
-  - when that key's own device proves on a fresh connection that is public (as a reconnect starts under #813) and
-    no other open connection proven with that key is private. If one is, the report stays private, and haild
-    re-checks it each time a connection proven with that key closes, clearing it once none of them is private.
-    A superseded connection is closed 30 seconds after the new proof, so after an ordinary Wi-Fi reconnect the
-    report clears within about 30 seconds.
+  - by a **pending clear** from a fresh public proof.
 
-  Another key connecting never clears it.
+  The pending clear works like this:
+  - A proof on a fresh connection that is public (as a reconnect starts under #813) sets a pending clear tied to
+    that connection. It applies once every older connection of the key has closed. A new proof supersedes them, so
+    they close within about 30 seconds.
+  - It applies only if, at that moment, the connection that set it is still the key's current approved connection,
+    open and public.
+  - Privacy turned on from any connection of the key cancels it. So does that connection closing, being demoted or
+    being superseded.
+
+  After an ordinary Wi-Fi reconnect, the report therefore clears within about 30 seconds. Dropping a connection
+  never clears a report by itself, and another key connecting never clears it.
 - **Before a proof or approval:** privacy turned on over a connection that has not yet proven, or whose key is still
   pending, is held by that connection and applied to the key at the proof or approval. A connection that never
   proves protects only itself: it gets nothing proactive, but its privacy marks no key.
@@ -199,7 +216,9 @@ The answer gains outcome tokens, and `push: suggested` goes away:
   has a token), `held: push_cap`;
 - refused: `dropped: private`, `push: failed`.
 
-These go on the answer's outcome line. `haild notify status` keeps its existing held count.
+These go on a new `outcome:` line of the answer. The existing `held: N updates waiting` line, printed with the
+answer and by `haild notify status`, stays as it is. An `info` update held for a natural pause answers
+`held: info`. An update held while a re-challenge runs gets its final outcome once the challenge resolves.
 
 ## APNs from haild
 
@@ -246,7 +265,7 @@ These go on the answer's outcome line. `haild notify status` keeps its existing 
   - The fourth push is a summary, "N updates waiting" (`pushed: summary`).
   - After that, further updates in the window are held (`held: push_cap`) and show as cards on the next connection.
     No fifth push goes out, and these are not pushed later when the window frees.
-  - The summary's N counts the updates it stands for: the fourth and any already waiting for that slot.
+  - The summary's N is the number of updates held in the queue when it is sent.
   - A retry of the same push does not count again.
 - **Quiet hours:**
   - `SessionUpdateQuietHours` exists but is unwired. `host.json` gains `"quietHours": "22:00-07:00"` in the host's
@@ -341,11 +360,12 @@ So everything except the APNs client and the device store waits for Part 10's st
 3. **Privacy across devices:** while any device is private, nothing proactive reaches any device. That device ends
    it, by turning privacy off or by reconnecting while public. An involuntary reconnect (the phone rejoining Wi-Fi)
    ends it too, as under #813, within about 30 seconds, once the old connection is closed. Revoking it also clears
-   its report, and someone on the network path could forge a clear (Known limits). Part 10 accepted the
-   same-key-reconnect clearing; the 30-second wait for the old connection keeps that rule while closing a relay
-   race.
+   its report, and someone on the network path could forge a clear (Known limits).
+   - Part 10 accepted the same-key-reconnect clearing on 2026-10-22. The 30-second pending clear came after that
+     sign-off; it only delays a relayed clear by about 30 seconds.
    - Costs: a phone that drops off while private keeps every device quiet until it reconnects. After a haild
      restart, nothing is pushed to a device until it has connected again; a connected Mac still gets rules 4 to 6.
+     A connection that never proves protects only itself.
    - Is that what you want?
 4. **Quiet hours:** what window? Should any `action` break through? A breakthrough would need the time-sensitive
    entitlement. Proposed: no breakthrough.
