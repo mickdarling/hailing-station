@@ -319,10 +319,11 @@ extension RightyoAmbientPipeline {
     /// `started` advertised `duck` and the line was written. An older RightyO skips a line it does not know and keeps
     /// deciding turns, so it is never written one and this is false: the host then never claims duck mode is on.
     /// Asked before `started`, the wish is kept and written once a child that advertised it starts. Never blocks.
-    /// Turning it off closes the owner's session (#735 H-5): its turns are held for "save that", and with
-    /// `summarize` (the spoken exit, the device's end, the auto-end) one summary of them is sent, in its own task.
+    /// Turning it off with `summarize` (the spoken exit, the device's end, the auto-end) closes the owner's session
+    /// (#735 H-5): its turns are held for "save that", and one summary of them is sent, in its own task. Without it
+    /// (media mode, a child that cannot take duck mode) the turns are discarded at once.
     @discardableResult public func reportDuck(_ on: Bool, summarize: Bool = true) -> Bool {
-        let change = duck.change(on) { [child] on in child.reportDuck(on) }
+        let change = duck.change(on, summarize: summarize) { [child] on in child.reportDuck(on) }
         if summarize, let held = change.closed {
             Task { [consumer, duckEnd] in
                 let outcome = await consumer.summarizeDuck(held, via: duckEnd.step)
@@ -332,10 +333,25 @@ extension RightyoAmbientPipeline {
         return change.written
     }
 
-    /// Keeps the summary's spoken text (#735 H-5) when `request` is the reply its dispatch was handed off as; true
-    /// when it was this stream's. Never logged.
-    public func noteDuckReply(request: UUID, text: String) -> Bool {
-        duckEnd.buffer?.noteReply(request: request, text: text) ?? false
+    /// Keeps the summary's spoken text (#735 H-5), made inert (`inertSummary`), when `request` is the input request
+    /// its dispatch was handed off as; the kept text's UTF-8 byte count when it was this stream's, nil otherwise.
+    /// Never logged.
+    public func noteDuckReply(request: UUID, text: String) -> Int? {
+        let inert = Self.inertSummary(text)
+        guard duckEnd.buffer?.noteReply(request: request, text: inert) == true else { return nil }
+        return DuckSession.Held.capped(inert, bytes: DuckSession.Held.maxSummaryBytes).utf8.count
+    }
+
+    /// The agent's summary text made inert before it is kept for a note (#735 H-5): a Markdown viewer must never load
+    /// remote content or embed another note from it. `<` (HTML, autolinks) becomes `&lt;`; an image's `![` becomes
+    /// `! [`; an Obsidian embed or wikilink's `[[` becomes `[ [`; and a line starting `---` (front matter, a rule)
+    /// starts `\---` instead. Only the agent's text: the owner's own words are saved as said.
+    static func inertSummary(_ text: String) -> String {
+        var inert = text.replacingOccurrences(of: "<", with: "&lt;").replacingOccurrences(of: "![", with: "! [")
+        while inert.contains("[[") { inert = inert.replacingOccurrences(of: "[[", with: "[ [") }
+        return inert.split(separator: "\n", omittingEmptySubsequences: false).map { line in
+            line.drop { $0 == " " || $0 == "\t" }.hasPrefix("---") ? "\\" + line : String(line)
+        }.joined(separator: "\n")
     }
 
     /// Drops the owner's duck words at once, open or held (#735 H-5): this stream is retiring (a reload, a new
@@ -679,23 +695,27 @@ final class AmbientOwnerVoiceRelay: Sendable {
 final class AmbientDuckControl: Sendable {
     private struct State { var started = false, advertised = false, wanted = false }
     private let state = Mutex(State())
-    /// The owner's words (#735 H-3): a new session begins when the wish turns on, and closes when it turns off, its
-    /// turns held for the owner's save (H-5); they are discarded when this child cannot take it. A repeated wish
-    /// ("still on", a reload's re-report) changes nothing.
+    /// The owner's words (#735 H-3): a new session begins when the wish turns on. When it turns off with a summary its
+    /// turns are held for the owner's save (H-5); otherwise, and when this child cannot take it, they are discarded. A
+    /// repeated wish ("still on", a reload's re-report) changes nothing.
     private let session: DuckSession?
 
     init(session: DuckSession? = nil) { self.session = session }
 
     var active: Bool { state.withLock { $0.wanted } }
 
-    func report(_ on: Bool, write: (Bool) -> Bool) -> Bool { change(on, write: write).written }
+    func report(_ on: Bool, write: (Bool) -> Bool) -> Bool { change(on, summarize: false, write: write).written }
 
-    /// `report`, also returning what turning it off left held (#735 H-5): the closed session's turns, or nil when it
-    /// was not on, held no turn, or this was an on.
-    func change(_ on: Bool, write: (Bool) -> Bool) -> (written: Bool, closed: DuckSession.Held?) {
+    /// `report`, also returning what turning it off with `summarize` left held (#735 H-5): the closed session's turns,
+    /// or nil when it was not on, held no turn, or this was an on. Turning it off without `summarize` discards them.
+    func change(_ on: Bool, summarize: Bool, write: (Bool) -> Bool) -> (written: Bool, closed: DuckSession.Held?) {
         state.withLock { state in
             var closed: DuckSession.Held?
-            if on, !state.wanted { session?.begin() } else if !on, state.wanted { closed = session?.close() }
+            if on, !state.wanted {
+                session?.begin()
+            } else if !on, state.wanted {
+                if summarize { closed = session?.close() } else { session?.end() }
+            }
             state.wanted = on
             return (state.advertised && write(on), closed)
         }

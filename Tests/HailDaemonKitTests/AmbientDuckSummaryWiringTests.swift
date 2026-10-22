@@ -17,10 +17,12 @@ import Testing
     static let thought = "First synthetic thought."
 
     /// The owner enters, thinks once, asks the status cue (so the test knows the thought was taken), then `ending`.
-    static func rig(_ ending: [String], timeout: TimeInterval = 30,
-                    destinations: VoiceDestinations? = nil) async throws -> DuckRig {
-        let script = try AmbientDuckCueWiringTests.script([thought, "Are you still listening?"] + ending)
-        return try await DuckRig(script: script, clips: clips, timeout: timeout, destinations: destinations)
+    /// With `lingers`, the fake RightyO waits two seconds after the audio ends before it stops.
+    static func rig(_ ending: [String], timeout: TimeInterval = 30, lingers: Bool = false) async throws -> DuckRig {
+        var script = try AmbientDuckCueWiringTests.script([thought, "Are you still listening?"] + ending)
+        if lingers { script = script.replacingOccurrences(of: "/bin/cat > /dev/null\n",
+                                                          with: "/bin/cat > /dev/null\n/bin/sleep 2\n") }
+        return try await DuckRig(script: script, clips: clips, timeout: timeout)
     }
 
     /// Waits for the status cue, so the thought before it is in the buffer.
@@ -68,13 +70,14 @@ import Testing
         let reply = ReplyDescriptor(id: UUID(), hostID: "mac-test", targetID: RecipientTestRig.target,
                                     requestID: context.id)
         router.observeReply(Frame(timestamp: 0, target: RecipientTestRig.target, source: "host",
-                                  payload: .text(TextPayload(text: "A synthetic summary.", reply: reply))))
+                                  payload: .text(TextPayload(text: "A <b> summary.", reply: reply))))
         // Another reply is not the summary's.
         let other = ReplyDescriptor(id: UUID(), hostID: "mac-test", targetID: RecipientTestRig.target,
                                     requestID: UUID())
         router.observeReply(Frame(timestamp: 0, target: RecipientTestRig.target, source: "host",
                                   payload: .text(TextPayload(text: "Something else.", reply: other))))
-        #expect(rig.details("ambient_duck_summary") == [Self.sent, "outcome=kept bytes=20"])
+        // Kept made inert: "A &lt;b> summary." is 17 bytes, the raw text 14.
+        #expect(rig.details("ambient_duck_summary") == [Self.sent, "outcome=kept bytes=17"])
         await rig.finish()
         #expect(rig.details("ambient_duck").last == "on=false reason=device reported=1")
     }
@@ -92,47 +95,58 @@ import Testing
         #expect(await rig.env.rig.adapter.contexts.isEmpty)
     }
 
-    /// The owner's save writes the note to the `notes` Markdown file and nowhere else, then "Saved." plays.
+    /// A retired stream (here the connection's end) drops the owner's held words at once, before its child is
+    /// reaped: the summary's reply arriving then is kept nowhere.
+    @Test func retiringTheStreamDropsTheHoldAtOnce() async throws {
+        let rig = try await Self.rig(["Rightyo, done thinking."], lingers: true)
+        defer { rig.close() }
+        #expect(await eventually { rig.details("ambient_duck_summary") == [Self.sent] })
+        let context = try #require(await rig.env.rig.adapter.contexts.first)
+        let pipeline = try #require(rig.env.router.activePipeline), connection = try #require(rig.connection())
+        rig.env.router.stop(connection: connection)
+        // The child lingers two seconds after its input closes, so the run cannot have ended yet.
+        #expect(rig.env.router.liveRuns == 1)
+        #expect(pipeline.noteDuckReply(request: context.id, text: "A synthetic summary.") == nil)
+        await rig.finish()
+    }
+
+    /// The owner's save writes the note to the destination the consumer resolved from `notes`, then "Saved." plays.
     @Test func aSaveGoesToTheNotesDestinationThenConfirms() async throws {
         let directory = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
         try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
         defer { try? FileManager.default.removeItem(at: directory) }
-        let inbox = directory.appendingPathComponent("Inbox.md"), other = directory.appendingPathComponent("Other.md")
-        let destinations = try VoiceDestinations(["Notes": .markdown(inbox.path), "Other": .markdown(other.path)])
-        let rig = try await Self.rig([], destinations: destinations)
+        let inbox = directory.appendingPathComponent("Inbox.md")
+        let rig = try await Self.rig([])
         defer { rig.close() }
         #expect(await Self.thoughtTaken(rig))
         let connection = try #require(rig.connection()), router = rig.env.router
-        let save = try #require(Self.save())
+        let save = try #require(Self.save(to: .markdown(inbox.path)))
         router.duckSave(on: connection, listener: rig.env.listener)(save)
         #expect(await eventually { !rig.details("ambient_duck_save").isEmpty })
         await rig.finish()
         #expect(rig.details("ambient_duck_save") == ["destination=notes outcome=saved turns=1 bytes=\(save.bytes) "
-            + "summary=none confirm=confirmsaved/0:sent"])
+            + "summary=pending confirm=confirmsaved/0:sent"])
         let body = try String(contentsOf: inbox, encoding: .utf8)
-        #expect(body.hasPrefix("- ") && body.contains("Duck mode notes, 1 turns.") && body.contains(Self.thought))
-        #expect(!FileManager.default.fileExists(atPath: other.path))
+        // One flattened list item, as every Markdown note.
+        #expect(body.hasPrefix("- ") && body.hasSuffix("\n") && body.dropLast().contains("\n") == false)
+        #expect(body.contains("Duck mode notes, 1 turns.") && body.contains(Self.thought))
     }
 
-    /// Without a `notes` destination nothing is saved anywhere, and the owner hears so.
-    @Test func withoutANotesDestinationNothingIsSaved() async throws {
-        let rig = try await Self.rig([])
-        defer { rig.close() }
-        #expect(await Self.thoughtTaken(rig))
-        let connection = try #require(rig.connection())
-        rig.env.router.duckSave(on: connection, listener: rig.env.listener)(try #require(Self.save()))
-        #expect(await eventually { !rig.details("ambient_duck_save").isEmpty })
-        await rig.finish()
-        #expect(rig.details("ambient_duck_save").first?.contains("outcome=no_destination") == true)
-        #expect(rig.details("ambient_duck_save").first?.hasSuffix("confirm=confirmnotsaved/0:sent") == true)
+    /// The agent's summary text is made inert for a Markdown viewer; the owner's own words are not touched.
+    @Test(arguments: [("<img src=x>", "&lt;img src=x>"), ("see ![a](u.png)", "see ! [a](u.png)"),
+                      ("[[Secret note]]", "[ [Secret note]]"), ("[[[x", "[ [ [x"), ("![[Embed]]", "! [ [Embed]]"),
+                      ("---\ntitle: x", "\\---\ntitle: x"), ("ok\n  ---", "ok\n\\  ---"),
+                      ("a - b --- c", "a - b --- c")])
+    func theSummaryTextIsMadeInert(_ raw: String, _ inert: String) {
+        #expect(RightyoAmbientPipeline.inertSummary(raw) == inert)
     }
 
     /// A note for one synthetic turn, as "save that" would hand it over.
-    static func save() -> DuckSave? {
+    static func save(to target: VoiceDestinations.Destination) -> DuckSave? {
         let session = DuckSession()
         session.begin()
         session.append(thought)
-        return session.close().map(DuckSave.init)
+        return session.close().map { DuckSave($0, to: target) }
     }
 
     @Test func eachSummaryOutcomeHasItsClipAndCountsOnlyToken() {

@@ -77,6 +77,7 @@ import Testing
             onAcknowledge: { _ in seen.withLock { $0.acknowledged += 1 } }
         )
         configuration.replyControl = true
+        configuration.destinations = try VoiceDestinations(["Notes": .markdown("/synthetic/Notes.md")])
         // As the host does: the owner's exit turns duck mode off, here with or without a summary.
         configuration.onVoiceDuck = { command in
             guard command == .off, let pipeline = box.withLock({ $0 }) else { return }
@@ -100,7 +101,7 @@ import Testing
         pipeline.finishInput()
         _ = try await pipeline.run()
         let requests = await dispatcher.requests
-        let kept = pipeline.noteDuckReply(request: Self.summaryOwner, text: "Late.")
+        let kept = pipeline.noteDuckReply(request: Self.summaryOwner, text: "Late.") != nil
         return seen.withLock { seen in
             (seen.requests, seen.keptAfterEnd) = (requests, kept)
             return seen
@@ -126,20 +127,23 @@ import Testing
     /// alone, and is neither sent nor acknowledged.
     @Test func aSaveCarriesTheSummarysTextAndTheTurns() async throws {
         let save = try Self.request("Rightyo, save that.", sequence: 10)
-        let seen = try await run([("A synthetic thought.", "owner")], after: save, reply: "A synthetic summary.")
+        let seen = try await run([("A synthetic thought.", "owner")], after: save,
+                                 reply: "A synthetic <b>summary</b> with ![x](u.png) and [[Note]].")
         #expect(seen.requests.count == 1 && seen.acknowledged == 0)
         let note = try #require(seen.saves.first)
         #expect(seen.saves.count == 1 && note.summary == "captured" && note.turns == 1)
-        #expect(note.text.contains("Summary: A synthetic summary.") && note.text.contains("- A synthetic thought."))
+        // The agent's text is kept made inert; the owner's words as said.
+        #expect(note.text.contains("Summary: A synthetic &lt;b>summary&lt;/b> with ! [x](u.png) and [ [Note]]."))
+        #expect(note.text.contains("- A synthetic thought."))
     }
 
-    /// Media mode or a child that cannot take duck mode ends it without a summary; the turns are still held.
-    @Test func withoutASummaryNothingIsSentAndTheTurnsAreStillHeld() async throws {
+    /// Media mode or a child that cannot take duck mode ends it without a summary and discards the turns at once, so
+    /// a later "save that to notes" is an ordinary request.
+    @Test func withoutASummaryNothingIsSentAndTheTurnsAreDiscarded() async throws {
         let save = try Self.request("Save that to notes.", sequence: 10)
         let seen = try await run([("A synthetic thought.", "owner")], summarize: false, after: save)
-        #expect(seen.requests.isEmpty && seen.summaries.isEmpty && seen.acknowledged == 0)
-        #expect(seen.saves.map(\.summary) == ["none"])
-        #expect(seen.saves.first?.text.contains("A synthetic thought.") == true)
+        #expect(seen.summaries.isEmpty && seen.saves.isEmpty && seen.acknowledged == 1)
+        #expect(seen.requests.count == 1 && seen.requests.first?.text.contains("A synthetic thought.") == false)
     }
 
     /// An empty session sends no summary, and with nothing held "save that" is an ordinary request.
@@ -167,14 +171,18 @@ import Testing
     /// The control closes the session on the off and returns its hold; `discard` drops it.
     @Test func theControlHoldsOnTheOffAndDiscardDropsIt() throws {
         let session = DuckSession(), control = AmbientDuckControl(session: session)
-        #expect(control.change(true) { _ in true }.closed == nil)
+        #expect(control.change(true, summarize: true) { _ in true }.closed == nil)
         session.append("A synthetic turn.")
-        #expect(control.change(true) { _ in true }.closed == nil)
-        let closed = try #require(control.change(false) { _ in true }.closed)
+        #expect(control.change(true, summarize: true) { _ in true }.closed == nil)
+        let closed = try #require(control.change(false, summarize: true) { _ in true }.closed)
         #expect(closed.copy.turns == ["A synthetic turn."] && session.held == closed)
-        #expect(control.change(false) { _ in true }.closed == nil && session.held == closed)
+        #expect(control.change(false, summarize: true) { _ in true }.closed == nil && session.held == closed)
         control.discard()
         #expect(session.held == nil)
+        // Without a summary the off discards at once: nothing is held.
+        _ = control.change(true, summarize: false) { _ in true }
+        session.append("Another synthetic turn.")
+        #expect(control.change(false, summarize: false) { _ in true }.closed == nil && session.held == nil)
     }
 }
 #endif

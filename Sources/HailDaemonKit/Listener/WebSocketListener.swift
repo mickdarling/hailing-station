@@ -523,11 +523,13 @@ public final class AmbientRightyoRouter: AmbientAudioSink, AmbientListenerWiring
         }
     }
     /// A delivered reply's final text for the input request `request` (#735 H-5): kept by the stream whose duck
-    /// summary was handed off as that request, and by no other, for a later save. Logs the kept byte count only.
+    /// summary was handed off as that request, and by no other, for a later save, made inert. A reply's text
+    /// is one final text frame (`haild reply` sends it whole), so the first one kept is the summary; a second reply
+    /// naming the same request is ignored. Logs the kept byte count only.
     func keepDuckSummary(_ request: UUID, text: String) {
         let runs = state.withLock { $0.runs.values.map { ($0.connection, $0.pipeline) } }
-        for (connection, pipeline) in runs where pipeline.noteDuckReply(request: request, text: text) {
-            let bytes = min(text.utf8.count, DuckSession.Held.maxSummaryBytes)
+        for (connection, pipeline) in runs {
+            guard let bytes = pipeline.noteDuckReply(request: request, text: text) else { continue }
             emit("ambient_duck_summary", connection: connection, detail: "outcome=kept bytes=\(bytes)")
         }
     }
@@ -1458,7 +1460,8 @@ extension AmbientRightyoRouter {
             if let expected, state.media[connection]?.token != expected { return nil }
             let reported = changeMedia(on, connection: connection, reason: reason, in: &state)
             let left = on && reported > 0 && state.duck[connection] != nil
-            // Media mode ends duck mode without a summary (#735 H-5): it would be spoken over what is playing.
+            // Media mode ends duck mode without a summary, discarding the owner's words (#735 H-5): a summary would be
+            // spoken over what is playing.
             return (reported, left ? changeDuck(false, connection: connection, reason: "voice", summarize: false,
                                                 in: &state) : nil)
         }

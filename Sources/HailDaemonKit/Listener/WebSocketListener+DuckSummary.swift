@@ -31,18 +31,15 @@ extension AmbientRightyoRouter {
     }
 
     /// The owner's "save that" (#735 H-5): the note goes to the owner's allowlisted `notes` destination (#552) by
-    /// `VoiceNoteRunner`, and only there; no `notes` destination saves nothing. Then `confirm-saved/` or
-    /// `confirm-not-saved/`, one at a time, in the order said. Logs the destination, outcome, counts, the summary's
-    /// state token and the clip; never the words.
+    /// `VoiceNoteRunner`, and only there: the consumer resolved `save.target` from `notes` alone, and without one it
+    /// was never a save. Then `confirm-saved/` or `confirm-not-saved/`, one at a time, in the order said. Logs the
+    /// destination, outcome, counts, the summary's state token and the clip; never the words.
     func duckSave(on connection: UUID, listener: WebSocketListener) -> @Sendable (DuckSave) -> Void {
         let chain = SerialTaskChain()
         return { [weak self, weak listener] save in
             chain.enqueue { [weak self, weak listener] in
                 guard let self else { return }
-                var outcome = "no_destination"
-                if let target = configuration.destinations?.destinations[Self.duckNotes] {
-                    outcome = await configuration.notes.run(target, text: save.text)
-                }
+                let outcome = await configuration.notes.run(save.target, text: save.text)
                 let persona = outcome == "saved" ? AmbientStopConfirmation.saved : AmbientStopConfirmation.notSaved
                 let confirm = await confirmVoiceMute(persona, on: connection, listener: listener)
                 let detail = "destination=notes outcome=\(outcome) turns=\(save.turns) bytes=\(save.bytes)"
@@ -51,8 +48,5 @@ extension AmbientRightyoRouter {
             }
         }
     }
-
-    /// The one destination a duck save may use: the owner's `notes`, keyed as the destinations file keys it.
-    static let duckNotes = RightyoAddressing.key("notes")
 }
 #endif
