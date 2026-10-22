@@ -162,6 +162,10 @@ public enum ControlPayload: Sendable, Equatable {
     /// it last changed (one of `MediaMode.reasons`), and while on, when it turns itself off (Unix milliseconds). Sent
     /// only to a device that advertises `MediaMode.capability`. It shows state only and grants no authority.
     case mediaMode(on: Bool, reason: String? = nil, expires: Int64? = nil)
+    /// Host to device (#735): whether the owner's rubber-duck mode is on for this device's ambient stream, why it last
+    /// changed (one of `DuckMode.reasons`), and while on, when it turns itself off (Unix milliseconds). Sent only to a
+    /// device that advertises `DuckMode.capability`. It shows state only and grants no authority.
+    case duckMode(on: Bool, reason: String? = nil, expires: Int64? = nil)
 }
 
 extension ControlPayload: Codable {
@@ -177,7 +181,7 @@ extension ControlPayload: Codable {
         case setReplyMute = "set_reply_mute", ownerVoice = "owner_voice", ambientInput = "ambient_input"
         case sessionUpdate = "session_update"
         case health, healthReport = "health_report"
-        case mediaMode = "media_mode"
+        case mediaMode = "media_mode", duckMode = "duck_mode"
     }
 
     // A closed wire enum is clearest as one exhaustive switch.
@@ -223,6 +227,7 @@ extension ControlPayload: Codable {
         case .sessionUpdate: self = try Self.sessionUpdate(from: decoder)
         case .health, .healthReport: self = try Self.health(from: decoder)
         case .mediaMode: self = try Self.mediaMode(from: decoder)
+        case .duckMode: self = try Self.duckMode(from: decoder)
         }
     }
 
@@ -273,6 +278,25 @@ extension ControlPayload: Codable {
                                                     debugDescription: "invalid media_mode expires"))
         }
         return .mediaMode(on: on, reason: MediaMode.reason(raw), expires: expires)
+    }
+
+    /// Strict (#735), exactly like `media_mode`: only `command`, the boolean `on`, an optional `reason` from
+    /// `DuckMode.reasons` and, only while on, a positive `expires`.
+    private static func duckMode(from decoder: any Decoder) throws -> ControlPayload {
+        try requireOnly(["command", "on", "reason", "expires"], "duck_mode", decoder)
+        let container = try decoder.container(keyedBy: CodingKeys.self)
+        let on = try container.decode(Bool.self, forKey: .on)
+        let raw = try container.decodeIfPresent(String.self, forKey: .reason)
+        let expires = try container.decodeIfPresent(Int64.self, forKey: .expires)
+        guard raw == nil || DuckMode.reason(raw) != nil else {
+            throw DecodingError.dataCorrupted(.init(codingPath: decoder.codingPath,
+                                                    debugDescription: "unknown duck_mode reason"))
+        }
+        guard MediaMode.validExpiry(expires, on: on) else {
+            throw DecodingError.dataCorrupted(.init(codingPath: decoder.codingPath,
+                                                    debugDescription: "invalid duck_mode expires"))
+        }
+        return .duckMode(on: on, reason: DuckMode.reason(raw), expires: expires)
     }
 
     /// Strict (rightyo#164): only `command` and a `state` from `OwnerVoice.states`.
@@ -470,6 +494,17 @@ extension ControlPayload: Codable {
                                                                       debugDescription: "invalid media_mode expires"))
             }
             try container.encodeIfPresent(expires, forKey: .expires)
+        case .duckMode(let on, let reason, let expires):
+            try container.encode(Command.duckMode, forKey: .command)
+            try container.encode(on, forKey: .on)
+            if let reason {
+                try container.encode(try Self.closed(DuckMode.reason(reason), reason, encoder), forKey: .reason)
+            }
+            guard MediaMode.validExpiry(expires, on: on) else {
+                throw EncodingError.invalidValue(expires as Any, .init(codingPath: encoder.codingPath,
+                                                                      debugDescription: "invalid duck_mode expires"))
+            }
+            try container.encodeIfPresent(expires, forKey: .expires)
         }
     }
 }
@@ -561,6 +596,21 @@ public enum MediaMode {
     static func validExpiry(_ expires: Int64?, on: Bool) -> Bool {
         guard let expires else { return true }
         return on && expires > 0
+    }
+}
+
+/// Duck mode state (#735): the owner's rubber-duck mode ("let me think out loud") is host-side, like media mode, so a
+/// device is told when it changes for its ambient stream. The device advertises `capability` in its `hello`; a host
+/// never sends `duck_mode` to a device without it, because an older device refuses an unknown command. `reason` says
+/// why it last changed: `voice` (the owner said so), `timeout` (it turned itself off) or `device` (a device asked).
+/// `expires` is when an on mode turns itself off, in Unix milliseconds like a frame's `ts`. Off by default.
+public enum DuckMode {
+    public static let capability = "duck_mode"
+    public static let reasons = ["voice", "timeout", "device"]
+
+    /// `value` when it is exactly one of `reasons`, else nil.
+    public static func reason(_ value: String?) -> String? {
+        value.flatMap { value in reasons.first { DiagnosticLimits.sameBytes($0, value) } }
     }
 }
 
@@ -988,6 +1038,20 @@ extension Schema {
             "properties": .object([
                 "command": .object([:]), "on": .object(["type": .string("boolean")]),
                 "reason": .object(["enum": .array(MediaMode.reasons.map(JSONValue.string))]),
+                "expires": .object(["type": .string("integer"), "minimum": .integer(1)])
+            ])
+        ])
+    ])
+
+    /// `duck_mode` carries `command`, a boolean `on`, an optional known `reason` and an optional positive integer
+    /// `expires`, and nothing else (#735). That `expires` comes only with `on: true` is checked by the decoder.
+    static let duckModePayloadRule: JSONValue = .object([
+        "if": .object(["properties": .object(["command": .object(["const": .string("duck_mode")])])]),
+        "then": .object([
+            "additionalProperties": .bool(false),
+            "properties": .object([
+                "command": .object([:]), "on": .object(["type": .string("boolean")]),
+                "reason": .object(["enum": .array(DuckMode.reasons.map(JSONValue.string))]),
                 "expires": .object(["type": .string("integer"), "minimum": .integer(1)])
             ])
         ])

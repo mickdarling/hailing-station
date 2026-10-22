@@ -177,7 +177,8 @@ public enum Schema {
                     "hello", "list_targets", "targets", "select", "subscribe", "unsubscribe", "escape", "ping", "pong",
                     "error", "diagnostic", "stop_playback", "ambient_moved_here", "ambient_heard",
                     "ambient_overheard", "overheard_scope", "set_reply_mute", "owner_voice", "ambient_input",
-                    "session_update", "health", "health_report", "media_mode"
+                    "session_update", "health", "health_report", "media_mode",
+                    "duck_mode"
                 ]
                     .map(JSONValue.string)
             )]),
@@ -228,6 +229,7 @@ public enum Schema {
             commandRule("session_update", requires: ["update", "session", "priority", "text"]),
             commandRule("health_report", requires: ["report"]),
             commandRule("media_mode", requires: ["on"]),
+            commandRule("duck_mode", requires: ["on"]),
             diagnosticPayloadRule,
             stopPlaybackPayloadRule,
             ambientMovedHerePayloadRule,
@@ -240,7 +242,8 @@ public enum Schema {
             sessionUpdatePayloadRule,
             healthPayloadRule,
             healthReportPayloadRule,
-            mediaModePayloadRule
+            mediaModePayloadRule,
+            duckModePayloadRule
         ])
     ])
 }
