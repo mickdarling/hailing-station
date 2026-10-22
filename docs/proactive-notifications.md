@@ -55,7 +55,9 @@ claims. It is trusted only for holding a private key the owner approved.
    - the 65 key bytes;
    - the 32 nonce bytes;
    - the token's ASCII hex (empty when pushes are off);
-   - the environment's ASCII (empty when pushes are off).
+   - the environment's ASCII (empty when pushes are off);
+   - the name's UTF-8 bytes;
+   - the kind's ASCII.
 
    A proof with no token clears the stored token: the app turned pushes off, and a relay cannot strip a token from a
    signed proof.
@@ -66,7 +68,9 @@ claims. It is trusted only for holding a private key the owner approved.
    - `approve` needs the full fingerprint, refuses one that matches more than one entry, and works only while that
      device is connected. The app shows its own fingerprint and its state, so the owner compares them on both
      screens. A device left `pending` after approval means the wrong row was approved.
-   - The name and kind are shown as **unverified** until approval, then fixed. Later proofs cannot change them.
+   - The name and kind are signed with the proof, so nobody on the path can relabel a device. They are still
+     chosen by the device, so they are shown as **unverified** until approval, then fixed. Later proofs cannot change
+     them.
    - `haild devices revoke <fingerprint>` demotes the key's live connection at once, clears the key's privacy report,
      and puts the key on a revoked list. A revoked key never becomes pending again.
 7. **Approved connection:** a connection becomes an **approved device** only after a valid proof from an approved key
@@ -266,6 +270,8 @@ answer and by `haild notify status`, stays as it is. An `info` update held for a
   session), `sound` and `interruption-level: active`. A `hail` object carries only `update`, `session` and
   `priority`. Card text is never pushed.
 - **Headers:**
+  - `authorization: bearer <JWT>`, the current provider token, never logged; and `apns-topic`, the app's bundle ID
+    from `apns.json`.
   - `apns-push-type: alert` and `apns-priority: 10`.
   - `apns-expiration`: the update's expiry, converted from its monotonic deadline to wall-clock seconds at send time.
   - `apns-collapse-id`: the update UUID, so a retried send replaces rather than duplicates.
