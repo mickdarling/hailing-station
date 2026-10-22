@@ -70,10 +70,11 @@ public final class DuckSession: Sendable {
 
     var snapshot: Snapshot { state.withLock { $0 } }
 
-    /// The prompt for an ask cue: the session as compact JSON (the cue's fixed phrase, never the heard words; the
+    /// The prompt for an ask cue from one `snapshot` of the buffer (so what is sent and what is counted agree): it as
+    /// compact JSON (the cue's fixed phrase, never the heard words; the
     /// owner's turns as JSON strings, so no turn text reaches the top level), then the duck reply block for `target`.
     /// One line; the host's sanitizer and guard still run on it at dispatch.
-    func prompt(cue: DuckCue, speakers: String, target: String) throws -> String {
+    static func prompt(_ copy: Snapshot, cue: DuckCue, speakers: String, target: String) throws -> String {
         struct Body: Encodable {
             let cue: String
             let startedAtMs: Int64?
@@ -85,7 +86,6 @@ public final class DuckSession: Sendable {
             let duck: Body
             let speakers: String
         }
-        let copy = snapshot
         let millis = { (date: Date?) in date.map { Int64(($0.timeIntervalSince1970 * 1_000).rounded()) } }
         let encoder = JSONEncoder()
         encoder.outputFormatting = [.sortedKeys, .withoutEscapingSlashes]

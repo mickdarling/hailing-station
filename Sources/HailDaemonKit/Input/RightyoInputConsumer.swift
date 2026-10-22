@@ -574,11 +574,14 @@ extension RightyoInputConsumer {
 extension RightyoInputConsumer {
     /// The owner's transcript while ducking (#735 H-3), under `noteDuckExit`'s guards: duck mode on, an enrolled
     /// session, the owner's turn, the live microphone, never an echo. Anything else, a guest's turn above all, is left
-    /// alone. A duck mode phrase is `VoiceDuck`'s. A mute phrase is carried out as `VoiceMute` (`lastVoiceMute`). A cue
+    /// alone, and so is every turn on a stream whose `started` said `activation: "disabled"`: a transcription-only
+    /// stream never sends, so it neither asks, nor buffers words that could only be sent, nor mutes (a mute reaches
+    /// the host only as a request, which such a stream refuses). A duck mode phrase is `VoiceDuck`'s. A mute phrase is carried out as `VoiceMute` (`lastVoiceMute`). A cue
     /// (`DuckCue`) is carried out: an ask sends the buffer, "discard that" empties it, the status cue is left to H-4.
     /// Every other turn enters the buffer. True only when an ask was handed to the agent.
     func noteDuckTurn(_ turn: RightyoInputEvent.Turn) async throws -> Bool {
-        guard let duckSession, duckActive?() == true, speakers == "enrolled", owners.contains(turn.utteranceId),
+        guard let duckSession, activationEnabled, duckActive?() == true, speakers == "enrolled",
+              owners.contains(turn.utteranceId),
               allowSynthetic || turn.provenance == "live-microphone", echoFilter?(turn.text) != true,
               VoiceDuck.command(in: turn.text, names: voiceNames) == nil else { return false }
         let mute = VoiceMute.command(in: turn.text, names: voiceNames)
@@ -599,13 +602,18 @@ extension RightyoInputConsumer {
     }
 
     /// Sends the buffer and the cue to `target`, through the same delivery step as any request, so the sanitizer, the
-    /// guard, the acknowledgement and the reply routing all apply. A refusal before handoff (a guarded word in the
-    /// buffer, say) is not the end of the stream: nothing was sent, `lastDuckCue` says so and the buffer stays. Any
-    /// other failure ends the consumer, as for a request. Voice routes (#636) never apply: the stream's own target.
+    /// guard, the acknowledgement and the reply routing all apply. A guard or policy refusal before handoff (a guarded
+    /// word anywhere in the buffer, the target's own refusal, the connection's request limit; `keepsListening`) is not
+    /// the end of the stream: nothing was sent, `lastDuckCue` says so and the buffer stays, since the whole buffer
+    /// makes such a refusal far likelier than for one request. Every other failure, a connection or selection that is
+    /// gone above all, ends the consumer exactly as it ends one for a request. Voice routes (#636) never apply.
+    /// The prompt and the logged counts come from one snapshot. A timeout exit that lands between the snapshot and the
+    /// handoff still lets this ask go: the owner said it while ducking, and the buffer is discarded all the same.
+    static let keepsListening: Set<LocalDispatchRefusal> = [.confirmationRequired, .deliveryRefused, .capacityExceeded]
     private func askDuck(_ cue: DuckCue, session: DuckSession) async throws -> Bool {
         guard let dispatcher else { return false }
-        let text = try session.prompt(cue: cue, speakers: speakers, target: target)
         let copy = session.snapshot
+        let text = try DuckSession.prompt(copy, cue: cue, speakers: speakers, target: target)
         busy = true
         defer { busy = false }
         do {
@@ -613,7 +621,7 @@ extension RightyoInputConsumer {
             lastReceipt = try await dispatcher.dispatch(text: text, target: target, binding: binding)
             lastDuckCue = .asked(turns: copy.turns.count, bytes: copy.bytes)
             return true
-        } catch let refusal as LocalDispatchRefusal where !refusal.handedOff {
+        } catch let refusal as LocalDispatchRefusal where Self.keepsListening.contains(refusal) {
             lastDuckCue = .notSent
             return false
         }

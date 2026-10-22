@@ -7,18 +7,24 @@ import Testing
 /// turns enter the buffer, and a whole-turn cue sends it, empties it or mutes. Synthetic text only.
 extension RightyoInputConsumerTests {
     /// An enrolled `started` naming `Rightyo`, as a RightyO that advertised duck mode would send it.
-    func duckStart() throws -> RightyoInputEvent {
+    func duckStart(activation: String = "finalized-turn") throws -> RightyoInputEvent {
         try event("session", sequence: 1, extra: ["phase": "started", "addressing": ["names": ["Rightyo"]],
-                                                  "capabilities": ["activation": "finalized-turn", "partials": false,
+                                                  "capabilities": ["activation": activation, "partials": false,
                                                                    "speakers": "enrolled", "context": true]])
     }
 
     /// One finalized transcript of `text` at `sequence`, the owner's unless `role` says otherwise.
     func duckTurn(_ text: String, sequence: Int, role: String? = "owner",
                   provenance: String = "synthetic") throws -> RightyoInputEvent {
+        try event("transcript", sequence: sequence,
+                  extra: ["turn": duckTurnBody(text, sequence: sequence, role: role, provenance: provenance)])
+    }
+
+    func duckTurnBody(_ text: String, sequence: Int, role: String? = "owner",
+                      provenance: String = "synthetic") -> [String: Any] {
         var body = roleTurn("u\(sequence)", role: role, start: sequence * 10, end: sequence * 10 + 5)
         (body["text"], body["provenance"]) = (text, provenance)
-        return try event("transcript", sequence: sequence, extra: ["turn": body])
+        return body
     }
 
     func duckConsumer(ducking: Bool = true, session: DuckSession? = DuckSession(),
