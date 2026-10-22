@@ -81,19 +81,19 @@ public enum CapturePlaybackSuppression {
     /// Each owner's check that its capture is still starting, recording, finalizing or interrupting.
     public static var liveness: [UUID: @MainActor () -> Bool] = [:]
     private static var ledgers: [ObjectIdentifier: CaptureSuppressionLedger] = [:]
+    private static var reporters: [ObjectIdentifier: @MainActor (Int) -> Void] = [:]
 
     /// Whether `playback` has a ledger now; only a player with an outstanding hold does.
     static func hasLedger(for playback: ReplyPlaybackController) -> Bool { existing(playback) != nil }
 
     public static func begin(_ owner: UUID, using playback: ReplyPlaybackController) { ledger(playback).begin(owner) }
 
-    /// Each call that can heal returns how many holds the heal dropped, for the caller's own scene to log (#760); no
-    /// callback is stored here, so a heal is never reported through another scene (#763 review).
+    /// Each call that can heal returns how many holds the heal dropped (#760), and tells that player's own reporter.
     @discardableResult
     public static func end(_ owner: UUID, using playback: ReplyPlaybackController, resuming: Bool) -> Int {
         liveness[owner] = nil
         guard let ledger = existing(playback) else { return 0 }
-        let count = healed(ledger.end(owner, resuming: resuming))
+        let count = healed(ledger.end(owner, resuming: resuming), playback)
         pruneIfEmpty(playback)
         return count
     }
@@ -113,9 +113,15 @@ public enum CapturePlaybackSuppression {
     @discardableResult
     public static func reconcile(using playback: ReplyPlaybackController) -> Int {
         guard let ledger = existing(playback) else { return 0 }
-        let count = healed(ledger.reconcile())
+        let count = healed(ledger.reconcile(), playback)
         pruneIfEmpty(playback)
         return count
+    }
+
+    /// Where `playback`'s heals are logged: set by its scene when it appears, removed (nil) when it goes away, so a heal
+    /// is reported only through its own scene and no closed scene is kept alive here (#763 review).
+    public static func reportHeals(for playback: ReplyPlaybackController, to reporter: (@MainActor (Int) -> Void)?) {
+        reporters[ObjectIdentifier(playback)] = reporter
     }
 
     private static func existing(_ playback: ReplyPlaybackController) -> CaptureSuppressionLedger? {
@@ -127,8 +133,9 @@ public enum CapturePlaybackSuppression {
         if ledgers[key]?.owners.isEmpty == true { ledgers[key] = nil }
     }
 
-    private static func healed(_ owners: [UUID]) -> Int {
+    private static func healed(_ owners: [UUID], _ playback: ReplyPlaybackController) -> Int {
         for owner in owners { liveness[owner] = nil }
+        if !owners.isEmpty { reporters[ObjectIdentifier(playback)]?(owners.count) }
         return owners.count
     }
 

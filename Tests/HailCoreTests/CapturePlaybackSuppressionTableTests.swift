@@ -55,6 +55,23 @@ import Testing
         #expect(CapturePlaybackSuppression.reconcile(using: playback) == 0)
     }
 
+    /// A heal is reported only to its own player's scene, and not after that scene removed its reporter.
+    @Test func healsReachOnlyTheirOwnScenesReporter() {
+        let mine = ReplyPlaybackController(player: TablePlayer())
+        let other = ReplyPlaybackController(player: TablePlayer())
+        var reported: [String] = []
+        CapturePlaybackSuppression.reportHeals(for: mine) { reported.append("mine \($0)") }
+        CapturePlaybackSuppression.reportHeals(for: other) { reported.append("other \($0)") }
+        CapturePlaybackSuppression.begin(UUID(), using: mine) // Dead.
+        CapturePlaybackSuppression.reconcile(using: mine)
+        #expect(reported == ["mine 1"])
+        CapturePlaybackSuppression.reportHeals(for: mine, to: nil)
+        CapturePlaybackSuppression.begin(UUID(), using: mine)
+        CapturePlaybackSuppression.reconcile(using: mine)
+        #expect(reported == ["mine 1"])
+        CapturePlaybackSuppression.reportHeals(for: other, to: nil)
+    }
+
     @Test func sceneActivationWithNoHoldCreatesNoLedger() {
         let playback = ReplyPlaybackController(player: TablePlayer())
         CapturePlaybackSuppression.releaseCompleted(using: playback)
