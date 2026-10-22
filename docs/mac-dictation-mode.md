@@ -11,7 +11,7 @@ During dictation:
 - nothing is typed into a password field;
 - guest speech is dropped.
 
-An optional, default-off refinement step can tidy the text using the target app's context.
+A context-aware refinement step, SuperWhisper-style, tidies the text using the target app's context. Mick framed this as the core of the feature; when it is on by default is decision D8.
 
 ## What exists today (origin/main)
 
@@ -99,11 +99,11 @@ Context is never read from a secure field. Clipboard items marked `ConcealedType
 
 **Decision D7:** the command set and phrasing.
 
-### 7. Optional context-aware refinement (default off)
+### 7. Context-aware refinement
 
 **Tier 0, always on:** deterministic cleanup. Spoken punctuation, spacing, capitalization, and number formatting where unambiguous. No model.
 
-**Tier 1, opt-in:** a local LLM rewrite.
+**Tier 1:** a local LLM rewrite. Whether it is on from the first release is D8.
 
 - **Context**, bounded and never from secure fields:
   - the frontmost app's name;
@@ -129,7 +129,11 @@ Context is never read from a secure field. Clipboard items marked `ConcealedType
   - ≤ 1.5 s p95 with it.
   - If refinement would exceed the budget, insert the raw text. A late rewrite never replaces text after insertion.
 
-**Decision D8:** whether refinement ships at all. If it does: the model (Foundation Models first is recommended), the context scope, and the budget.
+**Decision D8:** how refinement rolls out. This is not settled. There are two options:
+- **(a) Raw first, then refinement on by default.** Ship dictation with Tier 0 only. Add Tier 1 next, and turn it on by default once measurements on Mick's Mac show it within budget (≤ 1.5 s p95) with the meaning guardrails holding.
+- **(b) Refinement on from the first release.** Tier 1 ships with dictation and is on from day one. The latency budget and guardrails still apply: if it misses the budget, the raw text goes in.
+
+D8 also covers the model (Foundation Models first is recommended), the context scope and the budget.
 
 ### 8. Privacy and routing
 
@@ -151,7 +155,7 @@ Context is never read from a secure field. Clipboard items marked `ConcealedType
 3. **Mac app insertion core:** the Accessibility permission flow, the secure-field gate, paste-and-restore, and the typing fallback. Tests use a fake pasteboard and a fake AX focus.
 4. **Menu-bar state and the hotkey.**
 5. **Tier 0 cleanup and in-dictation commands.**
-6. **Tier 1 refinement:** Foundation Models first, with guardrails. Only if Mick chooses it in D8.
+6. **Tier 1 refinement:** Foundation Models first, with guardrails. Under D8 (a) it follows slice 5 and becomes default-on once within budget; under (b) it ships together with slices 3–5.
 
 A hands-on test matrix on Mick's Mac covers the apps he uses: an editor, Safari, Chrome, Slack, Terminal, and a password field. That testing happens with Mick present.
 
@@ -166,7 +170,7 @@ A hands-on test matrix on Mick's Mac covers the apps he uses: an editor, Safari,
 | D5 | Target | Keyboard focus |
 | D6 | Insertion | Paste-and-restore, with typed fallback |
 | D7 | Command set | As listed in section 6 |
-| D8 | Refinement | Off by default; Foundation Models; app name and nearby text only; ≤ 1.5 s |
+| D8 | Refinement rollout | Your choice: (a) raw first, refinement on by default once within budget, or (b) refinement on from the first release. Either way: Foundation Models, app name and nearby text only, ≤ 1.5 s |
 | D9 | Keeping dictation out of agent context | RightyO excludes the turns; `haild` refuses as a fail-closed check |
 
 Sources include the Handy source at `~/Developer/Handy`, plus public documentation and source for VoiceInk, SuperWhisper, Wispr Flow, MacWhisper, Aqua Voice and Apple, as of October 2026. Unverified points:
