@@ -65,6 +65,8 @@ if os.environ.get("FAKE_SWIFT_SUITE_ONLY"):  # a selection matching only an empt
     event("testStarted", "Fake.Suite")
     event("testEnded", "Fake.Suite")
 elif not os.environ.get("FAKE_SWIFT_EMPTY"):  # a lane whose selection matched nothing starts no test (#704)
+    for index in range(int(os.environ.get("FAKE_SWIFT_EXTRA_SUITES", "0"))):  # a stream as long as a real lane's
+        event("testStarted", f"Fake.Suite{index}")
     event("testStarted", "Fake.Suite")
     event("testStarted", "Fake.Suite/runs()/F.swift:1:1")
     event("testEnded", "Fake.Suite/runs()/F.swift:1:1")
@@ -168,6 +170,13 @@ class VerifyTestOutputTests(SuccessfulFixtureCleanup):
         self.assertEqual(result.returncode, 0, result.stderr)
         self.assertEqual((self.scratch / "swift-calls").read_text().split(),
                          ["build", "parallel-core", "parallel-rest", "serial"])
+
+    def test_a_long_stream_with_a_late_test_passes(self):
+        # A real lane writes thousands of events. The check must not read an early stop as "nothing started": a
+        # `grep | grep -q` pipeline under pipefail did, failing a 666-test lane.
+        self.env["FAKE_SWIFT_EXTRA_SUITES"] = "50000"
+        result = self.run_lane()
+        self.assertEqual(result.returncode, 0, result.stderr)
 
     def test_reporting_failure_cannot_make_success_look_successful(self):
         self.write_tool("cat", "import sys; sys.exit(9)")

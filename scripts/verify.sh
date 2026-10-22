@@ -97,9 +97,11 @@ PY
 
 # A slow console consumer must not stall test reporting while deadlines run (#185): output goes to a private file
 # and is replayed in full afterwards. A failed capture is kept, and neither failure masks the other.
-# Whether an event stream (JSON Lines, one event each) records a test function starting, not only a suite.
+# Whether an event stream (JSON Lines, one event each) records a test function starting, not only a suite. One awk,
+# no pipeline: under pipefail, `grep … | grep -q` fails when -q exits early and the first grep takes SIGPIPE.
 started_a_test() {
-  grep -E '"kind" *: *"testStarted"' "$1" 2>/dev/null | grep -Eq '"testID" *: *"[^"]*[.]swift:[0-9]+'
+  awk '/"kind" *: *"testStarted"/ && /"testID" *: *"[^"]*[.]swift:[0-9]+/ { found = 1; exit }
+       END { exit !found }' "$1" 2>/dev/null
 }
 
 run_captured() {
