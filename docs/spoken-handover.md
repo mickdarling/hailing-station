@@ -58,7 +58,7 @@ A spoken command can stop listening **here** and open a **handover window**. It 
   - the new device gets `ambient_moved_here { from, handover: true }`.
 - **Expiry:** nothing is lost. The thread stays where it was, and the next start behaves exactly as today. No clip plays on expiry, since no device may be listening to hear it.
 - **Cancel:** the owner saying "stay here", or a deliberate start on the old device within the window, cancels the handover. A resume start there is refused (section 3), not treated as a cancel.
-- **Snapshot:** the ledger entry and media mode to carry are copied into `carried` when the cue is heard. The old device is likely to disconnect once pocketed, which erases both before anyone picks up.
+- **Snapshot:** the ledger entry and media mode to carry are copied into `carried` when the cue is heard. The ledger entry is carried only if it belongs to the old connection. The cue never writes the ledger, so the target's latest entry can be a third device's, such as a typed request on the Mac, and that entry must not move. The old device is likely to disconnect once pocketed, which erases both before anyone picks up.
 - **Pickup applies the snapshot only if nothing newer replaced it.** The ledger is re-pointed only if its entry for the target is still the snapshotted one, or is gone because the old connection went away. A newer entry, such as a typed request on another device, wins. Media mode the new device has already set also wins over the snapshot.
 
 ### 5. What moves
@@ -86,7 +86,7 @@ A spoken command can stop listening **here** and open a **handover window**. It 
 1. **Matcher and gate:** `VoiceHandover.command` and the enrolled-owner gate, with tests only. The command is recognised and logged, and does nothing yet.
 2. **Stop here:** record the gate's moved record as `handedOver`, refuse resume starts from the old connection, play the `confirm-moving` clip, and add the `ambient_handover` control, sent only to devices advertising the capability.
 3. **The window:** `PendingHandover`, deliberate pickup by a different connection, expiry, cancel (including "stay here"), and the snapshot, plus `ambient_moved_here.handover`, sent only to devices advertising the capability.
-4. **Carry:** media mode and the last-input ledger re-pointed at the new connection.
+4. **Carry:** media mode, and the old connection's last-input entry (only if still current), re-pointed at the new connection.
 5. **App:** the `ambient_handover` capability, the "Moved" state and the "Picked up" confirmation, on iPhone, iPad and Mac.
 6. **#425 tie-in:** seed RightyO from the last turns. That's tracked there.
 
