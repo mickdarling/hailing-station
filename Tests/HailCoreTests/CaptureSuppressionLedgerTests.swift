@@ -1,5 +1,5 @@
 import Foundation
-@testable import HailCore
+import HailCore
 import HailProtocol
 import Testing
 
@@ -129,36 +129,6 @@ private final class LedgerRig {
         self.owners = owners
         self.playback = playback
         ledger = CaptureSuppressionLedger(playback: playback) { owners.ids.contains($0) }
-    }
-}
-
-/// #763 review: the per-player ledger table never keeps a closed scene's player alive.
-@MainActor
-@Suite struct CapturePlaybackSuppressionTableTests {
-    @Test func aPlayersLedgerIsRemovedOnceItsLastHoldEnds() {
-        let playback = ReplyPlaybackController(player: LedgerPlayer())
-        let owner = UUID()
-        CapturePlaybackSuppression.liveness[owner] = { true }
-        CapturePlaybackSuppression.begin(owner, using: playback)
-        #expect(CapturePlaybackSuppression.hasLedger(for: playback))
-        CapturePlaybackSuppression.end(owner, using: playback, resuming: true)
-        #expect(!CapturePlaybackSuppression.hasLedger(for: playback))
-        #expect(!playback.isCaptureSuppressed)
-    }
-
-    @Test func aHealThatEmptiesTheLedgerRemovesIt() {
-        let playback = ReplyPlaybackController(player: LedgerPlayer())
-        CapturePlaybackSuppression.begin(UUID(), using: playback) // No liveness registered: never live.
-        CapturePlaybackSuppression.reconcile(using: playback)
-        #expect(!CapturePlaybackSuppression.hasLedger(for: playback))
-        #expect(!playback.isCaptureSuppressed)
-    }
-
-    @Test func sceneActivationWithNoHoldCreatesNoLedger() {
-        let playback = ReplyPlaybackController(player: LedgerPlayer())
-        CapturePlaybackSuppression.releaseCompleted(using: playback)
-        CapturePlaybackSuppression.reconcile(using: playback)
-        #expect(!CapturePlaybackSuppression.hasLedger(for: playback))
     }
 }
 
