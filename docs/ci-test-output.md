@@ -31,7 +31,7 @@ Swift Testing reports test events synchronously, in the same process as the test
 - the capture is an owner-only regular file, and each lane keeps its exact arguments (the two parallel halves and the serial lane);
 - every lane is captured and replayed in full, including output larger than a pipe buffer;
 - a failure stops at the first parallel half, and a failing second half after a green first fails with its own status;
-- a lane that starts no test, or only an empty suite, fails, and a started test in the real runner's compact JSON passes;
+- a lane that starts no test, or only an empty suite, fails, and a started test in the real runner's compact JSON passes, including an early test followed by a long tail of events;
 - the exact failure status;
 - a printing failure;
 - a capture-creation failure;

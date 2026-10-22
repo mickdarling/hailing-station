@@ -95,8 +95,6 @@ for test in sorted(t for t, n in started.items() if n > 0):
 PY
 }
 
-# A slow console consumer must not stall test reporting while deadlines run (#185): output goes to a private file
-# and is replayed in full afterwards. A failed capture is kept, and neither failure masks the other.
 # Whether an event stream (JSON Lines, one event each) records a test function starting, not only a suite. One awk,
 # no pipeline: under pipefail, `grep … | grep -q` fails when -q exits early and the first grep takes SIGPIPE.
 started_a_test() {
@@ -104,6 +102,8 @@ started_a_test() {
        END { exit !found }' "$1" 2>/dev/null
 }
 
+# A slow console consumer must not stall test reporting while deadlines run (#185): output goes to a private file
+# and is replayed in full afterwards. A failed capture is kept, and neither failure masks the other.
 run_captured() {
   local log events pid idle status=0 report=0 stalled=0 dir="${HAIL_TEST_CAPTURE_DIR:-${TMPDIR:-/tmp}}"
   # CI points HAIL_TEST_CAPTURE_DIR at a directory it uploads even when the job fails or times out (#264).

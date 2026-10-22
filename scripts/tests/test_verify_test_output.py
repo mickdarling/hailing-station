@@ -65,11 +65,12 @@ if os.environ.get("FAKE_SWIFT_SUITE_ONLY"):  # a selection matching only an empt
     event("testStarted", "Fake.Suite")
     event("testEnded", "Fake.Suite")
 elif not os.environ.get("FAKE_SWIFT_EMPTY"):  # a lane whose selection matched nothing starts no test (#704)
-    for index in range(int(os.environ.get("FAKE_SWIFT_EXTRA_SUITES", "0"))):  # a stream as long as a real lane's
-        event("testStarted", f"Fake.Suite{index}")
     event("testStarted", "Fake.Suite")
     event("testStarted", "Fake.Suite/runs()/F.swift:1:1")
     event("testEnded", "Fake.Suite/runs()/F.swift:1:1")
+    # A real lane's first test starts early and thousands of events follow: the shape a `grep | grep -q` misread.
+    for index in range(int(os.environ.get("FAKE_SWIFT_TAIL_EVENTS", "0"))):
+        event("testStarted", f"Fake.Suite{index}")
     event("testEnded", "Fake.Suite")
 failing = os.environ.get("FAKE_SWIFT_FAIL_LANE")
 sys.exit(int(os.environ["FAKE_SWIFT_STATUS"]) if failing in (None, lane) else 0)
@@ -171,10 +172,10 @@ class VerifyTestOutputTests(SuccessfulFixtureCleanup):
         self.assertEqual((self.scratch / "swift-calls").read_text().split(),
                          ["build", "parallel-core", "parallel-rest", "serial"])
 
-    def test_a_long_stream_with_a_late_test_passes(self):
-        # A real lane writes thousands of events. The check must not read an early stop as "nothing started": a
-        # `grep | grep -q` pipeline under pipefail did, failing a 666-test lane.
-        self.env["FAKE_SWIFT_EXTRA_SUITES"] = "50000"
+    def test_an_early_test_in_a_long_stream_passes(self):
+        # A real lane's first test starts early and thousands of events follow. Under pipefail, `grep | grep -q` exits at
+        # that first match, the first grep takes SIGPIPE, and the 666-test lane read as "nothing started".
+        self.env["FAKE_SWIFT_TAIL_EVENTS"] = "50000"
         result = self.run_lane()
         self.assertEqual(result.returncode, 0, result.stderr)
 
