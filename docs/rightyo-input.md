@@ -667,12 +667,12 @@ The card follows the host: tapping end changes nothing until the host's `duck_mo
 
 #### Ending duck mode from the device (#735 H-4)
 
-With ambient listening on, `haild` advertises `end_duck_mode` (`docs/reply-protocol.md`), and the app's duck mode card has an end button. The device's `end_duck_mode` ends duck mode as the spoken exit does: the children are told, the auto-end and its warning are cancelled, and the device is told `duck_mode` off with `reason: "device"`, logged `ambient_duck on=false reason=device …`.
+With ambient listening on, `haild` advertises `end_duck_mode` (`docs/reply-protocol.md`), and the app's duck mode card has an end button. The device's `end_duck_mode` ends duck mode as the spoken exit does: the children are told, the auto-end and its warning are cancelled, and the device is told `duck_mode` off with `reason: "device"`, logged `ambient_duck on=false reason=device …`. `confirm-duck-off/` plays so the room hears it, logged `ambient_duck_confirmed on=false reason=device confirm=…`, as for the spoken exit only when a child took the end.
 
 - **Its own connection only.** The command carries nothing; `haild` uses the sending connection's own id, so one device cannot end another's duck mode.
 - **End only.** It can never start duck mode. Starting stays the owner's spoken entry, owner-only on an enrolled session.
-- **No clip.** The owner acted on the screen, and the card shows the end.
-- **Only while on.** While duck mode is off, it does nothing: nothing is logged, written to the child or sent back.
+- **Only while on, and only once.** While duck mode is off, it does nothing: nothing is logged, written to the child, played or sent back. The end applies only to the arming that was on when it arrived, matched under the lock that changes duck mode, so if the spoken exit, the auto-end or an unsupported child ends duck mode first, the device's end does nothing more.
+- **During lockdown.** It is honoured, like `ambient_input`: lockdown refuses actions on targets, and ending duck mode is the safe direction (nothing is sent anywhere).
 - **Same authority as `ambient_input`.** It is admitted only on a personal-terminal connection with ambient listening, the same rule as `ambient_input` and `overheard_scope`.
 
 #### The auto-end warning (#735 H-4)
@@ -681,7 +681,9 @@ About a minute before the auto-end, `haild` plays a clip from the reserved `conf
 
 - It plays only while that same arming of duck mode is still on and a child of the connection runs.
 - It is armed and cancelled with the auto-end. The spoken exit, entering media mode, a child that cannot take duck mode, or the connection's end before then means no warning. Saying the entry again re-arms both, so the owner hears one warning, a minute before the new end.
-- A timeout of a minute or less (`ambient.duckTimeout` 60) has no warning.
+- A timeout under twice the lead (`ambient.duckTimeout` under 120) has no warning.
+- A warning that comes due with less than half a minute left (the Mac woke near or past the end) is skipped and logged `skipped=late`. The auto-end itself is unaffected.
+- A warning checked just before an exit can still play a few milliseconds after it: the check and the clip's send are not one step.
 
 #### The duck buffer and ask cues (#735 H-3)
 
