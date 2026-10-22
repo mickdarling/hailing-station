@@ -22,6 +22,22 @@ extension TranscriptionLabView {
         [finalText, volatileText].filter { !$0.isEmpty }.joined(separator: " ")
     }
 
+    /// Discards any active recording and sends Escape at once. Compact beside Tap to talk when full screen (#819).
+    @ViewBuilder
+    var escapeControl: some View {
+        if let onEscape {
+            Button(role: .destructive) {
+                startInterrupt(using: onEscape)
+            } label: {
+                Label("Escape", systemImage: "xmark.octagon.fill")
+            }
+            .buttonStyle(.bordered)
+            .controlSize(compactTalk ? .regular : .large)
+            .disabled(isFinalizing || finishTask != nil || interruptTask != nil)
+            .accessibilityHint("Discards any active recording and sends Escape immediately to the target.")
+        }
+    }
+
     var talkButton: some View {
         Button {
             if isRecording {
@@ -30,10 +46,11 @@ extension TranscriptionLabView {
                 startTask = Task { await begin() }
             }
         } label: {
-            VStack(spacing: 8) {
+            let circle: CGFloat = compactTalk ? 52 : 82 // Smaller while the conversation is full screen (#819).
+            VStack(spacing: compactTalk ? 4 : 8) {
                 Image(systemName: isRecording ? "stop.fill" : "mic.fill")
-                    .font(.system(size: 32, weight: .semibold))
-                    .frame(width: 82, height: 82)
+                    .font(.system(size: compactTalk ? 22 : 32, weight: .semibold))
+                    .frame(width: circle, height: circle)
                     .foregroundStyle(.white)
                     .background(isRecording ? Color.red : Color.accentColor, in: Circle())
                     .shadow(

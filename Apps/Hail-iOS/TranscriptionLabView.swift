@@ -55,6 +55,8 @@ struct TranscriptionLabView: View {
     @State var destinationGeneration = UUID()
     @State var replyTimeoutTask: Task<Void, Never>?
     @State var ownsCaptureSuppression = false
+    /// Only what must stay reachable while the conversation is full screen (#819); the station sets it, Labs never.
+    @Environment(\.stationCompactTalk) var compactTalk
     @State var deferredStatusAnnouncement: String?
     @State var deferredReplyAnnouncement: String?
     @State var deferredControlledReplyFailure: String?
@@ -110,9 +112,9 @@ struct TranscriptionLabView: View {
     }
 
     var body: some View {
-        VStack(spacing: 18) {
+        VStack(spacing: compactTalk ? 10 : 18) {
             // The conversation thread shows each request as You (#318), so no separate last-request panel (#429).
-            if let destinationLabel {
+            if !compactTalk, let destinationLabel {
                 Label(destinationLabel, systemImage: "desktopcomputer")
                     .font(.caption.weight(.semibold))
                     .foregroundStyle(.secondary)
@@ -120,28 +122,20 @@ struct TranscriptionLabView: View {
                     .frame(maxWidth: .infinity, alignment: .trailing)
             }
 
-            talkButton
+            if compactTalk {
+                HStack(spacing: 12) { talkButton; escapeControl }
+            } else {
+                talkButton
+            }
 
             // Below the button, so its appearing never moves Tap to talk under a finishing tap.
             liveTranscript
 
-            pasteControl
-
-            if let onEscape {
-                Button(role: .destructive) {
-                    startInterrupt(using: onEscape)
-                } label: {
-                    Label("Escape", systemImage: "xmark.octagon.fill")
-                }
-                .buttonStyle(.bordered)
-                .controlSize(.large)
-                .disabled(isFinalizing || finishTask != nil || interruptTask != nil)
-                .accessibilityHint("Discards any active recording and sends Escape immediately to the target.")
-            }
+            if !compactTalk { pasteControl; escapeControl }
 
             statusRow
         }
-        .padding(18)
+        .padding(compactTalk ? 12 : 18)
         .background(.regularMaterial, in: RoundedRectangle(cornerRadius: 24, style: .continuous))
         .navigationTitle("Conversation")
         .task { await observeResults() }
