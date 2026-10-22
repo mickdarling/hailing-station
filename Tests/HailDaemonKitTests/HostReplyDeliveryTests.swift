@@ -164,9 +164,5 @@ private func selectReplyTarget(_ targetID: String, on socket: URLSessionWebSocke
 }
 
 private func receiveReplyTestFrame(on socket: URLSessionWebSocketTask) async throws -> Frame {
-    switch try await socket.receive() {
-    case .data(let data): try FrameCoding.decode(data)
-    case .string(let string): try FrameCoding.decode(Data(string.utf8))
-    @unknown default: throw TestSupportError.expectedOneControl
-    }
+    try await recipientSocketReceive(on: socket, step: "reply test frame")
 }
