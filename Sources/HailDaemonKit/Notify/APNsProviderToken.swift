@@ -43,42 +43,51 @@ struct APNsProviderToken: Sendable {
     }
 }
 
+/// A moment as both clocks see it: wall time for the token's `iat`, which APNs compares with its own clock, and
+/// monotonic time for the token's age, which no host clock change can move.
+struct APNsMoment: Sendable {
+    let wall: Date
+    let elapsed: ContinuousClock.Instant
+
+    static var now: APNsMoment { APNsMoment(wall: Date(), elapsed: .now) }
+}
+
 /// The token in use and when it was issued (#609). Apple accepts a token up to an hour old and refuses refreshes more
 /// often than every 20 minutes (`429 TooManyProviderTokenUpdates`), so one is reused until 50 minutes old, and a `403`
-/// may force a new one only once the current one is at least 20 minutes old. A host clock stepped back keeps the
-/// cached token rather than minting new ones, and a failed signing is never cached.
+/// may force a new one only once the current one is at least 20 minutes old. Age is measured on the monotonic clock,
+/// so a host clock stepped forward or back never mints tokens early; a failed signing is never cached.
 final class APNsTokenCache: Sendable {
-    static let minimumAge: TimeInterval = 20 * 60
-    static let refreshAge: TimeInterval = 50 * 60
+    static let minimumAge: Duration = .seconds(20 * 60)
+    static let refreshAge: Duration = .seconds(50 * 60)
 
     private let signer: APNsProviderToken
-    private let current = Mutex<(token: String, issued: Date)?>(nil)
+    private let current = Mutex<(token: String, issued: ContinuousClock.Instant)?>(nil)
 
     init(signer: APNsProviderToken) { self.signer = signer }
 
-    /// The token to send now: the cached one while under 50 minutes old (or the clock has stepped back), else a fresh
-    /// one. Nil only if signing failed.
-    func token(now: Date) -> String? {
+    /// The token to send now: the cached one while under 50 minutes old, else a fresh one. Nil only if signing failed.
+    func token(at moment: APNsMoment) -> String? {
         current.withLock { cached in
-            if let cached, now.timeIntervalSince(cached.issued) < Self.refreshAge { return cached.token }
-            return Self.issue(signer, now: now, into: &cached)
+            if let cached, moment.elapsed - cached.issued < Self.refreshAge { return cached.token }
+            return Self.issue(signer, at: moment, into: &cached)
         }
     }
 
     /// After APNs refused the provider token: a fresh one if the current one is at least 20 minutes old, else nil, so
     /// the refusal is reported rather than retried into Apple's refresh limit.
-    func refreshAfterRefusal(now: Date) -> String? {
+    func refreshAfterRefusal(at moment: APNsMoment) -> String? {
         current.withLock { cached in
-            if let cached, (0..<Self.minimumAge).contains(now.timeIntervalSince(cached.issued)) { return nil }
-            return Self.issue(signer, now: now, into: &cached)
+            if let cached, moment.elapsed - cached.issued < Self.minimumAge { return nil }
+            return Self.issue(signer, at: moment, into: &cached)
         }
     }
 
     private static func issue(
-        _ signer: APNsProviderToken, now: Date, into cached: inout (token: String, issued: Date)?
+        _ signer: APNsProviderToken, at moment: APNsMoment,
+        into cached: inout (token: String, issued: ContinuousClock.Instant)?
     ) -> String? {
-        guard let token = signer.token(issuedAt: now) else { return nil }
-        cached = (token, now)
+        guard let token = signer.token(issuedAt: moment.wall) else { return nil }
+        cached = (token, moment.elapsed)
         return token
     }
 }

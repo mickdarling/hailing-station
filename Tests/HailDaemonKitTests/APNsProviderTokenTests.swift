@@ -51,37 +51,49 @@ import Testing
         }
     }
 
+    /// A moment `minutes` after `base` on both clocks, or with the wall clock moved by `wallShift` minutes more.
+    private static func moment(
+        _ minutes: Int, after base: APNsMoment, wallShift: Int = 0
+    ) -> APNsMoment {
+        APNsMoment(wall: base.wall.addingTimeInterval(Double((minutes + wallShift) * 60)),
+                   elapsed: base.elapsed + .seconds(minutes * 60))
+    }
+
+    private static let start = APNsMoment(wall: Date(timeIntervalSince1970: 1_800_000_000), elapsed: .now)
+
     @Test func theTokenIsReusedUntilFiftyMinutesOld() throws {
         let cache = APNsTokenCache(signer: try Self.signer().0)
-        let start = Date(timeIntervalSince1970: 1_800_000_000)
-        let first = cache.token(now: start)
-        #expect(cache.token(now: start.addingTimeInterval(49 * 60)) == first)
-        let fresh = cache.token(now: start.addingTimeInterval(50 * 60))
+        let first = cache.token(at: Self.start)
+        #expect(cache.token(at: Self.moment(49, after: Self.start)) == first)
+        let fresh = cache.token(at: Self.moment(50, after: Self.start))
         #expect(fresh != first)
-        #expect(cache.token(now: start.addingTimeInterval(51 * 60)) == fresh)
+        #expect(cache.token(at: Self.moment(51, after: Self.start)) == fresh)
     }
 
     @Test func aRefusalRefreshesOnlyOnceTwentyMinutesHavePassed() throws {
         let cache = APNsTokenCache(signer: try Self.signer().0)
-        let start = Date(timeIntervalSince1970: 1_800_000_000)
-        let first = cache.token(now: start)
-        #expect(cache.refreshAfterRefusal(now: start.addingTimeInterval(19 * 60)) == nil)
-        #expect(cache.token(now: start.addingTimeInterval(19 * 60)) == first)
-        let fresh = try #require(cache.refreshAfterRefusal(now: start.addingTimeInterval(20 * 60)))
+        let first = cache.token(at: Self.start)
+        #expect(cache.refreshAfterRefusal(at: Self.moment(19, after: Self.start)) == nil)
+        #expect(cache.token(at: Self.moment(19, after: Self.start)) == first)
+        let fresh = try #require(cache.refreshAfterRefusal(at: Self.moment(20, after: Self.start)))
         #expect(fresh != first)
-        #expect(cache.refreshAfterRefusal(now: start.addingTimeInterval(21 * 60)) == nil)
+        #expect(cache.refreshAfterRefusal(at: Self.moment(21, after: Self.start)) == nil)
     }
 
-    /// A host clock stepped back keeps the cached token rather than minting one per step into Apple's refresh limit;
-    /// a refusal then may refresh, since the cached token's age is unknown.
-    @Test func aClockSteppedBackKeepsTheTokenUntilRefused() throws {
-        let cache = APNsTokenCache(signer: try Self.signer().0)
-        let start = Date(timeIntervalSince1970: 1_800_000_000)
-        let first = try #require(cache.token(now: start))
-        #expect(cache.token(now: start.addingTimeInterval(-60)) == first)
-        #expect(cache.token(now: start.addingTimeInterval(-3600)) == first)
-        let fresh = try #require(cache.refreshAfterRefusal(now: start.addingTimeInterval(-60)))
-        #expect(fresh != first)
+    /// Age is monotonic: a host wall clock jumped forward or back by an hour neither mints a token early nor lets a
+    /// refusal refresh inside Apple's 20-minute limit. The new token still carries the wall time it was issued at.
+    @Test func aWallClockJumpNeverChangesTheTokenAge() throws {
+        let (signer, _) = try Self.signer()
+        let cache = APNsTokenCache(signer: signer)
+        let first = try #require(cache.token(at: Self.start))
+        for shift in [60, -60] {
+            #expect(cache.token(at: Self.moment(5, after: Self.start, wallShift: shift)) == first)
+            #expect(cache.refreshAfterRefusal(at: Self.moment(5, after: Self.start, wallShift: shift)) == nil)
+        }
+        let later = Self.moment(50, after: Self.start, wallShift: 60)
+        let fresh = try #require(cache.token(at: later))
+        let claims = try JSONSerialization.jsonObject(with: Self.decode(fresh.split(separator: ".")[1]))
+        #expect((claims as? [String: Any])?["iat"] as? Int == Int(later.wall.timeIntervalSince1970))
     }
 }
 #endif
