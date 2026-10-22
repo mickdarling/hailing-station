@@ -42,15 +42,18 @@ print("fixture stdout")
 print("fixture stderr", file=sys.stderr)
 print("x" * 65536)
 
-def event(kind, test):
-    record = {"kind": "event", "version": 0, "payload": {"kind": kind, "testID": test}}
+def record(kind, test):
+    value = {"kind": "event", "version": 0, "payload": {"kind": kind, "testID": test}}
     # The real runner writes compact JSON; FAKE_SWIFT_COMPACT checks the guard reads that layout too.
     separators = (",", ":") if os.environ.get("FAKE_SWIFT_COMPACT") else None
-    line = json.dumps(record, separators=separators)
+    line = json.dumps(value, separators=separators)
     if os.environ.get("FAKE_SWIFT_ESCAPED_SLASHES"):  # the real runner writes `/` in a testID as `\/`
         line = line.replace("/", "\\/")
+    return line + "\n"
+
+def event(kind, test):
     with open(events, "a") as stream:  # Swift Testing writes each event as it happens.
-        stream.write(line + "\n")
+        stream.write(record(kind, test))
 
 if os.environ.get("FAKE_SWIFT_HANG"):
     event("testStarted", "Fake.Suite")
@@ -63,6 +66,12 @@ if os.environ.get("FAKE_SWIFT_HANG"):
                               "import signal, time; signal.signal(signal.SIGTERM, signal.SIG_IGN); time.sleep(600)"])
     with open(os.environ["FAKE_SWIFT_CHILD"], "w") as pid:
         pid.write(str(child.pid))
+    # More descendants than the stall sampler's cap, which must still sample this process first.
+    sleepers = [subprocess.Popen([sys.executable, "-c", "import time; time.sleep(600)"])
+                for _ in range(int(os.environ.get("FAKE_SWIFT_CHILDREN", "0")))]
+    if os.environ.get("FAKE_SWIFT_SELF"):
+        with open(os.environ["FAKE_SWIFT_SELF"], "w") as pid:
+            pid.write(str(os.getpid()))
     time.sleep(600)
 if os.environ.get("FAKE_SWIFT_ONLY_ID"):  # one started ID, to pin what the guard counts as a test case
     event("testStarted", os.environ["FAKE_SWIFT_ONLY_ID"])
@@ -74,8 +83,10 @@ elif not os.environ.get("FAKE_SWIFT_EMPTY"):  # a lane whose selection matched n
     event("testStarted", "Fake.Suite/runs()/F.swift:1:1")
     event("testEnded", "Fake.Suite/runs()/F.swift:1:1")
     # A real lane's first test starts early and thousands of events follow: the shape a `grep | grep -q` misread.
-    for index in range(int(os.environ.get("FAKE_SWIFT_TAIL_EVENTS", "0"))):
-        event("testStarted", f"Fake.Suite{index}")
+    # Written in one go: a file opened once per event made 50,000 of them outlast a slow runner's budget.
+    with open(events, "a") as stream:
+        stream.write("".join(record("testStarted", f"Fake.Suite{index}")
+                             for index in range(int(os.environ.get("FAKE_SWIFT_TAIL_EVENTS", "0")))))
     event("testEnded", "Fake.Suite")
 failing = os.environ.get("FAKE_SWIFT_FAIL_LANE")
 sys.exit(int(os.environ["FAKE_SWIFT_STATUS"]) if failing in (None, lane) else 0)
@@ -89,6 +100,14 @@ import os, sys
 pid = sys.argv[1]
 with open(os.environ["FAKE_SAMPLES"], "a") as samples:
     samples.write(" ".join(sys.argv[1:]) + "\n")
+if os.environ.get("FAKE_SAMPLER_HANG"):  # a sampler that never returns must be killed, not waited on
+    with open(os.environ["FAKE_SAMPLER_PIDS"], "a") as pids:
+        pids.write(f"{os.getpid()}\n")
+    import time
+    time.sleep(600)
+if os.environ.get("FAKE_SAMPLER_FAIL"):
+    print("sample[1]: cannot examine process: insufficient privilege", file=sys.stderr)
+    sys.exit(1)
 try:
     os.kill(int(pid), 0)
     state = "alive"
@@ -303,6 +322,41 @@ class VerifyTestOutputTests(SuccessfulFixtureCleanup):
         while time.monotonic() < deadline and alive(child):
             time.sleep(0.1)
         self.assertFalse(alive(child), "the stalled lane's descendants must be stopped")
+
+    def stalled_lane(self, **env):
+        self.env.update(FAKE_SWIFT_HANG="1", HAIL_TEST_STALL_SECONDS="2",
+                        FAKE_SWIFT_CHILD=str(self.scratch / "child-pid"), **env)
+        return self.run_lane()
+
+    def test_the_sampler_reaches_the_runner_before_its_spawned_children(self):
+        # Shallowest first: with more descendants than the cap, the lane's own process is still sampled.
+        result = self.stalled_lane(FAKE_SWIFT_CHILDREN="9", FAKE_SWIFT_SELF=str(self.scratch / "self-pid"))
+        self.assertEqual(result.returncode, 124, result.stderr)
+        sampled = [line.split()[0] for line in (self.scratch / "samples").read_text().splitlines()]
+        self.assertEqual(len(sampled), 8, sampled)
+        self.assertEqual(sampled[0], (self.scratch / "self-pid").read_text())
+        # The lane, its TERM-ignoring child and nine sleepers: three are left out, and the output says so.
+        self.assertIn("3 more processes not sampled", result.stderr)
+
+    def test_a_sampler_that_never_returns_is_killed_and_the_lane_still_stops(self):
+        result = self.stalled_lane(FAKE_SAMPLER_HANG="1", HAIL_STALL_SAMPLE_SECONDS="1",
+                                   FAKE_SAMPLER_PIDS=str(self.scratch / "sampler-pids"))
+        self.assertEqual(result.returncode, 124, result.stderr)
+        self.assertIn("  Fake.Suite/hangsForever()/F.swift:2:1\n", result.stderr)
+        self.assertIn("sampler still running after 1 s; stopped", result.stderr)
+        for pid in (self.scratch / "sampler-pids").read_text().split():
+            self.assertFalse(alive(int(pid)), "a timed-out sampler must not be left running")
+
+    def test_a_failing_sampler_says_why_under_its_header(self):
+        result = self.stalled_lane(FAKE_SAMPLER_FAIL="1")
+        self.assertEqual(result.returncode, 124, result.stderr)
+        self.assertIn("cannot examine process: insufficient privilege", result.stderr)
+
+    def test_a_sample_time_limit_that_is_not_a_positive_integer_is_refused(self):
+        self.env["HAIL_STALL_SAMPLE_SECONDS"] = "0"
+        result = self.run_lane()
+        self.assertEqual(result.returncode, 2)
+        self.assertIn("HAIL_STALL_SAMPLE_SECONDS must be a positive integer", result.stderr)
 
     def test_interrupting_verify_stops_the_running_lane(self):
         self.env.update(FAKE_SWIFT_HANG="1", HAIL_TEST_STALL_SECONDS="300",
