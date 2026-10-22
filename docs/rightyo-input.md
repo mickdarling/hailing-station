@@ -719,7 +719,7 @@ RightyO does not advertise v2 for a coaching listener, a tool replay, or a sessi
 Then no stream runs and nothing records:
 
 - privacy stays on: no `setDuck(false)`, no off notice, no "Recording again.";
-- `confirm-privacy-unavailable/` ("I can't listen privately right now.") plays at most once per connection, logged `ambient_duck_confirmed unavailable confirm=<token>`; later refusals log `unavailable repeat`.
+- `confirm-privacy-unavailable/` ("I can't listen privately right now.") plays for every refusal (#822: no silent state change), logged `ambient_duck_confirmed unavailable confirm=<token>`. A child a reload already retired (its stream lives on in the new child) is refused in silence, logged `unavailable retired`.
 
 The option's name follows rightyo#242 round 2. Until RightyO accepts it, a RightyO that rejects the unknown option exits, and one that ignores it does not confirm and is killed: either way the stream fails closed.
 
@@ -778,7 +778,7 @@ These reserved folders play nothing until Mick records them:
 | --- | --- | --- |
 | `confirm-privacy-on/` | "Privacy on. I'm only listening for my name." | entry, and re-entry while on (so worded as a status) |
 | `confirm-privacy-off/` | "Recording again." | RightyO's exit |
-| `confirm-privacy-unavailable/` | "I can't listen privately right now." | a child that cannot keep privacy was refused (once per connection) |
+| `confirm-privacy-unavailable/` | "I can't listen privately right now." | a child that cannot keep privacy was refused (every time; not for a child a reload already retired) |
 | `confirm-privacy-status/` | "Privacy on. I'm only listening for my name." | RightyO's status event while private |
 | `confirm-still-recording/` | "Still recording." | a negated entry |
 | `confirm-not-sent/` | "Nothing was sent." | an entry no child could take |

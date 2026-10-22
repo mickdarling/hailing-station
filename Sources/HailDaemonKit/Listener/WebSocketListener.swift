@@ -560,8 +560,6 @@ public final class AmbientRightyoRouter: AmbientAudioSink, AmbientListenerWiring
         var media: [UUID: AmbientMediaTimer] = [:]
         /// Connections whose owner turned duck mode on (#735), kept like `media`. A connection is never in both.
         var duck: [UUID: AmbientDuckTimer] = [:]
-        /// Connections already told privacy is unavailable (#735): at most once each, dropped when the connection ends.
-        var unavailableSaid: Set<UUID> = []
         /// The reply whose final text, the latest this host delivered, ended with a question (rightyo#199); nil
         /// otherwise, and cleared by audio of any other reply (a text-less acknowledgement clip). The phone plays
         /// replies in order and reports one end when its queue drains, so that reply is the one just heard.
@@ -658,7 +656,6 @@ public final class AmbientRightyoRouter: AmbientAudioSink, AmbientListenerWiring
             state.media.removeValue(forKey: connection)?.timer.cancel()
             state.duck.removeValue(forKey: connection)?.timer?.cancel()
             state.listener?.value?.replyHold.set(false, connection: connection)
-            state.unavailableSaid.remove(connection)
             if let active = state.active, state.runs[active.run]?.connection == connection { state.active = nil }
             return state.runs.filter { $0.value.connection == connection }.map(\.key)
         }
@@ -975,7 +972,10 @@ extension AmbientRightyoRouter {
         (settings.onHeard, settings.onOverheard) = transcriptRelays(on: connection, listener: listener)
         settings.onVoiceMute = voiceMuted(on: connection, listener: listener)
         settings.onVoiceMedia = voiceMedia(on: connection, listener: listener)
-        (settings.onVoiceDuck, settings.onDuckUnsupported) = (voiceDuck(on: connection, listener: listener),
+        // The child this pipeline runs, marked once it exists, so a refusal can tell whether a reload retired it.
+        let mark = AmbientRunMark()
+        (settings.onVoiceDuck, settings.onDuckUnsupported) = (voiceDuck(on: connection, listener: listener,
+                                                                        retired: retired(mark)),
                                                               duckUnsupported(on: connection))
         // Privacy on (#735 S-2b): the child is launched already private, on a spawn, a respawn or a reload alike.
         settings.startPrivate = state.withLock { $0.duck[connection] != nil }
@@ -993,11 +993,13 @@ extension AmbientRightyoRouter {
             }
             settings.onVoiceRouteRefused = voiceRouteRefused(on: connection, listener: listener)
         }
-        return try RightyoAmbientPipeline(configuration: settings,
-                                          dispatcher: AmbientListenerDispatcher(
-                                              listener: listener, audit: configuration.audit,
-                                              selection: selection, streamTarget: configuration.target
-                                          ))
+        let pipeline = try RightyoAmbientPipeline(configuration: settings,
+                                                  dispatcher: AmbientListenerDispatcher(
+                                                      listener: listener, audit: configuration.audit,
+                                                      selection: selection, streamTarget: configuration.target
+                                                  ))
+        mark.set(pipeline)
+        return pipeline
     }
 
     /// Registers a run for `pipeline` under the caller's lock and returns its id. The task is created under the lock,
@@ -1580,20 +1582,22 @@ extension AmbientRightyoRouter {
         }
     }
 
-    /// Whether `unavailable` may still be said on `connection`: true once per connection, per router.
-    func firstUnavailable(on connection: UUID) -> Bool {
-        state.withLock { $0.unavailableSaid.insert(connection).inserted }
+    /// Whether the run of the pipeline `mark` names was swapped out by a reload or retired (#822 A): its stream lives
+    /// on, or ended for another reason, so its refusal says nothing.
+    func retired(_ mark: AmbientRunMark) -> @Sendable () -> Bool {
+        { [weak self] in
+            guard let self, let pipeline = mark.pipeline else { return false }
+            return state.withLock { state in
+                state.runs.values.contains { $0.pipeline === pipeline && ($0.replaced || $0.retiredAt != nil) }
+            }
+        }
     }
 
     /// A start refused while private (#735 S-2b: the child could not even launch): nothing listens and privacy stays
-    /// on. The owner hears `confirm-privacy-unavailable/` at most once per connection (`firstUnavailable`, shared with
-    /// a refused child's `unavailable`), logged as `voiceDuck` logs it. Tokens only.
+    /// on. The owner hears `confirm-privacy-unavailable/` every time (#822 A: no silent change), logged as `voiceDuck`
+    /// logs it. Tokens only.
     func privacyUnavailable(on connection: UUID) {
         let listener = state.withLock { $0.listener?.value }
-        guard firstUnavailable(on: connection) else {
-            emit("ambient_duck_confirmed", connection: connection, detail: "unavailable repeat confirm=unreported")
-            return
-        }
         Task { [weak self, weak listener] in
             let confirm = await self?.confirmVoiceMute(AmbientStopConfirmation.privacyUnavailable, on: connection,
                                                        listener: listener) ?? "none"
@@ -1606,6 +1610,15 @@ extension AmbientRightyoRouter {
 /// whether an entry no child took found duck mode already on.
 private struct DuckChange {
     let duck: Int, media: Int?, still: Bool
+}
+
+/// The pipeline a router closure belongs to, set once the pipeline exists (#822 A); weak, so it never keeps one alive.
+final class AmbientRunMark: Sendable {
+    private struct Weak { weak var value: RightyoAmbientPipeline? }
+    private let held = Mutex(Weak())
+
+    func set(_ pipeline: RightyoAmbientPipeline) { held.withLock { $0.value = pipeline } }
+    var pipeline: RightyoAmbientPipeline? { held.withLock { $0.value } }
 }
 
 /// Runs the work given to it one piece at a time, in the order given (#404): each piece starts only once the one

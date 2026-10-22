@@ -106,10 +106,10 @@ import Testing
         #expect(rig.details("ambient_duck").isEmpty)
     }
 
-    /// Round 4: a child that cannot keep privacy is refused and "I can't listen privately right now." plays at most
-    /// once per connection: a second refused child on the same connection is logged as a repeat, in silence. With
+    /// Round 4, then #822 A (Mick: no silent state change): a child that cannot keep privacy is refused and "I can't
+    /// listen privately right now." plays every time, a second refused child on the same connection included. With
     /// S-2b both children were launched start-private and did not confirm it.
-    @Test func theUnavailableClipPlaysOncePerConnection() async throws {
+    @Test func theUnavailableClipPlaysForEveryRefusal() async throws {
         let later = AmbientDuckReloadTests.silent(advertises: true, version: 1)
         let clips = AmbientAckLibrary(clips: ["confirmprivacyon": [AmbientDuckModeTests.clip("Privacy on.", 9)],
                                           "confirmprivacyunavailable": [AmbientDuckModeTests.clip("I can't.", 2)]])
@@ -125,9 +125,9 @@ import Testing
         #expect(await eventually { rig.details("ambient_duck_confirmed").count == 3 })
         #expect(rig.env.router.duckMode(connection: connection))
         await rig.finish()
-        #expect(Array(rig.details("ambient_duck_confirmed").dropFirst()) == [
-            "unavailable confirm=confirmprivacyunavailable/0:sent", "unavailable repeat confirm=unreported"
-        ])
+        #expect(Array(rig.details("ambient_duck_confirmed").dropFirst()) == Array(
+            repeating: "unavailable confirm=confirmprivacyunavailable/0:sent", count: 2
+        ))
         #expect(rig.details("ambient_privacy_start") == Array(repeating: "outcome=refused reason=unconfirmed",
                                                               count: 2))
     }

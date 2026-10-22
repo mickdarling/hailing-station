@@ -39,12 +39,16 @@ extension AmbientRightyoRouter {
     /// - `hint`: the owner's turn that starts with a command and goes on: held back, nothing changes, and
     ///   `confirm-privacy-hint/` ("To go private, say 'stop recording' on its own.") says how, logged `hint`.
     /// - `unavailable`: a child that cannot keep privacy was refused (`duckUnsupported`); privacy stays on, and
-    ///   `confirm-privacy-unavailable/` ("I can't listen privately right now.") says so at most once per connection.
+    ///   `confirm-privacy-unavailable/` ("I can't listen privately right now.") says so every time (#822 A), except for
+    ///   a child a reload already retired (`retired`), whose stream lives on in its successor: logged, in silence.
     /// Nothing reaches the agent. Logs tokens only.
-    func voiceDuck(on connection: UUID, listener: WebSocketListener) -> @Sendable (PrivacyCommand) -> Void {
+    func voiceDuck(on connection: UUID, listener: WebSocketListener,
+                   retired: @escaping @Sendable () -> Bool = { false }) -> @Sendable (PrivacyCommand) -> Void {
         let chain = SerialTaskChain()
         return { [weak self, weak listener] command in
             var (reported, on) = (0, false)
+            // Read now, while the refused child's run is still live: once it ends, a router retires it too.
+            let silent = command == .unavailable && retired()
             if let self {
                 if command == .exit, !duckMode(connection: connection) {
                     emit("ambient_privacy", connection: connection, detail: "exit=ignored state=off")
@@ -55,11 +59,9 @@ extension AmbientRightyoRouter {
                 }
                 on = duckMode(connection: connection)
             }
-            chain.enqueue { [weak self, weak listener, reported, on] in
+            chain.enqueue { [weak self, weak listener, reported, on, silent] in
                 var (persona, outcome) = Self.duckConfirmation(command, reported: reported, on: on)
-                if command == .unavailable, self?.firstUnavailable(on: connection) == false {
-                    (persona, outcome) = (nil, "unavailable repeat")
-                }
+                if silent { (persona, outcome) = (nil, "unavailable retired") }
                 // Privacy taken (or still on) silences a reply playing on this connection first (Mick, round 2),
                 // through the owner's stop path; a refused entry leaves playback alone.
                 if command == .enter, on {
