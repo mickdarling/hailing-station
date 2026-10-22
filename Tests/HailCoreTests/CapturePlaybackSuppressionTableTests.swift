@@ -41,6 +41,20 @@ import Testing
         #expect(!playback.isCaptureSuppressed)
     }
 
+    /// A heal's count goes back to the scene that asked, which logs it; nothing is stored globally (#763 review).
+    @Test func eachCallReturnsTheHoldsItsHealDropped() {
+        let playback = ReplyPlaybackController(player: TablePlayer())
+        let live = UUID()
+        CapturePlaybackSuppression.liveness[live] = { true }
+        CapturePlaybackSuppression.begin(live, using: playback)
+        CapturePlaybackSuppression.begin(UUID(), using: playback) // Dead.
+        CapturePlaybackSuppression.begin(UUID(), using: playback) // Dead.
+        #expect(CapturePlaybackSuppression.reconcile(using: playback) == 2)
+        #expect(CapturePlaybackSuppression.releaseCompleted(using: playback) == 0)
+        #expect(CapturePlaybackSuppression.end(live, using: playback, resuming: true) == 0)
+        #expect(CapturePlaybackSuppression.reconcile(using: playback) == 0)
+    }
+
     @Test func sceneActivationWithNoHoldCreatesNoLedger() {
         let playback = ReplyPlaybackController(player: TablePlayer())
         CapturePlaybackSuppression.releaseCompleted(using: playback)

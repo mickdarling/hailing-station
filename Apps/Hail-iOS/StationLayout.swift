@@ -39,17 +39,14 @@ extension RootView {
         .safeAreaInset(edge: .bottom, spacing: 0) {
             StationBuildFooter()
         }
-        .onAppear {
-            CapturePlaybackSuppression.onHeal = { captureHoldsHealed($0) }
-            CapturePlaybackSuppression.releaseCompleted(using: playback)
-        }
+        .onAppear { healed(CapturePlaybackSuppression.releaseCompleted(using: playback)) }
         .onChange(of: scenePhase) { _, phase in
-            if phase == .active { CapturePlaybackSuppression.releaseCompleted(using: playback) }
+            if phase == .active { healed(CapturePlaybackSuppression.releaseCompleted(using: playback)) }
         }
         // A reply arriving also drops any capture hold left with no live capture, so it never queues silently (#760).
         .onChange(of: playback.latest?.id) { _, _ in
             guard scenePhase == .active || connections.ambientStreaming else { return }
-            CapturePlaybackSuppression.reconcile(using: playback)
+            healed(CapturePlaybackSuppression.reconcile(using: playback))
         }
     }
 

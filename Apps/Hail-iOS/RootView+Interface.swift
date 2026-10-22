@@ -20,7 +20,7 @@ extension RootView {
                 onCaptureWillBegin: { tapToTalk(started: true); CapturePlaybackSuppression.begin($0, using: playback) },
                 onCaptureDidEnd: {
                     tapToTalk(started: false)
-                    CapturePlaybackSuppression.end($0, using: playback, resuming: $1)
+                    healed(CapturePlaybackSuppression.end($0, using: playback, resuming: $1))
                 },
                 onCaptureTeardownCompleted: {
                     CapturePlaybackSuppression.markCleanupComplete($0, using: playback)
