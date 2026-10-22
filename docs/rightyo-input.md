@@ -706,14 +706,22 @@ Either way the turn is held back from the agent and changes nothing, media mode 
 
 RightyO does not advertise v2 for a coaching listener, a tool replay, or a session that uses a hosted transcriber or diarizer, since the private audio would still leave the host. These are refused the same way; the host cannot tell which applies.
 
-A child that cannot keep privacy never ends it. Only the owner's voice exit does (Mick, round 4). If a child starts while the host is private without advertising v2 (an older RightyO after a reload, or a new stream):
+**Children start private (S-2b).** While privacy is on, every RightyO child `haild` launches for that connection (a new stream, a respawn or a reload) gets RightyO's start-private option, `--start-private`, so it is private before it reads any audio. Until its `started` arrives, its words reach no relay and every request is held. Its `started` must confirm it as `"duck": {"version": 2, "private": true}` (version 2 or later; `private` the boolean `true`, nothing else), within 10 seconds of launch. This is in-session only: privacy lives in memory, never outlives its connection or a haild restart, and a fresh stream after either starts public.
+
+**No private audio before the proof (round 3).** While privacy is wished for, a child hears no audio until it has shown it keeps privacy: a start-private child's `started` confirming `private`, or a v2 child having taken `{"duck":true}`. Until then each audio segment is dropped, not written to the child, and not replaced with silence. Nothing is transcribed while private anyway, so the child needs no timing continuity, and dropping means not even silence reaches a child that might send audio off the machine (a hosted transcriber or diarizer). This covers the entry race (privacy entered while a public child is still starting) as well as a respawn. Audio flows again once privacy is confirmed, or at once if privacy ends first. A child that sends no `started` within 10 s while privacy is wished for is killed, having heard nothing.
+
+**A child that cannot keep privacy never ends it.** Only the owner's voice exit does (Mick, round 4), and later the app's switch (S-6). The child is refused instead. That covers:
+
+- a start-private child whose `started` says anything else (no `duck`, a v1, a v2 without `private: true`), or that sends no `started` within the deadline: killed at once (SIGTERM then SIGKILL, no grace), its run ends with `privacy unconfirmedStart`, logged `ambient_privacy_start outcome=refused reason=unconfirmed`;
+- a child launched while privacy was off, for which privacy came on before its `started` (an entry while a child is between spawn and `started` is taken by that child), that did not advertise v2: killed the same way, its run ends with `privacy unsupportedChild`, logged `ambient_privacy child=unsupported_version kept=true`. One that did advertise v2 is written `{"duck":true}` at `started`;
+- a start that fails outright while private (the child cannot be launched).
+
+Then no stream runs and nothing records:
 
 - privacy stays on: no `setDuck(false)`, no off notice, no "Recording again.";
-- the child is refused: its run ends, so nothing records;
-- `ambient_privacy child=unsupported_version kept=true` is logged;
-- `confirm-privacy-unavailable/` ("I can't listen privately right now.") plays, at most once per connection.
+- `confirm-privacy-unavailable/` ("I can't listen privately right now.") plays at most once per connection, logged `ambient_duck_confirmed unavailable confirm=<token>`; later refusals log `unavailable repeat`.
 
-An entry while a child is between spawn and `started` is taken by that child. It is written `{"duck":true}` when it starts with v2, or refused then in the same way.
+The option's name follows rightyo#242 round 2. Until RightyO accepts it, a RightyO that rejects the unknown option exits, and one that ignores it does not confirm and is killed: either way the stream fails closed.
 
 #### While private
 
@@ -726,13 +734,13 @@ Only RightyO's content-free events act. Both are admitted only on a session that
   - An exit while privacy is off (a stale one released after the off, or a duplicate) is ignored: no `setDuck`, no device notice and no clip. It is logged as `ambient_privacy exit=ignored state=off`.
 - **Status.** `{"type": "privacy", "action": "status"}`, for "what mode am I in", "are you recording" or "are you listening", from any speaker. It plays `confirm-privacy-status/` while private, and nothing otherwise (S-3 answers every mode).
 
-"Stop" does nothing while private, and RightyO sends no `dismiss` then. A `dismiss` that cites no admitted transcript ends the stream, as it always has. The decoder ignores keys it does not know. A `privacy` event carrying any content field the decoder knows (`turn`, `utterance_id`, `reason`, …), another `action`, or arriving on a session without v2, ends the stream. Only RightyO's `exit` (and, until it is removed, the auto-end below) or the connection's end leaves privacy. No stop-like phrase does, even one that slips through.
+"Stop" does nothing while private, and RightyO sends no `dismiss` then. A `dismiss` that cites no admitted transcript ends the stream, as it always has. The decoder ignores keys it does not know. A `privacy` event carrying any content field the decoder knows (`turn`, `utterance_id`, `reason`, …), another `action`, or arriving on a session without v2, ends the stream. Only RightyO's `exit` or the connection's end leaves privacy (later also the app's switch, S-6). No stop-like phrase does, even one that slips through.
 
 #### Playback, lifetime and media mode
 
 When privacy is taken, a reply playing on the connection is stopped first, through the owner's stop path (`stop_playback` to a device that takes it; `playback=` in the log). Only then does the clip play. "Still on" (an entry while already private) silences in the same way, since nothing should be playing while private. A refused entry leaves playback alone. Replies the agent sends later, while private, are not yet dropped; that is a follow-up (S-2c).
 
-Privacy ends on RightyO's exit, after `ambient.duckTimeout` in `host.json` (whole seconds, 60 to 14400; an hour by default, `--ambient-duck-timeout`), or when the connection ends. Mick has decided the only way out should be the owner's voice exit (and later the app switch, S-6). Removing the auto-end touches `WebSocketListener.swift`, `ConnectionProbeDaemon.swift` and `scripts/host.sh`, beyond this change's four files, so it follows separately. An entry while already private answers "still on" with `confirm-privacy-on/` and re-arms the timeout. Entering privacy leaves media mode, and entering media mode leaves privacy. A device that advertised `duck_mode` is told each change (`ambient_duck_device`), and sees "on" only once a child took it.
+Privacy ends only on the owner's exit (RightyO's `exit`; later the app's switch, S-6), or when the connection ends, since privacy lives in memory for its connection only. **There is no auto-end** (Mick, round 2): no timer runs and the device notice carries no expiry. `ambient.duckTimeout` in `host.json` and `--ambient-duck-timeout` are still accepted but no longer apply to privacy; they are reserved for a future session-mode auto-stop. An entry while already private answers "still on" with `confirm-privacy-on/`. Entering privacy leaves media mode, but **media mode never ends privacy**: while private, a media-mode entry from any source is refused (`ambient_media on=true … refused=private`), nothing changes or reaches the child, and the spoken one hears `confirm-privacy-status/`. A device that advertised `duck_mode` is told each change (`ambient_duck_device`), and sees "on" only once a child took it.
 
 #### Clips
 

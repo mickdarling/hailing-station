@@ -23,7 +23,7 @@ import Testing
 
     @Test func aChildThatAdvertisedDuckIsWrittenEveryChange() {
         let (control, written) = (AmbientDuckControl(), Written())
-        #expect(!control.observe(started: Data(Self.advertised.utf8), write: written.write))
+        #expect(control.observe(started: Data(Self.advertised.utf8), write: written.write) == .kept)
         #expect(control.report(true, write: written.write) && control.active)
         #expect(control.report(false, write: written.write) && !control.active)
         #expect(written.all == [true, false])
@@ -31,7 +31,7 @@ import Testing
 
     @Test func anOlderChildIsNeverWrittenAndNeverTookIt() {
         let (control, written) = (AmbientDuckControl(), Written())
-        #expect(!control.observe(started: Data(Self.started.utf8), write: written.write))
+        #expect(control.observe(started: Data(Self.started.utf8), write: written.write) == .kept)
         #expect(!control.report(true, write: written.write) && !control.report(false, write: written.write))
         #expect(written.all.isEmpty)
     }
@@ -42,21 +42,21 @@ import Testing
         let (control, written) = (AmbientDuckControl(), Written())
         // A child not yet started takes the wish: it is written at `started`, or the child is refused then.
         #expect(control.report(true, write: written.write))
-        #expect(!control.observe(started: Data(Self.advertised.utf8), write: written.write))
-        #expect(!control.observe(started: Data(Self.started.utf8), write: written.write))
+        #expect(control.observe(started: Data(Self.advertised.utf8), write: written.write) == .kept)
+        #expect(control.observe(started: Data(Self.started.utf8), write: written.write) == .kept)
         #expect(control.report(false, write: written.write))
         #expect(written.all == [true, false])
     }
 
-    /// A child that starts without `duck` v2 while privacy is wished for is reported (the pipeline refuses it),
-    /// never written.
-    @Test func aWishAnOlderChildCannotTakeIsDroppedAndReported() {
+    /// A child that starts without `duck` v2 while privacy is wished for (the spawn-to-started race) is refused (the
+    /// pipeline kills it), never written, and still counts as private: privacy is never lost (#735 round 2).
+    @Test func aWishAnOlderChildCannotTakeIsRefusedAndKeptPrivate() {
         let (control, written) = (AmbientDuckControl(), Written())
         #expect(control.report(true, write: written.write) && control.active)
-        #expect(control.observe(started: Data(Self.started.utf8), write: written.write))
-        #expect(!control.active && written.all.isEmpty)
+        #expect(control.observe(started: Data(Self.started.utf8), write: written.write) == .refused)
+        #expect(control.active && written.all.isEmpty)
         let (idle, none) = (AmbientDuckControl(), Written())
-        #expect(!idle.observe(started: Data(Self.started.utf8), write: none.write))
+        #expect(idle.observe(started: Data(Self.started.utf8), write: none.write) == .kept)
     }
 
     @Test(arguments: [

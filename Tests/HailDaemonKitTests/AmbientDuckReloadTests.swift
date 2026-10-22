@@ -4,11 +4,13 @@ import HailProtocol
 import Testing
 @testable import HailDaemonKit
 
-/// Privacy mode (internally duck) across children (#735): a reloaded child is told privacy is on; one that cannot
-/// take it (no `duck` v2) ends privacy rather than let the host claim it; a refused entry leaves no wish behind; the connection's end drops it.
+/// Privacy mode (internally duck) across children (#735): a reloaded child starts private (S-2b); one that does not
+/// confirm it is killed, never admitted; a refused entry leaves no wish behind; the connection's end drops it.
 /// Synthetic only.
 @Suite(.serialized, .timeLimit(.minutes(1)), .frozenGuardBudget) struct AmbientDuckReloadTests {
     static let record = "/bin/cat <&3 >> control.txt &\n"
+    /// Each launch's arguments after the executable, one line per launch.
+    static let argv = "echo \"$*\" >> argv.txt\n"
     /// `started` (advertising `duck` at `version`, v2 by default, or not at all) and `stopped` only: a child that
     /// hears nothing.
     static func silent(advertises: Bool, version: Int = 2, delay: Bool = false) -> String {
@@ -28,35 +30,43 @@ import Testing
     }
     static let entry = AmbientPrivacyEntryTests.fixture(saying: "Rightyo, stop recording.", advertises: true)
 
-    /// The old child's line, the new child's carried line once it starts, then the new child's own replayed entry.
-    @Test func aReloadedChildIsToldDuckModeIsOn() async throws {
-        let rig = try await DuckRig(script: Self.record + Self.entry)
+    /// While private (#735 S-2b) a reloaded child is launched start-private and, once its `started` confirms it, is
+    /// written nothing more for it: the old child's line, then only the new child's own replayed entry.
+    @Test func aReloadedChildStartsPrivate() async throws {
+        let rig = try await DuckRig(script: Self.record + Self.argv + Self.entry)
         defer { rig.close() }
         #expect(await eventually { rig.details("ambient_duck").count == 1 })
         #expect(await rig.env.router.reload() == .reloaded)
-        let three = String(repeating: "{\"duck\":true}\n", count: 3)
-        #expect(await eventually { (try? rig.fake.recorded("control.txt")) == three })
+        let two = String(repeating: "{\"duck\":true}\n", count: 2)
+        #expect(await eventually { (try? rig.fake.recorded("control.txt")) == two })
+        let launches = try rig.fake.recorded("argv.txt").split(separator: "\n")
+        #expect(launches.count == 2)
+        #expect(launches.first?.hasSuffix("--control-fd 3") == true)
+        #expect(launches.last?.hasSuffix("--control-fd 3 --start-private") == true)
+        #expect(rig.details("ambient_privacy_start").isEmpty)
         await rig.finish()
     }
 
-    /// A child without `duck` v2 (none, or a v1 that still transcribes) started during privacy mode ends it: no "on" is
-    /// ever claimed for a child not in it.
-    @Test(arguments: [nil, 1] as [Int?])
-    func aReloadedChildWithoutVersionTwoIsRefusedAndPrivacyKept(_ version: Int?) async throws {
-        let later = Self.silent(advertises: version != nil, version: version ?? 0)
+    /// A child asked to start private whose `started` does not confirm it (no `duck`, a v1, or a v2 that does not say
+    /// `private`) is killed and never admitted (#735 S-2b): privacy stays on, and the device never hears it end.
+    @Test(arguments: [nil, 1, 2] as [Int?]) func aReloadedChildThatDoesNotConfirmPrivacyIsKilled(
+        _ version: Int?
+    ) async throws {
+        let later = "echo $$ > later.pid\n" + Self.silent(advertises: version != nil, version: version ?? 0)
         let rig = try await DuckRig(script: Self.staged(Self.entry, later),
                                     capabilities: [DuckMode.capability])
         defer { rig.close() }
         #expect(await eventually { rig.details("ambient_duck").count == 1 })
         let connection = try #require(rig.connection())
         #expect(await rig.env.router.reload() == .reloaded)
-        // Round 4 (Mick): privacy stays on, the child is refused (its run ends), and nothing is written to it.
-        #expect(await eventually { rig.details("ambient_ended").contains { $0.hasSuffix("failed") } })
+        #expect(await eventually { rig.details("ambient_privacy_start") == ["outcome=refused reason=unconfirmed"] })
+        #expect(await eventually { rig.details("ambient_ended").contains("privacy unconfirmedStart") })
         #expect(rig.env.router.duckMode(connection: connection))
-        #expect(rig.details("ambient_privacy") == ["child=unsupported_version kept=true"])
+        #expect(rig.details("ambient_duck_unsupported").isEmpty)
         #expect(rig.details("ambient_duck") == ["on=true reason=voice reported=1"])
-        #expect(rig.details("ambient_duck_device") == ["on=true device=sent"])
-        #expect(try rig.fake.recorded("control.txt") == "{\"duck\":true}\n")
+        #expect(await eventually { rig.details("ambient_duck_device") == ["on=true device=sent"] })
+        let pid = try #require(Int32(rig.fake.recorded("later.pid").trimmingCharacters(in: .whitespacesAndNewlines)))
+        #expect(await eventually { kill(pid, 0) != 0 })
         await rig.finish()
     }
 

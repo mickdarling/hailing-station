@@ -107,7 +107,8 @@ import Testing
     }
 
     /// Round 4: a child that cannot keep privacy is refused and "I can't listen privately right now." plays at most
-    /// once per connection: a second refused child on the same connection is logged as a repeat, in silence.
+    /// once per connection: a second refused child on the same connection is logged as a repeat, in silence. With
+    /// S-2b both children were launched start-private and did not confirm it.
     @Test func theUnavailableClipPlaysOncePerConnection() async throws {
         let later = AmbientDuckReloadTests.silent(advertises: true, version: 1)
         let clips = AmbientAckLibrary(clips: ["confirmprivacyon": [AmbientDuckModeTests.clip("Privacy on.", 9)],
@@ -127,7 +128,8 @@ import Testing
         #expect(Array(rig.details("ambient_duck_confirmed").dropFirst()) == [
             "unavailable confirm=confirmprivacyunavailable/0:sent", "unavailable repeat confirm=unreported"
         ])
-        #expect(rig.details("ambient_privacy") == Array(repeating: "child=unsupported_version kept=true", count: 2))
+        #expect(rig.details("ambient_privacy_start") == Array(repeating: "outcome=refused reason=unconfirmed",
+                                                              count: 2))
     }
 
     /// Round 4 (key 2): a transcript is not addressed to the assistant, so the owner's partial command there gives
