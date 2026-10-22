@@ -166,6 +166,11 @@ public enum ControlPayload: Sendable, Equatable {
     /// changed (one of `DuckMode.reasons`), and while on, when it turns itself off (Unix milliseconds). Sent only to a
     /// device that advertises `DuckMode.capability`. It shows state only and grants no authority.
     case duckMode(on: Bool, reason: String? = nil, expires: Int64? = nil)
+    /// Device to host (#735 S-6): turn privacy (internally duck) on or off for this connection's own ambient stream,
+    /// from the app's privacy switch. Only `command` and the boolean `on`; sent only to a host that advertises
+    /// `DuckMode.privacySwitchCapability`. The host answers only with its `duck_mode` notice (reason `device`), never
+    /// with a reply frame, and the device shows privacy only once that notice says so.
+    case setPrivacy(on: Bool)
 }
 
 extension ControlPayload: Codable {
@@ -181,7 +186,7 @@ extension ControlPayload: Codable {
         case setReplyMute = "set_reply_mute", ownerVoice = "owner_voice", ambientInput = "ambient_input"
         case sessionUpdate = "session_update"
         case health, healthReport = "health_report"
-        case mediaMode = "media_mode", duckMode = "duck_mode"
+        case mediaMode = "media_mode", duckMode = "duck_mode", setPrivacy = "set_privacy"
     }
 
     // A closed wire enum is clearest as one exhaustive switch.
@@ -227,7 +232,7 @@ extension ControlPayload: Codable {
         case .sessionUpdate: self = try Self.sessionUpdate(from: decoder)
         case .health, .healthReport: self = try Self.health(from: decoder)
         case .mediaMode: self = try Self.mediaMode(from: decoder)
-        case .duckMode: self = try Self.duckMode(from: decoder)
+        case .duckMode, .setPrivacy: self = try Self.duckMode(from: decoder)
         }
     }
 
@@ -281,10 +286,16 @@ extension ControlPayload: Codable {
     }
 
     /// Strict (#735), exactly like `media_mode`: only `command`, the boolean `on`, an optional `reason` from
-    /// `DuckMode.reasons` and, only while on, a positive `expires`.
+    /// `DuckMode.reasons` and, only while on, a positive `expires`. The device's `set_privacy` (#735 S-6) is stricter,
+    /// like `set_reply_mute`: only `command` and the boolean `on`, so nothing rides along on a privacy switch: no
+    /// target, connection, reason, expiry or words.
     private static func duckMode(from decoder: any Decoder) throws -> ControlPayload {
-        try requireOnly(["command", "on", "reason", "expires"], "duck_mode", decoder)
         let container = try decoder.container(keyedBy: CodingKeys.self)
+        guard try container.decode(Command.self, forKey: .command) == .duckMode else {
+            try requireOnly(["command", "on"], "set_privacy", decoder)
+            return .setPrivacy(on: try container.decode(Bool.self, forKey: .on))
+        }
+        try requireOnly(["command", "on", "reason", "expires"], "duck_mode", decoder)
         let on = try container.decode(Bool.self, forKey: .on)
         let raw = try container.decodeIfPresent(String.self, forKey: .reason)
         let expires = try container.decodeIfPresent(Int64.self, forKey: .expires)
@@ -505,6 +516,9 @@ extension ControlPayload: Codable {
                                                                       debugDescription: "invalid duck_mode expires"))
             }
             try container.encodeIfPresent(expires, forKey: .expires)
+        case .setPrivacy(let on):
+            try container.encode(Command.setPrivacy, forKey: .command)
+            try container.encode(on, forKey: .on)
         }
     }
 }
@@ -604,8 +618,11 @@ public enum MediaMode {
 /// never sends `duck_mode` to a device without it, because an older device refuses an unknown command. `reason` says
 /// why it last changed: `voice` (the owner said so), `timeout` (it turned itself off) or `device` (a device asked).
 /// `expires` is when an on mode turns itself off, in Unix milliseconds like a frame's `ts`. Off by default.
+/// The app's privacy switch (#735 S-6) sends `set_privacy` only to a host that advertises `privacySwitchCapability`
+/// in its `hello`; an older host refuses the unknown command, so a device never sends it there.
 public enum DuckMode {
     public static let capability = "duck_mode"
+    public static let privacySwitchCapability = "set_privacy"
     public static let reasons = ["voice", "timeout", "device"]
 
     /// `value` when it is exactly one of `reasons`, else nil.
@@ -1054,6 +1071,15 @@ extension Schema {
                 "reason": .object(["enum": .array(DuckMode.reasons.map(JSONValue.string))]),
                 "expires": .object(["type": .string("integer"), "minimum": .integer(1)])
             ])
+        ])
+    ])
+
+    /// `set_privacy` carries `command` and a boolean `on`, and nothing else (#735 S-6).
+    static let setPrivacyPayloadRule: JSONValue = .object([
+        "if": .object(["properties": .object(["command": .object(["const": .string("set_privacy")])])]),
+        "then": .object([
+            "additionalProperties": .bool(false),
+            "properties": .object(["command": .object([:]), "on": .object(["type": .string("boolean")])])
         ])
     ])
 
