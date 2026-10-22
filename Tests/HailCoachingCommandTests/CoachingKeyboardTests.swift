@@ -61,6 +61,22 @@ import Testing
             #expect(ended.value == 1)
         }
     }
+    @Test func duplicatedControlInputIsCloseOnExec() throws {
+        let fixture = try PipeFixture()
+        let keyboard = try CoachingKeyboard(input: fixture.input, observeSignals: false, ended: {})
+        defer { keyboard.close() }
+        var pipe = stat()
+        #expect(fstat(fixture.input, &pipe) == 0)
+        // The keyboard's private dup is the only other descriptor on this pipe's read end.
+        let duplicates = (0..<getdtablesize()).filter { fd in
+            var info = stat()
+            return fd != fixture.input && fstat(fd, &info) == 0
+                && info.st_dev == pipe.st_dev && info.st_ino == pipe.st_ino
+                && fcntl(fd, F_GETFL) & O_ACCMODE == O_RDONLY
+        }
+        #expect(duplicates.count == 1)
+        for fd in duplicates { #expect(fcntl(fd, F_GETFD) & FD_CLOEXEC != 0) }
+    }
     private func wait(_ condition: () -> Bool) async throws {
         let deadline = ContinuousClock.now.advanced(by: .seconds(2))
         while !condition(), ContinuousClock.now < deadline { try await Task.sleep(for: .milliseconds(5)) }
@@ -82,6 +98,19 @@ import Testing
             let count = bytes.withUnsafeBytes { Darwin.write(output, $0.baseAddress, $0.count) }
             guard count == bytes.count else { throw CoachingCommandError.invalidControl }
         }
-        func finish() { if let output { Darwin.close(output); self.output = nil } }
+        /// Closes the writer and holds the caller (the main actor) until the reader can observe EOF (#774). A child
+        /// that another test spawns copies this process's descriptors, even close-on-exec ones, until its exec, so
+        /// the close alone can leave the pipe open for that window; the keyboard would then admit the line without EOF.
+        func finish() {
+            guard let output else { return }
+            Darwin.close(output); self.output = nil
+            let deadline = ContinuousClock.now.advanced(by: .seconds(2))
+            var state = pollfd(fd: input, events: Int16(POLLIN), revents: 0)
+            while ContinuousClock.now < deadline {
+                state.revents = 0
+                if poll(&state, 1, 0) > 0, state.revents & Int16(POLLHUP) != 0 { return }
+                usleep(1_000)
+            }
+        }
     }
 }
