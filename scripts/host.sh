@@ -315,12 +315,13 @@ write_plist() {
 }
 
 print_plist() {
-  local tmp program
+  local program
   program="$(staged_release)"
-  tmp="$(mktemp "${TMPDIR:-/tmp}/hail-plist.XXXXXX")"
-  write_plist "$tmp" "$program"
-  cat "$tmp"
-  rm -f "$tmp"
+  PLIST_TMP="$(mktemp "${TMPDIR:-/tmp}/hail-plist.XXXXXX")"
+  # write_plist can fail and exit (a bad host.json, no install): the temp file goes either way (#800).
+  trap 'rm -f -- "$PLIST_TMP"' EXIT
+  write_plist "$PLIST_TMP" "$program"
+  cat "$PLIST_TMP"
 }
 
 # A field (`pid`, `program`, `state`) of a loaded job, or nothing when it is not loaded.
