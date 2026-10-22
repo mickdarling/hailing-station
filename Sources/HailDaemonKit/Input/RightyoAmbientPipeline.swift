@@ -111,15 +111,16 @@ public final class RightyoAmbientPipeline: Sendable {
         /// Privacy mode (#735, internally duck), handled like `onVoiceMute`: called once per safety-set command in a
         /// transcript or request (`enter`; `stillRecording` when negated; `refused` from anyone but the owner;
         /// `unverified` from the owner role without a live voiceprint; `hint` for the owner's turn that starts with a
-        /// command and goes on), once per RightyO `privacy` event (`exit`, `status`), and with `lost` (see below). Only
+        /// command and goes on), once per RightyO `privacy` event (`exit`, `status`), and `unavailable` (below). Only
         /// when this is set are these turns privacy turns; then each is held back from the agent, and while privacy is
         /// on (the latest `reportDuck` said so) every request is. Without a control descriptor no child can take
         /// privacy, so an entry is refused, never typed. It must return at once.
         public var onVoiceDuck: (@Sendable (PrivacyCommand) -> Void)?
-        /// Called when this child starts while privacy is on but its `started` did not advertise `duck` version 2 or
-        /// higher (an older RightyO after a reload): it cannot take privacy, so the host must end it, returning true
-        /// when it did. Only then is `onVoiceDuck` called with `lost`, so recording never resumes in silence, and says
-        /// so once per connection. It must return at once.
+        /// Called when this child starts while privacy is wished for but its `started` did not advertise `duck`
+        /// version 2 or higher (an older RightyO after a reload): it cannot keep privacy. The host never ends privacy
+        /// for it (Mick, round 4: only the owner's exit does); it returns true when privacy is still on, and then
+        /// `onVoiceDuck` hears `unavailable` and this child is refused: its run ends with `RightyoPrivacyRefusal`, so
+        /// nothing records. Without this handler the child is refused too. It must return at once.
         public var onDuckUnsupported: (@Sendable () -> Bool)?
         /// The owner's allowlisted note destinations (#552); nil is off. A note to one is handed to
         /// `onVoiceDestination` with its destination key, target and words instead of being typed. It must return
@@ -260,7 +261,7 @@ public final class RightyoAmbientPipeline: Sendable {
                 // Only after the consumer admitted the line: an invalid one has already ended the stream.
                 if relayed { await overheard.observe(event) }
                 ownerVoice.observe(event)
-                observeStarted(event, line: line)
+                try observeStarted(event, line: line)
                 // A newly admitted `dismiss` delivers nothing and leaves its receipt; a replayed one leaves none.
                 if event.type == "dismiss", let receipt = await consumer.lastDismissal { onDismiss?(receipt) }
                 // A newly admitted voice mute (#404) is handed to the host instead of being typed.
@@ -305,13 +306,19 @@ extension RightyoAmbientPipeline {
         return true
     }
 
-    /// A child's `started` that cannot take the privacy wished for ends it (`onDuckUnsupported`) and says so (`lost`).
-    private func observeStarted(_ event: RightyoInputEvent, line: Data) {
+    /// A child's `started` that cannot take the privacy wished for: while the host is still private, the child is
+    /// refused (this run ends, so nothing records) and `unavailable` is said; privacy itself stays on.
+    private func observeStarted(_ event: RightyoInputEvent, line: Data) throws {
         guard event.type == "session", event.phase == "started",
-              duck.observe(started: line, write: { [child] on in child.reportDuck(on) }) else { return }
-        if onDuckUnsupported?() == true { onVoiceDuck?(.lost) }
+              duck.observe(started: line, write: { [child] on in child.reportDuck(on) }),
+              onDuckUnsupported?() ?? true else { return }
+        onVoiceDuck?(.unavailable)
+        throw RightyoPrivacyRefusal.unsupportedChild
     }
 }
+
+/// A child refused because it cannot keep the privacy the host is in (#735 round 4): its run ends with this.
+public enum RightyoPrivacyRefusal: Error, Sendable, Equatable { case unsupportedChild }
 
 /// The child's stdout as JSONL lines (#203): read on its own thread, always to EOF so the child never wedges on a
 /// full pipe. Each line is capped at `maxLineBytes`, and lines waiting to be taken at `maxQueuedBytes` in total;
@@ -642,9 +649,12 @@ final class AmbientDuckControl: Sendable {
 
     var active: Bool { state.withLock { $0.wanted } }
 
+    /// Sets the host's wish; true when this child takes it: written now to a child that advertised v2, or kept for
+    /// one not yet started, which takes it at `started` or is refused then (`observe`).
     func report(_ on: Bool, write: (Bool) -> Bool) -> Bool {
         state.withLock { state in
             state.wanted = on
+            guard state.started else { return true }
             return state.advertised && write(on)
         }
     }

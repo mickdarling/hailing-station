@@ -106,18 +106,40 @@ import Testing
         #expect(rig.details("ambient_duck").isEmpty)
     }
 
-    /// A reload to a child that cannot keep privacy ends it and says so ("Recording again."), never silently.
-    @Test func aReloadThatLosesPrivacySaysSo() async throws {
+    /// Round 4: a child that cannot keep privacy is refused and "I can't listen privately right now." plays at most
+    /// once per connection: a second refused child on the same connection is logged as a repeat, in silence.
+    @Test func theUnavailableClipPlaysOncePerConnection() async throws {
         let later = AmbientDuckReloadTests.silent(advertises: true, version: 1)
+        let clips = AmbientAckLibrary(clips: ["confirmprivacyon": [AmbientDuckModeTests.clip("Privacy on.", 9)],
+                                          "confirmprivacyunavailable": [AmbientDuckModeTests.clip("I can't.", 2)]])
         let rig = try await DuckRig(script: AmbientDuckReloadTests.staged(AmbientDuckReloadTests.entry, later),
-                                    clips: AmbientDuckModeTests.clips, capabilities: [DuckMode.capability])
+                                    clips: clips)
         defer { rig.close() }
         #expect(await eventually { rig.details("ambient_duck").count == 1 })
+        let connection = try #require(rig.connection())
         #expect(await rig.env.router.reload() == .reloaded)
         #expect(await eventually { rig.details("ambient_duck_confirmed").count == 2 })
+        // A new stream on the same connection starts another child that cannot keep privacy.
+        try await recipientSocketSend(audio(UUID(), 0), on: rig.socket)
+        #expect(await eventually { rig.details("ambient_duck_confirmed").count == 3 })
+        #expect(rig.env.router.duckMode(connection: connection))
         await rig.finish()
-        #expect(rig.details("ambient_duck_confirmed").last == "on=false lost confirm=confirmprivacyoff/0:sent")
-        #expect(rig.details("ambient_duck").last?.hasPrefix("on=false reason=timeout") == true)
+        #expect(Array(rig.details("ambient_duck_confirmed").dropFirst()) == [
+            "unavailable confirm=confirmprivacyunavailable/0:sent", "unavailable repeat confirm=unreported"
+        ])
+        #expect(rig.details("ambient_privacy") == Array(repeating: "child=unsupported_version kept=true", count: 2))
+    }
+
+    /// Round 4 (key 2): a transcript is not addressed to the assistant, so the owner's partial command there gives
+    /// no hint and no clip, and nothing changes.
+    @Test func anUnaddressedPartialGivesNoHint() async throws {
+        let rig = try await DuckRig(script: "/bin/cat <&3 > control.txt &\n" + Self.transcriptOnly(
+            "Rightyo, stop listening to him, he is wrong."), clips: AmbientDuckModeTests.clips)
+        defer { rig.close() }
+        #expect(await eventually { rig.connection() != nil })
+        try await Task.sleep(for: .milliseconds(300))
+        await rig.finish()
+        #expect(rig.details("ambient_duck_confirmed").isEmpty && rig.details("ambient_duck").isEmpty)
     }
 
     /// Round 3 B2: the owner role's entry without a live voiceprint is refused audibly, never in silence: its own clip
@@ -151,6 +173,18 @@ import Testing
         await rig.finish()
         #expect(rig.details("ambient_duck_confirmed") == ["hint confirm=confirmprivacyhint/0:sent"])
         #expect(rig.details("ambient_duck").isEmpty)
+    }
+
+    /// `started` (v2) and the owner's transcript of `words` (from a voiceprint) only, then `stopped`: no attention and
+    /// no request, so nothing addressed it to the assistant.
+    static func transcriptOnly(_ words: String) -> String {
+        """
+        /usr/bin/sed -n -e '1p' -e '4p' events.jsonl | /usr/bin/sed -e "s/formed-demo/$7/g" \
+          -e 's/Rightyo, archive the project./\(words)/g' \(AmbientPrivacyEventTests.duck(2)) \
+          \(AmbientPrivacyEventTests.voiceprint)
+        /bin/cat > /dev/null
+        /usr/bin/sed -n -e '$p' events.jsonl | /usr/bin/sed "s/formed-demo/$7/g"
+        """
     }
 }
 #endif

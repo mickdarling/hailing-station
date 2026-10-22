@@ -124,35 +124,39 @@ enum VoiceMedia {
 /// What privacy mode (#735, internally duck) asks the host to do. `enter` is a safety-set entry command
 /// (`PrivacyEntry`) in the live enrolled owner's turn, and `stillRecording` a negated one ("don't stop recording"), which only plays
 /// "Still recording."; `exit` and `status` are RightyO's content-free `privacy` events (rightyo S-1), which RightyO
-/// matched itself while private, when the host hears no words at all. `lost` is privacy ended because a reloaded child
-/// cannot keep it; `refused` an entry phrase from anyone but the owner, and `unverified` the owner role's entry without
+/// matched itself while private, when the host hears no words at all. `unavailable` is a child refused because it
+/// cannot keep the privacy the host is in; `refused` an entry phrase from anyone but the owner, and `unverified` the owner role's entry without
 /// a live voiceprint behind it; `hint` the owner role's turn that starts with a command and goes on.
 public enum PrivacyCommand: Sendable, Equatable {
-    case enter, stillRecording, exit, status, lost, refused, unverified, hint
+    case enter, stillRecording, exit, status, unavailable, refused, unverified, hint
 }
 
 /// The privacy safety set's entry (#735 S-2): deterministic and local, with no model, and intentional only (Mick: "It
 /// needs to be really intentional"; "If I say them, they can count for privacy"). An entry command counts only as a
 /// standalone command: the whole turn, or the whole turn after a greeting and an assistant name ("Hey Jarvis, privacy
 /// mode."), in any case and with any punctuation. Allowed around it:
-/// - before: "ok", "okay", "um", "uh", "so", "please", "hey", "now", "just", "alright", "wait", "no", and a polite "can /
-///   could / would / will you" (which alone may end in "?": "Can you stop recording?");
+/// - before: fillers and discourse words ("ok", "um", "so", "please", "just", "wait", "no", "well", "actually",
+///   "listen", "and", … see `leading`), and a polite "can / could / would / will you" (which alone may end in "?":
+///   "Can you stop recording?");
 /// - after: "please", "now", "thanks", "thank you", "right now", "for now", "for a minute / bit / while / sec / second",
 ///   and the assistant's name.
 ///
 /// The commands are "privacy mode" (also "… on", "turn on", "enter", "start", "enable", "activate", "switch to"),
 /// "go private", and "stop" with "recording", "recordings" or "listening", up to two determiners between ("stop the
 /// recording", "stop all the recordings"), and "stop listening to me". A standalone negated command ("don't stop
-/// recording") is `negated`: "Still recording.". A turn that starts with a command but goes on ("stop recording, my
-/// wife is here", "go private on github") is `partial`: the consumer holds the owner's back with a hint. Nothing else
+/// recording") is `negated`: "Still recording.". A turn that starts with an action command but goes on ("stop recording,
+/// my wife is here", "go private on github") is `partial`: the consumer holds the owner's request back with a hint. Nothing else
 /// counts: a command mid-sentence ("we should go private", code dictation), asked about ("what is privacy mode?") or
 /// said as a question. A lone name is no command, so a name alone and the command in the next turn enters on the second.
 /// Who may say it is the consumer's rule (`privacyCommand`). Matched on the heard words only; nothing is logged.
 enum PrivacyEntry {
     enum Match: Sendable, Equatable { case enter, negated, partial }
 
+    /// Fillers and discourse words a command may follow (Mick, round 4: "well", "actually", "listen", …), each with
+    /// or without a comma. Negations ("don't", "never") are never among them.
     static let leading: Set<String> = [
-        "ok", "okay", "um", "uh", "so", "please", "hey", "now", "just", "alright", "wait", "no"
+        "ok", "okay", "um", "uh", "so", "please", "hey", "now", "just", "alright", "wait", "no", "well", "actually",
+        "yeah", "yes", "listen", "fine", "oh", "right", "look", "and", "anyway", "sure", "hmm"
     ]
     static let polite: Set<String> = ["can", "could", "would", "will"]
     static let trailing: Set<String> = ["please", "now", "thanks", "ok", "okay", "um", "uh"]
@@ -163,7 +167,7 @@ enum PrivacyEntry {
     static let negations: [[String]] = [["don't"], ["dont"], ["do", "not"], ["never"], ["not"]]
     /// Words before a leading comma that are not an assistant's name: a command's own start, or an interjection.
     static let interjections: Set<String> = [
-        "stop", "go", "privacy", "turn", "enter", "start", "enable", "activate", "switch", "don't", "dont", "do",
+        "stop", "go", "privacy", "turn", "enter", "start", "enable", "activate", "switch", "put", "don't", "dont", "do",
         "never", "no", "not", "yes", "yeah", "well", "fine", "wait", "right", "oh", "and", "but", "look", "listen",
         "actually", "alright", "sure", "just", "can", "could", "would", "will"
     ]
@@ -172,7 +176,8 @@ enum PrivacyEntry {
     static let commands: Set<[String]> = [
         ["privacy", "mode"], ["privacy", "mode", "on"], ["turn", "on", "privacy", "mode"],
         ["enter", "privacy", "mode"], ["start", "privacy", "mode"], ["enable", "privacy", "mode"],
-        ["activate", "privacy", "mode"], ["switch", "to", "privacy", "mode"], ["go", "private"]
+        ["activate", "privacy", "mode"], ["switch", "to", "privacy", "mode"], ["go", "private"],
+        ["put", "yourself", "in", "privacy", "mode"]
     ]
 
     /// What the whole turn `heard` says, given the session's keyed addressing `names`; nil for anything else.
@@ -180,11 +185,15 @@ enum PrivacyEntry {
         let edges = trimmed(heard, names: names)
         var words = edges.words
         let asked = heard.trimmingCharacters(in: .whitespacesAndNewlines).hasSuffix("?")
-        guard !asked || edges.polite else { return nil }
         let negation = negations.first { words.starts(with: $0) }
         if let negation { words.removeFirst(negation.count) }
         words = Array(words.drop { leading.contains($0) })
-        if isCommand(words) { return negation == nil ? .enter : .negated }
+        if isCommand(words) {
+            // A "?" counts only on the polite form, or on a short verb command ASR may punctuate as a question
+            // ("Jarvis, go private?"); "privacy mode?" stays a question.
+            guard !asked || edges.polite || (words.count <= 3 && words.first != "privacy") else { return nil }
+            return negation == nil ? .enter : .negated
+        }
         guard negation == nil, !asked, startsWithCommand(words) else { return nil }
         return .partial
     }
@@ -233,14 +242,15 @@ enum PrivacyEntry {
         guard index < words.count, stopped.contains(words[index]) else { return false }
         let rest = Array(words[(index + 1)...])
         return rest.isEmpty || (words[index] == "listening" && rest == ["to", "me"])
+            || (words[index] != "listening" && rest == ["everything"])
     }
 
-    /// Whether `words` start with a command and go on, other than to leave privacy mode ("privacy mode off", "… is
-    /// over").
+    /// Whether `words` start with an action command ("stop recording", "stop listening", "go private") and go on.
+    /// Only actions count (Mick, round 4): "privacy mode" followed by more words is a mention ("privacy mode needs a
+    /// longer timeout") and goes to the agent.
     static func startsWithCommand(_ words: [String]) -> Bool {
-        guard words.count > 2 else { return false }
-        if words.starts(with: ["privacy", "mode"]), ["off", "is", "was"].contains(words[2]) { return false }
-        return (2..<min(words.count, 7)).contains { isCommand(Array(words.prefix($0))) }
+        guard words.count > 2, ["stop", "go"].contains(words[0]) else { return false }
+        return (2..<min(words.count, 6)).contains { isCommand(Array(words.prefix($0))) }
     }
 
     /// Lower-cased letter runs, apostrophes kept inside a word ("don't", typographic or not) and trimmed off its ends.
@@ -284,9 +294,11 @@ enum AmbientStopConfirmation {
     static let privacyRefused = RightyoAddressing.key("confirm-privacy-refused")
     /// "To go private, say 'stop recording' on its own.": the owner's turn that starts with a command and goes on.
     static let privacyHint = RightyoAddressing.key("confirm-privacy-hint")
+    /// "I can't listen privately right now.": a child that cannot keep privacy was refused; privacy stays on.
+    static let privacyUnavailable = RightyoAddressing.key("confirm-privacy-unavailable")
     static let reserved: Set<String> = [stopped, idle, muted, unmuted, mediaOn, mediaOff, saved, notSaved, notSent,
                                         privacyOn, privacyOff, privacyStatus, stillRecording, privacyRefused,
-                                        privacyHint]
+                                        privacyHint, privacyUnavailable]
 
     /// Why a playback stop is not confirmed, as a log token, or nil when it is: only the enrolled owner's stop, and
     /// only on a connection still there to hear it.
@@ -655,13 +667,15 @@ extension RightyoInputConsumer {
         return true
     }
 
-    /// A safety-set entry phrase in a transcript (#735 S-2), so going private never waits for RightyO to form a
+    /// A standalone safety-set command in a transcript (#735 S-2), so going private never waits for RightyO to form a
     /// request: carried out at most once per utterance, and its request, if one follows, is held back. Only a
     /// live-microphone turn counts (any turn with `allowSynthetic`, tests), as for requests; the assistant's own words
-    /// heard back (`echoFilter`) never count.
+    /// heard back (`echoFilter`) never count. A `partial` command is never acted on here: a transcript is not addressed
+    /// to the assistant, so only a request gets the hint (key 2, round 4).
     func notePrivacyPhrase(_ turn: RightyoInputEvent.Turn) {
         guard duckActive != nil, allowSynthetic || turn.provenance == "live-microphone",
               echoFilter?(turn.text) != true, let match = PrivacyEntry.match(turn.text, names: voiceNames),
+              match != .partial,
               let command = privacyCommand(match, owner: owners.contains(turn.utteranceId),
                                            voiceprint: voiceprintOwners.contains(turn.utteranceId)) else {
             return

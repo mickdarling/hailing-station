@@ -41,7 +41,8 @@ import Testing
 
     /// A child without `duck` v2 (none, or a v1 that still transcribes) started during privacy mode ends it: no "on" is
     /// ever claimed for a child not in it.
-    @Test(arguments: [nil, 1] as [Int?]) func aReloadedChildWithoutVersionTwoEndsPrivacy(_ version: Int?) async throws {
+    @Test(arguments: [nil, 1] as [Int?])
+    func aReloadedChildWithoutVersionTwoIsRefusedAndPrivacyKept(_ version: Int?) async throws {
         let later = Self.silent(advertises: version != nil, version: version ?? 0)
         let rig = try await DuckRig(script: Self.staged(Self.entry, later),
                                     capabilities: [DuckMode.capability])
@@ -49,32 +50,35 @@ import Testing
         #expect(await eventually { rig.details("ambient_duck").count == 1 })
         let connection = try #require(rig.connection())
         #expect(await rig.env.router.reload() == .reloaded)
-        #expect(await eventually { !rig.env.router.duckMode(connection: connection) })
-        #expect(rig.details("ambient_duck_unsupported") == ["child=unsupported_version"])
-        #expect(rig.details("ambient_duck").last?.hasPrefix("on=false reason=timeout") == true)
-        let device = ["on=true device=sent", "on=false device=sent"]
-        #expect(await eventually { rig.details("ambient_duck_device") == device })
+        // Round 4 (Mick): privacy stays on, the child is refused (its run ends), and nothing is written to it.
+        #expect(await eventually { rig.details("ambient_ended").contains { $0.hasSuffix("failed") } })
+        #expect(rig.env.router.duckMode(connection: connection))
+        #expect(rig.details("ambient_privacy") == ["child=unsupported_version kept=true"])
+        #expect(rig.details("ambient_duck") == ["on=true reason=voice reported=1"])
+        #expect(rig.details("ambient_duck_device") == ["on=true device=sent"])
+        #expect(try rig.fake.recorded("control.txt") == "{\"duck\":true}\n")
         await rig.finish()
     }
 
     /// An entry no child took withdraws the wish from a child still starting, which then is never written duck mode.
-    @Test func aRefusedEntryLeavesNoWishBehind() async throws {
+    /// Round 4: an entry while a reloaded child is between spawn and `started` is taken by that child: a v2 child is
+    /// written `{"duck":true}` once it starts; any other is refused there, privacy kept.
+    @Test(arguments: [2, 1]) func anEntryWhileTheChildStartsIsDecidedAtStarted(_ version: Int) async throws {
         let rig = try await DuckRig(script: Self.staged(Self.silent(advertises: false),
-                                                        Self.silent(advertises: true, delay: true)))
+                                                        Self.silent(advertises: true, version: version, delay: true)))
         defer { rig.close() }
         #expect(await eventually { rig.connection() != nil })
         let connection = try #require(rig.connection())
         #expect(await rig.env.router.reload() == .reloaded)
-        #expect(rig.env.router.setDuck(true, connection: connection, reason: "voice") == 0)
-        #expect(!rig.env.router.duckMode(connection: connection))
-        let directory = rig.fake.directory.path
-        #expect(await eventually {
-            ((try? FileManager.default.contentsOfDirectory(atPath: directory)) ?? [])
-                .filter { $0.hasPrefix("started.") }.count == 2
-        })
-        try await Task.sleep(for: .milliseconds(300))
-        #expect(try rig.fake.recorded("control.txt") == "")
-        #expect(rig.details("ambient_duck") == ["on=true reason=voice reported=0 refused=unsupported"])
+        #expect(rig.env.router.setDuck(true, connection: connection, reason: "voice") == 1)
+        #expect(rig.env.router.duckMode(connection: connection))
+        if version >= 2 {
+            #expect(await eventually { (try? rig.fake.recorded("control.txt")) == "{\"duck\":true}\n" })
+        } else {
+            #expect(await eventually { rig.details("ambient_privacy") == ["child=unsupported_version kept=true"] })
+            #expect(try rig.fake.recorded("control.txt") == "")
+        }
+        #expect(rig.env.router.duckMode(connection: connection))
         await rig.finish()
     }
 
@@ -110,7 +114,7 @@ import Testing
         check(.stillRecording, 0, false, AmbientStopConfirmation.stillRecording, "negated")
         check(.refused, 0, false, nil, "refused=not_owner")
         check(.unverified, 0, false, AmbientStopConfirmation.privacyRefused, "refused=unverified_owner")
-        check(.lost, 0, false, off, "on=false lost")
+        check(.unavailable, 0, true, AmbientStopConfirmation.privacyUnavailable, "unavailable")
         check(.hint, 0, false, AmbientStopConfirmation.privacyHint, "hint")
     }
 }

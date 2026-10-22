@@ -1,6 +1,7 @@
 #if os(macOS)
 public import Foundation
 import HailProtocol
+import Synchronization
 
 /// A connection's duck mode timeout (#735): the token an expiry must still match, and the task to cancel.
 struct AmbientDuckTimer {
@@ -37,8 +38,8 @@ extension AmbientRightyoRouter {
     ///   (or `confirm-not-sent/`) says so, logged `refused=unverified_owner`.
     /// - `hint`: the owner's turn that starts with a command and goes on: held back, nothing changes, and
     ///   `confirm-privacy-hint/` ("To go private, say 'stop recording' on its own.") says how, logged `hint`.
-    /// - `lost`: privacy already ended by `duckUnsupported` (a reloaded child cannot keep it); `confirm-privacy-off/`
-    ///   says so, so recording never resumes in silence.
+    /// - `unavailable`: a child that cannot keep privacy was refused (`duckUnsupported`); privacy stays on, and
+    ///   `confirm-privacy-unavailable/` ("I can't listen privately right now.") says so at most once per connection.
     /// Nothing reaches the agent. Logs tokens only.
     func voiceDuck(on connection: UUID, listener: WebSocketListener) -> @Sendable (PrivacyCommand) -> Void {
         let chain = SerialTaskChain()
@@ -56,6 +57,9 @@ extension AmbientRightyoRouter {
             }
             chain.enqueue { [weak self, weak listener, reported, on] in
                 var (persona, outcome) = Self.duckConfirmation(command, reported: reported, on: on)
+                if command == .unavailable, !Self.firstUnavailable(on: connection) {
+                    (persona, outcome) = (nil, "unavailable repeat")
+                }
                 // Privacy taken (or still on) silences a reply playing on this connection first (Mick, round 2),
                 // through the owner's stop path; a refused entry leaves playback alone.
                 if command == .enter, on {
@@ -81,27 +85,38 @@ extension AmbientRightyoRouter {
         case .exit: (reported > 0 ? AmbientStopConfirmation.privacyOff : nil, "on=false")
         case .status: (on ? AmbientStopConfirmation.privacyStatus : nil, "status on=\(on)")
         case .stillRecording: (AmbientStopConfirmation.stillRecording, "negated")
-        case .lost: (AmbientStopConfirmation.privacyOff, "on=false lost")
+        case .unavailable: (AmbientStopConfirmation.privacyUnavailable, "unavailable")
         case .refused: (nil, "refused=not_owner")
         case .unverified: (AmbientStopConfirmation.privacyRefused, "refused=unverified_owner")
         case .hint: (AmbientStopConfirmation.privacyHint, "hint")
         }
     }
 
-    /// A child that started while privacy was on without advertising `duck` v2 (an older RightyO after a reload)
-    /// cannot take it, and the host never claims a mode a child is not in: privacy ends for `connection`, its timeout
-    /// is cancelled and the device told off. The device's reason is `timeout`, the protocol's "it turned itself off":
-    /// nobody asked (`voice` and `device` would both say someone did); the host log says why.
-    /// True only when it ended privacy, so `lost` is said once per connection, not once per child that cannot take it.
+    /// A child that started while privacy was wished for without advertising `duck` v2 (an older RightyO after a
+    /// reload) cannot keep it. Privacy is never ended for it (Mick, round 4: only the owner's exit ends privacy): when
+    /// the host is still private this returns true and the pipeline refuses the child, so nothing records; logged
+    /// `ambient_privacy child=unsupported_version kept=true`. False when privacy already ended: the child runs on.
     func duckUnsupported(on connection: UUID) -> @Sendable () -> Bool {
         { [weak self] in
             guard let self, duckMode(connection: connection) else { return false }
-            emit("ambient_duck_unsupported", connection: connection, detail: "child=unsupported_version")
-            setDuck(false, connection: connection, reason: "timeout")
+            emit("ambient_privacy", connection: connection, detail: "child=unsupported_version kept=true")
+            return true
+        }
+    }
+
+    /// Whether `unavailable` may still be said on `connection`: true once per connection, bounded in memory.
+    static func firstUnavailable(on connection: UUID) -> Bool {
+        unavailableSaid.withLock { said in
+            guard !said.contains(connection) else { return false }
+            said.append(connection)
+            if said.count > 256 { said.removeFirst(said.count - 256) }
             return true
         }
     }
 }
+
+/// Connections already told privacy is unavailable (`firstUnavailable`); ids only, at most 256.
+private let unavailableSaid = Mutex<[UUID]>([])
 
 extension WebSocketListener {
     /// Sends `duck_mode` (#735) to the connection whose ambient stream it is: `sent`, `unsupported` (it did not
