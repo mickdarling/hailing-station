@@ -39,7 +39,7 @@ import Testing
         "stop all recording everything",
         // Only the polite form may end in "?" (Mick), after leads and a name too.
         "Could you stop listening?", "Will you go private?", "Jarvis, can you stop recording?",
-        "Well, could you stop recording?"
+        "Well, could you stop recording?", "Can you stop recording? Thanks."
     ]
     static let negated = [
         "Don't stop recording.", "Jarvis, do not stop listening.", "Please don't go private.", "never stop recording",
@@ -80,6 +80,8 @@ import Testing
         // A command said as a question is a question (Mick), with or without a lead or a name.
         "Stop recording?", "Go private?", "stop the recording?", "Jarvis, go private?", "Hey Jarvis, stop listening?",
         "So, stop recording?", "Actually, go private?", "And go private?", "Stop recording everything?",
+        "Stop recording?!", "Stop recording? Thanks.", "Go private? Please.", "Stop recording? Jarvis.",
+        "Stop recording\u{FF1F}", "\"Stop recording?\"", "(Go private?)",
         // Round 4: "privacy mode" followed by more words is a mention, never held.
         "privacy mode settings", "privacy mode toggle", "privacy mode and media mode",
         "privacy mode needs a longer timeout", "privacy mode is great", "privacy mode docs are out of date",

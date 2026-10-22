@@ -184,7 +184,8 @@ enum PrivacyEntry {
     static func match(_ heard: String, names: Set<String> = []) -> Match? {
         let edges = trimmed(heard, names: names)
         var words = edges.words
-        let asked = heard.trimmingCharacters(in: .whitespacesAndNewlines).hasSuffix("?")
+        // Asked anywhere in the turn, full-width too: "Stop recording? Thanks." and "Stop recording?!" are questions.
+        let asked = heard.contains("?") || heard.contains("\u{FF1F}")
         let negation = negations.first { words.starts(with: $0) }
         if let negation { words.removeFirst(negation.count) }
         words = Array(words.drop { leading.contains($0) })
