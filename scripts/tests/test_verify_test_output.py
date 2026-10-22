@@ -82,6 +82,25 @@ sys.exit(int(os.environ["FAKE_SWIFT_STATUS"]) if failing in (None, lane) else 0)
 '''
 
 
+
+# A fake `sample`: records its arguments and prints a call graph between lines the lane must drop.
+SAMPLER = r"""
+import os, sys
+pid = sys.argv[1]
+with open(os.environ["FAKE_SAMPLES"], "a") as samples:
+    samples.write(" ".join(sys.argv[1:]) + "\n")
+try:
+    os.kill(int(pid), 0)
+    state = "alive"
+except OSError:
+    state = "gone"
+print("before the call graph")
+print("Call graph:")
+print(f"    5 fake stack of {pid} while {state}")
+print("Total number in stack (recursive counted multiple, when >=5):")
+print("after the call graph")
+"""
+
 class SuccessfulFixtureCleanup(unittest.TestCase):
     def run(self, result=None):
         result = result if result is not None else self.defaultTestResult()
@@ -103,9 +122,12 @@ class VerifyTestOutputTests(SuccessfulFixtureCleanup):
         self.bin.mkdir(mode=0o700)
         self.write_tool("swift", SWIFT)
         self.write_tool("xcodebuild", "import sys; sys.exit(0)")
+        # A stalled lane's processes are sampled before they are stopped (#704); no fixture runs the real sampler.
+        self.write_tool("sample", SAMPLER)
         self.env = dict(os.environ, PATH=f"{self.bin}:{os.environ['PATH']}",
                         TMPDIR=str(self.scratch), FAKE_SWIFT_STATUS="0",
-                        FAKE_SWIFT_CALLS=str(self.scratch / "swift-calls"))
+                        FAKE_SWIFT_CALLS=str(self.scratch / "swift-calls"),
+                        HAIL_STALL_SAMPLER=str(self.bin / "sample"), FAKE_SAMPLES=str(self.scratch / "samples"))
         # CI sets this for the real lanes; the fixtures must capture into their own scratch (#264).
         self.env.pop("HAIL_TEST_CAPTURE_DIR", None)
         self.script = Path(__file__).resolve().parents[1] / "verify.sh"
@@ -248,6 +270,17 @@ class VerifyTestOutputTests(SuccessfulFixtureCleanup):
         self.assertNotIn("  Fake.Suite\n", result.stderr)
         self.assertEqual((self.scratch / "swift-calls").read_text().split(), ["build", "parallel-core"])
         child = int((self.scratch / "child-pid").read_text())
+        # The lane's processes were sampled while still running, briefly, and only the call graph was kept.
+        samples = [line.split() for line in (self.scratch / "samples").read_text().splitlines()]
+        self.assertIn(str(child), [pid for pid, *_ in samples])
+        self.assertTrue(all(arguments == ["1", "200"] for _, *arguments in samples), samples)
+        self.assertIn(f"=== stall sample of pid {child}: ", result.stderr)
+        self.assertIn(f"fake stack of {child} while alive\n", result.stderr)
+        self.assertNotIn("before the call graph", result.stderr)
+        self.assertNotIn("after the call graph", result.stderr)
+        stacks = list(self.scratch.glob("hailing-swift-stall-stacks.*"))
+        self.assertEqual(len(stacks), 1)
+        self.assertIn(f"also kept in {stacks[0]}", result.stderr)
         deadline = time.monotonic() + 10
         while time.monotonic() < deadline and alive(child):
             time.sleep(0.1)
@@ -256,6 +289,20 @@ class VerifyTestOutputTests(SuccessfulFixtureCleanup):
             kept = list(self.scratch.glob(f"hailing-swift-{kind}.*"))
             self.assertEqual(len(kept), 1, kind)
             self.assertIn(str(kept[0]), result.stderr)
+
+    def test_a_stalled_lane_without_a_sampler_is_still_stopped(self):
+        self.env.update(FAKE_SWIFT_HANG="1", HAIL_TEST_STALL_SECONDS="2",
+                        FAKE_SWIFT_CHILD=str(self.scratch / "child-pid"),
+                        HAIL_STALL_SAMPLER=str(self.scratch / "missing-sampler"))
+        result = self.run_lane()
+        self.assertEqual(result.returncode, 124, result.stderr)
+        self.assertIn("  Fake.Suite/hangsForever()/F.swift:2:1\n", result.stderr)
+        self.assertIn("no sampler at", result.stderr)
+        child = int((self.scratch / "child-pid").read_text())
+        deadline = time.monotonic() + 10
+        while time.monotonic() < deadline and alive(child):
+            time.sleep(0.1)
+        self.assertFalse(alive(child), "the stalled lane's descendants must be stopped")
 
     def test_interrupting_verify_stops_the_running_lane(self):
         self.env.update(FAKE_SWIFT_HANG="1", HAIL_TEST_STALL_SECONDS="300",
