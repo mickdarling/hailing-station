@@ -9,6 +9,22 @@ enum ReplyPublicationStatus: Equatable, Sendable {
     case absent, pending, ready
 }
 
+/// Connections in privacy mode (#735 S-2c, internally duck): the agent's replies to them are refused from the moment
+/// the host takes privacy until it confirms the exit. Set synchronously, under the router's lock, by the entry itself,
+/// and read inside each reply's final enqueue, so no frame the agent sends after entry is enqueued. Released on the
+/// router's serial notice queue after the entry's drop of pending replies has run (or at once when the connection
+/// ends). The host's own clips (privacy on, off and status) go through `deliverRequestlessReply`, which never
+/// consults it.
+final class PrivateReplyHold: Sendable {
+    private let held = Mutex<Set<UUID>>([])
+
+    func set(_ on: Bool, connection: UUID) {
+        held.withLock { _ = on ? $0.insert(connection).inserted : $0.remove(connection) != nil }
+    }
+
+    func holds(_ connection: UUID) -> Bool { held.withLock { $0.contains(connection) } }
+}
+
 /// A host-minted request belongs to this HostSession only. Neither device names nor wire UUIDs create it.
 struct HostReplyRequest {
     static let capacity = 64
@@ -404,6 +420,23 @@ extension HostSession {
 
     static let playbackStopLimit = 64
 
+    /// A reply refused while private (#735 S-2c) is stopped like a dismissed one: its later frames are refused too.
+    func stopHeldReply(_ id: UUID) {
+        guard !stoppedReplies.contains(id) else { return }
+        stoppedReplies.append(id)
+        stoppedReplies.removeFirst(max(0, stoppedReplies.count - Self.playbackStopLimit))
+        repliesInFlight.removeAll { $0 == id }
+    }
+
+    /// Drops every reply record (#735 S-2c): a pending handoff then commits as unowned, and a reply that arrives
+    /// for any of them later finds no recipient. Returns how many were dropped.
+    func dropRepliesForPrivacy() -> Int {
+        let dropped = replyRequests.count
+        replyRequests.removeAll()
+        evictedForHandoff.removeAll()
+        return dropped
+    }
+
     func hasStopped(_ frame: Frame) -> Bool {
         Self.replyID(frame).map(stoppedReplies.contains) ?? false
     }
@@ -447,10 +480,14 @@ extension WebSocketPeer {
         return status
     }
 
-    /// Returns true only for this negotiated connection's successfully dispatched, still-current request.
-    func deliverHostReply(_ frame: Frame) async -> Bool {
+    /// Returns true only for this negotiated connection's successfully dispatched, still-current request. While
+    /// `hold` holds this connection (#735 S-2c) the enqueue refuses, which also drops the request's record.
+    func deliverHostReply(_ frame: Frame, hold: PrivateReplyHold? = nil) async -> Bool {
+        let connection = session.connectionID
         guard !ended, await session.unleasedBindingIsCurrent(frame), let prepared = prepareReplyPublication(frame),
-              await session.enqueueHostReply(frame, enqueue: prepared.enqueue) else { return false }
+              await session.enqueueHostReply(frame, enqueue: {
+                  hold?.holds(connection) != true && prepared.enqueue()
+              }) else { return false }
         guard await prepared.result() else {
             finish(reason: "host reply send failed")
             return false
@@ -467,11 +504,15 @@ extension WebSocketPeer {
     /// Host-originated to this one connection (rightyo#105 acknowledgements): no route, no pin.
     func deliverRequestlessReply(_ frame: Frame) async -> Bool { await deliverRoutedReply(frame) != nil }
 
-    /// Returns the selection the reply was delivered under, so its later frames can be pinned to it (#370).
-    func deliverRoutedReply(_ frame: Frame, lastInput: LastInputRoute? = nil) async -> LastInputLedger.Entry? {
+    /// Returns the selection the reply was delivered under, so its later frames can be pinned to it (#370). The
+    /// agent's replies pass `hold` (#735 S-2c), checked in the enqueue; the host's own clips pass none.
+    func deliverRoutedReply(
+        _ frame: Frame, lastInput: LastInputRoute? = nil, hold: PrivateReplyHold? = nil
+    ) async -> LastInputLedger.Entry? {
+        let connection = session.connectionID
         guard !ended, let prepared = prepareReplyPublication(frame),
               let delivered = await session.enqueueRoutedReply(
-                frame, lastInput: lastInput, enqueue: prepared.enqueue
+                frame, lastInput: lastInput, enqueue: { hold?.holds(connection) != true && prepared.enqueue() }
               ) else { return nil }
         guard await prepared.result() else {
             finish(reason: "host reply send failed")
@@ -519,7 +560,9 @@ extension WebSocketListener {
         let late = await peer.session.answersLate(validated)
         // The snapshot may already be stale. Final synchronous gates decide; later send completion
         // failure is ambiguous and must never be treated as a safe pre-publication retry.
-        guard await peer.deliverHostReply(validated) else { throw LocalReplyRefusal.publicationFailed }
+        guard await peer.deliverHostReply(validated, hold: replyHold) else {
+            throw await refusal(validated, on: peer)
+        }
         ambient?.observeReply(validated) // Own-voice rejection for ambient requests (#269).
         if let peerID = peers.first(where: { $0.value === peer })?.key {
             noteRoute(validated, to: peerID, path: late ? "request_late" : "request")
@@ -561,8 +604,8 @@ extension WebSocketListener {
         // as the only candidate; check again before handing the reply to it.
         if await isStopped(frame) { throw LocalReplyRefusal.replyStopped }
         guard let (peerID, candidate) = candidates.first else { throw LocalReplyRefusal.noRecipient }
-        guard let delivered = await candidate.deliverRoutedReply(frame) else {
-            throw LocalReplyRefusal.publicationFailed
+        guard let delivered = await candidate.deliverRoutedReply(frame, hold: replyHold) else {
+            throw await refusal(frame, on: candidate)
         }
         pin(frame, to: delivered)
         noteRoute(frame, to: peerID, path: path)
@@ -584,8 +627,8 @@ extension WebSocketListener {
         try Task.checkCancellation()
         guard !stopped else { throw WebSocketListenerError.stoppedBeforeReady }
         if await isStopped(frame) { throw LocalReplyRefusal.replyStopped }
-        guard let delivered = await peer.deliverRoutedReply(frame, lastInput: route) else {
-            throw LocalReplyRefusal.publicationFailed
+        guard let delivered = await peer.deliverRoutedReply(frame, lastInput: route, hold: replyHold) else {
+            throw await refusal(frame, on: peer)
         }
         pin(frame, to: delivered)
         noteRoute(frame, to: peerID, path: "last_input")
@@ -602,6 +645,28 @@ extension WebSocketListener {
     private func pin(_ frame: Frame, to entry: LastInputLedger.Entry) {
         guard let target = frame.target, let reply = HostSession.replyID(frame) else { return }
         lastInput.pin(reply, target: target, to: entry)
+    }
+
+    /// Why a delivery that enqueued nothing was refused: `privacyHeld` while its connection is private (#735 S-2c),
+    /// which also stops the reply, so none of it plays after the exit either; `publicationFailed` otherwise.
+    private func refusal(_ frame: Frame, on peer: WebSocketPeer) async -> LocalReplyRefusal {
+        guard replyHold.holds(peer.session.connectionID) else { return .publicationFailed }
+        if let id = HostSession.replyID(frame) {
+            await peer.session.stopHeldReply(id)
+            stoppedReplyIDs.append(id)
+            stoppedReplyIDs.removeFirst(max(0, stoppedReplyIDs.count - HostSession.playbackStopLimit))
+        }
+        return .privacyHeld
+    }
+
+    /// Privacy taken on `connection` (#735 S-2c): every reply record its session holds is dropped, committed or
+    /// pending, so no answer to a request made before the entry plays later, during privacy or after it. Returns how
+    /// many were dropped (a count only).
+    func dropPrivateReplies(connection: UUID) async -> Int {
+        guard !stopped, let peer = peers.values.first(where: { $0.session.connectionID == connection }) else {
+            return 0
+        }
+        return await peer.session.dropRepliesForPrivacy()
     }
 
     /// A reply stopped on any connection is refused everywhere (#309), so a stop never hands the rest of it to

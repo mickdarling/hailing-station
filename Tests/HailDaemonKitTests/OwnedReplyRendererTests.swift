@@ -125,7 +125,9 @@ extension OwnedReplyRendererTests {
             renderer.retire(cancel: false)
             await #expect(throws: OwnedReplyRendererError.cleanupDeferred) { try await renderer.waitForCleanup() }
             #expect(renderer.cleanupDisposition == .deferred)
-            #expect(FileManager.default.fileExists(atPath: renderer.outputDirectory.path))
+            // It failed before writing anything: an empty deferred folder holds nothing to recover (#800), and it is
+            // gone before the report, so the CLI cannot exit first.
+            #expect(!FileManager.default.fileExists(atPath: renderer.outputDirectory.path))
         }
     }
 
@@ -149,7 +151,14 @@ extension OwnedReplyRendererTests {
         }
         _ = await during.value
         try await fixture.until("startup-cancelled child reaped") { reaped.withLock { $0 } }
-        #expect(try FileManager.default.contentsOfDirectory(atPath: fixture.outputRoot.path).count == 1)
+        // The deferred folder is kept with whatever the child wrote before it was stopped, or removed if it wrote
+        // nothing (#800): never left empty.
+        try await fixture.until("deferred folder kept with content or removed") {
+            let folders = (try? FileManager.default.contentsOfDirectory(at: fixture.outputRoot,
+                                                                        includingPropertiesForKeys: nil)) ?? []
+            return folders.isEmpty || (folders.count == 1 && !((try? FileManager.default
+                .contentsOfDirectory(atPath: folders[0].path)) ?? []).isEmpty)
+        }
     }
 
     @Test func invalidRootAndStartupConfigurationNeverCreateUnownedOutputs() throws {
