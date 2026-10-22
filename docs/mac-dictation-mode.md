@@ -11,7 +11,7 @@ During dictation:
 - nothing is typed into a password field;
 - guest speech is dropped.
 
-A context-aware refinement step, SuperWhisper-style, tidies the text using the target app's context. Mick framed this as the core of the feature; when it is on by default is decision D8.
+A context-aware refinement step, SuperWhisper-style, tidies the text using the target app's context. When it is on by default is decision D8.
 
 ## What exists today (origin/main)
 
