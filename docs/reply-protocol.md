@@ -227,3 +227,16 @@ grants no authority, and a device cannot change the mode with it.
 
 The decoder refuses any other key, an unknown `reason`, a non-positive `expires`, or `expires` with `on: false`; the
 schema refuses all but the last, which only the decoder can check.
+
+### Duck mode state (#735)
+
+Duck mode is the owner's rubber-duck mode ("let me think out loud"): while it is on, the owner's turns are kept for
+later instead of being sent as requests. Like media mode it lives on the host, so a device needs to be told.
+
+`{"command": "duck_mode", "on": true | false, "reason"?: "voice" | "timeout" | "device", "expires"?: <Unix ms>}` is
+shaped exactly like `media_mode`. `reason` says why it last changed: `voice` when the owner said so, `timeout` when an
+on mode turned itself off, `device` when a device asked. `expires` comes only with `on: true`. It is sent only to a
+device that advertised `duck_mode` (`DuckMode.capability`), because an older device refuses an unknown command. It
+shows state only and grants no authority. Nothing turns duck mode on yet; the host behaviour comes later in #735.
+
+The decoder and the schema refuse the same things as for `media_mode`.
