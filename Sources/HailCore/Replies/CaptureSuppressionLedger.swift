@@ -118,8 +118,8 @@ public enum CapturePlaybackSuppression {
         return count
     }
 
-    /// Where `playback`'s heals are logged: set by its scene when it appears, removed (nil) when it goes away, so a heal
-    /// is reported only through its own scene and no closed scene is kept alive here (#763 review).
+    /// Where `playback`'s heals are logged, set by its scene when it appears (nil removes it): a heal is reported only
+    /// through its own scene. The reporter should hold its scene's state weakly, so this table keeps nothing alive.
     public static func reportHeals(for playback: ReplyPlaybackController, to reporter: (@MainActor (Int) -> Void)?) {
         reporters[ObjectIdentifier(playback)] = reporter
     }

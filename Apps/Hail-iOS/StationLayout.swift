@@ -40,10 +40,13 @@ extension RootView {
             StationBuildFooter()
         }
         .onAppear {
-            CapturePlaybackSuppression.reportHeals(for: playback) { healed($0) }
+            // Weak, and never cleared on disappear: a pushed tool screen hides this view while its heals still count,
+            // and a scene that goes without `onDisappear` leaves nothing alive here (#763 review).
+            CapturePlaybackSuppression.reportHeals(for: playback) { [weak diagnostics] in
+                Self.logHeal($0, to: diagnostics)
+            }
             CapturePlaybackSuppression.releaseCompleted(using: playback)
         }
-        .onDisappear { CapturePlaybackSuppression.reportHeals(for: playback, to: nil) }
         .onChange(of: scenePhase) { _, phase in
             if phase == .active { CapturePlaybackSuppression.releaseCompleted(using: playback) }
         }

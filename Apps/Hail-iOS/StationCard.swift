@@ -143,8 +143,9 @@ extension RootView {
 
     /// A heal dropped `count` capture holds with no live capture behind them (#760): logged as a tap-to-talk end with
     /// reason `other` and the count, from the existing vocabulary, so older Macs still accept the batch.
-    func healed(_ count: Int) {
-        guard count > 0 else { return }
+    /// Static, taking the diagnostics weakly from its caller, so a reporter never keeps a closed scene alive (#763).
+    static func logHeal(_ count: Int, to diagnostics: DeviceDiagnostics?) {
+        guard count > 0, let diagnostics else { return }
         diagnostics.record(.captureState, [
             .state: .token("tap_to_talk_end"), .reason: .token("other"), .count: .integer(Int64(count))
         ])
