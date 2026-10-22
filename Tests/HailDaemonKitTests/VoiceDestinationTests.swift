@@ -84,7 +84,8 @@ import Testing
         let fake = directory.appendingPathComponent("shortcuts")
         try Data("#!/bin/sh\ncd '\(directory.path)'\n\(script)\n".utf8).write(to: fake)
         try FileManager.default.setAttributes([.posixPermissions: 0o700], ofItemAtPath: fake.path)
-        return (ShortcutRunner(executable: fake, timeout: timeout), directory)
+        // Its own notes folder, never the live haild's `$TMPDIR/hail-notes/` (#804).
+        return (ShortcutRunner(executable: fake, timeout: timeout, inputs: VoiceNoteInputs(base: directory)), directory)
     }
 
     @Test func theShortcutGetsTheWordsInAPrivateFileThatIsThenRemoved() async throws {

@@ -24,7 +24,7 @@ import Testing
         let base = try Self.scratch()
         defer { try? FileManager.default.removeItem(at: base) }
         let inputs = VoiceNoteInputs(base: base)
-        let first = try #require(inputs.newInput())
+        let first = try inputs.newInput().get()
         #expect(first.deletingLastPathComponent().standardizedFileURL == inputs.folder.standardizedFileURL)
         let mode = try FileManager.default.attributesOfItem(atPath: inputs.folder.path)[.posixPermissions] as? Int
         #expect(mode == 0o700)
@@ -55,7 +55,7 @@ import Testing
         try FileManager.default.createSymbolicLink(at: base.appendingPathComponent(VoiceNoteInputs.folderName),
                                                    withDestinationURL: elsewhere)
         let inputs = VoiceNoteInputs(base: base)
-        #expect(inputs.newInput() == nil)
+        #expect(inputs.newInput() == .failure(.folderUnsafe))
         inputs.sweep()
         #expect(FileManager.default.fileExists(atPath: decoy.path))
     }
@@ -99,6 +99,31 @@ import Testing
         #expect(finished.withLock { $0 })
     }
 
+    /// #804: startup returns its router while the notes sweep is still held, so the call site cannot quietly become
+    /// a wait. A sweep run in line would hold startup until its 10 s release and be seen as finished.
+    @Test func startupNeverWaitsForTheNotesSweep() async throws {
+        let base = try Self.scratch()
+        defer { try? FileManager.default.removeItem(at: base) }
+        let destinations = base.appendingPathComponent("destinations.json")
+        try Data(#"{"Notes": {"shortcut": "Hail to Notes"}}"#.utf8).write(to: destinations)
+        let release = DispatchSemaphore(value: 0), swept = Mutex(false)
+        let inputs = VoiceNoteInputs(base: base) {
+            _ = release.wait(timeout: .now() + 10)
+            swept.withLock { $0 = true }
+        }
+        let rig = try await RecipientTestRig.make()
+        let fake = try FakeRightyo("exit 0")
+        defer { fake.cleanUp() }
+        var options = ConnectionProbeDaemon.AmbientOptions(
+            executable: fake.executable, config: fake.config, target: RecipientTestRig.target
+        )
+        (options.destinations, options.noteInputs) = (destinations, inputs)
+        _ = try await ConnectionProbeDaemon.ambientRouter(options, host: rig.host, log: { _ in })
+        #expect(!swept.withLock { $0 }, "startup waited for the notes sweep")
+        release.signal()
+        #expect(await eventually { swept.withLock { $0 } })
+    }
+
     /// Startup with spoken notes on returns its router and sweeps the notes folder in the background.
     @Test func startupSweepsTheNotesFolderOffItsPath() async throws {
         let base = try Self.scratch()
@@ -106,7 +131,7 @@ import Testing
         let destinations = base.appendingPathComponent("destinations.json")
         try Data(#"{"Notes": {"shortcut": "Hail to Notes"}}"#.utf8).write(to: destinations)
         let inputs = VoiceNoteInputs(base: base)
-        let stale = try #require(inputs.newInput())
+        let stale = try inputs.newInput().get()
         try Self.note(stale, age: VoiceNoteInputs.maxAge + 60)
         let rig = try await RecipientTestRig.make()
         let fake = try FakeRightyo("exit 0")
