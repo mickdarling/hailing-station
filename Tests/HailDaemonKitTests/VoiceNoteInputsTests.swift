@@ -64,7 +64,9 @@ import Testing
         let base = try Self.scratch()
         defer { try? FileManager.default.removeItem(at: base) }
         let fake = base.appendingPathComponent("shortcuts")
-        try Data("#!/bin/sh\necho \"$4\" > '\(base.path)/path.txt'\n".utf8).write(to: fake)
+        // It records the input's path and mode: the words are readable by the owner only (#804).
+        try Data("#!/bin/sh\necho \"$4\" > '\(base.path)/path.txt'\nstat -f %Lp \"$4\" > '\(base.path)/mode.txt'\n"
+            .utf8).write(to: fake)
         try FileManager.default.setAttributes([.posixPermissions: 0o700], ofItemAtPath: fake.path)
         let inputs = VoiceNoteInputs(base: base)
         let runner = ShortcutRunner(executable: fake, timeout: .seconds(20), inputs: inputs)
@@ -74,6 +76,14 @@ import Testing
         #expect(URL(fileURLWithPath: path).deletingLastPathComponent().standardizedFileURL
             == inputs.folder.standardizedFileURL)
         #expect(!FileManager.default.fileExists(atPath: path))
+        let mode = try String(contentsOf: base.appendingPathComponent("mode.txt"), encoding: .utf8)
+        #expect(mode.trimmingCharacters(in: .newlines) == "600")
+    }
+
+    /// #804: an input is swept only once no run could still be reading it, past the Shortcut's timeout and the 2 s
+    /// grace before its SIGKILL.
+    @Test func theSweepAgeOutlastsAnyShortcutRun() {
+        #expect(Duration.seconds(VoiceNoteInputs.maxAge) > ShortcutRunner().timeout + .seconds(2))
     }
 
     /// The stall this guards: work handed to the background returns at once, however long the work takes.
