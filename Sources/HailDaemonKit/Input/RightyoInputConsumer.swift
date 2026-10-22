@@ -158,7 +158,7 @@ enum VoiceDuck {
 /// acknowledgement directory: `confirm-stopped/` ("Stopped.") and `confirm-idle/` ("Nothing playing, standing by."),
 /// for the owner's spoken mute (#404) `confirm-muted/` ("Muted.") and `confirm-unmuted/` ("Unmuted."), and for media
 /// mode (#551) `confirm-media-on/` and `confirm-media-off/`, for spoken notes (#552) `confirm-saved/` and
-/// `confirm-not-saved/`, and for duck mode (#735) `confirm-duck-on/` and `confirm-duck-off/`.
+/// `confirm-not-saved/`, and for duck mode (#735) `confirm-duck-on/`, `confirm-duck-off/` and `confirm-discarded/`.
 enum AmbientStopConfirmation {
     static let stopped = RightyoAddressing.key("confirm-stopped"), idle = RightyoAddressing.key("confirm-idle")
     static let muted = RightyoAddressing.key("confirm-muted"), unmuted = RightyoAddressing.key("confirm-unmuted")
@@ -174,8 +174,11 @@ enum AmbientStopConfirmation {
     /// recorded yet plays nothing, as for media mode.
     static let duckOn = RightyoAddressing.key("confirm-duck-on")
     static let duckOff = RightyoAddressing.key("confirm-duck-off")
+    /// The owner's "discard that" while ducking (#735 H-3): "Discarded." Reserved, so it is never an acknowledgement
+    /// voice; a folder Mick has not recorded yet plays nothing.
+    static let discarded = RightyoAddressing.key("confirm-discarded")
     static let reserved: Set<String> = [stopped, idle, muted, unmuted, mediaOn, mediaOff, saved, notSaved, notSent,
-                                        duckOn, duckOff]
+                                        duckOn, duckOff, discarded]
 
     /// Why a playback stop is not confirmed, as a log token, or nil when it is: only the enrolled owner's stop, and
     /// only on a connection still there to hear it.
