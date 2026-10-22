@@ -86,9 +86,10 @@ public final class DuckSession: Sendable {
     /// The open session's turns (empty once it is closed).
     var snapshot: Snapshot { state.withLock { $0.live } }
 
-    /// Duck mode turned off (#735 H-5): the open session closes and nothing more enters. Its turns, if any, are held
-    /// for `holdWindow` as one `Held`, which is returned for the summary; nil when no session was open or it held no
-    /// turn, and then nothing is held. A timer drops the hold at the window's end; every read checks it too.
+    /// Duck mode turned off with a summary to follow (#735 H-5): the open session closes and nothing more enters. Its
+    /// turns, if any, are held for `holdWindow` as one `Held`, its summary `pending` from now, and returned for the
+    /// summary; nil when no session was open or it held no turn, and then nothing is held. A timer drops the hold at
+    /// the window's end; every read checks it too. An exit without a summary calls `end` instead.
     func close() -> Held? {
         let instant = now()
         let held = state.withLock { state -> Held? in

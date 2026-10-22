@@ -26,7 +26,9 @@ import Testing
     @Test func closeHoldsTheTurnsAndNothingMoreEnters() throws {
         let (session, held) = try closed(["First synthetic turn.", "Second synthetic turn."])
         #expect(held.copy.turns == ["First synthetic turn.", "Second synthetic turn."])
-        #expect(held.summary == .notRequested && session.held == held)
+        // A summary is asked for at the exit, so a save before it is handed off says it is pending.
+        #expect(held.summary == .pending && session.held == held)
+        #expect(held.note.contains("Summary: still being asked for when this was saved."))
         #expect(!session.isOpen && session.snapshot.turns.isEmpty)
         #expect(!session.append("After the end."))
         // Closing again (a repeated off) changes nothing.
@@ -76,13 +78,20 @@ import Testing
         let (session, held) = try closed(["A synthetic turn."])
         let request = UUID()
         session.noteSummary(.sent(request), for: UUID())
-        #expect(session.held?.summary == .notRequested)
+        #expect(session.held?.summary == .pending)
         session.noteSummary(.sent(request), for: held.id)
         #expect(!session.noteReply(request: UUID(), text: "Another reply."))
         #expect(session.noteReply(request: request, text: "A synthetic summary."))
         #expect(session.held?.summary == .captured("A synthetic summary."))
         // Once captured, a repeat is ignored.
         #expect(!session.noteReply(request: request, text: "Changed."))
+        // The kept text is capped at 8,000 UTF-8 bytes, on a character boundary.
+        let (capping, cappingHeld) = try closed(["A synthetic turn."])
+        let longRequest = UUID()
+        capping.noteSummary(.sent(longRequest), for: cappingHeld.id)
+        #expect(capping.noteReply(request: longRequest, text: String(repeating: "ab", count: 4_500)))
+        guard case .captured(let kept)? = capping.held?.summary else { throw CancellationError() }
+        #expect(kept.utf8.count == 8_000 && DuckSession.Held.maxSummaryBytes == 8_000)
         let long = String(repeating: "é", count: DuckSession.Held.maxSummaryBytes)
         let capped = DuckSession.Held.capped(long, bytes: DuckSession.Held.maxSummaryBytes)
         #expect(capped.utf8.count == DuckSession.Held.maxSummaryBytes && long.hasPrefix(capped))
@@ -95,11 +104,12 @@ import Testing
         held.summary = .captured("A synthetic summary.")
         #expect(held.note == "Duck mode notes, 2 turns.\nSummary: A synthetic summary.\nTranscript:\n"
             + "- First synthetic turn.\n- Second synthetic turn.")
-        let states: [DuckSummaryState] = [.notRequested, .pending, .notSent, .sent(nil), .captured("x")]
-        #expect(states.map(\.token) == ["none", "pending", "not_sent", "spoken", "captured"])
+        let states: [DuckSummaryState] = [.pending, .notSent, .sent(nil), .captured("x")]
+        #expect(states.map(\.token) == ["pending", "not_sent", "spoken", "captured"])
         #expect(Set(states.map(\.line)).count == states.count && states.allSatisfy { $0.line.hasPrefix("Summary: ") })
-        let save = DuckSave(held)
+        let save = DuckSave(held, to: .markdown("/synthetic/Notes.md"))
         #expect(save.text == held.note && save.turns == 2 && save.bytes == held.note.utf8.count)
+        #expect(save.target == .markdown("/synthetic/Notes.md") && DuckSave.notesKey == "notes")
         #expect(save.summary == "captured")
         let dropping = DuckSession(maxBytes: 4)
         dropping.begin()
@@ -123,13 +133,16 @@ import Testing
         #expect(DangerousPatternGuard.matches(in: [prompt], patterns: DangerousPatternGuard.defaults).isEmpty)
     }
 
-    @Test(arguments: [("save that", DuckHeldCue.save), ("Jarvis, save that to notes please.", .save),
-                      ("Hey Rightyo, discard that.", .discard)])
+    @Test(arguments: [("Jarvis, save that", DuckHeldCue.save), ("Jarvis, save that to notes please.", .save),
+                      ("save that to notes", .save), ("Hey Rightyo, discard that.", .discard),
+                      ("discard that", .discard)])
     func theHeldCuesMatchWholeTurns(_ heard: String, _ cue: DuckHeldCue) {
         #expect(DuckHeldCue.cue(in: heard, names: Self.names) == cue)
     }
 
-    @Test(arguments: ["save that idea for later", "save the notes", "add to notes: save that", "save", "discard"])
+    /// A bare "save that" names nobody: it stays a request to the agent.
+    @Test(arguments: ["save that", "Save that please.", "save that idea for later", "save the notes",
+                      "add to notes: save that", "save", "discard", "Jarvis, save it"])
     func anythingElseIsNoHeldCue(_ heard: String) {
         #expect(DuckHeldCue.cue(in: heard, names: Self.names) == nil)
     }
