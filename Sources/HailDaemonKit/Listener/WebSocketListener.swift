@@ -484,6 +484,9 @@ public final class AmbientRightyoRouter: AmbientAudioSink, AmbientListenerWiring
         /// How long the owner's spoken duck mode (#735) lasts before it turns itself off: host.json
         /// `ambient.duckTimeout`, or `defaultDuckTimeout`.
         public var duckTimeout: TimeInterval = AmbientRightyoRouter.defaultDuckTimeout
+        /// Privacy mode's state across a restart (#735 S-2b); nil keeps it in memory only (tests). `haild` sets
+        /// `AmbientPrivacyState.standard()`.
+        public var privacyState: AmbientPrivacyState?
         /// The owner's allowlisted note destinations (#552); nil leaves spoken notes off.
         public var destinations: VoiceDestinations?
         var notes = VoiceNoteRunner()
@@ -557,6 +560,9 @@ public final class AmbientRightyoRouter: AmbientAudioSink, AmbientListenerWiring
         var media: [UUID: AmbientMediaTimer] = [:]
         /// Connections whose owner turned duck mode on (#735), kept like `media`. A connection is never in both.
         var duck: [UUID: AmbientDuckTimer] = [:]
+        /// The host is private (#735 S-2b): the state file said so at startup (or could not be read), or an entry
+        /// wrote it since. Every stream that starts meanwhile starts private; only a confirmed exit clears it.
+        var hostPrivate = false
         /// The reply whose final text, the latest this host delivered, ended with a question (rightyo#199); nil
         /// otherwise, and cleared by audio of any other reply (a text-less acknowledgement clip). The phone plays
         /// replies in order and reports one end when its queue drains, so that reply is the one just heard.
@@ -574,6 +580,13 @@ public final class AmbientRightyoRouter: AmbientAudioSink, AmbientListenerWiring
 
     public init(configuration: Configuration, log: @escaping @Sendable (WebSocketListenerEvent) -> Void = { _ in }) {
         (self.configuration, self.log) = (configuration, log)
+        // Before any stream can start (#735 S-2b): only a missing file starts public.
+        if let store = configuration.privacyState {
+            let reading = store.read()
+            state.withLock { $0.hostPrivate = reading != .public }
+            log(WebSocketListenerEvent(event: "ambient_privacy_state", sessionID: nil,
+                                       detail: "startup=\(reading.rawValue) private=\(reading != .public)"))
+        }
         let (wakes, wake) = AsyncStream.makeStream(of: Void.self, bufferingPolicy: .bufferingNewest(1))
         self.wake = wake
         let worker = Task { [weak self] in
@@ -963,8 +976,9 @@ extension AmbientRightyoRouter {
         settings.onVoiceMedia = voiceMedia(on: connection, listener: listener)
         (settings.onVoiceDuck, settings.onDuckUnsupported) = (voiceDuck(on: connection, listener: listener),
                                                               duckUnsupported(on: connection))
-        // Privacy on (#735 S-2b): the child is launched already private, on a spawn, a respawn or a reload alike.
-        settings.startPrivate = state.withLock { $0.duck[connection] != nil }
+        // Privacy on (#735 S-2b): the child is launched already private, on a spawn, a respawn or a reload alike, and
+        // so is every child while the host is private (after a restart while private, before any audio).
+        settings.startPrivate = state.withLock { $0.duck[connection] != nil || $0.hostPrivate }
         if let destinations = configuration.destinations {
             (settings.destinations, settings.onVoiceDestination) = (destinations, voiceNote(on: connection,
                                                                                             listener: listener))
@@ -997,11 +1011,15 @@ extension AmbientRightyoRouter {
         // A new or reloaded child starts with media mode off (#551). Told under the same lock `setMedia` changes it
         // under, so it can never miss a change made while it was starting.
         if state.media[connection] != nil { pipeline.reportMedia(true) }
+        // A private host (#735 S-2b) restores privacy on this connection: auto-end armed, device told.
+        let restored = state.hostPrivate && state.duck[connection] == nil
+        if restored { armDuck(connection: connection, reason: "restored", in: &state) }
         // Duck mode (#735) likewise; the pipeline writes it once the child's `started` says it takes it. Always told,
         // so a child launched start-private (S-2b) whose privacy ended meanwhile is written off once it confirms.
         pipeline.reportDuck(state.duck[connection] != nil)
         state.runs[id]?.task = Task { [weak self] in
             if reload { self?.emit("ambient_reloaded", detail: nil) }
+            if restored { self?.emit("ambient_privacy_state", connection: connection, detail: "restored=true") }
             self?.emit("ambient_started", connection: connection, detail: nil)
             await self?.run(pipeline, id: id, stream: stream, connection: connection)
         }
@@ -1508,24 +1526,60 @@ extension AmbientRightyoRouter {
             runs.forEach { _ = $0.pipeline.reportDuck(state.duck[connection] != nil) }
             return nil
         }
+        guard on else {
+            state.duck.removeValue(forKey: connection)?.timer.cancel()
+            noticeDuck(false, connection: connection, reason: reason, in: &state)
+            // Cleared only once the device was told the exit, and only if no connection is still private (S-2b).
+            if configuration.privacyState != nil {
+                mediaNotices.enqueue { [weak self] in self?.clearPrivacyState() }
+            }
+            return reported
+        }
+        armDuck(connection: connection, reason: reason, in: &state)
+        return reported
+    }
+
+    /// Privacy on for `connection` under the caller's lock: the state file first (#735 S-2b), before any notice or
+    /// clip confirms it, then the auto-end (re-armed), then the device notice.
+    private func armDuck(connection: UUID, reason: String, in state: inout State) {
+        if let store = configuration.privacyState {
+            let written = (try? store.enter()) != nil
+            state.hostPrivate = true
+            if !written { emit("ambient_privacy_state", connection: connection, detail: "write=failed") }
+        }
         let token = UUID(), timeout = configuration.duckTimeout
         state.duck.removeValue(forKey: connection)?.timer.cancel()
-        if on {
-            let timer = Task { [weak self] in
-                try? await Task.sleep(for: .seconds(timeout))
-                guard !Task.isCancelled else { return }
-                self?.setDuck(false, connection: connection, reason: "timeout", expected: token)
-            }
-            state.duck[connection] = AmbientDuckTimer(token: token, timer: timer)
+        let timer = Task { [weak self] in
+            try? await Task.sleep(for: .seconds(timeout))
+            guard !Task.isCancelled else { return }
+            self?.setDuck(false, connection: connection, reason: "timeout", expected: token)
         }
-        let expires = on ? Int64((Date().timeIntervalSince1970 + timeout) * 1_000) : nil
+        state.duck[connection] = AmbientDuckTimer(token: token, timer: timer)
+        noticeDuck(true, connection: connection, reason: reason, in: &state)
+    }
+
+    /// Queues the device's `duck_mode` notice in the order the mode changed.
+    private func noticeDuck(_ on: Bool, connection: UUID, reason: String, in state: inout State) {
+        let expires = on ? Int64((Date().timeIntervalSince1970 + configuration.duckTimeout) * 1_000) : nil
         let listener = state.listener?.value
         mediaNotices.enqueue { [weak self, weak listener] in
             let sent = await listener?.showDuckMode(on, reason: reason, expires: expires, connection: connection)
             self?.emit("ambient_duck_device", connection: connection,
                        detail: "on=\(on) device=\(sent ?? "no_connection")")
         }
-        return reported
+    }
+
+    /// Removes the state file after a confirmed exit (#735 S-2b), under the lock an entry writes it under, so an entry
+    /// meanwhile is never undone; left alone while any connection is still private. Logs a token only.
+    private func clearPrivacyState() {
+        guard let store = configuration.privacyState else { return }
+        let outcome = state.withLock { state -> String? in
+            guard state.hostPrivate, state.duck.isEmpty else { return nil }
+            guard (try? store.clear()) != nil else { return "failed" }
+            state.hostPrivate = false
+            return "cleared"
+        }
+        if let outcome { emit("ambient_privacy_state", detail: "clear=\(outcome)") }
     }
 }
 

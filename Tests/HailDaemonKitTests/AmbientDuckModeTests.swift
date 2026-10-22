@@ -131,13 +131,14 @@ final class DuckRig: Sendable {
     init(saying words: String = "", advertises: Bool = false, version: Int = 2, script: String? = nil,
          enrolled: Bool = true,
          clips: AmbientAckLibrary? = nil, timeout: TimeInterval = AmbientRightyoRouter.defaultDuckTimeout,
-         capabilities: [String] = []) async throws {
+         capabilities: [String] = [], privacy: AmbientPrivacyState? = nil) async throws {
         fake = try FakeRightyo(script ?? "/bin/cat <&3 > control.txt &\n" + AmbientPrivacyEntryTests.fixture(
             saying: words, enrolled: enrolled, advertises: advertises, version: version))
         try fake.install(fixture: enrolled ? "enrolled-formed-request.jsonl" : "tool-events.jsonl")
         let events = DuckEvents()
         env = try await ambientRig(fake, timing: .init(eofGrace: 20, termGrace: 20), acknowledgements: clips,
-                                   replyControl: true, duckTimeout: timeout, onEvent: { event in
+                                   replyControl: true, duckTimeout: timeout, privacyState: privacy,
+                                   onEvent: { event in
             events.list.withLock { $0.append(event) }
         })
         self.events = events
@@ -154,6 +155,10 @@ final class DuckRig: Sendable {
 
     func details(_ name: String) -> [String] {
         events.list.withLock { $0.filter { $0.event == name }.map { $0.detail ?? "" } }
+    }
+    /// `<event> <detail>` for every event named in `names`, in the order logged.
+    func ordered(_ names: Set<String>) -> [String] {
+        events.list.withLock { $0.filter { names.contains($0.event) }.map { "\($0.event) \($0.detail ?? "")" } }
     }
     /// The connection the ambient stream belongs to, once the stream started.
     func connection() -> UUID? { events.list.withLock { $0.first { $0.event == "ambient_started" }?.sessionID } }
