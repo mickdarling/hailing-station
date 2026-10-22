@@ -65,6 +65,15 @@ extension AmbientRightyoRouter {
         }
     }
 
+    /// A device's end control (#735 H-4, `end_duck_mode`): ends duck mode for `connection`, its own, exactly as the
+    /// spoken exit does (children, timeout and warning, device notice) but with reason `device` and no clip, since the
+    /// owner acted on the screen and the card shows the end. Only while duck mode is on: otherwise nothing changes and
+    /// nothing is logged, so a repeated end cannot flood the log or write the child. It can never start duck mode.
+    public func ambientDuckEnd(connection: UUID) {
+        guard duckMode(connection: connection) else { return }
+        setDuck(false, connection: connection, reason: "device")
+    }
+
     /// A child that started while duck mode was on without advertising `duck` (an older RightyO after a reload) cannot
     /// take it, and the host never claims a mode a child is not in: duck mode ends for `connection`, its timeout is
     /// cancelled and the device told off. The device's reason is `timeout`, the protocol's "it turned itself off":
