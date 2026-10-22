@@ -738,7 +738,15 @@ Only RightyO's content-free events act. Both are admitted only on a session that
 
 #### Playback, lifetime and media mode
 
-When privacy is taken, a reply playing on the connection is stopped first, through the owner's stop path (`stop_playback` to a device that takes it; `playback=` in the log). Only then does the clip play. "Still on" (an entry while already private) silences in the same way, since nothing should be playing while private. A refused entry leaves playback alone. Replies the agent sends later, while private, are not yet dropped; that is a follow-up (S-2c).
+When privacy is taken, a reply playing on the connection is stopped first, through the owner's stop path (`stop_playback` to a device that takes it; `playback=` in the log). Only then does the clip play. "Still on" (an entry while already private) silences in the same way, since nothing should be playing while private. A refused entry leaves playback alone. **The agent's replies are dropped while private (S-2c).** From the moment the host takes privacy (set with the change itself, before any clip or notice) until it confirms the exit, the agent's replies to that connection are refused inside their final enqueue, so no frame sent after entry reaches the device:
+
+- `haild reply` gets `reply refused [privacyHeld]: device is in privacy mode; reply dropped, nothing published` (a token and a fixed sentence, never words; the delivery audit records the token);
+- a refused reply is stopped, like a dismissed one: its later frames, pacer-queued audio included, stay refused after the exit (`replyStopped`), so no reply resumes half-way;
+- on entry every reply record the connection's session holds is dropped, committed or pending (`ambient_privacy_replies dropped=<n>`): an answer to a request made before privacy finds no recipient, during privacy or after;
+- the host's own clips (privacy on, off and status) are not agent replies and still play;
+- the hold is set with the entry itself, under the router's lock; the exit releases it on the router's serial notice queue, only after the entry's drop has run (logged `ambient_privacy_replies released=true`), so a reply from before a fast entry and exit never slips through;
+- privacy is in memory and per connection: the hold ends with the connection, and a new connection starts with none;
+- after the exit, new replies flow again.
 
 Privacy ends only on the owner's exit (RightyO's `exit`, or the app's switch, S-6, below), or when the connection ends, since privacy lives in memory for its connection only. **There is no auto-end** (Mick, round 2): no timer runs and the device notice carries no expiry. `ambient.duckTimeout` in `host.json` and `--ambient-duck-timeout` are still accepted but no longer apply to privacy; they are reserved for a future session-mode auto-stop. An entry while already private answers "still on" with `confirm-privacy-on/`. Entering privacy leaves media mode, but **media mode never ends privacy**: while private, a media-mode entry from any source is refused (`ambient_media on=true … refused=private`), nothing changes or reaches the child, and the spoken one hears `confirm-privacy-status/`. A device that advertised `duck_mode` is told each change (`ambient_duck_device`), and sees "on" only once a child took it.
 

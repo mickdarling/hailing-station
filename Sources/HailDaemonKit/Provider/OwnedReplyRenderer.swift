@@ -191,7 +191,7 @@ private final class ReplyRendererLifetime: Sendable {
         }
     }
 
-    /// Consumer retirement follows stable-file/finalization reads. Abnormal retirement reports
+    /// Consumer retirement follows stable-file/finalization reads. Abnormal retirement of a live child reports
     /// deferred cleanup immediately, but the source retains exact-child responsibility while alive.
     func retire(cancel: Bool) {
         gate.close()
@@ -244,6 +244,9 @@ private final class ReplyRendererLifetime: Sendable {
         let disposition = state.withLock { current -> OwnedReplyRendererCleanupDisposition in
             guard current.retired else { return .pending }
             if current.child.ownershipLost { return .ownershipLost }
+            // A reaped child's deferred cleanup reports after its empty-leaf removal (#800), so a caller that exits
+            // once `waitForCleanup` returns cannot strand it.
+            guard current.child.pid != nil else { return .pending }
             if current.cancelled || (current.child.status != nil && current.child.status != 0) { return .deferred }
             return .pending
         }
@@ -306,6 +309,8 @@ private final class ReplyRendererLifetime: Sendable {
             let completed: OwnedReplyRendererCleanupDisposition
             if disposition == .pending {
                 completed = self.folder.remove(checkpoint: self.hooks.cleanup) ? .completed : .failed
+            } else if disposition == .deferred {
+                self.folder.removeIfEmpty(); completed = disposition
             } else { self.folder.abandon(); completed = disposition }
             self.reportRetirement(completed)
             self.processExit.setEventHandler {}
@@ -520,6 +525,21 @@ private struct ReplyRendererFolder: Sendable {
         return unlinkat(rootDescriptor, url.lastPathComponent, AT_REMOVEDIR) == 0
     }
     func abandon() { close(rootDescriptor) } // Unknown child ownership: keep files for explicit local recovery.
+
+    /// A deferred cleanup (#800): the child (the group leader) is reaped but its outcome is not trusted, so any content
+    /// stays for local recovery. An empty folder holds nothing to recover, so it goes: `AT_REMOVEDIR` removes only an
+    /// empty directory, and only once the name still names the folder this renderer made. An ordinary descendant
+    /// still writing either lands first (the folder is kept) or later fails with ENOENT; nothing is lost or redirected.
+    /// As for `remove`, POSIX has no inode-conditional rmdir, so a same-UID rebind between the check and the removal
+    /// could cost an empty directory, never content. Retiring after the reap, `waitForCleanup` returns once it has run.
+    func removeIfEmpty() {
+        defer { close(rootDescriptor) }
+        var current = stat()
+        guard fstatat(rootDescriptor, url.lastPathComponent, &current, AT_SYMLINK_NOFOLLOW) == 0,
+              current.st_dev == identity.device, current.st_ino == identity.inode,
+              current.st_mode & S_IFMT == S_IFDIR else { return }
+        _ = unlinkat(rootDescriptor, url.lastPathComponent, AT_REMOVEDIR)
+    }
 }
 
 extension ReplyRendererFolder {
