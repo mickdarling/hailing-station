@@ -171,6 +171,10 @@ haild keeps, in memory only, each approved key's last privacy report.
   - After any reconnect the app does not listen until the host has confirmed the connection's state. If the app was
     private when the connection dropped and the host does not confirm it private, the app stays not listening until
     the owner turns listening on. This covers privacy held before a proof, which marked no key.
+  - If the app was listening in public when the connection dropped, it resumes listening once the host confirms the
+    connection public. The rule forbids only private to public.
+  - Whenever listening does not come back after a reconnect, the app says so, aloud and on the card (#822). It never
+    stops listening silently.
   - A reconnect that does not prove (no `owner_device` in the host's hello, or no challenge) starts not listening.
   - A haild restart comes back not listening (below).
 - **Before a proof or approval:** privacy turned on over a connection that has not yet proven, or whose key is still
