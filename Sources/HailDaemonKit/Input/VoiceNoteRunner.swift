@@ -66,8 +66,9 @@ struct ShortcutRunner: Sendable {
     var inputs = VoiceNoteInputs()
 
     func run(_ shortcut: String, text: String) async -> String {
-        guard let input = inputs.newInput(),
-              FileManager.default.createFile(atPath: input.path, contents: Data(text.utf8),
+        let input: URL
+        do throws(VoiceNoteInputs.Refusal) { input = try inputs.newInput().get() } catch { return error.rawValue }
+        guard FileManager.default.createFile(atPath: input.path, contents: Data(text.utf8),
                                              attributes: [.posixPermissions: 0o600]) else { return "input_failed" }
         defer { try? FileManager.default.removeItem(at: input) }
         let process = Process()

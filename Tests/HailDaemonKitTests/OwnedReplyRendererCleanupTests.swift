@@ -64,7 +64,9 @@ struct OwnedReplyRendererCleanupTests {
         release.signal()
         await renderer.waitForCancellationSignals()
         try await fixture.until("escalated child reaped") { !renderer.isRunning }
-        #expect(FileManager.default.fileExists(atPath: renderer.outputDirectory.path))
+        // A deferred folder with content is kept for local recovery (#800): only an empty one goes.
+        #expect(FileManager.default.fileExists(atPath: renderer.outputDirectory
+            .appendingPathComponent("synthetic.raw").path))
     }
 
     @Test func checkToDeleteLeafReplacementPreservesUnrelatedContents() async throws {
@@ -132,8 +134,10 @@ struct OwnedReplyRendererCleanupTests {
         let fixture = try RendererFixture(mode: "descendant-writer")
         defer { fixture.remove() }
         let renderer = try fixture.start()
+        // Its output, not only its record: a leader stopped between the two leaves an empty folder, removed (#800).
         try await fixture.until("descendant fixture ready") {
-            FileManager.default.fileExists(atPath: fixture.record.path)
+            FileManager.default.fileExists(atPath: renderer.outputDirectory
+                .appendingPathComponent("synthetic.raw").path)
         }
         renderer.retire(cancel: true)
         await #expect(throws: OwnedReplyRendererError.cleanupDeferred) { try await renderer.waitForCleanup() }
