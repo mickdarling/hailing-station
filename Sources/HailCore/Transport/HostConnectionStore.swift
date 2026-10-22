@@ -44,8 +44,6 @@ public final class HostConnectionStore {
     /// Each host's last `media_mode` for this device's stream (#612). A host keeps media mode per connection, so it
     /// is forgotten whenever that connection stops being ready or the host is removed.
     public private(set) var mediaMode: [HostEndpoint.Identifier: MediaModeStatus] = [:]
-    /// Each host's last `duck_mode` for this device's stream (#735), kept and forgotten exactly like `mediaMode`.
-    public private(set) var duckMode: [HostEndpoint.Identifier: DuckModeStatus] = [:]
     /// This device's current input route kind for `ambient_input` (rightyo#164); replaceable in tests.
     @ObservationIgnored var inputRoute: @MainActor () async -> String? = { HostConnectionStore.currentInputRoute() }
 
@@ -167,7 +165,7 @@ public final class HostConnectionStore {
         if let barrier { retiredBarriers[id] = barrier }
         (snapshots[id], health[id]) = (nil, nil)
         ownerVoiceUnrecognized.remove(id)
-        (mediaMode[id], duckMode[id]) = (nil, nil)
+        mediaMode[id] = nil
         order.removeAll { $0 == id }
     }
     /// Every selection change, endpoint change or removal invalidates outstanding bindings for the host.
@@ -182,7 +180,7 @@ public final class HostConnectionStore {
         snapshots[snapshot.id] = snapshot
         recordDiagnostics(from: previous, to: snapshot.state)
         if snapshot.state == .ready, previous != .ready { hostBecameReady(snapshot.id) }
-        if snapshot.state != .ready { (mediaMode[snapshot.id], duckMode[snapshot.id]) = (nil, nil) }
+        if snapshot.state != .ready { mediaMode[snapshot.id] = nil }
     }
 
     private func receive(_ event: HostReplyEvent, token: UUID) {
@@ -249,6 +247,8 @@ extension HostConnectionStore {
         case .control(.healthReport(let report)):
             let generation = snapshots[event.endpointID]?.connectionGeneration
             health[event.endpointID] = HostHealthReading(report: report, connectionGeneration: generation)
+        case .control(.mediaMode(let on, let reason, let expires)):
+            mediaMode[event.endpointID] = MediaModeStatus(on: on, reason: reason, expiresMilliseconds: expires)
         case .control(.error(let code, let message)) where code.isRequestRefusal:
             // The one chat line and the one announcement for every request refusal, whatever its code.
             conversation.noteRefusal(message, endpointID: event.endpointID,
@@ -266,19 +266,6 @@ extension HostConnectionStore {
             } else {
                 ownerVoiceUnrecognized.remove(event.endpointID)
             }
-        default:
-            return receiveModeNotice(event)
-        }
-        return true
-    }
-
-    /// True when `event` was a host's media mode (#612) or duck mode (#735) state for this device's stream, now kept.
-    private func receiveModeNotice(_ event: HostReplyEvent) -> Bool {
-        switch event.frame.payload {
-        case .control(.mediaMode(let on, let reason, let expires)):
-            mediaMode[event.endpointID] = MediaModeStatus(on: on, reason: reason, expiresMilliseconds: expires)
-        case .control(.duckMode(let on, let reason, let expires)):
-            duckMode[event.endpointID] = DuckModeStatus(on: on, reason: reason, expiresMilliseconds: expires)
         default:
             return false
         }
@@ -986,33 +973,4 @@ final class AmbientResumer {
 /// The streamer a send closure belongs to, filled in once it exists (#445).
 private final class StreamerSource: @unchecked Sendable {
     @MainActor weak var streamer: AmbientAudioStreamer?
-}
-
-/// The owner's rubber-duck mode (#735) as a host last reported it for this device's ambient stream. State only: the
-/// device cannot change the mode, and nothing turns it on yet.
-public struct DuckModeStatus: Equatable, Sendable {
-    public let on: Bool
-    /// Why it last changed: `voice`, `timeout` or `device`, or nil when the host did not say.
-    public let reason: String?
-    /// When an on mode turns itself off.
-    public let expires: Date?
-
-    public init(on: Bool, reason: String? = nil, expires: Date? = nil) {
-        self.on = on
-        self.reason = reason
-        self.expires = on ? expires : nil
-    }
-
-    /// From a host's `duck_mode` (Unix milliseconds for `expires`).
-    public init(on: Bool, reason: String?, expiresMilliseconds: Int64?) {
-        self.init(on: on, reason: reason,
-                  expires: expiresMilliseconds.map { Date(timeIntervalSince1970: TimeInterval($0) / 1_000) })
-    }
-
-    /// Whether it is on at `now`: an on mode past its expiry counts as off, even before the host says so.
-    public func isOn(now: Date = Date()) -> Bool {
-        guard on else { return false }
-        guard let expires else { return true }
-        return expires > now
-    }
 }
