@@ -650,7 +650,17 @@ Duck mode is for thinking out loud: while it is on, RightyO decides nothing and 
 
 `haild` writes `{"duck":true}` to the control descriptor only of a child whose `started` event advertised a top-level `duck` object. An older RightyO would skip the line and go on deciding turns, so it is never written one: duck mode is not entered, `ambient_duck … reported=0 refused=unsupported` is logged, and the owner hears `confirm-not-sent/`. Entering duck mode leaves media mode, and entering media mode leaves duck mode.
 
-Duck mode ends on the spoken exit, after `ambient.duckTimeout` in `host.json` (whole seconds, 60 to 14400; an hour by default, `--ambient-duck-timeout`), or when the connection ends. Saying the entry again while duck mode is on answers "still on" with `confirm-duck-on/` and re-arms the timeout when a child took it. A child that starts during duck mode without advertising `duck` (an older RightyO after a reload) ends duck mode: the timeout is cancelled and the device told off with reason `timeout`, logged as `ambient_duck_unsupported`. A device that advertised `duck_mode` is told each change (`ambient_duck_device`), and sees "on" only once a child took it. The changes are confirmed from the reserved `confirm-duck-on/` and `confirm-duck-off/` folders when they hold clips. Mick records both, and `confirm-discarded/` for the duck buffer below; `confirm-duck-on/` must be worded as a status ("Duck mode is on."), not "Turning on…", because it also answers an entry said while duck mode is already on.
+Duck mode ends on the spoken exit, after `ambient.duckTimeout` in `host.json` (whole seconds, 60 to 14400; an hour by default, `--ambient-duck-timeout`), or when the connection ends. Saying the entry again while duck mode is on answers "still on" with `confirm-duck-on/` and re-arms the timeout when a child took it. A child that starts during duck mode without advertising `duck` (an older RightyO after a reload) ends duck mode: the timeout is cancelled and the device told off with reason `timeout`, logged as `ambient_duck_unsupported`. A device that advertised `duck_mode` is told each change (`ambient_duck_device`), and sees "on" only once a child took it. The changes are confirmed from the reserved `confirm-duck-on/` and `confirm-duck-off/` folders when they hold clips. Mick records both, and `confirm-discarded/` for the duck buffer below; `confirm-duck-on/` must be worded as a status ("Duck mode is on."), not "Turning on…", because it also answers an entry said while duck mode is already on and the status cue below.
+
+#### The auto-end warning (#735 H-4)
+
+About a minute before the auto-end, `haild` plays a clip from the reserved `confirm-duck-ending/` folder ("Duck mode ends in a minute."), logged as `ambient_duck_ending confirm=…`. Mick records it; while the folder is empty nothing plays (`confirm=no_clips`).
+
+- It plays only while that same arming of duck mode is still on and a child of the connection runs.
+- It is armed and cancelled with the auto-end. The spoken exit, entering media mode, a child that cannot take duck mode, or the connection's end before then means no warning. Saying the entry again re-arms both, so the owner hears one warning, a minute before the new end.
+- A timeout under twice the lead (`ambient.duckTimeout` under 120) has no warning.
+- A warning that comes due with less than half a minute left (the Mac woke near or past the end) is skipped and logged `skipped=late`. The auto-end itself is unaffected.
+- A warning checked just before an exit can still play a few milliseconds after it: the check and the clip's send are not one step.
 
 #### The duck buffer and ask cues (#735 H-3)
 
@@ -677,7 +687,7 @@ Cues are whole owner turns, said while ducking, named or not ("what do you think
 | "play that back" | The same, and the agent recaps briefly. |
 | "discard that" | Empties the buffer, sends nothing, and plays `confirm-discarded/` ("Discarded."). Mick records the clip; while the folder is empty, nothing plays. |
 | "mute" (and the other `VoiceMute` phrases) | The spoken mute, as outside duck mode, with `confirm-muted/`. |
-| "are you still listening" | Matched, so it is never buffered or sent. H-4 answers it; for now it plays nothing. |
+| "are you still listening" | Never buffered or sent. The host answers it itself with `confirm-duck-on/` ("Duck mode is on."), never the agent, so a long silence never looks like a failure (H-4). Logged as `cue=status outcome=answered`. |
 
 How an ask is sent:
 

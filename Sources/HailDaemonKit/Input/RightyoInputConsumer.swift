@@ -158,7 +158,8 @@ enum VoiceDuck {
 /// acknowledgement directory: `confirm-stopped/` ("Stopped.") and `confirm-idle/` ("Nothing playing, standing by."),
 /// for the owner's spoken mute (#404) `confirm-muted/` ("Muted.") and `confirm-unmuted/` ("Unmuted."), and for media
 /// mode (#551) `confirm-media-on/` and `confirm-media-off/`, for spoken notes (#552) `confirm-saved/` and
-/// `confirm-not-saved/`, and for duck mode (#735) `confirm-duck-on/`, `confirm-duck-off/` and `confirm-discarded/`.
+/// `confirm-not-saved/`, and for duck mode (#735) `confirm-duck-on/`, `confirm-duck-off/`, `confirm-discarded/` and
+/// `confirm-duck-ending/`.
 enum AmbientStopConfirmation {
     static let stopped = RightyoAddressing.key("confirm-stopped"), idle = RightyoAddressing.key("confirm-idle")
     static let muted = RightyoAddressing.key("confirm-muted"), unmuted = RightyoAddressing.key("confirm-unmuted")
@@ -177,8 +178,11 @@ enum AmbientStopConfirmation {
     /// The owner's "discard that" while ducking (#735 H-3): "Discarded." Reserved, so it is never an acknowledgement
     /// voice; a folder Mick has not recorded yet plays nothing.
     static let discarded = RightyoAddressing.key("confirm-discarded")
+    /// Duck mode's auto-end is near (#735 H-4): about a minute before it, "Duck mode ends in a minute." Reserved, so it
+    /// is never an acknowledgement voice; a folder Mick has not recorded yet plays nothing.
+    static let duckEnding = RightyoAddressing.key("confirm-duck-ending")
     static let reserved: Set<String> = [stopped, idle, muted, unmuted, mediaOn, mediaOff, saved, notSaved, notSent,
-                                        duckOn, duckOff, discarded]
+                                        duckOn, duckOff, discarded, duckEnding]
 
     /// Why a playback stop is not confirmed, as a log token, or nil when it is: only the enrolled owner's stop, and
     /// only on a connection still there to hear it.
@@ -577,7 +581,8 @@ extension RightyoInputConsumer {
     /// alone, and so is every turn on a stream whose `started` said `activation: "disabled"`: a transcription-only
     /// stream never sends, so it neither asks, nor buffers words that could only be sent, nor mutes (a mute reaches
     /// the host only as a request, which such a stream refuses). A duck mode phrase is `VoiceDuck`'s. A mute phrase is carried out as `VoiceMute` (`lastVoiceMute`). A cue
-    /// (`DuckCue`) is carried out: an ask sends the buffer, "discard that" empties it, the status cue is left to H-4.
+    /// (`DuckCue`) is carried out: an ask sends the buffer, "discard that" empties it, the status cue is reported for the
+    /// host to answer with `confirm-duck-on/` (H-4).
     /// Every other turn enters the buffer. True only when an ask was handed to the agent.
     func noteDuckTurn(_ turn: RightyoInputEvent.Turn) async throws -> Bool {
         guard let duckSession, activationEnabled, duckActive?() == true, speakers == "enrolled",

@@ -162,7 +162,8 @@ import Testing
         #expect(Router.duckCueConfirmation(.notSent) == (AmbientStopConfirmation.notSent, "cue=ask outcome=not_sent"))
         #expect(Router.duckCueConfirmation(.discarded(turns: 3))
             == (AmbientStopConfirmation.discarded, "cue=discard turns=3"))
-        #expect(Router.duckCueConfirmation(.status) == (nil, "cue=status outcome=unanswered"))
+        // H-4: the host answers the status cue itself with the "Duck mode is on." clip.
+        #expect(Router.duckCueConfirmation(.status) == (AmbientStopConfirmation.duckOn, "cue=status outcome=answered"))
     }
 }
 #endif

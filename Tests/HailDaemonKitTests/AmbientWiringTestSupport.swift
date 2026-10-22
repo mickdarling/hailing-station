@@ -22,6 +22,7 @@ func ambientRig(
     events: AmbientEventNames? = nil, acknowledgements: AmbientAckLibrary? = nil, replyControl: Bool = false,
     mediaTimeout: TimeInterval = AmbientRightyoRouter.defaultMediaTimeout,
     duckTimeout: TimeInterval = AmbientRightyoRouter.defaultDuckTimeout,
+    duckWarningLead: TimeInterval = AmbientRightyoRouter.defaultDuckWarningLead,
     destinations: VoiceDestinations? = nil, shortcuts: ShortcutRunner = ShortcutRunner(),
     routes: VoiceRoutes? = nil, onEvent: (@Sendable (WebSocketListenerEvent) -> Void)? = nil
 ) async throws -> AmbientWiringRig {
@@ -33,7 +34,7 @@ func ambientRig(
         acknowledgements: acknowledgements, replyControl: replyControl
     )
     (configuration.mediaTimeout, configuration.destinations) = (mediaTimeout, destinations)
-    configuration.duckTimeout = duckTimeout
+    (configuration.duckTimeout, configuration.duckWarningLead) = (duckTimeout, duckWarningLead)
     configuration.notes.shortcuts = shortcuts
     let router = AmbientRightyoRouter(configuration: configuration, log: { events?.record($0); onEvent?($0) })
     let gate = AmbientAudioGate(target: RecipientTestRig.target, sink: router, sweepInterval: nil)

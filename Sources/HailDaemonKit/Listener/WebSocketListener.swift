@@ -484,6 +484,8 @@ public final class AmbientRightyoRouter: AmbientAudioSink, AmbientListenerWiring
         /// How long the owner's spoken duck mode (#735) lasts before it turns itself off: host.json
         /// `ambient.duckTimeout`, or `defaultDuckTimeout`.
         public var duckTimeout: TimeInterval = AmbientRightyoRouter.defaultDuckTimeout
+        /// How long before duck mode's auto-end its warning plays (#735 H-4); shorter in tests only.
+        var duckWarningLead: TimeInterval = AmbientRightyoRouter.defaultDuckWarningLead
         /// The owner's allowlisted note destinations (#552); nil leaves spoken notes off.
         public var destinations: VoiceDestinations?
         var notes = VoiceNoteRunner()
@@ -649,7 +651,7 @@ public final class AmbientRightyoRouter: AmbientAudioSink, AmbientListenerWiring
         let streams = state.withLock { state -> [UUID] in
             (state.latest[connection], state.inputRoutes[connection]) = (nil, nil)
             state.media.removeValue(forKey: connection)?.timer.cancel()
-            state.duck.removeValue(forKey: connection)?.timer.cancel()
+            state.duck.removeValue(forKey: connection)?.cancel()
             if let active = state.active, state.runs[active.run]?.connection == connection { state.active = nil }
             return state.runs.filter { $0.value.connection == connection }.map(\.key)
         }
@@ -698,6 +700,15 @@ public final class AmbientRightyoRouter: AmbientAudioSink, AmbientListenerWiring
     public func mediaMode(connection: UUID) -> Bool { state.withLock { $0.media[connection] != nil } }
     /// Whether the owner's spoken duck mode (#735) is on for `connection` (tests).
     func duckMode(connection: UUID) -> Bool { state.withLock { $0.duck[connection] != nil } }
+    /// The current duck mode arming for `connection`, if any (tests).
+    func duckTimer(connection: UUID) -> AmbientDuckTimer? { state.withLock { $0.duck[connection] } }
+    /// Whether duck mode is still on for `connection` under the arming `token` and a child of the connection runs
+    /// (#735 H-4): the auto-end warning plays only then.
+    func duckArmed(connection: UUID, token: UUID) -> Bool {
+        state.withLock { state in
+            state.duck[connection]?.token == token && state.runs.values.contains { $0.connection == connection }
+        }
+    }
 
     /// Waits (at most 30 s) for queued events to be handled, then for every current run to return (tests).
     func settle() async {
@@ -1503,17 +1514,18 @@ extension AmbientRightyoRouter {
             return nil
         }
         let token = UUID(), timeout = configuration.duckTimeout
-        state.duck.removeValue(forKey: connection)?.timer.cancel()
+        state.duck.removeValue(forKey: connection)?.cancel()
+        let listener = state.listener?.value
         if on {
             let timer = Task { [weak self] in
                 try? await Task.sleep(for: .seconds(timeout))
                 guard !Task.isCancelled else { return }
                 self?.setDuck(false, connection: connection, reason: "timeout", expected: token)
             }
-            state.duck[connection] = AmbientDuckTimer(token: token, timer: timer)
+            let warning = duckWarning(connection: connection, token: token, timeout: timeout, listener: listener)
+            state.duck[connection] = AmbientDuckTimer(token: token, timer: timer, warning: warning)
         }
         let expires = on ? Int64((Date().timeIntervalSince1970 + timeout) * 1_000) : nil
-        let listener = state.listener?.value
         mediaNotices.enqueue { [weak self, weak listener] in
             let sent = await listener?.showDuckMode(on, reason: reason, expires: expires, connection: connection)
             self?.emit("ambient_duck_device", connection: connection,
