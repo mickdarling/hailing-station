@@ -94,8 +94,8 @@ claims. It is trusted only for holding a private key the owner approved.
      connection that is private still counts for "Private now".
    - **No challenge:** if no `device_challenge` arrives within 10 seconds of a hello in which the host listed
      `owner_device`, the app shows that it could not be confirmed and treats itself as unapproved. Voice and replies
-     carry on unproven, as today. It still answers a challenge that arrives later. Without `owner_device` in the hello, it shows that this host does not offer owner
-     devices.
+     carry on unproven, as today. It still answers a challenge that arrives later. Without `owner_device` in the
+     hello, it shows that this host does not offer owner devices.
    - **Tokens** rotate only with a fresh proof answering a challenge.
 8. **Pending store:** a pending entry exists only while its connection is open.
    - At most 8 at once; a ninth proof from a new key is refused with `device_state {state: "full"}`.
