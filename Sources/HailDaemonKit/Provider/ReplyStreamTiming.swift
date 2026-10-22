@@ -7,9 +7,10 @@ private let timingLogger = Logger(
     category: ReplyTimingLog.category(executablePath: Bundle.main.executablePath)
 )
 
-/// Where reply timing is logged. An installed `haild` (the daemon, and the CLI a session's hook runs) logs under
-/// `reply-timing`; a SwiftPM build under `.build/` (the CLI tests, the Swift tests, `swift run`) logs under
-/// `reply-timing-dev`, so a test run never reads as live replies (#737).
+/// Where reply timing is logged. `haild reply` writes these lines (run by a session's hook, or as the daemon's reply
+/// child). An installed `haild` logs under `reply-timing`; one run from a SwiftPM `.build/` directory, as the CLI tests
+/// and `swift run` do, logs under `reply-timing-dev`, so a test run never reads as live replies (#737). The path is
+/// not resolved: an installed `haild` reached through `~/.local/bin` still reads as installed.
 package enum ReplyTimingLog {
     package static func category(executablePath: String?) -> String {
         executablePath?.contains("/.build/") == true ? "reply-timing-dev" : "reply-timing"
