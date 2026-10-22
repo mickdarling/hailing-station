@@ -63,10 +63,11 @@ struct MarkdownNoteWriter: Sendable {
 struct ShortcutRunner: Sendable {
     var executable = URL(fileURLWithPath: "/usr/bin/shortcuts")
     var timeout: Duration = .seconds(30)
+    var inputs = VoiceNoteInputs()
 
     func run(_ shortcut: String, text: String) async -> String {
-        let input = FileManager.default.temporaryDirectory.appendingPathComponent("hail-note-\(UUID().uuidString).txt")
-        guard FileManager.default.createFile(atPath: input.path, contents: Data(text.utf8),
+        guard let input = inputs.newInput(),
+              FileManager.default.createFile(atPath: input.path, contents: Data(text.utf8),
                                              attributes: [.posixPermissions: 0o600]) else { return "input_failed" }
         defer { try? FileManager.default.removeItem(at: input) }
         let process = Process()

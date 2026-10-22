@@ -180,6 +180,8 @@ extension ConnectionProbeDaemon {
         var destinations: URL? // `--ambient-destinations` (#552); a missing file leaves spoken notes off.
         /// `--ambient-duck-timeout` (#735): whole seconds in `AmbientRightyoRouter.duckTimeoutRange`; nil is the default.
         var duckTimeout: TimeInterval?
+        /// Where spoken notes keep their Shortcut inputs (#552); tests point it at a scratch folder.
+        var noteInputs = VoiceNoteInputs()
     }
 
     /// A flag's path: never empty and, when `absolute`, starting at `/`.
@@ -245,19 +247,6 @@ extension ConnectionProbeDaemon {
         public var description: String { "--voice-routes \(path): \(reason)" }
     }
 
-    /// A note input (#552) left behind when a haild exited during its Shortcut: removed at the next start, once older
-    /// than any run could still be reading it. Owner-only files in the per-user temporary folder.
-    private static func sweepNoteInputs() {
-        let folder = FileManager.default.temporaryDirectory
-        let names = (try? FileManager.default.contentsOfDirectory(atPath: folder.path)) ?? []
-        for name in names where name.hasPrefix("hail-note-") && name.hasSuffix(".txt") {
-            let file = folder.appendingPathComponent(name)
-            let modified = (try? FileManager.default.attributesOfItem(atPath: file.path))?[.modificationDate] as? Date
-            guard let modified, modified < Date(timeIntervalSinceNow: -300) else { continue }
-            try? FileManager.default.removeItem(at: file)
-        }
-    }
-
     /// Startup validation (#203): the executable and config pass the child's own checks, and the target is
     /// listed, alive and bound. The binding is pinned for the daemon's lifetime, as `haild rightyo` pins it.
     static func ambientRouter(
@@ -274,9 +263,10 @@ extension ConnectionProbeDaemon {
         guard listed.info.alive, let binding = listed.binding, !binding.isEmpty else {
             throw RightyoInputError.unavailableBinding
         }
-        let clips = options.ackClips.map(AmbientAckLibrary.init(directory:)).flatMap { $0.isEmpty ? nil : $0 }
-        let counts = clips?.summary ?? "personas=0 clips=0 reserved=0"
-        if options.ackClips != nil { log(.init(event: "ambient_ack_clips", detail: counts)) }
+        let library = options.ackClips.map(AmbientAckLibrary.init(directory:))
+        let clips = library.flatMap { $0.isEmpty ? nil : $0 }
+        // Skipped clips are counted even when none loaded, so a too-large recording is never silent.
+        if let library { log(.init(event: "ambient_ack_clips", detail: library.startupDetail)) }
         var configuration = AmbientRightyoRouter.Configuration(
             executable: options.executable, config: options.config, target: options.target, binding: binding,
             timing: timing, audit: audit, acknowledgements: clips, replyControl: options.replyControl
@@ -284,7 +274,8 @@ extension ConnectionProbeDaemon {
         if let duckTimeout = options.duckTimeout { configuration.duckTimeout = duckTimeout }
         // Spoken notes (#552): a malformed file leaves them off and says so, rather than refusing to start.
         if let file = options.destinations {
-            sweepNoteInputs()
+            // Inputs a haild left mid-Shortcut, in its own folder and off the startup path: never a wait for ready.
+            VoiceNoteInputs.inBackground { [inputs = options.noteInputs] in inputs.sweep() }
             do {
                 configuration.destinations = try VoiceDestinations.load(file)
                 let count = configuration.destinations.map { "count=\($0.destinations.count)" } ?? "missing"
