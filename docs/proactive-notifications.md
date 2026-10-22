@@ -37,7 +37,7 @@ claims. It is trusted only for holding a private key the owner approved.
 1. **Device key:** on first use the app makes a P-256 key pair in the Secure Enclave (iPhone, iPad) or the Keychain
    (Mac). The private key never leaves the device.
 2. **Challenge:** haild lists `owner_device` in its hello. When the device has listed it too, haild sends
-   `device_challenge {nonce}`, with a fresh random 32-byte nonce. The app answers `device_proof {key, signature,
+   `device_challenge {nonce}`, with a fresh random 32-byte nonce, base64 in the frame. The app answers `device_proof {key, signature,
    token?, environment?, name, kind}`.
 3. **Encodings:**
    - `key`: the public key as an uncompressed X9.63 point (65 bytes), base64 in the frame.
@@ -47,11 +47,13 @@ claims. It is trusted only for holding a private key the owner approved.
 4. **Signed message:** each of these, in order, as a 4-byte big-endian length followed by its bytes, so no field can
    be moved into another:
    - the ASCII label `hail-owner-device-v1`;
+   - the 65 key bytes;
    - the 32 nonce bytes;
    - the token's ASCII hex (empty when pushes are off);
    - the environment's ASCII (empty when pushes are off).
 
-   A proof with no token clears the stored token: the app turned pushes off, and a relay cannot strip a token from a
+   The host verifies the token and environment exactly as sent, before any normalising. A proof with no token clears
+   the stored token: the app turned pushes off, and a relay cannot strip a token from a
    signed proof.
 5. **Fingerprint:** the SHA-256 of the 65 key bytes, shown as 16 hex characters in four groups (64 bits). An attacker
    cannot choose it without the private key.
@@ -70,7 +72,11 @@ claims. It is trusted only for holding a private key the owner approved.
    - **Re-challenges:** every 10 minutes, and before rules 4 to 6 count the connection for an `action` (the ladder
      below).
    - **Timeout:** a connection that does not answer within 5 seconds is demoted (`device_state {state:
-     "unanswered"}`). It is challenged once more 30 seconds later, and a valid answer restores it.
+     "unanswered"}`). It is challenged once more 30 seconds later. Only an answer to that new challenge restores it;
+     nonces are single-use. A newer proof from the same key cancels the pending retry, and a connection superseded
+     meanwhile stays demoted.
+   - **After `superseded`** the app does not reconnect or re-prove on its own. It shows the state and leaves the
+     next step to the owner, so a relay cannot start a ping-pong with it.
    - **Tokens** rotate only with a fresh proof answering a challenge.
 8. **Pending store:** a pending entry exists only while its connection is open.
    - At most 8 at once; a ninth proof from a new key is refused with `device_state {state: "full"}`.
@@ -89,7 +95,13 @@ This is the same rule voice routing follows (`docs/voice-routing.md`): a discove
   someone on the network path.
 - They can read every `session_update`, as they can read every reply today.
 - While the owner's device is connected, they can relay its proof and the re-challenges to hold a connection of their
-  own. That demotes the real device's connection, which is told `superseded`.
+  own. That demotes the real device's connection, which is told `superseded`, though they can drop that frame too.
+- They can forge or replay a privacy report, or relay a proof on a fresh public connection, so privacy set by the
+  owner can be cleared this way while the owner's device is online. A fresh proof does not clear a key's report while
+  another open connection proven with the same key is private.
+- While a relay holds a key's approved connection, the real device gets nothing proactive and no push.
+- A push APNs has already accepted cannot be recalled if privacy starts before it arrives; its expiry is at most the
+  update's 4-hour lifetime.
 - `info` updates and cards drained without an `action` rely on the 10-minute re-challenge. For up to 10 minutes after
   the real device leaves, a relayed or half-open connection can still receive them.
 
@@ -100,11 +112,17 @@ not remove them. Removing them needs TLS with a pinned host key, which is out of
 ## Owner privacy
 
 haild keeps, in memory only, each approved key's last privacy report.
+- **At every proof** (a fresh connection, a pending connection being approved, or a restore after `unanswered`), the
+  key's report is set from that connection's privacy state at that moment: private if the connection is private. So
+  privacy entered before approval, or before the proof completed, is never lost. Only a proof on a connection that is
+  public right now can clear a report; a re-challenge answer never clears one.
 - **Recording:** privacy turned on from any connection that has proven a key marks that key private. Privacy turned
-  off counts only from that key's current approved connection. Privacy on an unapproved connection marks no key.
-- **Clearing:** a key's private report clears only when that key turns privacy off, when that key's own device makes
-  a fresh proven connection (which starts public, as under #813), or when the key is revoked. Another key connecting
-  never clears it, and dropping a connection does not.
+  off counts only from that key's current approved connection.
+- **Clearing:** a key's private report clears only when that key turns privacy off, when that key's own device
+  proves on a fresh connection that is public (as a reconnect starts under #813), or when the key is revoked.
+  Another key connecting never clears it, and dropping a connection does not.
+- **Unapproved connections:** privacy turned on before a key is proven is held by that connection and applied to the
+  key at the proof.
 - **The owner is private** while any approved key's report is private. Then nothing proactive reaches **any**
   device: nothing is spoken, shown or pushed (rule 1). Mick's rule is that privacy means nothing reaches him until he
   ends it.
@@ -115,19 +133,21 @@ haild keeps, in memory only, each approved key's last privacy report.
 
 Compared with #813, this is stricter in two ways. A key's report outlives its connection until that key reconnects or
 turns privacy off. And one private device stops all proactive delivery to every device. Part 10, who owns privacy,
-accepted both as the safe direction on 2026-10-22, with the same-key-reconnect clearing rule above.
+accepted both as the safe direction on 2026-10-22 (by direct session message), with the same-key-reconnect
+clearing rule above.
 
 ## Delivery ladder
 
 The host decides each update when it is submitted, and again whenever the queue drains or a send is retried. The
 first rule that applies wins. Every rule that delivers means an **approved** device. An unapproved connection
-receives nothing proactive and does not count as connected.
+receives nothing proactive and does not count as connected. A connection that is private right now receives nothing,
+whatever the key reports: a backstop to rule 1.
 
 1. **Private:** while the owner is private, the update is **dropped**, matching #813's "dropped, not paused". Nothing
    is spoken, shown or pushed, and `haild notify` answers `dropped: private`. Updates already held are purged when
    privacy starts, as #813 purges pending replies.
 2. **Quiet** (`haild notify quiet on`) **or quiet hours:** held, never spoken or pushed. A connected device gets the
-   card without sound.
+   card without sound, after the same re-challenge as rules 4 to 6 for an `action`.
 3. **`info`:** held. It drains at the next natural pause on a listening device, at the next interaction ("You have
    3 updates"), or when the owner asks. It is never pushed.
 4. **`action`, a listening device not in media mode:** spoken now in the house voice, plus the card.
@@ -140,10 +160,15 @@ receives nothing proactive and does not count as connected.
    The update stays held until its expiry and shows as a card on the next connection; the `update` UUID stops it
    showing twice.
 
-For an `action`, rules 4 to 6 first re-challenge each candidate connection. One that does not answer within 5 seconds
-is demoted and no longer counts, so the update falls through, at worst to rule 7. While that check runs the update is
-held, and `haild notify` answers once the decision is made, within about 5 seconds. A Mac whose user is idle or whose
-screen is locked reports `away`, so it does not stop the phone's push.
+For an `action`, rules 4 to 6 first re-challenge each candidate connection.
+- One that does not answer within 5 seconds is demoted and no longer counts, so the update falls through, at worst to
+  rule 7.
+- While that check runs, the update is held. Other updates and drains in the meantime share the same outstanding
+  challenge.
+- When it resolves, the ladder runs again from rule 1, so privacy or quiet that began during the wait still applies.
+- `haild notify` answers once the decision is made, within about 5 seconds.
+
+A Mac whose user is idle or whose screen is locked reports `away`, so it does not stop the phone's push.
 
 ## How a session triggers one
 
@@ -155,7 +180,8 @@ control (`docs/host-operations.md`).
 
 The answer gains outcome tokens, and `push: suggested` goes away:
 - delivered: `spoken`, `shown`, `pushed`, `pushed: summary`;
-- held: `held: quiet`, `held: no_device`;
+- held: `held: quiet`, `held: no_device` (rule 7 has no eligible key: none has connected since the restart, or none
+  has a token), `held: push_cap`;
 - refused: `dropped: private`, `push: failed`.
 
 ## APNs from haild
@@ -197,10 +223,12 @@ The answer gains outcome tokens, and `push: suggested` goes away:
 ## Rate limits and quiet hours
 
 - The existing per-session limit stays: 6 updates an hour, 5 held, 20 in all, 4-hour lifetime.
-- **Pushes:** at most 4 in any 60-minute window ending now, for the whole host, counting the summary.
+- **Pushes:** at most 4 in any 60-minute window ending now, for the whole host, counting the summary. One update
+  pushed to several keys counts once.
   - The first 3 in a window go individually.
-  - Later ones collapse into one summary push, "N updates waiting" (`pushed: summary`), which takes the fourth slot.
-    It has a fixed collapse ID, so a later summary replaces it.
+  - The fourth push is a summary, "N updates waiting" (`pushed: summary`).
+  - After that, further updates in the window are held (`held: push_cap`) and show as cards on the next connection.
+    No fifth push goes out.
   - A retry of the same push does not count again.
 - **Quiet hours:**
   - `SessionUpdateQuietHours` exists but is unwired. `host.json` gains `"quietHours": "22:00-07:00"` in the host's
@@ -216,8 +244,8 @@ The answer gains outcome tokens, and `push: suggested` goes away:
 - **Notification:** titled with the session and grouped by `thread-id`. Tapping it opens the thread. While that
   thread is on screen, the in-app card replaces the banner.
 - **Speaking:** only in the house voice, rendered by the host and played by the app's reply player (rules 4 and 5).
-  The app plays proactive speech only if it is really in front and unmuted at that moment, whatever it last
-  reported. It gains no on-device synthesiser and no second voice. A push can play its alert sound but cannot speak
+  For rule 5, the app plays the speech only if it is really in front and unmuted at that moment, whatever it last
+  reported. Rule 4 speech on a listening device plays as replies do today. It gains no on-device synthesiser and no second voice. A push can play its alert sound but cannot speak
   the update.
 - **Presence:**
   - The app sends `presence {foreground, muted, away}` once approved, then on every change: coming to the front or
@@ -290,8 +318,10 @@ So everything except the APNs client and the device store waits for Part 10's st
    - Either way, the existence and timing of pushes reach Apple.
 2. **While private:** updates are **dropped**, and held ones purged, to match #813. Would you rather they were held
    and delivered after privacy ends? Held updates are agent output, not anything heard.
-3. **Privacy across devices:** while any device is private, nothing proactive reaches any device. Only that device
-   ends it, by turning privacy off or reconnecting. Part 10 has accepted this.
+3. **Privacy across devices:** while any device is private, nothing proactive reaches any device. That device ends
+   it, by turning privacy off or by reconnecting while public; an involuntary reconnect (the phone rejoining Wi-Fi)
+   ends it too, as under #813. Revoking it also clears its report, and someone on the network path could forge a
+   clear (Known limits). Part 10 has accepted this.
    - Costs: a phone that drops off while private keeps every device quiet until it reconnects. After a haild
      restart, nothing is pushed to a device until it has connected again; a connected Mac still gets rules 4 to 6.
    - Is that what you want?
