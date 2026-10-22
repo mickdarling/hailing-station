@@ -195,7 +195,10 @@ enum PrivacyEntry {
             guard !asked || edges.polite else { return nil }
             return negation == nil ? .enter : .negated
         }
-        guard negation == nil, !asked, startsWithCommand(words) else { return nil }
+        // A turn that starts with a command and goes on is held unless the whole turn is a question: "Stop recording?
+        // My wife is here." is still held back, as before; "stop listening to podcasts?" is not.
+        let endsAsked = heard.trimmingCharacters(in: .whitespacesAndNewlines).hasSuffix("?")
+        guard negation == nil, !endsAsked, startsWithCommand(words) else { return nil }
         return .partial
     }
 

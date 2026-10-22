@@ -52,7 +52,9 @@ import Testing
         "go private on github", "stop recording my expenses", "stop recording the meeting", "stop listening to music",
         "go private with the repo", "stop recording audio", "stop recording and then send it", "go private and quiet",
         "stop the recording studio booking", "Jarvis, stop recording, the kids are home",
-        "stop_recording returns early"
+        "stop_recording returns early",
+        // A question that goes on is still held: the owner's words do not reach the agent (#826 keys).
+        "Stop recording? My wife is here.", "Go private? The kids are home."
     ]
     static let nothing = [
         // Mid-sentence, code dictation included: never held.
