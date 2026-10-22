@@ -42,10 +42,14 @@ public protocol AmbientAudioSink: Sendable {
     /// A connection's ambient input route kind changed (rightyo#164): one of `AmbientInput.routes`, never a port or
     /// device name, so speaker-ID results can be attributed to an input chain. Same rules as `ambientAudio`.
     func ambientInputRoute(_ route: String, connection: UUID)
+    /// A device asked to end duck mode for its own connection (#735 H-4, `end_duck_mode`). Same rules as
+    /// `ambientAudio`. A sink without duck mode ignores it.
+    func ambientDuckEnd(connection: UUID)
 }
 
 extension AmbientAudioSink {
     public func ambientInputRoute(_ route: String, connection: UUID) {}
+    public func ambientDuckEnd(connection: UUID) {}
 }
 
 /// One opt-in ambient microphone stream per daemon (#203). Shape: pcm16, 16 kHz, mono, a stream id, no
@@ -156,6 +160,12 @@ public actor AmbientAudioGate {
         guard AmbientInput.route(route) != nil, inputRoutes[connection] != route else { return }
         inputRoutes[connection] = route
         sink.ambientInputRoute(route, connection: connection)
+    }
+
+    /// Hands on a device's `end_duck_mode` (#735 H-4) for `connection`, the session's own connection id, so a device
+    /// can end only its own duck mode. Whether duck mode is on is the sink's to check.
+    public func endDuck(connection: UUID) {
+        sink.ambientDuckEnd(connection: connection)
     }
 
     /// Ends the active stream once it has been silent for `idleTimeout`.

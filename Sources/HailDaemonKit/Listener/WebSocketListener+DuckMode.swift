@@ -65,6 +65,29 @@ extension AmbientRightyoRouter {
         }
     }
 
+    /// A device's end control (#735 H-4, `end_duck_mode`): ends duck mode for `connection`, its own, exactly as the
+    /// spoken exit does (children, timeout and warning, device notice, `confirm-duck-off/` so the room hears it) but
+    /// with reason `device`. Only while duck mode is on: otherwise nothing changes, nothing is logged and no clip
+    /// plays, so a repeated end cannot flood the log, write the child or chatter. It can never start duck mode.
+    public func ambientDuckEnd(connection: UUID) {
+        guard let token = duckTimer(connection: connection)?.token else { return }
+        endDuck(connection: connection, armedAs: token)
+    }
+
+    /// Ends the arming `token` of `connection`'s duck mode for its device. The token is matched under the lock that
+    /// changes duck mode, so if the spoken exit, the auto-end or an unsupported child ended it (or a re-entry re-armed
+    /// it) since the token was read, this does nothing: no second notice wrongly saying `device`, no second
+    /// `{"duck":false}`, no log line and no clip. As for the spoken exit, an end no child took is not confirmed.
+    func endDuck(connection: UUID, armedAs token: UUID) {
+        guard setDuck(false, connection: connection, reason: "device", expected: token) > 0 else { return }
+        let listener = attachedListener
+        Task { [weak self, weak listener] in
+            guard let self else { return }
+            let confirm = await confirmVoiceMute(AmbientStopConfirmation.duckOff, on: connection, listener: listener)
+            emit("ambient_duck_confirmed", connection: connection, detail: "on=false reason=device confirm=\(confirm)")
+        }
+    }
+
     /// A child that started while duck mode was on without advertising `duck` (an older RightyO after a reload) cannot
     /// take it, and the host never claims a mode a child is not in: duck mode ends for `connection`, its timeout is
     /// cancelled and the device told off. The device's reason is `timeout`, the protocol's "it turned itself off":
@@ -73,6 +96,7 @@ extension AmbientRightyoRouter {
         { [weak self] in
             guard let self, duckMode(connection: connection) else { return }
             emit("ambient_duck_unsupported", connection: connection, detail: "child=started_without_duck")
+            // Open in #735: an `unsupported` reason is queued for Mick's decision; until then this end says `timeout`.
             setDuck(false, connection: connection, reason: "timeout")
         }
     }

@@ -114,6 +114,19 @@ final class DuckRig: Sendable {
     func details(_ name: String) -> [String] {
         events.list.withLock { $0.filter { $0.event == name }.map { $0.detail ?? "" } }
     }
+    /// Every event so far, as `name detail`, in order.
+    func allEvents() -> [String] { events.list.withLock { $0.map { "\($0.event) \($0.detail ?? "")" } } }
+    /// Waits until no new event has arrived for `quiet`, then returns them all.
+    func settledEvents(quiet: Duration = .milliseconds(400)) async -> [String] {
+        var last = allEvents()
+        for _ in 0..<50 {
+            try? await Task.sleep(for: quiet)
+            let now = allEvents()
+            if now == last { return now }
+            last = now
+        }
+        return last
+    }
     /// The connection the ambient stream belongs to, once the stream started.
     func connection() -> UUID? { events.list.withLock { $0.first { $0.event == "ambient_started" }?.sessionID } }
 
