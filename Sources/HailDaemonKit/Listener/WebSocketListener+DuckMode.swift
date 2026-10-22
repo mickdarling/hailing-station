@@ -82,6 +82,7 @@ extension AmbientRightyoRouter {
         { [weak self] in
             guard let self, duckMode(connection: connection) else { return }
             emit("ambient_duck_unsupported", connection: connection, detail: "child=started_without_duck")
+            // TODO(#735): an `unsupported` reason is queued for Mick's decision; until then this end says `timeout`.
             setDuck(false, connection: connection, reason: "timeout")
         }
     }
