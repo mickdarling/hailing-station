@@ -3,18 +3,18 @@ import Testing
 @testable import HailDaemonKit
 
 /// `--ambient-duck-timeout` (#735 H-2), from host.json `ambient.duckTimeout`: whole seconds from a minute to twelve
-/// hours, once, only with the ambient set; absent, duck mode ends itself after three hours.
+/// hours, once, only with the ambient set; absent, duck mode ends itself after an hour.
 @Suite(.frozenGuardBudget) struct AmbientDuckTimeoutOptionsTests {
     static let head = AmbientWiringOptionsTests.base + AmbientWiringOptionsTests.personal
     static let ambient = AmbientWiringOptionsTests.ambient
 
     @Test func theDefaultIsThreeHoursAndAbsentLeavesIt() throws {
-        #expect(AmbientRightyoRouter.defaultDuckTimeout == 3 * 3600)
+        #expect(AmbientRightyoRouter.defaultDuckTimeout == 3600)
         #expect(AmbientRightyoRouter.duckTimeoutRange.contains(AmbientRightyoRouter.defaultDuckTimeout))
         #expect(try ConnectionProbeDaemon.options(Self.head + Self.ambient).ambient?.duckTimeout == nil)
     }
 
-    @Test(arguments: [("60", 60.0), ("5400", 5400.0), ("43200", 43_200.0)])
+    @Test(arguments: [("60", 60.0), ("5400", 5400.0), ("14400", 14_400.0)])
     func aTimeoutInRangeRidesWithTheAmbientFlags(_ value: String, _ seconds: TimeInterval) throws {
         let options = try ConnectionProbeDaemon.options(Self.head + Self.ambient + ["--ambient-duck-timeout", value])
         #expect(options.ambient?.duckTimeout == seconds)
@@ -23,7 +23,8 @@ import Testing
     static let refused: [[String]] = [
         head + ["--ambient-duck-timeout", "600"],
         head + ambient + ["--ambient-duck-timeout", "59"],
-        head + ambient + ["--ambient-duck-timeout", "43201"],
+        head + ambient + ["--ambient-duck-timeout", "14401"],
+        head + ambient + ["--ambient-duck-timeout", "43200"],
         head + ambient + ["--ambient-duck-timeout", "0"],
         head + ambient + ["--ambient-duck-timeout", "-600"],
         head + ambient + ["--ambient-duck-timeout", "600.5"],

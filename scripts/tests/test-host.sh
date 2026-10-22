@@ -173,9 +173,9 @@ bad_config "duck timeout without ambient" \
 bad_config "duck timeout under a minute" \
   '{"bind": "127.0.0.1", "port": 8765, "singleTerminalReplyFallback": true,
     "ambient": {"rightyo": "/bin/sh", "config": "/etc/hosts", "target": "tmux:t", "duckTimeout": 59}}'
-bad_config "duck timeout over twelve hours" \
+bad_config "duck timeout over four hours" \
   '{"bind": "127.0.0.1", "port": 8765, "singleTerminalReplyFallback": true,
-    "ambient": {"rightyo": "/bin/sh", "config": "/etc/hosts", "target": "tmux:t", "duckTimeout": 43201}}'
+    "ambient": {"rightyo": "/bin/sh", "config": "/etc/hosts", "target": "tmux:t", "duckTimeout": 14401}}'
 bad_config "duck timeout as a string" \
   '{"bind": "127.0.0.1", "port": 8765, "singleTerminalReplyFallback": true,
     "ambient": {"rightyo": "/bin/sh", "config": "/etc/hosts", "target": "tmux:t", "duckTimeout": "600"}}'

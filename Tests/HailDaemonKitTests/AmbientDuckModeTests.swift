@@ -10,7 +10,7 @@ import Testing
 /// "Nothing was sent."; duck and media mode are exclusive. Synthetic only.
 @Suite(.serialized, .timeLimit(.minutes(1)), .frozenGuardBudget) struct AmbientDuckModeTests {
     static let duckOn = AmbientAckClip(pcm: Data(repeating: 9, count: 480), sampleRate: 24_000,
-                                       text: "Thinking out loud.")
+                                       text: "Duck mode is on.")
     static let notSent = AmbientAckClip(pcm: Data(repeating: 5, count: 480), sampleRate: 24_000,
                                         text: "Nothing was sent.")
     static let clips = AmbientAckLibrary(clips: ["confirmduckon": [duckOn], "confirmnotsent": [notSent]])
@@ -19,7 +19,7 @@ import Testing
         let rig = try await DuckRig(saying: "Rightyo, duck mode.", advertises: true, clips: Self.clips,
                                     timeout: 0.5)
         defer { rig.close() }
-        #expect(try await rig.confirmation() == "Thinking out loud.")
+        #expect(try await rig.confirmation() == "Duck mode is on.")
         #expect(await eventually { rig.details("ambient_duck").count == 2 })
         await rig.finish()
         #expect(rig.details("ambient_duck") == ["on=true reason=voice reported=1",
@@ -85,9 +85,11 @@ final class DuckRig: Sendable {
     let stream = UUID()
     private let events: DuckEvents
 
-    init(saying words: String, advertises: Bool, enrolled: Bool = true, clips: AmbientAckLibrary? = nil,
-         timeout: TimeInterval = AmbientRightyoRouter.defaultDuckTimeout, capabilities: [String] = []) async throws {
-        fake = try FakeRightyo("/bin/cat <&3 > control.txt &\n" + AmbientVoiceDuckTests.fixture(
+    /// `script`, when given, replaces the fixture saying `words` as the fake's whole behaviour.
+    init(saying words: String = "", advertises: Bool = false, script: String? = nil, enrolled: Bool = true,
+         clips: AmbientAckLibrary? = nil, timeout: TimeInterval = AmbientRightyoRouter.defaultDuckTimeout,
+         capabilities: [String] = []) async throws {
+        fake = try FakeRightyo(script ?? "/bin/cat <&3 > control.txt &\n" + AmbientVoiceDuckTests.fixture(
             saying: words, enrolled: enrolled, advertises: advertises))
         try fake.install(fixture: enrolled ? "enrolled-formed-request.jsonl" : "tool-events.jsonl")
         let events = DuckEvents()

@@ -961,7 +961,8 @@ extension AmbientRightyoRouter {
         (settings.onHeard, settings.onOverheard) = transcriptRelays(on: connection, listener: listener)
         settings.onVoiceMute = voiceMuted(on: connection, listener: listener)
         settings.onVoiceMedia = voiceMedia(on: connection, listener: listener)
-        settings.onVoiceDuck = voiceDuck(on: connection, listener: listener)
+        (settings.onVoiceDuck, settings.onDuckUnsupported) = (voiceDuck(on: connection, listener: listener),
+                                                              duckUnsupported(on: connection))
         if let destinations = configuration.destinations {
             (settings.destinations, settings.onVoiceDestination) = (destinations, voiceNote(on: connection,
                                                                                             listener: listener))
@@ -1441,19 +1442,21 @@ extension AmbientRightyoRouter {
 
     /// Turns duck mode on or off for `connection` (#735), as `setMedia` does, and returns how many children took it.
     /// Only a child whose RightyO advertised duck mode takes it; when none does (an older RightyO) duck mode is not
-    /// entered at all, nothing else changes, and the caller tells the owner. Duck mode taken leaves media mode.
+    /// entered at all, nothing else changes, and the caller tells the owner. An entry no child took while duck mode is
+    /// already on (a reloaded child not started yet) leaves it on, timeout unchanged. Duck mode taken leaves media mode.
     @discardableResult
     func setDuck(_ on: Bool, connection: UUID, reason: String, expected: UUID? = nil) -> Int {
-        let changed = state.withLock { state -> (duck: Int, media: Int?)? in
+        let changed = state.withLock { state -> DuckChange? in
             if let expected, state.duck[connection]?.token != expected { return nil }
             guard let reported = changeDuck(on, connection: connection, reason: reason, in: &state) else {
-                return (0, nil)
+                return DuckChange(duck: 0, media: nil, still: state.duck[connection] != nil)
             }
             let left = on && state.media[connection] != nil
-            return (reported, left ? changeMedia(false, connection: connection, reason: "voice", in: &state) : nil)
+            let media = left ? changeMedia(false, connection: connection, reason: "voice", in: &state) : nil
+            return DuckChange(duck: reported, media: media, still: false)
         }
         guard let changed else { return 0 }
-        let refused = on && changed.duck == 0 ? " refused=unsupported" : ""
+        let refused = !on || changed.duck > 0 ? "" : changed.still ? " still_on" : " refused=unsupported"
         emit("ambient_duck", connection: connection,
              detail: "on=\(on) reason=\(reason) reported=\(changed.duck)\(refused)")
         if let media = changed.media {
@@ -1517,6 +1520,12 @@ extension AmbientRightyoRouter {
         }
         return reported
     }
+}
+
+/// What `setDuck` changed: how many children took duck mode, how many took media mode's end when it left it, and
+/// whether an entry no child took found duck mode already on.
+private struct DuckChange {
+    let duck: Int, media: Int?, still: Bool
 }
 
 /// Runs the work given to it one piece at a time, in the order given (#404): each piece starts only once the one

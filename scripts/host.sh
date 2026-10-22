@@ -40,7 +40,7 @@ host.json: {"bind": "127.0.0.1", "port": 8765, "hostID": "optional", "singleTerm
             "voiceRoutes": "/abs/optional-routes.json",
             "ambient": {"rightyo": "/abs/path", "config": "/abs/path", "target": "tmux:name",
                         "ackClips": "/abs/optional-clip-folder", "replyControl": false,
-                        "destinations": "/abs/optional-destinations.json", "duckTimeout": 10800}}
+                        "destinations": "/abs/optional-destinations.json", "duckTimeout": 3600}}
 Ambient listening requires "singleTerminalReplyFallback": true. "ackClips" (optional) holds <persona>/*.wav
 acknowledgement clips played on each admitted request; missing clips leave acknowledgements off.
 "replyControl" (optional, needs "deviceDiagnostics": true and a RightyO with --control-fd) sends the phone's
@@ -48,7 +48,7 @@ reply playback start and end to RightyO, which times conversation follow-ups fro
 "destinations" (optional) allowlists the Shortcuts the enrolled owner's spoken notes may run (#552); it is read at
 start, so a new or changed file needs a restart.
 "duckTimeout" (optional) is how many seconds the owner's spoken duck mode lasts before it ends itself (#735): a
-whole number from 60 to 43200; without it, three hours.
+whole number from 60 to 14400; without it, one hour.
 "voiceRoutes" (optional) names the sessions a request can be addressed to ("Deck, ...") and the default (#636).
 It only names targets; each still needs its policy entry. It is read at start, so a change needs a restart.
 USAGE
@@ -172,8 +172,8 @@ load_daemon_arguments() {
     fi
     if [[ -n "$duck_timeout" ]]; then
       # Duck mode's auto-end (#735), in the daemon's own bounds, so a bad value fails here, not in a crash loop.
-      if ! [[ "$duck_timeout" =~ ^[0-9]{1,6}$ ]] || (( duck_timeout < 60 || duck_timeout > 43200 )); then
-        fail "ambient \"duckTimeout\" must be a whole number of seconds from 60 to 43200"
+      if ! [[ "$duck_timeout" =~ ^[0-9]{1,6}$ ]] || (( duck_timeout < 60 || duck_timeout > 14400 )); then
+        fail "ambient \"duckTimeout\" must be a whole number of seconds from 60 to 14400"
       fi
       DAEMON_ARGS+=(--ambient-duck-timeout "$duck_timeout")
     fi
