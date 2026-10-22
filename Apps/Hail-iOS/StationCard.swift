@@ -272,9 +272,11 @@ struct AmbientListeningCard: View {
             if controller.isListening, let media = connections.mediaMode[binding.hostID] {
                 MediaModeStatusView(status: media)
             }
-            // The privacy switch (#735 S-6): only while listening, and only on a host that takes it.
+            // The privacy switch (#735 S-6): while listening on a host that takes it, and while privacy is confirmed
+            // on but the host stopped listening, so it can be turned off.
             if connections.showsPrivacySwitch(binding.hostID, listening: controller.isListening) {
-                PrivacySwitchView(connections: connections, hostID: binding.hostID)
+                PrivacySwitchView(connections: connections, hostID: binding.hostID,
+                                  listening: controller.isListening)
             }
             if controller.isListening, let handoff = controller.handoff, case .movedHere = handoff {
                 // This device took listening over (#366): a brief, calm confirmation.
@@ -344,15 +346,18 @@ struct OwnerVoiceUnrecognizedView: View {
 struct PrivacySwitchView: View {
     let connections: HostConnectionStore
     let hostID: HostEndpoint.Identifier
+    let listening: Bool
 
     var body: some View {
         TimelineView(.periodic(from: .now, by: 1)) { context in
-            let status = connections.privacySwitch(hostID, now: context.date)
+            let status = connections.privacySwitch(hostID, listening: listening, now: context.date)
             VStack(alignment: .leading, spacing: 4) {
                 Toggle(isOn: Binding(get: { status.isPrivate }, set: { on in
                     Task { try? await connections.setPrivacy(on: on, host: hostID) }
                 })) {
                     Label(status.title, systemImage: status.isPrivate ? "lock.fill" : "mic.fill")
+                        .accessibilityIdentifier(status.shown == .privateListeningUnavailable
+                            ? "station.privacy-unavailable" : "station.privacy-title")
                         .font(.subheadline.weight(.semibold))
                         .foregroundStyle(status.isPrivate ? Color.green : Color.orange)
                 }

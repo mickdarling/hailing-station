@@ -46,9 +46,9 @@ public final class HostConnectionStore {
     public private(set) var mediaMode: [HostEndpoint.Identifier: MediaModeStatus] = [:]
     /// Each host's last `duck_mode` for this device's stream (#735), kept and forgotten exactly like `mediaMode`.
     public private(set) var duckMode: [HostEndpoint.Identifier: DuckModeStatus] = [:]
-    /// Each host's privacy switch tap still waiting for its `duck_mode` notice (#735 S-6); dropped by any notice, and
-    /// with `duckMode` whenever the connection stops being ready or the host is removed.
-    public private(set) var privacyRequests: [HostEndpoint.Identifier: PrivacyRequest] = [:]
+    /// Each host's privacy switch state on this side (#735 S-6): a tap waiting for its notice, and whether the host
+    /// stopped listening after confirming privacy. Reset by any `duck_mode` notice; dropped with `duckMode`.
+    public private(set) var privacyLocal: [HostEndpoint.Identifier: PrivacySwitchLocal] = [:]
     /// This device's current input route kind for `ambient_input` (rightyo#164); replaceable in tests.
     @ObservationIgnored var inputRoute: @MainActor () async -> String? = { HostConnectionStore.currentInputRoute() }
 
@@ -282,7 +282,7 @@ extension HostConnectionStore {
             mediaMode[event.endpointID] = MediaModeStatus(on: on, reason: reason, expiresMilliseconds: expires)
         case .control(.duckMode(let on, let reason, let expires)):
             duckMode[event.endpointID] = DuckModeStatus(on: on, reason: reason, expiresMilliseconds: expires)
-            privacyRequests[event.endpointID] = nil
+            privacyLocal[event.endpointID] = nil
         default:
             return false
         }
@@ -306,7 +306,13 @@ extension HostConnectionStore {
             guard ambientBinding(host: binding.hostID, targetID: binding.targetID) == binding,
                   connections[binding.hostID] === connection else { throw HostConnectionFailure.notReady }
         }
-        try await connection.sendAudio(audio)
+        do {
+            try await connection.sendAudio(audio)
+        } catch {
+            notePrivateStop(error, binding: binding)
+            throw error
+        }
+        if audio.sequence > 0 { privacyLocal[binding.hostID]?.listeningStopped = false }
     }
 
     /// A new ambient stream starts a new RightyO session, so an earlier "not recognised" no longer holds; and a host
@@ -376,7 +382,18 @@ extension HostConnectionStore {
     /// A host keeps media mode, privacy and a switch's request per connection: forgotten together when it stops being
     /// ready or the host is removed, so nothing confirmed outlives the connection it was confirmed on.
     func forgetModes(_ id: HostEndpoint.Identifier) {
-        (mediaMode[id], duckMode[id], privacyRequests[id]) = (nil, nil, nil)
+        (mediaMode[id], duckMode[id], privacyLocal[id]) = (nil, nil, nil)
+    }
+
+    /// Jarvis's "Privacy on · listening unavailable": the host confirmed privacy on this connection, then ended the
+    /// ambient stream (`not_allowed: ambient stopped:` or `ambient unavailable:`), as it does when no child can keep
+    /// privacy. Noted only for the connection generation the privacy was confirmed on.
+    func notePrivateStop(_ error: any Error, binding: AmbientAudioBinding) {
+        guard case HostConnectionFailure.remote(let message) = error,
+              ["not_allowed: ambient stopped:", "not_allowed: ambient unavailable:"].contains(where: message.hasPrefix),
+              duckMode[binding.hostID]?.isOn() == true,
+              snapshots[binding.hostID]?.connectionGeneration == binding.connectionGeneration else { return }
+        privacyLocal[binding.hostID, default: PrivacySwitchLocal()].listeningStopped = true
     }
 
     /// Whether the station offers the switch for `id`: a ready host that advertised `set_privacy`. An older host never.
@@ -385,15 +402,19 @@ extension HostConnectionStore {
         return snapshot.capabilities.contains(DuckMode.privacySwitchCapability)
     }
 
-    /// Whether the station card shows the switch: only while this device is listening, on a host that takes it.
-    public func showsPrivacySwitch(_ id: HostEndpoint.Identifier, listening: Bool) -> Bool {
-        listening && canSetPrivacy(id)
+    /// Whether the station card shows the switch: while this device is listening, on a host that takes it; and, the
+    /// one exception (Jarvis), while privacy is confirmed on but the host stopped listening, so it can be turned off.
+    public func showsPrivacySwitch(_ id: HostEndpoint.Identifier, listening: Bool, now: Date = Date()) -> Bool {
+        guard canSetPrivacy(id) else { return false }
+        return listening || privacySwitch(id, listening: false, now: now).shown == .privateListeningUnavailable
     }
 
     /// What the switch shows for `id` at `now`: private only once the host's notice confirmed it on a live connection.
-    public func privacySwitch(_ id: HostEndpoint.Identifier, now: Date = Date()) -> PrivacySwitchStatus {
-        PrivacySwitchStatus(ready: snapshots[id]?.state == .ready, duck: duckMode[id],
-                            requested: privacyRequests[id], now: now)
+    public func privacySwitch(_ id: HostEndpoint.Identifier, listening: Bool = true,
+                              now: Date = Date()) -> PrivacySwitchStatus {
+        let local = privacyLocal[id]
+        return PrivacySwitchStatus(ready: snapshots[id]?.state == .ready, duck: duckMode[id], requested: local?.request,
+                                   listeningStopped: !listening && local?.listeningStopped == true, now: now)
     }
 
     /// Asks host `id` to turn privacy on or off for this device's stream. The switch waits (not private) until the
@@ -401,11 +422,11 @@ extension HostConnectionStore {
     public func setPrivacy(on: Bool, host id: HostEndpoint.Identifier) async throws {
         guard let connection = connections[id] else { throw HostConnectionFailure.notReady }
         let request = PrivacyRequest(on: on)
-        privacyRequests[id] = request
+        privacyLocal[id, default: PrivacySwitchLocal()].request = request
         do {
             try await connection.sendSetPrivacy(on: on)
         } catch {
-            if privacyRequests[id] == request { privacyRequests[id] = nil }
+            if privacyLocal[id]?.request == request { privacyLocal[id]?.request = nil }
             throw error
         }
     }

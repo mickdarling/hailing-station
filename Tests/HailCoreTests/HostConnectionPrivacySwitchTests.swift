@@ -70,7 +70,7 @@ import Testing
         #expect(waiting.pending && !waiting.isPrivate && store.duckMode[endpoint.id] == nil)
         try await push(.duckMode(on: true, reason: "device"), on: socket)
         try await waitUntil { await MainActor.run { store.privacySwitch(endpoint.id).isPrivate } }
-        #expect(!store.privacySwitch(endpoint.id).pending && store.privacyRequests[endpoint.id] == nil)
+        #expect(!store.privacySwitch(endpoint.id).pending && store.privacyLocal[endpoint.id]?.request == nil)
         try await store.setPrivacy(on: false, host: endpoint.id)
         #expect(!store.privacySwitch(endpoint.id).isPrivate) // pending off reads not private at once
         try await push(.duckMode(on: false, reason: "device"), on: socket)
@@ -87,7 +87,7 @@ import Testing
         await #expect(throws: HostConnectionFailure.unsupportedCapability(DuckMode.privacySwitchCapability)) {
             try await store.setPrivacy(on: true, host: endpoint.id)
         }
-        #expect(store.privacyRequests[endpoint.id] == nil)
+        #expect(store.privacyLocal[endpoint.id]?.request == nil)
         #expect(try await !socket.sentFrames().contains { $0.payload == .control(.setPrivacy(on: true)) })
         await store.disconnect(endpoint.id)
         let capable = try await rig.readyStore(capabilities: Self.capable)
@@ -108,7 +108,7 @@ import Testing
         try await waitUntil { await MainActor.run { store.snapshots[endpoint.id]?.state != .ready } }
         let gone = store.privacySwitch(endpoint.id)
         #expect(gone.shown == .unconfirmed && !gone.pending && !gone.isPrivate)
-        #expect(store.duckMode[endpoint.id] == nil && store.privacyRequests[endpoint.id] == nil)
+        #expect(store.duckMode[endpoint.id] == nil && store.privacyLocal[endpoint.id]?.request == nil)
         #expect(!store.showsPrivacySwitch(endpoint.id, listening: true))
     }
 }
