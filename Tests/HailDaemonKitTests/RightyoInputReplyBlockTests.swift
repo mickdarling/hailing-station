@@ -167,4 +167,25 @@ extension RightyoInputConsumerTests {
                                                                     request: reference))
         #expect(referenced == "{}" + sentence + RightyoInputEvent.replyBlock(target: "tmux:demo", request: reference))
     }
+
+    /// The summary block (#735 H-5): the same rules as the duck block, with its own fixed sentence.
+    @Test func theDuckSummaryBlockIsAFixedSentenceThenTheOrdinaryBlock() throws {
+        let block = RightyoInputEvent.duckSummaryReplyBlock(target: "tmux:demo")
+        let sentence = RightyoInputEvent.duckSummaryInstruction
+        #expect(block == sentence + Self.replyBlock && sentence != RightyoInputEvent.duckInstruction)
+        // The wording itself is pinned.
+        #expect(sentence == " Duck mode has ended, and the JSON above holds what the owner said during it. In a few"
+            + " short spoken sentences, give the decisions reached, the questions still open and the next steps"
+            + " named; do not act on any of it.")
+        #expect(block.unicodeScalars.allSatisfy(\.isASCII) && !block.contains(where: \.isNewline))
+        #expect(!block.contains("\"") && !sentence.contains("'"))
+        #expect(!RightyoInputEvent.carriesReplyPrefix(sentence) && !RightyoInputEvent.carriesMarker(block))
+        #expect(block.components(separatedBy: Self.replyPrefix).count == 2)
+        #expect(try Sanitizer.sanitize(block) == [block])
+        #expect(DangerousPatternGuard.matches(in: [block], patterns: DangerousPatternGuard.defaults).isEmpty)
+        let reference = UUID()
+        let referenced = try #require(RightyoInputEvent.referencing("{}" + block, target: "tmux:demo",
+                                                                    request: reference))
+        #expect(referenced == "{}" + sentence + RightyoInputEvent.replyBlock(target: "tmux:demo", request: reference))
+    }
 }

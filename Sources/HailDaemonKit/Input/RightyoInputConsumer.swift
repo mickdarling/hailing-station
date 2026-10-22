@@ -317,7 +317,13 @@ public actor RightyoInputConsumer {
     private let binding: String
     private let session: String
     private let streamBudgetMs: Int?
-    private var started = false, terminal = false, busy = false, activationEnabled = false, failed = false
+    private var started = false, terminal = false, activationEnabled = false, failed = false
+    /// An event or a duck summary is in flight (#735 H-5); whoever waits for it is woken as it clears.
+    private var busy = false { didSet { if !busy { wakeDuckWaiters() } } }
+    /// The duck summary holds `busy` (#735 H-5): an event waits for it instead of being refused, and `finish` allows
+    /// it. Tasks waiting for `busy` or this to clear.
+    private var summarizing = false
+    private var duckWaiters: [CheckedContinuation<Void, Never>] = []
     private var sequence = 0, emittedAt = 0
     private var speakers = "anonymous"
     /// The keyed addressing names a voice mute may start with (#404), from the accepted `started`.
@@ -372,6 +378,9 @@ public actor RightyoInputConsumer {
     private(set) var lastDuckCue: DuckCueOutcome?
     /// Utterances already carried out as a duck cue or mute, so a request for one is held back, never sent twice.
     private var duckCueTurns: [String] = []
+    /// The owner's "save that" for an ended duck session (#735 H-5), cleared as each event is consumed like
+    /// `lastVoiceDestination`; the note goes only to the `notes` destination.
+    private(set) var lastDuckSave: DuckSave?
     /// The owner's note to an allowlisted destination (#552), held back like `lastVoiceMute`; nil for any other line.
     private(set) var lastVoiceDestination: VoiceDestinations.Command?
     private let destinations: VoiceDestinations?
@@ -425,11 +434,9 @@ public actor RightyoInputConsumer {
     /// True means handled: guarded delivery, or validation only when initialized with no host. An admitted `dismiss`
     /// delivers nothing and returns false; `lastDismissal` then says what it did.
     public func consume(_ event: RightyoInputEvent) async throws -> Bool {
-        lastReceipt = nil
-        lastDismissal = nil
-        lastVoiceMute = nil
-        (lastVoiceMedia, lastVoiceDestination, lastRouteRefusal, lastVoiceDuck) = (nil, nil, nil, nil)
-        lastDuckCue = nil
+        // A duck summary in flight (#735 H-5) is waited for, so the event never meets its `busy`.
+        await waitOutDuckSummary()
+        clearLastOutcomes()
         do {
             guard try admit(event) else { return false }
             if event.type == "override" { return true }
@@ -512,7 +519,7 @@ public actor RightyoInputConsumer {
         return true
     }
     public func finish() throws {
-        guard terminal, !busy else { throw RightyoInputError.invalidLifecycle }
+        guard terminal, !busy || summarizing else { throw RightyoInputError.invalidLifecycle }
         if failed { throw RightyoInputError.producerFailed }
     }
 }
@@ -528,6 +535,7 @@ extension RightyoInputConsumer {
         // A turn already carried out as a duck cue or mute (#735 H-3) is never typed as well.
         if duckCueTurns.contains(turn.utteranceId) { return true }
         if holdsVoiceDuck(turn, owner: owner) { return true }
+        if holdsDuckHeld(turn, owner: owner) { return true }
         if speakers == "enrolled", owner, let note = destinations?.command(in: turn.text, names: voiceNames) {
             lastVoiceDestination = note
             return true
@@ -630,6 +638,84 @@ extension RightyoInputConsumer {
             lastDuckCue = .notSent
             return false
         }
+    }
+}
+extension RightyoInputConsumer {
+    /// The owner's "save that" or "discard that" while an ended duck session's turns are held (#735 H-5); true when
+    /// it was one and is held back. The destinations rule (#552): an enrolled session, the owner's request (its
+    /// transcript and attention both said owner), on a stream that sends; the request path already refused an echo
+    /// and, on a live-only consumer, any turn not from the live microphone. With nothing held, or anyone else's turn,
+    /// it is a request like any other. A save takes the hold, so it is written at most once.
+    /// A save is a command only with an allowlisted `notes` destination; without one, "save that" reaches the agent
+    /// and the hold stays.
+    private func holdsDuckHeld(_ turn: RightyoInputEvent.Turn, owner: Bool) -> Bool {
+        guard let duckSession, activationEnabled, speakers == "enrolled", owner, duckActive?() != true,
+              let cue = DuckHeldCue.cue(in: turn.text, names: voiceNames) else { return false }
+        switch cue {
+        case .save:
+            guard let notes = destinations?.destinations[DuckSave.notesKey], let held = duckSession.takeHeld() else {
+                return false
+            }
+            lastDuckSave = DuckSave(held, to: notes)
+        case .discard:
+            guard let turns = duckSession.discardHeld() else { return false }
+            lastDuckCue = .discarded(turns: turns)
+        }
+        return true
+    }
+
+    /// The end-of-session summary (#735 H-5): sends the ended session's `held` turns once, with the summary block,
+    /// through `step` (the pipeline's delivery step, without the acknowledgement: the exit's own clip already played),
+    /// so the sanitizer, the guard and the policy apply as for an ask. Nothing is sent on a stream that never sends
+    /// (`activation: "disabled"`), off an enrolled session, without a delivery step, or once the stream has ended.
+    /// It is a background step, so no failure ends the stream: a guard or policy refusal (`keepsListening`) is
+    /// reported `notSent`, any other `failed`, and either way the hold says the summary was not sent. It takes the
+    /// consumer's `busy`, as a request does: it waits for an event in flight, and an event arriving meanwhile waits
+    /// for it. Once it holds `busy` it checks that `held` is still the live hold: a "discard that", a new session or
+    /// the stream's retirement before then means nothing is sent.
+    func summarizeDuck(_ held: DuckSession.Held, via step: any RightyoDispatching) async -> DuckSummaryOutcome {
+        while busy || summarizing { await waitForDuck() }
+        (busy, summarizing) = (true, true)
+        defer { (summarizing, busy) = (false, false) }
+        guard let duckSession, dispatcher != nil, activationEnabled, speakers == "enrolled", !terminal,
+              duckSession.held?.id == held.id,
+              let text = try? DuckSession.summaryPrompt(held.copy, speakers: speakers, target: target) else {
+            duckSession?.noteSummary(.notSent, for: held.id)
+            return .skipped
+        }
+        do {
+            try Task.checkCancellation()
+            let receipt = try await step.dispatch(text: text, target: target, binding: binding)
+            duckSession.noteSummary(.sent(receipt.request), for: held.id)
+            return .sent(turns: held.copy.turns.count, bytes: held.copy.bytes)
+        } catch {
+            duckSession.noteSummary(.notSent, for: held.id)
+            let kept = (error as? LocalDispatchRefusal).map(Self.keepsListening.contains) ?? false
+            return kept ? .notSent : .failed
+        }
+    }
+
+    /// Waits while a duck summary holds `busy` (#735 H-5).
+    func waitOutDuckSummary() async {
+        while summarizing { await waitForDuck() }
+    }
+
+    /// What the previous event left (receipts, commands, cues), cleared as each event is consumed.
+    func clearLastOutcomes() {
+        (lastReceipt, lastDismissal, lastVoiceMute) = (nil, nil, nil)
+        (lastVoiceMedia, lastVoiceDestination, lastRouteRefusal, lastVoiceDuck) = (nil, nil, nil, nil)
+        (lastDuckCue, lastDuckSave) = (nil, nil)
+    }
+
+    /// Suspends until `busy` or `summarizing` next clears; callers re-check in a loop.
+    private func waitForDuck() async {
+        await withCheckedContinuation { duckWaiters.append($0) }
+    }
+
+    private func wakeDuckWaiters() {
+        let waiting = duckWaiters
+        duckWaiters = []
+        waiting.forEach { $0.resume() }
     }
 }
 /// Correlation against admitted records lives here so the actor body stays within the type-length limit.

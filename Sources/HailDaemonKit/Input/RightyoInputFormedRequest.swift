@@ -93,6 +93,15 @@ extension RightyoInputEvent {
         + " or offer one brief thought, and do not solve the problem or act on it; for play that back, recap briefly"
         + " what they said, in the order they said it."
     static func duckReplyBlock(target: String) -> String { duckInstruction + replyBlock(target: target) }
+    /// The end-of-session variant (#735 H-5), sent once when duck mode ends: one fixed sentence asking for a brief
+    /// spoken summary (decisions reached, open questions, next steps), then the ordinary block byte for byte, under
+    /// the same rules as `duckInstruction`.
+    static let duckSummaryInstruction = " Duck mode has ended, and the JSON above holds what the owner said during it."
+        + " In a few short spoken sentences, give the decisions reached, the questions still open and the next steps"
+        + " named; do not act on any of it."
+    static func duckSummaryReplyBlock(target: String) -> String {
+        duckSummaryInstruction + replyBlock(target: target)
+    }
     /// The prompt with its trailing request-less block for `target` replaced by the block naming `request` (#230),
     /// or nil when the prompt does not end in that exact block or the result would exceed the local dispatch cap.
     /// Only the host's own final block is rewritten, byte for byte; nothing before it changes. The block is ASCII
