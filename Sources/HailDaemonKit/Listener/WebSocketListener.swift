@@ -481,6 +481,9 @@ public final class AmbientRightyoRouter: AmbientAudioSink, AmbientListenerWiring
         public var replyControl = false
         /// How long the owner's spoken media mode (#551) lasts before it turns itself off.
         public var mediaTimeout: TimeInterval = AmbientRightyoRouter.defaultMediaTimeout
+        /// How long the owner's spoken duck mode (#735) lasts before it turns itself off: host.json
+        /// `ambient.duckTimeout`, or `defaultDuckTimeout`.
+        public var duckTimeout: TimeInterval = AmbientRightyoRouter.defaultDuckTimeout
         /// The owner's allowlisted note destinations (#552); nil leaves spoken notes off.
         public var destinations: VoiceDestinations?
         var notes = VoiceNoteRunner()
@@ -552,6 +555,8 @@ public final class AmbientRightyoRouter: AmbientAudioSink, AmbientListenerWiring
         /// Connections whose owner turned media mode on (#551), each with its timeout; dropped (and the timeout
         /// cancelled) when it ends, times out or the connection stops. Every child registered meanwhile is told.
         var media: [UUID: AmbientMediaTimer] = [:]
+        /// Connections whose owner turned duck mode on (#735), kept like `media`. A connection is never in both.
+        var duck: [UUID: AmbientDuckTimer] = [:]
         /// The reply whose final text, the latest this host delivered, ended with a question (rightyo#199); nil
         /// otherwise, and cleared by audio of any other reply (a text-less acknowledgement clip). The phone plays
         /// replies in order and reports one end when its queue drains, so that reply is the one just heard.
@@ -564,7 +569,7 @@ public final class AmbientRightyoRouter: AmbientAudioSink, AmbientListenerWiring
     fileprivate let log: @Sendable (WebSocketListenerEvent) -> Void
     /// Wakes the worker; signals coalesce, the events themselves are in `State.queue`.
     fileprivate let wake: AsyncStream<Void>.Continuation
-    /// Media mode state for devices (#612), sent one at a time in the order the mode changed.
+    /// Media and duck mode state for devices (#612, #735), sent one at a time in the order the modes changed.
     fileprivate let mediaNotices = SerialTaskChain()
 
     public init(configuration: Configuration, log: @escaping @Sendable (WebSocketListenerEvent) -> Void = { _ in }) {
@@ -644,6 +649,7 @@ public final class AmbientRightyoRouter: AmbientAudioSink, AmbientListenerWiring
         let streams = state.withLock { state -> [UUID] in
             (state.latest[connection], state.inputRoutes[connection]) = (nil, nil)
             state.media.removeValue(forKey: connection)?.timer.cancel()
+            state.duck.removeValue(forKey: connection)?.timer.cancel()
             if let active = state.active, state.runs[active.run]?.connection == connection { state.active = nil }
             return state.runs.filter { $0.value.connection == connection }.map(\.key)
         }
@@ -690,6 +696,8 @@ public final class AmbientRightyoRouter: AmbientAudioSink, AmbientListenerWiring
 
     var peakQueue: Int { state.withLock { $0.peakQueue } }
     public func mediaMode(connection: UUID) -> Bool { state.withLock { $0.media[connection] != nil } }
+    /// Whether the owner's spoken duck mode (#735) is on for `connection` (tests).
+    func duckMode(connection: UUID) -> Bool { state.withLock { $0.duck[connection] != nil } }
 
     /// Waits (at most 30 s) for queued events to be handled, then for every current run to return (tests).
     func settle() async {
@@ -953,6 +961,8 @@ extension AmbientRightyoRouter {
         (settings.onHeard, settings.onOverheard) = transcriptRelays(on: connection, listener: listener)
         settings.onVoiceMute = voiceMuted(on: connection, listener: listener)
         settings.onVoiceMedia = voiceMedia(on: connection, listener: listener)
+        (settings.onVoiceDuck, settings.onDuckUnsupported) = (voiceDuck(on: connection, listener: listener),
+                                                              duckUnsupported(on: connection))
         if let destinations = configuration.destinations {
             (settings.destinations, settings.onVoiceDestination) = (destinations, voiceNote(on: connection,
                                                                                             listener: listener))
@@ -985,6 +995,8 @@ extension AmbientRightyoRouter {
         // A new or reloaded child starts with media mode off (#551). Told under the same lock `setMedia` changes it
         // under, so it can never miss a change made while it was starting.
         if state.media[connection] != nil { pipeline.reportMedia(true) }
+        // Duck mode (#735) likewise; the pipeline writes it once the child's `started` says it takes it.
+        if state.duck[connection] != nil { pipeline.reportDuck(true) }
         state.runs[id]?.task = Task { [weak self] in
             if reload { self?.emit("ambient_reloaded", detail: nil) }
             self?.emit("ambient_started", connection: connection, detail: nil)
@@ -1105,7 +1117,7 @@ extension AmbientRightyoRouter {
     }
 
     /// One confirmation clip from `persona`'s reserved folder, sent like the stop confirmation; its outcome token.
-    private func confirmVoiceMute(
+    func confirmVoiceMute(
         _ persona: String, on connection: UUID, listener: WebSocketListener?
     ) async -> String {
         guard let library = configuration.acknowledgements,
@@ -1203,7 +1215,7 @@ extension AmbientRightyoRouter {
         }
     }
 
-    fileprivate func emit(_ event: String, connection: UUID? = nil, detail: String?) {
+    func emit(_ event: String, connection: UUID? = nil, detail: String?) {
         log(WebSocketListenerEvent(event: event, sessionID: connection, detail: detail))
     }
 }
@@ -1410,41 +1422,110 @@ extension AmbientRightyoRouter {
     /// Turns media mode on or off for `connection` and tells its children; returns how many took it. On (re)arms the
     /// timeout and any change cancels the one before; `expected`, when given, makes this an expiry that applies only
     /// while that timeout is still the current one. The children are written under the lock (a write never blocks),
-    /// so a child `register` adds at the same moment either is written here or sees the new state.
+    /// so a child `register` adds at the same moment either is written here or sees the new state. Media mode a child
+    /// took leaves duck mode (#735): the two are exclusive.
     @discardableResult
     func setMedia(_ on: Bool, connection: UUID, reason: String, expected: UUID? = nil) -> Int {
-        let token = UUID(), timeout = configuration.mediaTimeout
-        let reported = state.withLock { state -> Int? in
+        let changed = state.withLock { state -> (media: Int, duck: Int?)? in
             if let expected, state.media[connection]?.token != expected { return nil }
-            state.media.removeValue(forKey: connection)?.timer.cancel()
-            if on {
-                let timer = Task { [weak self] in
-                    try? await Task.sleep(for: .seconds(timeout))
-                    guard !Task.isCancelled else { return }
-                    self?.setMedia(false, connection: connection, reason: "timeout", expected: token)
-                }
-                state.media[connection] = AmbientMediaTimer(token: token, timer: timer)
-            }
-            let reported = state.runs.values.filter { $0.connection == connection && $0.pipeline.reportMedia(on) }.count
-            // The device sees on only once a child took it, so it never shows a mode not in force; off always (#612).
-            // Queued under the same lock as the change, so a timeout's off and a spoken on reach the device in the
-            // order the mode changed (the chain takes only its own lock).
-            if !on || reported > 0 {
-                let expires = on ? Int64((Date().timeIntervalSince1970 + timeout) * 1_000) : nil
-                let listener = state.listener?.value
-                mediaNotices.enqueue { [weak self, weak listener] in
-                    let sent = await listener?.showMediaMode(on, reason: reason, expires: expires,
-                                                             connection: connection)
-                    self?.emit("ambient_media_device", connection: connection,
-                               detail: "on=\(on) device=\(sent ?? "no_connection")")
-                }
-            }
-            return reported
+            let reported = changeMedia(on, connection: connection, reason: reason, in: &state)
+            let left = on && reported > 0 && state.duck[connection] != nil
+            return (reported, left ? changeDuck(false, connection: connection, reason: "voice", in: &state) : nil)
         }
-        guard let reported else { return 0 }
-        emit("ambient_media", connection: connection, detail: "on=\(on) reason=\(reason) reported=\(reported)")
+        guard let changed else { return 0 }
+        emit("ambient_media", connection: connection, detail: "on=\(on) reason=\(reason) reported=\(changed.media)")
+        if let duck = changed.duck {
+            emit("ambient_duck", connection: connection, detail: "on=false reason=voice reported=\(duck)")
+        }
+        return changed.media
+    }
+
+    /// Turns duck mode on or off for `connection` (#735), as `setMedia` does, and returns how many children took it.
+    /// Only a child whose RightyO advertised duck mode takes it; when none does (an older RightyO) duck mode is not
+    /// entered at all, nothing else changes, and the caller tells the owner. An entry no child took while duck mode is
+    /// already on (a reloaded child not started yet) leaves it on, timeout unchanged. Duck mode taken leaves media mode.
+    @discardableResult
+    func setDuck(_ on: Bool, connection: UUID, reason: String, expected: UUID? = nil) -> Int {
+        let changed = state.withLock { state -> DuckChange? in
+            if let expected, state.duck[connection]?.token != expected { return nil }
+            guard let reported = changeDuck(on, connection: connection, reason: reason, in: &state) else {
+                return DuckChange(duck: 0, media: nil, still: state.duck[connection] != nil)
+            }
+            let left = on && state.media[connection] != nil
+            let media = left ? changeMedia(false, connection: connection, reason: "voice", in: &state) : nil
+            return DuckChange(duck: reported, media: media, still: false)
+        }
+        guard let changed else { return 0 }
+        let refused = !on || changed.duck > 0 ? "" : changed.still ? " still_on" : " refused=unsupported"
+        emit("ambient_duck", connection: connection,
+             detail: "on=\(on) reason=\(reason) reported=\(changed.duck)\(refused)")
+        if let media = changed.media {
+            emit("ambient_media", connection: connection, detail: "on=false reason=voice reported=\(media)")
+        }
+        return changed.duck
+    }
+
+    /// Media mode's change under the caller's lock: the timeout, the children, then the device notice, queued under the
+    /// same lock so a timeout's off and a spoken on reach the device in the order the mode changed. How many took it.
+    private func changeMedia(_ on: Bool, connection: UUID, reason: String, in state: inout State) -> Int {
+        let token = UUID(), timeout = configuration.mediaTimeout
+        state.media.removeValue(forKey: connection)?.timer.cancel()
+        if on {
+            let timer = Task { [weak self] in
+                try? await Task.sleep(for: .seconds(timeout))
+                guard !Task.isCancelled else { return }
+                self?.setMedia(false, connection: connection, reason: "timeout", expected: token)
+            }
+            state.media[connection] = AmbientMediaTimer(token: token, timer: timer)
+        }
+        let reported = state.runs.values.filter { $0.connection == connection && $0.pipeline.reportMedia(on) }.count
+        // The device sees on only once a child took it, so it never shows a mode not in force; off always (#612).
+        if !on || reported > 0 {
+            let expires = on ? Int64((Date().timeIntervalSince1970 + timeout) * 1_000) : nil
+            let listener = state.listener?.value
+            mediaNotices.enqueue { [weak self, weak listener] in
+                let sent = await listener?.showMediaMode(on, reason: reason, expires: expires, connection: connection)
+                self?.emit("ambient_media_device", connection: connection,
+                           detail: "on=\(on) device=\(sent ?? "no_connection")")
+            }
+        }
         return reported
     }
+
+    /// Duck mode's change under the caller's lock, as `changeMedia`; nil when it was to turn on and no child took it,
+    /// in which case every child's wish is withdrawn and nothing else changes (the fail-safe for an older RightyO).
+    private func changeDuck(_ on: Bool, connection: UUID, reason: String, in state: inout State) -> Int? {
+        let runs = state.runs.values.filter { $0.connection == connection }
+        let reported = runs.filter { $0.pipeline.reportDuck(on) }.count
+        guard !on || reported > 0 else {
+            runs.forEach { _ = $0.pipeline.reportDuck(state.duck[connection] != nil) }
+            return nil
+        }
+        let token = UUID(), timeout = configuration.duckTimeout
+        state.duck.removeValue(forKey: connection)?.timer.cancel()
+        if on {
+            let timer = Task { [weak self] in
+                try? await Task.sleep(for: .seconds(timeout))
+                guard !Task.isCancelled else { return }
+                self?.setDuck(false, connection: connection, reason: "timeout", expected: token)
+            }
+            state.duck[connection] = AmbientDuckTimer(token: token, timer: timer)
+        }
+        let expires = on ? Int64((Date().timeIntervalSince1970 + timeout) * 1_000) : nil
+        let listener = state.listener?.value
+        mediaNotices.enqueue { [weak self, weak listener] in
+            let sent = await listener?.showDuckMode(on, reason: reason, expires: expires, connection: connection)
+            self?.emit("ambient_duck_device", connection: connection,
+                       detail: "on=\(on) device=\(sent ?? "no_connection")")
+        }
+        return reported
+    }
+}
+
+/// What `setDuck` changed: how many children took duck mode, how many took media mode's end when it left it, and
+/// whether an entry no child took found duck mode already on.
+private struct DuckChange {
+    let duck: Int, media: Int?, still: Bool
 }
 
 /// Runs the work given to it one piece at a time, in the order given (#404): each piece starts only once the one
