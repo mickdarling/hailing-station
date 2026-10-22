@@ -35,8 +35,13 @@ import Testing
             await task.value
             let child = try #require(owned)
             #expect(!child.isRunning && child.cleanupDisposition == .deferred)
-            // Retain the authored scratch and abnormal renderer evidence; never delete on test failure.
-            #expect(FileManager.default.fileExists(atPath: child.outputDirectory.path))
+            // The child wrote nothing, so its deferred folder holds nothing to recover and is removed (#800);
+            // the authored scratch around it stays until the test process exits.
+            let deadline = ContinuousClock.now + .seconds(5)
+            while FileManager.default.fileExists(atPath: child.outputDirectory.path), ContinuousClock.now < deadline {
+                try await Task.sleep(for: .milliseconds(20))
+            }
+            #expect(!FileManager.default.fileExists(atPath: child.outputDirectory.path))
         }
     }
 }

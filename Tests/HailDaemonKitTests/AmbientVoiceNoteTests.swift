@@ -31,7 +31,7 @@ import Testing
             acknowledgements: AmbientAckLibrary(clips: ["confirmsaved": [Self.saved],
                                                         "confirmnotsaved": [Self.notSaved]]),
             destinations: try VoiceDestinations(["Notes": .shortcut("Hail to Notes")]),
-            shortcuts: ShortcutRunner(executable: shortcuts, timeout: .seconds(20)),
+            shortcuts: ShortcutRunner(executable: shortcuts, timeout: .seconds(20), inputs: .init(base: directory)),
             onEvent: { event in
                 if event.event == "ambient_voice_note" { details.withLock { $0.append(event.detail ?? "") } }
             }
