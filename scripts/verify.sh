@@ -120,6 +120,12 @@ run_captured() {
   LANE_PID=""
   trap - INT TERM
   cat "$log" || report=$?
+  # `swift test` passes a selection that matches nothing (#704): a lane that started no test fails, so a renamed target
+  # or pattern can never turn a lane silently green.
+  if (( !stalled && status == 0 && report == 0 )) && ! grep -Eq '"kind" *: *"testStarted"' "$events"; then
+    printf 'No test started in this lane; an empty selection fails (#704): %s\n' "$*" >&2 || :
+    status=65
+  fi
   if (( stalled )); then
     status=124
     {
