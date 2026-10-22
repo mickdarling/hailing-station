@@ -84,14 +84,17 @@ claims. It is trusted only for holding a private key the owner approved.
    - **After `superseded`** the app does not re-prove on its own. It may reconnect for voice and replies without
      listing `owner_device`, so it is not challenged; that works unproven as today but receives nothing proactive.
      It shows the state, and the owner's next step is a reconnect that proves.
-   - **After `unanswered`** the app answers the retry challenge if it is still connected. If it misses that retry
-     too, it shows that it is unconfirmed and reconnects to prove again.
-   - **Privacy changes while demoted:** the connection keeps only the latest one. A privacy-on discards a held off,
-     and so does the connection being superseded or closing. A held off applies at restore only if the connection is
-     public at that moment.
+   - **After `unanswered`** the app answers the retry challenge if it is still connected. If no `approved` arrives
+     within about 40 seconds of `unanswered`, it shows that it is unconfirmed and reconnects to prove again. That
+     reconnect starts public, as any reconnect does under #813. So its proof sets a pending clear, and privacy ends
+     about 30 seconds later, shown as `ending` meanwhile (open question 3).
+   - **Privacy changes while demoted:** a privacy-on applies to the key at once (Recording) and is never held; it
+     discards any held privacy-off. Only a privacy-off is held, and the connection being superseded or closing also
+     discards it. A held off applies at restore only if the connection is public at that moment. A demoted
+     connection that is private still counts for "Private now".
    - **No challenge:** if no `device_challenge` arrives within 10 seconds of a hello in which the host listed
-     `owner_device`, the app shows that it could not be confirmed and treats itself as unapproved. It still answers a
-     challenge that arrives later. Without `owner_device` in the hello, it shows that this host does not offer owner
+     `owner_device`, the app shows that it could not be confirmed and treats itself as unapproved. Voice and replies
+     carry on unproven, as today. It still answers a challenge that arrives later. Without `owner_device` in the hello, it shows that this host does not offer owner
      devices.
    - **Tokens** rotate only with a fresh proof answering a challenge.
 8. **Pending store:** a pending entry exists only while its connection is open.
@@ -122,8 +125,10 @@ This is the same rule voice routing follows (`docs/voice-routing.md`): a discove
   force a reconnect about every 30 seconds.
 - A forged privacy-on drops new updates and purges held ones, so queued agent output is lost. It discloses nothing.
 - They can drop a privacy-on frame, so the owner's privacy never takes effect on the host. The app shows privacy only
-  once the host confirms it (as in #817), so a dropped frame shows as not private.
-- A connection that never proves protects only itself: its privacy marks no key.
+  once the host confirms it (as in #817), so a dropped frame alone shows as not private. But they can also forge the
+  confirmation: the indicator is advisory and unauthenticated until the listener has TLS.
+- A connection that never proves protects only itself: its privacy marks no key. The same device can still be pushed
+  under its key while that key reports public.
 - A push APNs has already accepted cannot be recalled if privacy starts before it arrives; its expiry is at most the
   update's 4-hour lifetime.
 - `info` updates and cards drained without an `action` rely on the 10-minute re-challenge. For up to 10 minutes after
@@ -161,8 +166,11 @@ haild keeps, in memory only, each approved key's last privacy report.
   never clears a report by itself, and another key connecting never clears it.
   - A pending clear cancelled by demotion is not re-armed by a restore. The owner stays private until that device
     turns privacy off or proves on a fresh connection; this fails closed.
-  - While a pending clear waits, the host reports the key's privacy as `ending` in `device_state`, not public. So the
-    device never shows "public" before the clear has applied.
+  - While a pending clear waits, the host reports the key's privacy as `ending` in `device_state`, not public.
+  - haild sends `device_state` on every change to the key's privacy. Its `privacy` field is the key's report, not the
+    owner's; for a pending key it is the connection's own privacy.
+  - The app shows "not private" only when both its connection and its key report public. So the device never shows
+    public before a clear has applied.
 - **Before a proof or approval:** privacy turned on over a connection that has not yet proven, or whose key is still
   pending, is held by that connection and applied to the key at the proof or approval. A connection that never
   proves protects only itself: it gets nothing proactive, but its privacy marks no key.
@@ -323,7 +331,7 @@ is no version bump.
 | `session_update` (exists) | host to device | `session_update` | `update`, `session`, `priority`, `text`, `card?` |
 | `device_challenge` | host to device | `owner_device` | `nonce` |
 | `device_proof` | device to host | `owner_device` | `key`, `signature`, `token?`, `environment?`, `name`, `kind` |
-| `device_state` | host to device | `owner_device` | `fingerprint`, `state`: `pending`, `approved`, `revoked`, `superseded`, `unanswered` or `full`; `privacy`: `private`, `ending` or `public` |
+| `device_state` | host to device | `owner_device` | `fingerprint`, `state`: `pending`, `approved`, `revoked`, `superseded`, `unanswered` or `full`; `privacy`: `private`, `ending` or `public` (the key's report; the connection's own for `pending`; absent for `full` and `revoked`) |
 | `presence` | device to host | `presence` | `foreground`, `muted`, `away` (booleans) |
 
 The APNs JSON is not a hail frame. It lives in a new `Notify/` type, with its schema in `docs/reply-protocol.md`.
@@ -382,6 +390,9 @@ So everything except the APNs client and the device store waits for Part 10's st
    - Costs: a phone that drops off while private keeps every device quiet until it reconnects. After a haild
      restart, nothing is pushed to a device until it has connected again; a connected Mac still gets rules 4 to 6.
      A connection that never proves protects only itself.
+   - The app's own reconnect after a missed re-challenge also ends privacy, about 30 seconds later and shown as
+     `ending`. Alternatively the app could send privacy-on before proving on a reconnect it starts itself, which
+     would differ from #813's "a fresh connection starts public". That choice is Part 10's.
    - Is that what you want?
 4. **Quiet hours:** what window? Should any `action` break through? A breakthrough would need the time-sensitive
    entitlement. Proposed: no breakthrough.
