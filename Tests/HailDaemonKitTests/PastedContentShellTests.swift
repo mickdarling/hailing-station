@@ -69,13 +69,15 @@ import Testing
         try await withTaskExecutorPreference(HeavyTestExecutor.shared) { try everyFramedLineIsInertInBothShells() }
     }
 
+    /// Each shell with no startup files, then `-c` and the line.
+    private static let shells = [("/bin/bash", ["--norc", "--noprofile", "-c"]), ("/bin/zsh", ["-f", "-c"])]
+
     private func everyFramedLineIsInertInBothShells() throws {
-        let shells = [("/bin/bash", ["--norc", "--noprofile", "-c"]), ("/bin/zsh", ["-f", "-c"])]
         var runs = 0
         for paste in Self.pastes {
             for spoken in Self.spokens {
                 let line = try PastedContent.frame(spoken: spoken, pasted: paste)
-                for (shell, flags) in shells {
+                for (shell, flags) in Self.shells {
                     let directory = FileManager.default.temporaryDirectory
                         .appendingPathComponent("hail-paste-shell-\(UUID().uuidString)")
                     try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: false)
@@ -91,20 +93,23 @@ import Testing
         #expect(runs == Self.pastes.count * Self.spokens.count * 2)
     }
 
-    /// Positive control: the harness does see a canary run. The #628 review's probe, unframed, creates the file.
+    /// Positive control: the harness does see a canary run, in each shell the inert test uses. The #628 review's probe,
+    /// unframed, creates the file.
     @Test func theHarnessDetectsAPasteThatRuns() async throws {
         try await withTaskExecutorPreference(HeavyTestExecutor.shared) { try harnessSeesTheCanary() }
     }
 
     private func harnessSeesTheCanary() throws {
-        let directory = FileManager.default.temporaryDirectory
-            .appendingPathComponent("hail-paste-control-\(UUID().uuidString)")
-        try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: false)
-        defer { try? FileManager.default.removeItem(at: directory) }
         let raw = "zq's this \"notes x'; echo PWNED-$((6*7)); touch PWNED #\""
-        let result = try run("/bin/bash", ["--norc", "--noprofile", "-c", raw], in: directory)
-        #expect(result.output.contains("PWNED-42"))
-        #expect(try FileManager.default.contentsOfDirectory(atPath: directory.path) == ["PWNED"])
+        for (shell, flags) in Self.shells {
+            let directory = FileManager.default.temporaryDirectory
+                .appendingPathComponent("hail-paste-control-\(UUID().uuidString)")
+            try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: false)
+            defer { try? FileManager.default.removeItem(at: directory) }
+            let result = try run(shell, flags + [raw], in: directory)
+            #expect(result.output.contains("PWNED-42"), "\(shell): \(result.output)")
+            #expect(try FileManager.default.contentsOfDirectory(atPath: directory.path) == ["PWNED"], "\(shell)")
+        }
     }
 
     /// With no spoken part, the framed line is one plain simple command to both shells' parsers: no quote, no
