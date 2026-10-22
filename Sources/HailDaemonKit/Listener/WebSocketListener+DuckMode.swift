@@ -8,27 +8,34 @@ struct AmbientDuckTimer {
     let timer: Task<Void, Never>
 }
 
-/// Duck mode (#735, "let me think out loud"): the owner's spoken entry and exit, its auto-end, and its device notice.
-/// The state lives beside media mode's in `AmbientRightyoRouter.State`; `setDuck` changes it.
+/// Privacy mode (#735, internally duck): entry from any speaker's safety-set phrase, exit and status from RightyO's
+/// content-free events, its auto-end and its device notice. The state lives beside media mode's in
+/// `AmbientRightyoRouter.State`; `setDuck` changes it.
 extension AmbientRightyoRouter {
     /// An hour (provisional default for decision 3 of #735, Mick's to change): long enough for one think, short
-    /// enough that a forgotten duck mode does not swallow the evening. host.json `ambient.duckTimeout` overrides it.
+    /// enough that a forgotten privacy mode does not swallow the evening. host.json `ambient.duckTimeout` overrides it.
     public static let defaultDuckTimeout: TimeInterval = 3600
     /// The `ambient.duckTimeout` values `haild` accepts, in seconds: a minute to four hours.
     public static let duckTimeoutRange: ClosedRange<TimeInterval> = 60...(4 * 3600)
 
-    /// The owner's spoken duck mode (#735): set for every child of `connection` at once, then confirmed with a
-    /// `confirm-duck-on/` or `confirm-duck-off/` clip when there is one, in the order said. An entry while duck mode is
-    /// already on is answered "still on" with `confirm-duck-on/` (worded as a status), the auto-end re-armed when a
-    /// child took it. An entry no child took while duck mode is off (an older RightyO, which would go on deciding
-    /// turns) leaves it off and plays `confirm-not-sent/`, as does a phrase refused on an anonymous session; an exit
-    /// no child took is not confirmed. Logs tokens only.
-    func voiceDuck(on connection: UUID, listener: WebSocketListener) -> @Sendable (VoiceDuckCommand) -> Void {
+    /// Privacy mode's commands (#735 S-2) for every child of `connection` at once, each confirmed with a clip when
+    /// there is one, in the order said:
+    /// - `enter`: `setDuck(true)`, which only a child that advertised `duck` v2 takes. Taken, or already on ("still
+    ///   on", the auto-end re-armed when a child took it), it plays `confirm-privacy-on/`. Taken by none while off
+    ///   (a v1 RightyO, which still transcribes, or no control descriptor) it is refused, fail closed: privacy stays
+    ///   off and `confirm-not-sent/` plays, logged `refused=unsupported_version`.
+    /// - `exit`: `setDuck(false)`, which tells the device, then `confirm-privacy-off/`. RightyO checked the owner.
+    /// - `status`: `confirm-privacy-status/` while privacy is on; nothing otherwise (S-3 answers every mode).
+    /// - `stillRecording`: `confirm-still-recording/` only; nothing changes.
+    /// Nothing reaches the agent. Logs tokens only.
+    func voiceDuck(on connection: UUID, listener: WebSocketListener) -> @Sendable (PrivacyCommand) -> Void {
         let chain = SerialTaskChain()
         return { [weak self, weak listener] command in
             var (reported, on) = (0, false)
-            if command == .on || command == .off, let self {
-                reported = setDuck(command == .on, connection: connection, reason: "voice")
+            if let self {
+                if command == .enter || command == .exit {
+                    reported = setDuck(command == .enter, connection: connection, reason: "voice")
+                }
                 on = duckMode(connection: connection)
             }
             chain.enqueue { [weak self, weak listener, reported, on] in
@@ -42,26 +49,27 @@ extension AmbientRightyoRouter {
         }
     }
 
-    /// The clip folder that answers a duck mode phrase, or nil for none, and the log token for what happened, given
-    /// how many children took it and whether duck mode is on afterwards.
-    static func duckConfirmation(_ command: VoiceDuckCommand, reported: Int, on: Bool) -> (String?, String) {
+    /// The clip folder that answers a privacy command, or nil for none, and the log token for what happened, given
+    /// how many children took it and whether privacy is on afterwards.
+    static func duckConfirmation(_ command: PrivacyCommand, reported: Int, on: Bool) -> (String?, String) {
         switch command {
-        case .refused(let entry): (AmbientStopConfirmation.notSent, "on=\(entry) refused=anonymous")
-        case .on where reported == 0 && on: (AmbientStopConfirmation.duckOn, "on=true still_on")
-        case .on where reported == 0: (AmbientStopConfirmation.notSent, "on=true refused=unsupported")
-        case .on: (AmbientStopConfirmation.duckOn, "on=true")
-        case .off: (reported > 0 ? AmbientStopConfirmation.duckOff : nil, "on=false")
+        case .enter where reported > 0: (AmbientStopConfirmation.privacyOn, "on=true")
+        case .enter where on: (AmbientStopConfirmation.privacyOn, "on=true still_on")
+        case .enter: (AmbientStopConfirmation.notSent, "on=true refused=unsupported_version")
+        case .exit: (reported > 0 ? AmbientStopConfirmation.privacyOff : nil, "on=false")
+        case .status: (on ? AmbientStopConfirmation.privacyStatus : nil, "status on=\(on)")
+        case .stillRecording: (AmbientStopConfirmation.stillRecording, "negated")
         }
     }
 
-    /// A child that started while duck mode was on without advertising `duck` (an older RightyO after a reload) cannot
-    /// take it, and the host never claims a mode a child is not in: duck mode ends for `connection`, its timeout is
-    /// cancelled and the device told off. The device's reason is `timeout`, the protocol's "it turned itself off":
+    /// A child that started while privacy was on without advertising `duck` v2 (an older RightyO after a reload)
+    /// cannot take it, and the host never claims a mode a child is not in: privacy ends for `connection`, its timeout
+    /// is cancelled and the device told off. The device's reason is `timeout`, the protocol's "it turned itself off":
     /// nobody asked (`voice` and `device` would both say someone did); the host log says why.
     func duckUnsupported(on connection: UUID) -> @Sendable () -> Void {
         { [weak self] in
             guard let self, duckMode(connection: connection) else { return }
-            emit("ambient_duck_unsupported", connection: connection, detail: "child=started_without_duck")
+            emit("ambient_duck_unsupported", connection: connection, detail: "child=unsupported_version")
             setDuck(false, connection: connection, reason: "timeout")
         }
     }

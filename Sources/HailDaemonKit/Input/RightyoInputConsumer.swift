@@ -121,34 +121,68 @@ enum VoiceMedia {
     }
 }
 
-/// What the owner's spoken duck mode phrase (#735) asks the host to do: turn it `on` or `off`, or, on a session that
-/// cannot tell the owner's voice apart, `refused` (the phrase is held back and the owner told nothing was sent);
-/// `entry` says whether the refused phrase was the entry or the exit.
-public enum VoiceDuckCommand: Sendable, Equatable { case on, off, refused(entry: Bool) }
+/// What privacy mode (#735, internally duck) asks the host to do. `enter` is a safety-set entry phrase
+/// (`PrivacyEntry`) in any speaker's turn, and `stillRecording` a negated one ("don't stop recording"), which only plays
+/// "Still recording."; `exit` and `status` are RightyO's content-free `privacy` events (rightyo S-1), which RightyO
+/// matched itself while private, when the host hears no words at all.
+public enum PrivacyCommand: Sendable, Equatable { case enter, stillRecording, exit, status }
 
-/// The owner's spoken duck mode (#735, "let me think out loud"): a whole turn that is only an on or off phrase,
-/// trimmed as `VoiceMute` trims, except that it must name the assistant ("Jarvis, done thinking"), for entry as well
-/// as exit, so thinking aloud about ducks never turns it on. The phrases are Mick's to choose (decision 2 of #735):
-/// edit the two sets below. Matched on the heard words only; nothing is logged.
-enum VoiceDuck {
-    static let onPhrases: Set<String> = [
-        "duck mode", "duck mode on", "let me think out loud", "i'm going to think out loud", "think out loud with me"
-    ]
-    static let offPhrases: Set<String> = [
-        "duck mode off", "end duck mode", "done thinking", "i'm done thinking", "done thinking out loud"
-    ]
+/// The privacy safety set's entry (#735 S-2): deterministic and local, with no model. A phrase counts anywhere in a
+/// turn, whatever comes before it (filler, a name, the rest of a name split off into the turn before), in any case and
+/// with any punctuation. No name and no owner is needed: going private only ever withholds, so any speaker, a guest or
+/// an anonymous session's, may say it. When in doubt it goes private: one clean phrase anywhere wins over a negated one
+/// elsewhere, and only a negation right before the phrase ("don't", "do not", "never"), across at most a few bridging
+/// words ("don't you", "I don't want you to"), holds it back. A "privacy mode" that asks to leave it ("privacy mode
+/// off", "end privacy mode") is not an entry. Matched on the heard words only; nothing is logged.
+enum PrivacyEntry {
+    enum Match: Sendable, Equatable { case enter, negated }
 
-    /// The command a whole named turn says, given the session's keyed addressing `names`; nil for anything else.
-    static func command(in heard: String, names: Set<String>) -> VoiceDuckCommand? {
-        var words = heard.lowercased().split { !$0.isLetter && $0 != "'" }.map(String.init)[...]
-        while words.last == "please" { words.removeLast() }
-        if let first = words.first, VoiceMute.greetings.contains(first) { words = words.dropFirst() }
-        guard let named = VoiceMute.nameWidth(words, names: names) else { return nil }
-        words = words.dropFirst(named)
-        if words.first == "please" { words = words.dropFirst() }
-        let phrase = words.joined(separator: " ")
-        if onPhrases.contains(phrase) { return .on }
-        return offPhrases.contains(phrase) ? .off : nil
+    static let phrases: [[String]] = [
+        ["stop", "recording"], ["stop", "listening"], ["privacy", "mode"], ["go", "private"]
+    ]
+    static let negations: Set<String> = ["don't", "dont", "never", "not", "won't", "wont", "shouldn't", "doesn't"]
+    /// Words a negation may reach across to the phrase, up to `maxBridge` of them.
+    static let bridges: Set<String> = ["you", "to", "want", "need", "ever", "just", "really", "please", "i", "we"]
+    static let maxBridge = 4
+    /// Words before "privacy mode" that ask to leave it.
+    static let leaving: Set<String> = ["end", "exit", "leave", "quit", "stop", "disable", "off", "cancel"]
+
+    /// What `heard` says, or nil when it holds no entry phrase at all.
+    static func match(_ heard: String) -> Match? {
+        let words = words(heard)
+        var negated = false
+        for start in words.indices {
+            for phrase in phrases where words[start...].starts(with: phrase) && !leaves(words, phrase, at: start) {
+                if !isNegated(words, before: start) { return .enter }
+                negated = true
+            }
+        }
+        return negated ? .negated : nil
+    }
+
+    /// Lower-cased letter runs, apostrophes kept inside a word ("don't", typographic or not) and trimmed off its ends.
+    static func words(_ heard: String) -> [String] {
+        heard.lowercased().replacingOccurrences(of: "\u{2019}", with: "'")
+            .split { !$0.isLetter && $0 != "'" }
+            .map { $0.trimmingCharacters(in: CharacterSet(charactersIn: "'")) }
+            .filter { !$0.isEmpty }
+    }
+
+    /// A negation before `start`, reached across bridging words only.
+    static func isNegated(_ words: [String], before start: Int) -> Bool {
+        for index in stride(from: start - 1, through: max(0, start - 1 - maxBridge), by: -1) {
+            if negations.contains(words[index]) { return true }
+            if !bridges.contains(words[index]) { return false }
+        }
+        return false
+    }
+
+    /// "privacy mode off", "end privacy mode", "turn off privacy mode", "out of privacy mode".
+    static func leaves(_ words: [String], _ phrase: [String], at start: Int) -> Bool {
+        guard phrase == ["privacy", "mode"] else { return false }
+        let next = start + 2 < words.count ? words[start + 2] : nil
+        let previous = start > 0 ? words[start - 1] : nil, before = start > 1 ? words[start - 2] : nil
+        return next == "off" || previous.map(leaving.contains) == true || (previous == "of" && before == "out")
     }
 }
 
@@ -158,7 +192,8 @@ enum VoiceDuck {
 /// acknowledgement directory: `confirm-stopped/` ("Stopped.") and `confirm-idle/` ("Nothing playing, standing by."),
 /// for the owner's spoken mute (#404) `confirm-muted/` ("Muted.") and `confirm-unmuted/` ("Unmuted."), and for media
 /// mode (#551) `confirm-media-on/` and `confirm-media-off/`, for spoken notes (#552) `confirm-saved/` and
-/// `confirm-not-saved/`, and for duck mode (#735) `confirm-duck-on/` and `confirm-duck-off/`.
+/// `confirm-not-saved/`, and for privacy mode (#735, internally duck) `confirm-privacy-on/`, `confirm-privacy-off/`,
+/// `confirm-privacy-status/` and `confirm-still-recording/`.
 enum AmbientStopConfirmation {
     static let stopped = RightyoAddressing.key("confirm-stopped"), idle = RightyoAddressing.key("confirm-idle")
     static let muted = RightyoAddressing.key("confirm-muted"), unmuted = RightyoAddressing.key("confirm-unmuted")
@@ -169,13 +204,16 @@ enum AmbientStopConfirmation {
     static let saved = RightyoAddressing.key("confirm-saved"), notSaved = RightyoAddressing.key("confirm-not-saved")
     /// An ambient request the owner addressed to a voice route that did not take it (#636): "Nothing was sent."
     static let notSent = RightyoAddressing.key("confirm-not-sent")
-    /// Duck mode (#735): "Duck mode is on." and "Duck mode is off." `confirm-duck-on/` must be worded as a status, not
-    /// "Turning on…", since it also answers an entry said while duck mode is already on. A folder Mick has not
-    /// recorded yet plays nothing, as for media mode.
-    static let duckOn = RightyoAddressing.key("confirm-duck-on")
-    static let duckOff = RightyoAddressing.key("confirm-duck-off")
+    /// Privacy mode (#735, internally duck): `confirm-privacy-on/` ("Privacy on. I'm only listening for my name.") is
+    /// worded as a status, since it also answers an entry said while privacy is already on; `confirm-privacy-off/`
+    /// ("Recording again."); `confirm-privacy-status/` answers RightyO's status event while private, and
+    /// `confirm-still-recording/` ("Still recording.") a negated entry. A folder Mick has not recorded plays nothing.
+    static let privacyOn = RightyoAddressing.key("confirm-privacy-on")
+    static let privacyOff = RightyoAddressing.key("confirm-privacy-off")
+    static let privacyStatus = RightyoAddressing.key("confirm-privacy-status")
+    static let stillRecording = RightyoAddressing.key("confirm-still-recording")
     static let reserved: Set<String> = [stopped, idle, muted, unmuted, mediaOn, mediaOff, saved, notSaved, notSent,
-                                        duckOn, duckOff]
+                                        privacyOn, privacyOff, privacyStatus, stillRecording]
 
     /// Why a playback stop is not confirmed, as a log token, or nil when it is: only the enrolled owner's stop, and
     /// only on a connection still there to hear it.
@@ -352,13 +390,15 @@ public actor RightyoInputConsumer {
     private(set) var lastVoiceMedia: VoiceMedia.Command?
     /// Whether media phrases are commands (#551): only when the child has a control descriptor to carry them.
     private let mediaCommands: Bool
-    /// The owner's spoken duck mode (#735), held back like `lastVoiceMute`; nil for any other line. Duck phrases are
-    /// commands only with `duckActive` (a control descriptor and a host that handles them), which says whether duck
-    /// mode is on: an exit is a command only then, and otherwise a request exactly as before duck mode existed.
-    private(set) var lastVoiceDuck: VoiceDuckCommand?
+    /// Privacy mode (#735, internally duck): what the latest event asked, held back from the agent like
+    /// `lastVoiceMute`; nil for any other line. Only with `duckActive` (a host that handles privacy), which says
+    /// whether privacy is on.
+    private(set) var lastPrivacy: PrivacyCommand?
     private let duckActive: (@Sendable () -> Bool)?
-    /// Utterances whose owner transcript already ended duck mode, so their request is held back without a second off.
-    private var duckExits: [String] = []
+    /// Utterances whose transcript already carried a safety-set phrase: their request is held back with nothing more.
+    private var privacyHeld: [String] = []
+    /// `started` advertised `duck` version 2 or higher ("keeps nothing", rightyo S-1): only then is `privacy` admitted.
+    private var privacyCapable = false
     /// The owner's note to an allowlisted destination (#552), held back like `lastVoiceMute`; nil for any other line.
     private(set) var lastVoiceDestination: VoiceDestinations.Command?
     private let destinations: VoiceDestinations?
@@ -414,11 +454,11 @@ public actor RightyoInputConsumer {
         lastReceipt = nil
         lastDismissal = nil
         lastVoiceMute = nil
-        (lastVoiceMedia, lastVoiceDestination, lastRouteRefusal, lastVoiceDuck) = (nil, nil, nil, nil)
+        (lastVoiceMedia, lastVoiceDestination, lastRouteRefusal, lastPrivacy) = (nil, nil, nil, nil)
         do {
             guard try admit(event) else { return false }
             if event.type == "override" { return true }
-            if event.type == "transcript", let turn = event.turn { noteDuckExit(turn) }
+            try notePrivacy(event)
             guard event.type == "request", let requestID = event.requestId else { return false }
             guard try claim(requestID, provenance: event.turn?.provenance) else { return false }
             guard let dispatcher else { return true }
@@ -431,7 +471,7 @@ public actor RightyoInputConsumer {
             // enrolled session only a turn both its transcript and its attention record call the owner's (`owners`)
             // counts; anyone else's is a request like any other. On an anonymous one any voice counts (see
             // `VoiceMute`): the mute is device-local and reversible.
-            if let turn = event.turn, holdsVoiceCommand(turn) { return false }
+            if let turn = event.turn, holdsPrivacy(turn) || holdsVoiceCommand(turn) { return false }
             // Busy from addressing on: the route's binding lookup suspends, and no event may enter meanwhile.
             busy = true
             defer { busy = false }
@@ -485,6 +525,7 @@ public actor RightyoInputConsumer {
                 voiceNames = VoiceMute.names(in: event.addressing)
                 forming = event.requestForming != nil
                 (dismissible, conversational) = (event.dismissal != nil, event.conversation != nil)
+                privacyCapable = RightyoInputEvent.privacyVersion(event.duck).map { $0 >= 2 } ?? false
             }
         } else if !started { throw RightyoInputError.invalidLifecycle }
         try correlate(event)
@@ -507,7 +548,6 @@ extension RightyoInputConsumer {
     /// in `lastVoiceDestination`.
     private func holdsVoiceCommand(_ turn: RightyoInputEvent.Turn) -> Bool {
         let owner = owners.contains(turn.utteranceId)
-        if holdsVoiceDuck(turn, owner: owner) { return true }
         if speakers == "enrolled", owner, let note = destinations?.command(in: turn.text, names: voiceNames) {
             lastVoiceDestination = note
             return true
@@ -523,36 +563,42 @@ extension RightyoInputConsumer {
     }
 }
 extension RightyoInputConsumer {
-    /// The owner's duck mode phrase (#735) in a request; true when it is held back. Entry and exit are the enrolled
-    /// owner's alone, the destinations rule (#552), not the mute's: a guest's phrase is a request like any other, and
-    /// on an anonymous session, where no voice can be told apart, it is held back as `refused`. An exit its own
-    /// transcript already carried out (`noteDuckExit`) is held back with nothing more to do. While duck mode is off an
-    /// exit phrase is not a command at all: it reaches the agent as it did before duck mode existed.
-    private func holdsVoiceDuck(_ turn: RightyoInputEvent.Turn, owner: Bool) -> Bool {
-        guard let duckActive, let command = VoiceDuck.command(in: turn.text, names: voiceNames) else { return false }
-        if duckExits.contains(turn.utteranceId) { return true }
-        if command == .off, !duckActive() { return false }
-        guard speakers == "enrolled" else {
-            lastVoiceDuck = .refused(entry: command == .on)
+    /// A safety-set entry phrase (#735 S-2) in a request; true when the request is held back from the agent. Any
+    /// speaker's phrase counts (see `PrivacyEntry`), negated or not, and so does a request whose transcript already
+    /// carried one (`notePrivacyPhrase`), with nothing more to do. While privacy is on nothing reaches the agent at
+    /// all: RightyO v2 sends no request then, and one already in flight when privacy began is dropped.
+    private func holdsPrivacy(_ turn: RightyoInputEvent.Turn) -> Bool {
+        guard let duckActive else { return false }
+        if privacyHeld.contains(turn.utteranceId) { return true }
+        if let match = PrivacyEntry.match(turn.text) {
+            lastPrivacy = match == .enter ? .enter : .stillRecording
             return true
         }
-        guard owner else { return false }
-        lastVoiceDuck = command
-        return true
+        return duckActive()
     }
 
-    /// The owner's exit phrase in a transcript (#735). While duck mode is on RightyO decides nothing and sends no
-    /// request (rightyo R-2), so "Jarvis, done thinking" arrives only as the enrolled owner's transcript; it is
-    /// carried out from there, at most once per utterance. An echo or a turn not from the live microphone never is.
-    /// It trusts the transcript's `owner` role alone: under R-2 no attention record follows to confirm or demote it,
-    /// and an exit can only fail toward normal mode, never into a mode that withholds requests.
-    func noteDuckExit(_ turn: RightyoInputEvent.Turn) {
-        guard duckActive?() == true, speakers == "enrolled", owners.contains(turn.utteranceId),
-              allowSynthetic || turn.provenance == "live-microphone", echoFilter?(turn.text) != true,
-              VoiceDuck.command(in: turn.text, names: voiceNames) == .off else { return }
-        lastVoiceDuck = .off
-        duckExits.append(turn.utteranceId)
-        if duckExits.count > 32 { duckExits.removeFirst(duckExits.count - 32) }
+    /// A safety-set entry phrase in any speaker's transcript (#735 S-2), so going private never waits for RightyO to
+    /// form a request: carried out at most once per utterance, and its request, if one follows, is held back. The
+    /// assistant's own words heard back (`echoFilter`) never count.
+    func notePrivacyPhrase(_ turn: RightyoInputEvent.Turn) {
+        guard duckActive != nil, echoFilter?(turn.text) != true, let match = PrivacyEntry.match(turn.text) else {
+            return
+        }
+        lastPrivacy = match == .enter ? .enter : .stillRecording
+        privacyHeld.append(turn.utteranceId)
+        if privacyHeld.count > 32 { privacyHeld.removeFirst(privacyHeld.count - 32) }
+    }
+
+    /// RightyO's content-free `privacy` event (rightyo S-1), refused (ending the stream, fail closed) unless the
+    /// session advertised `duck` v2. The exit is trusted as RightyO's own check: it emits one only for the enrolled
+    /// owner's voice saying the name and an exit phrase, matched locally while it keeps nothing; the host hears no
+    /// words then and cannot re-check. Any speaker may ask the status. Neither ever reaches the agent. A transcript
+    /// goes to `notePrivacyPhrase`.
+    private func notePrivacy(_ event: RightyoInputEvent) throws {
+        if event.type == "transcript", let turn = event.turn { notePrivacyPhrase(turn) }
+        guard event.type == "privacy" else { return }
+        guard privacyCapable else { throw RightyoInputError.invalidEvent }
+        if duckActive != nil { lastPrivacy = event.action == "exit" ? .exit : .status }
     }
 }
 /// Correlation against admitted records lives here so the actor body stays within the type-length limit.
@@ -656,9 +702,14 @@ extension RightyoInputConsumer {
     /// delivered stays delivered (withdrawal is advisory); any other id, including one never seen, which is how
     /// RightyO names a request it withheld, is recorded so a later request with it is dropped, idempotently, under
     /// the same cap as `requests`. Scope and role only withhold or stop host action; they never grant any.
+    /// Privacy mode (#735 S-2, rightyo S-1): a RightyO keeping nothing sends no transcript, but still turns an exact stop
+    /// phrase into a dismissal that stops playback only and withdraws nothing. On a session that advertised `duck` v2,
+    /// that one shape is admitted without a cited transcript, even if the host's own privacy just ended (the child may
+    /// not have read the off line yet). It can only stop a reply playing; it never confirms as the owner's.
     private func dismiss(_ event: RightyoInputEvent) throws {
-        guard dismissible, let utterance = event.utteranceId, finals[utterance] != nil,
-              let ids = event.withdrawnRequestIds, let scope = event.scope, let reason = event.reason else {
+        guard dismissible, let utterance = event.utteranceId,
+              let ids = event.withdrawnRequestIds, let scope = event.scope, let reason = event.reason,
+              finals[utterance] != nil || (privacyCapable && scope == ["playback"] && ids.isEmpty) else {
             throw RightyoInputError.invalidEvent
         }
         let delivered = ids.filter(requests.contains)

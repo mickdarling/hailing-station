@@ -108,14 +108,15 @@ public final class RightyoAmbientPipeline: Sendable {
         /// Called once per admitted request that is the owner's spoken media mode on (true) or off (#551), handled
         /// like `onVoiceMute`. It must return at once.
         public var onVoiceMedia: (@Sendable (Bool) -> Void)?
-        /// Called once per owner's spoken duck mode phrase (#735), handled like `onVoiceMute`: an entry or exit in a
-        /// request, an exit in the owner's transcript (RightyO sends no request in duck mode), or `refused` on an
-        /// anonymous session. Duck phrases are commands only when this is set and `replyControl` is on, and an exit
-        /// only while duck mode is on (the latest `reportDuck` said so); otherwise it is a request as before. It must
-        /// return at once.
-        public var onVoiceDuck: (@Sendable (VoiceDuckCommand) -> Void)?
-        /// Called when this child starts while duck mode is on but its `started` did not advertise `duck` (an older
-        /// RightyO after a reload): it cannot take duck mode, so the host must end it. It must return at once.
+        /// Privacy mode (#735, internally duck), handled like `onVoiceMute`: called once per safety-set entry phrase in
+        /// any speaker's transcript or request (`enter`, or `stillRecording` when negated), and once per RightyO
+        /// `privacy` event (`exit`, `status`). Only when this is set are the phrases commands; then each is held back
+        /// from the agent, and while privacy is on (the latest `reportDuck` said so) every request is. Without a
+        /// control descriptor no child can take privacy, so an entry is refused, never typed. It must return at once.
+        public var onVoiceDuck: (@Sendable (PrivacyCommand) -> Void)?
+        /// Called when this child starts while privacy is on but its `started` did not advertise `duck` version 2 or
+        /// higher (an older RightyO after a reload): it cannot take privacy, so the host must end it. It must return
+        /// at once.
         public var onDuckUnsupported: (@Sendable () -> Void)?
         /// The owner's allowlisted note destinations (#552); nil is off. A note to one is handed to
         /// `onVoiceDestination` with its destination key, target and words instead of being typed. It must return
@@ -160,7 +161,7 @@ public final class RightyoAmbientPipeline: Sendable {
     private let onDismiss: (@Sendable (RightyoDismissReceipt) -> Void)?
     private let onVoiceMute: (@Sendable (Bool) -> Void)?
     private let onVoiceMedia: (@Sendable (Bool) -> Void)?
-    private let onVoiceDuck: (@Sendable (VoiceDuckCommand) -> Void)?
+    private let onVoiceDuck: (@Sendable (PrivacyCommand) -> Void)?
     private let duck: AmbientDuckControl
     private let onDuckUnsupported: (@Sendable () -> Void)?
     private let onVoiceDestination: (@Sendable (String, VoiceDestinations.Destination, String) -> Void)?
@@ -180,7 +181,7 @@ public final class RightyoAmbientPipeline: Sendable {
                                               acknowledge: { relay.fire() }, heard: { await heard.deliver() })
         let duck = AmbientDuckControl()
         let ducking: @Sendable () -> Bool = { duck.active }
-        let duckActive = configuration.replyControl && configuration.onVoiceDuck != nil ? ducking : nil
+        let duckActive = configuration.onVoiceDuck != nil ? ducking : nil
         consumer = try RightyoInputConsumer(host: nil, target: configuration.target, binding: configuration.binding,
                                             session: session, allowSynthetic: configuration.allowSynthetic,
                                             dispatcher: step, echoFilter: configuration.isEcho,
@@ -219,9 +220,10 @@ public final class RightyoAmbientPipeline: Sendable {
     /// off or the line was dropped. Never blocks.
     @discardableResult public func reportMedia(_ on: Bool) -> Bool { child.reportMedia(on) }
 
-    /// Sets duck mode in this stream's RightyO (#735) over the same control descriptor; true only when the child's
-    /// `started` advertised `duck` and the line was written. An older RightyO skips a line it does not know and keeps
-    /// deciding turns, so it is never written one and this is false: the host then never claims duck mode is on.
+    /// Sets privacy mode (#735, internally duck) in this stream's RightyO over the same control descriptor; true only
+    /// when the child's `started` advertised `duck` version 2 or higher and the line was written. An older RightyO
+    /// still transcribes while ducked (v1) or skips the line, so it is never written one and this is false: the host
+    /// then never claims privacy is on (fail closed).
     /// Asked before `started`, the wish is kept and written once a child that advertised it starts. Never blocks.
     @discardableResult public func reportDuck(_ on: Bool) -> Bool {
         duck.report(on) { [child] on in child.reportDuck(on) }
@@ -269,7 +271,7 @@ public final class RightyoAmbientPipeline: Sendable {
                 if event.type == "request", let command = await consumer.lastVoiceMedia {
                     onVoiceMedia?(command == .on)
                 }
-                if let command = await consumer.lastVoiceDuck { onVoiceDuck?(command) }
+                if let command = await consumer.lastPrivacy { onVoiceDuck?(command) }
                 if event.type == "request", let note = await consumer.lastVoiceDestination {
                     onVoiceDestination?(note.destination, note.target, note.text)
                 }
@@ -604,8 +606,9 @@ final class AmbientOwnerVoiceRelay: Sendable {
     }
 }
 
-/// Duck mode in one child (#735): written only once the child's admitted `started` advertised a top-level `duck`
-/// object (rightyo R-2's capability, presence only, as for `conversation`). Until `started`, the latest wish is kept
+/// Privacy mode in one child (#735, internally duck): written only once the child's admitted `started` advertised a
+/// top-level `duck` object with an integer `version` of 2 or higher (rightyo S-1, "keeps nothing"); a v1 child still
+/// transcribes while ducked, so it counts as not advertising it. Until `started`, the latest wish is kept
 /// and written then; a child that did not advertise it is never written a duck line, and a wish it cannot take is
 /// dropped and reported, so the host ends duck mode rather than claim it. Under one lock, so a wish and the `started`
 /// that answers it cannot cross. `active` is the host's latest wish as this child holds it: the owner is ducking.
@@ -638,10 +641,10 @@ final class AmbientDuckControl: Sendable {
         }
     }
 
-    /// Whether a `started` line carries a top-level `duck` object.
+    /// Whether a `started` line carries a top-level `duck` object of version 2 or higher.
     static func advertises(_ line: Data) -> Bool {
-        guard let object = (try? JSONSerialization.jsonObject(with: line)) as? [String: Any] else { return false }
-        return object["duck"] is [String: Any]
+        guard let object = try? JSONDecoder().decode([String: JSONValue].self, from: line) else { return false }
+        return (RightyoInputEvent.privacyVersion(object["duck"]) ?? 0) >= 2
     }
 }
 

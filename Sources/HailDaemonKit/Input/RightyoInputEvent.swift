@@ -99,7 +99,10 @@ public struct RightyoInputEvent: Codable, Sendable {
     ///
     /// Owner voice status (rightyo#164, rightyo#172): `owner_voice` on `started` (raw, presence and shape read by
     /// `AmbientOwnerVoiceRelay`), then `owner_voice` events carrying only `state`.
-    let acknowledgement, acknowledge, speakerNames, speakerName, ownerVoice: JSONValue?
+    ///
+    /// Privacy mode (#735, internally duck): `duck` on `started` (raw; `privacyVersion` reads it), then, from a
+    /// version 2 producer, `privacy` events carrying only `action`, `exit` or `status`. Never any words.
+    let acknowledgement, acknowledge, speakerNames, speakerName, ownerVoice, duck: JSONValue?, action: String?
     public static func decode(_ data: Data) throws -> Self {
         guard !data.isEmpty, data.count <= 1_200_000 else { throw RightyoInputError.capacity }
         let decoder = JSONDecoder()
@@ -276,7 +279,7 @@ private struct DismissalKey: CodingKey {
 /// after a request, or returned to `ambient`. They deliver nothing and grant nothing; ids and labels only, never text.
 extension RightyoInputEvent {
     static let eventTypes: Set<String> = ["session", "transcript", "attention", "request", "override", "dismiss",
-                                          "conversation", "owner_voice"]
+                                          "conversation", "owner_voice", "privacy"]
     static let ownerVoiceStates: Set<String> = ["unrecognized", "recognized"]
     static let conversationReasons: Set<String> = ["request", "timeout", "other_human", "closed", "dismissed"]
 
@@ -295,6 +298,7 @@ extension RightyoInputEvent {
             guard state == nil || type == "owner_voice", atMs == nil, untilMs == nil else {
                 throw RightyoInputError.invalidEvent
             }
+            try validatePrivacy()
             return try validateOwnerVoice()
         }
         guard let state, let reason, Self.conversationReasons.contains(reason),
@@ -329,6 +333,37 @@ extension RightyoInputEvent {
               byUtteranceId == nil, requestForming == nil, formedRequest == nil, dismissal == nil, addressing == nil,
               conversation == nil, acknowledgement == nil, acknowledge == nil, speakerNames == nil,
               speakerName == nil, ownerVoice == nil else {
+            throw RightyoInputError.invalidEvent
+        }
+    }
+}
+/// Privacy mode (#735 S-2, rightyo S-1). A producer that advertises `duck` version 2 or higher at `started` keeps
+/// nothing while private and sends only `privacy` events: `exit` once the enrolled owner said the name and an exit
+/// phrase, `status` for anyone asking what mode it is in. Each is content-free: `action` and the envelope, nothing else.
+extension RightyoInputEvent {
+    static let privacyActions: Set<String> = ["exit", "status"]
+
+    /// The `version` of a `duck` advertisement, `{"version": N}`; nil for anything else.
+    static func privacyVersion(_ duck: JSONValue?) -> Int64? {
+        guard case .object(let object) = duck, case .integer(let version)? = object["version"] else { return nil }
+        return version
+    }
+
+    /// `duck` rides only on `started` and `action` only on `privacy`, which carries no other optional field this
+    /// decoder knows. Whether the session advertised it is the consumer's rule.
+    func validatePrivacy() throws {
+        if duck != nil, type != "session" || phase != "started" { throw RightyoInputError.invalidEvent }
+        guard type == "privacy" else {
+            guard action == nil else { throw RightyoInputError.invalidEvent }
+            return
+        }
+        guard let action, Self.privacyActions.contains(action), turn == nil, decision == nil, context == nil,
+              requestId == nil, utteranceId == nil, phase == nil, capabilities == nil, state == nil, atMs == nil,
+              untilMs == nil, reason == nil, speakerId == nil, role == nil, scope == nil, speechEndMs == nil,
+              confidence == nil, decisionAtMs == nil, cooldownUntilMs == nil, withdrawnRequestIds == nil,
+              supersededRequestId == nil, byUtteranceId == nil, requestForming == nil, formedRequest == nil,
+              dismissal == nil, addressing == nil, conversation == nil, acknowledgement == nil, acknowledge == nil,
+              speakerNames == nil, speakerName == nil, ownerVoice == nil, duck == nil else {
             throw RightyoInputError.invalidEvent
         }
     }

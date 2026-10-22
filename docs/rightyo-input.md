@@ -642,13 +642,48 @@ When the ack library has clips in the reserved `confirm-media-on/` and `confirm-
 
 The app control and the "Media mode" indicator on the ambient card are a later slice.
 
-### Duck mode (#735)
+### Privacy mode (internally duck) (#735)
 
-Duck mode is for thinking out loud: while it is on, RightyO decides nothing and sends no request (rightyo R-2). It is off until the owner says so. Entry and exit are whole turns that must name the assistant: "Jarvis, duck mode" or "Jarvis, let me think out loud" to enter, "Jarvis, done thinking" to exit (`VoiceDuck`; the phrase sets are Mick's to change). Only the enrolled owner's turn counts, the spoken-notes rule; a guest's phrase is a request like any other. On an anonymous session the phrase is held back and the owner hears `confirm-not-sent/`. The exit is a command only while duck mode is on, and then also counts in the owner's transcript, since duck mode sends no request; while duck mode is off, "Jarvis, done thinking" reaches the agent as an ordinary request.
+Privacy mode keeps nothing: while it is on, RightyO sends no transcript, attention or request, keeps nothing in memory and retains no audio (rightyo S-1). Its ASR runs in RAM only to hear the way back in. The wire and the code still say `duck`: the control line is `{"duck":true}`, the capability is `started.duck`, the device frame is `duck_mode` and the log events are `ambient_duck*`.
 
-`haild` writes `{"duck":true}` to the control descriptor only of a child whose `started` event advertised a top-level `duck` object. An older RightyO would skip the line and go on deciding turns, so it is never written one: duck mode is not entered, `ambient_duck … reported=0 refused=unsupported` is logged, and the owner hears `confirm-not-sent/`. Entering duck mode leaves media mode, and entering media mode leaves duck mode.
+**Entry: the safety set (`PrivacyEntry`).** "Stop recording", "stop listening", "privacy mode" and "go private" all mean the same state. They are matched by `haild` deterministically and locally, with no model:
 
-Duck mode ends on the spoken exit, after `ambient.duckTimeout` in `host.json` (whole seconds, 60 to 14400; an hour by default, `--ambient-duck-timeout`), or when the connection ends. Saying the entry again while duck mode is on answers "still on" with `confirm-duck-on/` and re-arms the timeout when a child took it. A child that starts during duck mode without advertising `duck` (an older RightyO after a reload) ends duck mode: the timeout is cancelled and the device told off with reason `timeout`, logged as `ambient_duck_unsupported`. A device that advertised `duck_mode` is told each change (`ambient_duck_device`), and sees "on" only once a child took it. The changes are confirmed from the reserved `confirm-duck-on/` and `confirm-duck-off/` folders when they hold clips. Mick records both; `confirm-duck-on/` must be worded as a status ("Duck mode is on."), not "Turning on…", because it also answers an entry said while duck mode is already on.
+- anywhere in a turn, after filler ("ok", "um", "so") or a name, in any case and with any punctuation;
+- across a split name: a lone "Jarvis," followed by the phrase in the next turn enters on the second turn, because no name is needed;
+- in any speaker's transcript in normal mode, so entry never waits for RightyO to form a request, and in requests. The request that carried the phrase is held back and never reaches the agent.
+
+No name and no owner is needed. Any speaker may go private, including a guest and anyone on an anonymous session. This is safe because privacy only ever withholds: it cannot reveal, send or run anything. The worst a stranger can do is pause the assistant until the owner says "Jarvis, I'm back" or the auto-end fires, and the device notice and the confirmation clip make that visible.
+
+When in doubt it goes private. A clean phrase anywhere in the turn wins over a negated one elsewhere. Only a negation right before the phrase ("don't", "do not", "never", "won't"), across at most four bridging words ("I don't want you to stop recording"), holds it back. A negated phrase changes nothing, is held back from the agent, and plays `confirm-still-recording/` ("Still recording."). A "privacy mode" that asks to leave it ("privacy mode off", "end privacy mode", "turn off privacy mode") is not an entry and reaches the agent as an ordinary request. The assistant's own words heard back (the echo filter) never enter.
+
+While privacy is on, nothing reaches the agent. RightyO v2 sends no request, and one already in flight when privacy began is dropped.
+
+**Fail closed against an older RightyO.** `haild` writes `{"duck":true}` only to a child whose `started` advertised `duck` with an integer `version` of 2 or higher ("keeps nothing"). A v1 child still transcribes while ducked, and an older one would skip the line, so neither is written one. Privacy is not entered: `ambient_duck … reported=0 refused=unsupported` and `ambient_duck_confirmed on=true refused=unsupported_version` are logged, and the speaker hears `confirm-not-sent/`. A pipeline without a control descriptor refuses in the same way. A child that starts during privacy without `duck` v2 (an older RightyO after a reload) ends privacy: the timeout is cancelled, the device is told off with reason `timeout`, and `ambient_duck_unsupported child=unsupported_version` is logged.
+
+**Exit and status come from RightyO.** While private the host hears no words, so RightyO matches the way back in itself and sends content-free events, admitted only on a session that advertised `duck` v2:
+
+- `{"type": "privacy", "action": "exit"}` (with the usual `schema_version`, `session_id`, `sequence` and `emitted_at_ms` envelope) after the enrolled owner's voice said "<name>, I'm back", "<name>, start listening" or "<name>, privacy off". `haild` turns privacy off, tells the device, and plays `confirm-privacy-off/`. The host does not re-check the owner: it has no words to check, and RightyO's enrolled-voice and name match is the check. A forged exit would need a compromised local RightyO, which could already transcribe anyway.
+- `{"type": "privacy", "action": "status"}` for "what mode am I in", "are you recording" or "are you listening", from any speaker. It plays `confirm-privacy-status/` while private and nothing otherwise (S-3 answers every mode).
+
+A `privacy` event carrying any other field or action, or one from a session without `duck` v2, ends the stream.
+
+While private, an exact stop phrase still lets the speaker cut off a reply that is playing. RightyO sends a `dismiss` with `scope: ["playback"]`, `withdrawn_request_ids: []` and no text. It cites no transcript, because none was kept. On a `duck` v2 session `haild` admits that one shape without a cited transcript. It stops playback only, and is never confirmed as the owner's.
+
+RightyO does not advertise `duck` v2 for a coaching listener, a tool replay, or a session that uses a hosted transcriber or diarizer, since the private audio would still leave the host. `haild` cannot tell which of these applies. It refuses privacy for all of them in the same way, as `refused=unsupported_version`.
+
+**Lifetime.** Privacy ends on RightyO's exit, after `ambient.duckTimeout` in `host.json` (whole seconds, 60 to 14400; an hour by default, `--ambient-duck-timeout`), or when the connection ends. An entry heard while privacy is already on answers "still on" with `confirm-privacy-on/` and re-arms the timeout when a child took it. Entering privacy leaves media mode, and entering media mode leaves privacy. A device that advertised `duck_mode` is told each change (`ambient_duck_device`), and sees "on" only once a child took it.
+
+**Clips.** These reserved folders play nothing until Mick records them:
+
+| Folder | Words | When |
+| --- | --- | --- |
+| `confirm-privacy-on/` | "Privacy on. I'm only listening for my name." | entry, and re-entry while on (so worded as a status) |
+| `confirm-privacy-off/` | "Recording again." | RightyO's exit |
+| `confirm-privacy-status/` | "Privacy on. I'm only listening for my name." | RightyO's status event while private |
+| `confirm-still-recording/` | "Still recording." | a negated entry |
+| `confirm-not-sent/` | "Nothing was sent." | an entry no child could take |
+
+They replace H-2's `confirm-duck-on/` and `confirm-duck-off/`. H-2's named duck phrases ("Jarvis, duck mode", "let me think out loud", "done thinking") are gone and reach the agent as ordinary requests.
 
 ### Spoken notes to configured destinations (#552)
 

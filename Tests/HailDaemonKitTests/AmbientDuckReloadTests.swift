@@ -4,14 +4,16 @@ import HailProtocol
 import Testing
 @testable import HailDaemonKit
 
-/// Duck mode across children (#735 H-2): a reloaded child is told duck mode is on; one that cannot take it ends duck
-/// mode rather than let the host claim it; a refused entry leaves no wish behind; the connection's end drops it.
+/// Privacy mode (internally duck) across children (#735): a reloaded child is told privacy is on; one that cannot
+/// take it (no `duck` v2) ends privacy rather than let the host claim it; a refused entry leaves no wish behind; the connection's end drops it.
 /// Synthetic only.
 @Suite(.serialized, .timeLimit(.minutes(1)), .frozenGuardBudget) struct AmbientDuckReloadTests {
     static let record = "/bin/cat <&3 >> control.txt &\n"
-    /// `started` (advertising `duck` or not) and `stopped` only: a child that hears nothing.
-    static func silent(advertises: Bool, delay: Bool = false) -> String {
-        let duck = advertises ? #" -e 's/"phase": "started"/"duck": {"version": 1}, "phase": "started"/'"# : ""
+    /// `started` (advertising `duck` at `version`, v2 by default, or not at all) and `stopped` only: a child that
+    /// hears nothing.
+    static func silent(advertises: Bool, version: Int = 2, delay: Bool = false) -> String {
+        let duck = advertises
+            ? #" -e 's/"phase": "started"/"duck": {"version": \#(version)}, "phase": "started"/'"# : ""
         return """
         \(delay ? "/bin/sleep 1" : ":")
         /usr/bin/sed -n -e '1p' events.jsonl | /usr/bin/sed -e "s/formed-demo/$7/g"\(duck)
@@ -24,7 +26,7 @@ import Testing
     static func staged(_ first: String, _ later: String) -> String {
         record + "if [ -f first.done ]; then\n\(later)\nelse\n/usr/bin/touch first.done\n\(first)\nfi"
     }
-    static let entry = AmbientVoiceDuckTests.fixture(saying: "Rightyo, duck mode.", advertises: true)
+    static let entry = AmbientPrivacyEntryTests.fixture(saying: "Rightyo, stop recording.", advertises: true)
 
     /// The old child's line, the new child's carried line once it starts, then the new child's own replayed entry.
     @Test func aReloadedChildIsToldDuckModeIsOn() async throws {
@@ -37,16 +39,18 @@ import Testing
         await rig.finish()
     }
 
-    /// A child without `duck` started during duck mode ends it: no "on" is ever claimed for a child not in it.
-    @Test func aReloadedChildWithoutDuckEndsDuckMode() async throws {
-        let rig = try await DuckRig(script: Self.staged(Self.entry, Self.silent(advertises: false)),
+    /// A child without `duck` v2 (none, or a v1 that still transcribes) started during privacy mode ends it: no "on" is
+    /// ever claimed for a child not in it.
+    @Test(arguments: [nil, 1] as [Int?]) func aReloadedChildWithoutVersionTwoEndsPrivacy(_ version: Int?) async throws {
+        let later = Self.silent(advertises: version != nil, version: version ?? 0)
+        let rig = try await DuckRig(script: Self.staged(Self.entry, later),
                                     capabilities: [DuckMode.capability])
         defer { rig.close() }
         #expect(await eventually { rig.details("ambient_duck").count == 1 })
         let connection = try #require(rig.connection())
         #expect(await rig.env.router.reload() == .reloaded)
         #expect(await eventually { !rig.env.router.duckMode(connection: connection) })
-        #expect(rig.details("ambient_duck_unsupported") == ["child=started_without_duck"])
+        #expect(rig.details("ambient_duck_unsupported") == ["child=unsupported_version"])
         #expect(rig.details("ambient_duck").last?.hasPrefix("on=false reason=timeout") == true)
         let device = ["on=true device=sent", "on=false device=sent"]
         #expect(await eventually { rig.details("ambient_duck_device") == device })
@@ -90,19 +94,20 @@ import Testing
     }
 
     @Test func eachAnswerHasItsClipAndToken() {
-        let on = AmbientStopConfirmation.duckOn, off = AmbientStopConfirmation.duckOff
-        let notSent = AmbientStopConfirmation.notSent
-        let check = { (command: VoiceDuckCommand, reported: Int, isOn: Bool, persona: String?, token: String) in
+        let on = AmbientStopConfirmation.privacyOn, off = AmbientStopConfirmation.privacyOff
+        let notSent = AmbientStopConfirmation.notSent, status = AmbientStopConfirmation.privacyStatus
+        let check = { (command: PrivacyCommand, reported: Int, isOn: Bool, persona: String?, token: String) in
             let answer = AmbientRightyoRouter.duckConfirmation(command, reported: reported, on: isOn)
             #expect(answer.0 == persona && answer.1 == token)
         }
-        check(.on, 1, true, on, "on=true")
-        check(.on, 0, true, on, "on=true still_on")
-        check(.on, 0, false, notSent, "on=true refused=unsupported")
-        check(.off, 1, false, off, "on=false")
-        check(.off, 0, false, nil, "on=false")
-        check(.refused(entry: true), 0, false, notSent, "on=true refused=anonymous")
-        check(.refused(entry: false), 0, true, notSent, "on=false refused=anonymous")
+        check(.enter, 1, true, on, "on=true")
+        check(.enter, 0, true, on, "on=true still_on")
+        check(.enter, 0, false, notSent, "on=true refused=unsupported_version")
+        check(.exit, 1, false, off, "on=false")
+        check(.exit, 0, false, nil, "on=false")
+        check(.status, 0, true, status, "status on=true")
+        check(.status, 0, false, nil, "status on=false")
+        check(.stillRecording, 0, false, AmbientStopConfirmation.stillRecording, "negated")
     }
 }
 #endif

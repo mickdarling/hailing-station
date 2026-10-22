@@ -4,11 +4,12 @@ import Synchronization
 import Testing
 @testable import HailDaemonKit
 
-/// Duck mode reaches only a RightyO that advertised it (#735 H-2). An older RightyO skips an unknown control line and
-/// goes on deciding turns, so it is never written one, and the host is told it did not take it. Synthetic only.
+/// Privacy mode (internally duck) reaches only a RightyO that advertised `duck` version 2 or higher (#735 S-2). A v1
+/// RightyO still transcribes while ducked, and an older one skips the line, so neither is ever written one, and the
+/// host is told it did not take it (fail closed). Synthetic only.
 @Suite(.serialized, .timeLimit(.minutes(1)), .frozenGuardBudget) struct AmbientDuckControlTests {
     static let started = #"{"type": "session", "phase": "started", "capabilities": {}}"#
-    static let advertised = #"{"type": "session", "phase": "started", "duck": {"version": 1}}"#
+    static let advertised = #"{"type": "session", "phase": "started", "duck": {"version": 2}}"#
 
     /// Every line a control was asked to write.
     final class Written: Sendable {
@@ -57,17 +58,25 @@ import Testing
         #expect(!idle.observe(started: Data(Self.started.utf8), write: none.write))
     }
 
-    @Test(arguments: [#"{"duck": true}"#, #"{"duck": null}"#, #"{"duck": [1]}"#, "[]", "not json", #"{}"#])
-    func onlyAnObjectAdvertisesDuck(_ line: String) {
+    @Test(arguments: [
+        #"{"duck": true}"#, #"{"duck": null}"#, #"{"duck": [1]}"#, "[]", "not json", #"{}"#, #"{"duck": {}}"#,
+        #"{"duck": {"version": 1}}"#, #"{"duck": {"version": "2"}}"#, #"{"duck": {"version": 1.5}}"#,
+        #"{"duck": {"version": true}}"#
+    ])
+    func onlyVersionTwoOrLaterAdvertisesPrivacy(_ line: String) {
         #expect(!AmbientDuckControl.advertises(Data(line.utf8)))
-        #expect(AmbientDuckControl.advertises(Data(#"{"duck": {}}"#.utf8)))
     }
 
-    /// End to end in one pipeline: the owner's entry asks the child to duck; only an advertising child is written the
-    /// line and reports that it took it.
-    @Test(arguments: [true, false]) func onlyAnAdvertisingChildTakesDuckMode(_ advertises: Bool) async throws {
+    @Test(arguments: [2, 3]) func versionTwoOrLaterAdvertisesPrivacy(_ version: Int) {
+        #expect(AmbientDuckControl.advertises(Data(#"{"duck": {"version": \#(version)}}"#.utf8)))
+    }
+
+    /// End to end in one pipeline: the entry asks the child to go private; only a v2 child is written the line and
+    /// reports that it took it, never a v1 one.
+    @Test(arguments: [true, false]) func onlyAVersionTwoChildTakesPrivacy(_ advertises: Bool) async throws {
         let fake = try FakeRightyo("/bin/cat <&3 > control.txt &\n"
-            + AmbientVoiceDuckTests.fixture(saying: "Rightyo, duck mode.", advertises: advertises))
+            + AmbientPrivacyEntryTests.fixture(saying: "Rightyo, stop recording.", advertises: true,
+                                               version: advertises ? 2 : 1))
         defer { fake.cleanUp() }
         try fake.install(fixture: "enrolled-formed-request.jsonl")
         let box = Mutex<RightyoAmbientPipeline?>(nil), took = Mutex<[Bool]>([])
@@ -77,7 +86,7 @@ import Testing
         )
         configuration.replyControl = true
         configuration.onVoiceDuck = { command in
-            guard command == .on, let pipeline = box.withLock({ $0 }) else { return }
+            guard command == .enter, let pipeline = box.withLock({ $0 }) else { return }
             took.withLock { $0.append(pipeline.reportDuck(true)) }
         }
         let dispatcher = RecordingAmbientDispatcher()

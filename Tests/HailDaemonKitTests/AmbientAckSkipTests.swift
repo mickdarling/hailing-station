@@ -20,7 +20,7 @@ import Testing
     @Test func anOversizedOrMalformedClipIsCountedNotSilent() throws {
         let root = FileManager.default.temporaryDirectory.appendingPathComponent("ack-skip-\(UUID().uuidString)")
         defer { try? FileManager.default.removeItem(at: root) }
-        let persona = root.appendingPathComponent("jarvis"), duck = root.appendingPathComponent("confirm-duck-on")
+        let persona = root.appendingPathComponent("jarvis"), duck = root.appendingPathComponent("confirm-privacy-on")
         for folder in [persona, duck] {
             try FileManager.default.createDirectory(at: folder, withIntermediateDirectories: true)
         }
@@ -30,13 +30,13 @@ import Testing
         let library = AmbientAckLibrary(directory: root)
         #expect(library.skipped == [.tooLarge: 1, .badFormat: 1])
         #expect(library.startupDetail == "personas=1 clips=1 reserved=0 skipped=2 too_large=1 bad_format=1")
-        #expect(library.nextReserved(AmbientStopConfirmation.duckOn) == nil)
+        #expect(library.nextReserved(AmbientStopConfirmation.privacyOn) == nil)
     }
 
     @Test func aCleanLibraryKeepsTheShortDetail() throws {
         let root = FileManager.default.temporaryDirectory.appendingPathComponent("ack-skip-\(UUID().uuidString)")
         defer { try? FileManager.default.removeItem(at: root) }
-        let duck = root.appendingPathComponent("confirm-duck-on")
+        let duck = root.appendingPathComponent("confirm-privacy-on")
         try FileManager.default.createDirectory(at: duck, withIntermediateDirectories: true)
         try Self.wav(bytes: PayloadLimits.maxAudioBytes).write(to: duck.appendingPathComponent("fits.wav"))
         let library = AmbientAckLibrary(directory: root)
