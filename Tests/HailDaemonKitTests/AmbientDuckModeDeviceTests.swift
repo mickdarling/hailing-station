@@ -9,7 +9,7 @@ import Testing
 /// command. Synthetic only.
 @Suite(.serialized, .timeLimit(.minutes(1))) struct AmbientDuckModeDeviceTests {
     private func run(capabilities: [String], expectFrames: Bool) async throws -> [String] {
-        let rig = try await DuckRig(saying: "Rightyo, duck mode.", advertises: true, timeout: 0.5,
+        let rig = try await DuckRig(saying: "Rightyo, stop recording.", advertises: true, timeout: 0.5,
                                     capabilities: capabilities)
         defer { rig.close() }
         let before = Int64(Date().timeIntervalSince1970 * 1_000)
@@ -52,7 +52,7 @@ import Testing
     /// Saying the entry again while duck mode is on re-arms the auto-end: the device sees a later expiry, the first
     /// timeout never fires, and the one off that follows says `timeout`.
     @Test func theAutoEndReArmsOnReEntry() async throws {
-        let rig = try await DuckRig(saying: "Rightyo, duck mode.", advertises: true, timeout: 1,
+        let rig = try await DuckRig(saying: "Rightyo, stop recording.", advertises: true, timeout: 1,
                                     capabilities: [DuckMode.capability])
         defer { rig.close() }
         let before = Int64(Date().timeIntervalSince1970 * 1_000)
