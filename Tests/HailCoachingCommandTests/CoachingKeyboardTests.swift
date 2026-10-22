@@ -82,6 +82,19 @@ import Testing
             let count = bytes.withUnsafeBytes { Darwin.write(output, $0.baseAddress, $0.count) }
             guard count == bytes.count else { throw CoachingCommandError.invalidControl }
         }
-        func finish() { if let output { Darwin.close(output); self.output = nil } }
+        /// Closes the writer and holds the caller (the main actor) until the reader can observe EOF (#774). A child
+        /// that another test spawns copies this process's descriptors, even close-on-exec ones, until its exec, so
+        /// the close alone can leave the pipe open for that window; the keyboard would then admit the line without EOF.
+        func finish() {
+            guard let output else { return }
+            Darwin.close(output); self.output = nil
+            let deadline = ContinuousClock.now.advanced(by: .seconds(2))
+            var state = pollfd(fd: input, events: Int16(POLLIN), revents: 0)
+            while ContinuousClock.now < deadline {
+                state.revents = 0
+                if poll(&state, 1, 0) > 0, state.revents & Int16(POLLHUP) != 0 { return }
+                usleep(1_000)
+            }
+        }
     }
 }
