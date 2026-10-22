@@ -11,7 +11,7 @@ The owner says "I'm moving to the iPad" (or "I'm switching devices"), and the co
 - **Take-over (#366, #368, #372):** the most recent device to *start* a stream holds it. `AmbientAudioGate.start()` (`Sources/HailDaemonKit/Listener/AmbientAudioGate.swift`) ends the old stream as superseded once the new one's first segment passes every check.
   - The new device gets `ambient_moved_here`, if it advertises `ambient_takeover`.
   - The old device gets `not_allowed` "ambient moved to <kind>", but only on its next segment.
-- **No stealing back (#373):** an automatic retry's start (`resume: true`) is refused while another connection holds an *active* stream. With no active stream it isn't refused. A device whose segment is refused as `malformed: ambient stream must be new` treats that as transient (`HostConnectionStore.isTransient`) and opens a fresh resume stream about 1 s later.
+- **No stealing back (#373):** an automatic retry's start (`resume: true`) is refused while another connection holds an *active* stream. With no active stream it isn't refused. A device whose segment is refused as `malformed: ambient stream must be new` treats that as transient (`AmbientListeningController.isTransient`, in `HostConnectionStore.swift`) and opens a fresh resume stream about 1 s later.
 - **End reasons are host-internal.** A device learns its stream ended only from the refusal of its next segment, and only a gate "moved" record turns that into the final `not_allowed` "ambient moved to <kind>".
 - **Device identity:** the host knows each connection by a fresh UUID and a device class from the hello (`phone`, `pad` or `mac`; `HelloInfo.deviceKind`). Every app sends the same device name, so **two iPads can't be told apart**; only the connection is unique.
 - **Owner-only spoken commands:** voice mute (#404), media mode (#551) and destination notes are matched in `RightyoInputConsumer`. On an *enrolled* session a command counts only when RightyO's transcript role says "owner"; an attention record, when there is one, can only demote it. Destination notes require enrolled plus owner. A guest's phrase passes to the agent as an ordinary request.
@@ -35,7 +35,7 @@ A spoken command can stop listening **here** and open a **handover window**. It 
 ### 2. Recognising the command
 
 - **The matcher:** a new `VoiceHandover.command` in the host's `RightyoInputConsumer`, beside `VoiceMute`. It uses the same candidate stripping (greeting, addressing name, "please"). A small fixed phrase set: "I'm moving to (the) <device>", "switching to (the) <device>", "I'm moving devices", "hand over (to the) <device>". `<device>` maps to `phone`, `pad` or `mac` by a small table: iPhone, phone, iPad, pad, tablet, Mac, laptop, computer.
-- **The owner gate is stricter than mute's.** It requires an **enrolled** session, and both RightyO records saying owner, the same as destination notes. On an anonymous session the phrase is not a command; it passes to the agent as today. A handover moves where replies and the conversation go, so it shouldn't rest on "any voice".
+- **The owner gate is stricter than mute's.** It requires an **enrolled** session whose transcript role says owner, with no attention record demoting it, the same as destination notes. On an anonymous session the phrase is not a command; it passes to the agent as today. A handover moves where replies and the conversation go, so it shouldn't rest on "any voice".
 - **Echo:** an agent reply that says "moving to the iPad" is caught as echo by `RecentSpokenReplies`, and the host's own clips by `HostPhrases`, so neither can trigger it.
 
 ### 3. On the device that heard it
@@ -43,7 +43,7 @@ A spoken command can stop listening **here** and open a **handover window**. It 
 1. The host ends that device's stream and records it in the gate as **moved** (reason `handedOver`, next to `superseded`). An older app then gets the existing final "ambient moved to …" refusal on its next segment and stops, instead of retrying. The #373 rule alone doesn't do this, since no stream is active during the window.
    - While the window is open, the host also refuses **resume** starts from the old connection, so an automatic restart can neither reopen listening there nor cancel the handover.
 2. The host sends that connection a new control, `ambient_handover { to: <kind>?, window_seconds }`, only to a device advertising a new capability, `ambient_handover`. An older device sees only the stream ending, as today.
-3. A reserved clip, `confirm-moving`, plays on the old device before the stream ends: for example, "Moving. Pick up on the iPad." The device shows "Moved: listening paused here".
+3. A reserved clip, `confirm-moving`, plays on the old device before the stream ends: for example, "Moving. Pick up on the iPad." The device shows "Moved: listening stopped here". That state is final: the ambient toggle is off, and nothing resumes it on its own, not even the interruption pause's automatic resume. Only a tap starts listening there again, during the window or after it.
 
 ### 4. The handover window
 
@@ -59,6 +59,7 @@ A spoken command can stop listening **here** and open a **handover window**. It 
 - **Expiry:** nothing is lost. The thread stays where it was, and the next start behaves exactly as today. No clip plays on expiry, since no device may be listening to hear it.
 - **Cancel:** the owner saying "stay here", or a deliberate start on the old device within the window, cancels the handover. A resume start there is refused (section 3), not treated as a cancel.
 - **Snapshot:** the ledger entry and media mode to carry are copied into `carried` when the cue is heard. The old device is likely to disconnect once pocketed, which erases both before anyone picks up.
+- **Pickup applies the snapshot only if nothing newer replaced it.** The ledger is re-pointed only if its entry for the target is still the snapshotted one, or is gone because the old connection went away. A newer entry, such as a typed request on another device, wins. Media mode the new device has already set also wins over the snapshot.
 
 ### 5. What moves
 
@@ -74,7 +75,7 @@ A spoken command can stop listening **here** and open a **handover window**. It 
 
 ### 6. Security of the cue
 
-- **Who:** enrolled owner only, with both RightyO records agreeing. Guests and anonymous sessions can't hand over.
+- **Who:** enrolled owner only: the transcript role says owner and no attention record demotes it. Guests and anonymous sessions can't hand over.
 - **What it can do:** stop listening on one device and open a time-limited window for the same target. It can't start a microphone, select a target, change routes or reach another host.
 - **Replay or synthesis:** a recording or clone of the owner's voice that passes speaker ID can, at worst, stop listening on one device and open a window. That is a denial of listening, not an exposure: voice mute today only silences replies. The window does nothing unless the owner deliberately starts on another device in it.
 - **Window abuse:** only a connection that selects the same target on the same host, already authorised through pairing, can pick up. The window adds no new authority; it only skips the busy refusal and copies per-connection settings.
