@@ -16,6 +16,13 @@ extension CodexLauncherTests {
         guard chmod(copy, 0o700) == 0, chmod(inner.path, 0o700) == 0 else { throw CodexLaunchError.invalidPath }
         return (folder, copy)
     }
+    /// Removes every ACL entry from `path`, so a deny-delete entry no longer keeps the scratch folder alive (#800).
+    static func clearACLs(_ path: String) {
+        let process = Process()
+        process.executableURL = URL(fileURLWithPath: "/bin/chmod")
+        process.arguments = ["-N", path]
+        try? process.run(); process.waitUntilExit()
+    }
     static func addACL(_ entry: String, to path: String) throws {
         let process = Process()
         process.executableURL = URL(fileURLWithPath: "/bin/chmod")
@@ -47,7 +54,7 @@ extension CodexLauncherTests {
 
     @Test func anAncestorDenyACLIsAccepted() async throws {
         let (folder, copy) = try Self.nested(), outer = folder.appendingPathComponent("outer").path
-        defer { try? FileManager.default.removeItem(at: folder) }
+        defer { Self.clearACLs(outer); try? FileManager.default.removeItem(at: folder) }
         #expect(chmod(outer, 0o700) == 0)
         try Self.addACL("everyone deny delete", to: outer)
         let evidence = try await CodexLauncher.verify(path: copy, requirement: Self.apple,

@@ -14,8 +14,8 @@ struct FakeRightyo {
     let config: URL
 
     static let shared: URL = {
-        let directory = physical(FileManager.default.temporaryDirectory.appendingPathComponent(
-            "fake-rightyo-shared-\(getpid())"))
+        let directory = TestScratch.register(physical(FileManager.default.temporaryDirectory.appendingPathComponent(
+            "fake-rightyo-shared-\(getpid())")))
         let executable = directory.appendingPathComponent("rightyo")
         try? FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
         if !FileManager.default.fileExists(atPath: executable.path) {
@@ -34,8 +34,8 @@ struct FakeRightyo {
     }
 
     init(_ body: String, mode: mode_t = 0o755) throws {
-        directory = Self.physical(FileManager.default.temporaryDirectory
-            .appendingPathComponent("fake-rightyo-\(UUID().uuidString)"))
+        directory = TestScratch.register(Self.physical(FileManager.default.temporaryDirectory
+            .appendingPathComponent("fake-rightyo-\(UUID().uuidString)")))
         try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
         config = directory.appendingPathComponent("config.json")
         try Data("{}".utf8).write(to: config)

@@ -70,7 +70,7 @@ import Testing
         let root: URL, path: URL, data: Data
         var configuration: CoachingConfiguration { configuration(profile: path) }
         init() throws {
-            root = FileManager.default.temporaryDirectory.appendingPathComponent("hailing-coaching-profile-\(UUID())")
+            root = TestScratch.url("hailing-coaching-profile")
             try FileManager.default.createDirectory(at: root, withIntermediateDirectories: false,
                                                    attributes: [.posixPermissions: 0o700])
             path = root.appendingPathComponent("profile")

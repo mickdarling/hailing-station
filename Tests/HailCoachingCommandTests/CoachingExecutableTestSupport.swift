@@ -101,7 +101,7 @@ import Testing
     }
     private var owner: ForegroundCoaching?
     init(executable: String, commandControls: Bool = false) throws {
-        root = FileManager.default.temporaryDirectory.appendingPathComponent("hailing-coaching-executable-\(UUID())")
+        root = TestScratch.url("hailing-coaching-executable")
         try FileManager.default.createDirectory(at: root, withIntermediateDirectories: false,
                                                attributes: [.posixPermissions: 0o700])
         configuration = try Self.makeConfiguration(root: root, executable: executable, commandControls: commandControls)

@@ -8,7 +8,7 @@ import Testing
 @Suite(.serialized, .timeLimit(.minutes(1))) @MainActor struct CoachingSpeechStartupTests {
     @Test func postSpawnCancellationKeepsHandleAndJoinsBeforeRenderReturns() async throws {
         for _ in 0..<5 {
-            let root = FileManager.default.temporaryDirectory.appendingPathComponent("coaching-startup-\(UUID())")
+            let root = TestScratch.url("coaching-startup")
             try FileManager.default.createDirectory(at: root, withIntermediateDirectories: false,
                                                    attributes: [.posixPermissions: 0o700])
             let output = root.appendingPathComponent("output"), script = root.appendingPathComponent("vbsay")
