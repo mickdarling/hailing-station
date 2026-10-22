@@ -4,46 +4,10 @@ import Synchronization
 import Testing
 @testable import HailDaemonKit
 
-/// Privacy mode's safety-set entry (#735 S-2): matched locally and loosely, from any speaker, held back from the agent,
-/// a negation answered "Still recording."; the old duck phrases are gone. Synthetic text only.
+/// Privacy mode's safety-set entry through the pipeline (#735 S-2): a standalone command, the live enrolled owner's
+/// alone, held back from the agent, a negation answered "Still recording."; anyone else's is refused, the old duck
+/// phrases are gone. The matcher's own table is `AmbientPrivacyCorpusTests`. Synthetic text only.
 @Suite(.serialized, .timeLimit(.minutes(1)), .frozenGuardBudget) struct AmbientPrivacyEntryTests {
-    /// Each phrase, after filler, mid-turn, after a name, in any case and punctuation.
-    @Test(arguments: [
-        "Stop recording.", "stop listening", "Privacy mode", "go private", "STOP RECORDING!",
-        "Jarvis, stop recording.", "Hey Rightyo, go private please", "OK, um, so stop listening",
-        "Okay so, uh, privacy mode", "I think we should go private for a bit", "Can you stop-recording now?",
-        "No, stop recording.", "Don't worry, stop recording", "Don’t stop. Stop recording.",
-        "Don't stop recording. Actually, stop recording.", "Is privacy mode on?", "privacy mode on",
-        "don't um stop recording"
-    ])
-    func anEntryPhraseAnywhereEnters(_ heard: String) {
-        #expect(PrivacyEntry.match(heard) == .enter)
-    }
-
-    /// A negation right before the phrase, across a few bridging words, is held back as "Still recording.".
-    @Test(arguments: [
-        "Don't stop recording", "do not stop listening", "Please don’t go private.", "Jarvis, dont stop recording",
-        "I don't want you to stop recording", "never stop listening", "We won't go private", "Do NOT privacy mode"
-    ])
-    func aNegatedPhraseIsStillRecording(_ heard: String) {
-        #expect(PrivacyEntry.match(heard) == .negated)
-    }
-
-    /// Near misses, a request to leave privacy mode, a lone name and the old duck phrases are not entries.
-    @Test(arguments: [
-        "", "Jarvis,", "Jarvis", "stop", "recording", "privacy", "private mode", "go privately", "stop recordings",
-        "the recording stopped", "listening to music", "privacy mode off", "end privacy mode", "turn off privacy mode",
-        "get out of privacy mode", "Jarvis, duck mode.", "Let me think out loud", "Jarvis, done thinking."
-    ])
-    func anythingElseIsNoEntry(_ heard: String) {
-        #expect(PrivacyEntry.match(heard) == nil)
-    }
-
-    /// A name said alone, then the phrase in the next turn: the phrase needs no name, so the second turn enters.
-    @Test func aSplitNameStillEnters() {
-        #expect(PrivacyEntry.match("Jarvis,") == nil && PrivacyEntry.match("stop recording") == .enter)
-    }
-
     @Test func theControlLineReachesTheChild() async throws {
         let fake = try FakeRightyo("/bin/cat <&3 > control.txt")
         defer { fake.cleanUp() }
@@ -76,13 +40,24 @@ import Testing
         return (seen.withLock { $0 }, delivered)
     }
 
-    /// The owner's, a guest's and an anonymous session's entry each enter once (from the transcript) and the request
-    /// that carried it is held back.
-    @Test(arguments: [(true, false), (true, true), (false, false)])
-    func anySpeakersEntryEntersAndItsRequestIsHeldBack(_ enrolled: Bool, _ guest: Bool) async throws {
-        let script = Self.fixture(saying: "OK, um, Rightyo, stop recording.", enrolled: enrolled, guest: guest)
-        let (seen, delivered) = try await run(script, enrolled: enrolled)
+    /// The live enrolled owner's entry enters once (from the transcript) and the request that carried it is held back.
+    @Test func theOwnersEntryEntersAndItsRequestIsHeldBack() async throws {
+        let (seen, delivered) = try await run(Self.fixture(saying: "OK, um, Rightyo, stop recording."), enrolled: true)
         #expect(seen == [.enter] && delivered == 0)
+    }
+
+    /// Owner only (Mick, round 2): a guest's, an unlabelled turn's, a label-only or inferred owner's (no voiceprint
+    /// source) and an anonymous session's entry, negated or not, is refused: held back, and nothing else.
+    @Test(arguments: [
+        ("guest", "Rightyo, stop recording."), ("unlabelled", "privacy mode"), ("label", "go private"),
+        ("inferred", "Stop listening."), ("anonymous", "Rightyo, stop recording."), ("guest", "do not stop recording")
+    ])
+    func anyoneElsesEntryIsRefusedAndHeldBack(_ who: String, _ words: String) async throws {
+        let script = Self.fixture(saying: words, enrolled: who != "anonymous", guest: who == "guest",
+                                  unlabelled: who == "unlabelled",
+                                  roleSource: who == "label" ? "label" : who == "inferred" ? nil : "voiceprint")
+        let (seen, delivered) = try await run(script, enrolled: who != "anonymous")
+        #expect(seen == [.refused] && delivered == 0)
     }
 
     /// A lone name in one turn, then the phrase in the next.
@@ -122,16 +97,26 @@ import Testing
         #expect(seen.isEmpty && delivered == 0)
     }
 
-    /// An echo of the assistant's own words never enters from the transcript; its request is dropped as echo.
-    @Test func anEchoedPhraseDoesNotEnter() async throws {
-        let fake = try FakeRightyo(Self.fixture(saying: "I can stop recording if you like."))
+    /// Defence in depth: while private a stop-like turn that slips through is never an exit, and never typed.
+    @Test(arguments: ["stop", "stop that", "stop listening", "Rightyo, stop."])
+    func whilePrivateNoStopLikeTurnExits(_ words: String) async throws {
+        let (seen, delivered) = try await run(Self.fixture(saying: words, advertises: true), enrolled: true,
+                                              ducking: true)
+        #expect(!seen.contains(.exit) && delivered == 0)
+    }
+
+    /// An echo of the assistant's own words (a reply, or a clip such as "Privacy mode is off.") never enters from the
+    /// transcript; its request is dropped as echo.
+    @Test(arguments: ["Stop recording.", "Privacy mode is off.", "Privacy mode."])
+    func anEchoedPhraseDoesNotEnter(_ words: String) async throws {
+        let fake = try FakeRightyo(Self.fixture(saying: words))
         defer { fake.cleanUp() }
         try fake.install(fixture: "enrolled-formed-request.jsonl")
         let seen = Mutex<[PrivacyCommand]>([])
         var configuration = RightyoAmbientPipeline.Configuration(
             executable: fake.executable, config: fake.config, target: "tmux:demo", binding: "pinned",
             connection: UUID(), allowSynthetic: true, timing: .init(eofGrace: 20, termGrace: 20),
-            isEcho: { $0.contains("stop recording") }
+            isEcho: { $0 == words }
         )
         (configuration.onVoiceDuck, configuration.replyControl) = ({ command in
             seen.withLock { $0.append(command) }
@@ -145,17 +130,24 @@ import Testing
 }
 
 extension AmbientPrivacyEntryTests {
-    /// The voice-mute fixture with `words` said, the name `Rightyo` advertised, and optionally `duck` (`version`)
-    /// advertised, every owner role turned into a guest's, or the earlier turn made a lone "Rightyo,".
+    /// The voice-mute fixture with `words` said, the name `Rightyo` advertised, the owner's transcript attributed from
+    /// a live voiceprint (`roleSource`, or none when nil), and optionally `duck` (`version`) advertised, every owner role
+    /// turned into a guest's or removed, or the earlier turn made a lone "Rightyo,".
     static func fixture(saying words: String, enrolled: Bool = true, guest: Bool = false, advertises: Bool = false,
-                        version: Int = 2, splitName: Bool = false) -> String {
+                        version: Int = 2, splitName: Bool = false, unlabelled: Bool = false,
+                        roleSource: String? = "voiceprint") -> String {
         let source = enrolled ? "Rightyo, archive the project." : "Rightyo, check our discussion."
         let session = enrolled ? "formed-demo" : "tool-demo"
         var edits = #"-e 's/"phase": "started"/"addressing": {"names": ["Rightyo"]}, "phase": "started"/'"#
         if advertises {
             edits += #" -e 's/"phase": "started"/"duck": {"version": \#(version)}, "phase": "started"/'"#
         }
+        if let roleSource, enrolled {
+            edits += #" -e '/"role": "owner"/s/"type": "transcript"/"#
+                + #""role_source": "\#(roleSource)", "type": "transcript"/'"#
+        }
         if guest { edits += #" -e 's/"role": "owner"/"role": "participant"/g'"# }
+        if unlabelled { edits += #" -e 's/, "role": "owner"//g' -e 's/"role": "owner", //g'"# }
         if splitName { edits += #" -e 's/"text": "Speaker A[^"]*"/"text": "Rightyo,"/g'"# }
         return """
         /usr/bin/sed -e '$d' -e "s/\(session)/$7/g" -e 's/\(source)/\(words)/g' \(edits) events.jsonl

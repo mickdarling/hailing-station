@@ -5,7 +5,7 @@ import Synchronization
 import Testing
 @testable import HailDaemonKit
 
-/// Privacy mode (internally duck) through the listener (#735 S-2): any speaker's entry reaches a RightyO that keeps
+/// Privacy mode (internally duck) through the listener (#735 S-2): the owner's entry reaches a RightyO that keeps
 /// nothing (`duck` v2) and is confirmed, the auto-end turns it off; a v1 or older RightyO leaves it off and the speaker
 /// hears "Nothing was sent."; a negation hears "Still recording."; RightyO's exit and status events are carried out and
 /// answered; privacy and media mode are exclusive. Synthetic only.
@@ -30,7 +30,7 @@ import Testing
         await rig.finish()
         #expect(rig.details("ambient_duck") == ["on=true reason=voice reported=1",
                                                 "on=false reason=timeout reported=1"])
-        #expect(rig.details("ambient_duck_confirmed") == ["on=true confirm=confirmprivacyon/0:sent"])
+        #expect(rig.details("ambient_duck_confirmed") == ["on=true playback=idle confirm=confirmprivacyon/0:sent"])
         #expect(try rig.fake.recorded("control.txt") == "{\"duck\":true}\n{\"duck\":false}\n")
     }
 
@@ -55,15 +55,15 @@ import Testing
         #expect(try rig.fake.recorded("control.txt") == "")
     }
 
-    /// Going private is the safe direction: an anonymous session's entry enters too.
-    @Test func anAnonymousSessionsEntryEnters() async throws {
+    /// Owner only: an anonymous session's entry is ignored with no clip, held back, and logged `refused=not_owner`.
+    @Test func anAnonymousSessionsEntryIsRefused() async throws {
         let rig = try await DuckRig(saying: "go private", advertises: true, enrolled: false, clips: Self.clips)
         defer { rig.close() }
-        #expect(try await rig.confirmation() == "Privacy on. I'm only listening for my name.")
         #expect(await eventually { !rig.details("ambient_duck_confirmed").isEmpty })
         await rig.finish()
-        #expect(rig.details("ambient_duck").first == "on=true reason=voice reported=1")
-        #expect(rig.details("ambient_duck_confirmed") == ["on=true confirm=confirmprivacyon/0:sent"])
+        #expect(rig.details("ambient_duck").isEmpty)
+        #expect(rig.details("ambient_duck_confirmed") == ["on=true refused=not_owner confirm=unreported"])
+        #expect(try rig.fake.recorded("control.txt") == "")
     }
 
     @Test func aNegationPlaysStillRecordingAndChangesNothing() async throws {
@@ -91,7 +91,8 @@ import Testing
         await rig.finish()
         #expect(rig.details("ambient_duck") == ["on=true reason=voice reported=1", "on=false reason=voice reported=1"])
         #expect(rig.details("ambient_duck_confirmed") == [
-            "on=true confirm=confirmprivacyon/0:sent", "status on=true confirm=confirmprivacystatus/0:sent",
+            "on=true playback=idle confirm=confirmprivacyon/0:sent",
+            "status on=true confirm=confirmprivacystatus/0:sent",
             "on=false confirm=confirmprivacyoff/0:sent", "status on=false confirm=unreported"
         ])
         #expect(rig.details("ambient_duck_device") == ["on=true device=sent", "on=false device=sent"])

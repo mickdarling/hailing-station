@@ -108,15 +108,15 @@ public final class RightyoAmbientPipeline: Sendable {
         /// Called once per admitted request that is the owner's spoken media mode on (true) or off (#551), handled
         /// like `onVoiceMute`. It must return at once.
         public var onVoiceMedia: (@Sendable (Bool) -> Void)?
-        /// Privacy mode (#735, internally duck), handled like `onVoiceMute`: called once per safety-set entry phrase in
-        /// any speaker's transcript or request (`enter`, or `stillRecording` when negated), and once per RightyO
-        /// `privacy` event (`exit`, `status`). Only when this is set are the phrases commands; then each is held back
+        /// Privacy mode (#735, internally duck), handled like `onVoiceMute`: called once per safety-set entry command
+        /// in a transcript or request (`enter`, `stillRecording` when negated, `refused` from anyone but the live
+        /// enrolled owner), and once per RightyO `privacy` event (`exit`, `status`), or `lost` (see below). Only when this is set are the phrases commands; then each is held back
         /// from the agent, and while privacy is on (the latest `reportDuck` said so) every request is. Without a
         /// control descriptor no child can take privacy, so an entry is refused, never typed. It must return at once.
         public var onVoiceDuck: (@Sendable (PrivacyCommand) -> Void)?
         /// Called when this child starts while privacy is on but its `started` did not advertise `duck` version 2 or
-        /// higher (an older RightyO after a reload): it cannot take privacy, so the host must end it. It must return
-        /// at once.
+        /// higher (an older RightyO after a reload): it cannot take privacy, so the host must end it. `onVoiceDuck` is
+        /// then called with `lost`, so recording never resumes in silence. It must return at once.
         public var onDuckUnsupported: (@Sendable () -> Void)?
         /// The owner's allowlisted note destinations (#552); nil is off. A note to one is handed to
         /// `onVoiceDestination` with its destination key, target and words instead of being typed. It must return
@@ -252,16 +252,12 @@ public final class RightyoAmbientPipeline: Sendable {
         do {
             for try await line in child.lines {
                 let event = try RightyoInputEvent.decode(line)
-                acknowledgement.observe(event, readAt: .now)
-                heard.observe(event)
+                let relayed = observeBeforeConsuming(event)
                 if try await consumer.consume(event), event.type == "request" { delivered += 1 }
                 // Only after the consumer admitted the line: an invalid one has already ended the stream.
-                await overheard.observe(event)
+                if relayed { await overheard.observe(event) }
                 ownerVoice.observe(event)
-                if event.type == "session", event.phase == "started",
-                   duck.observe(started: line, write: { [child] on in child.reportDuck(on) }) {
-                    onDuckUnsupported?()
-                }
+                observeStarted(event, line: line)
                 // A newly admitted `dismiss` delivers nothing and leaves its receipt; a replayed one leaves none.
                 if event.type == "dismiss", let receipt = await consumer.lastDismissal { onDismiss?(receipt) }
                 // A newly admitted voice mute (#404) is handed to the host instead of being typed.
@@ -286,6 +282,32 @@ public final class RightyoAmbientPipeline: Sendable {
         }
         let exit = await child.stop()
         return Summary(delivered: delivered, child: child.counters, exit: exit)
+    }
+}
+
+/// Privacy mode (#735) in the event loop, beside the type so its body stays within the length limit.
+extension RightyoAmbientPipeline {
+    /// The events that carry or decide heard words: while privacy is on none of them reaches a relay.
+    static func carriesWords(_ event: RightyoInputEvent) -> Bool {
+        ["transcript", "attention", "request"].contains(event.type)
+    }
+
+    /// Hands `event` to the acknowledgement and heard relays; false, relaying nothing, for words that still arrive
+    /// while privacy is on (#735: the child has not read the line yet). Those reach only the consumer, which keeps
+    /// hashes and holds every request; the overheard relay must then skip them too.
+    private func observeBeforeConsuming(_ event: RightyoInputEvent) -> Bool {
+        guard !(duck.active && Self.carriesWords(event)) else { return false }
+        acknowledgement.observe(event, readAt: .now)
+        heard.observe(event)
+        return true
+    }
+
+    /// A child's `started` that cannot take the privacy wished for ends it (`onDuckUnsupported`) and says so (`lost`).
+    private func observeStarted(_ event: RightyoInputEvent, line: Data) {
+        guard event.type == "session", event.phase == "started",
+              duck.observe(started: line, write: { [child] on in child.reportDuck(on) }) else { return }
+        onDuckUnsupported?()
+        onVoiceDuck?(.lost)
     }
 }
 

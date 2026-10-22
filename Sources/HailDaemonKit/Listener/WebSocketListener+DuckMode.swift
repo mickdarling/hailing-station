@@ -8,7 +8,7 @@ struct AmbientDuckTimer {
     let timer: Task<Void, Never>
 }
 
-/// Privacy mode (#735, internally duck): entry from any speaker's safety-set phrase, exit and status from RightyO's
+/// Privacy mode (#735, internally duck): entry from the owner's safety-set command, exit and status from RightyO's
 /// content-free events, its auto-end and its device notice. The state lives beside media mode's in
 /// `AmbientRightyoRouter.State`; `setDuck` changes it.
 extension AmbientRightyoRouter {
@@ -23,23 +23,41 @@ extension AmbientRightyoRouter {
     /// - `enter`: `setDuck(true)`, which only a child that advertised `duck` v2 takes. Taken, or already on ("still
     ///   on", the auto-end re-armed when a child took it), it plays `confirm-privacy-on/`. Taken by none while off
     ///   (a v1 RightyO, which still transcribes, or no control descriptor) it is refused, fail closed: privacy stays
-    ///   off and `confirm-not-sent/` plays, logged `refused=unsupported_version`.
-    /// - `exit`: `setDuck(false)`, which tells the device, then `confirm-privacy-off/`. RightyO checked the owner.
+    ///   off and `confirm-not-sent/` plays, logged `refused=unsupported_version`. Taken or still on, a reply playing on
+    ///   the connection is stopped first, as the owner's stop does (`playback=` in the log), then only the clip plays;
+    ///   "still on" silences too, since nothing should be playing while private. A refused entry leaves playback alone.
+    /// - `exit`: `setDuck(false)`, which tells the device, then `confirm-privacy-off/`. RightyO checked the owner. An
+    ///   exit while privacy is off (a stale one released after the off, or a duplicate) is ignored: no `setDuck`, no
+    ///   device notice and no clip, logged `ambient_privacy exit=ignored state=off`.
     /// - `status`: `confirm-privacy-status/` while privacy is on; nothing otherwise (S-3 answers every mode).
     /// - `stillRecording`: `confirm-still-recording/` only; nothing changes.
+    /// - `refused`: an entry phrase from anyone but the live enrolled owner: nothing changes (media mode included), no
+    ///   clip (S-5 may add one), logged `refused=not_owner`.
+    /// - `lost`: privacy already ended by `duckUnsupported` (a reloaded child cannot keep it); `confirm-privacy-off/`
+    ///   says so, so recording never resumes in silence.
     /// Nothing reaches the agent. Logs tokens only.
     func voiceDuck(on connection: UUID, listener: WebSocketListener) -> @Sendable (PrivacyCommand) -> Void {
         let chain = SerialTaskChain()
         return { [weak self, weak listener] command in
             var (reported, on) = (0, false)
             if let self {
+                if command == .exit, !duckMode(connection: connection) {
+                    emit("ambient_privacy", connection: connection, detail: "exit=ignored state=off")
+                    return
+                }
                 if command == .enter || command == .exit {
                     reported = setDuck(command == .enter, connection: connection, reason: "voice")
                 }
                 on = duckMode(connection: connection)
             }
             chain.enqueue { [weak self, weak listener, reported, on] in
-                let (persona, outcome) = Self.duckConfirmation(command, reported: reported, on: on)
+                var (persona, outcome) = Self.duckConfirmation(command, reported: reported, on: on)
+                // Privacy taken (or still on) silences a reply playing on this connection first (Mick, round 2),
+                // through the owner's stop path; a refused entry leaves playback alone.
+                if command == .enter, on {
+                    let playback = await listener?.stopReplyPlayback(connection: connection)
+                    outcome += " playback=\(playback ?? "no_connection")"
+                }
                 var confirm = "unreported"
                 if let persona {
                     confirm = await self?.confirmVoiceMute(persona, on: connection, listener: listener) ?? "none"
@@ -59,6 +77,8 @@ extension AmbientRightyoRouter {
         case .exit: (reported > 0 ? AmbientStopConfirmation.privacyOff : nil, "on=false")
         case .status: (on ? AmbientStopConfirmation.privacyStatus : nil, "status on=\(on)")
         case .stillRecording: (AmbientStopConfirmation.stillRecording, "negated")
+        case .lost: (AmbientStopConfirmation.privacyOff, "on=false lost")
+        case .refused: (nil, "on=true refused=not_owner")
         }
     }
 

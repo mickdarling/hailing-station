@@ -13,6 +13,10 @@ import Testing
             + #"\"sequence\": \#(sequence), \"emitted_at_ms\": \#(at)\#(extra), \"action\": \"\#(action)\"}""#
     }
 
+    /// The owner's transcript attributed from a live voiceprint (`role_source`), the only one that may enter.
+    static let voiceprint = #" -e '/"role": "owner"/s/"type": "transcript"/"#
+        + #""role_source": "voiceprint", "type": "transcript"/'"#
+
     static func duck(_ version: Int) -> String {
         #" -e 's/"phase": "started"/"duck": {"version": \#(version)}, "phase": "started"/'"#
     }
@@ -36,21 +40,22 @@ import Testing
         let lines = actions.enumerated().map { line($1, sequence: $0 + 5, at: 2000) }
         return """
         /usr/bin/sed -n -e '1p' -e '4p' events.jsonl | /usr/bin/sed -e "s/formed-demo/$7/g" \
-          -e 's/Rightyo, archive the project./Stop recording./g' \(duck(2))
+          -e 's/Rightyo, archive the project./Stop recording./g' \(duck(2))\(voiceprint)
         \(lines.joined(separator: "\n"))
         /bin/cat > /dev/null
         /usr/bin/sed -n -e '$p' events.jsonl | /usr/bin/sed -e "s/formed-demo/$7/g" -e 's/"sequence": 7/"sequence": 99/'
         """
     }
 
-    private func run(_ script: String, ducking: Bool = true) async throws -> ([PrivacyCommand], Int) {
+    private func run(_ script: String, ducking: Bool = true,
+                     allowSynthetic: Bool = true) async throws -> ([PrivacyCommand], Int) {
         let fake = try FakeRightyo(script)
         defer { fake.cleanUp() }
         try fake.install(fixture: "enrolled-formed-request.jsonl")
         let seen = Mutex<[PrivacyCommand]>([])
         var configuration = RightyoAmbientPipeline.Configuration(
             executable: fake.executable, config: fake.config, target: "tmux:demo", binding: "pinned",
-            connection: UUID(), allowSynthetic: true, timing: .init(eofGrace: 20, termGrace: 20)
+            connection: UUID(), allowSynthetic: allowSynthetic, timing: .init(eofGrace: 20, termGrace: 20)
         )
         configuration.onVoiceDuck = { command in seen.withLock { $0.append(command) } }
         configuration.replyControl = true
@@ -89,12 +94,44 @@ import Testing
         await #expect(throws: RightyoInputError.self) { _ = try await run(Self.events(actions, extra: extra)) }
     }
 
+    /// Only a live-microphone transcript enters (the fixture's turn is `synthetic`, with synthetic turns not admitted).
+    @Test func aNonLiveTranscriptDoesNotEnter() async throws {
+        let (live, _) = try await run(Self.enterThen([]), ducking: false)
+        let (synthetic, _) = try await run(Self.enterThen([]), ducking: false, allowSynthetic: false)
+        #expect(live == [.enter] && synthetic.isEmpty)
+    }
+
+    /// `privacy` refuses content in `validatePrivacy` itself: the same event, valid without them, is refused with a
+    /// fully valid `turn` (words included) or a valid `utterance_id`.
+    @Test func aPrivacyEventWithATurnOrUtteranceIsRefused() throws {
+        let envelope = #""type": "privacy", "action": "exit", "schema_version": 1, "session_id": "s1", "#
+            + #""sequence": 2, "emitted_at_ms": 5"#
+        let turn = #""turn": {"session_id": "s1", "utterance_id": "u1", "revision": 1, "start_ms": 0, "end_ms": 5, "#
+            + #""text": "hello there", "finalized": true, "overlap": false, "recognizer_id": "authored-fixture", "#
+            + #""provenance": "synthetic", "speaker_provenance": "authored-fixture"}"#
+        let bare = try RightyoInputEvent.decode(Data("{\(envelope)}".utf8))
+        try bare.validate(session: "s1", enrolled: true)
+        for extra in [turn, #""utterance_id": "u1""#] {
+            let event = try RightyoInputEvent.decode(Data("{\(envelope), \(extra)}".utf8))
+            #expect(throws: RightyoInputError.invalidEvent) { try event.validatePrivacy() }
+            #expect(throws: RightyoInputError.invalidEvent) { try event.validate(session: "s1", enrolled: true) }
+        }
+    }
+
     @Test func theEventsSchemaKeepsActionAndDuckInTheirPlace() throws {
         let session = #""schema_version": 1, "session_id": "s1", "sequence": 2, "emitted_at_ms": 5"#
         let transcript = try RightyoInputEvent.decode(Data(#"{"type": "dismiss", "action": "exit", \#(session)}"#.utf8))
         #expect(throws: RightyoInputError.invalidEvent) { try transcript.validatePrivacy() }
         let ducked = try RightyoInputEvent.decode(Data(#"{"type": "privacy", "duck": {}, \#(session)}"#.utf8))
         #expect(throws: RightyoInputError.invalidEvent) { try ducked.validatePrivacy() }
+        // `duck` outside `started`, and `role_source` off a transcript, are refused by `validatePrivacy` itself.
+        for line in [#"{"type": "session", "phase": "stopped", "duck": {"version": 2}, \#(session)}"#,
+                     #"{"type": "dismiss", "role_source": "voiceprint", \#(session)}"#] {
+            let event = try RightyoInputEvent.decode(Data(line.utf8))
+            #expect(throws: RightyoInputError.invalidEvent) { try event.validatePrivacy() }
+        }
+        let stopped = try RightyoInputEvent.decode(Data(#"{"type": "session", "phase": "stopped", \#(session)}"#.utf8))
+        try stopped.validatePrivacy()
         #expect(RightyoInputEvent.privacyVersion(.object(["version": .integer(2)])) == 2)
         #expect(RightyoInputEvent.privacyVersion(.object(["version": .string("2")])) == nil)
         #expect(RightyoInputEvent.privacyVersion(.bool(true)) == nil)
@@ -103,7 +140,7 @@ import Testing
 
 extension AmbientPrivacyEventTests {
     /// `started` advertising natural dismissal and `duck` at `version` unless nil, then a stop phrase's dismissal with
-    /// `scope` and `ids` that cites no transcript (RightyO keeps none while private), then `stopped`.
+    /// `scope` and `ids` that cites no transcript, then `stopped`.
     static func privateStop(version: Int? = 2, scope: String = #"[\"playback\"]"#, ids: String = "[]") -> String {
         let dismissal = #""dismissal": {"version": 1, "window_ms": 10000, "cooldown_ms": 30000, "#
             + #""cooldown_min_confidence": 0.9}, "#
@@ -139,20 +176,13 @@ extension AmbientPrivacyEventTests {
         return seen.withLock { $0 }
     }
 
-    /// While private a stop phrase still stops a playing reply: a playback-only dismissal that withdraws nothing is
-    /// admitted without a transcript, and never counts as the owner's (no confirmation clip).
-    @Test func aPrivateStopPhraseStopsPlaybackOnly() async throws {
-        let receipts = try await dismissals(Self.privateStop())
-        #expect(receipts.count == 1 && receipts.first?.stopsPlayback == true && receipts.first?.owner == false)
-        #expect(receipts.first?.scope == ["playback"] && receipts.first?.withdrawn == 0)
-    }
-
-    /// Any other uncited dismissal, or one from a session without `duck` v2, still ends the stream.
+    /// While private "stop" does nothing (Mick, round 2): RightyO sends no dismissal then, and an uncited one, even
+    /// playback-only on a `duck` v2 session, ends the stream as it did before privacy mode.
     @Test(arguments: [
-        (2, #"[\"playback\", \"pending_request\"]"#, "[]"), (2, #"[\"playback\"]"#, #"[\"$7:x\"]"#),
-        (1, #"[\"playback\"]"#, "[]")
+        (2, #"[\"playback\"]"#, "[]"), (2, #"[\"playback\", \"pending_request\"]"#, "[]"),
+        (2, #"[\"playback\"]"#, #"[\"$7:x\"]"#), (1, #"[\"playback\"]"#, "[]")
     ])
-    func anyOtherUncitedDismissalEndsTheStream(_ version: Int, _ scope: String, _ ids: String) async {
+    func anUncitedDismissalEndsTheStream(_ version: Int, _ scope: String, _ ids: String) async {
         await #expect(throws: RightyoInputError.self) {
             _ = try await dismissals(Self.privateStop(version: version, scope: scope, ids: ids))
         }

@@ -77,8 +77,7 @@ public struct RightyoInputEvent: Codable, Sendable {
     /// Natural dismissal (rightyo#98): advertised once at `started`; only then may `dismiss` events arrive.
     @RefusingNull var dismissal: Dismissal?
     /// `dismiss` fields. `speech_end_ms` also rides on `attention`, and `reason` on terminal session events.
-    let speechEndMs: Int?
-    let speakerId: String?
+    let speechEndMs: Int?, speakerId: String?
     let scope: [String]?
     let withdrawnRequestIds: [String]?
     let reason: String?
@@ -101,8 +100,10 @@ public struct RightyoInputEvent: Codable, Sendable {
     /// `AmbientOwnerVoiceRelay`), then `owner_voice` events carrying only `state`.
     ///
     /// Privacy mode (#735, internally duck): `duck` on `started` (raw; `privacyVersion` reads it), then, from a
-    /// version 2 producer, `privacy` events carrying only `action`, `exit` or `status`. Never any words.
-    let acknowledgement, acknowledge, speakerNames, speakerName, ownerVoice, duck: JSONValue?, action: String?
+    /// version 2 producer, `privacy` events carrying only `action`, `exit` or `status`. Never any words. `role_source`
+    /// rides on a `transcript`: `voiceprint` says its owner role came from a live voiceprint, not a label or inference.
+    let acknowledgement, acknowledge, speakerNames, speakerName, ownerVoice, duck: JSONValue?
+    let action, roleSource: String?
     public static func decode(_ data: Data) throws -> Self {
         guard !data.isEmpty, data.count <= 1_200_000 else { throw RightyoInputError.capacity }
         let decoder = JSONDecoder()
@@ -353,6 +354,7 @@ extension RightyoInputEvent {
     /// decoder knows. Whether the session advertised it is the consumer's rule.
     func validatePrivacy() throws {
         if duck != nil, type != "session" || phase != "started" { throw RightyoInputError.invalidEvent }
+        if roleSource != nil, type != "transcript" { throw RightyoInputError.invalidEvent }
         guard type == "privacy" else {
             guard action == nil else { throw RightyoInputError.invalidEvent }
             return
