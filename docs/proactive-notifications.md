@@ -34,14 +34,15 @@ The personal-terminal listener has no TLS and no peer authentication (`docs/secu
 be read, and frames can be injected, by someone on the network path. So a device is never trusted for what it
 claims. It is trusted only for holding a private key the owner approved.
 
-1. **Device key:** on first use the app makes a P-256 key pair: in the Secure Enclave on iPhone and iPad, or as a
-   Keychain item protected by the user account on the Mac, which is weaker. The key is this-device-only, never
-   synced, and usable after first unlock with no presence check. The private key never leaves the device.
+1. **Device key:** on first use the app makes a P-256 key pair in the Secure Enclave: on iPhone and iPad, and on Macs
+   with Apple silicon or a T2 chip. Other Macs use a Keychain item protected by the user account, which is weaker.
+   The key is this-device-only, never synced, and usable after first unlock with no presence check. The private key
+   never leaves the device.
 2. **Challenge:** haild lists `owner_device` in its hello. When the device has listed it too, haild sends
    `device_challenge {nonce}`, with a fresh random 32-byte nonce, base64 in the frame. The app answers
-   `device_proof {key, signature, token?, environment?, name, kind}`. The app proves before it starts any audio, and
-   its key is usable after the device's first unlock, so a locked phone reconnecting in the background can still
-   prove.
+   `device_proof {key, signature, token?, environment?, name, kind}`. On a normal connection the app proves before
+   it starts any audio (the exception is a voice-only reconnect after `superseded`, below). Its key is usable after
+   the device's first unlock, so a locked phone reconnecting in the background can still prove.
 3. **Encodings:**
    - `key`: the public key as an uncompressed X9.63 point (65 bytes), base64 in the frame.
    - `signature`: ECDSA P-256 over SHA-256, DER-encoded, base64.
@@ -80,12 +81,18 @@ claims. It is trusted only for holding a private key the owner approved.
      "unanswered"}`). It is challenged once more 30 seconds later. Only an answer to that new challenge restores it;
      nonces are single-use. A connection that misses that one retry stays demoted until it reconnects. A newer proof
      from the same key cancels the pending retry, and a connection superseded meanwhile stays demoted.
-   - **After `superseded`** the app does not re-prove on its own. It may reconnect for voice and replies, which works
-     unproven as today but receives nothing proactive. It shows the state and leaves the next proof to the owner.
-   - **After `unanswered`** the app answers the retry challenge if it is still connected. A privacy-off sent while
-     the connection is demoted is held by the connection and applied if it is restored.
-   - **No challenge:** if no `device_challenge` arrives within 10 seconds of the hello, the app shows that this host
-     does not offer owner devices and treats itself as unapproved.
+   - **After `superseded`** the app does not re-prove on its own. It may reconnect for voice and replies without
+     listing `owner_device`, so it is not challenged; that works unproven as today but receives nothing proactive.
+     It shows the state, and the owner's next step is a reconnect that proves.
+   - **After `unanswered`** the app answers the retry challenge if it is still connected. If it misses that retry
+     too, it shows that it is unconfirmed and reconnects to prove again.
+   - **Privacy changes while demoted:** the connection keeps only the latest one. A privacy-on discards a held off,
+     and so does the connection being superseded or closing. A held off applies at restore only if the connection is
+     public at that moment.
+   - **No challenge:** if no `device_challenge` arrives within 10 seconds of a hello in which the host listed
+     `owner_device`, the app shows that it could not be confirmed and treats itself as unapproved. It still answers a
+     challenge that arrives later. Without `owner_device` in the hello, it shows that this host does not offer owner
+     devices.
    - **Tokens** rotate only with a fresh proof answering a challenge.
 8. **Pending store:** a pending entry exists only while its connection is open.
    - At most 8 at once; a ninth proof from a new key is refused with `device_state {state: "full"}`.
@@ -104,7 +111,8 @@ This is the same rule voice routing follows (`docs/voice-routing.md`): a discove
   someone on the network path.
 - They can read every `session_update`, as they can read every reply today.
 - While the owner's device is connected, they can relay its proof and the re-challenges to hold a connection of their
-  own. That demotes the real device's connection, which is told `superseded`, though they can drop that frame too.
+  own. That supersedes the real device's connection, which is told `superseded` and closed 30 seconds later, though
+  they can drop that frame too.
 - They can forge or replay a privacy report, or relay a proof on a fresh public connection, so privacy set by the
   owner can be cleared this way while the owner's device is online: at once by a forged report, or about 30 seconds
   after a relayed proof, when the owner's superseded private connection is closed (see Clearing).
@@ -113,6 +121,8 @@ This is the same rule voice routing follows (`docs/voice-routing.md`): a discove
   drops the `superseded` frame, the app just sees the connection close, reconnects, and starts public, so a relay can
   force a reconnect about every 30 seconds.
 - A forged privacy-on drops new updates and purges held ones, so queued agent output is lost. It discloses nothing.
+- They can drop a privacy-on frame, so the owner's privacy never takes effect on the host. The app shows privacy only
+  once the host confirms it (as in #817), so a dropped frame shows as not private.
 - A connection that never proves protects only itself: its privacy marks no key.
 - A push APNs has already accepted cannot be recalled if privacy starts before it arrives; its expiry is at most the
   update's 4-hour lifetime.
@@ -128,8 +138,9 @@ not remove them. Removing them needs TLS with a pinned host key, which is out of
 haild keeps, in memory only, each approved key's last privacy report.
 - **At every proof** (a fresh connection, a pending connection being approved, or a restore after `unanswered`), a
   private connection marks the key private. So privacy entered before approval, or before the proof completed, is
-  kept from the moment the proof lands. Only a fresh proof can clear a report (see Clearing); a re-challenge answer
-  or a restore never clears one.
+  kept from the moment the proof lands. A re-challenge answer never clears a report. A restore clears it only by
+  applying a held privacy-off, when the connection is public at that moment (Owner devices, item 7). Otherwise only
+  a fresh proof can clear a report (see Clearing).
 - **Recording:** privacy turned on from any connection that has proven a key marks that key private. Privacy turned
   off counts only from that key's current approved connection.
 - **Clearing:** a key's private report clears only:
@@ -148,6 +159,10 @@ haild keeps, in memory only, each approved key's last privacy report.
 
   After an ordinary Wi-Fi reconnect, the report therefore clears within about 30 seconds. Dropping a connection
   never clears a report by itself, and another key connecting never clears it.
+  - A pending clear cancelled by demotion is not re-armed by a restore. The owner stays private until that device
+    turns privacy off or proves on a fresh connection; this fails closed.
+  - While a pending clear waits, the host reports the key's privacy as `ending` in `device_state`, not public. So the
+    device never shows "public" before the clear has applied.
 - **Before a proof or approval:** privacy turned on over a connection that has not yet proven, or whose key is still
   pending, is held by that connection and applied to the key at the proof or approval. A connection that never
   proves protects only itself: it gets nothing proactive, but its privacy marks no key.
@@ -213,7 +228,7 @@ The answer gains outcome tokens, and `push: suggested` goes away:
 - delivered: `spoken` (sent for speaking; under rule 5 the app may still decline and show only the card), `shown`,
   `pushed`, `pushed: summary`;
 - held: `held: quiet`, `held: no_device` (rule 7 has no eligible key: none has connected since the restart, or none
-  has a token), `held: push_cap`;
+  has a token), `held: push_cap`, `held: info`;
 - refused: `dropped: private`, `push: failed`.
 
 These go on a new `outcome:` line of the answer. The existing `held: N updates waiting` line, printed with the
@@ -308,7 +323,7 @@ is no version bump.
 | `session_update` (exists) | host to device | `session_update` | `update`, `session`, `priority`, `text`, `card?` |
 | `device_challenge` | host to device | `owner_device` | `nonce` |
 | `device_proof` | device to host | `owner_device` | `key`, `signature`, `token?`, `environment?`, `name`, `kind` |
-| `device_state` | host to device | `owner_device` | `fingerprint`, `state`: `pending`, `approved`, `revoked`, `superseded`, `unanswered` or `full` |
+| `device_state` | host to device | `owner_device` | `fingerprint`, `state`: `pending`, `approved`, `revoked`, `superseded`, `unanswered` or `full`; `privacy`: `private`, `ending` or `public` |
 | `presence` | device to host | `presence` | `foreground`, `muted`, `away` (booleans) |
 
 The APNs JSON is not a hail frame. It lives in a new `Notify/` type, with its schema in `docs/reply-protocol.md`.
@@ -362,7 +377,8 @@ So everything except the APNs client and the device store waits for Part 10's st
    ends it too, as under #813, within about 30 seconds, once the old connection is closed. Revoking it also clears
    its report, and someone on the network path could forge a clear (Known limits).
    - Part 10 accepted the same-key-reconnect clearing on 2026-10-22. The 30-second pending clear came after that
-     sign-off; it only delays a relayed clear by about 30 seconds.
+     sign-off. It delays a relayed clear by about 30 seconds, and it also delays an honest clear, or cancels one
+     when privacy is turned on again. Both fail closed.
    - Costs: a phone that drops off while private keeps every device quiet until it reconnects. After a haild
      restart, nothing is pushed to a device until it has connected again; a connected Mac still gets rules 4 to 6.
      A connection that never proves protects only itself.
