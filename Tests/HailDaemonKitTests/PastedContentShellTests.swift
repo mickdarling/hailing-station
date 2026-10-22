@@ -1,4 +1,5 @@
 import Foundation
+import Synchronization
 import Testing
 @testable import HailDaemonKit
 
@@ -34,7 +35,7 @@ import Testing
 
     /// Blocks until the shell exits, so only from a body on `HeavyTestExecutor`. A shell still running at `deadline` is
     /// killed with its whole process group (the shell leads its own), so a child holding the pipe open dies too, the
-    /// read and the wait end, and the test fails.
+    /// read and the wait end, and the test fails, even when the shell itself had exited and only its child ran on.
     private func run(_ shell: String, _ arguments: [String], in directory: URL) throws -> Run {
         let process = Process()
         process.executableURL = URL(fileURLWithPath: shell)
@@ -47,13 +48,18 @@ import Testing
         process.standardError = output
         try process.run()
         let pid = process.processIdentifier
-        let overdue = DispatchWorkItem { _ = Darwin.kill(-pid, SIGKILL) }
+        let killed = Mutex(false)
+        let overdue = DispatchWorkItem {
+            killed.withLock { $0 = true }
+            _ = Darwin.kill(-pid, SIGKILL)
+        }
         DispatchQueue.global().asyncAfter(deadline: .now() + Self.deadline, execute: overdue)
         let data = output.fileHandleForReading.readDataToEndOfFile()
         process.waitUntilExit()
         overdue.cancel()
         #expect(process.terminationReason == .exit,
                 "\(shell) ended on signal \(process.terminationStatus); one running at \(Self.deadline) s is killed")
+        #expect(!killed.withLock { $0 }, "\(shell) or a child it left ran past \(Self.deadline) s and was killed")
         return Run(status: process.terminationStatus, output: String(bytes: data, encoding: .utf8) ?? "")
     }
 
