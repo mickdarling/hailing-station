@@ -125,10 +125,9 @@ extension OwnedReplyRendererTests {
             renderer.retire(cancel: false)
             await #expect(throws: OwnedReplyRendererError.cleanupDeferred) { try await renderer.waitForCleanup() }
             #expect(renderer.cleanupDisposition == .deferred)
-            // It failed before writing anything: an empty deferred folder holds nothing to recover (#800).
-            try await fixture.until("empty deferred folder removed") {
-                !FileManager.default.fileExists(atPath: renderer.outputDirectory.path)
-            }
+            // It failed before writing anything: an empty deferred folder holds nothing to recover (#800), and it is
+            // gone before the report, so the CLI cannot exit first.
+            #expect(!FileManager.default.fileExists(atPath: renderer.outputDirectory.path))
         }
     }
 

@@ -191,7 +191,7 @@ private final class ReplyRendererLifetime: Sendable {
         }
     }
 
-    /// Consumer retirement follows stable-file/finalization reads. Abnormal retirement reports
+    /// Consumer retirement follows stable-file/finalization reads. Abnormal retirement of a live child reports
     /// deferred cleanup immediately, but the source retains exact-child responsibility while alive.
     func retire(cancel: Bool) {
         gate.close()
@@ -244,6 +244,9 @@ private final class ReplyRendererLifetime: Sendable {
         let disposition = state.withLock { current -> OwnedReplyRendererCleanupDisposition in
             guard current.retired else { return .pending }
             if current.child.ownershipLost { return .ownershipLost }
+            // A reaped child's deferred cleanup reports after its empty-leaf removal (#800), so a caller that exits
+            // once `waitForCleanup` returns cannot strand it.
+            guard current.child.pid != nil else { return .pending }
             if current.cancelled || (current.child.status != nil && current.child.status != 0) { return .deferred }
             return .pending
         }
@@ -528,7 +531,7 @@ private struct ReplyRendererFolder: Sendable {
     /// empty directory, and only once the name still names the folder this renderer made. An ordinary descendant
     /// still writing either lands first (the folder is kept) or later fails with ENOENT; nothing is lost or redirected.
     /// As for `remove`, POSIX has no inode-conditional rmdir, so a same-UID rebind between the check and the removal
-    /// could cost an empty directory, never content. Best effort: `waitForCleanup` may return before it runs.
+    /// could cost an empty directory, never content. Retiring after the reap, `waitForCleanup` returns once it has run.
     func removeIfEmpty() {
         defer { close(rootDescriptor) }
         var current = stat()

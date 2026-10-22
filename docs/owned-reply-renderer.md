@@ -60,7 +60,9 @@ deferred/lost-ownership disposition, with one exception (#800): once the leader 
 removal checks through the root descriptor that the name still names this renderer's leaf (device,
 inode, directory), then uses `unlinkat(AT_REMOVEDIR)`, which refuses a non-empty directory, so content
 is never removed. A descendant still writing either lands first, keeping the leaf, or later fails with
-ENOENT. It is best effort and may run after `waitForCleanup` returns. POSIX has no inode-conditional
+ENOENT. When the leader is reaped before retirement, as on nonzero exit, `waitForCleanup` returns only
+after the removal, so the CLI cannot exit first; a live leader's deferral is reported at retirement and
+the removal follows its reap. POSIX has no inode-conditional
 rmdir, so a same-UID rebind between the check and the removal could cost an empty directory, never
 content. A lost-ownership leaf is always retained. Exact leader reaping does not establish descendant
 quiescence. Controlled synthetic tests demonstrate a descendant can still write after the leader is
