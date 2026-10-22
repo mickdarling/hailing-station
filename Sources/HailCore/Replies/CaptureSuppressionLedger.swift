@@ -74,6 +74,8 @@ public final class CaptureSuppressionLedger {
 
 /// Reply playback's capture suppression (#91), one `CaptureSuppressionLedger` per player. Each capture owner registers
 /// whether its capture is live, so a hold with no capture behind it is dropped instead of muting replies (#760).
+/// A player's ledger exists only while it has owners: it is removed once empty, so a closed scene's player and its
+/// audio are never kept alive by this table (#763 review).
 @MainActor
 public enum CapturePlaybackSuppression {
     /// Each owner's check that its capture is still starting, recording, finalizing or interrupting.
@@ -82,24 +84,43 @@ public enum CapturePlaybackSuppression {
     public static var onHeal: (@MainActor (Int) -> Void)?
     private static var ledgers: [ObjectIdentifier: CaptureSuppressionLedger] = [:]
 
+    /// Whether `playback` has a ledger now; only a player with an outstanding hold does.
+    static func hasLedger(for playback: ReplyPlaybackController) -> Bool { existing(playback) != nil }
+
     public static func begin(_ owner: UUID, using playback: ReplyPlaybackController) { ledger(playback).begin(owner) }
 
     public static func end(_ owner: UUID, using playback: ReplyPlaybackController, resuming: Bool) {
         liveness[owner] = nil
-        healed(ledger(playback).end(owner, resuming: resuming))
+        guard let ledger = existing(playback) else { return }
+        healed(ledger.end(owner, resuming: resuming))
+        pruneIfEmpty(playback)
     }
 
     public static func markCleanupComplete(_ owner: UUID, using playback: ReplyPlaybackController) {
-        ledger(playback).markCleanupComplete(owner)
+        existing(playback)?.markCleanupComplete(owner)
     }
 
     /// On appearing and on scene activation: routine releases of completed teardowns, then any heal.
     public static func releaseCompleted(using playback: ReplyPlaybackController) {
-        for owner in ledger(playback).releaseCompleted() { liveness[owner] = nil }
+        guard let ledger = existing(playback) else { return }
+        for owner in ledger.releaseCompleted() { liveness[owner] = nil }
         reconcile(using: playback)
     }
 
-    public static func reconcile(using playback: ReplyPlaybackController) { healed(ledger(playback).reconcile()) }
+    public static func reconcile(using playback: ReplyPlaybackController) {
+        guard let ledger = existing(playback) else { return }
+        healed(ledger.reconcile())
+        pruneIfEmpty(playback)
+    }
+
+    private static func existing(_ playback: ReplyPlaybackController) -> CaptureSuppressionLedger? {
+        ledgers[ObjectIdentifier(playback)]
+    }
+
+    private static func pruneIfEmpty(_ playback: ReplyPlaybackController) {
+        let key = ObjectIdentifier(playback)
+        if ledgers[key]?.owners.isEmpty == true { ledgers[key] = nil }
+    }
 
     private static func healed(_ owners: [UUID]) {
         guard !owners.isEmpty else { return }
