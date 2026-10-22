@@ -10,7 +10,7 @@ Swift Testing reports test events synchronously, in the same process as the test
 
 ## The fix
 
-`scripts/verify.sh` runs each test lane through `run_captured`. There are three: the parallel lane in two processes, HailCoreTests first and then every other target (#704), and the serial timing lane from #208.
+`scripts/verify.sh` runs each test lane through `run_captured`, three lanes in all: HailCoreTests in a parallel process of its own, then every other target in a second parallel process (#704), and the serial timing lane from #208.
 
 - Output (stdout and stderr together) goes to a private regular file, created with `mktemp` (owner-only), and is printed in full once the lane finishes.
 - Parallelism, test selection, assertions and deadlines are unchanged. There is no live progress while a lane runs.
@@ -21,7 +21,7 @@ Swift Testing reports test events synchronously, in the same process as the test
 - A test failure returns the original non-zero status, even if printing also fails.
 - A printing failure after the tests pass also fails verification.
 - If the capture file cannot be created, the tests do not run.
-- A lane that started no test fails with status 65, naming its command (#704). `swift test` exits 0 when a selection matches nothing, so a renamed target or pattern would otherwise turn a lane silently green.
+- A lane that started no test fails with status 65, naming its command (#704). `swift test` exits 0 when a selection matches nothing, so a renamed target or pattern would otherwise turn a lane silently green. A suite starting is not enough: a test's ID ends in its source location, and one such start is required. XCTest results never reach the Swift Testing event stream, so a lane holding only XCTest tests would also fail here.
 - A failed lane keeps its capture and names its path on stderr. That notice is best-effort, so an unwritable stderr cannot mask the status. A successful capture is removed.
 
 ## Tests
@@ -31,7 +31,7 @@ Swift Testing reports test events synchronously, in the same process as the test
 - the capture is an owner-only regular file, and each lane keeps its exact arguments (the two parallel halves and the serial lane);
 - every lane is captured and replayed in full, including output larger than a pipe buffer;
 - a failure stops at the first parallel half, and a failing second half after a green first fails with its own status;
-- a lane that starts no test fails;
+- a lane that starts no test, or only an empty suite, fails, and a started test in the real runner's compact JSON passes;
 - the exact failure status;
 - a printing failure;
 - a capture-creation failure;

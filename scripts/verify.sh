@@ -97,6 +97,11 @@ PY
 
 # A slow console consumer must not stall test reporting while deadlines run (#185): output goes to a private file
 # and is replayed in full afterwards. A failed capture is kept, and neither failure masks the other.
+# Whether an event stream (JSON Lines, one event each) records a test function starting, not only a suite.
+started_a_test() {
+  grep -E '"kind" *: *"testStarted"' "$1" 2>/dev/null | grep -Eq '"testID" *: *"[^"]*[.]swift:[0-9]+'
+}
+
 run_captured() {
   local log events pid idle status=0 report=0 stalled=0 dir="${HAIL_TEST_CAPTURE_DIR:-${TMPDIR:-/tmp}}"
   # CI points HAIL_TEST_CAPTURE_DIR at a directory it uploads even when the job fails or times out (#264).
@@ -121,8 +126,9 @@ run_captured() {
   trap - INT TERM
   cat "$log" || report=$?
   # `swift test` passes a selection that matches nothing (#704): a lane that started no test fails, so a renamed target
-  # or pattern can never turn a lane silently green.
-  if (( !stalled && status == 0 && report == 0 )) && ! grep -Eq '"kind" *: *"testStarted"' "$events"; then
+  # or pattern can never turn a lane silently green. A test's ID ends in its source location; a suite's does not, so a
+  # selection that still matches an empty suite fails too.
+  if (( !stalled && status == 0 && report == 0 )) && ! started_a_test "$events"; then
     printf 'No test started in this lane; an empty selection fails (#704): %s\n' "$*" >&2 || :
     status=65
   fi
