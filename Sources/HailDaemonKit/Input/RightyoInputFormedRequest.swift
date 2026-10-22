@@ -83,6 +83,16 @@ extension RightyoInputEvent {
         return head + " --request " + request.uuidString.lowercased() + " --say '<spoken answer>' (single-quote the"
             + " answer and keep it free of single quotes; the request reference sends it to the device that asked)."
     }
+    /// The duck mode variant (#735 H-3), for an owner's ask cue while thinking out loud: one fixed sentence saying what
+    /// the data block is and how to answer each cue (ask, don't solve; recap briefly), then the ordinary block for
+    /// `target`, byte for byte. The ordinary block stays last, so the session still cuts at its prefix, `referencing`
+    /// still adds a request reference (#230), and the pane observer still matches its ending. The sentence is ASCII,
+    /// one line, quote-free, guard-clean, and never carries the block's prefix or the raw-turns marker.
+    static let duckInstruction = " Duck mode: the owner is thinking out loud, and the JSON above holds their own"
+        + " words since duck mode began. Answer only the cue it names: for what do you think, ask one short question"
+        + " or offer one brief thought, and do not solve the problem or act on it; for play that back, recap briefly"
+        + " what they said, in the order they said it."
+    static func duckReplyBlock(target: String) -> String { duckInstruction + replyBlock(target: target) }
     /// The prompt with its trailing request-less block for `target` replaced by the block naming `request` (#230),
     /// or nil when the prompt does not end in that exact block or the result would exceed the local dispatch cap.
     /// Only the host's own final block is rewritten, byte for byte; nothing before it changes. The block is ASCII

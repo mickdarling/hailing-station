@@ -150,4 +150,21 @@ extension RightyoInputConsumerTests {
         let over = try await formedRequest(fuller, formed: longest, priors: priors + [extra])
         await #expect(throws: RightyoInputError.capacity) { try await fuller.consume(over) }
     }
+
+    /// The duck mode block (#735 H-3): one fixed ASCII sentence, then the ordinary block byte for byte, so the session
+    /// still cuts at the last prefix and `referencing` still adds a request reference (#230). Sanitizer and guard clean.
+    @Test func theDuckBlockIsAFixedSentenceThenTheOrdinaryBlock() throws {
+        let duck = RightyoInputEvent.duckReplyBlock(target: "tmux:demo")
+        let sentence = RightyoInputEvent.duckInstruction
+        #expect(duck == sentence + Self.replyBlock && duck.hasSuffix(Self.replyBlock))
+        #expect(duck.unicodeScalars.allSatisfy(\.isASCII) && !duck.contains(where: \.isNewline) && !duck.contains("\""))
+        #expect(!RightyoInputEvent.carriesReplyPrefix(sentence) && !RightyoInputEvent.carriesMarker(duck))
+        #expect(duck.components(separatedBy: Self.replyPrefix).count == 2)
+        #expect(try Sanitizer.sanitize(duck) == [duck])
+        #expect(DangerousPatternGuard.matches(in: [duck], patterns: DangerousPatternGuard.defaults).isEmpty)
+        let reference = UUID()
+        let referenced = try #require(RightyoInputEvent.referencing("{}" + duck, target: "tmux:demo",
+                                                                    request: reference))
+        #expect(referenced == "{}" + sentence + RightyoInputEvent.replyBlock(target: "tmux:demo", request: reference))
+    }
 }

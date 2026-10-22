@@ -158,7 +158,7 @@ enum VoiceDuck {
 /// acknowledgement directory: `confirm-stopped/` ("Stopped.") and `confirm-idle/` ("Nothing playing, standing by."),
 /// for the owner's spoken mute (#404) `confirm-muted/` ("Muted.") and `confirm-unmuted/` ("Unmuted."), and for media
 /// mode (#551) `confirm-media-on/` and `confirm-media-off/`, for spoken notes (#552) `confirm-saved/` and
-/// `confirm-not-saved/`, and for duck mode (#735) `confirm-duck-on/` and `confirm-duck-off/`.
+/// `confirm-not-saved/`, and for duck mode (#735) `confirm-duck-on/`, `confirm-duck-off/` and `confirm-discarded/`.
 enum AmbientStopConfirmation {
     static let stopped = RightyoAddressing.key("confirm-stopped"), idle = RightyoAddressing.key("confirm-idle")
     static let muted = RightyoAddressing.key("confirm-muted"), unmuted = RightyoAddressing.key("confirm-unmuted")
@@ -174,8 +174,11 @@ enum AmbientStopConfirmation {
     /// recorded yet plays nothing, as for media mode.
     static let duckOn = RightyoAddressing.key("confirm-duck-on")
     static let duckOff = RightyoAddressing.key("confirm-duck-off")
+    /// The owner's "discard that" while ducking (#735 H-3): "Discarded." Reserved, so it is never an acknowledgement
+    /// voice; a folder Mick has not recorded yet plays nothing.
+    static let discarded = RightyoAddressing.key("confirm-discarded")
     static let reserved: Set<String> = [stopped, idle, muted, unmuted, mediaOn, mediaOff, saved, notSaved, notSent,
-                                        duckOn, duckOff]
+                                        duckOn, duckOff, discarded]
 
     /// Why a playback stop is not confirmed, as a log token, or nil when it is: only the enrolled owner's stop, and
     /// only on a connection still there to hear it.
@@ -359,6 +362,12 @@ public actor RightyoInputConsumer {
     private let duckActive: (@Sendable () -> Bool)?
     /// Utterances whose owner transcript already ended duck mode, so their request is held back without a second off.
     private var duckExits: [String] = []
+    /// The owner's words while ducking (#735 H-3); nil leaves duck cues and the buffer off. Fed only by `noteDuckTurn`.
+    private let duckSession: DuckSession?
+    /// What the owner's duck cue just did (#735 H-3), cleared as each event is consumed like `lastVoiceMute`.
+    private(set) var lastDuckCue: DuckCueOutcome?
+    /// Utterances already carried out as a duck cue or mute, so a request for one is held back, never sent twice.
+    private var duckCueTurns: [String] = []
     /// The owner's note to an allowlisted destination (#552), held back like `lastVoiceMute`; nil for any other line.
     private(set) var lastVoiceDestination: VoiceDestinations.Command?
     private let destinations: VoiceDestinations?
@@ -375,14 +384,15 @@ public actor RightyoInputConsumer {
                 allowSynthetic: Bool = false, streamBudgetMs: Int? = nil,
                 dispatcher: (any RightyoDispatching)? = nil, echoFilter: (@Sendable (String) -> Bool)? = nil,
                 mediaCommands: Bool = false, destinations: VoiceDestinations? = nil,
-                routing: RightyoVoiceRouting? = nil, duckActive: (@Sendable () -> Bool)? = nil) throws {
+                routing: RightyoVoiceRouting? = nil, duckActive: (@Sendable () -> Bool)? = nil,
+                duckSession: DuckSession? = nil) throws {
         guard !binding.isEmpty, RightyoInputEvent.identifier(session), streamBudgetMs.map({ $0 >= 0 }) ?? true else {
             throw RightyoInputError.unavailableBinding
         }
         try Self.validateTarget(target)
         self.dispatcher = dispatcher ?? host.map { RightyoHostDispatcher(host: $0) }
         (self.echoFilter, self.mediaCommands, self.destinations) = (echoFilter, mediaCommands, destinations)
-        (self.routing, self.duckActive) = (routing, duckActive)
+        (self.routing, self.duckActive, self.duckSession) = (routing, duckActive, duckSession)
         self.allowSynthetic = allowSynthetic
         self.target = target
         self.binding = binding
@@ -415,10 +425,14 @@ public actor RightyoInputConsumer {
         lastDismissal = nil
         lastVoiceMute = nil
         (lastVoiceMedia, lastVoiceDestination, lastRouteRefusal, lastVoiceDuck) = (nil, nil, nil, nil)
+        lastDuckCue = nil
         do {
             guard try admit(event) else { return false }
             if event.type == "override" { return true }
-            if event.type == "transcript", let turn = event.turn { noteDuckExit(turn) }
+            if event.type == "transcript", let turn = event.turn {
+                noteDuckExit(turn)
+                return try await noteDuckTurn(turn)
+            }
             guard event.type == "request", let requestID = event.requestId else { return false }
             guard try claim(requestID, provenance: event.turn?.provenance) else { return false }
             guard let dispatcher else { return true }
@@ -507,6 +521,8 @@ extension RightyoInputConsumer {
     /// in `lastVoiceDestination`.
     private func holdsVoiceCommand(_ turn: RightyoInputEvent.Turn) -> Bool {
         let owner = owners.contains(turn.utteranceId)
+        // A turn already carried out as a duck cue or mute (#735 H-3) is never typed as well.
+        if duckCueTurns.contains(turn.utteranceId) { return true }
         if holdsVoiceDuck(turn, owner: owner) { return true }
         if speakers == "enrolled", owner, let note = destinations?.command(in: turn.text, names: voiceNames) {
             lastVoiceDestination = note
@@ -553,6 +569,62 @@ extension RightyoInputConsumer {
         lastVoiceDuck = .off
         duckExits.append(turn.utteranceId)
         if duckExits.count > 32 { duckExits.removeFirst(duckExits.count - 32) }
+    }
+}
+extension RightyoInputConsumer {
+    /// The owner's transcript while ducking (#735 H-3), under `noteDuckExit`'s guards: duck mode on, an enrolled
+    /// session, the owner's turn, the live microphone, never an echo. Anything else, a guest's turn above all, is left
+    /// alone, and so is every turn on a stream whose `started` said `activation: "disabled"`: a transcription-only
+    /// stream never sends, so it neither asks, nor buffers words that could only be sent, nor mutes (a mute reaches
+    /// the host only as a request, which such a stream refuses). A duck mode phrase is `VoiceDuck`'s. A mute phrase is carried out as `VoiceMute` (`lastVoiceMute`). A cue
+    /// (`DuckCue`) is carried out: an ask sends the buffer, "discard that" empties it, the status cue is left to H-4.
+    /// Every other turn enters the buffer. True only when an ask was handed to the agent.
+    func noteDuckTurn(_ turn: RightyoInputEvent.Turn) async throws -> Bool {
+        guard let duckSession, activationEnabled, duckActive?() == true, speakers == "enrolled",
+              owners.contains(turn.utteranceId),
+              allowSynthetic || turn.provenance == "live-microphone", echoFilter?(turn.text) != true,
+              VoiceDuck.command(in: turn.text, names: voiceNames) == nil else { return false }
+        let mute = VoiceMute.command(in: turn.text, names: voiceNames)
+        let cue = mute == nil ? DuckCue.cue(in: turn.text, names: voiceNames) : nil
+        guard mute != nil || cue != nil else {
+            duckSession.append(turn.text)
+            return false
+        }
+        duckCueTurns.append(turn.utteranceId)
+        if duckCueTurns.count > 32 { duckCueTurns.removeFirst(duckCueTurns.count - 32) }
+        switch cue {
+        case nil: lastVoiceMute = mute
+        case .status?: lastDuckCue = .status
+        case .discard?: lastDuckCue = .discarded(turns: duckSession.discard())
+        case let ask?: return try await askDuck(ask, session: duckSession)
+        }
+        return false
+    }
+
+    /// Sends the buffer and the cue to `target`, through the same delivery step as any request, so the sanitizer, the
+    /// guard, the acknowledgement and the reply routing all apply. A guard or policy refusal before handoff (a guarded
+    /// word anywhere in the buffer, the target's own refusal, the connection's request limit; `keepsListening`) is not
+    /// the end of the stream: nothing was sent, `lastDuckCue` says so and the buffer stays, since the whole buffer
+    /// makes such a refusal far likelier than for one request. Every other failure, a connection or selection that is
+    /// gone above all, ends the consumer exactly as it ends one for a request. Voice routes (#636) never apply.
+    /// The prompt and the logged counts come from one snapshot. A timeout exit that lands between the snapshot and the
+    /// handoff still lets this ask go: the owner said it while ducking, and the buffer is discarded all the same.
+    static let keepsListening: Set<LocalDispatchRefusal> = [.confirmationRequired, .deliveryRefused, .capacityExceeded]
+    private func askDuck(_ cue: DuckCue, session: DuckSession) async throws -> Bool {
+        guard let dispatcher else { return false }
+        let copy = session.snapshot
+        let text = try DuckSession.prompt(copy, cue: cue, speakers: speakers, target: target)
+        busy = true
+        defer { busy = false }
+        do {
+            try Task.checkCancellation()
+            lastReceipt = try await dispatcher.dispatch(text: text, target: target, binding: binding)
+            lastDuckCue = .asked(turns: copy.turns.count, bytes: copy.bytes)
+            return true
+        } catch let refusal as LocalDispatchRefusal where Self.keepsListening.contains(refusal) {
+            lastDuckCue = .notSent
+            return false
+        }
     }
 }
 /// Correlation against admitted records lives here so the actor body stays within the type-length limit.
