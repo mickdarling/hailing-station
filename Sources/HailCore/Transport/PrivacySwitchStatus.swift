@@ -82,7 +82,7 @@ public struct PrivacySwitchStatus: Equatable, Sendable {
         case .confirmedPrivate: return "The Mac confirmed privacy. It is only listening for its name."
         case .privateListeningUnavailable:
             return "The Mac confirmed privacy and stopped listening: it can't listen privately right now. "
-                + "Nothing is recorded. Turn privacy off to listen again."
+                + "Nothing is recorded from this device. Turn privacy off to listen again."
         case .confirmedNotPrivate: return "The Mac is recording and sending requests."
         case .unconfirmed: return "The Mac has not confirmed privacy."
         }
