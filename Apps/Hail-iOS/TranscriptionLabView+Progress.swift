@@ -22,7 +22,9 @@ extension TranscriptionLabView {
     @MainActor
     func restorePlaybackAfterForcedTeardown() {
         guard scenePhase == .active else { return }
-        guard finishTask == nil, startTask == nil, !isStarting, !isFinalizing, !isInterrupting else {
+        // A live recording keeps replies held (#765): with ambient streaming the scene cleanup is skipped, so this runs
+        // on every activation, including while tap-to-talk still has the microphone.
+        guard finishTask == nil, startTask == nil, !isStarting, !isRecording, !isFinalizing, !isInterrupting else {
             playbackRestoreRequested = true
             return
         }
