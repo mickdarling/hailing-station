@@ -148,4 +148,11 @@ extension HostConnection {
         try requireReady(capability: AmbientInput.capability)
         try await send(.ambientInput(route: route), generation: generation)
     }
+
+    /// Ends the owner's duck mode for this device's stream (#735 H-4). Only to a ready host that advertised
+    /// `end_duck_mode`: an older host refuses the command. It can never start duck mode.
+    public func sendEndDuckMode() async throws {
+        try requireReady(capability: DuckMode.endCapability)
+        try await send(.endDuckMode, generation: generation)
+    }
 }

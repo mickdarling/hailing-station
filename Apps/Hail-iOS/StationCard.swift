@@ -272,6 +272,11 @@ struct AmbientListeningCard: View {
             if controller.isListening, let media = connections.mediaMode[binding.hostID] {
                 MediaModeStatusView(status: media)
             }
+            if controller.isListening, let duck = connections.duckMode[binding.hostID] {
+                DuckModeStatusView(status: duck, canEnd: connections.canEndDuckMode(binding.hostID)) {
+                    Task { try? await connections.endDuckMode(host: binding.hostID) }
+                }
+            }
             if controller.isListening, let handoff = controller.handoff, case .movedHere = handoff {
                 // This device took listening over (#366): a brief, calm confirmation.
                 Label(handoff.status, systemImage: "checkmark.circle.fill")
@@ -352,6 +357,48 @@ struct MediaModeStatusView: View {
                 }
                 .accessibilityElement(children: .combine)
                 .accessibilityIdentifier("station.ambient-media-mode")
+            }
+        }
+    }
+}
+
+/// The owner's duck mode (#735 H-4): while it is on, nothing is sent, so the card says so, how it ends, and offers
+/// to end it when the host takes the device's end control (never to start it). Once it ends, the card says how for a
+/// few minutes: by voice, by itself or from this device.
+struct DuckModeStatusView: View {
+    let status: DuckModeStatus
+    /// The host offers `end_duck_mode` and reported duck mode on.
+    let canEnd: Bool
+    let end: () -> Void
+
+    var body: some View {
+        // Re-checked each minute, so a mode past its end stops showing even if the host's "off" never arrives.
+        TimelineView(.everyMinute) { context in
+            if let detail = status.detail(now: context.date) {
+                VStack(alignment: .leading, spacing: 6) {
+                    VStack(alignment: .leading, spacing: 4) {
+                        Label("Duck mode is on", systemImage: "ellipsis.bubble")
+                            .font(.subheadline.weight(.semibold))
+                            .foregroundStyle(.teal)
+                        Text(detail)
+                            .font(.footnote)
+                            .foregroundStyle(.secondary)
+                    }
+                    .accessibilityElement(children: .combine)
+                    .accessibilityIdentifier("station.ambient-duck-mode")
+                    if canEnd {
+                        Button("End duck mode", action: end)
+                            .buttonStyle(.bordered)
+                            .controlSize(.small)
+                            .accessibilityHint("Ends duck mode on the Mac")
+                            .accessibilityIdentifier("station.ambient-duck-mode-end")
+                    }
+                }
+            } else if let ended = status.endedDetail(now: context.date) {
+                Label(ended, systemImage: "ellipsis.bubble")
+                    .font(.footnote)
+                    .foregroundStyle(.secondary)
+                    .accessibilityIdentifier("station.ambient-duck-mode-ended")
             }
         }
     }
