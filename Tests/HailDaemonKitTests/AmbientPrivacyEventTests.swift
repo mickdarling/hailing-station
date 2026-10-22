@@ -170,7 +170,6 @@ extension AmbientPrivacyEventTests {
         (configuration.onVoiceDuck, configuration.replyControl) = ({ _ in }, true)
         let pipeline = try RightyoAmbientPipeline(configuration: configuration,
                                                   dispatcher: RecordingAmbientDispatcher())
-        pipeline.reportDuck(true)
         pipeline.finishInput()
         _ = try await pipeline.run()
         return seen.withLock { $0 }

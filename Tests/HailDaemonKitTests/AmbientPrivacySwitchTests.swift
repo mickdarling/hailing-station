@@ -83,7 +83,7 @@ import Testing
         let (entry, onWords) = try await Self.untilWords(rig.socket, step: "privacy on")
         #expect(onWords == "Privacy on. I'm only listening for my name.")
         #expect(entry.contains(.control(.stopPlayback)))
-        #expect(entry.contains { if case .control(.duckMode(true, "device", _?)) = $0 { true } else { false } })
+        #expect(entry.contains { if case .control(.duckMode(true, "device", nil)) = $0 { true } else { false } })
         #expect(entry.allSatisfy { if case .control(.error) = $0 { false } else { true } })
         #expect(router.duckMode(connection: connection))
         try await Self.send(false, on: rig.socket)

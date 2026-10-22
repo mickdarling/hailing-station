@@ -40,20 +40,21 @@ import Testing
     /// and a later `started` never changes what the first one said.
     @Test func aWishBeforeStartedIsWrittenOnceTheChildAdvertisesIt() {
         let (control, written) = (AmbientDuckControl(), Written())
-        #expect(!control.report(true, write: written.write))
+        // A child not yet started takes the wish: it is written at `started`, or the child is refused then.
+        #expect(control.report(true, write: written.write))
         #expect(control.observe(started: Data(Self.advertised.utf8), write: written.write) == .kept)
         #expect(control.observe(started: Data(Self.started.utf8), write: written.write) == .kept)
         #expect(control.report(false, write: written.write))
         #expect(written.all == [true, false])
     }
 
-    /// A child that starts without `duck` while duck mode is wished for is reported, never written, and no longer
-    /// counts as ducking, so its exit phrase is a request again.
-    @Test func aWishAnOlderChildCannotTakeIsDroppedAndReported() {
+    /// A child that starts without `duck` v2 while privacy is wished for (the spawn-to-started race) is refused (the
+    /// pipeline kills it), never written, and still counts as private: privacy is never lost (#735 round 2).
+    @Test func aWishAnOlderChildCannotTakeIsRefusedAndKeptPrivate() {
         let (control, written) = (AmbientDuckControl(), Written())
-        #expect(!control.report(true, write: written.write) && control.active)
-        #expect(control.observe(started: Data(Self.started.utf8), write: written.write) == .lost)
-        #expect(!control.active && written.all.isEmpty)
+        #expect(control.report(true, write: written.write) && control.active)
+        #expect(control.observe(started: Data(Self.started.utf8), write: written.write) == .refused)
+        #expect(control.active && written.all.isEmpty)
         let (idle, none) = (AmbientDuckControl(), Written())
         #expect(idle.observe(started: Data(Self.started.utf8), write: none.write) == .kept)
     }
@@ -72,7 +73,8 @@ import Testing
     }
 
     /// End to end in one pipeline: the entry asks the child to go private; only a v2 child is written the line and
-    /// reports that it took it, never a v1 one.
+    /// reports that it took it, never a v1 one. The entry's handling is awaited as a signal, not polled for, and the
+    /// teardown graces are short, so a loaded parallel run cannot push it past its time limit.
     @Test(arguments: [true, false]) func onlyAVersionTwoChildTakesPrivacy(_ advertises: Bool) async throws {
         let fake = try FakeRightyo("/bin/cat <&3 > control.txt &\n"
             + AmbientPrivacyEntryTests.fixture(saying: "Rightyo, stop recording.", advertises: true,
@@ -82,19 +84,27 @@ import Testing
         let box = Mutex<RightyoAmbientPipeline?>(nil), took = Mutex<[Bool]>([])
         var configuration = RightyoAmbientPipeline.Configuration(
             executable: fake.executable, config: fake.config, target: "tmux:demo", binding: "pinned",
-            connection: UUID(), allowSynthetic: true, timing: .init(eofGrace: 20, termGrace: 20)
+            connection: UUID(), allowSynthetic: true, timing: .init(eofGrace: 5, termGrace: 5)
         )
+        let (handled, signal) = AsyncStream<Bool>.makeStream()
         configuration.replyControl = true
         configuration.onVoiceDuck = { command in
             guard command == .enter, let pipeline = box.withLock({ $0 }) else { return }
-            took.withLock { $0.append(pipeline.reportDuck(true)) }
+            let taken = pipeline.reportDuck(true)
+            took.withLock { $0.append(taken) }
+            signal.yield(taken)
         }
         let dispatcher = RecordingAmbientDispatcher()
         let pipeline = try RightyoAmbientPipeline(configuration: configuration, dispatcher: dispatcher)
         box.withLock { $0 = pipeline }
         // Input stays open until the entry was handled: closing it closes the control descriptor too.
-        let run = Task { try await pipeline.run().delivered }
-        #expect(await eventually { took.withLock { !$0.isEmpty } })
+        // A run that ends without the entry finishes the signal, so the wait fails instead of hanging.
+        let run = Task {
+            defer { signal.finish() }
+            return try await pipeline.run().delivered
+        }
+        var entries = handled.makeAsyncIterator()
+        #expect(await entries.next() == advertises)
         pipeline.finishInput()
         #expect(try await run.value == 0)
         #expect(took.withLock { $0 } == [advertises])
