@@ -45,6 +45,14 @@ STALL_SECONDS="${HAIL_TEST_STALL_SECONDS:-300}"
   exit 2
 }
 LANE_PID=""
+# The sampler run on a stalled lane's processes before they are stopped, and how long each run may take before it is
+# killed; the fixtures point it at a fake and shorten the limit.
+STALL_SAMPLER="${HAIL_STALL_SAMPLER:-/usr/bin/sample}"
+SAMPLE_SECONDS="${HAIL_STALL_SAMPLE_SECONDS:-15}"
+[[ $SAMPLE_SECONDS =~ ^[1-9][0-9]{0,2}$ ]] || {
+  echo "HAIL_STALL_SAMPLE_SECONDS must be a positive integer of at most 3 digits" >&2
+  exit 2
+}
 
 # Prints a process and every descendant, deepest first.
 process_tree() {
@@ -71,6 +79,35 @@ stop_tree() {
 stop_lane_and_exit() {
   [[ -z $LANE_PID ]] || stop_tree "$LANE_PID"
   exit 130
+}
+
+# Samples a stalled lane's processes before they are stopped (#704): the stacks show what every unfinished test waits
+# on, which the event stream cannot. Shallowest first, so `swift test` and its test runner come before any child a test
+# spawned, and at most eight. One second at 200 ms suspends a process five times, not the thousand of sample's default
+# interval. Each run is killed after SAMPLE_SECONDS, so sampling can never hold off the stop for long. Only the call
+# graph is kept; without one, the sampler's last lines say why.
+sample_stalled() {
+  local pid out sampler waited sampled=0 pids=()
+  [[ -x $STALL_SAMPLER ]] || { echo "no sampler at $STALL_SAMPLER; no stacks"; return 0; }
+  while IFS= read -r pid; do pids=("$pid" ${pids[@]+"${pids[@]}"}); done < <(process_tree "$1")
+  out="$(mktemp "${TMPDIR:-/tmp}/hailing-stall-sample.XXXXXX")"
+  for pid in "${pids[@]}"; do
+    (( sampled++ < 8 )) || { echo "$(( ${#pids[@]} - 8 )) more processes not sampled"; break; }
+    printf '=== stall sample of pid %s: %s ===\n' "$pid" "$(ps -o comm= -p "$pid" 2>/dev/null || echo exited)"
+    "$STALL_SAMPLER" "$pid" 1 200 > "$out" 2>&1 &
+    sampler=$!
+    for (( waited = 0; waited < SAMPLE_SECONDS * 10; waited++ )); do
+      kill -0 "$sampler" 2>/dev/null || break
+      sleep 0.1
+    done
+    if kill -0 "$sampler" 2>/dev/null; then
+      kill -KILL "$sampler" 2>/dev/null || :
+      echo "sampler still running after $SAMPLE_SECONDS s; stopped"
+    fi
+    wait "$sampler" 2>/dev/null || :
+    awk '/^Call graph:/ { keep = 1 } /^Total number in stack/ { keep = 0 } keep' "$out" | grep . || tail -n 3 "$out"
+  done
+  rm -f -- "$out"
 }
 
 # The test functions the event stream shows as started without having ended or been skipped.
@@ -105,7 +142,7 @@ started_a_test() {
 # A slow console consumer must not stall test reporting while deadlines run (#185): output goes to a private file
 # and is replayed in full afterwards. A failed capture is kept, and neither failure masks the other.
 run_captured() {
-  local log events pid idle status=0 report=0 stalled=0 dir="${HAIL_TEST_CAPTURE_DIR:-${TMPDIR:-/tmp}}"
+  local log events stacks pid idle status=0 report=0 stalled=0 dir="${HAIL_TEST_CAPTURE_DIR:-${TMPDIR:-/tmp}}"
   # CI points HAIL_TEST_CAPTURE_DIR at a directory it uploads even when the job fails or times out (#264).
   mkdir -p "$dir"
   log="$(mktemp "$dir/hailing-swift-tests.XXXXXX")"
@@ -119,6 +156,8 @@ run_captured() {
     idle=$(( $(date +%s) - $(stat -f %m "$events") ))
     if (( idle >= STALL_SECONDS )); then
       stalled=1
+      stacks="$(mktemp "$dir/hailing-swift-stall-stacks.XXXXXX")" || stacks=/dev/null
+      sample_stalled "$pid" > "$stacks" 2>&1 || :
       stop_tree "$pid"
       break
     fi
@@ -140,6 +179,8 @@ run_captured() {
     {
       printf 'Stalled: no test event for %s s; stopped (#449). Started and never ended:\n' "$STALL_SECONDS"
       unfinished_tests "$events"
+      printf 'Stacks of the stalled lane (#704), also kept in %s:\n' "$stacks"
+      cat "$stacks"
     } >&2 || :
   fi
   if (( status || report )); then
