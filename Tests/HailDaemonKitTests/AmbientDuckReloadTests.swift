@@ -80,7 +80,9 @@ import Testing
         #expect(await eventually { rig.connection() != nil })
         let connection = try #require(rig.connection())
         #expect(await rig.env.router.reload() == .reloaded)
-        #expect(rig.env.router.setDuck(true, connection: connection, reason: "voice") == 1)
+        // The new child, still starting, takes the entry. The retiring old child also counts if its own `started`
+        // has not been read yet (#807 key 2's nit (b), tracked on #735), so 1 or 2: waiting on that read is a race.
+        #expect((1...2).contains(rig.env.router.setDuck(true, connection: connection, reason: "voice")))
         #expect(rig.env.router.duckMode(connection: connection))
         if version >= 2 {
             #expect(await eventually { (try? rig.fake.recorded("control.txt")) == "{\"duck\":true}\n" })
