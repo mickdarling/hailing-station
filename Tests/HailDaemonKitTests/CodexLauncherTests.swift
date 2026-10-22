@@ -12,7 +12,7 @@ import Testing
         { _ in Data(text.utf8) }
     }
     static func scratch() throws -> URL {
-        let folder = FileManager.default.temporaryDirectory.appendingPathComponent("codex-launcher-\(UUID())")
+        let folder = TestScratch.url("codex-launcher")
         try FileManager.default.createDirectory(at: folder, withIntermediateDirectories: false,
                                                 attributes: [.posixPermissions: 0o700])
         return folder

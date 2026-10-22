@@ -7,7 +7,7 @@ import Testing
 @Suite(.serialized, .timeLimit(.minutes(1))) @MainActor struct CoachingStartupEventTests {
     @Test(arguments: ["-1", "0.5", "true", "0", "0.0"])
     func malformedStartupTimeCannotUnlockAdvice(emitted: String) async throws {
-        let root = FileManager.default.temporaryDirectory.appendingPathComponent("coaching-event-\(UUID())")
+        let root = TestScratch.url("coaching-event")
         try FileManager.default.createDirectory(at: root, withIntermediateDirectories: false,
                                                attributes: [.posixPermissions: 0o700])
         let executable = root.appendingPathComponent("authored-child"), config = root.appendingPathComponent("config")

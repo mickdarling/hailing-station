@@ -110,7 +110,7 @@ private extension Array where Element == String {
             guard let owner else { preconditionFailure("Incomplete authored fixture") }; return owner
         }
         init(hosted: Bool, missingCatalog: Bool = false) throws {
-            let root = FileManager.default.temporaryDirectory.appendingPathComponent("coaching-binding-\(UUID())")
+            let root = TestScratch.url("coaching-binding")
             try FileManager.default.createDirectory(at: root, withIntermediateDirectories: false,
                                                    attributes: [.posixPermissions: 0o700])
             record = root.appendingPathComponent("arguments"); catalog = root.appendingPathComponent("catalog")

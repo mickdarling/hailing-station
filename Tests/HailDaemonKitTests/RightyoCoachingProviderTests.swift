@@ -54,7 +54,7 @@ import Testing
         }
     }
     private func fixture(_ data: Data) throws -> URL {
-        let root = FileManager.default.temporaryDirectory.appendingPathComponent("coaching-provider-\(UUID())")
+        let root = TestScratch.url("coaching-provider")
         try FileManager.default.createDirectory(at: root, withIntermediateDirectories: false,
                                                attributes: [.posixPermissions: 0o700])
         let file = root.appendingPathComponent("catalog")

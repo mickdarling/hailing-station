@@ -128,8 +128,7 @@ import Testing
 
     init(tail: String, renew: Bool = false, off: Bool = false, hosted: Bool = false,
          deferExpiry: Bool = false) throws {
-        let root = FileManager.default.temporaryDirectory
-            .appendingPathComponent("hailing-coaching-regression-\(UUID())")
+        let root = TestScratch.url("hailing-coaching-regression")
         try FileManager.default.createDirectory(at: root, withIntermediateDirectories: false,
                                                attributes: [.posixPermissions: 0o700])
         let executable = root.appendingPathComponent("authored-child"), config = root.appendingPathComponent("config")
