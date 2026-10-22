@@ -54,8 +54,8 @@ public struct ConnectionProbeAuthorizer: HostSessionAuthorizing {
 /// Explicitly enabled personal-testing mode. It exposes only target selection, final text delivery,
 /// and literal Escape in addition to the probe operations; the default listener remains read-only.
 /// Ambient audio (#203) is admitted, and `stream_audio` advertised, only when a gate is supplied; so is a device's
-/// `overheard_scope` (#398), with `ambient_overheard` advertised, and its `ambient_input` route kind (rightyo#164),
-/// with `ambient_input_route` advertised. Device
+/// `overheard_scope` (#398), with `ambient_overheard` advertised, its `ambient_input` route kind (rightyo#164),
+/// with `ambient_input_route` advertised, and its privacy switch (#735 S-6), with `set_privacy` advertised. Device
 /// diagnostics (#234) are admitted, and `device_diagnostics` advertised, only when a sink is supplied; so is a
 /// `health` request (#614), with `host_health` advertised, only when a summary is supplied. A final text
 /// frame may carry a paste (#608, `pasted_text`), which is framed as untrusted data before delivery.
@@ -74,7 +74,8 @@ public struct PersonalTerminalAuthorizer: HostSessionAuthorizing {
         self.health = health
         capabilities = ["list_targets", "ping", "select_target", "send_text", "escape", "receive_replies",
                         PastedText.capability]
-            + (ambientAudio == nil ? [] : ["stream_audio", AmbientOverheard.capability, AmbientInput.capability])
+            + (ambientAudio == nil ? [] : ["stream_audio", AmbientOverheard.capability, AmbientInput.capability,
+                                           DuckMode.privacySwitchCapability])
             + (diagnostics == nil ? [] : [DiagnosticLimits.capability, DiagnosticLimits.streamAbandonedCapability])
             + (health == nil ? [] : [HostHealth.capability])
     }
@@ -99,7 +100,7 @@ public struct PersonalTerminalAuthorizer: HostSessionAuthorizing {
             switch control {
             case .hello, .ping, .listTargets, .select, .escape: .allow
             case .diagnostic: diagnostics == nil ? .deny : .allow
-            case .overheardScope, .ambientInput: ambientAudio == nil ? .deny : .allow
+            case .overheardScope, .ambientInput, .setPrivacy: ambientAudio == nil ? .deny : .allow
             case .health: health == nil ? .deny : .allow
             default: .deny
             }
@@ -375,6 +376,12 @@ extension HostSession {
         // A closed route kind (rightyo#164), never a port name: noted for attribution and never answered either.
         if case .control(.ambientInput(let route)) = frame.payload, let gate = authorizer.ambientAudio {
             await gate.noteInputRoute(route, connection: connectionID)
+            return HostSessionResult(frames: [])
+        }
+        // The privacy switch (#735 S-6) for this connection's own ambient stream only, never another's. Never answered:
+        // the `duck_mode` notice follows when privacy changed.
+        if case .control(.setPrivacy(let on)) = frame.payload, let gate = authorizer.ambientAudio {
+            await gate.setPrivacy(on, connection: connectionID)
             return HostSessionResult(frames: [])
         }
         // The host's read-only health summary (#614): always answered, from the shared cached result, on this

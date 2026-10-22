@@ -748,7 +748,27 @@ When privacy is taken, a reply playing on the connection is stopped first, throu
 - privacy is in memory and per connection: the hold ends with the connection, and a new connection starts with none;
 - after the exit, new replies flow again.
 
-Privacy ends only on the owner's exit (RightyO's `exit`; later the app's switch, S-6), or when the connection ends, since privacy lives in memory for its connection only. **There is no auto-end** (Mick, round 2): no timer runs and the device notice carries no expiry. `ambient.duckTimeout` in `host.json` and `--ambient-duck-timeout` are still accepted but no longer apply to privacy; they are reserved for a future session-mode auto-stop. An entry while already private answers "still on" with `confirm-privacy-on/`. Entering privacy leaves media mode, but **media mode never ends privacy**: while private, a media-mode entry from any source is refused (`ambient_media on=true … refused=private`), nothing changes or reaches the child, and the spoken one hears `confirm-privacy-status/`. A device that advertised `duck_mode` is told each change (`ambient_duck_device`), and sees "on" only once a child took it.
+Privacy ends only on the owner's exit (RightyO's `exit`, or the app's switch, S-6, below), or when the connection ends, since privacy lives in memory for its connection only. **There is no auto-end** (Mick, round 2): no timer runs and the device notice carries no expiry. `ambient.duckTimeout` in `host.json` and `--ambient-duck-timeout` are still accepted but no longer apply to privacy; they are reserved for a future session-mode auto-stop. An entry while already private answers "still on" with `confirm-privacy-on/`. Entering privacy leaves media mode, but **media mode never ends privacy**: while private, a media-mode entry from any source is refused (`ambient_media on=true … refused=private`), nothing changes or reaches the child, and the spoken one hears `confirm-privacy-status/`. A device that advertised `duck_mode` is told each change (`ambient_duck_device`), and sees "on" only once a child took it.
+
+#### The app's privacy switch (#735 S-6)
+
+With ambient listening on, `haild` advertises `set_privacy` (`docs/reply-protocol.md`), and the app shows a privacy switch while it is listening.
+
+- **Trust:** the paired owner device, the same gate as `ambient_input` (Mick's decision). No voiceprint is asked for, and it is not a voice entry.
+- **On** takes the owner's entry path with reason `device`: privacy is written to every child of the connection (so a respawn or reload starts private), every request is held back, a reply playing is stopped, and only `confirm-privacy-on/` plays. The device is told `duck_mode` on with `reason: "device"`. If no child can take privacy (a v1 or older RightyO), it fails closed: privacy stays off, the device is told off, and `confirm-not-sent/` plays.
+- **Off** takes the owner's exit path with reason `device`: `{"duck":false}` is written to every child of the connection, as for the voice exit, the device is told off, and `confirm-privacy-off/` plays when a child took it. It is the way out when the voice exit cannot be heard, for example from a child respawned start-private that has not bound the owner's voiceprint.
+- **Its own connection only.** The command carries no connection; `haild` uses the sending connection's id. On is acted on only while that connection holds the active ambient stream. Off is also acted on after its stream ended, so the switch stays the way out when the host stopped listening because no child could keep privacy.
+- **Only a change.** A switch to the state already held does nothing: nothing is logged, written, played or sent back. A switch applies only to the privacy arming it read, matched under the lock that changes privacy, so if the owner's voice changed it first, the switch does nothing more.
+- **Answered only by the notice.** No reply frame; the app shows privacy only once the `duck_mode` notice says so.
+- **Logs:** state tokens only: `ambient_duck on=… reason=device reported=…` and `ambient_duck_confirmed on=… reason=device … confirm=…`.
+
+**The switch on the station card.** It shows only while the device is listening, and only on a host that advertises `set_privacy`; an older host shows no switch. It is bound to the host's `duck_mode` notice for this connection, never to the tap (`station.privacy-switch`, with `station.privacy-status` and `station.privacy-pending`):
+
+- **Private** only while the host has confirmed privacy on, on a ready connection.
+- **Not private** when the host has confirmed it off.
+- **Recording may be on** for everything unconfirmed: no notice yet, a connection that is connecting or dropped, an on notice past its end, or a tap still waiting for its notice. A waiting tap shows a spinner and disables the switch for up to ten seconds; then the switch shows the host's last confirmed state again.
+- **Privacy on · listening unavailable** (`station.privacy-unavailable`) when the host confirmed privacy on and then ended this connection's ambient stream (`not_allowed: ambient stopped:` or `ambient unavailable:`) on the same connection, as it does when no child can keep privacy. Not recording is the host's confirmed fact here. This is the one state in which the switch shows while not listening, so privacy can be turned off; the host takes an off for the connection after its stream ended.
+- A dropped or reconnected connection clears the indicator and any waiting tap.
 
 #### Clips
 

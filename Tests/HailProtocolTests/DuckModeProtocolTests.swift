@@ -61,4 +61,38 @@ import Testing
             }
         }
     }
+
+    /// S-6: the app's privacy switch sends `set_privacy`, only `command` and the boolean `on`. Its host capability is
+    /// distinct from the device's `duck_mode`, which stays host-to-device state.
+    @Test func setPrivacyIsOnlyTheCommandAndABoolean() throws {
+        #expect(DuckMode.privacySwitchCapability == "set_privacy")
+        #expect(DuckMode.privacySwitchCapability != DuckMode.capability)
+        for on in [true, false] {
+            let frame = Frame(timestamp: 1, source: "terminal", payload: .control(.setPrivacy(on: on)))
+            #expect(try FrameCoding.decode(FrameCoding.encode(frame)) == frame)
+            let wire = try #require(String(bytes: try FrameCoding.encode(frame), encoding: .utf8))
+            #expect(wire.contains(#""payload":{"command":"set_privacy","on":\#(on)}"#))
+        }
+        #expect(try decodeControl(#"{"command":"set_privacy","on":true}"#) == .setPrivacy(on: true))
+        #expect(try decodeControl(#"{"on":false,"command":"set_privacy"}"#) == .setPrivacy(on: false))
+        #expect(try decodeControl(#"{"command":"set_privacy","on":true}"#) != .duckMode(on: true))
+    }
+
+    /// Nothing rides along on a switch (no target, connection, reason, expiry or words), `on` is required and must be
+    /// a JSON boolean, and the command name is exact.
+    @Test(arguments: [
+        #"{"command":"set_privacy"}"#, #"{"command":"set_privacy","on":null}"#,
+        #"{"command":"set_privacy","on":"true"}"#, #"{"command":"set_privacy","on":1}"#,
+        #"{"command":"set_privacy","on":0}"#, #"{"command":"set_privacy","on":{}}"#,
+        #"{"command":"set_privacy","on":[true]}"#,
+        #"{"command":"set_privacy","on":true,"reason":"device"}"#,
+        #"{"command":"set_privacy","on":true,"expires":5}"#,
+        #"{"command":"set_privacy","on":true,"target":"tmux:a"}"#,
+        #"{"command":"set_privacy","on":false,"connection":"0B0B0B0B-0000-4000-8000-000000000001"}"#,
+        #"{"command":"set_privacy","on":true,"text":"x"}"#, #"{"command":"Set_Privacy","on":true}"#,
+        #"{"command":"set_privacy ","on":true}"#, #"{"command":"privacy","on":true}"#
+    ])
+    func setPrivacyRefusesAnythingElse(_ payload: String) {
+        #expect(throws: DecodingError.self) { try decodeControl(payload) }
+    }
 }

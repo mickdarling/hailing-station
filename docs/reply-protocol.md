@@ -240,3 +240,16 @@ device that advertised `duck_mode` (`DuckMode.capability`), because an older dev
 shows state only and grants no authority. Nothing turns duck mode on yet; the host behaviour comes later in #735.
 
 The decoder and the schema refuse the same things as for `media_mode`.
+
+#### The privacy switch (#735 S-6)
+
+`{"command": "set_privacy", "on": true | false}` is sent by a device to a host that advertised `set_privacy`
+(`DuckMode.privacySwitchCapability`), when the owner flips the privacy switch in the app. Privacy is duck mode
+internally. It carries nothing else: no target, connection, reason or words. The host turns privacy on or off for that
+connection's own ambient stream only, and only while that connection has one. It answers only with its `duck_mode`
+notice, `reason: "device"`; there is no reply frame. A request that matches the state already held does nothing.
+
+The device shows privacy as on only once a `duck_mode` notice says so on a live connection; until then (a pending
+switch, connecting, a stale or lost connection, an older host) it shows not private. An older host does not advertise
+the capability, so a device never sends the command there (an older host would refuse it). The decoder and the schema
+refuse any other key, and the decoder refuses a missing or non-boolean `on`.
