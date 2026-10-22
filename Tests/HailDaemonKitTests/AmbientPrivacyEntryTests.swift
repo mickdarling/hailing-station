@@ -134,6 +134,9 @@ import Testing
 }
 
 extension AmbientPrivacyEntryTests {
+    /// Sets `PRIV` to the `started` suffix that confirms privacy when the fake was launched `--start-private`.
+    static let startPrivatePrelude = #"PRIV=''; case " $* " in *" --start-private "*) PRIV=', "private": true';; esac"#
+
     /// The voice-mute fixture with `words` said, the name `Rightyo` advertised, the owner's transcript attributed from
     /// a live voiceprint (`roleSource`, or none when nil), and optionally `duck` (`version`) advertised, every owner role
     /// turned into a guest's or removed, or the earlier turn made a lone "Rightyo,".
@@ -144,7 +147,8 @@ extension AmbientPrivacyEntryTests {
         let session = enrolled ? "formed-demo" : "tool-demo"
         var edits = #"-e 's/"phase": "started"/"addressing": {"names": ["Rightyo"]}, "phase": "started"/'"#
         if advertises {
-            edits += #" -e 's/"phase": "started"/"duck": {"version": \#(version)}, "phase": "started"/'"#
+            // A child launched start-private (#735 S-2b) says so in `started`, as RightyO's round 2 does.
+            edits += #" -e 's/"phase": "started"/"duck": {"version": \#(version)'"$PRIV"'}, "phase": "started"/'"#
         }
         if let roleSource, enrolled {
             edits += #" -e '/"role": "owner"/s/"type": "transcript"/"#
@@ -154,6 +158,7 @@ extension AmbientPrivacyEntryTests {
         if unlabelled { edits += #" -e 's/, "role": "owner"//g' -e 's/"role": "owner", //g'"# }
         if splitName { edits += #" -e 's/"text": "Speaker A[^"]*"/"text": "Rightyo,"/g'"# }
         return """
+        \(startPrivatePrelude)
         /usr/bin/sed -e '$d' -e "s/\(session)/$7/g" -e 's/\(source)/\(words)/g' \(edits) events.jsonl
         /bin/cat > /dev/null
         /usr/bin/sed -n -e '$p' events.jsonl | /usr/bin/sed "s/\(session)/$7/g"

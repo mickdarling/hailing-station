@@ -139,6 +139,14 @@ public final class RightyoAmbientPipeline: Sendable {
         public var onOwnerVoice: (@Sendable (String) -> Void)?
         /// Extra variables for the child (rightyo#172), `RIGHTYO_`-prefixed only.
         public var environment: [String: String] = [:]
+        /// Launch the child already private (#735 S-2b), as the host does whenever privacy is on: RightyO's
+        /// start-private option, privacy wished for from the first line, and a `started` that must confirm it
+        /// (`"duck": {"version": 2 or later, "private": true}`) within `startDeadline`. One that does not is killed
+        /// and the run throws `RightyoPrivacyRefusal.unconfirmedStart`: it is never admitted.
+        public var startPrivate = false
+        /// How long a child has to emit `started` while privacy is wished for before it is killed (and, until then, it
+        /// hears no audio).
+        public var startDeadline: TimeInterval = RightyoAmbientPipeline.defaultStartDeadline
 
         public init(executable: URL, config: URL, target: String, binding: String, connection: UUID,
                     allowSynthetic: Bool = false, timing: RightyoChildProcess.Timing = .init(),
@@ -167,6 +175,10 @@ public final class RightyoAmbientPipeline: Sendable {
     private let onVoiceMedia: (@Sendable (Bool) -> Void)?
     private let onVoiceDuck: (@Sendable (PrivacyCommand) -> Void)?
     private let duck: AmbientDuckControl
+    /// The deadline for `started` while privacy is wished for (#735 S-2b), and whether this child was launched
+    /// start-private (its `started` must then confirm `private`).
+    private let startDeadline: TimeInterval
+    private let startsPrivate: Bool
     private let onDuckUnsupported: (@Sendable () -> Bool)?
     private let onVoiceDestination: (@Sendable (String, VoiceDestinations.Destination, String) -> Void)?
     private let onVoiceRouteRefused: (@Sendable (RightyoVoiceRouting.Refusal) -> Void)?
@@ -183,7 +195,7 @@ public final class RightyoAmbientPipeline: Sendable {
         let heard = AmbientHeardRelay(onHeard: configuration.onHeard)
         let step = RightyoAmbientDispatchStep(connection: configuration.connection, dispatcher: dispatcher,
                                               acknowledge: { relay.fire() }, heard: { await heard.deliver() })
-        let duck = AmbientDuckControl()
+        let duck = AmbientDuckControl(startPrivate: configuration.startPrivate)
         let ducking: @Sendable () -> Bool = { duck.active }
         let duckActive = configuration.onVoiceDuck != nil ? ducking : nil
         consumer = try RightyoInputConsumer(host: nil, target: configuration.target, binding: configuration.binding,
@@ -196,12 +208,13 @@ public final class RightyoAmbientPipeline: Sendable {
         let child = try RightyoChildProcess(executable: configuration.executable, config: configuration.config,
                                             session: session, timing: configuration.timing,
                                             replyControl: configuration.replyControl,
-                                            env: configuration.environment)
+                                            env: configuration.environment, startPrivate: configuration.startPrivate)
         (self.child, self.session) = (child, session)
         onDismiss = configuration.onDismiss
         (onVoiceMute, onVoiceMedia) = (configuration.onVoiceMute, configuration.onVoiceMedia)
         onVoiceDuck = configuration.onVoiceDuck
         (self.duck, onDuckUnsupported) = (duck, configuration.onDuckUnsupported)
+        (startDeadline, startsPrivate) = (configuration.startDeadline, configuration.startPrivate)
         onVoiceDestination = configuration.onVoiceDestination
         onVoiceRouteRefused = configuration.onVoiceRouteRefused
         acknowledgement = relay
@@ -212,7 +225,16 @@ public final class RightyoAmbientPipeline: Sendable {
 
     /// Hands one raw mono 16 kHz s16le chunk to the child without blocking; false once input has closed or for
     /// a chunk that is empty, odd-length or larger than the backlog. Overload drops the oldest pending audio.
-    @discardableResult public func send(audio pcm: Data) -> Bool { child.write(pcm) }
+    /// While privacy is wished for and this child has not yet shown it keeps it (#735 S-2b round 3: a `started` that
+    /// confirms `private` for a start-private child, or a v2 child that took `{"duck":true}`), the chunk is dropped,
+    /// never written, and this returns true: the child hears no private audio, and the stream is not ended for it.
+    @discardableResult public func send(audio pcm: Data) -> Bool {
+        guard duck.mayHearAudio else { return true }
+        return child.write(pcm)
+    }
+
+    /// Whether audio now reaches the child (#735 S-2b; tests).
+    var hearsAudio: Bool { duck.mayHearAudio }
 
     /// Reports the assistant's spoken reply on this stream's device (rightyo#124); false when reply control is off
     /// or the report was dropped. Never blocks.
@@ -252,6 +274,8 @@ public final class RightyoAmbientPipeline: Sendable {
     /// Consumes the child's events until it ends. Returns after a clean terminal session event and EOF; throws
     /// the first decode, consumer, dispatch or transport error. Either way the child is stopped and reaped.
     public func run() async throws -> Summary {
+        let deadline = armStartDeadline()
+        defer { deadline?.cancel() }
         var delivered = 0
         do {
             for try await line in child.lines {
@@ -261,7 +285,7 @@ public final class RightyoAmbientPipeline: Sendable {
                 // Only after the consumer admitted the line: an invalid one has already ended the stream.
                 if relayed { await overheard.observe(event) }
                 ownerVoice.observe(event)
-                try observeStarted(event, line: line)
+                try await observeStarted(event, line: line)
                 // A newly admitted `dismiss` delivers nothing and leaves its receipt; a replayed one leaves none.
                 if event.type == "dismiss", let receipt = await consumer.lastDismissal { onDismiss?(receipt) }
                 // A newly admitted voice mute (#404) is handed to the host instead of being typed.
@@ -280,9 +304,10 @@ public final class RightyoAmbientPipeline: Sendable {
                 }
             }
             try await consumer.finish()
+            try duck.checkStarted()
         } catch {
             await child.stop()
-            throw error
+            throw duck.expired ? RightyoPrivacyRefusal.unconfirmedStart : error
         }
         let exit = await child.stop()
         return Summary(delivered: delivered, child: child.counters, exit: exit)
@@ -306,19 +331,44 @@ extension RightyoAmbientPipeline {
         return true
     }
 
-    /// A child's `started` that cannot take the privacy wished for: while the host is still private, the child is
-    /// refused (this run ends, so nothing records) and `unavailable` is said; privacy itself stays on.
-    private func observeStarted(_ event: RightyoInputEvent, line: Data) throws {
+    /// A child's `started` that cannot keep the privacy wished for (#735): a start-private child (S-2b) that did not
+    /// confirm it, or one launched before privacy came on that did not advertise `duck` v2 while the host is still
+    /// private. It is killed at once (SIGTERM then SIGKILL, no grace), `unavailable` is said, and its run throws
+    /// `RightyoPrivacyRefusal`: never admitted, nothing records, and privacy itself stays on.
+    private func observeStarted(_ event: RightyoInputEvent, line: Data) async throws {
         guard event.type == "session", event.phase == "started",
-              duck.observe(started: line, write: { [child] on in child.reportDuck(on) }),
-              onDuckUnsupported?() ?? true else { return }
+              duck.observe(started: line, write: { [child] on in child.reportDuck(on) }) == .refused else { return }
+        guard startsPrivate || onDuckUnsupported?() ?? true else {
+            duck.release()
+            return
+        }
+        await child.stop(eofGrace: 0, termGrace: 0)
         onVoiceDuck?(.unavailable)
-        throw RightyoPrivacyRefusal.unsupportedChild
+        throw startsPrivate ? RightyoPrivacyRefusal.unconfirmedStart : RightyoPrivacyRefusal.unsupportedChild
     }
+
+    /// A child that has not emitted `started` by its deadline while privacy is wished for (launched start-private, or
+    /// privacy entered while it was starting) is killed and `unavailable` is said; it never heard any audio, and the
+    /// run then throws `RightyoPrivacyRefusal.unconfirmedStart`. Nil for a child without privacy handling.
+    private func armStartDeadline() -> Task<Void, Never>? {
+        guard onVoiceDuck != nil || startsPrivate else { return nil }
+        return Task { [duck, child, onVoiceDuck, startDeadline] in
+            try? await Task.sleep(for: .seconds(startDeadline))
+            guard !Task.isCancelled, duck.expire() else { return }
+            await child.stop(eofGrace: 0, termGrace: 0)
+            onVoiceDuck?(.unavailable)
+        }
+    }
+
+    /// Ten seconds: far beyond a healthy RightyO's start, short enough that a wedged one is not left holding the
+    /// stream while the owner believes it is listening privately.
+    public static let defaultStartDeadline: TimeInterval = 10
 }
 
 /// A child refused because it cannot keep the privacy the host is in (#735 round 4): its run ends with this.
-public enum RightyoPrivacyRefusal: Error, Sendable, Equatable { case unsupportedChild }
+/// `unsupportedChild`: no `duck` v2 at `started`; `unconfirmedStart` (S-2b): launched start-private and its `started`
+/// did not confirm `"private": true`, or did not come within the deadline. Content-free.
+public enum RightyoPrivacyRefusal: Error, Sendable, Equatable { case unsupportedChild, unconfirmedStart }
 
 /// The child's stdout as JSONL lines (#203): read on its own thread, always to EOF so the child never wedges on a
 /// full pipe. Each line is capped at `maxLineBytes`, and lines waiting to be taken at `maxQueuedBytes` in total;
@@ -643,11 +693,46 @@ final class AmbientOwnerVoiceRelay: Sendable {
 /// and written then; a child that did not advertise it is never written a duck line, and a wish it cannot take is
 /// dropped and reported, so the host ends duck mode rather than claim it. Under one lock, so a wish and the `started`
 /// that answers it cannot cross. `active` is the host's latest wish as this child holds it: the owner is ducking.
+/// Started private (#735 S-2b), the wish is on from the first line and `started` must confirm `"private": true`.
 final class AmbientDuckControl: Sendable {
-    private struct State { var started = false, advertised = false, wanted = false }
-    private let state = Mutex(State())
+    /// What a child's first `started` meant: `kept`, or `refused` when privacy is wished for and this child cannot
+    /// keep it (launched start-private without confirming it, or without `duck` v2): it must be killed.
+    enum Started: Equatable { case kept, refused }
+    private struct State {
+        var started = false, advertised = false, wanted = false, mustConfirm = false, expired = false
+        /// This child has shown it keeps privacy: a confirmed start-private `started`, or a v2 child that took
+        /// `{"duck":true}`. Until then, while privacy is wished for, it hears no audio.
+        var keeps = false
+    }
+    private let state: Mutex<State>
+
+    init(startPrivate: Bool = false) {
+        state = Mutex(State(wanted: startPrivate, mustConfirm: startPrivate))
+    }
 
     var active: Bool { state.withLock { $0.wanted } }
+    /// Audio may reach the child: privacy is not wished for, or the child has shown it keeps it (#735 S-2b round 3).
+    var mayHearAudio: Bool { state.withLock { !$0.wanted || $0.keeps } }
+
+    /// The host says privacy already ended for a child that could not keep it: it runs on, public.
+    func release() { state.withLock { $0.wanted = false } }
+    /// The start deadline passed before `started` (#735 S-2b).
+    var expired: Bool { state.withLock { $0.expired } }
+
+    /// Ends the wait for `started` at the deadline: true when it had not come (the child must be killed); a later
+    /// `started` is then ignored, and the wish stays on.
+    func expire() -> Bool {
+        state.withLock { state in
+            guard state.wanted || state.mustConfirm, !state.started else { return false }
+            (state.started, state.expired) = (true, true)
+            return true
+        }
+    }
+
+    /// Throws `unconfirmed` when the deadline passed: a run that otherwise ended cleanly is still a refusal.
+    func checkStarted() throws {
+        if expired { throw RightyoPrivacyRefusal.unconfirmedStart }
+    }
 
     /// Sets the host's wish; true when this child takes it: written now to a child that advertised v2, or kept for
     /// one not yet started, which takes it at `started` or is refused then (`observe`).
@@ -655,24 +740,45 @@ final class AmbientDuckControl: Sendable {
         state.withLock { state in
             state.wanted = on
             guard state.started else { return true }
-            return state.advertised && write(on)
+            let taken = state.advertised && write(on)
+            // A v2 child keeps privacy only once it has taken the line; a failed write withholds audio (fail closed).
+            if on { state.keeps = taken }
+            return taken
         }
     }
 
-    /// Records the child's `started`; true when duck mode was wished for and this child cannot take it.
-    func observe(started line: Data, write: (Bool) -> Bool) -> Bool {
-        let advertised = Self.advertises(line)
+    /// Records the child's first `started`. A child that cannot keep the privacy wished for is never written and stays
+    /// wished private (its words stay held) until it is killed. A confirmed start-private one the host no longer wants
+    /// private is written off.
+    func observe(started line: Data, write: (Bool) -> Bool) -> Started {
+        let (advertised, confirmed) = (Self.advertises(line), Self.confirmsPrivate(line))
         return state.withLock { state in
-            guard !state.started else { return false }
-            (state.started, state.advertised) = (true, advertised)
-            guard state.wanted else { return false }
-            if advertised {
-                _ = write(true)
-                return false
+            guard !state.started else { return .kept }
+            state.started = true
+            if state.mustConfirm, !confirmed {
+                state.wanted = true
+                return .refused
             }
-            state.wanted = false
-            return true
+            state.advertised = advertised
+            if state.mustConfirm {
+                state.keeps = true
+                if !state.wanted { _ = write(false) }
+                return .kept
+            }
+            guard state.wanted else { return .kept }
+            guard advertised else { return .refused }
+            state.keeps = write(true)
+            return .kept
         }
+    }
+
+    /// Whether a `started` line says the child started private (#735 S-2b): a `duck` advertisement of version 2 or
+    /// higher whose `private` is the boolean true. Nothing else confirms it.
+    static func confirmsPrivate(_ line: Data) -> Bool {
+        guard advertises(line),
+              let object = try? JSONDecoder().decode([String: JSONValue].self, from: line),
+              case .object(let duck)? = object["duck"], case .bool(true)? = duck["private"] else { return false }
+        return true
     }
 
     /// Whether a `started` line carries a top-level `duck` object of version 2 or higher.

@@ -20,16 +20,17 @@ public final class RightyoChildProcess: Sendable {
     private let stderrBytes = RightyoByteCount()
     private let timing: Timing
     /// Fixed validated executable/argv/environment; only RIGHTYO_ additions (#172). Coaching is explicitly opt-in.
+    /// `startPrivate` (#735 S-2b) adds RightyO's start-private option; never with coaching.
     public init(executable: URL, config: URL, session: String, provenance: RightyoAudioProvenance = .liveMicrophone,
                 timing: Timing = .init(), replyControl: Bool = false, env: [String: String] = [:],
-                coaching: RightyoCoachingLaunch? = nil) throws {
-        guard coaching == nil || !replyControl else { throw RightyoChildError.unsafeConfig }
+                coaching: RightyoCoachingLaunch? = nil, startPrivate: Bool = false) throws {
+        guard coaching == nil || (!replyControl && !startPrivate) else { throw RightyoChildError.unsafeConfig }
         let extra = try coaching?.arguments(session: session, provenance: provenance) ?? []
         let hasControl = replyControl || coaching != nil
         let resolved = try Self.validate(executable: executable, config: config)
         try RightyoChildGroup.requireOwnedRuntime()
         let argv = Self.arguments(session: session, config: config, provenance: provenance,
-                                  replyControl: hasControl) + extra
+                                  replyControl: hasControl) + (startPrivate ? [Self.startPrivateFlag] : []) + extra
         let environment = Self.environment().merging(env.filter { $0.key.hasPrefix("RIGHTYO_") }) { old, _ in old }
         let child = try Self.spawn(resolved, arguments: argv, environment: environment.map { "\($0.key)=\($0.value)" },
                                    directory: config.deletingLastPathComponent().path, replyControl: hasControl)
@@ -63,6 +64,10 @@ public final class RightyoChildProcess: Sendable {
             Self.drainErrors(child.errors) { count in stderrBytes.withLock { $0 += count } }
         }
     }
+
+    /// RightyO's start-private option (#735 S-2b; rightyo#242 round 2, provisional until that PR names it): the child
+    /// is private before it reads any audio.
+    static let startPrivateFlag = "--start-private"
 
     /// Drop abandons stdin and kills only the owned group, which still reaps.
     deinit {
