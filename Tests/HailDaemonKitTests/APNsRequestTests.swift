@@ -52,7 +52,8 @@ import Testing
     }
 
     @Test func aContentFreePushNamesNeitherTheSessionNorItsWords() throws {
-        let request = try #require(Self.make(.update(id: Self.id, session: "Deck", text: "Built"), content: .contentFree))
+        let update = APNsPush.Kind.update(id: Self.id, session: "Deck", text: "Built")
+        let request = try #require(Self.make(update, content: .contentFree))
         let text = try #require(String(data: request.body, encoding: .utf8))
         #expect(!text.contains("Deck") && !text.contains("Built"))
         let body = try Self.json(request)
