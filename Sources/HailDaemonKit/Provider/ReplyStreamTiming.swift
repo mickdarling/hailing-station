@@ -1,7 +1,21 @@
+import Foundation
 import os
 import Synchronization
 
-private let timingLogger = Logger(subsystem: "com.mickdarling.hailing-station", category: "reply-timing")
+private let timingLogger = Logger(
+    subsystem: "com.mickdarling.hailing-station",
+    category: ReplyTimingLog.category(executablePath: Bundle.main.executablePath)
+)
+
+/// Where reply timing is logged. `haild reply` writes these lines (run by a session's hook, or as the daemon's reply
+/// child). An installed `haild` logs under `reply-timing`; one run from a SwiftPM `.build/` directory, as the CLI tests
+/// and `swift run` do, logs under `reply-timing-dev`, so a test run never reads as live replies (#737). The path is
+/// not resolved: an installed `haild` reached through `~/.local/bin` still reads as installed.
+package enum ReplyTimingLog {
+    package static func category(executablePath: String?) -> String {
+        executablePath?.contains("/.build/") == true ? "reply-timing-dev" : "reply-timing"
+    }
+}
 
 /// One spoken reply's delivery timing (#737), so choppy playback shows in data. The device plays a reply from its
 /// first frame with no reserve, so when a frame is acknowledged its queue holds the audio acknowledged before it less
@@ -83,9 +97,10 @@ package final class ReplyTimingRecorder: Sendable {
         timing.withLock { $0.sent(audio: audio, at: sentAt, acknowledgedAfter: acknowledgedAfter, resends: resends) }
     }
 
-    /// Logs the summary to the unified log (`log show --predicate 'category == "reply-timing"'`). `line` is built
-    /// from numbers only, and `outcome` is one of a few fixed words, so both are public. A reply that sent its audio
-    /// some other way (vbsay's file mode) measured nothing and says so.
+    /// Logs the summary to the unified log (`log show --predicate 'category == "reply-timing"'`, or `reply-timing-dev`
+    /// from a build; see `ReplyTimingLog`). `line` is built from numbers only, and `outcome` is one of a few fixed
+    /// words, so both are public. A reply that sent its audio some other way (vbsay's file mode) measured nothing and
+    /// says so.
     package func log(outcome: String, at end: ContinuousClock.Instant = .now) {
         let summary = timing.withLock { $0.summary(at: end) }
         let outcome = outcome == "played" && summary.frames == 0 ? "played_unmeasured" : outcome

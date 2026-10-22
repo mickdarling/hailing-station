@@ -46,8 +46,11 @@ def event(kind, test):
     record = {"kind": "event", "version": 0, "payload": {"kind": kind, "testID": test}}
     # The real runner writes compact JSON; FAKE_SWIFT_COMPACT checks the guard reads that layout too.
     separators = (",", ":") if os.environ.get("FAKE_SWIFT_COMPACT") else None
+    line = json.dumps(record, separators=separators)
+    if os.environ.get("FAKE_SWIFT_ESCAPED_SLASHES"):  # the real runner writes `/` in a testID as `\/`
+        line = line.replace("/", "\\/")
     with open(events, "a") as stream:  # Swift Testing writes each event as it happens.
-        stream.write(json.dumps(record, separators=separators) + "\n")
+        stream.write(line + "\n")
 
 if os.environ.get("FAKE_SWIFT_HANG"):
     event("testStarted", "Fake.Suite")
@@ -61,7 +64,9 @@ if os.environ.get("FAKE_SWIFT_HANG"):
     with open(os.environ["FAKE_SWIFT_CHILD"], "w") as pid:
         pid.write(str(child.pid))
     time.sleep(600)
-if os.environ.get("FAKE_SWIFT_SUITE_ONLY"):  # a selection matching only an empty suite starts no test
+if os.environ.get("FAKE_SWIFT_ONLY_ID"):  # one started ID, to pin what the guard counts as a test case
+    event("testStarted", os.environ["FAKE_SWIFT_ONLY_ID"])
+elif os.environ.get("FAKE_SWIFT_SUITE_ONLY"):  # a selection matching only an empty suite starts no test
     event("testStarted", "Fake.Suite")
     event("testEnded", "Fake.Suite")
 elif not os.environ.get("FAKE_SWIFT_EMPTY"):  # a lane whose selection matched nothing starts no test (#704)
@@ -163,6 +168,22 @@ class VerifyTestOutputTests(SuccessfulFixtureCleanup):
         result = self.run_lane()
         self.assertEqual(result.returncode, 65, result.stderr)
         self.assertIn("No test started in this lane", result.stderr)
+
+    def test_only_an_id_ending_in_a_swift_line_and_column_counts_as_a_test(self):
+        # A test case's ID ends `<file>.swift:<line>:<column>`; a suite's has no location. Names that merely mention
+        # `.swift`, or carry a location that is incomplete, not numeric or not at the end, must not pass the guard.
+        for started in ("Fake.swiftSuite", "Fake.Suite/F.swift", "Fake.Suite/runs()/F.swift:1", "F.swift:x:1",
+                        "Fake.Suite/runs()/F.swift:12:5x", "Fake.Suite/runs()/F.swift:1:", "Fake.Suite/runs()/F.swift::1"):
+            with self.subTest(started=started):
+                self.env["FAKE_SWIFT_ONLY_ID"] = started
+                result = self.run_lane()
+                self.assertEqual(result.returncode, 65, result.stderr)
+                self.assertIn("No test started in this lane", result.stderr)
+        # The real shape, slashes escaped as the runner writes them, passes.
+        self.env.update(FAKE_SWIFT_ONLY_ID="Fake.Suite/runs()/F.swift:12:5", FAKE_SWIFT_ESCAPED_SLASHES="1")
+        result = self.run_lane()
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertNotIn("No test started in this lane", result.stderr)
 
     def test_compact_json_events_count_as_started(self):
         # The real runner writes compact JSON (no spaces); a started test in that layout must pass.

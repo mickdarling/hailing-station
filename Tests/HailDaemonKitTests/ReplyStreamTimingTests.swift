@@ -62,4 +62,15 @@ import Testing
         #expect(timing.summary(at: at(3_000)).line == "reply audio: frames=2 audio_ms=1250 first_audio_ms=1008 "
             + "min_lead_ms=399 ack_max_ms=9 ack_p95_ms=9 resends=2 wall_ms=3000")
     }
+
+    @Test func anInstalledHaildLogsAsLiveAndABuildLogsAsDev() {
+        let release = "/Users/o/Library/Application Support/HailingStation/releases/830b7a7ac06cc4e4/haild"
+        #expect(ReplyTimingLog.category(executablePath: release) == "reply-timing")
+        #expect(ReplyTimingLog.category(executablePath: "/opt/homebrew/bin/haild") == "reply-timing")
+        #expect(ReplyTimingLog.category(executablePath: nil) == "reply-timing")
+        let build = "/Users/o/Developer/hailing-station/.build/arm64-apple-macosx/debug/haild"
+        #expect(ReplyTimingLog.category(executablePath: build) == "reply-timing-dev")
+        // A path that only names `.build` as part of a word is not a build directory.
+        #expect(ReplyTimingLog.category(executablePath: "/Users/o/my.builds/haild") == "reply-timing")
+    }
 }
