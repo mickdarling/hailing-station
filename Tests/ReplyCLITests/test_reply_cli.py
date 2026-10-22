@@ -649,7 +649,8 @@ class ReplyCLITests(unittest.TestCase):
             self.assertEqual(len(requests), 1)
             self.assertEqual(result.stdout, "")
             self.assertIn("owned output cleanup deferred", result.stderr)
-            self.assertEqual(len(list(root.iterdir())), 1)
+            # It exited before writing anything: the empty deferred folder is removed (#800).
+            self.assertEqual(list(root.iterdir()), [])
 
     def test_accepted_text_then_refused_audio_preserves_fixed_primary_publication_failure(self):
         self.assert_audio_publication_failure(
