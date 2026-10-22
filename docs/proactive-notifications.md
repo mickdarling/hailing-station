@@ -30,7 +30,7 @@ On `main` today:
   off when no child can take it. Privacy does not survive a restart (#809 records "Privacy no longer survives a
   restart"). Mick decided on 2026-10-22 that a network drop must never turn privacy into public, so in this design
   a device that was private comes back private or not listening (Owner privacy, Reconnects). Part 10 has proposed
-  that as S-7a to S-7c; none of it is built.
+  that as S-7a0 to S-7c; none of it is built.
 
 ## Owner devices
 
@@ -166,8 +166,8 @@ haild keeps, in memory only, each approved key's last privacy report.
 
   Dropping a connection, reconnecting, a fresh proof and another key connecting never clear it.
   - A privacy-off on the key's current approved connection clears the report even when that connection is already
-    public; it is not a no-op. Otherwise a key left private by a discarded held off, or by a privacy-on from an older
-    or forged connection, would have no exit but revocation.
+    public; it is not a no-op (owner devices, slice 2). Otherwise a key left private by a discarded held off, or by a
+    privacy-on from an older or forged connection, would have no exit but revocation.
   - While its key reports private and its connection is public, the app shows that proactive updates are paused by
     privacy, with an "End privacy" action that sends that off. #817's switch still shows "Recording may be on" for
     the connection itself.
@@ -177,28 +177,32 @@ haild keeps, in memory only, each approved key's last privacy report.
     public while its key is private.
 - **Reconnects:** Mick decided on 2026-10-22: "A network drop should not change it from being private to being
   public." A reconnect never brings a device back listening in public while it was private. Proposed by Part 10 as
-  S-7a to S-7c; none of it is built.
+  S-7a0 to S-7c; none of it is built.
   - A reconnect leaves the key's report as it was (Clearing). The host starts every connection public and not
     listening. That is listening privacy, per connection; the key's report governs only proactive delivery.
-  - **The owner's wish:** the app keeps the owner's latest privacy choice for each saved host, in its own defaults,
-    so it survives the app being killed. A privacy-on still waiting for the host's confirmation counts as on.
-  - **Wish on:** before any audio, on a reconnect or a manual start, the app sends `set_privacy {on}` and waits for
-    the host's `duck_mode` on notice. If that is refused or does not come, it stays not listening. S-7a lets the
-    host accept that request with no active stream; the next stream then starts private, or is refused, never
-    public. This also covers privacy held before a proof, which marked no key.
-  - **Wish off:** if the app was listening in public when the connection dropped, it may resume once the host
-    confirms the connection public: haild sends the connection's current `duck_mode` state once after the hello,
-    and the app resumes only on that notice. Silence never counts as public.
-  - **A restart is not a drop:** haild puts a random per-launch instance id in its hello. When the id for a saved
-    host changes, the app does not resume, clears the wish (privacy does not survive a restart, #809), and comes back
-    not listening (below).
+  - **The owner's wish (S-7b):** the app keeps the owner's latest privacy choice for each saved host. A privacy-on
+    still waiting for the host's confirmation counts as on. Keeping it in the app's defaults, so it survives the app
+    being killed, is proposed and pending Mick, since #809 settled that privacy does not survive a host restart.
+  - **Wish on:** before any audio, the app sends `set_privacy {on}` and waits for the host's `duck_mode` on notice.
+    If that is refused or does not come, it stays not listening. S-7a lets the host accept that request with no
+    active stream; the next stream on that connection then starts private, or is refused, never public (a named
+    S-7a test). This also covers privacy held before a proof, which marked no key.
+  - **What the host confirms (S-7a):** haild sends the connection's current `duck_mode` state once after the hello.
+    The app treats only a `duck_mode` notice as the host's confirmation; silence never counts as public.
+  - **No resume yet:** S-7 does not resume listening on its own. After a reconnect the owner starts listening again,
+    and that listen is privacy-first while the wish is on. So the guarantee #817 pins in
+    `AmbientBindingChangeRegressionTests`, that listening never starts on a reconnect (key 1's requirement in the
+    #808 review), still holds. A later auto-resume PR relaxes it on purpose: a device that was listening in public
+    resumes once the host confirms public, and one that was private resumes only through the privacy-first path.
+  - **A restart is not a drop (S-7a0):** haild puts a random per-launch instance id in its hello, a protocol field of
+    its own. When the id for a saved host changes, the app clears the wish (#809), does not resume, and says "The
+    Mac restarted. Listening is off and privacy ended."
   - A reconnect that does not prove (no `owner_device` in the host's hello, no challenge, or the voice-only reconnect
     after `superseded`) follows the same path, since the wish is per host, not per key. A host the app has not saved
     starts not listening.
-  - Whenever listening does not come back after a reconnect or a restart, the app says so, aloud and on the card
-    (S-7c, #822). It never stops listening silently.
-  - Any resume reverses a guarantee #817 pins in `AmbientBindingChangeRegressionTests`: listening never starts on a
-    reconnect (key 1's requirement in the #808 review). S-7b changes that test on purpose.
+  - Whenever listening stops on a drop, a handover or a restart, the app says so, aloud and on the card (S-7c,
+    #822): "Listening stopped: the connection changed", adding "Privacy is still on." when it is. It never stops
+    listening silently.
 - **Before a proof or approval:** privacy turned on over a connection that has not yet proven, or whose key is still
   pending, is held by that connection and applied to the key at the proof or approval. A connection that never
   proves protects only itself: it gets nothing proactive, but its privacy marks no key.
@@ -372,8 +376,8 @@ The APNs JSON is not a hail frame. It lives in a new `Notify/` type, with its sc
 
 Part 10's privacy stack (#807, #808, #813, S-6) has merged. It changed `WebSocketListener*`, `HostSession`,
 `HostReplyDelivery`, the RightyO input files, and `Control.swift`/`Schema.swift` (for `set_privacy`). Its proposed
-reconnect work (S-7) touches `WebSocketListener+DuckMode.swift`, `AmbientAudioGate`, `HostConnectionStore` and the
-station card.
+reconnect work (S-7a0 to S-7c) touches the hello's protocol fields, `WebSocketListener+DuckMode.swift`,
+`AmbientAudioGate`, `HostConnectionStore` and the station card.
 
 | Area | Files | Overlap |
 | --- | --- | --- |
@@ -446,7 +450,7 @@ rechecked at 6fabeb2 for this revision:
 - no report of the app's mute state to the host.
 
 The privacy semantics it defers to are Part 10's, merged on `main` (#807, #808, #813, #815 to #817). Part 10 signed
-off on this section on 2026-10-22, before Mick's reconnect decision. The reconnect path is Part 10's proposal (S-7a
+off on this section on 2026-10-22, before Mick's reconnect decision. The reconnect path is Part 10's proposal (S-7a0
 to S-7c), which Jarvis put in the privacy deploy set; it is not built. The public resume is Jarvis's answer of
 2026-10-22. The restart and reconnect rules follow Mick's 2026-10-22 decisions, and #809 records that privacy no
 longer survives a restart. The words "listening is off until he turns it on from the app" and "A network drop should
