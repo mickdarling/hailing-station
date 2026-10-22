@@ -14,6 +14,9 @@ trap 'chmod -R u+w "$scratch" 2>/dev/null; rm -rf -- "$scratch"' EXIT
 export HAIL_HOST_ROOT="$scratch/App Support/root" HAIL_CONFIG_DIR="$scratch/config" HAIL_LAUNCH_AGENTS="$scratch/agents"
 export HAIL_LOG_DIR="$scratch/logs" HAIL_BIN_DIR="$scratch/my bin" HAIL_READY_SECONDS=2 HAIL_SETTLE_SECONDS=0
 export HAIL_LAUNCHCTL="$scratch/launchctl"
+# host.sh's own temp files land here, so a leak shows (#800).
+export TMPDIR="$scratch/tmp/"
+mkdir -p "$TMPDIR"
 host="$repo_root/scripts/host.sh"
 jobs="$scratch/jobs"
 mkdir -p "$HAIL_CONFIG_DIR" "$jobs"
@@ -142,6 +145,9 @@ bad_config "IPv4-mapped IPv6" '{"bind": "::ffff:127.0.0.1", "port": 8765}'
 bad_config "scoped IPv6" '{"bind": "fe80::1%en0", "port": 8765}'
 bad_config "hex word that is not IPv6" '{"bind": "beef", "port": 8765}'
 bad_config "port as a string" '{"bind": "127.0.0.1", "port": "8765"}'
+# Each refused plist above failed after making its temp file; none may be left behind (#800).
+leftover=("$TMPDIR"hail-plist.*)
+[[ ! -e "${leftover[0]}" ]] || fail "a refused plist left its temp file: ${leftover[*]}"
 printf '%s\n' '{"bind": "::1", "port": 8765}' > "$HAIL_CONFIG_DIR/host.json"
 "$host" plist >/dev/null || fail "IPv6 loopback was refused"
 bad_config "non-boolean flag" '{"bind": "127.0.0.1", "port": 8765, "deviceDiagnostics": 1}'
