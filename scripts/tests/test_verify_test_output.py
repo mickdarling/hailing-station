@@ -43,9 +43,11 @@ print("fixture stderr", file=sys.stderr)
 print("x" * 65536)
 
 def event(kind, test):
+    record = {"kind": "event", "version": 0, "payload": {"kind": kind, "testID": test}}
+    # The real runner writes compact JSON; FAKE_SWIFT_COMPACT checks the guard reads that layout too.
+    separators = (",", ":") if os.environ.get("FAKE_SWIFT_COMPACT") else None
     with open(events, "a") as stream:  # Swift Testing writes each event as it happens.
-        stream.write(json.dumps({"kind": "event", "version": 0,
-                                 "payload": {"kind": kind, "testID": test}}) + "\n")
+        stream.write(json.dumps(record, separators=separators) + "\n")
 
 if os.environ.get("FAKE_SWIFT_HANG"):
     event("testStarted", "Fake.Suite")
@@ -59,9 +61,17 @@ if os.environ.get("FAKE_SWIFT_HANG"):
     with open(os.environ["FAKE_SWIFT_CHILD"], "w") as pid:
         pid.write(str(child.pid))
     time.sleep(600)
-if not os.environ.get("FAKE_SWIFT_EMPTY"):  # a lane whose selection matched nothing starts no test (#704)
+if os.environ.get("FAKE_SWIFT_SUITE_ONLY"):  # a selection matching only an empty suite starts no test
+    event("testStarted", "Fake.Suite")
+    event("testEnded", "Fake.Suite")
+elif not os.environ.get("FAKE_SWIFT_EMPTY"):  # a lane whose selection matched nothing starts no test (#704)
+    event("testStarted", "Fake.Suite")
     event("testStarted", "Fake.Suite/runs()/F.swift:1:1")
     event("testEnded", "Fake.Suite/runs()/F.swift:1:1")
+    # A real lane's first test starts early and thousands of events follow: the shape a `grep | grep -q` misread.
+    for index in range(int(os.environ.get("FAKE_SWIFT_TAIL_EVENTS", "0"))):
+        event("testStarted", f"Fake.Suite{index}")
+    event("testEnded", "Fake.Suite")
 failing = os.environ.get("FAKE_SWIFT_FAIL_LANE")
 sys.exit(int(os.environ["FAKE_SWIFT_STATUS"]) if failing in (None, lane) else 0)
 '''
@@ -145,6 +155,29 @@ class VerifyTestOutputTests(SuccessfulFixtureCleanup):
         self.assertIn("No test started in this lane", result.stderr)
         self.assertEqual((self.scratch / "swift-calls").read_text().split(), ["build", "parallel-core"])
         self.assertEqual(len(list(self.scratch.glob("hailing-swift-tests.*"))), 1)
+        self.assertEqual(len(list(self.scratch.glob("hailing-swift-events.*"))), 1)
+
+    def test_a_lane_that_starts_only_a_suite_fails(self):
+        # A selection that still matches a suite with no runnable test is as empty as one matching nothing.
+        self.env["FAKE_SWIFT_SUITE_ONLY"] = "1"
+        result = self.run_lane()
+        self.assertEqual(result.returncode, 65, result.stderr)
+        self.assertIn("No test started in this lane", result.stderr)
+
+    def test_compact_json_events_count_as_started(self):
+        # The real runner writes compact JSON (no spaces); a started test in that layout must pass.
+        self.env["FAKE_SWIFT_COMPACT"] = "1"
+        result = self.run_lane()
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertEqual((self.scratch / "swift-calls").read_text().split(),
+                         ["build", "parallel-core", "parallel-rest", "serial"])
+
+    def test_an_early_test_in_a_long_stream_passes(self):
+        # A real lane's first test starts early and thousands of events follow. Under pipefail, `grep | grep -q` exits at
+        # that first match, the first grep takes SIGPIPE, and the 666-test lane read as "nothing started".
+        self.env["FAKE_SWIFT_TAIL_EVENTS"] = "50000"
+        result = self.run_lane()
+        self.assertEqual(result.returncode, 0, result.stderr)
 
     def test_reporting_failure_cannot_make_success_look_successful(self):
         self.write_tool("cat", "import sys; sys.exit(9)")

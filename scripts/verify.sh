@@ -95,6 +95,13 @@ for test in sorted(t for t, n in started.items() if n > 0):
 PY
 }
 
+# Whether an event stream (JSON Lines, one event each) records a test function starting, not only a suite. One awk,
+# no pipeline: under pipefail, `grep … | grep -q` fails when -q exits early and the first grep takes SIGPIPE.
+started_a_test() {
+  awk '/"kind" *: *"testStarted"/ && /"testID" *: *"[^"]*[.]swift:[0-9]+:[0-9]+"/ { found = 1; exit }
+       END { exit !found }' "$1" 2>/dev/null
+}
+
 # A slow console consumer must not stall test reporting while deadlines run (#185): output goes to a private file
 # and is replayed in full afterwards. A failed capture is kept, and neither failure masks the other.
 run_captured() {
@@ -121,9 +128,11 @@ run_captured() {
   trap - INT TERM
   cat "$log" || report=$?
   # `swift test` passes a selection that matches nothing (#704): a lane that started no test fails, so a renamed target
-  # or pattern can never turn a lane silently green.
-  if (( !stalled && status == 0 && report == 0 )) && ! grep -Eq '"kind" *: *"testStarted"' "$events"; then
-    printf 'No test started in this lane; an empty selection fails (#704): %s\n' "$*" >&2 || :
+  # or pattern can never turn a lane silently green. A test's ID ends in its source location; a suite's does not, so a
+  # selection that still matches an empty suite fails too.
+  if (( !stalled && status == 0 && report == 0 )) && ! started_a_test "$events"; then
+    printf 'No test started in this lane (no testStarted with a source location in its event stream);' >&2 || :
+    printf ' an empty selection fails (#704): %s\n' "$*" >&2 || :
     status=65
   fi
   if (( stalled )); then
