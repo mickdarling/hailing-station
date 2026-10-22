@@ -10,8 +10,8 @@ struct AmbientDuckTimer {
 }
 
 /// Privacy mode (#735, internally duck): entry from the owner's safety-set command, exit and status from RightyO's
-/// content-free events, and its device notice (no auto-end, Mick round 2). The state lives beside media mode's in
-/// `AmbientRightyoRouter.State`; `setDuck` changes it.
+/// content-free events, the app's privacy switch (S-6), and its device notice (no auto-end, Mick round 2). The state
+/// lives beside media mode's in `AmbientRightyoRouter.State`; `setDuck` changes it.
 extension AmbientRightyoRouter {
     /// An hour. Reserved for the session-mode auto-stop: privacy has no auto-end (Mick, round 2), so this no longer
     /// applies to it. host.json `ambient.duckTimeout` overrides it.
@@ -89,6 +89,53 @@ extension AmbientRightyoRouter {
         case .refused: (nil, "refused=not_owner")
         case .unverified: (AmbientStopConfirmation.privacyRefused, "refused=unverified_owner")
         case .hint: (AmbientStopConfirmation.privacyHint, "hint")
+        }
+    }
+
+    /// The app's privacy switch (#735 S-6, `set_privacy`) for `connection`, the sending session's own: the gate hands
+    /// it on only while that connection holds the active ambient stream. Trust is the paired owner device (Mick's
+    /// decision), not a voice, so no voiceprint is asked for. A switch that matches the state already held does nothing
+    /// at all: nothing is logged, written, played or sent back, so repeated taps cannot flood the log or chatter.
+    public func ambientPrivacy(_ on: Bool, connection: UUID) {
+        let armed = duckArming(connection: connection)
+        guard on == (armed == nil) else { return }
+        switchPrivacy(on, connection: connection, armedAs: armed)
+    }
+
+    /// Switches `connection`'s privacy from its device, only while its arming is still `armed` (nil: off), matched under
+    /// the lock that changes it. If the owner's voice changed it since it was read, this does nothing: no second
+    /// notice wrongly saying `device`, no child write, no log line and no clip.
+    /// - on: the owner's entry path with reason `device`. `setDuck(true)` writes the children (so a respawn or reload
+    ///   starts private, S-2b), holds every request back and tells the device once a child took it; then a reply
+    ///   playing is stopped and only `confirm-privacy-on/` plays. Taken by no child (a v1 or older
+    ///   RightyO), it fails closed: privacy stays off, the device is told off so its switch settles on not private,
+    ///   `confirm-not-sent/` plays, and playback is left alone.
+    /// - off: the owner's exit path with reason `device`. `setDuck(false)` tells the children and the device, then
+    ///   `confirm-privacy-off/` plays when a child took it.
+    /// Logged as state tokens only.
+    func switchPrivacy(_ on: Bool, connection: UUID, armedAs armed: UUID?) {
+        guard let reported = setDuck(on, connection: connection, reason: "device", whileArming: { $0 == armed }) else {
+            return
+        }
+        let listener = attachedListener
+        privacySwitches.enqueue { [weak self, weak listener] in
+            guard let self else { return }
+            var (persona, outcome): (String?, String) = (nil, "on=\(on) reason=device")
+            switch (on, reported > 0) {
+            case (true, true):
+                let playback = await listener?.stopReplyPlayback(connection: connection) ?? "no_connection"
+                (persona, outcome) = (AmbientStopConfirmation.privacyOn, outcome + " playback=\(playback)")
+            case (true, false):
+                let device = await listener?.showDuckMode(false, reason: "device", expires: nil,
+                                                          connection: connection) ?? "no_connection"
+                persona = AmbientStopConfirmation.notSent
+                outcome += " refused=unsupported_version device=\(device)"
+            case (false, true): persona = AmbientStopConfirmation.privacyOff
+            case (false, false): break
+            }
+            var confirm = "unreported"
+            if let persona { confirm = await confirmVoiceMute(persona, on: connection, listener: listener) }
+            emit("ambient_duck_confirmed", connection: connection, detail: "\(outcome) confirm=\(confirm)")
         }
     }
 
