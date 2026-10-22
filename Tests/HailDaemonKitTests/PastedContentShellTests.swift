@@ -60,7 +60,9 @@ import Testing
         #expect(process.terminationReason == .exit,
                 "\(shell) ended on signal \(process.terminationStatus); one running at \(Self.deadline) s is killed")
         #expect(!killed.withLock { $0 }, "\(shell) or a child it left ran past \(Self.deadline) s and was killed")
-        return Run(status: process.terminationStatus, output: String(bytes: data, encoding: .utf8) ?? "")
+        // Latin-1 decodes any bytes, so output that isn't UTF-8 still shows an ASCII canary instead of reading as "".
+        let text = String(bytes: data, encoding: .utf8) ?? String(bytes: data, encoding: .isoLatin1) ?? ""
+        return Run(status: process.terminationStatus, output: text)
     }
 
     @Test func noPasteRunsInBashOrZshWhateverTheSpokenPartQuotes() async throws {
