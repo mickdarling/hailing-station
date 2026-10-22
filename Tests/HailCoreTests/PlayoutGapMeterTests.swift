@@ -98,6 +98,14 @@ import Testing
         #expect(meter.take() == PlayoutGapMeter.Gaps())
     }
 
+    @Test func theNextReplysStartReopensMutedGapCounting() {
+        var meter = PlayoutGapMeter()
+        meter.scheduled(.milliseconds(500), at: at(0), startsReply: true, endsReply: true)
+        meter.scheduled(.milliseconds(500), at: at(2_000), startsReply: true) // a new reply: dry again at 2500
+        meter.muteChanged(true, at: at(2_800)) // a real gap in that reply, 300 ms heard before muting
+        #expect(meter.take().milliseconds == 300)
+    }
+
     @Test func audioArrivingWhileMutedCountsNothing() {
         var meter = PlayoutGapMeter()
         meter.scheduled(.milliseconds(500), at: at(0), startsReply: true)

@@ -272,7 +272,7 @@ extension DeviceDiagnostics {
         }
         if busy != lastPlayback.busy {
             // Gaps heard since playback began (#737), from a player that counts them: how many, and their total
-            // length. Gaps counted while not busy (muted) were never heard, so a start drops them.
+            // length. Anything counted while not busy (idle) was never heard, so a start drops it.
             let reporter = (playback.player as? any PlayoutGapReporting)
                 ?? (playback.player as? EchoGuardedReplyPlayer)?.gapReporter
             let gaps = reporter?.takePlayoutGaps()
