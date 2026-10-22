@@ -700,8 +700,10 @@ public final class AmbientRightyoRouter: AmbientAudioSink, AmbientListenerWiring
     public func mediaMode(connection: UUID) -> Bool { state.withLock { $0.media[connection] != nil } }
     /// Whether the owner's spoken duck mode (#735) is on for `connection` (tests).
     func duckMode(connection: UUID) -> Bool { state.withLock { $0.duck[connection] != nil } }
-    /// The current duck mode arming for `connection`, if any (tests).
+    /// The current duck mode arming for `connection`, if any: its token for a device end (#735 H-4), and tests.
     func duckTimer(connection: UUID) -> AmbientDuckTimer? { state.withLock { $0.duck[connection] } }
+    /// The listener this router is attached to, if it is still there (#735 H-4: a device end's clip).
+    var attachedListener: WebSocketListener? { state.withLock { $0.listener?.value } }
     /// Whether duck mode is still on for `connection` under the arming `token` and a child of the connection runs
     /// (#735 H-4): the auto-end warning plays only then.
     func duckArmed(connection: UUID, token: UUID) -> Bool {

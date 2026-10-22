@@ -654,12 +654,12 @@ Duck mode ends on the spoken exit, after `ambient.duckTimeout` in `host.json` (w
 
 #### Ending duck mode from the device (#735 H-4)
 
-With ambient listening on, `haild` advertises `end_duck_mode` (`docs/reply-protocol.md`), and the app's duck mode card has an end button. The device's `end_duck_mode` ends duck mode as the spoken exit does: the children are told, the auto-end and its warning are cancelled, and the device is told `duck_mode` off with `reason: "device"`, logged `ambient_duck on=false reason=device …`.
+With ambient listening on, `haild` advertises `end_duck_mode` (`docs/reply-protocol.md`), and the app's duck mode card has an end button. The device's `end_duck_mode` ends duck mode as the spoken exit does: the children are told, the auto-end and its warning are cancelled, and the device is told `duck_mode` off with `reason: "device"`, logged `ambient_duck on=false reason=device …`. `confirm-duck-off/` plays so the room hears it, logged `ambient_duck_confirmed on=false reason=device confirm=…`, as for the spoken exit only when a child took the end.
 
 - **Its own connection only.** The command carries nothing; `haild` uses the sending connection's own id, so one device cannot end another's duck mode.
 - **End only.** It can never start duck mode. Starting stays the owner's spoken entry, owner-only on an enrolled session.
-- **No clip.** The owner acted on the screen, and the card shows the end.
-- **Only while on.** While duck mode is off, it does nothing: nothing is logged, written to the child or sent back.
+- **Only while on, and only once.** While duck mode is off, it does nothing: nothing is logged, written to the child, played or sent back. The end applies only to the arming that was on when it arrived, matched under the lock that changes duck mode, so if the spoken exit, the auto-end or an unsupported child ends duck mode first, the device's end does nothing more.
+- **During lockdown.** It is honoured, like `ambient_input`: lockdown refuses actions on targets, and ending duck mode is the safe direction (nothing is sent anywhere).
 - **Same authority as `ambient_input`.** It is admitted only on a personal-terminal connection with ambient listening, the same rule as `ambient_input` and `overheard_scope`.
 
 #### The auto-end warning (#735 H-4)
