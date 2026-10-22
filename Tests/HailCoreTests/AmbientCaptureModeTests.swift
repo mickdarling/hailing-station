@@ -147,12 +147,16 @@ struct AmbientCaptureModeTests {
         await settle()
         await streamer.stop()
 
-        var names: [DiagnosticEventName] = []
+        var events: [DiagnosticEvent] = []
         while let batch = log.nextBatch() {
-            names += batch.events.map(\.name)
+            events += batch.events
             clock.advance(by: .seconds(60))
         }
-        #expect(names.filter { $0 == .replyPlaybackStart || $0 == .replyPlaybackEnd }
-            == [.replyPlaybackStart, .replyPlaybackEnd])
+        let names: [DiagnosticEventName] = events.map(\.name)
+        let playbackEdges: [DiagnosticEventName] = names.filter { $0 == .replyPlaybackStart || $0 == .replyPlaybackEnd }
+        #expect(playbackEdges == [.replyPlaybackStart, .replyPlaybackEnd])
+        // #737: this harness's player counts no gaps, so the end carries no fields rather than zeros.
+        let end: DiagnosticEvent = try #require(events.first { $0.name == .replyPlaybackEnd })
+        #expect(end.fields.isEmpty)
     }
 }
