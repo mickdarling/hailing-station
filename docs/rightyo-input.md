@@ -665,7 +665,7 @@ The commands are:
 These don't count:
 
 - a command mid-sentence, code dictation included ("we should go private", "set the flag to stop listening on 443");
-- a question or mention ("what is privacy mode?"). A turn ending in "?" counts only in the polite form ("Can you stop recording?") or as a verb command of three words or fewer, which ASR may punctuate as a question ("Jarvis, go private?"). "Privacy mode?" stays a question;
+- a question or mention ("what is privacy mode?"). A turn ending in "?" counts only in the polite form ("Can you stop recording?"). A command said as a question ("Stop recording?", "So, go private?", "Privacy mode?") is a question, never an entry;
 - a leaving phrase ("privacy mode off", "end privacy mode").
 
 They reach the agent as ordinary requests.

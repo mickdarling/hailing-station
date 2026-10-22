@@ -189,9 +189,9 @@ enum PrivacyEntry {
         if let negation { words.removeFirst(negation.count) }
         words = Array(words.drop { leading.contains($0) })
         if isCommand(words) {
-            // A "?" counts only on the polite form, or on a short verb command ASR may punctuate as a question
-            // ("Jarvis, go private?"); "privacy mode?" stays a question.
-            guard !asked || edges.polite || (words.count <= 3 && words.first != "privacy") else { return nil }
+            // A "?" counts only on the polite form ("Can you stop recording?"). Mick: a command said as a question
+            // ("Stop recording?", "So, go private?") is a question, never an entry.
+            guard !asked || edges.polite else { return nil }
             return negation == nil ? .enter : .negated
         }
         guard negation == nil, !asked, startsWithCommand(words) else { return nil }

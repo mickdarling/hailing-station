@@ -34,10 +34,12 @@ import Testing
         "Fine, go private.", "Oh, privacy mode.", "And stop recording", "Okay so, stop recording.",
         "Right, go private.",
         "Look, stop listening.", "Anyway, privacy mode.", "Yes, stop recording.", "Hmm, go private.",
-        // Round 4: more owner phrasings, and ASR's "?" on a short verb command.
+        // Round 4: more owner phrasings.
         "Put yourself in privacy mode.", "Jarvis, put yourself in privacy mode please", "Stop recording everything.",
-        "stop all recording everything", "Jarvis, go private?", "Stop recording?", "Go private?",
-        "stop the recording?", "Hey Jarvis, stop listening?"
+        "stop all recording everything",
+        // Only the polite form may end in "?" (Mick), after leads and a name too.
+        "Could you stop listening?", "Will you go private?", "Jarvis, can you stop recording?",
+        "Well, could you stop recording?"
     ]
     static let negated = [
         "Don't stop recording.", "Jarvis, do not stop listening.", "Please don't go private.", "never stop recording",
@@ -75,6 +77,9 @@ import Testing
         "Privacy mode is off.", "no more privacy mode", "done with privacy mode", "privacy mode is over",
         "I'm not in privacy mode", "exit privacy mode", "Jarvis, I'm back", "start listening", "privacy off",
         "privacy mode was off", "Jarvis, privacy mode on?", "turn on privacy mode?",
+        // A command said as a question is a question (Mick), with or without a lead or a name.
+        "Stop recording?", "Go private?", "stop the recording?", "Jarvis, go private?", "Hey Jarvis, stop listening?",
+        "So, stop recording?", "Actually, go private?", "And go private?", "Stop recording everything?",
         // Round 4: "privacy mode" followed by more words is a mention, never held.
         "privacy mode settings", "privacy mode toggle", "privacy mode and media mode",
         "privacy mode needs a longer timeout", "privacy mode is great", "privacy mode docs are out of date",
