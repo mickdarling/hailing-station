@@ -45,7 +45,9 @@ public final class PCM16AudioPlayer: ReplyAudioPlaying {
         // New audio plays the node even after a pause the controller never resumed (a reply arriving while paused),
         // or after the system stopped it (an interruption): neither stretch was heard as a gap.
         if !wasPlaying { gapMeter.restarted(at: .now) }
-        gapMeter.scheduled(Self.duration(of: buffers), at: .now, startsReply: payload.sequence == 0)
+        gapMeter.scheduled(
+            Self.duration(of: buffers), at: .now, startsReply: payload.sequence == 0, endsReply: payload.isFinal
+        )
         if !node.isPlaying { node.play() }
     }
 
@@ -90,7 +92,9 @@ public final class PCM16AudioPlayer: ReplyAudioPlaying {
             let completion = index == payloads.indices.last ? onPlayed : nil
             let buffers = try PCM16PlaybackBuffers.forPayload(payload)
             schedule(buffers, onPlayed: completion)
-            gapMeter.scheduled(Self.duration(of: buffers), at: .now, startsReply: index == 0)
+            gapMeter.scheduled(
+                Self.duration(of: buffers), at: .now, startsReply: index == 0, endsReply: payload.isFinal
+            )
         }
         node.play()
     }

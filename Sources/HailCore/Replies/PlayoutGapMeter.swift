@@ -18,11 +18,16 @@ public struct PlayoutGapMeter: Equatable, Sendable {
     private var queuedUntil: ContinuousClock.Instant?
     private var pausedWith: Duration?
     private var muted = false
+    /// The reply's final audio is queued: silence after it is the reply having ended, never a gap.
+    private var replyEnded = false
 
     public init() {}
 
-    /// `duration` of audio was queued at `now`; `startsReply` for a reply's first audio.
-    public mutating func scheduled(_ duration: Duration, at now: ContinuousClock.Instant, startsReply: Bool) {
+    /// `duration` of audio was queued at `now`; `startsReply` for a reply's first audio, `endsReply` for its last.
+    public mutating func scheduled(
+        _ duration: Duration, at now: ContinuousClock.Instant, startsReply: Bool, endsReply: Bool = false
+    ) {
+        if startsReply { replyEnded = false }
         if !startsReply, !muted, pausedWith == nil, let queuedUntil, now - queuedUntil >= Self.threshold {
             gaps.count += 1
             gaps.total += now - queuedUntil
@@ -32,6 +37,7 @@ public struct PlayoutGapMeter: Equatable, Sendable {
         } else {
             queuedUntil = max(queuedUntil ?? now, now) + duration
         }
+        if endsReply { replyEnded = true }
     }
 
     /// Playback paused at `now`: what is still queued waits, and time paused is never a gap.
@@ -59,7 +65,7 @@ public struct PlayoutGapMeter: Equatable, Sendable {
     public mutating func muteChanged(_ isMuted: Bool, at now: ContinuousClock.Instant) {
         guard isMuted != muted else { return }
         if pausedWith == nil, let queuedUntil, now > queuedUntil {
-            if isMuted, now - queuedUntil >= Self.threshold {
+            if isMuted, !replyEnded, now - queuedUntil >= Self.threshold {
                 gaps.count += 1
                 gaps.total += now - queuedUntil
             }
@@ -70,7 +76,7 @@ public struct PlayoutGapMeter: Equatable, Sendable {
 
     /// The queue was dropped (a stop, or a new queue): the next audio starts afresh.
     public mutating func cleared() {
-        (queuedUntil, pausedWith) = (nil, nil)
+        (queuedUntil, pausedWith, replyEnded) = (nil, nil, false)
     }
 
     /// The gaps counted since the last call, which starts a new count.

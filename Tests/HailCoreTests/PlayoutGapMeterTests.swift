@@ -90,6 +90,14 @@ import Testing
         #expect(gaps.milliseconds == 300)
     }
 
+    @Test func aMuteAfterTheReplysFinalAudioCountsNothing() {
+        var meter = PlayoutGapMeter()
+        meter.scheduled(.milliseconds(500), at: at(0), startsReply: true)
+        meter.scheduled(.milliseconds(100), at: at(300), startsReply: false, endsReply: true) // ends at 600
+        meter.muteChanged(true, at: at(800)) // a spoken mute applied as the reply finished
+        #expect(meter.take() == PlayoutGapMeter.Gaps())
+    }
+
     @Test func audioArrivingWhileMutedCountsNothing() {
         var meter = PlayoutGapMeter()
         meter.scheduled(.milliseconds(500), at: at(0), startsReply: true)
