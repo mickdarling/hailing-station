@@ -20,7 +20,7 @@ An optional, default-off refinement step can tidy the text using the target app'
   - `VoiceMute` and `VoiceMedia` (`Input/RightyoInputConsumer.swift`) match a whole turn against a phrase set after stripping greetings and the addressing name.
   - RightyO's `dismiss` / `stop-phrase` handles "stop".
   - A dictation cue can reuse that phrase matching, but **not** its voice gate. `holdsVoiceCommand` accepts any voice on an anonymous session, which is acceptable for silencing local audio but not for typing into apps. Dictation uses the stricter gate that destination notes use (#552): an enrolled session and an owner turn.
-- **Agent context.** Every RightyO `request` carries `context.turns`, the preceding turns (`RightyoInputFormedRequest`). Dictated speech would therefore ride along with the next "Jarvis, …" request unless it is explicitly excluded (see section 8).
+- **Agent context.** Every RightyO `request` carries `context.turns`, the preceding turns (declared in `RightyoInputEvent`, carried by `RightyoInputFormedRequest`). Dictated speech would therefore ride along with the next "Jarvis, …" request unless it is explicitly excluded (see section 8).
 - **Mac menu bar.** `Apps/Hail-iOS/MacMenuBar.swift` has a status line and an Ambient Listening toggle. The icon comes from `StationMenuStatus`.
 - **Missing.** There is no Accessibility, `CGEvent`, insertion or secure-field code anywhere, and no local LLM in the Swift sources. The only LLM work is the offline intent experiment ([local-intent-evaluation.md](local-intent-evaluation.md)). It found 7–8B models too unreliable for routing, at roughly 170–210 ms warm.
 
@@ -136,7 +136,7 @@ Context is never read from a secure field. Clipboard items marked `ConcealedType
 - Dictated text is never sent to an agent session, the context buffer or a target.
 - **Agent context excludes dictation.** Turns spoken while dictation is on must never appear in a later request's `context.turns`. There are two ways to do it:
   - (a) RightyO is told dictation is on and excludes those turns from context. This is a change in the rightyo repo.
-  - (b) `haild` records the dictation window and strips (or refuses) any context turn inside it before handoff.
+  - (b) `haild` records the dictation window and **refuses** any request whose context cites a turn inside it. Stripping turns isn't enough when RightyO forms the request: its own request text could paraphrase what was dictated.
 
   Recommendation: (a) as the source of truth, with (b) as a fail-closed check. This is decision **D9**.
 - It follows normal transcript retention. Refinement context is held in memory only, for the one request.
@@ -167,7 +167,7 @@ A hands-on test matrix on Mick's Mac covers the apps he uses: an editor, Safari,
 | D6 | Insertion | Paste-and-restore, with typed fallback |
 | D7 | Command set | As listed in section 6 |
 | D8 | Refinement | Off by default; Foundation Models; app name and nearby text only; ≤ 1.5 s |
-| D9 | Keeping dictation out of agent context | RightyO excludes the turns; `haild` strips or refuses as a check |
+| D9 | Keeping dictation out of agent context | RightyO excludes the turns; `haild` refuses as a fail-closed check |
 
 Sources include the Handy source at `~/Developer/Handy`, plus public documentation and source for VoiceInk, SuperWhisper, Wispr Flow, MacWhisper, Aqua Voice and Apple, as of October 2026. Unverified points:
 - Foundation Models latency on a Mac;
