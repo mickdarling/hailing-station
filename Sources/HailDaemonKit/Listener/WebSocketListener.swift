@@ -963,6 +963,8 @@ extension AmbientRightyoRouter {
         settings.onVoiceMedia = voiceMedia(on: connection, listener: listener)
         (settings.onVoiceDuck, settings.onDuckUnsupported) = (voiceDuck(on: connection, listener: listener),
                                                               duckUnsupported(on: connection))
+        // Privacy on (#735 S-2b): the child is launched already private, on a spawn, a respawn or a reload alike.
+        settings.startPrivate = state.withLock { $0.duck[connection] != nil }
         if let destinations = configuration.destinations {
             (settings.destinations, settings.onVoiceDestination) = (destinations, voiceNote(on: connection,
                                                                                             listener: listener))
@@ -995,8 +997,9 @@ extension AmbientRightyoRouter {
         // A new or reloaded child starts with media mode off (#551). Told under the same lock `setMedia` changes it
         // under, so it can never miss a change made while it was starting.
         if state.media[connection] != nil { pipeline.reportMedia(true) }
-        // Duck mode (#735) likewise; the pipeline writes it once the child's `started` says it takes it.
-        if state.duck[connection] != nil { pipeline.reportDuck(true) }
+        // Duck mode (#735) likewise; the pipeline writes it once the child's `started` says it takes it. Always told,
+        // so a child launched start-private (S-2b) whose privacy ended meanwhile is written off once it confirms.
+        pipeline.reportDuck(state.duck[connection] != nil)
         state.runs[id]?.task = Task { [weak self] in
             if reload { self?.emit("ambient_reloaded", detail: nil) }
             self?.emit("ambient_started", connection: connection, detail: nil)
@@ -1163,6 +1166,10 @@ extension AmbientRightyoRouter {
         } catch {
             let described = Self.describe(error)
             (failure, detail) = (described, described)
+            // A child asked to start private that did not confirm it (#735 S-2b) was killed and is not admitted.
+            if error as? RightyoChildError == .privacyUnconfirmed {
+                emit("ambient_privacy_start", connection: connection, detail: "outcome=refused reason=unconfirmed")
+            }
         }
         // A reload's replaced child (#405) is marked `replaced`, so `haild doctor` does not read its end as a failure.
         // Read and `ending` set in one lock, with no suspension before the emit: a reload cannot replace this run

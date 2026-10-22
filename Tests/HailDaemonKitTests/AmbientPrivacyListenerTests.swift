@@ -106,18 +106,21 @@ import Testing
         #expect(rig.details("ambient_duck").isEmpty)
     }
 
-    /// A reload to a child that cannot keep privacy ends it and says so ("Recording again."), never silently.
-    @Test func aReloadThatLosesPrivacySaysSo() async throws {
+    /// A reload to a child that cannot keep privacy (#735 S-2b: launched start-private, not confirmed) is killed and
+    /// refused: privacy stays on, so no "Recording again." clip and no off reach the device.
+    @Test func aReloadThatCannotKeepPrivacyIsRefusedAndPrivacyStays() async throws {
         let later = AmbientDuckReloadTests.silent(advertises: true, version: 1)
         let rig = try await DuckRig(script: AmbientDuckReloadTests.staged(AmbientDuckReloadTests.entry, later),
                                     clips: AmbientDuckModeTests.clips, capabilities: [DuckMode.capability])
         defer { rig.close() }
         #expect(await eventually { rig.details("ambient_duck").count == 1 })
+        let connection = try #require(rig.connection())
         #expect(await rig.env.router.reload() == .reloaded)
-        #expect(await eventually { rig.details("ambient_duck_confirmed").count == 2 })
+        #expect(await eventually { rig.details("ambient_privacy_start") == ["outcome=refused reason=unconfirmed"] })
+        #expect(rig.env.router.duckMode(connection: connection))
         await rig.finish()
-        #expect(rig.details("ambient_duck_confirmed").last == "on=false lost confirm=confirmprivacyoff/0:sent")
-        #expect(rig.details("ambient_duck").last?.hasPrefix("on=false reason=timeout") == true)
+        #expect(rig.details("ambient_duck_confirmed").count == 1)
+        #expect(rig.details("ambient_duck") == ["on=true reason=voice reported=1"])
     }
 }
 #endif

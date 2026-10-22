@@ -23,7 +23,7 @@ import Testing
 
     @Test func aChildThatAdvertisedDuckIsWrittenEveryChange() {
         let (control, written) = (AmbientDuckControl(), Written())
-        #expect(!control.observe(started: Data(Self.advertised.utf8), write: written.write))
+        #expect(control.observe(started: Data(Self.advertised.utf8), write: written.write) == .kept)
         #expect(control.report(true, write: written.write) && control.active)
         #expect(control.report(false, write: written.write) && !control.active)
         #expect(written.all == [true, false])
@@ -31,7 +31,7 @@ import Testing
 
     @Test func anOlderChildIsNeverWrittenAndNeverTookIt() {
         let (control, written) = (AmbientDuckControl(), Written())
-        #expect(!control.observe(started: Data(Self.started.utf8), write: written.write))
+        #expect(control.observe(started: Data(Self.started.utf8), write: written.write) == .kept)
         #expect(!control.report(true, write: written.write) && !control.report(false, write: written.write))
         #expect(written.all.isEmpty)
     }
@@ -41,8 +41,8 @@ import Testing
     @Test func aWishBeforeStartedIsWrittenOnceTheChildAdvertisesIt() {
         let (control, written) = (AmbientDuckControl(), Written())
         #expect(!control.report(true, write: written.write))
-        #expect(!control.observe(started: Data(Self.advertised.utf8), write: written.write))
-        #expect(!control.observe(started: Data(Self.started.utf8), write: written.write))
+        #expect(control.observe(started: Data(Self.advertised.utf8), write: written.write) == .kept)
+        #expect(control.observe(started: Data(Self.started.utf8), write: written.write) == .kept)
         #expect(control.report(false, write: written.write))
         #expect(written.all == [true, false])
     }
@@ -52,10 +52,10 @@ import Testing
     @Test func aWishAnOlderChildCannotTakeIsDroppedAndReported() {
         let (control, written) = (AmbientDuckControl(), Written())
         #expect(!control.report(true, write: written.write) && control.active)
-        #expect(control.observe(started: Data(Self.started.utf8), write: written.write))
+        #expect(control.observe(started: Data(Self.started.utf8), write: written.write) == .lost)
         #expect(!control.active && written.all.isEmpty)
         let (idle, none) = (AmbientDuckControl(), Written())
-        #expect(!idle.observe(started: Data(Self.started.utf8), write: none.write))
+        #expect(idle.observe(started: Data(Self.started.utf8), write: none.write) == .kept)
     }
 
     @Test(arguments: [

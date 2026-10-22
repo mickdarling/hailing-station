@@ -135,6 +135,11 @@ public final class RightyoAmbientPipeline: Sendable {
         public var onOwnerVoice: (@Sendable (String) -> Void)?
         /// Extra variables for the child (rightyo#172), `RIGHTYO_`-prefixed only.
         public var environment: [String: String] = [:]
+        /// Launch the child already private (#735 S-2b), as the host does whenever privacy is on: RightyO's
+        /// start-private option, privacy wished for from the first line, and a `started` that must confirm it
+        /// (`"duck": {"version": 2 or later, "private": true}`). One that does not is killed and the run throws
+        /// `RightyoChildError.privacyUnconfirmed`: it is never admitted.
+        public var startPrivate = false
 
         public init(executable: URL, config: URL, target: String, binding: String, connection: UUID,
                     allowSynthetic: Bool = false, timing: RightyoChildProcess.Timing = .init(),
@@ -179,7 +184,7 @@ public final class RightyoAmbientPipeline: Sendable {
         let heard = AmbientHeardRelay(onHeard: configuration.onHeard)
         let step = RightyoAmbientDispatchStep(connection: configuration.connection, dispatcher: dispatcher,
                                               acknowledge: { relay.fire() }, heard: { await heard.deliver() })
-        let duck = AmbientDuckControl()
+        let duck = AmbientDuckControl(startPrivate: configuration.startPrivate)
         let ducking: @Sendable () -> Bool = { duck.active }
         let duckActive = configuration.onVoiceDuck != nil ? ducking : nil
         consumer = try RightyoInputConsumer(host: nil, target: configuration.target, binding: configuration.binding,
@@ -192,7 +197,7 @@ public final class RightyoAmbientPipeline: Sendable {
         let child = try RightyoChildProcess(executable: configuration.executable, config: configuration.config,
                                             session: session, timing: configuration.timing,
                                             replyControl: configuration.replyControl,
-                                            env: configuration.environment)
+                                            env: configuration.environment, startPrivate: configuration.startPrivate)
         (self.child, self.session) = (child, session)
         onDismiss = configuration.onDismiss
         (onVoiceMute, onVoiceMedia) = (configuration.onVoiceMute, configuration.onVoiceMedia)
@@ -257,7 +262,7 @@ public final class RightyoAmbientPipeline: Sendable {
                 // Only after the consumer admitted the line: an invalid one has already ended the stream.
                 if relayed { await overheard.observe(event) }
                 ownerVoice.observe(event)
-                observeStarted(event, line: line)
+                try await observeStarted(event, line: line)
                 // A newly admitted `dismiss` delivers nothing and leaves its receipt; a replayed one leaves none.
                 if event.type == "dismiss", let receipt = await consumer.lastDismissal { onDismiss?(receipt) }
                 // A newly admitted voice mute (#404) is handed to the host instead of being typed.
@@ -303,11 +308,19 @@ extension RightyoAmbientPipeline {
     }
 
     /// A child's `started` that cannot take the privacy wished for ends it (`onDuckUnsupported`) and says so (`lost`).
-    private func observeStarted(_ event: RightyoInputEvent, line: Data) {
-        guard event.type == "session", event.phase == "started",
-              duck.observe(started: line, write: { [child] on in child.reportDuck(on) }) else { return }
-        onDuckUnsupported?()
-        onVoiceDuck?(.lost)
+    /// A child launched start-private whose `started` did not confirm it is killed at once (SIGTERM then SIGKILL, no
+    /// grace) and throws `privacyUnconfirmed`, so it is never admitted (fail closed).
+    private func observeStarted(_ event: RightyoInputEvent, line: Data) async throws {
+        guard event.type == "session", event.phase == "started" else { return }
+        switch duck.observe(started: line, write: { [child] on in child.reportDuck(on) }) {
+        case .kept: return
+        case .unconfirmed:
+            await child.stop(eofGrace: 0, termGrace: 0)
+            throw RightyoChildError.privacyUnconfirmed
+        case .lost:
+            onDuckUnsupported?()
+            onVoiceDuck?(.lost)
+        }
     }
 }
 
@@ -634,9 +647,17 @@ final class AmbientOwnerVoiceRelay: Sendable {
 /// and written then; a child that did not advertise it is never written a duck line, and a wish it cannot take is
 /// dropped and reported, so the host ends duck mode rather than claim it. Under one lock, so a wish and the `started`
 /// that answers it cannot cross. `active` is the host's latest wish as this child holds it: the owner is ducking.
+/// Started private (#735 S-2b), the wish is on from the first line and `started` must confirm `"private": true`.
 final class AmbientDuckControl: Sendable {
-    private struct State { var started = false, advertised = false, wanted = false }
-    private let state = Mutex(State())
+    /// What a child's first `started` meant: `kept` (nothing to do), `lost` (privacy was wished for and this child
+    /// cannot take it) or `unconfirmed` (launched start-private and `started` did not say it is private).
+    enum Started: Equatable { case kept, lost, unconfirmed }
+    private struct State { var started = false, advertised = false, wanted = false, mustConfirm = false }
+    private let state: Mutex<State>
+
+    init(startPrivate: Bool = false) {
+        state = Mutex(State(wanted: startPrivate, mustConfirm: startPrivate))
+    }
 
     var active: Bool { state.withLock { $0.wanted } }
 
@@ -647,20 +668,40 @@ final class AmbientDuckControl: Sendable {
         }
     }
 
-    /// Records the child's `started`; true when duck mode was wished for and this child cannot take it.
-    func observe(started line: Data, write: (Bool) -> Bool) -> Bool {
-        let advertised = Self.advertises(line)
+    /// Records the child's first `started`. A start-private child that did not confirm it is never written and stays
+    /// wished private (its words stay held) until it is killed. A confirmed one the host no longer wants private
+    /// is written off.
+    func observe(started line: Data, write: (Bool) -> Bool) -> Started {
+        let (advertised, confirmed) = (Self.advertises(line), Self.confirmsPrivate(line))
         return state.withLock { state in
-            guard !state.started else { return false }
-            (state.started, state.advertised) = (true, advertised)
-            guard state.wanted else { return false }
+            guard !state.started else { return .kept }
+            state.started = true
+            if state.mustConfirm, !confirmed {
+                state.wanted = true
+                return .unconfirmed
+            }
+            state.advertised = advertised
+            if state.mustConfirm {
+                if !state.wanted { _ = write(false) }
+                return .kept
+            }
+            guard state.wanted else { return .kept }
             if advertised {
                 _ = write(true)
-                return false
+                return .kept
             }
             state.wanted = false
-            return true
+            return .lost
         }
+    }
+
+    /// Whether a `started` line says the child started private (#735 S-2b): a `duck` advertisement of version 2 or
+    /// higher whose `private` is the boolean true. Nothing else confirms it.
+    static func confirmsPrivate(_ line: Data) -> Bool {
+        guard advertises(line),
+              let object = try? JSONDecoder().decode([String: JSONValue].self, from: line),
+              case .object(let duck)? = object["duck"], case .bool(true)? = duck["private"] else { return false }
+        return true
     }
 
     /// Whether a `started` line carries a top-level `duck` object of version 2 or higher.
