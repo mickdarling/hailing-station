@@ -26,7 +26,7 @@ import Testing
         #expect(router.duckMode(connection: connection) && !router.mediaMode(connection: connection))
         #expect(rig.details("ambient_media") == ["on=true reason=voice reported=0 refused=private",
                                                  "on=true reason=voice reported=0 refused=private"])
-        #expect(try rig.fake.recorded("control.txt") == "{\"duck\":true}\n")
+        #expect(await eventually { (try? rig.fake.recorded("control.txt")) == "{\"duck\":true}\n" })
         await rig.finish()
     }
 
