@@ -33,6 +33,21 @@ import Testing
         #expect(library.nextReserved(AmbientStopConfirmation.duckOn) == nil)
     }
 
+    /// #804: a `.wav` that is not a regular file (a FIFO, never opened) is `unreadable`, and one over the 1 MiB read
+    /// cap is `too_large` before it is read, not mistaken for an unreadable one.
+    @Test(.timeLimit(.minutes(1))) func aFifoIsUnreadableAndAFileOverTheReadCapIsTooLarge() throws {
+        let root = FileManager.default.temporaryDirectory.appendingPathComponent("ack-skip-\(UUID().uuidString)")
+        defer { try? FileManager.default.removeItem(at: root) }
+        let persona = root.appendingPathComponent("jarvis")
+        try FileManager.default.createDirectory(at: persona, withIntermediateDirectories: true)
+        try Self.wav(bytes: 4800).write(to: persona.appendingPathComponent("ok.wav"))
+        #expect(mkfifo(persona.appendingPathComponent("pipe.wav").path, 0o600) == 0)
+        try Data(count: 1_048_577).write(to: persona.appendingPathComponent("huge.wav"))
+        let library = AmbientAckLibrary(directory: root)
+        #expect(library.skipped == [.unreadable: 1, .tooLarge: 1])
+        #expect(library.startupDetail == "personas=1 clips=1 reserved=0 skipped=2 too_large=1 unreadable=1")
+    }
+
     @Test func aCleanLibraryKeepsTheShortDetail() throws {
         let root = FileManager.default.temporaryDirectory.appendingPathComponent("ack-skip-\(UUID().uuidString)")
         defer { try? FileManager.default.removeItem(at: root) }
