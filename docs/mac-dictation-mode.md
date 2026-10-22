@@ -17,9 +17,10 @@ An optional, default-off refinement step can tidy the text using the target app'
 
 - **Audio and owner gating.** The Mac streams PCM16 at 16 kHz to `haild`. RightyO transcribes it and identifies the enrolled owner (`RightyoInputConsumer`, `owners`). Dictation needs exactly this, so no new capture or recognizer is required.
 - **Spoken owner cues.**
-  - `VoiceMute` and `VoiceMedia` (`Input/RightyoInputConsumer.swift`) match a whole owner turn against a phrase set after stripping greetings and the addressing name.
+  - `VoiceMute` and `VoiceMedia` (`Input/RightyoInputConsumer.swift`) match a whole turn against a phrase set after stripping greetings and the addressing name.
   - RightyO's `dismiss` / `stop-phrase` handles "stop".
-  - A dictation cue fits the `VoiceMedia` pattern.
+  - A dictation cue can reuse that phrase matching, but **not** its voice gate. `holdsVoiceCommand` accepts any voice on an anonymous session, which is acceptable for silencing local audio but not for typing into apps. Dictation uses the stricter gate that destination notes use (#552): an enrolled session and an owner turn.
+- **Agent context.** Every RightyO `request` carries `context.turns`, the preceding turns (`RightyoInputFormedRequest`). Dictated speech would therefore ride along with the next "Jarvis, …" request unless it is explicitly excluded (see section 8).
 - **Mac menu bar.** `Apps/Hail-iOS/MacMenuBar.swift` has a status line and an Ambient Listening toggle. The icon comes from `StationMenuStatus`.
 - **Missing.** There is no Accessibility, `CGEvent`, insertion or secure-field code anywhere, and no local LLM in the Swift sources. The only LLM work is the offline intent experiment ([local-intent-evaluation.md](local-intent-evaluation.md)). It found 7–8B models too unreliable for routing, at roughly 170–210 ms warm.
 
@@ -47,7 +48,7 @@ While dictation is on, `haild` sends each **finalized owner utterance** to the M
 
 ### 2. Switching in and out
 
-- **Spoken cue:** owner-only, whole-turn match like `VoiceMedia`. For example "dictate", "start dictating", "stop dictating".
+- **Spoken cue:** whole-turn phrase match like `VoiceMedia`, but **enrolled owner only**, as for destination notes (#552). The cue and every dictated word require an enrolled session and an owner turn. On an anonymous session, dictation refuses to start. For example "dictate", "start dictating", "stop dictating".
 - **Menu-bar toggle:** a "Dictation" item, with a distinct menu-bar icon while active.
 - **Optional global hotkey:** use `RegisterEventHotKey` (Carbon). It needs no Input Monitoring permission, unlike a `CGEventTap`.
 - **Quiet timeout:** dictation turns itself off after N seconds of no owner speech.
@@ -64,10 +65,11 @@ Insert at the keyboard focus (`AXFocusedUIElement` of the frontmost app). Don't 
 ### 4. Insertion
 
 Primary method: **pasteboard plus synthesized Cmd-V, with a full restore**, following VoiceInk's careful version rather than Handy's text-only one.
-1. Snapshot every item and type on the general pasteboard.
-2. Write the text, marked `org.nspasteboard.TransientType` and `ConcealedType` so clipboard managers skip it, plus a private session marker.
-3. Wait about 100–200 ms, then post Cmd-V using the physical key code (9) to `.cghidEventTap`.
-4. After 250 ms or more, restore the snapshot **only if** the pasteboard still holds our marker. If the user copied something in between, keep theirs.
+1. **Check the current clipboard's types first, without reading any values.** If any item is `org.nspasteboard.ConcealedType` or `TransientType` (a copied password, or another tool's transient write), don't use the clipboard for this insert. Use the typing fallback. Snapshotting and restoring it would keep a password on the clipboard after the password manager's auto-clear, which only clears its own write.
+2. Otherwise, snapshot every item and type on the general pasteboard.
+3. Write the text, marked `org.nspasteboard.TransientType` and `ConcealedType` so clipboard managers skip it, plus a private session marker.
+4. Wait about 100–200 ms. **Immediately before posting, re-check** that focus is the same element and that it is still not secure (section 5); if either changed, abort and restore. Then post Cmd-V using the physical key code (9) to `.cghidEventTap`.
+5. After 250 ms or more, restore the snapshot **only if** the pasteboard still holds our marker. If the user copied something in between, keep theirs.
 
 Fallback: chunked `CGEventKeyboardSetUnicodeString` typing, for fields that reject paste (non-secure only). Use small chunks, never split a surrogate pair, and never retry a partial insert.
 
@@ -85,7 +87,9 @@ Refuse to insert, and show the refusal in the menu bar and with a short sound, w
 
 The second check is system-wide and can stay set after a password field closes (a "leak"), so it can refuse wrongly. That is the safe direction. The menu says "Secure input is on", so the user knows why.
 
-Context is never read from a secure field. Clipboard items marked `ConcealedType`, which password managers use, are never read.
+The gate runs when the utterance arrives **and again immediately before the paste or each typed chunk**, because focus can move during the wait.
+
+Context is never read from a secure field. Clipboard items marked `ConcealedType`, which password managers use, are never read, snapshotted or restored (section 4, step 1).
 
 ### 6. Granularity and in-dictation commands
 
@@ -130,14 +134,20 @@ Context is never read from a secure field. Clipboard items marked `ConcealedType
 ### 8. Privacy and routing
 
 - Dictated text is never sent to an agent session, the context buffer or a target.
+- **Agent context excludes dictation.** Turns spoken while dictation is on must never appear in a later request's `context.turns`. There are two ways to do it:
+  - (a) RightyO is told dictation is on and excludes those turns from context. This is a change in the rightyo repo.
+  - (b) `haild` records the dictation window and strips (or refuses) any context turn inside it before handoff.
+
+  Recommendation: (a) as the source of truth, with (b) as a fail-closed check. This is decision **D9**.
 - It follows normal transcript retention. Refinement context is held in memory only, for the one request.
 - Only the owner's voice is transcribed into the field. Guest speech is dropped while dictating.
 - Nothing leaves the Mac: no cloud recognizer or LLM.
 
 ## Proposed slices (small PRs, each behind a default-off flag)
 
-1. **Protocol and `haild`:** the dictation capability and frame. In dictation mode, finalized owner utterances go to the requesting Mac connection and are never dispatched. Security:critical, two keys.
-2. **Spoken cues and the quiet timeout** (`VoiceMedia`-style), with tests.
+1. **Protocol and `haild`:** the dictation capability and frame. In dictation mode, finalized **enrolled-owner** utterances go to the requesting Mac connection and are never dispatched. `haild`'s fail-closed context check (section 8, D9) is part of this slice. Security:critical, two keys.
+1b. **RightyO:** a dictation flag that excludes dictated turns from `context.turns` (rightyo repo).
+2. **Spoken cues and the quiet timeout:** `VoiceMedia`-style phrase matching with the enrolled-owner gate, with tests, including a refusal on anonymous sessions.
 3. **Mac app insertion core:** the Accessibility permission flow, the secure-field gate, paste-and-restore, and the typing fallback. Tests use a fake pasteboard and a fake AX focus.
 4. **Menu-bar state and the hotkey.**
 5. **Tier 0 cleanup and in-dictation commands.**
@@ -157,6 +167,7 @@ A hands-on test matrix on Mick's Mac covers the apps he uses: an editor, Safari,
 | D6 | Insertion | Paste-and-restore, with typed fallback |
 | D7 | Command set | As listed in section 6 |
 | D8 | Refinement | Off by default; Foundation Models; app name and nearby text only; ≤ 1.5 s |
+| D9 | Keeping dictation out of agent context | RightyO excludes the turns; `haild` strips or refuses as a check |
 
 Sources include the Handy source at `~/Developer/Handy`, plus public documentation and source for VoiceInk, SuperWhisper, Wispr Flow, MacWhisper, Aqua Voice and Apple, as of October 2026. Unverified points:
 - Foundation Models latency on a Mac;
