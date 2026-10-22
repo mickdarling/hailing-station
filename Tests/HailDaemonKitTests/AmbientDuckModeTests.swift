@@ -18,6 +18,7 @@ import Testing
         "confirmprivacyoff": [clip("Recording again.", 8)],
         "confirmprivacystatus": [clip("Privacy on. I'm only listening for my name.", 7)],
         "confirmstillrecording": [clip("Still recording.", 6)],
+        "confirmprivacyunavailable": [clip("I can't listen privately right now.", 4)],
         "confirmprivacyhint": [clip("To go private, say stop recording on its own.", 3)],
         "confirmnotsent": [clip("Nothing was sent.", 5)]
     ])
@@ -132,13 +133,15 @@ final class DuckRig: Sendable {
     init(saying words: String = "", advertises: Bool = false, version: Int = 2, script: String? = nil,
          enrolled: Bool = true,
          clips: AmbientAckLibrary? = nil, timeout: TimeInterval = AmbientRightyoRouter.defaultDuckTimeout,
-         capabilities: [String] = []) async throws {
+         capabilities: [String] = [],
+         startDeadline: TimeInterval = RightyoAmbientPipeline.defaultStartDeadline) async throws {
         fake = try FakeRightyo(script ?? "/bin/cat <&3 > control.txt &\n" + AmbientPrivacyEntryTests.fixture(
             saying: words, enrolled: enrolled, advertises: advertises, version: version))
         try fake.install(fixture: enrolled ? "enrolled-formed-request.jsonl" : "tool-events.jsonl")
         let events = DuckEvents()
         env = try await ambientRig(fake, timing: .init(eofGrace: 20, termGrace: 20), acknowledgements: clips,
-                                   replyControl: true, duckTimeout: timeout, onEvent: { event in
+                                   replyControl: true, duckTimeout: timeout, startDeadline: startDeadline,
+                                   onEvent: { event in
             events.list.withLock { $0.append(event) }
         })
         self.events = events

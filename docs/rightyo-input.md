@@ -702,20 +702,23 @@ Either way the turn is held back from the agent and changes nothing, media mode 
 
 RightyO does not advertise v2 for a coaching listener, a tool replay, or a session that uses a hosted transcriber or diarizer, since the private audio would still leave the host. These are refused the same way; the host cannot tell which applies.
 
-**Children start private (S-2b).** While privacy is on, every RightyO child `haild` launches for that connection (a new stream, a respawn or a reload) gets RightyO's start-private option, `--start-private`, so it is private before it reads any audio. Until its `started` arrives, its words reach no relay and every request is held. Its `started` must confirm it as `"duck": {"version": 2, "private": true}` (version 2 or later; `private` the boolean `true`, nothing else). Any other `started` (no `duck`, a v1, a v2 without `private: true`) gets the child killed at once (SIGTERM then SIGKILL, no grace) and never admitted:
+**Children start private (S-2b).** While privacy is on, every RightyO child `haild` launches for that connection (a new stream, a respawn or a reload) gets RightyO's start-private option, `--start-private`, so it is private before it reads any audio. Until its `started` arrives, its words reach no relay and every request is held. Its `started` must confirm it as `"duck": {"version": 2, "private": true}` (version 2 or later; `private` the boolean `true`, nothing else), within 10 seconds of launch.
 
-- the run ends with `child privacyUnconfirmed`, and the device's stream is ended;
-- `ambient_privacy_start outcome=refused reason=unconfirmed` is logged;
-- privacy stays on, with its timeout: nothing plays and the device hears no off.
+**Privacy is never lost to a child.** A child that cannot keep privacy is killed at once (SIGTERM then SIGKILL, no grace) and never admitted. That covers:
 
-The option's name follows rightyo#242 round 2; until RightyO accepts it, a RightyO that rejects the unknown option exits, and one that ignores it does not confirm and is killed: either way the stream fails closed.
+- a start-private child whose `started` says anything else (no `duck`, a v1, a v2 without `private: true`);
+- a start-private child with no `started` within the deadline;
+- a child launched while privacy was off, for which privacy came on before its `started`, that did not advertise v2 (one that did takes the wish at `started`);
+- a start that fails outright (the child cannot be launched).
 
-A child launched while privacy was off, for which privacy came on before its `started`, still takes the wish at `started` if it advertised v2. If it did not, privacy ends rather than be claimed:
+Then no stream runs and nothing records:
 
-- the timeout is cancelled;
-- the device is told off with reason `timeout`, the protocol's "it turned itself off";
-- `ambient_duck_unsupported child=unsupported_version` is logged;
-- `confirm-privacy-off/` plays, logged `on=false lost`, so recording never resumes in silence.
+- the run ends with `privacy unconfirmed` (or the start is refused), and the device's stream is ended;
+- `ambient_privacy_start outcome=refused reason=unconfirmed` is logged for a killed child;
+- privacy stays on: no `lost`, no off, and the device is never told off;
+- the owner hears `confirm-privacy-unavailable/` ("I can't listen privately right now.") at most once per connection, logged `ambient_privacy_unavailable confirm=<token>`; later refusals log `confirm=already_told`.
+
+The option's name follows rightyo#242 round 2. Until RightyO accepts it, a RightyO that rejects the unknown option exits, and one that ignores it does not confirm and is killed: either way the stream fails closed.
 
 #### While private
 
@@ -743,7 +746,8 @@ These reserved folders play nothing until Mick records them:
 | Folder | Words | When |
 | --- | --- | --- |
 | `confirm-privacy-on/` | "Privacy on. I'm only listening for my name." | entry, and re-entry while on (so worded as a status) |
-| `confirm-privacy-off/` | "Recording again." | RightyO's exit, or privacy lost by a child that cannot take it |
+| `confirm-privacy-off/` | "Recording again." | RightyO's exit |
+| `confirm-privacy-unavailable/` | "I can't listen privately right now." | privacy on, but no child could keep it (once per connection) |
 | `confirm-privacy-status/` | "Privacy on. I'm only listening for my name." | RightyO's status event while private |
 | `confirm-still-recording/` | "Still recording." | a negated entry |
 | `confirm-not-sent/` | "Nothing was sent." | an entry no child could take |

@@ -60,7 +60,7 @@ import Testing
         let connection = try #require(rig.connection())
         #expect(await rig.env.router.reload() == .reloaded)
         #expect(await eventually { rig.details("ambient_privacy_start") == ["outcome=refused reason=unconfirmed"] })
-        #expect(await eventually { rig.details("ambient_ended").contains("child privacyUnconfirmed") })
+        #expect(await eventually { rig.details("ambient_ended").contains("privacy unconfirmed") })
         #expect(rig.env.router.duckMode(connection: connection))
         #expect(rig.details("ambient_duck_unsupported").isEmpty)
         #expect(rig.details("ambient_duck") == ["on=true reason=voice reported=1"])

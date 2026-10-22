@@ -118,9 +118,14 @@ import Testing
         #expect(await rig.env.router.reload() == .reloaded)
         #expect(await eventually { rig.details("ambient_privacy_start") == ["outcome=refused reason=unconfirmed"] })
         #expect(rig.env.router.duckMode(connection: connection))
+        // Round 2: no `lost`; the owner hears "I can't listen privately right now." once.
+        #expect(await eventually {
+            rig.details("ambient_privacy_unavailable") == ["confirm=confirmprivacyunavailable/0:sent"]
+        })
         await rig.finish()
         #expect(rig.details("ambient_duck_confirmed").count == 1)
         #expect(rig.details("ambient_duck") == ["on=true reason=voice reported=1"])
+        #expect(rig.details("ambient_duck_unsupported").isEmpty)
     }
 
     /// Round 3 B2: the owner role's entry without a live voiceprint is refused audibly, never in silence: its own clip

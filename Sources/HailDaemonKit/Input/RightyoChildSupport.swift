@@ -5,9 +5,9 @@ import Synchronization
 
 /// Why the RightyO child refused to start or its output ended (#203). Cases name rules, never content:
 /// `unsafeExecutable`/`unsafeConfig` (see `validate`), `lineTooLong` (a stdout line past `maxLineBytes`),
-/// `backlog` (untaken lines past `maxQueuedBytes`), `transportLost`, `privacyUnconfirmed` (#735 S-2b, killed).
+/// `backlog` (untaken lines past `maxQueuedBytes`), `transportLost`.
 public enum RightyoChildError: Error, Sendable, Equatable {
-    case unsafeExecutable, unsafeConfig, lineTooLong, backlog, transportLost, privacyUnconfirmed
+    case unsafeExecutable, unsafeConfig, lineTooLong, backlog, transportLost
 }
 
 /// How a reaped child ended.
@@ -32,16 +32,12 @@ extension RightyoChildProcess {
         public var writtenBytes = 0, droppedChunks = 0, droppedBytes = 0, stderrBytes = 0
     }
     /// RightyO requires `--provenance` with `--mode stdin`; the phone microphone is `live-microphone`.
-    /// `startPrivate` (#735 S-2b): private before any audio, whenever privacy is on (`AmbientDuckControl`).
     public static func arguments(session: String, config: URL,
                                  provenance: RightyoAudioProvenance = .liveMicrophone,
-                                 replyControl: Bool = false, startPrivate: Bool = false) -> [String] {
+                                 replyControl: Bool = false) -> [String] {
         ["listen", "--mode", "stdin", "--provenance", provenance.rawValue, "--session-id", session,
          "--config", config.path] + (replyControl ? ["--control-fd", String(controlDescriptor)] : [])
-            + (startPrivate ? [startPrivateFlag] : [])
     }
-    /// RightyO's start-private option (rightyo#242 round 2; provisional until that PR names it).
-    static let startPrivateFlag = "--start-private"
     /// The child's descriptor for host control lines (rightyo#124), present only with `replyControl`.
     static let controlDescriptor: Int32 = 3
 

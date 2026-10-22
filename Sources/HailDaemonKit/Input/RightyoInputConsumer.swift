@@ -284,9 +284,12 @@ enum AmbientStopConfirmation {
     static let privacyRefused = RightyoAddressing.key("confirm-privacy-refused")
     /// "To go private, say 'stop recording' on its own.": the owner's turn that starts with a command and goes on.
     static let privacyHint = RightyoAddressing.key("confirm-privacy-hint")
+    /// "I can't listen privately right now." (#735 S-2b): privacy is on but no child could keep it (a start-private
+    /// child that did not confirm, an older RightyO, a failed start), so nothing listens; once per connection.
+    static let privacyUnavailable = RightyoAddressing.key("confirm-privacy-unavailable")
     static let reserved: Set<String> = [stopped, idle, muted, unmuted, mediaOn, mediaOff, saved, notSaved, notSent,
                                         privacyOn, privacyOff, privacyStatus, stillRecording, privacyRefused,
-                                        privacyHint]
+                                        privacyHint, privacyUnavailable]
 
     /// Why a playback stop is not confirmed, as a log token, or nil when it is: only the enrolled owner's stop, and
     /// only on a connection still there to hear it.

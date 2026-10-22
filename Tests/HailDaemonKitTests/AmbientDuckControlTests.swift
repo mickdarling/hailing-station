@@ -47,13 +47,13 @@ import Testing
         #expect(written.all == [true, false])
     }
 
-    /// A child that starts without `duck` while duck mode is wished for is reported, never written, and no longer
-    /// counts as ducking, so its exit phrase is a request again.
-    @Test func aWishAnOlderChildCannotTakeIsDroppedAndReported() {
+    /// A child that starts without `duck` while privacy is wished for (the spawn-to-started race, #735 S-2b) is
+    /// refused, never written, and still counts as private until it is killed: privacy is never lost.
+    @Test func aWishAnOlderChildCannotTakeIsRefusedAndKeptPrivate() {
         let (control, written) = (AmbientDuckControl(), Written())
         #expect(!control.report(true, write: written.write) && control.active)
-        #expect(control.observe(started: Data(Self.started.utf8), write: written.write) == .lost)
-        #expect(!control.active && written.all.isEmpty)
+        #expect(control.observe(started: Data(Self.started.utf8), write: written.write) == .refused)
+        #expect(control.active && written.all.isEmpty)
         let (idle, none) = (AmbientDuckControl(), Written())
         #expect(idle.observe(started: Data(Self.started.utf8), write: none.write) == .kept)
     }

@@ -484,6 +484,8 @@ public final class AmbientRightyoRouter: AmbientAudioSink, AmbientListenerWiring
         /// How long the owner's spoken duck mode (#735) lasts before it turns itself off: host.json
         /// `ambient.duckTimeout`, or `defaultDuckTimeout`.
         public var duckTimeout: TimeInterval = AmbientRightyoRouter.defaultDuckTimeout
+        /// How long a child launched start-private (#735 S-2b) has to emit `started` before it is killed.
+        public var startDeadline: TimeInterval = RightyoAmbientPipeline.defaultStartDeadline
         /// The owner's allowlisted note destinations (#552); nil leaves spoken notes off.
         public var destinations: VoiceDestinations?
         var notes = VoiceNoteRunner()
@@ -557,6 +559,8 @@ public final class AmbientRightyoRouter: AmbientAudioSink, AmbientListenerWiring
         var media: [UUID: AmbientMediaTimer] = [:]
         /// Connections whose owner turned duck mode on (#735), kept like `media`. A connection is never in both.
         var duck: [UUID: AmbientDuckTimer] = [:]
+        /// Connections already told "I can't listen privately right now." (#735 S-2b): at most once each.
+        var unavailableTold: Set<UUID> = []
         /// The reply whose final text, the latest this host delivered, ended with a question (rightyo#199); nil
         /// otherwise, and cleared by audio of any other reply (a text-less acknowledgement clip). The phone plays
         /// replies in order and reports one end when its queue drains, so that reply is the one just heard.
@@ -650,6 +654,7 @@ public final class AmbientRightyoRouter: AmbientAudioSink, AmbientListenerWiring
             (state.latest[connection], state.inputRoutes[connection]) = (nil, nil)
             state.media.removeValue(forKey: connection)?.timer.cancel()
             state.duck.removeValue(forKey: connection)?.timer.cancel()
+            state.unavailableTold.remove(connection)
             if let active = state.active, state.runs[active.run]?.connection == connection { state.active = nil }
             return state.runs.filter { $0.value.connection == connection }.map(\.key)
         }
@@ -965,6 +970,7 @@ extension AmbientRightyoRouter {
                                                               duckUnsupported(on: connection))
         // Privacy on (#735 S-2b): the child is launched already private, on a spawn, a respawn or a reload alike.
         settings.startPrivate = state.withLock { $0.duck[connection] != nil }
+        settings.startDeadline = configuration.startDeadline
         if let destinations = configuration.destinations {
             (settings.destinations, settings.onVoiceDestination) = (destinations, voiceNote(on: connection,
                                                                                             listener: listener))
@@ -1166,9 +1172,10 @@ extension AmbientRightyoRouter {
         } catch {
             let described = Self.describe(error)
             (failure, detail) = (described, described)
-            // A child asked to start private that did not confirm it (#735 S-2b) was killed and is not admitted.
-            if error as? RightyoChildError == .privacyUnconfirmed {
+            // A child that could not keep privacy (#735 S-2b) was killed and is not admitted; privacy stays on.
+            if error as? RightyoPrivacyError == .unconfirmed {
                 emit("ambient_privacy_start", connection: connection, detail: "outcome=refused reason=unconfirmed")
+                privacyUnavailable(on: connection)
             }
         }
         // A reload's replaced child (#405) is marked `replaced`, so `haild doctor` does not read its end as a failure.
@@ -1199,6 +1206,8 @@ extension AmbientRightyoRouter {
 
     private func refuse(_ stream: UUID, connection: UUID, reason: String) {
         emit("ambient_refused", detail: reason)
+        // A start refused while private (#735 S-2b): nothing listens, privacy stays on, and the owner is told.
+        if state.withLock({ $0.duck[connection] != nil }) { privacyUnavailable(on: connection) }
         let listener = state.withLock { $0.listener?.value }
         Task { await listener?.ambientFailed(stream: stream, connection: connection,
                                              message: "ambient unavailable: \(reason)") }
@@ -1215,6 +1224,7 @@ extension AmbientRightyoRouter {
     fileprivate static func describe(_ error: any Error) -> String {
         switch error {
         case let error as RightyoChildError: "child \(error)"
+        case let error as RightyoPrivacyError: "privacy \(error)"
         case let error as RightyoInputError: "input \(error)"
         case let error as LocalDispatchRefusal: "dispatch \(error.rawValue)"
         case let error as LocalReplyRefusal: "dispatch \(error.rawValue)"
@@ -1526,6 +1536,26 @@ extension AmbientRightyoRouter {
                        detail: "on=\(on) device=\(sent ?? "no_connection")")
         }
         return reported
+    }
+}
+
+extension AmbientRightyoRouter {
+    /// Privacy is on but no child could keep it (#735 S-2b): nothing listens and privacy stays on (no `lost`, no
+    /// off). The owner hears `confirm-privacy-unavailable/` ("I can't listen privately right now.") at most once
+    /// per connection; later refusals only log. Tokens only.
+    func privacyUnavailable(on connection: UUID) {
+        let (first, listener) = state.withLock { state in
+            (state.unavailableTold.insert(connection).inserted, state.listener?.value)
+        }
+        guard first else {
+            emit("ambient_privacy_unavailable", connection: connection, detail: "confirm=already_told")
+            return
+        }
+        Task { [weak self, weak listener] in
+            let confirm = await self?.confirmVoiceMute(AmbientStopConfirmation.privacyUnavailable, on: connection,
+                                                       listener: listener) ?? "none"
+            self?.emit("ambient_privacy_unavailable", connection: connection, detail: "confirm=\(confirm)")
+        }
     }
 }
 
