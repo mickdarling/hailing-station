@@ -2,10 +2,18 @@
 public import Foundation
 import HailProtocol
 
-/// A connection's duck mode timeout (#735): the token an expiry must still match, and the task to cancel.
+/// A connection's duck mode timeout (#735): the token an expiry must still match, and the task to cancel. `warning`
+/// (H-4) plays the auto-end warning a minute before; nil when the timeout is too short for one.
 struct AmbientDuckTimer {
     let token: UUID
     let timer: Task<Void, Never>
+    var warning: Task<Void, Never>?
+
+    /// Cancels the auto-end and its warning together, so a warning never outlives the arming it belongs to.
+    func cancel() {
+        timer.cancel()
+        warning?.cancel()
+    }
 }
 
 /// Duck mode (#735, "let me think out loud"): the owner's spoken entry and exit, its auto-end, and its device notice.
@@ -16,6 +24,9 @@ extension AmbientRightyoRouter {
     public static let defaultDuckTimeout: TimeInterval = 3600
     /// The `ambient.duckTimeout` values `haild` accepts, in seconds: a minute to four hours.
     public static let duckTimeoutRange: ClosedRange<TimeInterval> = 60...(4 * 3600)
+    /// How long before the auto-end the owner hears `confirm-duck-ending/` (#735 H-4): a minute, enough to say the
+    /// entry again (which re-arms it) or wrap up. A timeout no longer than this has no warning.
+    static let defaultDuckWarningLead: TimeInterval = 60
 
     /// The owner's spoken duck mode (#735): set for every child of `connection` at once, then confirmed with a
     /// `confirm-duck-on/` or `confirm-duck-off/` clip when there is one, in the order said. An entry while duck mode is
@@ -70,8 +81,9 @@ extension AmbientRightyoRouter {
 extension AmbientRightyoRouter {
     /// The owner's duck cue (#735 H-3), confirmed in the order said: "discard that" with a `confirm-discarded/` clip,
     /// an ask nothing could send with `confirm-not-sent/`. A sent ask needs no clip of its own: the ordinary
-    /// acknowledgement already played, and the agent's reply follows. The status cue is H-4's; it plays nothing yet.
-    /// Logs counts and tokens only, never words.
+    /// acknowledgement already played, and the agent's reply follows. The status cue ("are you still listening") is
+    /// answered by the host with `confirm-duck-on/` ("Duck mode is on.", H-4), never by the agent: nothing is
+    /// dispatched, so a long silence never looks like a failure. Logs counts and tokens only, never words.
     func duckCue(on connection: UUID, listener: WebSocketListener) -> @Sendable (DuckCueOutcome) -> Void {
         let chain = SerialTaskChain()
         return { [weak self, weak listener] outcome in
@@ -92,7 +104,25 @@ extension AmbientRightyoRouter {
         case .asked(let turns, let bytes): (nil, "cue=ask outcome=sent turns=\(turns) bytes=\(bytes)")
         case .notSent: (AmbientStopConfirmation.notSent, "cue=ask outcome=not_sent")
         case .discarded(let turns): (AmbientStopConfirmation.discarded, "cue=discard turns=\(turns)")
-        case .status: (nil, "cue=status outcome=unanswered")
+        case .status: (AmbientStopConfirmation.duckOn, "cue=status outcome=answered")
+        }
+    }
+}
+
+extension AmbientRightyoRouter {
+    /// The auto-end warning for one arming of duck mode (#735 H-4), or nil when `timeout` is no longer than the lead:
+    /// after `timeout` less the lead it plays `confirm-duck-ending/` on `connection`, only if that same arming is still
+    /// on and a child of the connection runs. Cancelled with the auto-end (`AmbientDuckTimer.cancel`), so an exit, a
+    /// re-entry, media mode or the connection's end before then means no warning; a re-entry arms a fresh one.
+    func duckWarning(connection: UUID, token: UUID, timeout: TimeInterval,
+                     listener: WebSocketListener?) -> Task<Void, Never>? {
+        let lead = configuration.duckWarningLead
+        guard lead > 0, timeout > lead else { return nil }
+        return Task { [weak self, weak listener] in
+            try? await Task.sleep(for: .seconds(timeout - lead))
+            guard !Task.isCancelled, let self, duckArmed(connection: connection, token: token) else { return }
+            let confirm = await confirmVoiceMute(AmbientStopConfirmation.duckEnding, on: connection, listener: listener)
+            emit("ambient_duck_ending", connection: connection, detail: "confirm=\(confirm)")
         }
     }
 }

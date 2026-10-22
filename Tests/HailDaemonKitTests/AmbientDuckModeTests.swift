@@ -88,13 +88,15 @@ final class DuckRig: Sendable {
     /// `script`, when given, replaces the fixture saying `words` as the fake's whole behaviour.
     init(saying words: String = "", advertises: Bool = false, script: String? = nil, enrolled: Bool = true,
          clips: AmbientAckLibrary? = nil, timeout: TimeInterval = AmbientRightyoRouter.defaultDuckTimeout,
+         lead: TimeInterval = AmbientRightyoRouter.defaultDuckWarningLead,
          capabilities: [String] = []) async throws {
         fake = try FakeRightyo(script ?? "/bin/cat <&3 > control.txt &\n" + AmbientVoiceDuckTests.fixture(
             saying: words, enrolled: enrolled, advertises: advertises))
         try fake.install(fixture: enrolled ? "enrolled-formed-request.jsonl" : "tool-events.jsonl")
         let events = DuckEvents()
         env = try await ambientRig(fake, timing: .init(eofGrace: 20, termGrace: 20), acknowledgements: clips,
-                                   replyControl: true, duckTimeout: timeout, onEvent: { event in
+                                   replyControl: true, duckTimeout: timeout, duckWarningLead: lead,
+                                   onEvent: { event in
             events.list.withLock { $0.append(event) }
         })
         self.events = events
