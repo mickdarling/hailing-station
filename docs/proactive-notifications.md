@@ -14,7 +14,8 @@ beyond what Status lists**, and implementation waits for Mick's answers to the o
 | `haild notify` and the `kind: "update"` request on the reply socket | Merged (#643, #679). Not deployed. |
 | `session_update` host-to-device frame and its capability | Merged (#624). Nothing sends it yet. |
 | Showing an update card in the app | Local branches from 2026-10-20, never pushed or reviewed. |
-| Owner devices, draining, speaking, privacy, quiet hours, APNs | Proposed here. |
+| Slice 1a: APNs provider token, request and response classification (no network) | In review. |
+| Owner devices, draining, speaking, privacy, quiet hours, the rest of APNs | Proposed here. |
 
 On `main` today:
 - Every update is held: `listeningDevice` is nulled in `LocalSessionUpdate.swift`, and `SessionUpdateQueue.drain` has
@@ -268,7 +269,8 @@ answer and by `haild notify status`, stays as it is. An `info` update held for a
   `api.sandbox.push.apple.com`. No new dependency.
 - **Payload:** `aps.alert` with a title (the session label) and a body (see open question 1), plus `thread-id` (the
   session), `sound` and `interruption-level: active`. A `hail` object carries only `update`, `session` and
-  `priority`. Card text is never pushed.
+  `priority`; the summary push carries its count as `hail.summary` instead of `update` and `session`. Card text
+  is never pushed.
 - **Headers:**
   - `authorization: bearer <JWT>`, the current provider token, never logged; and `apns-topic`, the app's bundle ID
     from `apns.json`.
