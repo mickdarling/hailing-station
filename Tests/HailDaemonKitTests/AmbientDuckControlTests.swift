@@ -10,50 +10,51 @@ import Testing
     static let started = #"{"type": "session", "phase": "started", "capabilities": {}}"#
     static let advertised = #"{"type": "session", "phase": "started", "duck": {"version": 1}}"#
 
-    /// Every line a control would write, and the control writing them.
+    /// Every line a control was asked to write.
     final class Written: Sendable {
         private let lines = Mutex<[Bool]>([])
         var all: [Bool] { lines.withLock { $0 } }
-        func control() -> AmbientDuckControl {
-            AmbientDuckControl { [self] on in
-                lines.withLock { $0.append(on) }
-                return true
-            }
+        func write(_ on: Bool) -> Bool {
+            lines.withLock { $0.append(on) }
+            return true
         }
     }
 
-    private func control() -> (AmbientDuckControl, Written) {
-        let written = Written()
-        return (written.control(), written)
-    }
-
     @Test func aChildThatAdvertisedDuckIsWrittenEveryChange() {
-        let (control, written) = control()
-        control.observe(started: Data(Self.advertised.utf8))
-        #expect(control.report(true) && control.report(false))
+        let (control, written) = (AmbientDuckControl(), Written())
+        #expect(!control.observe(started: Data(Self.advertised.utf8), write: written.write))
+        #expect(control.report(true, write: written.write) && control.active)
+        #expect(control.report(false, write: written.write) && !control.active)
         #expect(written.all == [true, false])
     }
 
     @Test func anOlderChildIsNeverWrittenAndNeverTookIt() {
-        let (control, written) = control()
-        control.observe(started: Data(Self.started.utf8))
-        #expect(!control.report(true) && !control.report(false))
+        let (control, written) = (AmbientDuckControl(), Written())
+        #expect(!control.observe(started: Data(Self.started.utf8), write: written.write))
+        #expect(!control.report(true, write: written.write) && !control.report(false, write: written.write))
         #expect(written.all.isEmpty)
     }
 
     /// A wish made before `started` (a reloaded child while duck mode is on) is written once a capable child starts,
     /// and a later `started` never changes what the first one said.
     @Test func aWishBeforeStartedIsWrittenOnceTheChildAdvertisesIt() {
-        let (control, written) = control()
-        #expect(!control.report(true))
-        control.observe(started: Data(Self.advertised.utf8))
-        control.observe(started: Data(Self.started.utf8))
-        #expect(control.report(false))
+        let (control, written) = (AmbientDuckControl(), Written())
+        #expect(!control.report(true, write: written.write))
+        #expect(!control.observe(started: Data(Self.advertised.utf8), write: written.write))
+        #expect(!control.observe(started: Data(Self.started.utf8), write: written.write))
+        #expect(control.report(false, write: written.write))
         #expect(written.all == [true, false])
-        let (older, none) = self.control()
-        #expect(!older.report(true))
-        older.observe(started: Data(Self.started.utf8))
-        #expect(none.all.isEmpty)
+    }
+
+    /// A child that starts without `duck` while duck mode is wished for is reported, never written, and no longer
+    /// counts as ducking, so its exit phrase is a request again.
+    @Test func aWishAnOlderChildCannotTakeIsDroppedAndReported() {
+        let (control, written) = (AmbientDuckControl(), Written())
+        #expect(!control.report(true, write: written.write) && control.active)
+        #expect(control.observe(started: Data(Self.started.utf8), write: written.write))
+        #expect(!control.active && written.all.isEmpty)
+        let (idle, none) = (AmbientDuckControl(), Written())
+        #expect(!idle.observe(started: Data(Self.started.utf8), write: none.write))
     }
 
     @Test(arguments: [#"{"duck": true}"#, #"{"duck": null}"#, #"{"duck": [1]}"#, "[]", "not json", #"{}"#])

@@ -122,8 +122,9 @@ enum VoiceMedia {
 }
 
 /// What the owner's spoken duck mode phrase (#735) asks the host to do: turn it `on` or `off`, or, on a session that
-/// cannot tell the owner's voice apart, `refused` (the phrase is held back and the owner told nothing was sent).
-public enum VoiceDuckCommand: Sendable, Equatable { case on, off, refused }
+/// cannot tell the owner's voice apart, `refused` (the phrase is held back and the owner told nothing was sent);
+/// `entry` says whether the refused phrase was the entry or the exit.
+public enum VoiceDuckCommand: Sendable, Equatable { case on, off, refused(entry: Bool) }
 
 /// The owner's spoken duck mode (#735, "let me think out loud"): a whole turn that is only an on or off phrase,
 /// trimmed as `VoiceMute` trims, except that it must name the assistant ("Jarvis, done thinking"), for entry as well
@@ -168,8 +169,9 @@ enum AmbientStopConfirmation {
     static let saved = RightyoAddressing.key("confirm-saved"), notSaved = RightyoAddressing.key("confirm-not-saved")
     /// An ambient request the owner addressed to a voice route that did not take it (#636): "Nothing was sent."
     static let notSent = RightyoAddressing.key("confirm-not-sent")
-    /// Duck mode (#735): "Thinking out loud. I'm listening." and "Done thinking." A folder Mick has not recorded yet
-    /// plays nothing, as for media mode.
+    /// Duck mode (#735): "Duck mode is on." and "Duck mode is off." `confirm-duck-on/` must be worded as a status, not
+    /// "Turning on…", since it also answers an entry said while duck mode is already on. A folder Mick has not
+    /// recorded yet plays nothing, as for media mode.
     static let duckOn = RightyoAddressing.key("confirm-duck-on")
     static let duckOff = RightyoAddressing.key("confirm-duck-off")
     static let reserved: Set<String> = [stopped, idle, muted, unmuted, mediaOn, mediaOff, saved, notSaved, notSent,
@@ -351,9 +353,10 @@ public actor RightyoInputConsumer {
     /// Whether media phrases are commands (#551): only when the child has a control descriptor to carry them.
     private let mediaCommands: Bool
     /// The owner's spoken duck mode (#735), held back like `lastVoiceMute`; nil for any other line. Duck phrases are
-    /// commands only with `duckCommands` (a control descriptor and a host that handles them).
+    /// commands only with `duckActive` (a control descriptor and a host that handles them), which says whether duck
+    /// mode is on: an exit is a command only then, and otherwise a request exactly as before duck mode existed.
     private(set) var lastVoiceDuck: VoiceDuckCommand?
-    private let duckCommands: Bool
+    private let duckActive: (@Sendable () -> Bool)?
     /// Utterances whose owner transcript already ended duck mode, so their request is held back without a second off.
     private var duckExits: [String] = []
     /// The owner's note to an allowlisted destination (#552), held back like `lastVoiceMute`; nil for any other line.
@@ -372,14 +375,14 @@ public actor RightyoInputConsumer {
                 allowSynthetic: Bool = false, streamBudgetMs: Int? = nil,
                 dispatcher: (any RightyoDispatching)? = nil, echoFilter: (@Sendable (String) -> Bool)? = nil,
                 mediaCommands: Bool = false, destinations: VoiceDestinations? = nil,
-                routing: RightyoVoiceRouting? = nil, duckCommands: Bool = false) throws {
+                routing: RightyoVoiceRouting? = nil, duckActive: (@Sendable () -> Bool)? = nil) throws {
         guard !binding.isEmpty, RightyoInputEvent.identifier(session), streamBudgetMs.map({ $0 >= 0 }) ?? true else {
             throw RightyoInputError.unavailableBinding
         }
         try Self.validateTarget(target)
         self.dispatcher = dispatcher ?? host.map { RightyoHostDispatcher(host: $0) }
         (self.echoFilter, self.mediaCommands, self.destinations) = (echoFilter, mediaCommands, destinations)
-        (self.routing, self.duckCommands) = (routing, duckCommands)
+        (self.routing, self.duckActive) = (routing, duckActive)
         self.allowSynthetic = allowSynthetic
         self.target = target
         self.binding = binding
@@ -523,23 +526,28 @@ extension RightyoInputConsumer {
     /// The owner's duck mode phrase (#735) in a request; true when it is held back. Entry and exit are the enrolled
     /// owner's alone, the destinations rule (#552), not the mute's: a guest's phrase is a request like any other, and
     /// on an anonymous session, where no voice can be told apart, it is held back as `refused`. An exit its own
-    /// transcript already carried out (`noteDuckExit`) is held back with nothing more to do.
+    /// transcript already carried out (`noteDuckExit`) is held back with nothing more to do. While duck mode is off an
+    /// exit phrase is not a command at all: it reaches the agent as it did before duck mode existed.
     private func holdsVoiceDuck(_ turn: RightyoInputEvent.Turn, owner: Bool) -> Bool {
-        guard duckCommands, let command = VoiceDuck.command(in: turn.text, names: voiceNames) else { return false }
+        guard let duckActive, let command = VoiceDuck.command(in: turn.text, names: voiceNames) else { return false }
+        if duckExits.contains(turn.utteranceId) { return true }
+        if command == .off, !duckActive() { return false }
         guard speakers == "enrolled" else {
-            lastVoiceDuck = .refused
+            lastVoiceDuck = .refused(entry: command == .on)
             return true
         }
         guard owner else { return false }
-        lastVoiceDuck = duckExits.contains(turn.utteranceId) ? nil : command
+        lastVoiceDuck = command
         return true
     }
 
     /// The owner's exit phrase in a transcript (#735). While duck mode is on RightyO decides nothing and sends no
     /// request (rightyo R-2), so "Jarvis, done thinking" arrives only as the enrolled owner's transcript; it is
     /// carried out from there, at most once per utterance. An echo or a turn not from the live microphone never is.
+    /// It trusts the transcript's `owner` role alone: under R-2 no attention record follows to confirm or demote it,
+    /// and an exit can only fail toward normal mode, never into a mode that withholds requests.
     func noteDuckExit(_ turn: RightyoInputEvent.Turn) {
-        guard duckCommands, speakers == "enrolled", owners.contains(turn.utteranceId),
+        guard duckActive?() == true, speakers == "enrolled", owners.contains(turn.utteranceId),
               allowSynthetic || turn.provenance == "live-microphone", echoFilter?(turn.text) != true,
               VoiceDuck.command(in: turn.text, names: voiceNames) == .off else { return }
         lastVoiceDuck = .off

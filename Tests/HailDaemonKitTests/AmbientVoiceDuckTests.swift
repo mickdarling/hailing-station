@@ -43,9 +43,10 @@ import Testing
         #expect(try fake.recorded("control.txt") == "{\"duck\":true}\n{\"media\":false}\n{\"duck\":false}\n")
     }
 
-    /// Runs one fixture through a pipeline and returns what reached `onVoiceDuck` and how many requests were typed.
-    private func run(_ script: String, enrolled: Bool, control: Bool = true, wired: Bool = true)
-        async throws -> ([VoiceDuckCommand], Int) {
+    /// Runs one fixture through a pipeline, with duck mode already on when `ducking` (the fixture must then advertise
+    /// `duck`), and returns what reached `onVoiceDuck` and how many requests were typed.
+    private func run(_ script: String, enrolled: Bool, control: Bool = true, wired: Bool = true,
+                     ducking: Bool = false) async throws -> ([VoiceDuckCommand], Int) {
         let fake = try FakeRightyo(script)
         defer { fake.cleanUp() }
         try fake.install(fixture: enrolled ? "enrolled-formed-request.jsonl" : "tool-events.jsonl")
@@ -58,6 +59,7 @@ import Testing
         configuration.replyControl = control
         let dispatcher = RecordingAmbientDispatcher()
         let pipeline = try RightyoAmbientPipeline(configuration: configuration, dispatcher: dispatcher)
+        if ducking { pipeline.reportDuck(true) }
         pipeline.finishInput()
         let delivered = try await pipeline.run().delivered
         return (seen.withLock { $0 }, delivered)
@@ -68,23 +70,51 @@ import Testing
         #expect(seen == [.on] && delivered == 0)
     }
 
-    /// The exit is carried out from the owner's transcript (in duck mode RightyO sends no request), and the request
-    /// that follows it here is held back without a second off.
-    @Test func theOwnersExitIsCarriedOutOnceFromItsTranscript() async throws {
-        let (seen, delivered) = try await run(Self.fixture(saying: "Rightyo, done thinking."), enrolled: true)
+    /// Re-entry while ducking is still an entry: the host answers it.
+    @Test func anEntryWhileDuckingIsHandedToTheHost() async throws {
+        let (seen, delivered) = try await run(Self.fixture(saying: "Rightyo, duck mode.", advertises: true),
+                                              enrolled: true, ducking: true)
+        #expect(seen == [.on] && delivered == 0)
+    }
+
+    /// While ducking, the exit is carried out from the owner's transcript, and the request that follows it here is held
+    /// back without a second off.
+    @Test func whileDuckingTheExitIsCarriedOutOnce() async throws {
+        let (seen, delivered) = try await run(Self.fixture(saying: "Rightyo, done thinking.", advertises: true),
+                                              enrolled: true, ducking: true)
         #expect(seen == [.off] && delivered == 0)
+    }
+
+    /// While duck mode is off the exit phrase is an ordinary request, as before duck mode existed: nothing is held,
+    /// refused or confirmed, with or without a RightyO that takes duck mode.
+    @Test(arguments: [true, false]) func outsideDuckModeTheExitReachesTheAgent(_ advertises: Bool) async throws {
+        let (seen, delivered) = try await run(Self.fixture(saying: "Rightyo, done thinking.", advertises: advertises),
+                                              enrolled: true)
+        #expect(seen.isEmpty && delivered == 1)
+        let (anonymous, sent) = try await run(Self.fixture(saying: "Rightyo, done thinking.", enrolled: false),
+                                              enrolled: false)
+        #expect(anonymous.isEmpty && sent == 1)
     }
 
     @Test func onAnAnonymousSessionTheEntryIsRefusedNotTyped() async throws {
         let (seen, delivered) = try await run(Self.fixture(saying: "Rightyo, duck mode.", enrolled: false),
                                               enrolled: false)
-        #expect(seen == [.refused] && delivered == 0)
+        #expect(seen == [.refused(entry: true)] && delivered == 0)
     }
 
-    /// A guest's phrase on an enrolled session is a request like any other, as for spoken notes (#552).
+    /// The refusal names its direction: an exit refused while ducking is not logged as an entry.
+    @Test func onAnAnonymousSessionAnExitWhileDuckingIsRefusedAsAnExit() async throws {
+        let script = Self.fixture(saying: "Rightyo, done thinking.", enrolled: false, advertises: true)
+        let (seen, delivered) = try await run(script, enrolled: false, ducking: true)
+        #expect(seen == [.refused(entry: false)] && delivered == 0)
+    }
+
+    /// A guest's phrase on an enrolled session is a request like any other, as for spoken notes (#552), even while
+    /// ducking.
     @Test(arguments: ["Rightyo, duck mode.", "Rightyo, done thinking."])
     func aGuestsPhraseIsARequestLikeAnyOther(_ words: String) async throws {
-        let (seen, delivered) = try await run(Self.fixture(saying: words, guest: true), enrolled: true)
+        let (seen, delivered) = try await run(Self.fixture(saying: words, guest: true, advertises: true),
+                                              enrolled: true, ducking: true)
         #expect(seen.isEmpty && delivered == 1)
     }
 
