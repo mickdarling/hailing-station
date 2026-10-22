@@ -69,6 +69,11 @@ struct RendererFixture: Sendable {
         }
     }
     write_file($record, "same-group-private-output");
+    if ($mode eq 'swap-folder') {
+        rename($output, "$output.moved") or die "fixture move failed";
+        mkdir($output, 0700) or die "fixture mkdir failed";
+        exit(23);
+    }
     exit(23) if $mode eq 'nonzero';
     if ($mode eq 'stdout') {
         die "fixture stdout configuration" unless ($ENV{VBSAY_STDOUT} // '') eq '1';

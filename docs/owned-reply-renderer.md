@@ -55,8 +55,18 @@ Successful cleanup requires **both** consumer retirement after stable-file/final
 trusted successful renderer exit that waits for all writers. Normal exit alone cannot prematurely
 delete PCM before those reads. Actual VB say can use subprocesses, so this is not a single-process
 claim. Cancellation, nonzero exit, or lost child ownership **retains the private leaf** with a fixed
-deferred/lost-ownership disposition. Exact leader reaping does not establish descendant quiescence.
-Controlled synthetic tests demonstrate a descendant can still write after the leader is cancelled.
+deferred/lost-ownership disposition, with one exception (#800): once the leader is reaped, a deferred
+(cancelled or nonzero-exit) leaf that is **empty** is removed, since it holds nothing to recover. The
+removal checks through the root descriptor that the name still names this renderer's leaf (device,
+inode, directory), then uses `unlinkat(AT_REMOVEDIR)`, which refuses a non-empty directory, so content
+is never removed. A descendant still writing either lands first, keeping the leaf, or later fails with
+ENOENT. When the leader is reaped before retirement, as on nonzero exit, `waitForCleanup` returns only
+after the removal, so the CLI cannot exit first; a live leader's deferral is reported at retirement and
+the removal follows its reap. POSIX has no inode-conditional
+rmdir, so a same-UID rebind between the check and the removal could cost an empty directory, never
+content. A lost-ownership leaf is always retained. Exact leader reaping does not establish descendant
+quiescence. Controlled synthetic tests demonstrate a descendant can still write after the leader is
+cancelled.
 
 Cancellation submits exact-child TERM then, after a short grace, exact-child KILL if ownership remains.
 Deferred retirement is reported without awaiting kernel exit. The CLI may await the signal-submission
