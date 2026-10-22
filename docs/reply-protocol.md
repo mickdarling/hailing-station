@@ -237,6 +237,13 @@ later instead of being sent as requests. Like media mode it lives on the host, s
 shaped exactly like `media_mode`. `reason` says why it last changed: `voice` when the owner said so, `timeout` when an
 on mode turned itself off, `device` when a device asked. `expires` comes only with `on: true`. It is sent only to a
 device that advertised `duck_mode` (`DuckMode.capability`), because an older device refuses an unknown command. It
-shows state only and grants no authority. Nothing turns duck mode on yet; the host behaviour comes later in #735.
+shows state only and grants no authority. The owner turns it on and off by voice (`docs/rightyo-input.md`).
 
 The decoder and the schema refuse the same things as for `media_mode`.
+
+`{"command": "end_duck_mode"}` (#735 H-4) is sent by a device to a host that advertised `end_duck_mode`
+(`DuckMode.endCapability`), when the user ends duck mode from the app. It carries nothing else. The host ends duck mode
+for that connection's own ambient stream only, as the spoken exit does, and tells the device `duck_mode` off with
+`reason: "device"`. A device can only end duck mode this way, never start it, and the command reaches no other
+connection. An older host does not advertise the capability, so a device never sends it there (an older host would
+refuse the unknown command). The decoder and the schema refuse any other key.

@@ -178,7 +178,7 @@ public enum Schema {
                     "error", "diagnostic", "stop_playback", "ambient_moved_here", "ambient_heard",
                     "ambient_overheard", "overheard_scope", "set_reply_mute", "owner_voice", "ambient_input",
                     "session_update", "health", "health_report", "media_mode",
-                    "duck_mode"
+                    "duck_mode", "end_duck_mode"
                 ]
                     .map(JSONValue.string)
             )]),
@@ -243,7 +243,8 @@ public enum Schema {
             healthPayloadRule,
             healthReportPayloadRule,
             mediaModePayloadRule,
-            duckModePayloadRule
+            duckModePayloadRule,
+            endDuckModePayloadRule
         ])
     ])
 }

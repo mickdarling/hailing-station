@@ -166,6 +166,10 @@ public enum ControlPayload: Sendable, Equatable {
     /// changed (one of `DuckMode.reasons`), and while on, when it turns itself off (Unix milliseconds). Sent only to a
     /// device that advertises `DuckMode.capability`. It shows state only and grants no authority.
     case duckMode(on: Bool, reason: String? = nil, expires: Int64? = nil)
+    /// Device to host (#735 H-4): end duck mode for this connection's own ambient stream, as the owner's spoken exit
+    /// does, with reason `device`. Only `command`; sent only to a host that advertises `DuckMode.endCapability`. It
+    /// can only end the mode, never start it, and reaches no other connection.
+    case endDuckMode
 }
 
 extension ControlPayload: Codable {
@@ -181,7 +185,7 @@ extension ControlPayload: Codable {
         case setReplyMute = "set_reply_mute", ownerVoice = "owner_voice", ambientInput = "ambient_input"
         case sessionUpdate = "session_update"
         case health, healthReport = "health_report"
-        case mediaMode = "media_mode", duckMode = "duck_mode"
+        case mediaMode = "media_mode", duckMode = "duck_mode", endDuckMode = "end_duck_mode"
     }
 
     // A closed wire enum is clearest as one exhaustive switch.
@@ -227,7 +231,7 @@ extension ControlPayload: Codable {
         case .sessionUpdate: self = try Self.sessionUpdate(from: decoder)
         case .health, .healthReport: self = try Self.health(from: decoder)
         case .mediaMode: self = try Self.mediaMode(from: decoder)
-        case .duckMode: self = try Self.duckMode(from: decoder)
+        case .duckMode, .endDuckMode: self = try Self.duckMode(from: decoder)
         }
     }
 
@@ -281,10 +285,15 @@ extension ControlPayload: Codable {
     }
 
     /// Strict (#735), exactly like `media_mode`: only `command`, the boolean `on`, an optional `reason` from
-    /// `DuckMode.reasons` and, only while on, a positive `expires`.
+    /// `DuckMode.reasons` and, only while on, a positive `expires`. `end_duck_mode` (H-4) is stricter still, like
+    /// `stop_playback`: only `command`, so nothing rides along on an end.
     private static func duckMode(from decoder: any Decoder) throws -> ControlPayload {
-        try requireOnly(["command", "on", "reason", "expires"], "duck_mode", decoder)
         let container = try decoder.container(keyedBy: CodingKeys.self)
+        guard try container.decode(Command.self, forKey: .command) == .duckMode else {
+            try requireOnly(["command"], "end_duck_mode", decoder)
+            return .endDuckMode
+        }
+        try requireOnly(["command", "on", "reason", "expires"], "duck_mode", decoder)
         let on = try container.decode(Bool.self, forKey: .on)
         let raw = try container.decodeIfPresent(String.self, forKey: .reason)
         let expires = try container.decodeIfPresent(Int64.self, forKey: .expires)
@@ -505,6 +514,7 @@ extension ControlPayload: Codable {
                                                                       debugDescription: "invalid duck_mode expires"))
             }
             try container.encodeIfPresent(expires, forKey: .expires)
+        case .endDuckMode: try container.encode(Command.endDuckMode, forKey: .command)
         }
     }
 }
@@ -604,8 +614,11 @@ public enum MediaMode {
 /// never sends `duck_mode` to a device without it, because an older device refuses an unknown command. `reason` says
 /// why it last changed: `voice` (the owner said so), `timeout` (it turned itself off) or `device` (a device asked).
 /// `expires` is when an on mode turns itself off, in Unix milliseconds like a frame's `ts`. Off by default.
+/// A device may end the mode (#735 H-4, never start it) with `end_duck_mode`, only on a host that advertises
+/// `endCapability` in its `hello`; an older host refuses the unknown command.
 public enum DuckMode {
     public static let capability = "duck_mode"
+    public static let endCapability = "end_duck_mode"
     public static let reasons = ["voice", "timeout", "device"]
 
     /// `value` when it is exactly one of `reasons`, else nil.
@@ -1055,6 +1068,12 @@ extension Schema {
                 "expires": .object(["type": .string("integer"), "minimum": .integer(1)])
             ])
         ])
+    ])
+
+    /// `end_duck_mode` carries only `command` (#735 H-4).
+    static let endDuckModePayloadRule: JSONValue = .object([
+        "if": .object(["properties": .object(["command": .object(["const": .string("end_duck_mode")])])]),
+        "then": .object(["additionalProperties": .bool(false), "properties": .object(["command": .object([:])])])
     ])
 
     /// `owner_voice` carries `command` and a known `state` and nothing else (rightyo#164).

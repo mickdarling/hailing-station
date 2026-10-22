@@ -288,6 +288,10 @@ public enum Fixtures {
             id: id(233), timestamp: 1_758_200_051_300, source: "host",
             payload: .control(.duckMode(on: false, reason: "timeout"))
         )),
+        Example(name: "control-end-duck-mode", frame: Frame(
+            id: id(234), timestamp: 1_758_200_051_400, source: "terminal",
+            payload: .control(.endDuckMode)
+        )),
         Example(name: "control-ambient-input", frame: Frame(
             id: id(212), timestamp: 1_758_200_050_900, source: "terminal",
             payload: .control(.ambientInput(route: "usb_audio"))

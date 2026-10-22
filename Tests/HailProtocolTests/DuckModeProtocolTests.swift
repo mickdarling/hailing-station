@@ -61,4 +61,27 @@ import Testing
             }
         }
     }
+
+    /// H-4: a device ends duck mode with `end_duck_mode`, only `command`, never with `duck_mode` itself, which stays
+    /// host-to-device state. The host capability that admits it is distinct from the device's `duck_mode`.
+    @Test func endDuckModeIsOnlyTheCommand() throws {
+        #expect(DuckMode.endCapability == "end_duck_mode")
+        #expect(DuckMode.endCapability != DuckMode.capability)
+        try roundTrip(.endDuckMode)
+        #expect(try decodeControl(#"{"command":"end_duck_mode"}"#) == .endDuckMode)
+        let frame = Frame(timestamp: 1, source: "terminal", payload: .control(.endDuckMode))
+        let wire = try #require(String(bytes: try FrameCoding.encode(frame), encoding: .utf8))
+        #expect(wire.contains(#""payload":{"command":"end_duck_mode"}"#))
+    }
+
+    /// Nothing rides along: not an `on` (a device can never start duck mode), a reason, a target or text.
+    @Test(arguments: [
+        #"{"command":"end_duck_mode","on":true}"#, #"{"command":"end_duck_mode","on":false}"#,
+        #"{"command":"end_duck_mode","reason":"device"}"#, #"{"command":"end_duck_mode","target":"tmux:a"}"#,
+        #"{"command":"end_duck_mode","text":"x"}"#, #"{"command":"End_Duck_Mode"}"#,
+        #"{"command":"start_duck_mode"}"#
+    ])
+    func endDuckModeRefusesAnythingElse(_ payload: String) {
+        #expect(throws: DecodingError.self) { try decodeControl(payload) }
+    }
 }
