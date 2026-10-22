@@ -23,6 +23,9 @@ public enum LocalReplyRefusal: String, Codable, Error, Sendable {
     case publicationFailed
     /// The reply was stopped by a dismissal (#309): the user asked for silence, so this is not a fault.
     case replyStopped
+    /// Its device is in privacy mode (#735 S-2c): nothing is played until the owner leaves it, and this reply is
+    /// dropped, not held for later. Not a fault.
+    case privacyHeld
     case internalFailure = "internal"
 
     public var message: String {
@@ -38,6 +41,7 @@ public enum LocalReplyRefusal: String, Codable, Error, Sendable {
         case .notUniqueRecipient: "request recipient is not unique; nothing published"
         case .publicationFailed: "publication failed; outcome is not retryable"
         case .replyStopped: "reply stopped by a dismissal; nothing published"
+        case .privacyHeld: "device is in privacy mode; reply dropped, nothing published"
         case .internalFailure: "internal failure"
         }
         return "reply refused [\(rawValue)]: \(reason)"

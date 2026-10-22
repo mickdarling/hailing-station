@@ -58,7 +58,8 @@ public actor WebSocketListener {
     /// Opt-in ambient listening (#203): the sink of the authorizer's `AmbientAudioGate`. Nil by default.
     let ambient: (any AmbientListenerWiring)?
     /// Per target, the connection that most recently sent it admitted input (#370). Host-side only.
-    let lastInput = LastInputLedger()
+    /// `replyHold`: connections whose agent replies are refused while private (#735 S-2c); the ambient router sets it.
+    let (lastInput, replyHold) = (LastInputLedger(), PrivateReplyHold())
     /// Sessions' unsolicited updates (#609): off unless `--session-updates`. The quiet switch lasts until restart.
     var sessionUpdates = SessionUpdateQueue(), sessionUpdatesQuiet = false
 
@@ -663,6 +664,7 @@ public final class AmbientRightyoRouter: AmbientAudioSink, AmbientListenerWiring
             (state.latest[connection], state.inputRoutes[connection]) = (nil, nil)
             state.media.removeValue(forKey: connection)?.timer.cancel()
             state.duck.removeValue(forKey: connection)?.timer.cancel()
+            state.listener?.value?.replyHold.set(false, connection: connection)
             if let active = state.active, state.runs[active.run]?.connection == connection { state.active = nil }
             return state.runs.filter { $0.value.connection == connection }.map(\.key)
         }
@@ -1528,6 +1530,8 @@ extension AmbientRightyoRouter {
         }
         guard on else {
             state.duck.removeValue(forKey: connection)?.timer.cancel()
+            // Replies flow again from the exit on (S-2c); those refused meanwhile stay dropped.
+            state.listener?.value?.replyHold.set(false, connection: connection)
             noticeDuck(false, connection: connection, reason: reason, in: &state)
             // Cleared only once the device was told the exit, and only if no connection is still private (S-2b).
             if configuration.privacyState != nil {
@@ -1555,6 +1559,13 @@ extension AmbientRightyoRouter {
             self?.setDuck(false, connection: connection, reason: "timeout", expected: token)
         }
         state.duck[connection] = AmbientDuckTimer(token: token, timer: timer)
+        // From now on the agent's replies to this connection are refused (S-2c), then its pending ones dropped.
+        let listener = state.listener?.value
+        listener?.replyHold.set(true, connection: connection)
+        mediaNotices.enqueue { [weak self, weak listener] in
+            let dropped = await listener?.dropPrivateReplies(connection: connection) ?? 0
+            self?.emit("ambient_privacy_replies", connection: connection, detail: "dropped=\(dropped)")
+        }
         noticeDuck(true, connection: connection, reason: reason, in: &state)
     }
 
