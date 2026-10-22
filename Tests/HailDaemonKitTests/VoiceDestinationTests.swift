@@ -104,6 +104,18 @@ import Testing
         #expect(!FileManager.default.fileExists(atPath: input))
     }
 
+    /// #782: the Shortcut gets none of haild's descriptors, so it can neither read the owner's terminal nor write
+    /// into haild's logs. Setting them to nil gives the null device on Darwin; leaving them unset would inherit
+    /// haild's. Stdout and stderr are pipes or files under the test runner, and stdin is when run from one.
+    @Test func theShortcutGetsNoneOfHaildsDescriptors() async throws {
+        let (runner, directory) = try runner(#"for fd in 0 1 2; do if [ /dev/fd/$fd -ef /dev/null ]; "#
+            + #"then echo "$fd null" >> fds.txt; else echo "$fd other" >> fds.txt; fi; done"#)
+        defer { try? FileManager.default.removeItem(at: directory) }
+        #expect(await runner.run("Hail to Notes", text: "x") == "saved")
+        let fds = try String(contentsOf: directory.appendingPathComponent("fds.txt"), encoding: .utf8)
+        #expect(fds == "0 null\n1 null\n2 null\n")
+    }
+
     @Test func aFailingOrHungShortcutIsReportedNotSaved() async throws {
         let (failing, one) = try runner("exit 3")
         defer { try? FileManager.default.removeItem(at: one) }
