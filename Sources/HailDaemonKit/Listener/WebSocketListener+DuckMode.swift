@@ -97,7 +97,8 @@ extension AmbientRightyoRouter {
             guard let self, duckMode(connection: connection) else { return }
             emit("ambient_duck_unsupported", connection: connection, detail: "child=started_without_duck")
             // Open in #735: an `unsupported` reason is queued for Mick's decision; until then this end says `timeout`.
-            setDuck(false, connection: connection, reason: "timeout")
+            // No summary (#735 H-5): nobody ended it, and the child that could not take it never heard the session.
+            setDuck(false, connection: connection, reason: "timeout", summarize: false)
         }
     }
 }

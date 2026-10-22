@@ -696,7 +696,7 @@ While duck mode is on, `haild` keeps the enrolled owner's transcript turns in a 
 
   A guest's turn, an unlabelled one, a turn on an anonymous session and an echo never enter. The same guards decide H-2's spoken exit.
 - **Where it lives.** RAM only, at most 32,000 UTF-8 bytes; the oldest turns drop first. It keeps the time duck mode began and the time of the last turn it took.
-- **When it is discarded.** It is empty again when duck mode turns off by any route (the spoken exit, the auto-end, entering media mode, or a child that cannot take duck mode), when the next duck session begins, when its child is replaced (`haild ambient reload`), and when `haild` exits.
+- **When it is discarded.** When duck mode turns off, the session closes: nothing more enters, and its turns are held for ten minutes for the owner's save ([summary and save](#the-end-of-session-summary-and-the-owners-save-735-h-5)). They are discarded when the next duck session begins, when the hold's ten minutes end, when the owner saves or discards them, when the stream ends or its child is replaced (`haild ambient reload`), when `haild` exits, and at once when a child cannot take duck mode.
 - **Never logged or written.** Logs carry counts and tokens only.
 - **Transcription-only streams.** On a stream whose `started` said `activation: "disabled"`, nothing enters the buffer and no cue counts, the mute included: such a stream never sends.
 - **Known limit: owner trust is the transcript's role alone.** Under rightyo R-2 no attention record follows a ducked turn to confirm or demote it, so the buffer, the asks, the discard and the mute rest on the transcript's `role: owner`, that is, on RightyO's enrolled diarization. The enrolled owner's voice, as RightyO hears it, is the only voice that can trigger them; a misattributed guest turn would count as the owner's. H-2's spoken exit rests on the same evidence.
@@ -720,10 +720,33 @@ How an ask is sent:
 - The guard sees the whole buffer, so a guarded word said while thinking (for example "delete") refuses the ask. Nothing is sent, the stream goes on, and the buffer stays. The owner hears the ordinary acknowledgement (it plays before the dispatch, as for any request), then `confirm-not-sent/`. Say "discard that" to start clean. Guarding each turn as it enters is #790.
 - Only a guard or policy refusal keeps listening (`confirmationRequired`, `deliveryRefused`, `capacityExceeded`). A connection or selection that is gone ends the stream, as it does for a request.
 - The device is not shown what was sent: an ask does not call `onHeard`, so unlike an ordinary request its words never appear on the device as heard.
-- A timeout exit that lands while an ask is being built still lets that ask go, since it was said while ducking. The buffer is discarded all the same.
+- A timeout exit that lands while an ask is being built still lets that ask go, since it was said while ducking. The session closes all the same.
 - Each cue logs `ambient_duck_cue` with counts only, for example `cue=ask outcome=sent turns=12 bytes=2048`.
 
 "What was I saying about X" is not a cue yet (#791). RightyO does not release it as a whole turn.
+
+#### The end-of-session summary and the owner's save (#735 H-5)
+
+When duck mode ends, `haild` asks the selected session once for a short spoken summary of what the owner said.
+
+- **Which exits send one.** The spoken exit ("Jarvis, done thinking"), the device's end and the auto-end each send one; they differ only in the device notice's `reason` (`voice`, `device`, `timeout`). Entering media mode ends duck mode with no summary, since it would be spoken over what is playing. A child that cannot take duck mode ends it with no summary, since nobody asked. The connection's end, a reload and `haild` exiting send nothing and discard the turns.
+- **Nothing to summarise, nothing sent.** A session that holds no owner turn sends nothing and logs nothing.
+- **What is sent.** The same JSON as an ask, with the fixed cue `duck mode ended`, then the summary reply block: one fixed sentence (give the decisions reached, the questions still open and the next steps named, briefly, spoken; do not act on them) followed by the ordinary reply block, byte for byte.
+- **How it is sent.** Through the stream's own ambient dispatch, so the sanitizer, the guard, policy, tiers and lockdown apply as for an ask, always to the stream's own target. No acknowledgement plays and the device is not shown it: the exit's own `confirm-duck-off/` already answered, and the summary is not something the owner just said. A stream whose `started` said `activation: "disabled"`, or an anonymous session, never sends one.
+- **Refusals.** H-3's split applies. A guard or policy refusal (`confirmationRequired`, `deliveryRefused`, `capacityExceeded`) plays `confirm-not-sent/`, and the turns stay held for a save. Any other failure, a connection or selection that is gone above all, ends the stream, as it does for a request.
+- **Logs.** `ambient_duck_summary outcome=sent turns=… bytes=… confirm=none`, or `outcome=not_sent`, `failed` or `skipped`. Counts and tokens only.
+
+After the exit, the turns and the summary's state stay in RAM for ten minutes:
+
+- **The summary's text.** The host sees the agent's reply as it delivers it. A final reply text whose request is the one the summary was handed off as is kept with the turns (at most 8,000 UTF-8 bytes), logged `ambient_duck_summary outcome=kept bytes=…`. Any other reply is ignored.
+- **"Save that" or "save that to notes".** Writes one note through the owner's allowlisted `notes` destination ([spoken notes](#spoken-notes-to-configured-destinations-552)) by its own handler, then plays `confirm-saved/`, or `confirm-not-saved/` if it failed. The note is "Duck mode notes, N turns.", then the summary line, then each turn as said. The summary line is the summary's spoken text when the host saw it; otherwise it says what happened instead: spoken but its text not seen, still pending, not sent, or none asked for. A Markdown destination makes the note one list item, line breaks turned to spaces.
+- **"Discard that".** Drops them unsaved and plays `confirm-discarded/`.
+- **Who may.** Only the enrolled owner's request: both its transcript and its attention record say owner (the spoken-notes rule), from the live microphone, not echo-matched, on a stream that sends. A guest's "save that", one on an anonymous session, or any "save that" with nothing held, is an ordinary request to the agent, as before duck mode existed. While duck mode is on, "save that" is just a thought: it enters the buffer.
+- **Once.** A save takes the turns, so a second "save that" is an ordinary request. A save never happens without the owner's cue, and never goes anywhere but `notes`. Without a `notes` destination nothing is written, and the owner hears `confirm-not-saved/` (`outcome=no_destination`).
+- **Logs.** `ambient_duck_save destination=notes outcome=… turns=… bytes=… summary=<captured|spoken|pending|not_sent|none> confirm=…`. Never the words.
+- **Known limit.** The save is a request, so RightyO must decide that "save that" is addressed. Name the assistant ("Jarvis, save that") if it is not inside a conversation window.
+
+No new clip: the save uses #552's `confirm-saved/` and `confirm-not-saved/`, a refused summary `confirm-not-sent/`, and the discard H-3's `confirm-discarded/`.
 
 ### Spoken notes to configured destinations (#552)
 
