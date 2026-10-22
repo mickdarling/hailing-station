@@ -560,6 +560,8 @@ public final class AmbientRightyoRouter: AmbientAudioSink, AmbientListenerWiring
         var media: [UUID: AmbientMediaTimer] = [:]
         /// Connections whose owner turned duck mode on (#735), kept like `media`. A connection is never in both.
         var duck: [UUID: AmbientDuckTimer] = [:]
+        /// Connections already told privacy is unavailable (#735): at most once each, dropped when the connection ends.
+        var unavailableSaid: Set<UUID> = []
         /// The reply whose final text, the latest this host delivered, ended with a question (rightyo#199); nil
         /// otherwise, and cleared by audio of any other reply (a text-less acknowledgement clip). The phone plays
         /// replies in order and reports one end when its queue drains, so that reply is the one just heard.
@@ -654,6 +656,7 @@ public final class AmbientRightyoRouter: AmbientAudioSink, AmbientListenerWiring
             state.media.removeValue(forKey: connection)?.timer.cancel()
             state.duck.removeValue(forKey: connection)?.timer?.cancel()
             state.listener?.value?.replyHold.set(false, connection: connection)
+            state.unavailableSaid.remove(connection)
             if let active = state.active, state.runs[active.run]?.connection == connection { state.active = nil }
             return state.runs.filter { $0.value.connection == connection }.map(\.key)
         }
@@ -1564,12 +1567,17 @@ extension AmbientRightyoRouter {
         }
     }
 
+    /// Whether `unavailable` may still be said on `connection`: true once per connection, per router.
+    func firstUnavailable(on connection: UUID) -> Bool {
+        state.withLock { $0.unavailableSaid.insert(connection).inserted }
+    }
+
     /// A start refused while private (#735 S-2b: the child could not even launch): nothing listens and privacy stays
     /// on. The owner hears `confirm-privacy-unavailable/` at most once per connection (`firstUnavailable`, shared with
     /// a refused child's `unavailable`), logged as `voiceDuck` logs it. Tokens only.
     func privacyUnavailable(on connection: UUID) {
         let listener = state.withLock { $0.listener?.value }
-        guard Self.firstUnavailable(on: connection) else {
+        guard firstUnavailable(on: connection) else {
             emit("ambient_duck_confirmed", connection: connection, detail: "unavailable repeat confirm=unreported")
             return
         }

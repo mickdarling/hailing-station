@@ -1,7 +1,6 @@
 #if os(macOS)
 public import Foundation
 import HailProtocol
-import Synchronization
 
 /// A connection in duck mode (#735): the token an expiry must still match, and the task to cancel. Privacy arms no
 /// timer (Mick, round 2: no auto-end), so `timer` is nil for it; the slot is kept for the session-mode auto-stop.
@@ -58,7 +57,7 @@ extension AmbientRightyoRouter {
             }
             chain.enqueue { [weak self, weak listener, reported, on] in
                 var (persona, outcome) = Self.duckConfirmation(command, reported: reported, on: on)
-                if command == .unavailable, !Self.firstUnavailable(on: connection) {
+                if command == .unavailable, self?.firstUnavailable(on: connection) == false {
                     (persona, outcome) = (nil, "unavailable repeat")
                 }
                 // Privacy taken (or still on) silences a reply playing on this connection first (Mick, round 2),
@@ -104,20 +103,7 @@ extension AmbientRightyoRouter {
             return true
         }
     }
-
-    /// Whether `unavailable` may still be said on `connection`: true once per connection, bounded in memory.
-    static func firstUnavailable(on connection: UUID) -> Bool {
-        unavailableSaid.withLock { said in
-            guard !said.contains(connection) else { return false }
-            said.append(connection)
-            if said.count > 256 { said.removeFirst(said.count - 256) }
-            return true
-        }
-    }
 }
-
-/// Connections already told privacy is unavailable (`firstUnavailable`); ids only, at most 256.
-private let unavailableSaid = Mutex<[UUID]>([])
 
 extension WebSocketListener {
     /// Sends `duck_mode` (#735) to the connection whose ambient stream it is: `sent`, `unsupported` (it did not
