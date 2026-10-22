@@ -31,7 +31,7 @@ public enum ChatTimestamps {
         let daysAgo = calendar.dateComponents([.day], from: day, to: today).day ?? 0
         let style = Date.FormatStyle(locale: locale, calendar: calendar, timeZone: calendar.timeZone)
         switch daysAgo {
-        case ...0: return "Today \(clock)" // A clock a little ahead of the Mac's still reads as today.
+        case ...0: return "Today \(clock)" // Any later day too: only a device clock stepped back gives one.
         case 1: return "Yesterday \(clock)"
         case 2...6: return "\(date.formatted(style.weekday(.wide))) \(clock)"
         default:

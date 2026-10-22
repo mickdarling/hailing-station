@@ -48,7 +48,7 @@ import Testing
         #expect(Self.header(Self.date(9, 41, year: 2025)) == "Oct 21, 2025 at 9:41 AM")
     }
 
-    @Test func aClockAheadOfNowStillReadsAsToday() {
+    @Test func anyFutureDateReadsAsToday() {
         #expect(Self.header(Self.date(days: 1, 8, 0)) == "Today 8:00 AM")
     }
 

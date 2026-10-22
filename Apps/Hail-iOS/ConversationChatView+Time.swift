@@ -1,9 +1,8 @@
 import HailCore
 import SwiftUI
 
-/// How far a swipe pulls the thread left to reveal each entry's time (#766).
-private enum TimeReveal { static let width: CGFloat = 64 }
-
+/// How far a swipe has pulled the thread left to reveal each entry's time (#766), as a fraction of the full reveal:
+/// 0 at rest, 1 fully shown. The full reveal is 64 pt at the default text size and grows with Dynamic Type.
 private struct ChatTimeRevealKey: EnvironmentKey { static let defaultValue: CGFloat = 0 }
 
 extension EnvironmentValues {
@@ -41,31 +40,34 @@ struct TimedChatRow<Content: View>: View {
     let date: Date
     @ViewBuilder let content: Content
     @Environment(\.chatTimeReveal) private var reveal
+    @ScaledMetric(relativeTo: .caption2) private var width: CGFloat = 64
 
     var body: some View {
         #if os(macOS)
         content.help(ChatTimestamps.time(date))
         #else
         content
-            .offset(x: -reveal)
+            .offset(x: -reveal * width)
             .frame(maxWidth: .infinity)
             .overlay(alignment: .trailing) {
                 Text(ChatTimestamps.time(date))
                     .font(.caption2)
                     .foregroundStyle(.secondary)
                     .fixedSize()
-                    .offset(x: TimeReveal.width - reveal)
-                    .opacity(reveal / TimeReveal.width)
+                    .offset(x: (1 - reveal) * width)
+                    .opacity(reveal)
                     .accessibilityHidden(true) // Already in the entry's label.
             }
         #endif
     }
 }
 
-/// Pulls the whole thread left while a mostly horizontal swipe lasts, revealing every entry's time, and springs
-/// back when it ends (#766). Vertical scrolling and the context menu are untouched.
+/// Pulls the whole thread left with the finger while a mostly horizontal swipe lasts, revealing every entry's time,
+/// and springs back when it ends or is cancelled (#766): gesture state resets either way, where an `onEnded` reset
+/// would leave the thread stuck open after a cancellation. Vertical scrolling and the context menu are untouched.
 struct ChatTimeRevealGesture: ViewModifier {
-    @State private var reveal: CGFloat = 0
+    @GestureState(resetTransaction: Transaction(animation: .spring(duration: 0.3))) private var reveal: CGFloat = 0
+    @ScaledMetric(relativeTo: .caption2) private var width: CGFloat = 64
 
     func body(content: Content) -> some View {
         #if os(macOS)
@@ -75,12 +77,10 @@ struct ChatTimeRevealGesture: ViewModifier {
             .environment(\.chatTimeReveal, reveal)
             .simultaneousGesture(
                 DragGesture(minimumDistance: 16)
-                    .onChanged { drag in
+                    .updating($reveal) { drag, reveal, _ in
                         let (across, down) = (drag.translation.width, drag.translation.height)
-                        guard across < 0, abs(across) > abs(down) else { return }
-                        reveal = min(-across, TimeReveal.width)
+                        reveal = across < 0 && abs(across) > abs(down) ? min(-across / width, 1) : 0
                     }
-                    .onEnded { _ in withAnimation(.spring(duration: 0.3)) { reveal = 0 } }
             )
         #endif
     }
