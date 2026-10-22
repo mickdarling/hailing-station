@@ -44,22 +44,12 @@ func ambientRig(
                             port: try await listener.start())
 }
 
-/// The next frame on `socket`, or a recorded issue naming `step` once `within` passes (#378): the socket is then
-/// cancelled so the receive throws instead of waiting forever.
+/// The next frame on `socket`, or a recorded issue naming `step` once `within` passes (#378). Every receive is now
+/// bounded the same way (#704); this keeps the ambient suites' named steps.
 func receiveFrame(
     on socket: URLSessionWebSocketTask, step: String, within: Duration = .seconds(15)
 ) async throws -> Frame {
-    let timer = Task {
-        try await Task.sleep(for: within)
-        socket.cancel(with: .goingAway, reason: nil)
-    }
-    defer { timer.cancel() }
-    do {
-        return try await recipientSocketReceive(on: socket)
-    } catch {
-        Issue.record("no frame within \(within) at: \(step)")
-        throw error
-    }
+    try await recipientSocketReceive(on: socket, step: step, within: within)
 }
 
 /// `recipientSocketBarrier` with a bound: a ping, then its pong within `within`, else an issue naming `step`. A stray

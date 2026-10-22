@@ -204,7 +204,7 @@ import Testing
         }
         do {
             try await terminal.send(.data(FrameCoding.encode(helloFrame())))
-            _ = try await terminal.receive()
+            _ = try await recipientSocketReceive(on: terminal, step: "hello reply")
             try await terminal.send(.data(FrameCoding.encode(
                 sessionFrame(payload: .control(.select(targetID: RecipientTestRig.target)))
             )))
@@ -354,7 +354,7 @@ import Testing
         }
         do {
             try await terminal.send(.data(FrameCoding.encode(helloFrame())))
-            _ = try await terminal.receive()
+            _ = try await recipientSocketReceive(on: terminal, step: "hello reply")
             try await terminal.send(.data(FrameCoding.encode(
                 sessionFrame(payload: .control(.select(targetID: RecipientTestRig.target)))
             )))
@@ -427,7 +427,7 @@ import Testing
         }
         do {
             try await terminal.send(.data(FrameCoding.encode(helloFrame())))
-            _ = try await terminal.receive()
+            _ = try await recipientSocketReceive(on: terminal, step: "hello reply")
             let select = sessionFrame(payload: .control(.select(targetID: "tmux:reply")))
             try await recipientSocketSend(select, on: terminal)
             try await recipientSocketBarrier(on: terminal)
@@ -471,7 +471,7 @@ import Testing
         defer { terminal.cancel(with: .normalClosure, reason: nil); session.invalidateAndCancel() }
         do {
             try await terminal.send(.data(FrameCoding.encode(helloFrame())))
-            _ = try await terminal.receive()
+            _ = try await recipientSocketReceive(on: terminal, step: "hello reply")
             let select = sessionFrame(payload: .control(.select(targetID: "tmux:reply")))
             try await recipientSocketSend(select, on: terminal)
             try await recipientSocketBarrier(on: terminal)
@@ -668,7 +668,7 @@ private func expectRefusal(
 
 private func selectOrdinary(on terminal: URLSessionWebSocketTask, listener: WebSocketListener) async throws -> UUID {
     try await terminal.send(.data(FrameCoding.encode(helloFrame())))
-    _ = try await terminal.receive()
+    _ = try await recipientSocketReceive(on: terminal, step: "hello reply")
     try await recipientSocketSend(sessionFrame(payload: .control(.select(targetID: "tmux:ordinary"))), on: terminal)
     try await recipientSocketBarrier(on: terminal)
     return try #require(await listener.peers.keys.first)
@@ -776,11 +776,7 @@ private func terminalClient(port: UInt16) throws -> (URLSession, URLSessionWebSo
 }
 
 private func terminalFrame(_ socket: URLSessionWebSocketTask) async throws -> Frame {
-    switch try await socket.receive() {
-    case .data(let data): try FrameCoding.decode(data)
-    case .string(let text): try FrameCoding.decode(Data(text.utf8))
-    @unknown default: throw TestSupportError.expectedOneControl
-    }
+    try await recipientSocketReceive(on: socket, step: "terminal frame")
 }
 
 private func submit(_ frame: Frame, socket: String) async throws -> LocalReplyResponse {
