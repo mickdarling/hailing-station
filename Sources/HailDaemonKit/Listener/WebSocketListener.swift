@@ -571,6 +571,8 @@ public final class AmbientRightyoRouter: AmbientAudioSink, AmbientListenerWiring
     fileprivate let wake: AsyncStream<Void>.Continuation
     /// Media and duck mode state for devices (#612, #735), sent one at a time in the order the modes changed.
     fileprivate let mediaNotices = SerialTaskChain()
+    /// The device privacy switch's playback stop and clip (#735 S-6), one switch at a time in the order switched.
+    let privacySwitches = SerialTaskChain()
 
     public init(configuration: Configuration, log: @escaping @Sendable (WebSocketListenerEvent) -> Void = { _ in }) {
         (self.configuration, self.log) = (configuration, log)
@@ -698,6 +700,11 @@ public final class AmbientRightyoRouter: AmbientAudioSink, AmbientListenerWiring
     public func mediaMode(connection: UUID) -> Bool { state.withLock { $0.media[connection] != nil } }
     /// Whether the owner's spoken duck mode (#735) is on for `connection` (tests).
     func duckMode(connection: UUID) -> Bool { state.withLock { $0.duck[connection] != nil } }
+    /// The current privacy arming's token for `connection`, nil while privacy is off (#735 S-6: a device switch reads
+    /// it, then changes privacy only while it is still the current one).
+    func duckArming(connection: UUID) -> UUID? { state.withLock { $0.duck[connection]?.token } }
+    /// The listener this router is attached to, if it is still there (#735 S-6: a device switch's stop and clip).
+    var attachedListener: WebSocketListener? { state.withLock { $0.listener?.value } }
 
     /// Waits (at most 30 s) for queued events to be handled, then for every current run to return (tests).
     func settle() async {
@@ -1453,8 +1460,14 @@ extension AmbientRightyoRouter {
     /// already on (a reloaded child not started yet) leaves it on, timeout unchanged. Duck mode taken leaves media mode.
     @discardableResult
     func setDuck(_ on: Bool, connection: UUID, reason: String, expected: UUID? = nil) -> Int {
+        setDuck(on, connection: connection, reason: reason) { expected == nil || $0 == expected } ?? 0
+    }
+
+    /// `setDuck`, only while `connection`'s privacy arming (its token, nil while off) still passes `armed`, checked
+    /// under the lock that changes it (#735 S-6). Nil when it does not: nothing changes, is logged, written or sent.
+    func setDuck(_ on: Bool, connection: UUID, reason: String, whileArming armed: (UUID?) -> Bool) -> Int? {
         let changed = state.withLock { state -> DuckChange? in
-            if let expected, state.duck[connection]?.token != expected { return nil }
+            guard armed(state.duck[connection]?.token) else { return nil }
             guard let reported = changeDuck(on, connection: connection, reason: reason, in: &state) else {
                 return DuckChange(duck: 0, media: nil, still: state.duck[connection] != nil)
             }
@@ -1462,7 +1475,7 @@ extension AmbientRightyoRouter {
             let media = left ? changeMedia(false, connection: connection, reason: "voice", in: &state) : nil
             return DuckChange(duck: reported, media: media, still: false)
         }
-        guard let changed else { return 0 }
+        guard let changed else { return nil }
         let refused = !on || changed.duck > 0 ? "" : changed.still ? " still_on" : " refused=unsupported"
         emit("ambient_duck", connection: connection,
              detail: "on=\(on) reason=\(reason) reported=\(changed.duck)\(refused)")

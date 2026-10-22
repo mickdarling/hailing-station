@@ -716,6 +716,18 @@ When privacy is taken, a reply playing on the connection is stopped first, throu
 
 Privacy ends on RightyO's exit, after `ambient.duckTimeout` in `host.json` (whole seconds, 60 to 14400; an hour by default, `--ambient-duck-timeout`), or when the connection ends. An entry while already private answers "still on" with `confirm-privacy-on/` and re-arms the timeout. Entering privacy leaves media mode, and entering media mode leaves privacy. A device that advertised `duck_mode` is told each change (`ambient_duck_device`), and sees "on" only once a child took it.
 
+#### The app's privacy switch (#735 S-6)
+
+With ambient listening on, `haild` advertises `set_privacy` (`docs/reply-protocol.md`), and the app shows a privacy switch while it is listening.
+
+- **Trust:** the paired owner device, the same gate as `ambient_input` (Mick's decision). No voiceprint is asked for, and it is not a voice entry.
+- **On** takes the owner's entry path with reason `device`: privacy is written to every child of the connection (so a respawn or reload starts private), every request is held back, a reply playing is stopped, and only `confirm-privacy-on/` plays. The device is told `duck_mode` on with `reason: "device"`. If no child can take privacy (a v1 or older RightyO), it fails closed: privacy stays off, the device is told off, and `confirm-not-sent/` plays.
+- **Off** takes the owner's exit path with reason `device`: `{"duck":false}` is written to every child of the connection, as for the voice exit, the device is told off, and `confirm-privacy-off/` plays when a child took it. It is the way out when the voice exit cannot be heard, for example from a child respawned start-private that has not bound the owner's voiceprint.
+- **Its own connection only, and only while listening.** The command carries no connection; `haild` uses the sending connection's id, and acts only while that connection holds the active ambient stream.
+- **Only a change.** A switch to the state already held does nothing: nothing is logged, written, played or sent back. A switch applies only to the privacy arming it read, matched under the lock that changes privacy, so if the voice or the auto-end changed it first, the switch does nothing more.
+- **Answered only by the notice.** No reply frame; the app shows privacy only once the `duck_mode` notice says so.
+- **Logs:** state tokens only: `ambient_duck on=… reason=device reported=…` and `ambient_duck_confirmed on=… reason=device … confirm=…`.
+
 #### Clips
 
 These reserved folders play nothing until Mick records them:
