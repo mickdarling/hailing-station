@@ -184,8 +184,7 @@ enum PrivacyEntry {
     static func match(_ heard: String, names: Set<String> = []) -> Match? {
         let edges = trimmed(heard, names: names)
         var words = edges.words
-        // Asked anywhere in the turn, full-width too: "Stop recording? Thanks." and "Stop recording?!" are questions.
-        let asked = heard.contains("?") || heard.contains("\u{FF1F}")
+        let asked = asks(heard, names: names)
         let negation = negations.first { words.starts(with: $0) }
         if let negation { words.removeFirst(negation.count) }
         words = Array(words.drop { leading.contains($0) })
@@ -226,6 +225,22 @@ enum PrivacyEntry {
             }) { words = words.dropLast(width) }
         }
         return (Array(words), asksPolitely)
+    }
+
+    /// Whether the turn is asked: a "?" (or full-width "？") anywhere, so "Stop recording? Thanks." and "Stop
+    /// recording?!" are questions. A "?" right after a leading name or filler alone is not one (Mick: "Jarvis? Stop
+    /// recording." should turn on privacy), nor after several ("Okay? Jarvis? Go private."); any other "?" is.
+    static func asks(_ heard: String, names: Set<String>) -> Bool {
+        var rest = Substring(heard)
+        while let mark = rest.firstIndex(where: { $0 == "?" || $0 == "\u{FF1F}" }) {
+            let before = words(String(rest[..<mark]))
+            let named = before.drop { leading.contains($0) }
+            let lead = !before.isEmpty
+                && (named.isEmpty || named.count <= 3 && names.contains(named.joined().filter { $0 != "'" }))
+            guard lead else { return true }
+            rest = rest[rest.index(after: mark)...]
+        }
+        return false
     }
 
     /// The single word before the turn's first comma, fillers aside, unless it could start a command.
