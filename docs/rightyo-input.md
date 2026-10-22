@@ -714,7 +714,18 @@ Only RightyO's content-free events act. Both are admitted only on a session that
 
 When privacy is taken, a reply playing on the connection is stopped first, through the owner's stop path (`stop_playback` to a device that takes it; `playback=` in the log). Only then does the clip play. "Still on" (an entry while already private) silences in the same way, since nothing should be playing while private. A refused entry leaves playback alone. Replies the agent sends later, while private, are not yet dropped; that is a follow-up (S-2c).
 
-Privacy ends on RightyO's exit, after `ambient.duckTimeout` in `host.json` (whole seconds, 60 to 14400; an hour by default, `--ambient-duck-timeout`), or when the connection ends. An entry while already private answers "still on" with `confirm-privacy-on/` and re-arms the timeout. Entering privacy leaves media mode, and entering media mode leaves privacy. A device that advertised `duck_mode` is told each change (`ambient_duck_device`), and sees "on" only once a child took it.
+Privacy ends on RightyO's exit, or after `ambient.duckTimeout` in `host.json` (whole seconds, 60 to 14400; an hour by default, `--ambient-duck-timeout`). When the connection ends its own privacy state goes with it, but the host stays private (below): the next stream, from any device, starts private again. An entry while already private answers "still on" with `confirm-privacy-on/` and re-arms the timeout. Entering privacy leaves media mode, and entering media mode leaves privacy. A device that advertised `duck_mode` is told each change (`ambient_duck_device`), and sees "on" only once a child took it.
+
+#### Across a restart (S-2b)
+
+Privacy survives a haild restart, a crash and a reload. Its state lives in one content-free file, `privacy/state.json` in haild's own config directory (`~/.config/hail`, or `HAIL_CONFIG_DIR`), never the shared temp folder:
+
+- it holds `{"private":true,"since":<unix seconds>}` and a newline, nothing else: no words, names or ids;
+- the file is 0600 and its directory 0700;
+- it is written atomically (a temp file in the same directory, fsync, rename, directory fsync) when privacy is entered, before anything confirms the entry: before the clip and before the device notice. A failed write is logged `ambient_privacy_state write=failed`; privacy is still entered;
+- it is removed only after the host confirmed an exit to the device (the `duck_mode` off notice was sent) and no connection is still private, logged `ambient_privacy_state clear=cleared`. A disconnect, a shutdown or a crash never removes it.
+
+At startup, before any stream can start, haild reads it (`ambient_privacy_state startup=<reading> private=<bool>`). Only a **missing** file starts public. A private record, or a file that is corrupt (anything but that exact record), unreadable, a symlink or not a regular file, starts private: fail closed. While the host is private, every stream that starts restores privacy on its connection (`ambient_privacy_state restored=true`): the auto-end is armed afresh, the device is told on (reason left off), and the child is launched start-private, as above. The file is never a way out: privacy still ends only on RightyO's exit or the auto-end.
 
 #### Clips
 

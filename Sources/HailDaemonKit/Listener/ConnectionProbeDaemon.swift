@@ -10,9 +10,12 @@ public enum ConnectionProbeDaemon {
         host: HailHost, arguments: [String], hostName: String,
         log: @escaping @Sendable (WebSocketListenerEvent) -> Void
     ) async throws {
+        var parsed = try options(arguments)
+        // Privacy mode's state across a restart (#735 S-2b), in haild's own config directory.
+        parsed.ambient?.privacyState = AmbientPrivacyState.standard()
         // One writer per audit directory: a second `AuditLog` on the same day's file is refused `inUse`.
         let (listener, replyEndpoint) = try await compose(
-            try options(arguments), host: host, hostName: hostName,
+            parsed, host: host, hostName: hostName,
             audit: AuditLog(directory: AuditHistory.standard().directory), log: log
         )
         signal(SIGTERM, SIG_IGN)
@@ -182,6 +185,8 @@ extension ConnectionProbeDaemon {
         var duckTimeout: TimeInterval?
         /// Where spoken notes keep their Shortcut inputs (#552); tests point it at a scratch folder.
         var noteInputs = VoiceNoteInputs()
+        /// Privacy mode's state file (#735 S-2b): `run` sets the standard one; nil (tests) keeps privacy in memory.
+        var privacyState: AmbientPrivacyState?
     }
 
     /// A flag's path: never empty and, when `absolute`, starting at `/`.
@@ -272,6 +277,8 @@ extension ConnectionProbeDaemon {
             timing: timing, audit: audit, acknowledgements: clips, replyControl: options.replyControl
         )
         if let duckTimeout = options.duckTimeout { configuration.duckTimeout = duckTimeout }
+        // Privacy survives a restart (#735 S-2b): read as the router is made, so before any stream starts.
+        configuration.privacyState = options.privacyState
         // Spoken notes (#552): a malformed file leaves them off and says so, rather than refusing to start.
         if let file = options.destinations {
             // Inputs a haild left mid-Shortcut, in its own folder and off the startup path: never a wait for ready.
