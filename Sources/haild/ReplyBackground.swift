@@ -91,7 +91,7 @@ enum ReplyBackground {
     }
 
     private static func releaseStandardError() {
-        let null = open("/dev/null", O_WRONLY)
+        let null = open("/dev/null", O_WRONLY | O_CLOEXEC) // dup2 leaves stderr itself inheritable
         if null >= 0 { dup2(null, STDERR_FILENO); close(null) }
     }
 

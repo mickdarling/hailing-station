@@ -80,7 +80,7 @@ struct CoachingConfiguration {
     /// Private local profile, no symlink/FIFO/unbounded read. Errors never echo paths or profile contents.
     func loadProfile() throws -> Data {
         guard Self.validListener(listenerID) else { throw CoachingCommandError.invalidConfiguration }
-        let fd = open(profile.path, O_RDONLY | O_NOFOLLOW | O_NONBLOCK)
+        let fd = open(profile.path, O_RDONLY | O_NOFOLLOW | O_NONBLOCK | O_CLOEXEC)
         guard fd >= 0 else { throw CoachingCommandError.invalidConfiguration }
         defer { close(fd) }
         var details = stat()

@@ -18,7 +18,7 @@ import Foundation
             }
             fd = path.withUnsafeBufferPointer {
                 guard let base = $0.baseAddress else { return -1 }
-                return Darwin.open(base, O_WRONLY | O_NONBLOCK | O_NOCTTY)
+                return Darwin.open(base, O_WRONLY | O_NONBLOCK | O_NOCTTY | O_CLOEXEC)
             }
             var opened = stat()
             guard fd >= 0, fstat(fd, &opened) == 0, opened.st_dev == original.st_dev,
@@ -31,9 +31,10 @@ import Foundation
                   fcntl(output, F_GETFL) & O_NONBLOCK != 0 else {
                 throw CoachingCommandError.localControlRequired
             }
-            fd = dup(output)
+            fd = fcntl(output, F_DUPFD_CLOEXEC, 0)
         }
-        guard fd >= 0, fcntl(fd, F_SETFD, FD_CLOEXEC) == 0, fcntl(fd, F_SETNOSIGPIPE, 1) == 0 else {
+        // Close-on-exec from the moment it exists, on both paths (#782): no exec in between can inherit it.
+        guard fd >= 0, fcntl(fd, F_SETNOSIGPIPE, 1) == 0 else {
             if fd >= 0 { Darwin.close(fd) }; throw CoachingCommandError.localControlRequired
         }
         descriptor = fd
