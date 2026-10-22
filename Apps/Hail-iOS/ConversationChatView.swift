@@ -40,28 +40,27 @@ struct ConversationChatView: View {
                     replyControls
                 }
             }
-            ScrollViewReader { reader in
-                ScrollView {
-                    VStack(spacing: 10) { // Not lazy (#428): the log holds at most 200 messages.
-                        if entries.isEmpty {
-                            Text("Tap to talk. What you say and Haili's replies appear here.")
-                                .font(.subheadline)
-                                .foregroundStyle(.secondary)
-                                .frame(maxWidth: .infinity, alignment: .leading)
-                        }
-                        ForEach(entries) { entry in
-                            if entry.notice { notice(entry).id(entry.id) } else { bubble(entry).id(entry.id) }
-                        }
+            ScrollView {
+                VStack(spacing: 10) { // Not lazy (#428): the log holds at most 200 messages.
+                    if entries.isEmpty {
+                        Text("Tap to talk. What you say and Haili's replies appear here.")
+                            .font(.subheadline)
+                            .foregroundStyle(.secondary)
+                            .frame(maxWidth: .infinity, alignment: .leading)
                     }
-                    .padding(.vertical, 4)
+                    ForEach(entries) { entry in
+                        if entry.notice { notice(entry).id(entry.id) } else { bubble(entry).id(entry.id) }
+                    }
                 }
-                .scrollBounceBehavior(.basedOnSize)
-                .defaultScrollAnchor(.bottom)
-                .onChange(of: entries) { _, current in
-                    guard let last = current.last else { return }
-                    withAnimation(.easeOut(duration: 0.2)) { reader.scrollTo(last.id, anchor: .bottom) }
-                }
+                .padding(.vertical, 4)
             }
+            .scrollBounceBehavior(.basedOnSize)
+            .modifier(ChatOvershootProbe()) // DEBUG UI tests only (#717).
+            // Opens on the newest message and, as messages arrive, stream in or are trimmed from the top of the
+            // capped log, keeps the bottom edge in place (#717). No scrollTo: an animated one aimed at geometry from
+            // before a trim left the chat scrolled past its end, blank until scrolled by hand.
+            .defaultScrollAnchor(.bottom)
+            .defaultScrollAnchor(.bottom, for: .sizeChanges)
         }
         .padding(16)
         .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)

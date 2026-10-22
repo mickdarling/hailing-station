@@ -120,15 +120,16 @@ extension RootView {
     /// controls are never out of reach.
     @ViewBuilder
     var chatSurface: some View {
-        if let destination {
+        if let thread = chatThread {
             ConversationChatView(
                 // With another session's reply to a request addressed from this thread, labelled (#636).
                 entries: connections.conversation.entries(
-                    endpointID: destination.hostID, targetID: destination.target.id, addressed: true
+                    endpointID: thread.hostID, targetID: thread.targetID, addressed: true
                 ),
-                threadTargetID: destination.target.id,
+                threadTargetID: thread.targetID,
                 playback: playback
             )
+            .task { await StationUITestSeed.runIfRequested(into: connections) } // DEBUG UI tests only (#717).
         } else if let reply = playback.latest {
             ReplyPlaybackView(reply: reply, playback: playback)
         }
