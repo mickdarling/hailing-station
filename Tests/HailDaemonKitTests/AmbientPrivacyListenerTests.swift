@@ -46,13 +46,13 @@ import Testing
                                         + AmbientPrivacyEventTests.enterThen(["exit", "exit"]),
                                     clips: AmbientDuckModeTests.clips, capabilities: [DuckMode.capability])
         defer { rig.close() }
-        #expect(await eventually { !rig.details("ambient_privacy").isEmpty })
-        #expect(await eventually { rig.details("ambient_duck_device").count == 2 })
+        #expect(await eventually { ["ambient_privacy", "ambient_duck_device"].map { rig.details($0).count } == [1, 2] })
         await rig.finish()
         #expect(rig.details("ambient_privacy") == ["exit=ignored state=off"])
         #expect(rig.details("ambient_duck") == ["on=true reason=voice reported=1", "on=false reason=voice reported=1"])
-        // The off clip's delivery (sent, or refused while the on clip plays) is not the outcome (#735 flake).
-        #expect(rig.details("ambient_duck_confirmed").map { $0.replacing("off/0:refused", with: "off/0:sent") }
+        // Not the outcome: the off clip's delivery (#735 flake), or the exit withdrawing the entry silently (#836).
+        #expect(rig.details("ambient_duck_confirmed").map { $0.replacing("off/0:refused", with: "off/0:sent")
+            .replacing("withdrawn confirm=unreported", with: "playback=idle confirm=confirmprivacyon/0:sent") }
             == ["on=true playback=idle confirm=confirmprivacyon/0:sent", "on=false confirm=confirmprivacyoff/0:sent"])
     }
 
