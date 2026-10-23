@@ -223,6 +223,11 @@ haild keeps, in memory only, each approved key's last privacy report.
   - **A restart is not a drop (S-7a0):** haild puts a random per-launch instance id in its hello, a protocol field of
     its own. When the id for a saved host changes, the app clears the wish (#809), does not resume, and says "The
     Mac restarted. Listening is off and privacy ended."
+  - **A host without the instance id** (one from before S-7a0, such as the merged S-6 host) cannot tell a restart
+    from a drop, so the app fails closed: it keeps the wish and never resumes. That is never less private than #809,
+    only more: a kept wish makes the next listen ask for privacy first. Such a host also lacks S-7a, so it cannot
+    confirm privacy with no stream; the next listen then stays not listening, says "This Mac can't confirm privacy
+    before listening.", and offers "Listen publicly". Updating haild removes the case.
   - A reconnect that does not prove (no `owner_device` in the host's hello, no challenge, or the voice-only reconnect
     after `superseded`) follows the same path, since the wish is per host, not per key. A host the app has not saved
     starts not listening.
