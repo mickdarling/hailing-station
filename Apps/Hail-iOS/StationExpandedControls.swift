@@ -20,8 +20,7 @@ extension EnvironmentValues {
     }
 }
 
-/// Holds the device's remembered choice (#819) and hands the station a binding to it. A UI-test reset
-/// (`-reset-station-state`) clears it once per launch, so each test starts with the station showing.
+/// Holds the device's remembered choice (#819). A UI-test reset (`-reset-station-state`) clears it once per launch.
 struct StationExpansionReader<Content: View>: View {
     @AppStorage(stationExpansionKey) private var expanded = false
     let content: (Binding<Bool>) -> Content
@@ -59,8 +58,7 @@ struct StationExpandToggle: View {
     }
 }
 
-/// Pinch out on the chat to expand it, pinch in to bring the station back (#819). Simultaneous, so scrolling, the
-/// time-reveal swipe and the context menu are untouched.
+/// Pinch out to expand the chat, in to bring the station back (#819). Simultaneous, so scrolling stays untouched.
 struct StationExpandPinch: ViewModifier {
     @Binding var expanded: Bool
     /// Off where there is no chat to expand.
@@ -85,6 +83,7 @@ struct StationExpandedHeader<Picker: View>: View {
     let listening: Bool
     @Binding var expanded: Bool
     @ViewBuilder let picker: Picker
+    @Environment(\.dynamicTypeSize) private var typeSize
 
     var body: some View {
         HStack(spacing: 10) {
@@ -94,9 +93,13 @@ struct StationExpandedHeader<Picker: View>: View {
                 Button {
                     withAnimation(.easeInOut(duration: 0.2)) { expanded = false }
                 } label: {
-                    Label("Listening", systemImage: "waveform").font(.subheadline.weight(.semibold))
+                    // Never cut short (#819 review); just the icon at large sizes, so the destination stays readable.
+                    let icon = Image(systemName: "waveform")
+                    if typeSize < .xLarge { Label { Text("Listening") } icon: { icon } } else { icon }
                 }
+                .font(.subheadline.weight(.semibold))
                 .buttonStyle(.bordered)
+                .fixedSize()
                 .accessibilityLabel("Listening · Show controls")
                 .accessibilityHint("Brings back the station, where listening can be stopped.")
                 .accessibilityIdentifier("station.expanded-listening")
@@ -119,15 +122,14 @@ extension RootView {
     func primaryColumn(_ fit: StationFit, expanded: Binding<Bool>) -> some View {
         let isExpanded = expanded.wrappedValue
         let listening = connections.ambientStreaming
-        // Stacked, or Tap to talk beside the chat in landscape (#819 review). The same slots either way, so
-        // switching never remounts Tap to talk.
+        // Stacked, or Tap to talk beside the chat in landscape (#819 review): the same slots, so nothing remounts.
         let layout = fit.beside
             ? AnyLayout(HStackLayout(alignment: .top, spacing: 12))
             : AnyLayout(VStackLayout(spacing: isExpanded ? 12 : 18))
         return layout {
             if !fit.isWide {
                 expandableChat(expanded)
-                    .frame(height: fit.fitsOneScreen ? nil : 340)
+                    .frame(height: fit.fitsOneScreen ? nil : fit.chatHeight)
                     .layoutPriority(1)
             }
             // Beside the chat the column can run out of height, so it scrolls there; elsewhere it keeps its own height.

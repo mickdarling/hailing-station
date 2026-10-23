@@ -33,7 +33,7 @@ extension TranscriptionLabView {
                 if compactTalk { icon } else { Label { Text("Escape") } icon: { icon } }
             }
             .buttonStyle(.bordered)
-            .controlSize(compactTalk ? .regular : .large)
+            .controlSize(.large) // A full touch target, icon or not (#819 review).
             .disabled(isFinalizing || finishTask != nil || interruptTask != nil)
             .accessibilityLabel("Escape")
             .accessibilityHint("Discards any active recording and sends Escape immediately to the target.")

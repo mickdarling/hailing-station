@@ -69,6 +69,20 @@ final class ConversationFullScreenUITests: XCTestCase {
         try expectReachable(["station.talk", "station.privacy-switch"], in: app)
     }
 
+    /// #819 review: at accessibility text sizes nothing fits one screen, so expanding gives the chat most of it and the
+    /// station scrolls to Tap to talk, rather than squeezing the chat below its collapsed height.
+    @MainActor
+    func testAtAccessibilitySizesExpandingNeverShrinksTheChat() throws {
+        let large = ["-UIPreferredContentSizeCategoryName", "UICTContentSizeCategoryAccessibilityL"]
+        let app = launch(talk: true, extra: large)
+        let chat = try seededChat(in: app)
+        let before = chat.frame.height
+        toggle(app).tap()
+        try expectLabel("Show the station", in: app)
+        attach(app, named: "accessibility-expanded")
+        XCTAssertGreaterThanOrEqual(chat.frame.height, before, "The chat shrank: \(before) to \(chat.frame.height).")
+    }
+
     /// #819 review: in landscape, Tap to talk and the privacy switch sit beside the chat under a slim header, so
     /// expanding keeps most of the short screen for the chat and nothing leaves it.
     @MainActor
@@ -118,10 +132,10 @@ final class ConversationFullScreenUITests: XCTestCase {
 
     /// The reset also clears the remembered choice, so each test starts with the station showing.
     @MainActor
-    private func launch(reset: Bool = true, talk: Bool = false) -> XCUIApplication {
+    private func launch(reset: Bool = true, talk: Bool = false, extra: [String] = []) -> XCUIApplication {
         let app = XCUIApplication()
         app.launchArguments += (reset ? ["-reset-station-state"] : []) + ["-seed-conversation", "\(Self.turns)"]
-            + (talk ? ["-seed-talk-card"] : [])
+            + (talk ? ["-seed-talk-card"] : []) + extra
         app.launch()
         return app
     }

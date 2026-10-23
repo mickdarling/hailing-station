@@ -15,6 +15,8 @@ struct StationFit {
     /// The full-screen conversation on a screen wider than tall (#819 review): Tap to talk sits beside the chat, so
     /// a landscape iPhone keeps its height for the chat.
     let beside: Bool
+    /// The chat's height when the station scrolls: larger while full screen at accessibility sizes (#819 review).
+    var chatHeight: CGFloat = 340
 }
 
 extension RootView {
@@ -81,9 +83,12 @@ extension RootView {
         let fits = StationPlatform.supportsWideLayout && horizontalSizeClass == .regular
             && !dynamicTypeSize.isAccessibilitySize && size.height >= 600
         if expanded {
+            // At accessibility sizes nothing fits one screen (#819 review): the chat takes most of it, and the station
+            // scrolls to Tap to talk below.
+            let large = dynamicTypeSize.isAccessibilitySize
             return StationFit(
-                fitsOneScreen: true, isWide: false, height: size.height, denseType: fits,
-                beside: size.width > size.height
+                fitsOneScreen: !large, isWide: false, height: large ? nil : size.height, denseType: fits,
+                beside: !large && size.width > size.height, chatHeight: max(340, size.height * 0.7)
             )
         }
         return StationFit(
