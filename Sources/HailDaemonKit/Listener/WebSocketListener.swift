@@ -1671,6 +1671,12 @@ extension AmbientRightyoRouter {
         return chain
     }
 
+    /// Whether `connection` is private as the owner heard it (6362119223): armed, and announced (`heardOn`). Read when
+    /// a status clip plays, behind every entry queued before it on the chain, so it reports the decided state.
+    func privacyHeardOn(connection: UUID) -> Bool {
+        state.withLock { $0.duck[connection] != nil && $0.privacy[connection]?.heardOn != false }
+    }
+
     /// Queues the clip `work` builds, given whether privacy is on, on `connection`'s chain, under the lock that reads it.
     func enqueuePrivacyClip(_ connection: UUID, _ work: (Bool) -> @Sendable () async -> Void) {
         state.withLock { state in

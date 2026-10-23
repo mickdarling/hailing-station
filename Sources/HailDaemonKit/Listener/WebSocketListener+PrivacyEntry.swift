@@ -83,6 +83,10 @@ struct AmbientPrivacyLedger<Child: AnyObject> {
         return open(all.map { Member(child: $0.0, duck: $0.1, opened: now) }, wasOn: true, at: now, recovery: true)
     }
 
+    /// Whether a status may say privacy is on, given that it is armed (#735 S-8 HS-C, 6362119223): only once it was
+    /// announced. An open entry not yet proven, or "unavailable" as the last word, is not private to the owner.
+    var heardOn: Bool { entries.values.allSatisfy(\.withdrawn) && said != .unavailable }
+
     /// An off: every open entry is withdrawn, and "Recording again." is the last word.
     mutating func withdrawAll() {
         for key in entries.keys { entries[key]?.withdrawn = true }

@@ -81,11 +81,12 @@ import Testing
         #expect(try rig.fake.recorded("control.txt") == "")
     }
 
-    /// The owner's transcript enters, then RightyO's status and exit events: the status clip while private, then the
-    /// exit turns privacy off, tells the device and confirms "Recording again.".
+    /// The owner's transcript enters, then RightyO's status and exit events before the entry's ack: the exit withdraws
+    /// the entry silently, turns privacy off, tells the device and confirms "Recording again.". The status, asked
+    /// while the entry was unproven, is decided when it plays and never says privacy is on (#735 6362119223).
     @Test func statusAndExitEventsAreAnswered() async throws {
-        let rig = try await DuckRig(script: FakeRightyo.ackingControl() + "\n"
-                                        + AmbientPrivacyEventTests.enterThen(["status", "exit", "status"]),
+        let script = AmbientPrivacyEventTests.enterThen(["status", "exit", "status"], acked: false)
+        let rig = try await DuckRig(script: FakeRightyo.ackingControl() + "\n" + script,
                                     clips: Self.clips, capabilities: [DuckMode.capability])
         defer { rig.close() }
         #expect(await eventually { rig.details("ambient_duck_confirmed").count == 4 })
@@ -95,8 +96,7 @@ import Testing
         await rig.finish()
         #expect(rig.details("ambient_duck") == ["on=true reason=voice reported=1", "on=false reason=voice reported=1"])
         #expect(rig.details("ambient_duck_confirmed") == [
-            "on=true playback=idle confirm=confirmprivacyon/0:sent",
-            "status on=true confirm=confirmprivacystatus/0:sent",
+            "on=true withdrawn confirm=unreported", "status on=false confirm=unreported",
             "on=false confirm=confirmprivacyoff/0:sent", "status on=false confirm=unreported"
         ])
         #expect(rig.details("ambient_duck_device") == ["on=true device=sent", "on=false device=sent"])
