@@ -711,6 +711,11 @@ extension RightyoInputConsumer {
         if privacyHeld.count > 32 { privacyHeld.removeFirst(privacyHeld.count - 32) }
     }
 
+    /// RightyO's `role_source` values that put the owner's own voice behind a turn (#735): its label live-bound to the
+    /// enrolled owner, every word (`voiceprint`) or some by inference (`voiceprint_label`). RightyO sends the
+    /// second only when the turn's whole span passes its owner voice check (rightyo#250). Any other value is not.
+    static let ownVoice: Set<String> = ["voiceprint", "voiceprint_label"]
+
     /// Entry is the live enrolled owner's alone (Mick, round 2: "only my registered voice should be able to turn
     /// privacy mode on"; 2026-10-23: "I should be the only one to be able to turn it on"): an enrolled session, and a
     /// turn RightyO attributed to the owner from a live voiceprint binding (`ownVoice`: `voiceprint`, or
@@ -721,9 +726,6 @@ extension RightyoInputConsumer {
     /// A negation changes nothing, so an owner-role turn's needs no voiceprint. A `partial` command (it starts with
     /// one and goes on) is the owner role's `hint`, held back; anyone else's is no privacy turn at all (nil) and goes
     /// on as an ordinary request, since only the owner's commands count (Mick).
-    /// RightyO's `role_source` values that put the owner's own voice behind a turn (#735): its label live-bound to the
-    /// enrolled owner, every word (`voiceprint`) or some by inference (`voiceprint_label`). Any other value is not.
-    static let ownVoice: Set<String> = ["voiceprint", "voiceprint_label"]
 
     private func privacyCommand(_ match: PrivacyEntry.Match, owner: Bool, voiceprint: Bool) -> PrivacyCommand? {
         let owner = speakers == "enrolled" && owner

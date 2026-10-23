@@ -691,7 +691,7 @@ A matching turn is checked in transcripts, so entry never waits for a request to
 
 - an enrolled session;
 - a turn RightyO attributed to the owner, in the transcript and, on the request path, in the attention record too;
-- that attribution coming from a live voiceprint binding, as the transcript's top-level `"role_source"` says: `"voiceprint"` (every word under the owner's bound label) or `"voiceprint_label"` (the same binding, with some words inferred under it, as most short commands are; #735, Mick: "I should be the only one to be able to turn it on"). A label-configured owner, or any other value, does not qualify.
+- that attribution coming from a live voiceprint binding, as the transcript's top-level `"role_source"` says: `"voiceprint"` (every word under the owner's bound label) or `"voiceprint_label"` (the same binding, with some words inferred under it, as most short commands are; RightyO sends it only for an entry-shaped turn whose whole span, inferred words included, passes its owner voice check, rightyo#250; #735, Mick: "I should be the only one to be able to turn it on"). A label-configured owner, or any other value, does not qualify.
 
 How a refusal sounds depends on who spoke:
 
