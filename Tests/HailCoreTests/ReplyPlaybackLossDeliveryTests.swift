@@ -6,12 +6,11 @@ import Testing
 /// #825 / #838: loss observation must survive a presentation update in the same main-actor turn.
 @MainActor
 @Suite struct ReplyPlaybackLossDeliveryTests {
-    @Test(arguments: [true, false])
-    func abandonedStreamSurvivesHistoryPressureUntilObserved(allowCue: Bool) async throws {
+    @Test func abandonedStreamSurvivesHistoryPressureUntilObserved() async throws {
         let rig = IdleRig(), reply = idleReply()
         let renderer = CountingRenderer(), fallback = FirstAudioFallbacks(), observed = ObservedReplyLosses()
         let announcer = Announcer(playback: rig.controller, renderer: renderer) { fallback.record($0, $1) }
-        announcer.watchReplyAudio { observed.record(rig.controller); return allowCue }
+        announcer.watchReplyAudio { observed.record(rig.controller); return true }
         rig.controller.ingest(idleAudio(reply, sequence: 0, final: false, byte: 7))
         let id = try #require(rig.controller.replies.first?.id)
         for _ in 0...ReplyPlaybackController.presentationLimit { rig.controller.ingest(lossRaceText()) }
@@ -22,50 +21,69 @@ import Testing
         #expect(rig.controller.lostAudioStatuses[id] == ReplyPlaybackController.abandonedStatus)
         await settleFirstAudio()
         #expect(observed.statuses[id] == ReplyPlaybackController.abandonedStatus)
-        #expect(renderer.rendered == (allowCue ? [.replyAudioLost] : []))
-        #expect(rig.player.scheduled.count == (allowCue ? 2 : 1))
+        #expect(renderer.rendered == [.replyAudioLost])
+        #expect(rig.player.scheduled.count == 2)
         #expect(fallback.announcements.isEmpty)
-        if allowCue, rig.player.scheduled.count > 1 { rig.player.completeReply() }
-        #expect(rig.controller.presentationKeysToRetain.isEmpty, "VoiceOver observations acknowledge losses too")
+        if rig.player.scheduled.count > 1 { rig.player.completeReply() }
+        #expect(rig.controller.presentationKeysToRetain.isEmpty, "the Announcer acknowledged its delivery")
         announcer.watchReplyAudio { true }
         await settleFirstAudio()
-        #expect(renderer.rendered.count == (allowCue ? 1 : 0), "an observed loss is never announced twice")
+        #expect(renderer.rendered.count == 1, "an observed loss is never announced twice")
         rig.controller.ingest(lossRaceText())
         #expect(rig.controller.lostAudioStatuses[id] == nil, "the next trim uses ordinary history semantics")
         #expect(rig.controller.replies.count == ReplyPlaybackController.presentationLimit)
         withExtendedLifetime(announcer) {}
     }
 
-    @Test func voiceOverObservationReleasesExpiredFirstAudioWithoutACue() async throws {
+    @Test(arguments: [false, true], [false, true])
+    func voiceOverLossSurvivesDeferredEligibilityCheck(midStream: Bool, watchBeforeLoss: Bool) async throws {
         let rig = IdleRig(), reply = idleReply(), renderer = CountingRenderer(), observed = ObservedReplyLosses()
         let announcer = Announcer(playback: rig.controller, renderer: renderer) { _, _ in
             Issue.record("VoiceOver owns this announcement")
         }
-        announcer.watchReplyAudio { observed.record(rig.controller); return false }
-        rig.controller.ingest(firstAudioText(reply))
+        if watchBeforeLoss { announcer.watchReplyAudio { observed.record(rig.controller); return false } }
+        if midStream {
+            rig.controller.ingest(idleAudio(reply, sequence: 0, final: false, byte: 7))
+        } else {
+            rig.controller.ingest(firstAudioText(reply))
+        }
         let id = try #require(rig.controller.replies.first?.id)
         for _ in 0...ReplyPlaybackController.presentationLimit { rig.controller.ingest(lossRaceText()) }
         await settleFirstAudio()
-        rig.advance(by: .seconds(20))
+        rig.advance(by: .seconds(25))
         rig.controller.ingest(lossRaceText())
+        if !watchBeforeLoss { announcer.watchReplyAudio { observed.record(rig.controller); return false } }
         await settleFirstAudio()
         #expect(observed.statuses[id] == ReplyPlaybackController.abandonedStatus)
-        #expect(rig.controller.presentationKeysToRetain.isEmpty)
+        // Model the app's deferred eligibility check after capture or another reply holds VoiceOver (#825, #86).
+        for _ in 0..<3 {
+            for _ in 0...ReplyPlaybackController.presentationLimit { rig.controller.ingest(lossRaceText()) }
+            await settleFirstAudio()
+            #expect(rig.controller.lostAudioStatuses[id] == observed.statuses[id])
+            #expect(rig.controller.lostAudioStatuses[id] == ReplyPlaybackController.abandonedStatus)
+            #expect(rig.controller.presentationKeysToRetain.count == 1)
+        }
         announcer.watchReplyAudio { true }
         await settleFirstAudio()
         #expect(renderer.rendered.isEmpty)
-        #expect(rig.player.scheduled.isEmpty)
+        #expect(rig.player.scheduled.count == (midStream ? 1 : 0))
         rig.controller.ingest(lossRaceText())
-        #expect(rig.controller.lostAudioStatuses[id] == nil)
+        #expect(rig.controller.lostAudioStatuses[id] == ReplyPlaybackController.abandonedStatus)
         withExtendedLifetime(announcer) {}
     }
 
-    @Test func unconsumedLossesKeepOnlyABoundedWindowInArrivalOrder() {
-        let rig = IdleRig()
+    @Test(arguments: [false, true])
+    func unconsumedLossesKeepOnlyABoundedWindowInArrivalOrder(voiceOver: Bool) async {
+        let rig = IdleRig(), renderer = CountingRenderer()
+        let announcer = voiceOver ? Announcer(playback: rig.controller, renderer: renderer) { _, _ in
+            Issue.record("an unconsumed loss must not produce an Announcer fallback")
+        } : nil
+        announcer?.watchReplyAudio { false }
         for _ in 0..<2 {
             let replies = (0..<(ReplyPlaybackController.seenFrameLimit + 2)).map { _ in idleReply() }
             for reply in replies { rig.controller.ingest(firstAudioText(reply)) }
             rig.advance(by: .seconds(20))
+            await settleFirstAudio()
             #expect(rig.controller.presentationKeysToRetain.count == ReplyPlaybackController.seenFrameLimit)
             rig.controller.ingest(lossRaceText())
             #expect(rig.controller.lostAudioStatuses.count == ReplyPlaybackController.seenFrameLimit)
@@ -75,6 +93,9 @@ import Testing
             #expect(rig.status(of: replies[2]) == ReplyPlaybackController.abandonedStatus)
             #expect(rig.status(of: replies[replies.count - 1]) == ReplyPlaybackController.abandonedStatus)
         }
+        #expect(renderer.rendered.isEmpty)
+        #expect(rig.player.scheduled.isEmpty)
+        withExtendedLifetime(announcer) {}
     }
 }
 

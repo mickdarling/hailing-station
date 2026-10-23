@@ -51,9 +51,14 @@ public final class Announcer {
         let lost = withObservationTracking { playback.lostAudioStatuses } onChange: { [weak self] in
             Task { @MainActor in self?.watchReplyAudio(when: allowed) }
         }
+        // Skipped losses stay once-only: VoiceOver owned them even if it later turns off (#825, #86).
+        // Keep their statuses eligible for deferred VoiceOver across trims; without app acknowledgement,
+        // only the bounded, oldest-first seenFrameLimit eviction releases their retention (#825, #86).
         for (id, status) in lost where announcedReplies.insert(id).inserted {
-            if allowed() { announceAudioProblem(status) }
-            playback.acknowledgeAudioLoss(id) // VoiceOver owns the deferred announcement when not allowed (#86).
+            if allowed() {
+                announceAudioProblem(status)
+                playback.acknowledgeAudioLoss(id)
+            }
         }
     }
 
