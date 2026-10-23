@@ -131,7 +131,9 @@ import Testing
         let deadlines = AmbientAckDeadlines()
         deadlines.arm(AmbientAckDeadlines.freshStart, after: 0.05) { _ in fired.add("first") }
         deadlines.arm(AmbientAckDeadlines.freshStart, after: 0.1) { _ in fired.add("second") }
-        try await Task.sleep(for: .milliseconds(400))
+        // Polled, not a fixed sleep: a loaded runner can delay both (#836 CI). The first, cancelled, never fires.
+        #expect(await eventually { fired.all.contains("second") })
+        withExtendedLifetime(deadlines) {}
         #expect(fired.all == ["second"])
         #expect(AmbientRightyoRouter.announcement(.withdrawn, claimed: false, wasOn: true) == (nil, " withdrawn"))
     }
