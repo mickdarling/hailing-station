@@ -9,7 +9,7 @@ import Testing
 /// without a device's audio stream, and privacy never outlives its router: after a restart a new connection has no
 /// privacy state and its first stream starts public. Synthetic only.
 @Suite(.serialized, .timeLimit(.minutes(1)), .frozenGuardBudget) struct AmbientPrivacyInMemoryTests {
-    static let argv = "echo \"$*\" >> argv.txt\n/bin/cat <&3 >> control.txt &\n"
+    static let argv = "echo \"$*\" >> argv.txt\n" + FakeRightyo.ackingControl(append: true) + "\n"
 
     /// A device that connects and selects the target, but sends no audio, starts no capture and no child.
     @Test func noChildWithoutADeviceAudioStream() async throws {

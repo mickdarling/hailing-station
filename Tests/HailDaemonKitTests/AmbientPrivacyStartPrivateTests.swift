@@ -8,7 +8,7 @@ import Testing
 /// start-private option, and one whose `started` does not confirm `"private": true` is killed, never admitted.
 /// Synthetic only.
 @Suite(.serialized, .timeLimit(.minutes(1)), .frozenGuardBudget) struct AmbientPrivacyStartPrivateTests {
-    static let confirmed = #"{"type": "session", "phase": "started", "duck": {"version": 2, "private": true}}"#
+    static let confirmed = #"{"type": "session", "phase": "started", "duck": {"version": 3, "private": true}}"#
 
     @Test func theOptionIsRightyosStartPrivate() {
         #expect(RightyoChildProcess.startPrivateFlag == "--start-private")
@@ -37,12 +37,13 @@ import Testing
 
     @Test(arguments: [
         #"{"type": "session", "phase": "started"}"#,
-        #"{"type": "session", "phase": "started", "duck": {"version": 2}}"#,
-        #"{"type": "session", "phase": "started", "duck": {"version": 2, "private": false}}"#,
-        #"{"type": "session", "phase": "started", "duck": {"version": 2, "private": "true"}}"#,
-        #"{"type": "session", "phase": "started", "duck": {"version": 2, "private": 1}}"#,
+        #"{"type": "session", "phase": "started", "duck": {"version": 3}}"#,
+        #"{"type": "session", "phase": "started", "duck": {"version": 3, "private": false}}"#,
+        #"{"type": "session", "phase": "started", "duck": {"version": 3, "private": "true"}}"#,
+        #"{"type": "session", "phase": "started", "duck": {"version": 3, "private": 1}}"#,
         #"{"type": "session", "phase": "started", "duck": {"version": 1, "private": true}}"#,
-        #"{"type": "session", "phase": "started", "private": true, "duck": {"version": 2}}"#
+        #"{"type": "session", "phase": "started", "duck": {"version": 2, "private": true}}"#,
+        #"{"type": "session", "phase": "started", "private": true, "duck": {"version": 3}}"#
     ])
     func anythingElseIsUnconfirmedAndStaysHeld(_ line: String) {
         let (control, written) = (AmbientDuckControl(startPrivate: true), AmbientDuckControlTests.Written())
@@ -72,7 +73,8 @@ import Testing
 
     /// A new stream on a connection that is private (a respawn) launches its child start-private too.
     @Test func aRespawnWhilePrivateStartsPrivate() async throws {
-        let script = "echo \"$*\" >> argv.txt\n/bin/cat <&3 >> control.txt &\n" + AmbientDuckReloadTests.entry
+        let script = "echo \"$*\" >> argv.txt\n" + FakeRightyo.ackingControl(append: true) + "\n"
+            + AmbientDuckReloadTests.entry
         let rig = try await DuckRig(script: script)
         defer { rig.close() }
         #expect(await eventually { rig.details("ambient_duck").count == 1 })
@@ -123,9 +125,9 @@ import Testing
         #expect(await eventually { kill(pid, 0) != 0 })
     }
 
-    /// The spawn-to-started race: a child launched public, privacy wished for before its `started`, and no `duck` v2.
+    /// The spawn-to-started race: a child launched public, privacy wished for before its `started`, and no `duck` v3.
     /// It is killed and refused, never `lost`: privacy stays wished and nothing is delivered.
-    @Test(arguments: [nil, 1] as [Int?]) func theSpawnToStartedRaceIsRefused(_ version: Int?) async throws {
+    @Test(arguments: [nil, 1, 2] as [Int?]) func theSpawnToStartedRaceIsRefused(_ version: Int?) async throws {
         let fake = try FakeRightyo("/bin/sleep 0.5\n" + AmbientPrivacyEntryTests.fixture(
             saying: "Rightyo, archive the project.", advertises: version != nil, version: version ?? 1))
         defer { fake.cleanUp() }
@@ -139,7 +141,7 @@ import Testing
     /// A failed start while private (the child cannot even launch) is refused; privacy stays on and the owner hears
     /// "I can't listen privately right now." for every start that fails (#822 A: no silent state change).
     @Test func aFailedStartWhilePrivateKeepsPrivacyAndSaysSoEachTime() async throws {
-        let rig = try await DuckRig(script: "/bin/cat <&3 >> control.txt &\n" + AmbientDuckReloadTests.entry,
+        let rig = try await DuckRig(script: AmbientDuckReloadTests.record + AmbientDuckReloadTests.entry,
                                     clips: AmbientDuckModeTests.clips)
         defer { rig.close() }
         #expect(await eventually { rig.details("ambient_duck").count == 1 })

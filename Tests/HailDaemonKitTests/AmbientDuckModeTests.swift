@@ -38,12 +38,12 @@ import Testing
         #expect(try rig.fake.recorded("control.txt") == "{\"duck\":true}\n")
     }
 
-    /// A v1 RightyO still transcribes while ducked and an older one would skip the line: privacy is not entered (fail
-    /// closed), no device is told it is on, nothing is written to the child, and the speaker hears that nothing was
-    /// sent. Listening goes on.
-    @Test(arguments: [false, true]) func aVersionOneOrOlderRightyoRefusesPrivacy(_ v1: Bool) async throws {
-        let rig = try await DuckRig(saying: "Rightyo, stop recording.", advertises: v1, version: 1, clips: Self.clips,
-                                    capabilities: [DuckMode.capability])
+    /// A v1 RightyO still transcribes while ducked, a v2 one never acks (#735 S-8) and an older one would skip the
+    /// line: privacy is not entered (fail closed), no device is told it is on, nothing is written to the child, and the
+    /// speaker hears that nothing was sent. Listening goes on.
+    @Test(arguments: [nil, 1, 2] as [Int?]) func aVersionTwoOrOlderRightyoRefusesPrivacy(_ version: Int?) async throws {
+        let rig = try await DuckRig(saying: "Rightyo, stop recording.", advertises: version != nil,
+                                    version: version ?? 1, clips: Self.clips, capabilities: [DuckMode.capability])
         defer { rig.close() }
         #expect(try await rig.confirmation() == "Nothing was sent.")
         #expect(await eventually { !rig.details("ambient_duck_confirmed").isEmpty })
@@ -84,7 +84,7 @@ import Testing
     /// The owner's transcript enters, then RightyO's status and exit events: the status clip while private, then the
     /// exit turns privacy off, tells the device and confirms "Recording again.".
     @Test func statusAndExitEventsAreAnswered() async throws {
-        let rig = try await DuckRig(script: "/bin/cat <&3 > control.txt &\n"
+        let rig = try await DuckRig(script: FakeRightyo.ackingControl() + "\n"
                                         + AmbientPrivacyEventTests.enterThen(["status", "exit", "status"]),
                                     clips: Self.clips, capabilities: [DuckMode.capability])
         defer { rig.close() }
@@ -115,12 +115,12 @@ final class DuckRig: Sendable {
     private let events: DuckEvents
 
     /// `script`, when given, replaces the fixture saying `words` as the fake's whole behaviour.
-    init(saying words: String = "", advertises: Bool = false, version: Int = 2, script: String? = nil,
+    init(saying words: String = "", advertises: Bool = false, version: Int = 3, script: String? = nil,
          enrolled: Bool = true,
          clips: AmbientAckLibrary? = nil, timeout: TimeInterval = AmbientRightyoRouter.defaultDuckTimeout,
          capabilities: [String] = [],
          startDeadline: TimeInterval = RightyoAmbientPipeline.defaultStartDeadline) async throws {
-        fake = try FakeRightyo(script ?? "/bin/cat <&3 > control.txt &\n" + AmbientPrivacyEntryTests.fixture(
+        fake = try FakeRightyo(script ?? FakeRightyo.ackingControl() + "\n" + AmbientPrivacyEntryTests.fixture(
             saying: words, enrolled: enrolled, advertises: advertises, version: version))
         try fake.install(fixture: enrolled ? "enrolled-formed-request.jsonl" : "tool-events.jsonl")
         let events = DuckEvents()

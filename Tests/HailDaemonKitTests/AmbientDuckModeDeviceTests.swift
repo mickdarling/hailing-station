@@ -42,7 +42,8 @@ import Testing
     }
 
     /// Mick, round 2: no privacy auto-end. With the (reserved) timeout set short and time well past it, privacy stays
-    /// on, nothing is written off to the child, and a re-entry carries no expiry either.
+    /// on, nothing is written off to the child, and a re-entry carries no expiry either. The child already keeps
+    /// privacy (it acked), so the re-entry writes it nothing more (#735 S-8).
     @Test func privacyStaysOnWithTimeAdvanced() async throws {
         let rig = try await DuckRig(saying: "Rightyo, stop recording.", advertises: true, timeout: 0.2,
                                     capabilities: [DuckMode.capability])
@@ -59,7 +60,7 @@ import Testing
         #expect(rig.env.router.duckMode(connection: connection))
         try await barrier(on: rig.socket, step: "no off")
         #expect(rig.details("ambient_duck") == ["on=true reason=voice reported=1", "on=true reason=voice reported=1"])
-        #expect(try rig.fake.recorded("control.txt") == "{\"duck\":true}\n{\"duck\":true}\n")
+        #expect(try rig.fake.recorded("control.txt") == "{\"duck\":true}\n")
         await rig.finish()
     }
 }

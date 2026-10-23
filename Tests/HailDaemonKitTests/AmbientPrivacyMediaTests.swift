@@ -69,9 +69,9 @@ import Testing
     }
 }
 
-/// A fake that takes control lines and forms one ordinary synthetic request, advertising `duck` v2.
+/// A fake that takes control lines and forms one ordinary synthetic request, advertising `duck` v3.
 enum AmbientPrivacyReplyQuiet {
-    static let script = "/bin/cat <&3 > control.txt &\n"
+    static let script = FakeRightyo.ackingControl() + "\n"
         + AmbientPrivacyEntryTests.fixture(saying: "Rightyo, archive the project.", advertises: true)
     /// Records two control lines, then holds its `started` until the test creates `go`.
     static let held = "IFS= read -r a <&3; IFS= read -r b <&3; printf '%s\\n%s\\n' \"$a\" \"$b\" > control.txt\n"

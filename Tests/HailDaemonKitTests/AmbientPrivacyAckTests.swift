@@ -77,12 +77,18 @@ extension AmbientPrivacyEventTests {
         #expect(await Self.seen(consumer) == Seen(.status, nil))
     }
 
-    /// Through the pipeline a v3 ack plays nothing and ends nothing; from v2 it ends the stream.
-    @Test func throughThePipelineAnAckReachesNoClip() async throws {
+    /// Through the pipeline (#735 S-8 HS-B) an ack no on-write asked for is a protocol error: from v3 it ends the stream
+    /// whether or not privacy is wished for (input closed first, so the wish was never written), and from v2 too.
+    @Test func throughThePipelineAnUnsolicitedAckEndsTheStream() async throws {
         let ack = #", \"at_ms\": 500"#
-        let (seen, delivered) = try await run(Self.events(["on"], version: 3, extra: ack))
-        #expect(seen.isEmpty && delivered == 0)
-        await #expect(throws: RightyoInputError.self) { _ = try await run(Self.events(["on"], extra: ack)) }
+        for ducking in [false, true] {
+            await #expect(throws: RightyoInputError.invalidEvent) {
+                _ = try await run(Self.events(["on"], extra: ack), ducking: ducking)
+            }
+        }
+        await #expect(throws: RightyoInputError.invalidEvent) {
+            _ = try await run(Self.events(["on"], version: 2, extra: ack), ducking: false)
+        }
     }
 }
 #endif

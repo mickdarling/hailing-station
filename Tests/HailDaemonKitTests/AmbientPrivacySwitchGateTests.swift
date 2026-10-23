@@ -38,14 +38,13 @@ import Testing
     /// owner's voiceprint, so the voice exit cannot reach it. The switch's off writes `{"duck":false}` to that child,
     /// exactly as the voice exit does, ends privacy and tells the device off with reason `device`.
     @Test func theSwitchEndsPrivacyInAChildRespawnedStartPrivate() async throws {
-        let started = #"-e 's/"phase": "started"/"duck": {"version": 2'"$PRIV"'}, "phase": "started"/'"#
+        let started = #"-e 's/"phase": "started"/"duck": {"version": 3'"$PRIV"'}, "phase": "started"/'"#
         let later = """
         echo "$*" >> argv.txt
         \(AmbientPrivacyEntryTests.startPrivatePrelude)
         /usr/bin/sed -n -e '1p' events.jsonl | /usr/bin/sed -e "s/formed-demo/$7/g" \(started)
         \(AmbientPrivacyEventTests.line("status", sequence: 2, at: 0))
-        /bin/cat > /dev/null
-        /usr/bin/sed -n -e '$p' events.jsonl | /usr/bin/sed -e "s/formed-demo/$7/g" -e 's/"sequence": 7/"sequence": 3/'
+        \(FakeRightyo.ackingTail)
         """
         let rig = try await DuckRig(script: AmbientDuckReloadTests.staged(AmbientDuckReloadTests.entry, later),
                                     clips: AmbientDuckModeTests.clips, capabilities: [DuckMode.capability])

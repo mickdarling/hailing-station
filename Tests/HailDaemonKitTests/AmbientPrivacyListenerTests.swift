@@ -8,7 +8,7 @@ import Testing
 /// connection's end) leaves privacy. An exit while privacy is off is ignored, and nothing a speaker says that slips
 /// through while private ever turns it off. Synthetic only.
 @Suite(.serialized, .timeLimit(.minutes(1)), .frozenGuardBudget) struct AmbientPrivacyListenerTests {
-    /// `started` (v2) and the owner's "Stop recording.", then one more owner transcript per text (as if it slipped
+    /// `started` (v3) and the owner's "Stop recording.", then one more owner transcript per text (as if it slipped
     /// through while private), then `stopped`.
     static func slips(_ texts: [String]) -> String {
         let source = "Rightyo, archive the project."
@@ -19,18 +19,17 @@ import Testing
                 + #"-e 's/"utterance_id": "request"/"utterance_id": "slip-\#(index)"/'"#
         }
         return """
-        /bin/cat <&3 > control.txt &
+        \(FakeRightyo.ackingControl())
         /usr/bin/sed -n -e '1p' -e '4p' events.jsonl | /usr/bin/sed -e "s/formed-demo/$7/g" \
-          -e 's/\(source)/Stop recording./g' \(AmbientPrivacyEventTests.duck(2))\(AmbientPrivacyEventTests.voiceprint)
+          -e 's/\(source)/Stop recording./g' \(AmbientPrivacyEventTests.duck(3))\(AmbientPrivacyEventTests.voiceprint)
         \(lines.joined(separator: "\n"))
-        /bin/cat > /dev/null
-        /usr/bin/sed -n -e '$p' events.jsonl | /usr/bin/sed -e "s/formed-demo/$7/g" -e 's/"sequence": 7/"sequence": 99/'
+        \(FakeRightyo.ackingTail)
         """
     }
 
     /// A stale or duplicate exit while privacy is off: no `setDuck`, no device notice, no clip; a state token only.
     @Test func anExitWhilePrivacyIsOffIsIgnored() async throws {
-        let script = "/bin/cat <&3 > control.txt &\n" + AmbientPrivacyEventTests.events(["exit"])
+        let script = FakeRightyo.ackingControl() + "\n" + AmbientPrivacyEventTests.events(["exit"])
         let rig = try await DuckRig(script: script,
                                     clips: AmbientDuckModeTests.clips, capabilities: [DuckMode.capability])
         defer { rig.close() }
@@ -43,7 +42,7 @@ import Testing
     }
 
     @Test func aDuplicateExitIsIgnored() async throws {
-        let rig = try await DuckRig(script: "/bin/cat <&3 > control.txt &\n"
+        let rig = try await DuckRig(script: FakeRightyo.ackingControl() + "\n"
                                         + AmbientPrivacyEventTests.enterThen(["exit", "exit"]),
                                     clips: AmbientDuckModeTests.clips, capabilities: [DuckMode.capability])
         defer { rig.close() }
@@ -74,9 +73,9 @@ import Testing
     }
 
     /// Privacy taken stops a reply playing first, through the owner's stop path (`stop_playback` to a device that takes
-    /// it), then plays only the clip; a refused entry (v1 child) leaves playback alone.
+    /// it), then plays only the clip; a refused entry (v2 child: it never acks) leaves playback alone.
     @Test(arguments: [true, false]) func enteringStopsPlaybackARefusalDoesNot(_ taken: Bool) async throws {
-        let rig = try await DuckRig(saying: "Rightyo, stop recording.", advertises: true, version: taken ? 2 : 1,
+        let rig = try await DuckRig(saying: "Rightyo, stop recording.", advertises: true, version: taken ? 3 : 2,
                                     clips: AmbientDuckModeTests.clips, capabilities: [PlaybackStop.capability])
         defer { rig.close() }
         var payloads: [FramePayload] = []
@@ -94,7 +93,7 @@ import Testing
     /// A guest's entry never enters and never ends media mode: refused, no clip, logged `refused=not_owner`.
     @Test func aGuestsEntryLeavesMediaModeOn() async throws {
         let entry = AmbientPrivacyEntryTests.fixture(saying: "Rightyo, stop recording.", guest: true, advertises: true)
-        let rig = try await DuckRig(script: "/bin/cat <&3 > control.txt &\n/bin/sleep 1\n" + entry,
+        let rig = try await DuckRig(script: FakeRightyo.ackingControl() + "\n/bin/sleep 1\n" + entry,
                                     clips: AmbientDuckModeTests.clips)
         defer { rig.close() }
         #expect(await eventually { rig.connection() != nil })
@@ -136,7 +135,7 @@ import Testing
     /// Round 4 (key 2): a transcript is not addressed to the assistant, so the owner's partial command there gives
     /// no hint and no clip, and nothing changes.
     @Test func anUnaddressedPartialGivesNoHint() async throws {
-        let rig = try await DuckRig(script: "/bin/cat <&3 > control.txt &\n" + Self.transcriptOnly(
+        let rig = try await DuckRig(script: FakeRightyo.ackingControl() + "\n" + Self.transcriptOnly(
             "Rightyo, stop listening to him, he is wrong."), clips: AmbientDuckModeTests.clips)
         defer { rig.close() }
         #expect(await eventually { rig.connection() != nil })
@@ -153,7 +152,7 @@ import Testing
             clips = AmbientAckLibrary(clips: ["confirmprivacyrefused": [AmbientDuckModeTests.clip("I couldn't.", 4)],
                                               "confirmnotsent": [AmbientDuckModeTests.clip("Nothing was sent.", 5)]])
         }
-        let rig = try await DuckRig(script: "/bin/cat <&3 > control.txt &\n" + AmbientPrivacyEntryTests.fixture(
+        let rig = try await DuckRig(script: FakeRightyo.ackingControl() + "\n" + AmbientPrivacyEntryTests.fixture(
             saying: "Rightyo, stop recording.", advertises: true, roleSource: nil), clips: clips)
         defer { rig.close() }
         #expect(try await rig.confirmation() == (recorded ? "I couldn't." : "Nothing was sent."))
@@ -178,15 +177,14 @@ import Testing
         #expect(rig.details("ambient_duck").isEmpty)
     }
 
-    /// `started` (v2) and the owner's transcript of `words` (from a voiceprint) only, then `stopped`: no attention and
+    /// `started` (v3) and the owner's transcript of `words` (from a voiceprint) only, then `stopped`: no attention and
     /// no request, so nothing addressed it to the assistant.
     static func transcriptOnly(_ words: String) -> String {
         """
         /usr/bin/sed -n -e '1p' -e '4p' events.jsonl | /usr/bin/sed -e "s/formed-demo/$7/g" \
-          -e 's/Rightyo, archive the project./\(words)/g' \(AmbientPrivacyEventTests.duck(2)) \
+          -e 's/Rightyo, archive the project./\(words)/g' \(AmbientPrivacyEventTests.duck(3)) \
           \(AmbientPrivacyEventTests.voiceprint)
-        /bin/cat > /dev/null
-        /usr/bin/sed -n -e '$p' events.jsonl | /usr/bin/sed "s/formed-demo/$7/g"
+        \(FakeRightyo.ackingTail)
         """
     }
 }

@@ -9,8 +9,8 @@ import Testing
 /// every pending reply record are dropped for good; the host's own confirmation clips still play; after the exit,
 /// new replies flow again. Synthetic only.
 @Suite(.serialized, .timeLimit(.minutes(1)), .frozenGuardBudget) struct AmbientPrivacyReplyTests {
-    /// A fake that takes control lines and forms one ordinary synthetic request, advertising `duck` v2.
-    static let quiet = "/bin/cat <&3 > control.txt &\n"
+    /// A fake that takes control lines and forms one ordinary synthetic request, advertising `duck` v3.
+    static let quiet = FakeRightyo.ackingControl() + "\n"
         + AmbientPrivacyEntryTests.fixture(saying: "Rightyo, archive the project.", advertises: true)
 
     /// A request-less reply frame (`haild reply --say`), text or one audio frame of `stream`.
