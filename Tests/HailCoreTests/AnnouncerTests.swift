@@ -62,12 +62,12 @@ import Testing
         let announcer = Announcer(playback: controller, renderer: FakeRenderer()) { announcement, _ in
             fallbacks.append(announcement)
         }
-        var allowed = false
-        announcer.watchReplyAudio { allowed }
+        let gate = Gate() // A class, not a captured var: the gate closure is Sendable (Swift 6.3).
+        announcer.watchReplyAudio { gate.open }
         controller.ingest(audio(sequence: 0, final: true))
         await settle()
         #expect(fallbacks.isEmpty, "not while VoiceOver's own announcements cover it")
-        allowed = true
+        gate.open = true
         controller.ingest(audio(sequence: 0, final: true, reply: ReplyDescriptor(
             id: UUID(), hostID: "main-mac", targetID: "tmux:codex", audioStreamID: UUID())))
         await settle()
@@ -102,6 +102,8 @@ import Testing
     }
 }
 @MainActor
+private final class Gate { var open = false }
+@MainActor
 private struct FakeRenderer: AnnouncementRendering {
     var fails = false
     func audio(for announcement: Announcement) async throws -> [AudioPayload] {
@@ -113,7 +115,6 @@ private struct FakeRenderer: AnnouncementRendering {
         }
     }
 }
-
 @MainActor
 private final class AnnouncePlayer: ReplyAudioPlaying {
     var scheduled: [AudioPayload] = []
@@ -141,7 +142,6 @@ private final class FailingPlayer: ReplyAudioPlaying {
     func setMuted(_ muted: Bool) {}
     func replaceQueue(with payloads: [AudioPayload], onPlayed: (@MainActor @Sendable () -> Void)?) {}
 }
-
 /// #838 review: the main path. A reply whose stream ended without its final audio is spoken as `replyAudioLost`,
 /// through the player, once, however its status changes after.
 @MainActor
