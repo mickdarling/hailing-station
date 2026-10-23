@@ -16,6 +16,8 @@ struct RootView: View {
     @State var keepalive = BackgroundKeepalive(renderer: StationPlatform.keepaliveRenderer())
     /// The "Diagnostics logging" log (#234): off by default; records and sends nothing until turned on.
     @State var diagnostics = DeviceDiagnostics()
+    @State var announcer: Announcer?
+    @State var announcementBanner: String? // A cue that could not be heard (#825 S4b), shown until tapped.
     @State var selectedHostID: HostEndpoint.Identifier?
     @State var selectedTargetID: String?
     @State var rememberedSelection: DestinationSelection?
@@ -49,6 +51,7 @@ struct RootView: View {
             content
         }
         .modifier(StationMenuStatusPublisher(connections: connections, destination: destination?.label))
+        .overlay(alignment: .top) { announcementBannerView }
         .onChange(of: scenePhase) { _, phase in
             scenePhaseRevision &+= 1
             selectionRevision &+= 1
@@ -90,6 +93,7 @@ struct RootView: View {
             connections.onReplyFrame = { playback.ingest($0) }
             // One announcement per refused request, whatever its code (#608, #636); the chat shows it too.
             connections.onRequestRefusal = { StationPlatform.announce($0) }
+            startAnnouncer()
             let keepalive = keepalive
             // Releases a session left active for an audible reply once that reply ends (#354).
             keepalive.follow(playback)
@@ -166,4 +170,31 @@ struct LabsView: View {
 
 #Preview {
     RootView()
+}
+
+extension RootView {
+    /// Spoken cues the station makes itself, through the reply player (#825 S4b); one that can't be heard is never
+    /// lost: a haptic, a banner, and VoiceOver say it (#822).
+    func startAnnouncer() {
+        let announcer = Announcer(playback: playback, renderer: LocalAnnouncementRenderer()) { announcement, _ in
+            #if os(iOS)
+            UINotificationFeedbackGenerator().notificationOccurred(.warning)
+            #endif
+            announcementBanner = announcement.fallbackText
+            StationPlatform.announce(announcement.fallbackText)
+        }
+        announcer.watchReplyAudio { !StationPlatform.voiceOverRunning } // VoiceOver hears the deferred ones (#86).
+        self.announcer = announcer
+    }
+    @ViewBuilder var announcementBannerView: some View {
+        if let banner = announcementBanner {
+            Label(banner, systemImage: "speaker.slash")
+                .font(.subheadline.weight(.semibold))
+                .padding(EdgeInsets(top: 10, leading: 14, bottom: 10, trailing: 14))
+                .background(.regularMaterial, in: Capsule())
+                .padding(.top, 8)
+                .onTapGesture { announcementBanner = nil }
+                .accessibilityIdentifier("station.announcement-banner")
+        }
+    }
 }

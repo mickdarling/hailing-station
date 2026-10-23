@@ -191,8 +191,8 @@ public final class ReplyPlaybackController {
             setPresentationStatus(nil, for: key)
             status = playingStatus
             guard segment.isFinal else { continue }
-            lastAudio = (0..<stream.nextSequence).compactMap { stream.segments[$0] }
-            lastKey = key
+            if !key.isAnnouncement { lastAudio = (0..<stream.nextSequence).compactMap { stream.segments[$0] } }
+            if !key.isAnnouncement { lastKey = key } // Replay replays the last reply, never an announcement (#825).
             completed.insert(key)
             return
         }
