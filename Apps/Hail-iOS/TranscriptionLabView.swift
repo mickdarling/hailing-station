@@ -122,18 +122,23 @@ struct TranscriptionLabView: View {
                     .frame(maxWidth: .infinity, alignment: .trailing)
             }
 
-            if compactTalk {
-                HStack(spacing: 12) { talkButton; escapeControl }
-            } else {
+            // Full screen (#819), one row: talk, its status and Escape. The button keeps the first slot either way,
+            // so expanding never rebuilds it.
+            let row = compactTalk ? AnyLayout(HStackLayout(spacing: 10)) : AnyLayout(VStackLayout(spacing: 18))
+            row {
                 talkButton
+                if compactTalk { statusRow; escapeControl }
             }
 
             // Below the button, so its appearing never moves Tap to talk under a finishing tap.
             liveTranscript
 
-            if !compactTalk { pasteControl; escapeControl }
+            // Always mounted (#819 review), so a destination change still clears a paste and a refused one comes
+            // back. Full screen it hides only the bare Paste button: an attached paste or a problem still shows.
+            pasteControl
+                .stationCollapsed(compactTalk && attachedPaste == nil && pasteProblem == nil)
 
-            statusRow
+            if !compactTalk { escapeControl; statusRow }
         }
         .padding(compactTalk ? 12 : 18)
         .background(.regularMaterial, in: RoundedRectangle(cornerRadius: 24, style: .continuous))

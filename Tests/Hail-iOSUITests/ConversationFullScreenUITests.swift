@@ -55,13 +55,27 @@ final class ConversationFullScreenUITests: XCTestCase {
         try expectLabel("Expand the conversation", in: relaunched)
     }
 
-    /// #819 review: in landscape, Tap to talk sits beside the chat under a one-row header, so expanding keeps most of
-    /// the short screen for the chat and nothing leaves it.
+    /// #819 review: with Tap to talk and the privacy switch present (an invented talk card), expanding on an iPhone in
+    /// portrait still grows the chat, and both stay on screen.
+    @MainActor
+    func testWithTapToTalkTheChatStillGrows() throws {
+        let app = launch(talk: true)
+        let chat = try seededChat(in: app)
+        let before = chat.frame.height
+        toggle(app).tap()
+        try expectLabel("Show the station", in: app)
+        attach(app, named: "talk-expanded")
+        XCTAssertGreaterThan(chat.frame.height, before + 60, "The chat shrank: \(before) to \(chat.frame.height).")
+        try expectReachable(["station.talk", "station.privacy-switch"], in: app)
+    }
+
+    /// #819 review: in landscape, Tap to talk and the privacy switch sit beside the chat under a slim header, so
+    /// expanding keeps most of the short screen for the chat and nothing leaves it.
     @MainActor
     func testInLandscapeTheChatKeepsMostOfTheScreen() throws {
         XCUIDevice.shared.orientation = .landscapeLeft
         defer { XCUIDevice.shared.orientation = .portrait }
-        let app = launch()
+        let app = launch(talk: true)
         let chat = try seededChat(in: app)
         toggle(app).tap()
         try expectLabel("Show the station", in: app)
@@ -71,6 +85,7 @@ final class ConversationFullScreenUITests: XCTestCase {
         XCTAssertLessThanOrEqual(chat.frame.maxY, window.maxY + 1)
         XCTAssertLessThanOrEqual(chat.frame.maxX, window.maxX + 1)
         XCTAssertLessThanOrEqual(toggle(app).frame.maxX, window.maxX + 1)
+        try expectReachable(["station.talk", "station.privacy-switch"], in: app)
     }
 
     /// The remembered choice never strands the owner: with no chat to carry the toggle (no destination, no seed),
@@ -103,11 +118,24 @@ final class ConversationFullScreenUITests: XCTestCase {
 
     /// The reset also clears the remembered choice, so each test starts with the station showing.
     @MainActor
-    private func launch(reset: Bool = true) -> XCUIApplication {
+    private func launch(reset: Bool = true, talk: Bool = false) -> XCUIApplication {
         let app = XCUIApplication()
         app.launchArguments += (reset ? ["-reset-station-state"] : []) + ["-seed-conversation", "\(Self.turns)"]
+            + (talk ? ["-seed-talk-card"] : [])
         app.launch()
         return app
+    }
+
+    /// Each element exists, can be tapped, and lies wholly inside the window.
+    @MainActor
+    private func expectReachable(_ identifiers: [String], in app: XCUIApplication) throws {
+        let window = app.windows.firstMatch.frame
+        for identifier in identifiers {
+            let element = app.descendants(matching: .any)[identifier].firstMatch
+            XCTAssertTrue(element.waitForExistence(timeout: 5), "\(identifier) is missing.")
+            XCTAssertTrue(element.isHittable, "\(identifier) cannot be tapped.")
+            XCTAssertTrue(window.contains(element.frame), "\(identifier) \(element.frame) leaves window \(window).")
+        }
     }
 
     @MainActor

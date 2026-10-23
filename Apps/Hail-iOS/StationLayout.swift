@@ -12,11 +12,9 @@ struct StationFit {
     /// The denser type of the one-screen iPad (#288). It follows the device's normal layout, so expanding the
     /// conversation (#819) never changes the text size.
     let denseType: Bool
-    /// The full-screen conversation on a screen wider than tall (#819 review): Tap to talk sits beside the chat,
-    /// under a one-row header, so a landscape iPhone keeps its height for the chat.
+    /// The full-screen conversation on a screen wider than tall (#819 review): Tap to talk sits beside the chat, so
+    /// a landscape iPhone keeps its height for the chat.
     let beside: Bool
-
-    var oneRowHeader: Bool { denseType || beside }
 }
 
 extension RootView {
@@ -30,10 +28,15 @@ extension RootView {
             let fit = stationFit(in: proxy.size, expanded: expanded.wrappedValue)
             ScrollView {
                 VStack(spacing: fit.fitsOneScreen ? 14 : 18) {
-                    // The one-row header only where the device's normal layout has room (#819 review): never on an
-                    // iPhone just because the conversation is full screen.
-                    StationHeader(connection: connectionPresentation, compact: fit.oneRowHeader) {
-                        destinationMenu
+                    // Full screen, a slim header (#819 review). Otherwise the one-row header only where the device's
+                    // normal layout has room. Neither holds state, so switching remounts nothing that matters.
+                    if expanded.wrappedValue {
+                        StationExpandedHeader(connection: connectionPresentation,
+                                              listening: connections.ambientStreaming, expanded: expanded) {
+                            destinationMenu
+                        }
+                    } else {
+                        StationHeader(connection: connectionPresentation, compact: fit.denseType) { destinationMenu }
                     }
                     adaptiveContent(fit, expanded: expanded)
                 }

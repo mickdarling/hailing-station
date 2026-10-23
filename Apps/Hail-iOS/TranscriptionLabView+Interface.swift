@@ -22,18 +22,20 @@ extension TranscriptionLabView {
         [finalText, volatileText].filter { !$0.isEmpty }.joined(separator: " ")
     }
 
-    /// Discards any active recording and sends Escape at once. Compact beside Tap to talk when full screen (#819).
+    /// Discards any active recording and sends Escape at once. An icon beside Tap to talk when full screen (#819).
     @ViewBuilder
     var escapeControl: some View {
         if let onEscape {
             Button(role: .destructive) {
                 startInterrupt(using: onEscape)
             } label: {
-                Label("Escape", systemImage: "xmark.octagon.fill")
+                let icon = Image(systemName: "xmark.octagon.fill")
+                if compactTalk { icon } else { Label { Text("Escape") } icon: { icon } }
             }
             .buttonStyle(.bordered)
             .controlSize(compactTalk ? .regular : .large)
             .disabled(isFinalizing || finishTask != nil || interruptTask != nil)
+            .accessibilityLabel("Escape")
             .accessibilityHint("Discards any active recording and sends Escape immediately to the target.")
         }
     }
@@ -53,15 +55,11 @@ extension TranscriptionLabView {
                     .frame(width: circle, height: circle)
                     .foregroundStyle(.white)
                     .background(isRecording ? Color.red : Color.accentColor, in: Circle())
-                    .shadow(
-                        color: (isRecording ? Color.red : Color.accentColor).opacity(0.25),
-                        radius: 12,
-                        y: 6
-                    )
+                    .shadow(color: (isRecording ? Color.red : Color.accentColor).opacity(0.25), radius: 12, y: 6)
                 Text(actionLabel)
                     .font(.headline)
             }
-            .frame(maxWidth: .infinity)
+            .frame(maxWidth: compactTalk ? nil : .infinity)
             .contentShape(Rectangle())
         }
         .buttonStyle(.plain)

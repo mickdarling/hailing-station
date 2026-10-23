@@ -1,14 +1,14 @@
 import HailCore
 import SwiftUI
 
-// The full-screen conversation (#819): the chat takes the whole station, and only what must stay reachable is shown
-// beside it: talk or stop (the same Tap to talk, without its paste offer), the privacy switch and indicator
-// (#735 S-6), and, while ambient listening is on, a way back to its card. Surfaces that own audio stay mounted, so
-// nothing they own stops: removing the ambient card would end listening, and removing Tap to talk would end a
-// capture. It applies only while there is a chat to carry the toggle.
+// The full-screen conversation (#819): the chat takes the whole station, with only what must stay reachable: a slim
+// header (the destination, and a way back to the ambient card while it listens), the privacy switch (#735 S-6), and
+// Tap to talk in one row. Surfaces that own audio stay mounted, so removing the ambient card never ends listening and
+// removing Tap to talk never ends a capture. It applies only while there is a chat to carry the toggle.
 
 /// Where the device remembers the choice, in its own defaults.
 private let stationExpansionKey = "station.chatExpanded"
+@MainActor private var stationExpansionWasReset = false
 
 private struct StationCompactTalkKey: EnvironmentKey { static let defaultValue = false }
 
@@ -28,28 +28,18 @@ struct StationExpansionReader<Content: View>: View {
 
     /// The UI-test reset runs here, before the first frame reads the choice, so a stored value never renders.
     init(@ViewBuilder content: @escaping (Binding<Bool>) -> Content) {
-        if StationExpansionReset.consume() { UserDefaults.standard.removeObject(forKey: stationExpansionKey) }
+        if !stationExpansionWasReset, ProcessInfo.processInfo.arguments.contains("-reset-station-state") {
+            stationExpansionWasReset = true // Once per process.
+            UserDefaults.standard.removeObject(forKey: stationExpansionKey)
+        }
         self.content = content
     }
 
     var body: some View { content($expanded) }
 }
 
-/// Runs the UI-test reset of the remembered choice once per process.
-@MainActor
-private enum StationExpansionReset {
-    static var didRun = false
-
-    static func consume() -> Bool {
-        guard !didRun, ProcessInfo.processInfo.arguments.contains("-reset-station-state") else { return false }
-        didRun = true
-        return true
-    }
-}
-
 /// Expands the conversation to the whole station, or brings the station back (#819). On the Mac, Shift-Command-E.
 struct StationExpandToggle: View {
-
     @Binding var expanded: Bool
 
     var body: some View {
@@ -87,34 +77,40 @@ struct StationExpandPinch: ViewModifier {
     }
 }
 
-/// What stays beside the full-screen conversation besides Tap to talk (#819): the privacy switch, under exactly the
-/// condition the ambient card uses, and a listening chip that brings the station back so listening can be stopped.
-struct StationExpandedBar: View {
-    let connections: HostConnectionStore
-    let hostID: HostEndpoint.Identifier?
+/// The header while the conversation is full screen (#819 review): one slim row, the destination, a listening chip that
+/// brings the station back so listening can be stopped, and the connection, instead of the tall station header.
+struct StationExpandedHeader<Picker: View>: View {
+    let connection: StationConnectionPresentation
+    /// The ambient controller's own listening state (#282).
+    let listening: Bool
     @Binding var expanded: Bool
+    @ViewBuilder let picker: Picker
 
     var body: some View {
-        let listening = connections.ambientStreaming
-        VStack(alignment: .leading, spacing: 10) {
-            // `ambientStreaming` is the ambient controller's own listening state (#282); PRIVATE still comes only
-            // from the host's confirmed notice inside the switch (#735 S-6).
-            if let hostID, connections.showsPrivacySwitch(hostID, listening: listening) {
-                PrivacySwitchView(connections: connections, hostID: hostID, listening: listening)
-            }
+        HStack(spacing: 10) {
+            picker.frame(maxWidth: 560)
+            Spacer(minLength: 0)
             if listening {
                 Button {
                     withAnimation(.easeInOut(duration: 0.2)) { expanded = false }
                 } label: {
-                    Label("Listening · Show controls", systemImage: "waveform")
-                        .font(.subheadline.weight(.semibold))
+                    Label("Listening", systemImage: "waveform").font(.subheadline.weight(.semibold))
                 }
                 .buttonStyle(.bordered)
+                .accessibilityLabel("Listening · Show controls")
                 .accessibilityHint("Brings back the station, where listening can be stopped.")
                 .accessibilityIdentifier("station.expanded-listening")
             }
+            Image(systemName: connection.systemImage)
+                .font(.body.weight(.semibold))
+                .foregroundStyle(connection.color)
+                .accessibilityLabel("Connection status: \(connection.label)")
+                .accessibilityIdentifier("station.connection")
         }
-        .frame(maxWidth: .infinity, alignment: .leading)
+        .padding(.horizontal, 14)
+        .padding(.vertical, 6)
+        .background(.regularMaterial, in: RoundedRectangle(cornerRadius: 20, style: .continuous))
+        .accessibilityElement(children: .contain)
     }
 }
 
@@ -122,6 +118,7 @@ extension RootView {
     /// The chat above Tap to talk, and, while the conversation is full screen (#819), what must stay reachable.
     func primaryColumn(_ fit: StationFit, expanded: Binding<Bool>) -> some View {
         let isExpanded = expanded.wrappedValue
+        let listening = connections.ambientStreaming
         // Stacked, or Tap to talk beside the chat in landscape (#819 review). The same slots either way, so
         // switching never remounts Tap to talk.
         let layout = fit.beside
@@ -133,16 +130,44 @@ extension RootView {
                     .frame(height: fit.fitsOneScreen ? nil : 340)
                     .layoutPriority(1)
             }
-            VStack(spacing: 12) {
-                // With no destination there is nothing to talk to: the setup panel steps aside too, until collapsing.
-                conversationSurface
-                    .environment(\.stationCompactTalk, isExpanded)
-                    .stationCollapsed(isExpanded && destination == nil)
-                if isExpanded {
-                    StationExpandedBar(connections: connections, hostID: destination?.hostID, expanded: expanded)
+            // Beside the chat the column can run out of height, so it scrolls there; elsewhere it keeps its own height.
+            // One wrapper in every mode, so rotating never remounts Tap to talk.
+            ScrollView {
+                VStack(spacing: 12) {
+                    // First, so a short column never cuts it off; the ambient card's own condition (#735 S-6).
+                    if isExpanded, let host = seedsTalk ? StationUITestSeed.hostID : destination?.hostID,
+                       seedsTalk || connections.showsPrivacySwitch(host, listening: listening) {
+                        PrivacySwitchView(connections: connections, hostID: host, listening: listening)
+                    }
+                    // With no destination there is nothing to talk to: the setup panel steps aside too.
+                    talkSurface
+                        .environment(\.stationCompactTalk, isExpanded)
+                        .stationCollapsed(isExpanded && !hasTalk)
                 }
             }
-            .frame(width: fit.beside && destination != nil ? 300 : nil) // Empty, and so narrow, with no destination.
+            .scrollDisabled(!fit.beside)
+            .scrollBounceBehavior(.basedOnSize)
+            .fixedSize(horizontal: false, vertical: !fit.beside)
+            .frame(width: fit.beside && hasTalk ? 300 : nil) // Empty, and so narrow, with no destination.
+        }
+    }
+
+    /// DEBUG UI tests only (#819 review): `-seed-talk-card` shows an invented Tap to talk and privacy switch with no
+    /// destination, so the full-screen layout is measured with both present. Nothing in release.
+    private var seedsTalk: Bool {
+        #if DEBUG
+        destination == nil && ProcessInfo.processInfo.arguments.contains("-seed-talk-card")
+        #else
+        false
+        #endif
+    }
+    private var hasTalk: Bool { destination != nil || seedsTalk }
+
+    @ViewBuilder private var talkSurface: some View {
+        if seedsTalk {
+            TranscriptionLabView(audioSession: audioRoutes, destinationLabel: "Invented Mac", onFinalized: { _, _ in })
+        } else {
+            conversationSurface
         }
     }
 
