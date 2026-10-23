@@ -194,8 +194,13 @@ haild keeps, in memory only, each approved key's last privacy report.
     `device_state {privacy: private}` as the wish and re-requests privacy before any audio. The report lives only in
     haild's memory, so a restart wipes it, and this cannot conflict with #809. It closes the relaunch gap for proven
     devices.
-  - A privacy-on that times out (the 10-second wait in #817) or is refused leaves the wish on, until the owner
-    turns privacy off.
+  - A privacy-on that times out (the 10-second wait in #817) or is refused leaves the wish on. The way out is the
+    S-7c card's "Listen publicly", which clears the wish in the app and says "Privacy is off. Listening publicly."
+    The switch stays bound to the host, so it never shows a privacy the host did not confirm.
+  - **Privacy turned on mid-listen** (proposed for S-7b, pending Mick): while the on waits for confirmation, the app
+    stops sending audio; on the notice it carries on privately; on a timeout or refusal it stops listening, and S-7c
+    says "Privacy wasn't confirmed. Listening is off." This changes #817, where a refused on plays
+    `confirm-not-sent` and the stream carries on in public. The owner asked for privacy, so this fails closed.
   - **Wish on:** before any audio, the app sends `set_privacy {on}` and waits for the host's `duck_mode` on notice.
     If that is refused or does not come, it stays not listening. S-7a lets the host accept that request with no
     active stream; the next stream on that connection then starts private, or is refused, never public (a named
