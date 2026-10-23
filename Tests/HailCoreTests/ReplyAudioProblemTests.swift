@@ -41,6 +41,8 @@ import Testing
         #expect(ReplyPlaybackController.audioProblem("Playback could not resume") == nil)
         #expect(ReplyPlaybackController.audioProblem("Audio format is not yet playable")
             == ReplyPlaybackController.audioCouldNotPlay)
+        #expect(ReplyPlaybackController.audioProblem("Audio couldn't be decoded")
+            == ReplyPlaybackController.audioCouldNotPlay)
         #expect(ReplyPlaybackController.audioProblem("Playback failed") == ReplyPlaybackController.audioCouldNotPlay)
         #expect(ReplyPlaybackController.audioProblem(ReplyPlaybackController.abandonedStatus)
             == ReplyPlaybackController.audioDidNotArrive)

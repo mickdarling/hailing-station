@@ -106,7 +106,7 @@ import Testing
         controller.ingest(audioEvent(queued, codec: .pcm16, byteCount: 2))
         player.failingSequence = 1
 
-        controller.ingest(audioEvent(failed, codec: .pcm16, byteCount: 1, sequence: 1))
+        controller.ingest(audioEvent(failed, codec: .pcm16, byteCount: 2, sequence: 1))
 
         #expect(player.cancelCount == 1)
         #expect(player.scheduled.compactMap { $0.reply?.id } == [failed.id, queued.id])
@@ -167,7 +167,7 @@ private func audioEvent(
 }
 
 @MainActor
-private final class FormatTestPlayer: ReplyAudioPlaying {
+final class FormatTestPlayer: ReplyAudioPlaying {
     var scheduled: [AudioPayload] = []
     var completions: [@MainActor @Sendable () -> Void] = []
     var shouldFailSchedule = false

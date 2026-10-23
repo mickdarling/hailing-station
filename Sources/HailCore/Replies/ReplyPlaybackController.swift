@@ -106,11 +106,7 @@ public final class ReplyPlaybackController {
         }
         let key = ReplyStreamKey(endpointID: event.endpointID, replyID: descriptor.id)
         guard !completed.contains(key) else { return }
-        guard audio.codec == .pcm16, audio.channels == 1 else {
-            let presentationID = upsertPresentation(event, descriptor: descriptor)
-            presentationStatuses[presentationID] = "Audio format is not yet playable"
-            return
-        }
+        guard !refuseUnplayableAudio(audio, event: event, descriptor: descriptor, key: key) else { return }
         var stream = streams[key] ?? ReplyStreamState()
         if let existing = stream.segments[audio.sequence], existing != audio {
             setPresentationStatus("Conflicting audio segment refused", for: key)
@@ -149,16 +145,6 @@ public final class ReplyPlaybackController {
         }
     }
 
-    private func failPlayback(for key: ReplyStreamKey) {
-        player.cancel()
-        playbackGeneration &+= 1
-        rollbackPlaybackStart(for: key)
-        streams[key] = nil
-        queue.removeAll { $0 == key }
-        completed.insert(key)
-        isPaused = false
-    }
-
     func drain() {
         watchHeadIfChanged() // before any segment of a new head is scheduled (#469)
         dropAbandonedHold() // an abandoned reply's held tail never plays before the next (#825)
@@ -181,7 +167,7 @@ public final class ReplyPlaybackController {
             } catch {
                 lastPlaybackError = error as NSError
                 failPlayback(for: key)
-                setPresentationStatus("Playback failed", for: key)
+                setPresentationStatus(Self.playbackFailed, for: key)
                 drain()
                 return
             }

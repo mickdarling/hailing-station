@@ -180,7 +180,7 @@ private final class FailingPlayer: ReplyAudioPlaying {
     }
 }
 @MainActor
-private final class CountingRenderer: AnnouncementRendering {
+final class CountingRenderer: AnnouncementRendering {
     var rendered: [Announcement] = []
     func audio(for announcement: Announcement) async throws -> [AudioPayload] {
         rendered.append(announcement)
@@ -189,7 +189,7 @@ private final class CountingRenderer: AnnouncementRendering {
     }
 }
 @MainActor
-private final class AbandonPlayer: ReplyAudioPlaying {
+final class AbandonPlayer: ReplyAudioPlaying {
     var scheduled: [AudioPayload] = []
     func schedule(_ payload: AudioPayload, onPlayed: (@MainActor @Sendable () -> Void)?) { scheduled.append(payload) }
     func cancel() {}
