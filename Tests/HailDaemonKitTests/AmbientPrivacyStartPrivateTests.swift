@@ -92,7 +92,7 @@ import Testing
         let first = try rig.fake.recorded("argv.txt").split(separator: "\n").first
         #expect(first?.contains("--start-private") == false)
         try await recipientSocketSend(audio(next, 1, final: true), on: rig.socket)
-        await rig.env.router.settle()
+        await rig.settle()
         #expect(rig.details("ambient_privacy_start").isEmpty)
         await rig.env.listener.stop(reason: "synthetic test complete")
     }
@@ -139,8 +139,9 @@ import Testing
     }
 
     /// A failed start while private (the child cannot even launch) is refused; privacy stays on and the owner hears
-    /// "I can't listen privately right now." for every start that fails (#822 A: no silent state change).
-    @Test func aFailedStartWhilePrivateKeepsPrivacyAndSaysSoEachTime() async throws {
+    /// "I can't listen privately right now." once (#822 A: no silent state change); the starts that fail after it
+    /// say nothing more while it is the last word (round 5, the once-guard: `already_unavailable`).
+    @Test func aFailedStartWhilePrivateKeepsPrivacyAndSaysSoOnce() async throws {
         let rig = try await DuckRig(script: AmbientDuckReloadTests.record + AmbientDuckReloadTests.entry,
                                     clips: AmbientDuckModeTests.clips)
         defer { rig.close() }
@@ -151,17 +152,19 @@ import Testing
         try await recipientSocketSend(audio(rig.stream, 1, final: true), on: rig.socket)
         #expect(await eventually { rig.details("ambient_ended").count == 1 })
         try FileManager.default.removeItem(at: rig.fake.config)
-        for _ in 0..<2 {
+        for index in 0..<3 {
             try await recipientSocketSend(audio(UUID(), 0), on: rig.socket)
-            #expect(await eventually { rig.details("ambient_refused").count >= 1 })
+            #expect(await eventually { rig.details("ambient_refused").count >= index + 1 })
             _ = try await receiveFrame(on: rig.socket, step: "refusal")
         }
-        #expect(await eventually { rig.details("ambient_duck_confirmed").count == 3 })
-        #expect(Array(rig.details("ambient_duck_confirmed").dropFirst()).sorted()
-                == Array(repeating: "unavailable confirm=confirmprivacyunavailable/0:sent", count: 2))
+        #expect(await eventually { rig.unavailableSilences.count == 2 })
+        #expect(await eventually { rig.details("ambient_duck_confirmed").count == 2 })
+        #expect(Array(rig.details("ambient_duck_confirmed").dropFirst())
+                == ["unavailable confirm=confirmprivacyunavailable/0:sent"])
+        #expect(rig.unavailableSilences == Array(repeating: "unavailable=already_unavailable", count: 2))
         #expect(rig.env.router.duckMode(connection: connection))
         #expect(rig.details("ambient_duck") == ["on=true reason=voice reported=1"])
-        await rig.env.router.settle()
+        await rig.settle()
         await rig.env.listener.stop(reason: "synthetic test complete")
     }
 
@@ -176,11 +179,18 @@ import Testing
         let connection = try #require(rig.connection())
         #expect(await rig.env.router.reload() == .reloaded)
         #expect(await eventually { rig.details("ambient_ended").contains("privacy unconfirmedStart") })
-        #expect(await eventually {
-            rig.details("ambient_duck_confirmed").last == "unavailable confirm=confirmprivacyunavailable/0:sent"
-        })
+        let unavailable = "confirm=confirmprivacyunavailable/0:sent"
+        #expect(await eventually { rig.details("ambient_duck_confirmed").contains { $0.hasSuffix(unavailable) } })
         #expect(rig.env.router.duckMode(connection: connection))
         await rig.finish()
+        // The entry's own confirmation waits for the first child's ack (#735 S-8 HS-C). Still open at the refusal, the
+        // entry says it (round 2); already announced, the refusal says it itself. Either way, once.
+        #expect(rig.details("ambient_duck_confirmed").filter { $0.hasSuffix(unavailable) }.count == 1)
     }
+}
+
+extension DuckRig {
+    /// The refusals the state rule left silent (`ambient_privacy unavailable=…`), in order.
+    var unavailableSilences: [String] { details("ambient_privacy").filter { $0.hasPrefix("unavailable=") } }
 }
 #endif

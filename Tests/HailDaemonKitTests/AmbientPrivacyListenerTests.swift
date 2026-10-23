@@ -46,13 +46,13 @@ import Testing
                                         + AmbientPrivacyEventTests.enterThen(["exit", "exit"]),
                                     clips: AmbientDuckModeTests.clips, capabilities: [DuckMode.capability])
         defer { rig.close() }
-        #expect(await eventually { !rig.details("ambient_privacy").isEmpty })
-        #expect(await eventually { rig.details("ambient_duck_device").count == 2 })
+        #expect(await eventually { ["ambient_privacy", "ambient_duck_device"].map { rig.details($0).count } == [1, 2] })
         await rig.finish()
         #expect(rig.details("ambient_privacy") == ["exit=ignored state=off"])
         #expect(rig.details("ambient_duck") == ["on=true reason=voice reported=1", "on=false reason=voice reported=1"])
-        // The off clip's delivery (sent, or refused while the on clip plays) is not the outcome (#735 flake).
-        #expect(rig.details("ambient_duck_confirmed").map { $0.replacing("off/0:refused", with: "off/0:sent") }
+        // Not the outcome: the off clip's delivery (#735 flake), or the exit withdrawing the entry silently (#836).
+        #expect(rig.details("ambient_duck_confirmed").map { $0.replacing("off/0:refused", with: "off/0:sent")
+            .replacing("withdrawn confirm=unreported", with: "playback=idle confirm=confirmprivacyon/0:sent") }
             == ["on=true playback=idle confirm=confirmprivacyon/0:sent", "on=false confirm=confirmprivacyoff/0:sent"])
     }
 
@@ -67,8 +67,12 @@ import Testing
         #expect(rig.env.router.duckMode(connection: connection))
         await rig.finish()
         #expect(rig.details("ambient_duck") == ["on=true reason=voice reported=1", "on=true reason=voice reported=1"])
-        #expect(rig.details("ambient_duck_confirmed") == ["on=true playback=idle confirm=confirmprivacyon/0:sent",
-                                                          "on=true playback=idle confirm=confirmprivacyon/0:sent"])
+        let on = "playback=idle confirm=confirmprivacyon/0:sent"
+        // Round 4 (finding 5): the first entry, still open when the re-entry opened, closes in silence and the
+        // re-entry announces the outcome; closed first, it says "privacy on" itself. Either way one clip per state.
+        let confirmed = rig.details("ambient_duck_confirmed"), first = confirmed.first ?? ""
+        #expect(["on=true " + on, "on=true superseded_by_newer confirm=unreported"].contains(first)
+            && confirmed.dropFirst() == ["on=true still_on " + on], "\(confirmed)")
         #expect(rig.details("ambient_privacy").isEmpty)
     }
 
@@ -107,9 +111,11 @@ import Testing
     }
 
     /// Round 4, then #822 A (Mick: no silent state change): a child that cannot keep privacy is refused and "I can't
-    /// listen privately right now." plays every time, a second refused child on the same connection included. With
-    /// S-2b both children were launched start-private and did not confirm it.
-    @Test func theUnavailableClipPlaysForEveryRefusal() async throws {
+    /// listen privately right now." plays when nothing else keeps privacy, a second refused child on the same
+    /// connection included: with S-2b both children were launched start-private and did not confirm it. The second
+    /// starts after "unavailable", so it is announced as a recovery entry (#735 S-8 HS-C round 4), whose verdict is
+    /// "unavailable" again: already the last word, it is not repeated (round 5, the once-guard: `already_unavailable`).
+    @Test func theUnavailableClipPlaysOnceForRefusalsInARow() async throws {
         let later = AmbientDuckReloadTests.silent(advertises: true, version: 1)
         let clips = AmbientAckLibrary(clips: ["confirmprivacyon": [AmbientDuckModeTests.clip("Privacy on.", 9)],
                                           "confirmprivacyunavailable": [AmbientDuckModeTests.clip("I can't.", 2)]])
@@ -117,6 +123,8 @@ import Testing
                                     clips: clips)
         defer { rig.close() }
         #expect(await eventually { rig.details("ambient_duck").count == 1 })
+        // The entry is confirmed once the first child acked it (#735 S-8 HS-C), before the reload retires it.
+        #expect(await eventually { rig.details("ambient_duck_confirmed").count == 1 })
         let connection = try #require(rig.connection())
         #expect(await rig.env.router.reload() == .reloaded)
         #expect(await eventually { rig.details("ambient_duck_confirmed").count == 2 })
@@ -125,9 +133,8 @@ import Testing
         #expect(await eventually { rig.details("ambient_duck_confirmed").count == 3 })
         #expect(rig.env.router.duckMode(connection: connection))
         await rig.finish()
-        #expect(Array(rig.details("ambient_duck_confirmed").dropFirst()) == Array(
-            repeating: "unavailable confirm=confirmprivacyunavailable/0:sent", count: 2
-        ))
+        let said = "confirm=confirmprivacyunavailable/0:sent", rest = rig.details("ambient_duck_confirmed").dropFirst()
+        #expect(Array(rest) == ["unavailable " + said, silentRecovery])
         #expect(rig.details("ambient_privacy_start") == Array(repeating: "outcome=refused reason=unconfirmed",
                                                               count: 2))
     }
@@ -188,4 +195,6 @@ import Testing
         """
     }
 }
+/// A silent recovery entry (#735 S-8 HS-C round 5): its "unavailable" would repeat the last word.
+private let silentRecovery = "on=true reason=recovery refused already_unavailable confirm=unreported"
 #endif

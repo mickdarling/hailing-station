@@ -260,10 +260,12 @@ public final class RightyoAmbientPipeline: Sendable {
     /// the first decode, consumer, dispatch or transport error. Either way the child is stopped and reaped.
     public func run() async throws -> Summary {
         let deadline = armStartDeadline()
+        // Ended before the ack deadlines close (#735 S-8): one already past its cancel check then finds the run over
+        // and says no stray `unavailable` after it.
         defer {
             deadline?.cancel()
-            ackDeadlines.close()
             duck.end()
+            ackDeadlines.close()
         }
         var delivered = 0
         do {
@@ -325,15 +327,32 @@ extension RightyoAmbientPipeline {
     /// already keeps privacy, an on needs no line). An older RightyO still transcribes while ducked (v1), never acks
     /// (v2) or skips the line, so it is never written one and this is false: the host then never claims privacy is on
     /// (fail closed). Written, the child still hears no audio until it acks (S-8), within `ackDeadline`.
-    /// Asked before `started`, the wish is kept and written once a child that advertised it starts. Never blocks.
+    /// Asked before `started`, the wish is kept and written once a child that advertised it starts; if its start
+    /// deadline already passed unwished, a fresh one is armed (#735 S-8 HS-C round 2). Never blocks.
     @discardableResult public func reportDuck(_ on: Bool) -> Bool {
-        duck.report(on, write: { [child] on in child.reportDuck(on) }, written: armAckDeadline)
+        duck.report(on, write: { [child] on in child.reportDuck(on) }, written: armAckDeadline,
+                    restart: armFreshStartDeadline)
     }
 
     /// True once this child keeps the privacy wished for (#735 S-8: its ack came, or it started private); false when
     /// privacy is not wished for, or once it never will be: the ack deadline, a refusal, the wish withdrawn, or the
     /// run's end. Waits until one of those. For the privacy-on clip (HS-C).
     func privacyKept() async -> Bool { await duck.kept() }
+    /// What this child's privacy came to, once settled as `privacyKept()` waits (#735 S-8 HS-C round 2).
+    func privacyAnswer() async -> AmbientPrivacyAnswer { await duck.answer() }
+    /// The same, now, without waiting: nil while still to come.
+    var privacySettled: AmbientPrivacyAnswer? { duck.settled }
+    /// This child's privacy state, which the router's entries open on and close (#735 S-8 HS-C round 3), and which its
+    /// refusal is said through (round 4: held strongly by the router's closures, so it outlives this pipeline).
+    var privacyControl: AmbientDuckControl { duck }
+
+    /// An entry's close refused this child at its own bound (round 4: its open + start + ack + margin, so only a child
+    /// whose own deadlines all passed): it is killed as at its own deadline, and `unavailable` goes through the same
+    /// path (the entry that claimed it says it).
+    func killRefused() async {
+        await child.stop(eofGrace: 0, termGrace: 0)
+        onVoiceDuck?(.unavailable)
+    }
 
     /// The events that carry or decide heard words: while privacy is on none of them reaches a relay.
     static func carriesWords(_ event: RightyoInputEvent) -> Bool {
@@ -362,6 +381,7 @@ extension RightyoAmbientPipeline {
             duck.release()
             return
         }
+        duck.refuseStart(as: startsPrivate ? .unconfirmedStart : .unsupportedChild)
         await child.stop(eofGrace: 0, termGrace: 0)
         onVoiceDuck?(.unavailable)
         throw startsPrivate ? RightyoPrivacyRefusal.unconfirmedStart : RightyoPrivacyRefusal.unsupportedChild
@@ -372,9 +392,25 @@ extension RightyoAmbientPipeline {
     /// run then throws `RightyoPrivacyRefusal.unconfirmedStart`. Nil for a child without privacy handling.
     private func armStartDeadline() -> Task<Void, Never>? {
         guard onVoiceDuck != nil || startsPrivate else { return nil }
-        return Task { [duck, child, onVoiceDuck, startDeadline] in
+        return Task { [startExpired, startDeadline] in
             try? await Task.sleep(for: .seconds(startDeadline))
-            guard !Task.isCancelled, duck.expire() else { return }
+            guard !Task.isCancelled else { return }
+            await startExpired()
+        }
+    }
+
+    /// A wish for a child still not started after its start deadline passed unwished (#735 S-8 HS-C round 2) gets a
+    /// fresh deadline, cancelled with the ack deadlines at the run's end. Called under the duck lock: it only arms.
+    private func armFreshStartDeadline() {
+        ackDeadlines.arm(AmbientAckDeadlines.freshStart, after: startDeadline) { [startExpired] _ in
+            await startExpired()
+        }
+    }
+
+    /// The start deadline passed: a child still not started while privacy is wished for is killed, `unavailable` said.
+    private var startExpired: @Sendable () async -> Void {
+        { [duck, child, onVoiceDuck] in
+            guard duck.expire() else { return }
             await child.stop(eofGrace: 0, termGrace: 0)
             onVoiceDuck?(.unavailable)
         }
@@ -391,7 +427,7 @@ extension RightyoAmbientPipeline {
     private func observePrivacy() async throws {
         if let command = await consumer.lastPrivacy { onVoiceDuck?(command) }
         guard await consumer.lastPrivacyAck != nil, duck.acknowledge() == .excess else { return }
-        if duck.active {
+        if duck.refuseIfWished() {
             await child.stop(eofGrace: 0, termGrace: 0)
             onVoiceDuck?(.unavailable)
         }
@@ -766,15 +802,58 @@ final class AmbientDuckControl: Sendable {
         var onWrites = 0, acks = 0
         /// An on-write's ack deadline passed while privacy was wished for (S-8); the run has ended (no more proof).
         var unacknowledged = false, ended = false
-        /// `kept()` callers waiting for the proof; each is resumed once, outside the lock.
-        var waiters: [CheckedContinuation<Bool, Never>] = []
+        /// The start deadline passed while privacy was not wished for (S-8 HS-C round 2): a later wish arms a fresh one.
+        var startLapsed = false
+        /// A `started` that cannot keep privacy, until the pipeline refuses the child or releases it: no answer yet.
+        var deciding = false
+        /// Refused and killed (any deadline, a `started` that cannot keep it, an excess ack, its bound): handled once
+        /// (`announced`), by the open entry it is attributed to (`refusedAt`), or by the router's state rule (round 4).
+        var refused = false, announced = false
+        var refusedAs: RightyoPrivacyRefusal?, refusedAt: Int?
+        /// The router's privacy entries still awaiting their close (round 2).
+        var openEntries: Set<Int> = []
+        /// `answer()` callers waiting for the proof, by id; each is resumed once, outside the lock, with the answer at
+        /// that moment (round 3: never re-read after a later change), or `timeout` by its own cancellation, whichever
+        /// removes it first.
+        var waiters: [UUID: CheckedContinuation<AmbientPrivacyAnswer, Never>] = [:]
 
         /// What `kept()` answers now: kept, never (from here on), or still to come.
         var proof: Proof {
-            if wanted, keeps, !ended, !unacknowledged { return .kept }
-            if !wanted || ended || expired || unacknowledged { return .never }
+            if deciding { return .pending }
+            if wanted, keeps, !ended, !unacknowledged, !refused { return .kept }
+            if !wanted || ended || expired || unacknowledged || refused { return .never }
             // Started with no on-write waiting for an ack (refused, or the write failed): nothing will prove it.
             return started && acks >= onWrites ? .never : .pending
+        }
+
+        /// What `answer()` says once the proof is settled (round 2).
+        var answer: AmbientPrivacyAnswer {
+            switch proof {
+            case .kept: .kept
+            case .pending: .timeout
+            case .never where refused: .refused(refusedAs)
+            case .never where ended: .ended
+            case .never where !wanted: .withdrawn
+            case .never: .refused(nil)
+            }
+        }
+
+        /// Records the refusal, attributed to the latest entry still open, if any: once that entry is closed, a refusal
+        /// is a new event, said by the child itself (round 3).
+        mutating func refuse(as kind: RightyoPrivacyRefusal?) {
+            (refused, refusedAs, refusedAt, deciding) = (true, kind, openEntries.max(), false)
+        }
+
+        /// Refuses a child whose proof is still to come, as its own deadline would (not started: `unconfirmedStart`;
+        /// an on-write unacked: `unacknowledged`).
+        mutating func refuseUnproven() {
+            if started {
+                (unacknowledged, keeps) = (true, false)
+                refuse(as: .unacknowledged)
+            } else {
+                (started, expired) = (true, true)
+                refuse(as: .unconfirmedStart)
+            }
         }
     }
     private let state: Mutex<State>
@@ -788,7 +867,7 @@ final class AmbientDuckControl: Sendable {
     var mayHearAudio: Bool { state.withLock { !$0.wanted || $0.keeps } }
 
     /// The host says privacy already ended for a child that could not keep it: it runs on, public.
-    func release() { update { $0.wanted = false } }
+    func release() { update { ($0.wanted, $0.deciding) = (false, false) } }
     /// The start deadline passed before `started` (#735 S-2b).
     var expired: Bool { state.withLock { $0.expired } }
     /// The child's first `started` was read, not the start deadline passed (tests).
@@ -799,31 +878,26 @@ final class AmbientDuckControl: Sendable {
         state.withLock { $0.expired ? .unconfirmedStart : $0.unacknowledged ? .unacknowledged : nil }
     }
 
-    /// Ends the wait for `started` at the deadline: true when it had not come (the child must be killed); a later
-    /// `started` is then ignored, and the wish stays on.
-    func expire() -> Bool {
-        update { state in
-            guard state.wanted || state.mustConfirm, !state.started else { return false }
-            (state.started, state.expired) = (true, true)
-            return true
-        }
-    }
-
-    /// Throws the refusal when a deadline passed: a run that otherwise ended cleanly is still a refusal.
-    func checkStarted() throws {
-        if let refusal { throw refusal }
-    }
-
     /// Sets the host's wish; true when this child takes it: written now to a child that advertised v3, or kept for
     /// one not yet started, which takes it at `started` or is refused then (`observe`). An on while this child already
     /// keeps privacy writes nothing and needs no new ack (S-8). Each `{"duck":true}` written is counted and handed to
-    /// `written` with its number, under the lock, so its ack deadline is armed before any ack can be counted.
-    func report(_ on: Bool, write: (Bool) -> Bool, written: (Int) -> Void = { _ in }) -> Bool {
+    /// `written` with its number, under the lock, so its ack deadline is armed before any ack can be counted. A wish
+    /// for a child not yet started whose start deadline already lapsed calls `restart` (a fresh deadline, round 2).
+    func report(_ on: Bool, write: (Bool) -> Bool, written: (Int) -> Void = { _ in },
+                restart: () -> Void = {}) -> Bool {
         update { state in
             let kept = state.wanted && state.keeps
             state.wanted = on
-            guard state.started else { return true }
+            guard state.started else {
+                if on, state.startLapsed {
+                    state.startLapsed = false
+                    restart()
+                }
+                return true
+            }
             if on, kept { return true }
+            // Refused (at a deadline, or otherwise) and being killed: nothing more is written, and it takes no on.
+            if on, state.unacknowledged || state.refused { return false }
             let taken = state.advertised && write(on)
             // Private only once acked; a failed write withholds audio (fail closed). Off needs no ack.
             state.keeps = false
@@ -841,7 +915,7 @@ final class AmbientDuckControl: Sendable {
             guard !state.started else { return .kept }
             state.started = true
             if state.mustConfirm, !confirmed {
-                state.wanted = true
+                (state.wanted, state.deciding) = (true, true)
                 return .refused
             }
             state.advertised = advertised
@@ -851,7 +925,10 @@ final class AmbientDuckControl: Sendable {
                 return .kept
             }
             guard state.wanted else { return .kept }
-            guard advertised else { return .refused }
+            guard advertised else {
+                state.deciding = true
+                return .refused
+            }
             if write(true) { Self.count(&state, written: written) }
             return .kept
         }
@@ -869,31 +946,6 @@ final class AmbientDuckControl: Sendable {
         }
     }
 
-    /// On-write `write` reached its ack deadline (#735 S-8): true when privacy is still wished for and that write is
-    /// still unacked (the child must be killed and refused). Audio stays withheld.
-    func expireAck(_ write: Int) -> Bool {
-        update { state in
-            guard state.wanted, !state.ended, !state.unacknowledged, state.acks < write else { return false }
-            (state.unacknowledged, state.keeps) = (true, false)
-            return true
-        }
-    }
-
-    /// The run ended: no proof can come any more, so every waiter hears false.
-    func end() { update { $0.ended = true } }
-
-    /// True once this child keeps the privacy wished for; false when it is not wished for, or once it cannot be proved
-    /// (a deadline, a refusal, the wish withdrawn, the run's end). Waits until one of those.
-    func kept() async -> Bool {
-        await withCheckedContinuation { continuation in
-            let proof = state.withLock { state in
-                if state.proof == .pending { state.waiters.append(continuation) }
-                return state.proof
-            }
-            if proof != .pending { continuation.resume(returning: proof == .kept) }
-        }
-    }
-
     private static func count(_ state: inout State, written: (Int) -> Void) {
         state.onWrites += 1
         written(state.onWrites)
@@ -901,15 +953,15 @@ final class AmbientDuckControl: Sendable {
 
     /// Runs `body` under the lock, then resumes every waiter once the proof is settled, outside the lock.
     private func update<Result: Sendable>(_ body: (inout State) -> Result) -> Result {
-        let (result, waiters, kept) = state.withLock { state in
+        let (result, waiters, answer) = state.withLock { state in
             let result = body(&state)
             guard state.proof != .pending, !state.waiters.isEmpty else {
-                return (result, [CheckedContinuation<Bool, Never>](), false)
+                return (result, [CheckedContinuation<AmbientPrivacyAnswer, Never>](), AmbientPrivacyAnswer.timeout)
             }
-            defer { state.waiters = [] }
-            return (result, state.waiters, state.proof == .kept)
+            defer { state.waiters = [:] }
+            return (result, Array(state.waiters.values), state.answer)
         }
-        waiters.forEach { $0.resume(returning: kept) }
+        waiters.forEach { $0.resume(returning: answer) }
         return result
     }
 
@@ -930,25 +982,186 @@ final class AmbientDuckControl: Sendable {
     }
 }
 
+/// One child's answer at an entry's close (#735 S-8 HS-C round 3): nil while still to come; whether the close claimed
+/// a refusal attributed to the entry, and whether it refused the child at its bound (it must be killed).
+struct AmbientPrivacyClosing: Sendable, Equatable {
+    let answer: AmbientPrivacyAnswer?
+    let claimed: Bool, refused: Bool
+}
+
+/// What a child's privacy came to (#735 S-8 HS-C round 2), for the entry's announcement: `kept`; `refused` (killed,
+/// with the reason when it was a deadline or a `started` that cannot keep it; nil for an excess ack, or for an on-line
+/// that could not be written); `ended` (the run ended without the proof); `withdrawn` (the wish went off first); or
+/// `timeout` (no answer within the router's bound).
+enum AmbientPrivacyAnswer: Equatable, Sendable {
+    case kept, refused(RightyoPrivacyRefusal?), ended, withdrawn, timeout
+
+    /// The entry's log token for an answer other than `kept`: `unacknowledged` only for an ack deadline.
+    var token: String {
+        switch self {
+        case .kept: "kept"
+        case .refused(.unacknowledged): "unacknowledged"
+        case .refused: "refused"
+        case .ended: "ended"
+        case .withdrawn: "withdrawn"
+        case .timeout: "timeout"
+        }
+    }
+}
+
+/// Deadlines, refusals and announcements (#735 S-8, HS-C round 2): each refusal is handled exactly once, by the entry it
+/// is attributed to when one is open, otherwise by the child's own `unavailable`, which the router says only when it
+/// changed the owner's state (round 4: no listening child still keeps privacy, and privacy is still on).
+extension AmbientDuckControl {
+    /// Ends the wait for `started` at the deadline: true when it had not come (the child must be killed); a later
+    /// `started` is then ignored, and the wish stays on.
+    /// Not wished for then, it is noted, so a later wish arms a fresh deadline (#735 S-8 HS-C round 2).
+    func expire() -> Bool {
+        update { state in
+            guard !state.started, !state.ended else { return false }
+            guard state.wanted || state.mustConfirm else {
+                state.startLapsed = true
+                return false
+            }
+            (state.started, state.expired) = (true, true)
+            state.refuse(as: .unconfirmedStart)
+            return true
+        }
+    }
+
+    /// Throws the refusal when a deadline passed: a run that otherwise ended cleanly is still a refusal.
+    func checkStarted() throws {
+        if let refusal { throw refusal }
+    }
+
+    /// On-write `write` reached its ack deadline (#735 S-8): true when privacy is still wished for and that write is
+    /// still unacked (the child must be killed and refused). Audio stays withheld.
+    func expireAck(_ write: Int) -> Bool {
+        update { state in
+            guard state.wanted, !state.ended, !state.unacknowledged, !state.refused, state.acks < write else {
+                return false
+            }
+            (state.unacknowledged, state.keeps) = (true, false)
+            state.refuse(as: .unacknowledged)
+            return true
+        }
+    }
+
+    /// The run ended: no proof can come any more, so every waiter hears false.
+    func end() { update { $0.ended = true } }
+
+    /// The pipeline refuses a child whose `started` could not keep privacy (`observe` said `refused`).
+    func refuseStart(as kind: RightyoPrivacyRefusal) { update { $0.refuse(as: kind) } }
+
+    /// An excess ack while privacy is wished for: true when this refuses the child (it must be killed).
+    func refuseIfWished() -> Bool {
+        update { state in
+            guard state.wanted, !state.refused else { return false }
+            state.refuse(as: nil)
+            return true
+        }
+    }
+
+    /// True once this child keeps the privacy wished for; false when it is not wished for, or once it cannot be proved
+    /// (a deadline, a refusal, the wish withdrawn, the run's end). Waits until one of those, or until the caller's task
+    /// is cancelled, which answers false (#735 S-8 HS-C: a cancelled confirmation never hangs).
+    func kept() async -> Bool { await answer() == .kept }
+
+    /// Waits as `kept()` does, then says what the privacy came to at that moment (round 3: a waiter woken by an off is
+    /// answered `withdrawn`, even if an on follows before it runs); `timeout` when the caller's task is cancelled.
+    func answer() async -> AmbientPrivacyAnswer {
+        let id = UUID()
+        return await withTaskCancellationHandler {
+            await withCheckedContinuation { continuation in
+                // Under the lock, so a cancellation either finds this waiter registered or is seen here first.
+                let answer = state.withLock { state -> AmbientPrivacyAnswer? in
+                    guard state.proof == .pending else { return state.answer }
+                    if Task.isCancelled { return .timeout }
+                    state.waiters[id] = continuation
+                    return nil
+                }
+                if let answer { continuation.resume(returning: answer) }
+            }
+        } onCancel: {
+            state.withLock { $0.waiters.removeValue(forKey: id) }?.resume(returning: .timeout)
+        }
+    }
+
+    /// What the privacy came to, or nil while still to come (#735 round 2: the property test drives it step by step).
+    var settled: AmbientPrivacyAnswer? { state.withLock { $0.proof == .pending ? nil : $0.answer } }
+
+    /// Router entry `entry` awaits its close: a refusal from now on is said by that entry, not by the child. A refusal
+    /// not yet said moves to it too (round 4): the newest entry announces the outcome, so it is never said twice.
+    func open(entry: Int) {
+        update { state in
+            state.openEntries.insert(entry)
+            if state.refused, !state.announced { state.refusedAt = entry }
+        }
+    }
+
+    /// Whether this child may still be keeping privacy (round 4, the state rule): it has proved it, or its proof is
+    /// still to come. A refused, ended or deaf child (an on-line it never took) holds nothing.
+    var holdsPrivacy: Bool { state.withLock { $0.proof != .never } }
+
+    /// Closes entry `entry` (#735 S-8 HS-C round 3) and reads this child's answer in the same step, under the lock, so
+    /// nothing can land between them: a refusal after it is a new event, never attributed to this entry. With
+    /// `refusePending`, this child's own bound has passed (round 4): a proof still to come is refused first (the child
+    /// must then be killed), but only by the newest entry still open, which owns that proof; an older one leaves it.
+    /// Whichever came first under this lock, the ack or the bound, decides. Claims a refusal attributed to the entry
+    /// that is not yet said.
+    func close(entry: Int, refusePending: Bool) -> AmbientPrivacyClosing {
+        update { state in
+            var refusedNow = false
+            if refusePending, state.proof == .pending, !state.deciding, state.openEntries.max() == entry {
+                state.refuseUnproven()
+                refusedNow = true
+            }
+            state.openEntries.remove(entry)
+            let claimed = state.refused && state.refusedAt == entry && !state.announced
+            if claimed { state.announced = true }
+            return AmbientPrivacyClosing(answer: state.proof == .pending ? nil : state.answer, claimed: claimed,
+                                         refused: refusedNow)
+        }
+    }
+
+    /// The child's own `unavailable`: true when it is to be said now; false once said, or while the entry it is
+    /// attributed to is still open (that entry says it).
+    func takeAnnouncement() -> Bool {
+        update { state in
+            guard !state.announced else { return false }
+            if let entry = state.refusedAt, state.openEntries.contains(entry) { return false }
+            state.announced = true
+            return true
+        }
+    }
+}
+
 /// The ack deadlines of one pipeline's on-writes (#735 S-8): one task per write, each removing itself when done, all
-/// cancelled when the run ends; none is armed after that.
+/// cancelled when the run ends; none is armed after that. Re-arming a key (the fresh start deadline) cancels the task
+/// it replaces, and a task removes only itself (round 3).
 final class AmbientAckDeadlines: Sendable {
     private struct State {
-        var tasks: [Int: Task<Void, Never>] = [:]
+        var tasks: [Int: (id: UUID, task: Task<Void, Never>)] = [:]
         var closed = false
     }
     private let state = Mutex(State())
+    /// The key of a fresh start deadline (#735 S-8 HS-C round 2); on-writes count from 1.
+    static let freshStart = 0
 
     /// After `seconds`, unless cancelled first, runs `expired` for on-write `write`.
     func arm(_ write: Int, after seconds: TimeInterval, _ expired: @escaping @Sendable (Int) async -> Void) {
         state.withLock { state in
             guard !state.closed else { return }
+            state.tasks[write]?.task.cancel()
+            let id = UUID()
             // Created under the lock, so its own removal (which takes the lock) always follows this insertion.
-            state.tasks[write] = Task { [weak self] in
+            state.tasks[write] = (id, Task { [weak self] in
                 try? await Task.sleep(for: .seconds(seconds))
                 if !Task.isCancelled { await expired(write) }
-                self?.state.withLock { _ = $0.tasks.removeValue(forKey: write) }
-            }
+                self?.state.withLock { state in
+                    if state.tasks[write]?.id == id { state.tasks[write] = nil }
+                }
+            })
         }
     }
 
@@ -956,7 +1169,7 @@ final class AmbientAckDeadlines: Sendable {
         let tasks = state.withLock { state in
             state.closed = true
             defer { state.tasks = [:] }
-            return Array(state.tasks.values)
+            return state.tasks.values.map(\.task)
         }
         tasks.forEach { $0.cancel() }
     }

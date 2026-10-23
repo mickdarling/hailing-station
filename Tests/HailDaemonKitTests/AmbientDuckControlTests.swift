@@ -59,6 +59,42 @@ import Testing
         #expect(idle.observe(started: Data(Self.started.utf8), write: none.write) == .kept)
     }
 
+    /// HS-C: a `kept()` waiter whose task is cancelled answers false and is resumed once: the proof that comes later
+    /// finds no waiter left. A task cancelled before it waits answers false too.
+    @Test func aCancelledWaiterAnswersFalse() async {
+        let (control, written) = (AmbientDuckControl(), Written())
+        #expect(control.observe(started: Data(Self.advertised.utf8), write: written.write) == .kept)
+        #expect(control.report(true, write: written.write))
+        let waiter = Task { await control.kept() }
+        try? await Task.sleep(for: .milliseconds(50))
+        waiter.cancel()
+        #expect(await waiter.value == false)
+        let early = Task {
+            while !Task.isCancelled { await Task.yield() }
+            return await control.kept()
+        }
+        early.cancel()
+        #expect(await early.value == false)
+        #expect(control.acknowledge() == .counted)
+        #expect(await control.kept())
+    }
+
+    /// HS-B's nits: once the run ended, a deadline already past its cancel check refuses nothing (so `run()` ends the
+    /// control before closing its deadlines), and a child refused at its deadline is written no further on-line.
+    @Test func anEndedRunRefusesNothingAndAnUnackedChildIsNotWrittenAgain() {
+        let (control, written) = (AmbientDuckControl(), Written())
+        #expect(control.observe(started: Data(Self.advertised.utf8), write: written.write) == .kept)
+        #expect(control.report(true, write: written.write) && control.expireAck(1))
+        #expect(control.report(false, write: written.write))
+        #expect(!control.report(true, write: written.write))
+        #expect(written.all == [true, false])
+        let (ended, lines) = (AmbientDuckControl(), Written())
+        #expect(ended.observe(started: Data(Self.advertised.utf8), write: lines.write) == .kept)
+        #expect(ended.report(true, write: lines.write))
+        ended.end()
+        #expect(!ended.expireAck(1) && ended.refusal == nil)
+    }
+
     @Test(arguments: [
         #"{"duck": true}"#, #"{"duck": null}"#, #"{"duck": [1]}"#, "[]", "not json", #"{}"#, #"{"duck": {}}"#,
         #"{"duck": {"version": 1}}"#, #"{"duck": {"version": "2"}}"#, #"{"duck": {"version": 1.5}}"#,

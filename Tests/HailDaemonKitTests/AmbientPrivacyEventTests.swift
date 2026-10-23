@@ -35,11 +35,15 @@ import Testing
     }
 
     /// `started` (v3), the owner's transcript "Stop recording.", then one `privacy` event per action, then `stopped`.
-    static func enterThen(_ actions: [String]) -> String {
-        let lines = actions.enumerated().map { line($1, sequence: $0 + 5, at: 2000) }
+    /// With `acked` and actions, the actions follow the entry's ack (#735 S-8 HS-C), so its privacy-on clip plays
+    /// first; without it they come before any ack.
+    static func enterThen(_ actions: [String], acked: Bool = true) -> String {
+        let waits = acked && !actions.isEmpty
+        let lines = actions.enumerated().map { line($1, sequence: $0 + (waits ? 1001 : 5), at: 2000) }
         return """
         /usr/bin/sed -n -e '1p' -e '4p' events.jsonl | /usr/bin/sed -e "s/formed-demo/$7/g" \
           -e 's/Rightyo, archive the project./Stop recording./g' \(duck(3))\(voiceprint)
+        \(waits ? FakeRightyo.untilFirstAck : "")
         \(lines.joined(separator: "\n"))
         \(FakeRightyo.ackingTail)
         """

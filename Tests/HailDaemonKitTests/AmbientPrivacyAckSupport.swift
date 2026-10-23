@@ -28,6 +28,7 @@ extension FakeRightyo {
             [ "$ctl" = '{"duck":true}' ] || continue
             while [ ! -e "ack.$$" ]; do /bin/sleep 0.02; done
             printf "$ACK_FORMAT" "${ACK_AT_MS:-0}" "$ACK_SID" "$n" "${ACK_EMITTED:-2000}"
+            /usr/bin/touch "acked.$n"
             n=$((n + 1))
           done 2>/dev/null ) &
         """#
@@ -35,6 +36,14 @@ extension FakeRightyo {
 
     /// The fake's own lines are out: acks may follow from here on.
     static let acksMayFollow = "/usr/bin/touch \"ack.$$\""
+
+    /// Acks may follow, then waits (at most 5 s) until the first one is out, so the lines after it follow the ack
+    /// (#735 S-8 HS-C). Those lines then need sequences above 1000.
+    static let untilFirstAck = """
+    \(acksMayFollow)
+    ACK_WAIT=0
+    while [ ! -e acked.1000 ] && [ $ACK_WAIT -lt 100 ]; do /bin/sleep 0.05; ACK_WAIT=$((ACK_WAIT + 1)); done
+    """
 
     /// The tail after the fake's own lines: acks may follow, stdin is drained to EOF (which closes fd 3 too), the reader
     /// is awaited, and the fixture's `stopped` line follows every ack.

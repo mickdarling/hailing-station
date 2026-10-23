@@ -114,18 +114,23 @@ final class DuckRig: Sendable {
     let stream = UUID()
     private let events: DuckEvents
 
+    /// Start and ack deadlines unless a test sets its own (#836): past any loaded runner's stall.
+    static let deadline: TimeInterval = 30
+
     /// `script`, when given, replaces the fixture saying `words` as the fake's whole behaviour.
     init(saying words: String = "", advertises: Bool = false, version: Int = 3, script: String? = nil,
          enrolled: Bool = true,
          clips: AmbientAckLibrary? = nil, timeout: TimeInterval = AmbientRightyoRouter.defaultDuckTimeout,
          capabilities: [String] = [],
-         startDeadline: TimeInterval = RightyoAmbientPipeline.defaultStartDeadline) async throws {
+         startDeadline: TimeInterval = DuckRig.deadline, ackDeadline: TimeInterval = DuckRig.deadline,
+         confirmTimeout: TimeInterval? = nil) async throws {
         fake = try FakeRightyo(script ?? FakeRightyo.ackingControl() + "\n" + AmbientPrivacyEntryTests.fixture(
             saying: words, enrolled: enrolled, advertises: advertises, version: version))
         try fake.install(fixture: enrolled ? "enrolled-formed-request.jsonl" : "tool-events.jsonl")
         let events = DuckEvents()
         env = try await ambientRig(fake, timing: .init(eofGrace: 20, termGrace: 20), acknowledgements: clips,
                                    replyControl: true, duckTimeout: timeout, startDeadline: startDeadline,
+                                   ackDeadline: ackDeadline, confirmTimeout: confirmTimeout,
                                    onEvent: { event in
             events.list.withLock { $0.append(event) }
         })
@@ -167,10 +172,19 @@ final class DuckRig: Sendable {
         return words.text
     }
 
-    func finish() async {
+    /// Ends the stream, then waits for every run and stops the listener, each bounded (`within`) so a hang fails the
+    /// test with a clear issue instead of blocking the run.
+    func finish(within: Duration = .seconds(30)) async {
         try? await recipientSocketSend(audio(stream, 1, final: true), on: socket)
-        await env.router.settle()
-        await env.listener.stop(reason: "synthetic test complete")
+        await settle(within: within)
+        await bounded("DuckRig listener stop", within: within) { [listener = env.listener] in
+            await listener.stop(reason: "synthetic test complete")
+        }
+    }
+
+    /// Every run returned, within `within`; otherwise an issue, never a hang.
+    func settle(within: Duration = .seconds(30)) async {
+        await boundedSettle(env.router, step: "DuckRig settle", within: within)
     }
 
     func close() {
