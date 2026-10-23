@@ -16,4 +16,12 @@ public enum MusicLine {
         let words = trimmed.filter { !marks.contains($0) }.split(whereSeparator: \.isWhitespace)
         return words.joined(separator: " ")
     }
+
+    /// The lyrics when a conversation entry is heard music: only a turn the microphone overheard (#823 review). A
+    /// request the owner sent stays their bubble, with its paste and actions, even wrapped in notes; Haili's replies
+    /// are never music.
+    public static func lyrics(of entry: ConversationEntry) -> String? {
+        guard entry.overheard, entry.speaker != .haili else { return nil }
+        return lyrics(entry.text)
+    }
 }

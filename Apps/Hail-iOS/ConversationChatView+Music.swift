@@ -9,16 +9,11 @@ extension ConversationChatView {
     ) -> some View {
         if entry.notice {
             notice(entry)
-        } else if let lyrics = Self.music(entry) {
+        } else if let lyrics = MusicLine.lyrics(of: entry) {
             musicLine(entry, lyrics: lyrics)
         } else {
             bubble(entry)
         }
-    }
-
-    /// The lyrics when a heard line is music (#823); never for Haili's replies.
-    static func music(_ entry: ConversationEntry) -> String? {
-        entry.speaker == .haili ? nil : MusicLine.lyrics(entry.text)
     }
 
     /// Music the microphone heard (#823): a dimmed line with a note, the lyrics in italics, and no speaker, since
