@@ -24,6 +24,8 @@ func ambientRig(
     duckTimeout: TimeInterval = AmbientRightyoRouter.defaultDuckTimeout,
     destinations: VoiceDestinations? = nil, shortcuts: ShortcutRunner = ShortcutRunner(),
     routes: VoiceRoutes? = nil, startDeadline: TimeInterval = RightyoAmbientPipeline.defaultStartDeadline,
+    ackDeadline: TimeInterval = RightyoAmbientPipeline.ackDeadline,
+    confirmTimeout: TimeInterval? = nil,
     onEvent: (@Sendable (WebSocketListenerEvent) -> Void)? = nil
 ) async throws -> AmbientWiringRig {
     let rig = try await RecipientTestRig.make()
@@ -35,6 +37,7 @@ func ambientRig(
     )
     (configuration.mediaTimeout, configuration.destinations) = (mediaTimeout, destinations)
     (configuration.duckTimeout, configuration.startDeadline) = (duckTimeout, startDeadline)
+    (configuration.ackDeadline, configuration.privacyConfirmTimeout) = (ackDeadline, confirmTimeout)
     configuration.notes.shortcuts = shortcuts
     let router = AmbientRightyoRouter(configuration: configuration, log: { events?.record($0); onEvent?($0) })
     let gate = AmbientAudioGate(target: RecipientTestRig.target, sink: router, sweepInterval: nil)
@@ -109,6 +112,35 @@ func settle(_ router: AmbientRightyoRouter, step: String, within: Duration = .se
     let deadline = ContinuousClock.now + within
     while router.liveRuns != 0, ContinuousClock.now < deadline { try? await Task.sleep(for: .milliseconds(50)) }
     if router.liveRuns != 0 { Issue.record("router still had \(router.liveRuns) runs after \(within) at: \(step)") }
+}
+
+/// Runs `work`, waiting for it at most `within` (#735 S-8 HS-C round 2): past it, records an issue naming `step` and
+/// returns, leaving the work to end on its own, so a hang fails the test fast instead of blocking the whole run.
+/// For waits that cannot be cancelled, such as `AmbientRightyoRouter.settle()` awaiting its runs' tasks.
+func bounded(_ step: String, within: Duration = .seconds(30), _ work: @escaping @Sendable () async -> Void) async {
+    let done = BoundedWaitFlag()
+    let task = Task {
+        await work()
+        done.set()
+    }
+    let deadline = ContinuousClock.now + within
+    while !done.isSet, ContinuousClock.now < deadline { try? await Task.sleep(for: .milliseconds(20)) }
+    guard !done.isSet else { return }
+    task.cancel()
+    Issue.record("\(step) did not finish within \(within)")
+}
+
+/// `router.settle()`, bounded as `bounded` is.
+func boundedSettle(_ router: AmbientRightyoRouter, step: String = "router settle",
+                   within: Duration = .seconds(30)) async {
+    await bounded(step, within: within) { await router.settle() }
+}
+
+/// Whether a `bounded` wait's work ended.
+final class BoundedWaitFlag: Sendable {
+    private let flag = Mutex(false)
+    var isSet: Bool { flag.withLock { $0 } }
+    func set() { flag.withLock { $0 = true } }
 }
 
 /// Every listener event name, in emission order.
