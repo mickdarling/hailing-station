@@ -83,6 +83,12 @@ struct AmbientPrivacyLedger<Child: AnyObject> {
         return open(all.map { Member(child: $0.0, duck: $0.1, opened: now) }, wasOn: true, at: now, recovery: true)
     }
 
+    /// Whether a status may say privacy is on, given that it is armed (#735 S-8 HS-C, 6362119223): only once it was
+    /// announced. Fails closed: only "Privacy on" as the last word, with no entry still unproven, is private to the
+    /// owner; nothing announced yet, "unavailable" or an off is not. So a status asked before a re-entry or a refusal
+    /// that opens or decides first is silent; their own clip follows.
+    var heardOn: Bool { entries.values.allSatisfy(\.withdrawn) && said == .on }
+
     /// An off: every open entry is withdrawn, and "Recording again." is the last word.
     mutating func withdrawAll() {
         for key in entries.keys { entries[key]?.withdrawn = true }

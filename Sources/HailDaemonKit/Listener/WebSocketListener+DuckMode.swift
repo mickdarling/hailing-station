@@ -77,9 +77,12 @@ extension AmbientRightyoRouter {
         guard entry.entry == nil else {
             return entryClip(entry, outcome: "on=true", connection: connection, listener: listener)
         }
-        let (persona, outcome) = Self.duckConfirmation(command, reported: entry.reported, on: entry.on)
         return { [weak self, weak listener] in
-            await self?.sayPrivacy(persona, outcome: outcome, connection: connection, listener: listener)
+            guard let self else { return }
+            // A status is decided when it plays, after the entries before it (6362119223): never "on" unannounced.
+            let on = command == .status ? privacyHeardOn(connection: connection) : entry.on
+            let (persona, outcome) = Self.duckConfirmation(command, reported: entry.reported, on: on)
+            await sayPrivacy(persona, outcome: outcome, connection: connection, listener: listener)
         }
     }
 
