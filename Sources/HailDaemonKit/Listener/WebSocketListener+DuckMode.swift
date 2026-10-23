@@ -47,7 +47,7 @@ extension AmbientRightyoRouter {
         let chain = SerialTaskChain()
         return { [weak self, weak listener] command in
             var (reported, on) = (0, false)
-            // Read now, while the refused child's run is still live: once it ends, a router retires it too.
+            // Read now, while the refused child's run is still registered: once it ends, the router removes it.
             let silent = command == .unavailable && retired()
             if let self {
                 if command == .exit, !duckMode(connection: connection) {

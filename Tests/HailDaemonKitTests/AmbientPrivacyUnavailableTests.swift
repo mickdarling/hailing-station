@@ -23,5 +23,25 @@ import Testing
         #expect(rig.details("ambient_duck_confirmed") == [retired ? "unavailable retired confirm=unreported" : said])
         await rig.finish()
     }
+
+    /// The verdict on real runs (#828 key 2): a run a reload swapped out counts as retired; one the gate ended does
+    /// not, so its refusal still speaks.
+    @Test func onlyAReloadRetiresARun() async throws {
+        // The child lingers after its input closes, so a run the gate ended is still registered when checked.
+        let rig = try await DuckRig(script: AmbientDuckReloadTests.silent(advertises: true) + "\n/bin/sleep 3")
+        defer { rig.close() }
+        #expect(await eventually { rig.env.router.activePipeline != nil })
+        let first = AmbientRunMark()
+        first.set(try #require(rig.env.router.activePipeline))
+        #expect(!rig.env.router.retired(first)())
+        #expect(await rig.env.router.reload() == .reloaded)
+        #expect(rig.env.router.retired(first)())
+        let second = AmbientRunMark()
+        second.set(try #require(rig.env.router.activePipeline))
+        try await recipientSocketSend(audio(rig.stream, 1, final: true), on: rig.socket)
+        #expect(await eventually { rig.env.router.activePipeline == nil })
+        #expect(!rig.env.router.retired(second)())
+        await rig.finish()
+    }
 }
 #endif

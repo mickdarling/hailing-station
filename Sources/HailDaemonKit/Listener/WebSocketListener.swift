@@ -1582,13 +1582,13 @@ extension AmbientRightyoRouter {
         }
     }
 
-    /// Whether the run of the pipeline `mark` names was swapped out by a reload or retired (#822 A): its stream lives
-    /// on, or ended for another reason, so its refusal says nothing.
+    /// Whether the run of the pipeline `mark` names was swapped out by a reload (#822 A): its stream lives on in the
+    /// new child, so its refusal says nothing. Any other refused child speaks, a stream the gate ended included.
     func retired(_ mark: AmbientRunMark) -> @Sendable () -> Bool {
         { [weak self] in
             guard let self, let pipeline = mark.pipeline else { return false }
             return state.withLock { state in
-                state.runs.values.contains { $0.pipeline === pipeline && ($0.replaced || $0.retiredAt != nil) }
+                state.runs.values.contains { $0.pipeline === pipeline && $0.replaced }
             }
         }
     }
