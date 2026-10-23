@@ -9,6 +9,8 @@ final class PrivacySimWorld {
     static let (startDeadline, ackDeadline) = (RightyoAmbientPipeline.defaultStartDeadline,
                                                RightyoAmbientPipeline.ackDeadline)
     static let bound = startDeadline + ackDeadline + AmbientRightyoRouter.privacyConfirmMargin
+    /// Every entry decides within this of its opening (round 5): twice the bound.
+    static let cap = 2 * bound
     let faults: PrivacySimFaults
     var time = 0.0, tick = 0, on = false
     var children: [PrivacySimChild] = [], timers: [PrivacySimTimer] = []
@@ -18,8 +20,8 @@ final class PrivacySimWorld {
     /// children whose `unavailable` handler has not yet run (a deadline task: kill, then the handler).
     var chain: [PrivacySimItem] = [], pending: [PrivacySimItem] = [], played: [PrivacySimClip] = []
     var handlers: [PrivacySimChild] = [], failures: [String] = []
-    /// The recovery entries a registration opened (round 4).
-    var recoveries: Set<Int> = []
+    /// The recovery entries a registration or a cap opened (rounds 4 and 5), and the entries seen past their cap.
+    var recoveries: Set<Int> = [], overCap: Set<Int> = []
 
     init(faults: PrivacySimFaults = []) { self.faults = faults }
 
@@ -136,7 +138,7 @@ final class PrivacySimWorld {
             chain.append(.own(child.index))
         } else if token?.hasSuffix("carried") == true {
             child.carried += 1
-        } else if token?.contains("superseded") == true {
+        } else if token?.contains("superseded") == true || token?.hasSuffix("already_unavailable") == true {
             child.silenced += 1
         }
     }

@@ -24,31 +24,18 @@ struct AmbientPrivacyChildAnswer {
 enum AmbientPrivacySaid: Equatable, Sendable { case on, unavailable, off }
 
 /// An entry's close (round 4): its clip (nil: a logged silence), its log tokens, the children whose refusal it took
-/// over, and those their bound refused (to be killed).
+/// over, those their bound refused (to be killed), and (round 5) the recovery entry a cap opened, to be queued.
 struct AmbientPrivacyDecision<Child: AnyObject> {
     let clip: String?
     let tokens: String
     var claimed: [Child] = [], refused: [Child] = []
+    var recovery: Int?
 }
 
-/// Still to wait (until the earliest listening child's own bound), or decided.
+/// Still to wait (until the earliest listening child's own bound, or the entry's cap), or decided.
 enum AmbientPrivacyClose<Child: AnyObject> {
     case wait(until: Double)
     case decided(AmbientPrivacyDecision<Child>)
-}
-
-extension AmbientPrivacyAnswer {
-    /// The entry's log token for an answer other than `kept`: `unacknowledged` only for an ack deadline.
-    var token: String {
-        switch self {
-        case .kept: "kept"
-        case .refused(.unacknowledged): "unacknowledged"
-        case .refused: "refused"
-        case .ended: "ended"
-        case .withdrawn: "withdrawn"
-        case .timeout: "timeout"
-        }
-    }
 }
 
 /// One connection's privacy entries and last word (#735 S-8 HS-C round 4), a value the router keeps under its lock and
@@ -62,8 +49,9 @@ struct AmbientPrivacyLedger<Child: AnyObject> {
     struct Entry {
         let opened: Double, wasOn: Bool
         var members: [Member]
-        /// An off withdrew it; a refusal another place would have said is carried to it.
-        var withdrawn = false, carried = false
+        /// An off withdrew it; a refusal another place would have said is carried to it; opened by no owner's command
+        /// but after "unavailable" (round 5: it never repeats "unavailable").
+        var withdrawn = false, carried = false, recovery = false
     }
     private(set) var entries: [Int: Entry] = [:]
     private(set) var last = 0
@@ -72,11 +60,13 @@ struct AmbientPrivacyLedger<Child: AnyObject> {
 
     /// Opens the next entry on `children` (every child of the connection) at `now`.
     mutating func open(on children: [(Child, AmbientDuckControl)], wasOn: Bool, at now: Double) -> Int {
+        open(children.map { Member(child: $0.0, duck: $0.1, opened: now) }, wasOn: wasOn, at: now, recovery: false)
+    }
+
+    private mutating func open(_ members: [Member], wasOn: Bool, at now: Double, recovery: Bool) -> Int {
         last += 1
-        children.forEach { $0.1.open(entry: last) }
-        entries[last] = Entry(opened: now, wasOn: wasOn, members: children.map {
-            Member(child: $0.0, duck: $0.1, opened: now)
-        })
+        members.forEach { $0.duck.open(entry: last) }
+        entries[last] = Entry(opened: now, wasOn: wasOn, members: members, recovery: recovery)
         return last
     }
 
@@ -90,7 +80,7 @@ struct AmbientPrivacyLedger<Child: AnyObject> {
             entries[key]?.members.append(Member(child: child, duck: duck, opened: now))
         }
         guard on, entries.isEmpty, said == .unavailable else { return nil }
-        return open(on: all, wasOn: true, at: now)
+        return open(all.map { Member(child: $0.0, duck: $0.1, opened: now) }, wasOn: true, at: now, recovery: true)
     }
 
     /// An off: every open entry is withdrawn, and "Recording again." is the last word.
@@ -101,7 +91,8 @@ struct AmbientPrivacyLedger<Child: AnyObject> {
 
     /// The state rule for a refusal (`duck`, or nil for a start refused while private): whether `unavailable` is said
     /// now, else the log token. Said only when it changed the owner's state: never twice, never after an off, never
-    /// while an open entry (the newest announces it, carried) or a listening child (`holders`) still keeps privacy.
+    /// while an open entry (the newest announces it, carried) or a listening child (`holders`) still keeps privacy,
+    /// and never while "unavailable" is already the last word (round 5, `already_unavailable`: refused starts in a row).
     mutating func refusal(of duck: AmbientDuckControl?, on: Bool, holders: [AmbientDuckControl]) -> (Bool, String?) {
         if let duck, !duck.takeAnnouncement() { return (false, "unavailable=said_by_entry") }
         guard on else { return (false, duck == nil ? nil : "unavailable=superseded_by_off") }
@@ -110,6 +101,7 @@ struct AmbientPrivacyLedger<Child: AnyObject> {
             return (false, "unavailable=said_by_entry carried")
         }
         if holders.contains(where: \.holdsPrivacy) { return (false, "unavailable=superseded_by_keep") }
+        if said == .unavailable { return (false, "unavailable=already_unavailable") }
         said = .unavailable
         return (true, nil)
     }
@@ -118,18 +110,26 @@ struct AmbientPrivacyLedger<Child: AnyObject> {
     /// own bound (its open + `bound`), unless an off withdrew the entry or a newer one is open. Each child is closed
     /// and read in one step under its lock; one past its own bound is refused there (the ack or the bound, whichever
     /// came first). An older entry closing under a newer one says nothing (`superseded_by_newer`) and carries any
-    /// refusal it claimed to the newest, which announces the outcome.
-    mutating func close(_ entry: Int, now: Double, bound: Double,
+    /// refusal it claimed to the newest, which announces the outcome. Round 5: every entry decides by its cap, `cap`
+    /// past its opening (nil: 2 × `bound`), however many children register meanwhile. At the cap it says "unavailable"
+    /// (`timeout cap`) without refusing a child whose own bound has not passed; those listening go on in a recovery
+    /// entry, which says "privacy on" once they prove it. A recovery entry never repeats "unavailable".
+    mutating func close(_ entry: Int, now: Double, bound: Double, cap: Double? = nil,
                         listening: (Child) -> Bool) -> AmbientPrivacyClose<Child> {
         guard let state = entries[entry] else { return .decided(.init(clip: nil, tokens: " withdrawn")) }
         let newest = entries.keys.max() ?? entry
         let deciding = !state.withdrawn && newest == entry
         let hears = state.members.map { listening($0.child) }
-        let waits = zip(state.members, hears).filter { member, hears in
+        let late = zip(state.members, hears).map { member, hears in
             hears && member.duck.settled == nil && now < member.opened + bound
         }
-        if deciding, let until = waits.map({ $0.0.opened + bound }).min() { return .wait(until: until) }
-        let closings = zip(state.members, hears).map { $0.duck.close(entry: entry, refusePending: deciding && $1) }
+        let capAt = state.opened + (cap ?? 2 * bound)
+        if deciding, now < capAt, let until = zip(state.members, late).filter(\.1).map({ $0.0.opened + bound }).min() {
+            return .wait(until: min(until, capAt))
+        }
+        let closings = zip(state.members, zip(hears, late)).map { member, flags in
+            member.duck.close(entry: entry, refusePending: deciding && flags.0 && !flags.1)
+        }
         entries[entry] = nil
         let answers = zip(closings, hears).map { closing, hears in
             AmbientPrivacyChildAnswer(answer: closing.answer ?? .timeout, listening: hears, claimed: closing.claimed,
@@ -143,10 +143,29 @@ struct AmbientPrivacyLedger<Child: AnyObject> {
             let tokens = " superseded_by_newer" + (claimed ? " carried" : "")
             return .decided(.init(clip: nil, tokens: tokens, claimed: took))
         }
-        let answer = AmbientRightyoRouter.privacyVerdict(answers, withdrawn: state.withdrawn, carried: state.carried)
-        let (clip, tokens) = AmbientRightyoRouter.announcement(answer, claimed: claimed, wasOn: state.wasOn)
+        let capped = deciding && late.contains(true)
+        var decision = decide(state, answers, claimed: claimed, capped: capped)
+        (decision.claimed, decision.refused) = (took, refused)
+        if capped {
+            let going = zip(state.members, hears).filter(\.1).map(\.0)
+            decision.recovery = open(going, wasOn: true, at: now, recovery: true)
+        }
+        return .decided(decision)
+    }
+
+    /// The deciding entry's clip and tokens (`timeout cap` at its cap), and the last word it leaves: a recovery entry
+    /// whose "unavailable" would repeat the last word says nothing (`already_unavailable`).
+    private mutating func decide(_ state: Entry, _ answers: [AmbientPrivacyChildAnswer], claimed: Bool,
+                                 capped: Bool) -> AmbientPrivacyDecision<Child> {
+        let answer = capped ? .timeout
+            : AmbientRightyoRouter.privacyVerdict(answers, withdrawn: state.withdrawn, carried: state.carried)
+        var (clip, tokens) = AmbientRightyoRouter.announcement(answer, claimed: claimed, wasOn: state.wasOn)
+        if capped { tokens += " cap" }
+        if clip == AmbientStopConfirmation.privacyUnavailable, state.recovery, said == .unavailable {
+            (clip, tokens) = (nil, tokens + " already_unavailable")
+        }
         if let clip { said = clip == AmbientStopConfirmation.privacyOn ? .on : .unavailable }
-        return .decided(.init(clip: clip, tokens: tokens, claimed: took, refused: refused))
+        return .init(clip: clip, tokens: tokens)
     }
 }
 
@@ -155,45 +174,10 @@ struct AmbientPrivacyLedger<Child: AnyObject> {
 /// connection's one clip chain (round 3), or a logged silence: withdrawn by an off ("Recording again." follows), or
 /// superseded by a newer entry, which announces the outcome (round 4).
 extension AmbientRightyoRouter {
-    /// The margin past a child's start and ack deadlines (round 3): each child's bound is start + ack + this (16 s by
+    /// The margin past a child's start and ack deadlines (round 3): each child's bound is start + ack + this (18 s by
     /// default) from when the entry opened on it (round 4: its registration, for a child a reload started meanwhile),
-    /// so it only ends a wait none of that child's own deadlines ended.
-    static let privacyConfirmMargin: TimeInterval = 1
-
-    /// The entry's clip and log tokens, given its answer, whether it took over a refusal (claimed or carried), and
-    /// whether privacy was already on: `confirm-privacy-on/` when kept (`superseded_by_keep` for a refusal it took
-    /// over: a listening child still keeps privacy, so nothing changed); nothing when withdrawn (`superseded_by_off`
-    /// for a refusal: "Recording again." is the last word); else `confirm-privacy-unavailable/`.
-    static func announcement(_ answer: AmbientPrivacyAnswer, claimed: Bool, wasOn: Bool) -> (String?, String) {
-        switch answer {
-        case .kept:
-            return (AmbientStopConfirmation.privacyOn,
-                    (wasOn ? " still_on" : "") + (claimed ? " superseded_by_keep" : ""))
-        case .withdrawn:
-            return (nil, claimed ? " withdrawn claimed superseded_by_off" : " withdrawn")
-        default:
-            return (AmbientStopConfirmation.privacyUnavailable, " \(answer.token)")
-        }
-    }
-
-    /// The entry's answer from its children's at the close (round 4, the state rule): withdrawn by an off; `timeout`
-    /// when a bound refused one; then a refusal of a listening child; then the listening children, those that ended
-    /// dropping out: all kept is `kept` (a refusal of a child that no longer listens changes nothing then); none left
-    /// is a refusal it took over (its own reason, or `refused` when carried) or `ended`; else the first not kept.
-    static func privacyVerdict(_ answers: [AmbientPrivacyChildAnswer], withdrawn: Bool,
-                               carried: Bool = false) -> AmbientPrivacyAnswer {
-        if withdrawn { return .withdrawn }
-        if answers.contains(where: \.refusedAtBound) { return .timeout }
-        let refusal = answers.first { child in
-            guard case .refused = child.answer else { return false }
-            return child.listening
-        }
-        if let refusal { return refusal.answer }
-        let present = answers.filter { $0.listening && $0.answer != .ended }.map(\.answer)
-        if let other = present.first(where: { $0 != .kept }) { return other }
-        if !present.isEmpty { return .kept }
-        if let claimed = answers.first(where: { $0.claimed }) { return claimed.answer }
-        return carried ? .refused(nil) : .ended
-    }
+    /// so it only ends a wait none of that child's own deadlines ended. Round 5: 3 s, so a late child's bound absorbs
+    /// a `started` whose processing load delayed; an entry's cap is twice the bound (36 s).
+    static let privacyConfirmMargin: TimeInterval = 3
 }
 #endif

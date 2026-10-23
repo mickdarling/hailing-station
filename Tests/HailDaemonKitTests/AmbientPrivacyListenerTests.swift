@@ -113,8 +113,9 @@ import Testing
     /// Round 4, then #822 A (Mick: no silent state change): a child that cannot keep privacy is refused and "I can't
     /// listen privately right now." plays when nothing else keeps privacy, a second refused child on the same
     /// connection included: with S-2b both children were launched start-private and did not confirm it. The second
-    /// starts after "unavailable", so it is announced as a recovery entry (#735 S-8 HS-C round 4), which says it.
-    @Test func theUnavailableClipPlaysForEveryRefusal() async throws {
+    /// starts after "unavailable", so it is announced as a recovery entry (#735 S-8 HS-C round 4), whose verdict is
+    /// "unavailable" again: already the last word, it is not repeated (round 5, the once-guard: `already_unavailable`).
+    @Test func theUnavailableClipPlaysOnceForRefusalsInARow() async throws {
         let later = AmbientDuckReloadTests.silent(advertises: true, version: 1)
         let clips = AmbientAckLibrary(clips: ["confirmprivacyon": [AmbientDuckModeTests.clip("Privacy on.", 9)],
                                           "confirmprivacyunavailable": [AmbientDuckModeTests.clip("I can't.", 2)]])
@@ -133,7 +134,7 @@ import Testing
         #expect(rig.env.router.duckMode(connection: connection))
         await rig.finish()
         let said = "confirm=confirmprivacyunavailable/0:sent", rest = rig.details("ambient_duck_confirmed").dropFirst()
-        #expect(Array(rest) == ["unavailable " + said, "on=true reason=recovery refused playback=idle " + said])
+        #expect(Array(rest) == ["unavailable " + said, silentRecovery])
         #expect(rig.details("ambient_privacy_start") == Array(repeating: "outcome=refused reason=unconfirmed",
                                                               count: 2))
     }
@@ -194,4 +195,6 @@ import Testing
         """
     }
 }
+/// A silent recovery entry (#735 S-8 HS-C round 5): its "unavailable" would repeat the last word.
+private let silentRecovery = "on=true reason=recovery refused already_unavailable confirm=unreported"
 #endif

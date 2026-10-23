@@ -995,6 +995,18 @@ struct AmbientPrivacyClosing: Sendable, Equatable {
 /// `timeout` (no answer within the router's bound).
 enum AmbientPrivacyAnswer: Equatable, Sendable {
     case kept, refused(RightyoPrivacyRefusal?), ended, withdrawn, timeout
+
+    /// The entry's log token for an answer other than `kept`: `unacknowledged` only for an ack deadline.
+    var token: String {
+        switch self {
+        case .kept: "kept"
+        case .refused(.unacknowledged): "unacknowledged"
+        case .refused: "refused"
+        case .ended: "ended"
+        case .withdrawn: "withdrawn"
+        case .timeout: "timeout"
+        }
+    }
 }
 
 /// Deadlines, refusals and announcements (#735 S-8, HS-C round 2): each refusal is handled exactly once, by the entry it

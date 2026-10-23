@@ -29,7 +29,8 @@ import Testing
     }
 
     /// The rule, both ways, and every silence named: said when nothing keeps privacy after it; silent while a
-    /// listening child keeps it or may (`superseded_by_keep`), after an off (`superseded_by_off`), and once said.
+    /// listening child keeps it or may (`superseded_by_keep`), after an off (`superseded_by_off`), once said, and while
+    /// "unavailable" is already the last word (`already_unavailable`).
     @Test func aRefusalIsSaidOnlyWhenItChangesTheState() {
         var ledger = Ledger()
         #expect(ledger.refusal(of: Self.refused(), on: true, holders: [Self.holder(proved: true)])
@@ -42,9 +43,14 @@ import Testing
         #expect(ledger.refusal(of: duck, on: true, holders: [duck]) == (true, nil))
         #expect(ledger.said == .unavailable)
         #expect(ledger.refusal(of: duck, on: true, holders: []) == (false, "unavailable=said_by_entry"))
-        // A start refused while private (no child): said the same way; while off, it is no privacy event at all.
-        #expect(ledger.refusal(of: nil, on: true, holders: []) == (true, nil))
+        // A start refused while private (no child): said the same way, but never again while "unavailable" is the
+        // last word (round 5, the once-guard), for a refused start or a child's; while off, it is no privacy event.
+        #expect(ledger.refusal(of: nil, on: true, holders: []) == (false, "unavailable=already_unavailable"))
+        #expect(ledger.refusal(of: Self.refused(), on: true, holders: []) == (false, "unavailable=already_unavailable"))
         #expect(ledger.refusal(of: nil, on: false, holders: []) == (false, nil))
+        var fresh = Ledger()
+        #expect(fresh.refusal(of: nil, on: true, holders: []) == (true, nil))
+        #expect(fresh.refusal(of: nil, on: true, holders: []) == (false, "unavailable=already_unavailable"))
     }
 
     /// While an entry is open, the newest announces the outcome: the refusal is carried to it, never said twice.

@@ -17,8 +17,9 @@ import Testing
 @Suite(.serialized, .timeLimit(.minutes(1)), .frozenGuardBudget) struct AmbientPrivacyPropertyTests {
     static let seeds: [UInt64] = Array(1...300)
     static let steps = 150
-    /// The first seed each a8de9f2 fault fails on (round 4, recorded from `roundThreesFaultsAreCaught`).
-    static let recorded: [(PrivacySimFaults, UInt64)] = [(.entryBound, 23), (.weakGuards, 2), (.splitEnqueue, 150)]
+    /// The first seed each a8de9f2 fault fails on (round 4, recorded from `roundThreesFaultsAreCaught`; round 5:
+    /// `entryBound` moved from 23 to 48 with the 18 s bound).
+    static let recorded: [(PrivacySimFaults, UInt64)] = [(.entryBound, 48), (.weakGuards, 2), (.splitEnqueue, 150)]
 
     @Test func everyEntryIsAnnouncedExactlyOnceInOrder() {
         for seed in Self.seeds {
@@ -45,9 +46,9 @@ import Testing
         }
     }
 
-    /// The per-child bound (finding 1): a reload late in an entry (at 14 s; the entry's own bound is at 16 s) registers
+    /// The per-child bound (finding 1): a reload late in an entry (at 14 s; the entry's own bound is at 18 s) registers
     /// a child that confirms its private start at 20 s, inside its own deadline: it is not killed, and the entry says
-    /// "privacy on". Counted from the entry, as a8de9f2 did, it is killed at 16 s.
+    /// "privacy on". Counted from the entry, as a8de9f2 did, it is killed at 18 s.
     @Test(arguments: [PrivacySimFaults(), .entryBound])
     func aReloadLateInAnEntryIsWaitedFor(_ faults: PrivacySimFaults) {
         let world = PrivacySimWorld(faults: faults)

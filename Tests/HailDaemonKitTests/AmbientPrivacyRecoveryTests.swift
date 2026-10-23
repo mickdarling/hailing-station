@@ -42,7 +42,8 @@ import Testing
 
     /// Proof before recovery: a start-private child that registers but never confirms its start, or starts without
     /// keeping privacy, never makes the recovery entry say "privacy on". Refused at its own start deadline (or at its
-    /// `started`), nothing keeps privacy, so by rule (c) the recovery entry says "unavailable" (`refused`).
+    /// `started`), nothing keeps privacy: by rule (c) the recovery entry's verdict is "unavailable" (`refused`), but it
+    /// is already the last word, so the entry says nothing (round 5, the once-guard: `already_unavailable`).
     @Test(arguments: [PrivacySimChild.Kind.v3, .v2]) func aRecoveryNeedsTheChildsProof(_ kind: PrivacySimChild.Kind) {
         let world = Self.unavailable()
         world.spawn(kind, writeFails: false, replacing: nil)
@@ -51,8 +52,8 @@ import Testing
         world.finish()
         let failures = world.failures + Property.check(world)
         #expect(failures.isEmpty, "\(failures)")
-        #expect(world.played == [.stop(1), .on(1), .own(0), .stop(2), .unavailable(2)])
-        #expect(world.decided[2]?.tokens == " refused" && world.children[1].claimed == 1)
+        #expect(world.played == [.stop(1), .on(1), .own(0), .silent(2)])
+        #expect(world.decided[2]?.tokens == " refused already_unavailable" && world.children[1].claimed == 1)
     }
 
     /// The off race: a refusal decided while private (a reload's child past its start deadline) whose handler runs

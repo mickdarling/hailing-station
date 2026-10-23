@@ -1695,14 +1695,22 @@ extension AmbientRightyoRouter {
 
     /// Closes privacy entry `entry` and decides it in one step under the router's lock (round 3), or says until when
     /// to wait (`AmbientPrivacyLedger.close`): no refusal lands between the answers read and the close, and no child
-    /// registers or is swapped out meanwhile.
+    /// registers or is swapped out meanwhile. A recovery entry its cap opened (round 5) is queued on the chain in that
+    /// same step, after this entry's clip.
     func closePrivacyEntry(_ entry: Int, connection: UUID) -> AmbientPrivacyClose<RightyoAmbientPipeline> {
         let (now, bound) = (privacyNow, configuration.privacyBound)
         return state.withLock { state in
             let listening = Set(Self.listening(connection, in: state).map(ObjectIdentifier.init))
-            return state.privacy[connection]?.close(entry, now: now, bound: bound) {
+            let close = state.privacy[connection]?.close(entry, now: now, bound: bound) {
                 listening.contains(ObjectIdentifier($0))
             } ?? .decided(.init(clip: nil, tokens: " withdrawn"))
+            if case .decided(let decision) = close, let recovery = decision.recovery {
+                let next = AmbientPrivacyEntry(reported: 0, entry: recovery, wasOn: true, on: true)
+                Self.clipChain(connection, in: &state).enqueue(entryClip(next, outcome: "on=true reason=recovery",
+                                                                         connection: connection,
+                                                                         listener: state.listener?.value))
+            }
+            return close
         }
     }
 
@@ -1794,6 +1802,45 @@ extension AmbientRightyoRouter {
         await awaitSettled(nil, connection: connection)
         let pipelines = listeningPipelines(connection: connection)
         return !pipelines.isEmpty && pipelines.allSatisfy { $0.privacySettled == .kept }
+    }
+}
+
+/// An entry's verdict and announcement (#735 S-8 HS-C), for `AmbientPrivacyLedger.close`.
+extension AmbientRightyoRouter {
+    /// The entry's clip and log tokens, given its answer, whether it took over a refusal (claimed or carried), and
+    /// whether privacy was already on: `confirm-privacy-on/` when kept (`superseded_by_keep` for a refusal it took
+    /// over: a listening child still keeps privacy, so nothing changed); nothing when withdrawn (`superseded_by_off`
+    /// for a refusal: "Recording again." is the last word); else `confirm-privacy-unavailable/`.
+    static func announcement(_ answer: AmbientPrivacyAnswer, claimed: Bool, wasOn: Bool) -> (String?, String) {
+        switch answer {
+        case .kept:
+            return (AmbientStopConfirmation.privacyOn,
+                    (wasOn ? " still_on" : "") + (claimed ? " superseded_by_keep" : ""))
+        case .withdrawn:
+            return (nil, claimed ? " withdrawn claimed superseded_by_off" : " withdrawn")
+        default:
+            return (AmbientStopConfirmation.privacyUnavailable, " \(answer.token)")
+        }
+    }
+
+    /// The entry's answer from its children's at the close (round 4, the state rule): withdrawn by an off; `timeout`
+    /// when a bound refused one; then a refusal of a listening child; then the listening children, those that ended
+    /// dropping out: all kept is `kept` (a refusal of a child that no longer listens changes nothing then); none left
+    /// is a refusal it took over (its own reason, or `refused` when carried) or `ended`; else the first not kept.
+    static func privacyVerdict(_ answers: [AmbientPrivacyChildAnswer], withdrawn: Bool,
+                               carried: Bool = false) -> AmbientPrivacyAnswer {
+        if withdrawn { return .withdrawn }
+        if answers.contains(where: \.refusedAtBound) { return .timeout }
+        let refusal = answers.first { child in
+            guard case .refused = child.answer else { return false }
+            return child.listening
+        }
+        if let refusal { return refusal.answer }
+        let present = answers.filter { $0.listening && $0.answer != .ended }.map(\.answer)
+        if let other = present.first(where: { $0 != .kept }) { return other }
+        if !present.isEmpty { return .kept }
+        if let claimed = answers.first(where: { $0.claimed }) { return claimed.answer }
+        return carried ? .refused(nil) : .ended
     }
 }
 

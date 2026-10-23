@@ -69,14 +69,15 @@ extension PrivacySimWorld {
     }
 
     /// When the running entry must next be closed: the earliest listening child's own bound (`entryBound`: the
-    /// entry's), while it waits for a proof.
+    /// entry's), while it waits for a proof, and at the latest its cap (round 5; never under `uncapped`).
     var boundDue: Double? {
         guard let entry = head, let state = ledger.entries[entry], !state.withdrawn, ledger.last == entry else {
             return nil
         }
         let waiting = state.members.filter { $0.child.listening && $0.duck.settled == nil }
         if faults.contains(.entryBound) { return waiting.isEmpty ? nil : state.opened + Self.bound }
-        return waiting.map { $0.opened + Self.bound }.min()
+        let due = waiting.map { $0.opened + Self.bound }.min()
+        return faults.contains(.uncapped) ? due : due.map { min($0, state.opened + Self.cap) }
     }
 
     /// The close (`closePrivacyEntry`), only for the entry the chain is running, with the listening set derived from
@@ -93,11 +94,22 @@ extension PrivacySimWorld {
         if !hearing.allSatisfy({ child in state.members.contains { $0.child === child } }) {
             failures.append("entry \(entry) is missing a listening child")
         }
-        guard case .decided(let decision) = ledger.close(entry, now: time, bound: Self.bound, listening: \.listening)
-        else { return }
+        let cap = faults.contains(.uncapped) ? Double.infinity : nil
+        guard case .decided(let decision) = ledger.close(entry, now: time, bound: Self.bound, cap: cap,
+                                                         listening: \.listening) else {
+            // (d) Round 5: every entry decides within its cap, however many children register meanwhile.
+            if !state.withdrawn, ledger.last == entry, time >= state.opened + Self.cap, overCap.insert(entry).inserted {
+                failures.append("entry \(entry) still waits at \(time), past its cap at \(state.opened + Self.cap)")
+            }
+            return
+        }
         tick += 1
         decision.claimed.forEach { $0.claimed += 1 }
         decision.refused.forEach { boundKill($0, entry: entry) }
+        if let recovery = decision.recovery {
+            recoveries.insert(recovery)
+            chain.append(.entry(recovery))
+        }
         decided[entry] = PrivacySimDecision(clip: decision.clip, tokens: decision.tokens, tick: tick,
                                             members: state.members.map(\.child))
         judge(entry, decision, withdrawn: state.withdrawn)
@@ -120,7 +132,10 @@ extension PrivacySimWorld {
             failures.append("entry \(entry) said privacy on while a listening child was refused or unproven")
         case AmbientStopConfirmation.privacyUnavailable? where truthful:
             failures.append("entry \(entry) said unavailable while privacy was kept\(decision.tokens)")
-        case nil where !withdrawn && !decision.tokens.contains("superseded_by_newer"):
+        case nil where decision.tokens.hasSuffix("already_unavailable") && (truthful || ledger.said != .unavailable):
+            failures.append("entry \(entry) silent as already unavailable\(decision.tokens)")
+        case nil where !withdrawn && !decision.tokens.contains("superseded_by_newer")
+            && !decision.tokens.hasSuffix("already_unavailable"):
             failures.append("entry \(entry) silent as\(decision.tokens)")
         case nil where decision.tokens.contains("superseded_by_newer") && ledger.last <= entry:
             failures.append("entry \(entry) superseded by no newer entry")

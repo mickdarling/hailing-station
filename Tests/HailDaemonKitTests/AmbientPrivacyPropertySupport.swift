@@ -65,17 +65,19 @@ struct PrivacySimDecision {
 /// The faults of a8de9f2 (round 3) that round 4 fixes, each switchable alone so its own failing seed is found:
 /// `entryBound` (finding 1: the bound counted from the entry, refusing a child a reload registered late),
 /// `weakGuards` (finding 2: a refusal said after its pipeline was freed reads every guard as nil, so it speaks), and
-/// `splitEnqueue` (finding 3: a switch's clip queued after the router's lock was released).
+/// `splitEnqueue` (finding 3: a switch's clip queued after the router's lock was released). Round 5: `uncapped`,
+/// 9b33a76's close with no cap on an entry's wait (a registration storm keeps it from ever deciding).
 struct PrivacySimFaults: OptionSet, Sendable, CustomStringConvertible {
     let rawValue: Int
     static let entryBound = Self(rawValue: 1)
     static let weakGuards = Self(rawValue: 2)
     static let splitEnqueue = Self(rawValue: 4)
+    static let uncapped = Self(rawValue: 8)
     static let roundThree: Self = [.entryBound, .weakGuards, .splitEnqueue]
 
     var description: String {
-        [(Self.entryBound, "entryBound"), (.weakGuards, "weakGuards"), (.splitEnqueue, "splitEnqueue")]
-            .filter { contains($0.0) }.map(\.1).joined(separator: "+")
+        [(Self.entryBound, "entryBound"), (.weakGuards, "weakGuards"), (.splitEnqueue, "splitEnqueue"),
+         (.uncapped, "uncapped")].filter { contains($0.0) }.map(\.1).joined(separator: "+")
     }
 }
 #endif

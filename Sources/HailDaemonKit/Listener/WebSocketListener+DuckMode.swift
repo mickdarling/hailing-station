@@ -42,7 +42,8 @@ extension AmbientRightyoRouter {
     ///   rule (round 4, `AmbientPrivacyLedger.refusal`), `confirm-privacy-unavailable/` ("I can't listen privately right
     ///   now.") says it only when it changed what the owner has: never twice (`said_by_entry`), never while an open
     ///   entry announces the outcome (carried to it, `said_by_entry`) or a listening child still keeps privacy
-    ///   (`superseded_by_keep`), never after an off (`superseded_by_off`); each silence logged `ambient_privacy`.
+    ///   (`superseded_by_keep`), never after an off (`superseded_by_off`), never while it is already the last word
+    ///   (round 5, `already_unavailable`); each silence logged `ambient_privacy`.
     /// Every clip, the entries' and the refusals', is queued on the connection's one chain under the router's lock
     /// that decided it (round 4), so their order is the order decided. Nothing reaches the agent. Logs tokens only.
     func voiceDuck(on connection: UUID, listener: WebSocketListener,
