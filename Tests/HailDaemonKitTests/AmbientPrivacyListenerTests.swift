@@ -53,8 +53,8 @@ import Testing
         #expect(rig.details("ambient_privacy") == ["exit=ignored state=off"])
         #expect(rig.details("ambient_duck") == ["on=true reason=voice reported=1", "on=false reason=voice reported=1"])
         // The off clip's delivery (sent, or refused while the on clip plays) is not the outcome (#735 flake).
-        #expect(rig.details("ambient_duck_confirmed").map { $0.hasPrefix("on=false") ? String($0.prefix(37)) : $0 }
-                == ["on=true playback=idle confirm=confirmprivacyon/0:sent", "on=false confirm=confirmprivacyoff/0:"])
+        #expect(rig.details("ambient_duck_confirmed").map { $0.replacingOccurrences(of: "0:refused", with: "0:sent") }
+            == ["on=true playback=idle confirm=confirmprivacyon/0:sent", "on=false confirm=confirmprivacyoff/0:sent"])
     }
 
     /// Defence in depth: while private, "stop", "stop that", "stop listening" or "Rightyo, stop" slipping through
