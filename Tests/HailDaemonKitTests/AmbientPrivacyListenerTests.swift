@@ -117,6 +117,8 @@ import Testing
                                     clips: clips)
         defer { rig.close() }
         #expect(await eventually { rig.details("ambient_duck").count == 1 })
+        // The entry is confirmed once the first child acked it (#735 S-8 HS-C), before the reload retires it.
+        #expect(await eventually { rig.details("ambient_duck_confirmed").count == 1 })
         let connection = try #require(rig.connection())
         #expect(await rig.env.router.reload() == .reloaded)
         #expect(await eventually { rig.details("ambient_duck_confirmed").count == 2 })

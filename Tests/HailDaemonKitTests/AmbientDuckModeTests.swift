@@ -119,13 +119,15 @@ final class DuckRig: Sendable {
          enrolled: Bool = true,
          clips: AmbientAckLibrary? = nil, timeout: TimeInterval = AmbientRightyoRouter.defaultDuckTimeout,
          capabilities: [String] = [],
-         startDeadline: TimeInterval = RightyoAmbientPipeline.defaultStartDeadline) async throws {
+         startDeadline: TimeInterval = RightyoAmbientPipeline.defaultStartDeadline,
+         ackDeadline: TimeInterval = RightyoAmbientPipeline.ackDeadline) async throws {
         fake = try FakeRightyo(script ?? FakeRightyo.ackingControl() + "\n" + AmbientPrivacyEntryTests.fixture(
             saying: words, enrolled: enrolled, advertises: advertises, version: version))
         try fake.install(fixture: enrolled ? "enrolled-formed-request.jsonl" : "tool-events.jsonl")
         let events = DuckEvents()
         env = try await ambientRig(fake, timing: .init(eofGrace: 20, termGrace: 20), acknowledgements: clips,
                                    replyControl: true, duckTimeout: timeout, startDeadline: startDeadline,
+                                   ackDeadline: ackDeadline,
                                    onEvent: { event in
             events.list.withLock { $0.append(event) }
         })

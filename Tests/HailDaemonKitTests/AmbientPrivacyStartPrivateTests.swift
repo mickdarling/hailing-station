@@ -176,11 +176,13 @@ import Testing
         let connection = try #require(rig.connection())
         #expect(await rig.env.router.reload() == .reloaded)
         #expect(await eventually { rig.details("ambient_ended").contains("privacy unconfirmedStart") })
-        #expect(await eventually {
-            rig.details("ambient_duck_confirmed").last == "unavailable confirm=confirmprivacyunavailable/0:sent"
-        })
+        let unavailable = "unavailable confirm=confirmprivacyunavailable/0:sent"
+        #expect(await eventually { rig.details("ambient_duck_confirmed").contains(unavailable) })
         #expect(rig.env.router.duckMode(connection: connection))
         await rig.finish()
+        // The entry's own confirmation waits for the first child's ack (#735 S-8 HS-C), on its own chain, so it may
+        // come either side of the refusal; the refusal is said once.
+        #expect(rig.details("ambient_duck_confirmed").filter { $0 == unavailable }.count == 1)
     }
 }
 #endif

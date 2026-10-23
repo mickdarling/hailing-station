@@ -487,6 +487,8 @@ public final class AmbientRightyoRouter: AmbientAudioSink, AmbientListenerWiring
         public var duckTimeout: TimeInterval = AmbientRightyoRouter.defaultDuckTimeout
         /// How long a child launched start-private (#735 S-2b) has to emit `started` before it is killed.
         public var startDeadline: TimeInterval = RightyoAmbientPipeline.defaultStartDeadline
+        /// How long each child has to ack a `{"duck":true}` (#735 S-8). Not configurable: tests only shorten it.
+        var ackDeadline: TimeInterval = RightyoAmbientPipeline.ackDeadline
         /// The owner's allowlisted note destinations (#552); nil leaves spoken notes off.
         public var destinations: VoiceDestinations?
         var notes = VoiceNoteRunner()
@@ -979,7 +981,7 @@ extension AmbientRightyoRouter {
                                                               duckUnsupported(on: connection))
         // Privacy on (#735 S-2b): the child is launched already private, on a spawn, a respawn or a reload alike.
         settings.startPrivate = state.withLock { $0.duck[connection] != nil }
-        settings.startDeadline = configuration.startDeadline
+        (settings.startDeadline, settings.ackDeadline) = (configuration.startDeadline, configuration.ackDeadline)
         if let destinations = configuration.destinations {
             (settings.destinations, settings.onVoiceDestination) = (destinations, voiceNote(on: connection,
                                                                                             listener: listener))
@@ -1183,9 +1185,11 @@ extension AmbientRightyoRouter {
         } catch {
             let described = Self.describe(error)
             (failure, detail) = (described, described)
-            // A child that could not keep privacy (#735 S-2b) was killed and is not admitted; privacy stays on.
-            if error as? RightyoPrivacyRefusal == .unconfirmedStart {
-                emit("ambient_privacy_start", connection: connection, detail: "outcome=refused reason=unconfirmed")
+            // A child that could not keep privacy (#735 S-2b, S-8: no ack) was killed and is not admitted; privacy
+            // stays on.
+            if let refusal = error as? RightyoPrivacyRefusal, refusal != .unsupportedChild {
+                let reason = refusal == .unconfirmedStart ? "unconfirmed" : "unacknowledged"
+                emit("ambient_privacy_start", connection: connection, detail: "outcome=refused reason=\(reason)")
             }
         }
         // A reload's replaced child (#405) is marked `replaced`, so `haild doctor` does not read its end as a failure.
@@ -1580,6 +1584,26 @@ extension AmbientRightyoRouter {
             guard !Task.isCancelled else { return }
             self?.setDuck(false, connection: connection, reason: "timeout", expected: token)
         }
+    }
+
+    /// Whether every child of `connection` keeps the privacy wished for (#735 S-8 HS-C), for the privacy-on clip: waits
+    /// for each run a reload has not swapped out, true only when all of them kept it; false when any did not, or there
+    /// is no run. A child a reload swapped out while waited for is answered for by the runs that follow it, at most
+    /// a few times. Always resolves: each child answers by its ack deadline, a refusal, the wish withdrawn or its end.
+    func privacyKept(connection: UUID) async -> Bool {
+        var awaited = Set<ObjectIdentifier>()
+        for _ in 0..<4 {
+            let pipelines = state.withLock { state in
+                state.runs.values.filter { $0.connection == connection && !$0.replaced }.map(\.pipeline)
+            }
+            // Nothing new since the last pass (or no run at all): the earlier answer stands.
+            guard pipelines.contains(where: { !awaited.contains(ObjectIdentifier($0)) }) else { return false }
+            awaited.formUnion(pipelines.map(ObjectIdentifier.init))
+            var kept = true
+            for pipeline in pipelines where kept { kept = await pipeline.privacyKept() }
+            if kept { return true }
+        }
+        return false
     }
 
     /// Whether the run of the pipeline `mark` names was swapped out by a reload (#822 A): its stream lives on in the

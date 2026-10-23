@@ -260,10 +260,12 @@ public final class RightyoAmbientPipeline: Sendable {
     /// the first decode, consumer, dispatch or transport error. Either way the child is stopped and reaped.
     public func run() async throws -> Summary {
         let deadline = armStartDeadline()
+        // Ended before the ack deadlines close (#735 S-8): one already past its cancel check then finds the run over
+        // and says no stray `unavailable` after it.
         defer {
             deadline?.cancel()
-            ackDeadlines.close()
             duck.end()
+            ackDeadlines.close()
         }
         var delivered = 0
         do {
@@ -766,8 +768,9 @@ final class AmbientDuckControl: Sendable {
         var onWrites = 0, acks = 0
         /// An on-write's ack deadline passed while privacy was wished for (S-8); the run has ended (no more proof).
         var unacknowledged = false, ended = false
-        /// `kept()` callers waiting for the proof; each is resumed once, outside the lock.
-        var waiters: [CheckedContinuation<Bool, Never>] = []
+        /// `kept()` callers waiting for the proof, by id; each is resumed once, outside the lock: by the proof, or with
+        /// false by its own cancellation, whichever removes it first.
+        var waiters: [UUID: CheckedContinuation<Bool, Never>] = [:]
 
         /// What `kept()` answers now: kept, never (from here on), or still to come.
         var proof: Proof {
@@ -824,6 +827,8 @@ final class AmbientDuckControl: Sendable {
             state.wanted = on
             guard state.started else { return true }
             if on, kept { return true }
+            // Refused at its ack deadline and being killed: nothing more is written to it, and it takes no on.
+            if on, state.unacknowledged { return false }
             let taken = state.advertised && write(on)
             // Private only once acked; a failed write withholds audio (fail closed). Off needs no ack.
             state.keeps = false
@@ -883,14 +888,23 @@ final class AmbientDuckControl: Sendable {
     func end() { update { $0.ended = true } }
 
     /// True once this child keeps the privacy wished for; false when it is not wished for, or once it cannot be proved
-    /// (a deadline, a refusal, the wish withdrawn, the run's end). Waits until one of those.
+    /// (a deadline, a refusal, the wish withdrawn, the run's end). Waits until one of those, or until the caller's task
+    /// is cancelled, which answers false (#735 S-8 HS-C: a cancelled confirmation never hangs).
     func kept() async -> Bool {
-        await withCheckedContinuation { continuation in
-            let proof = state.withLock { state in
-                if state.proof == .pending { state.waiters.append(continuation) }
-                return state.proof
+        let id = UUID()
+        return await withTaskCancellationHandler {
+            await withCheckedContinuation { continuation in
+                // Under the lock, so a cancellation either finds this waiter registered or is seen here first.
+                let proof = state.withLock { state -> Proof in
+                    guard state.proof == .pending else { return state.proof }
+                    if Task.isCancelled { return .never }
+                    state.waiters[id] = continuation
+                    return .pending
+                }
+                if proof != .pending { continuation.resume(returning: proof == .kept) }
             }
-            if proof != .pending { continuation.resume(returning: proof == .kept) }
+        } onCancel: {
+            state.withLock { $0.waiters.removeValue(forKey: id) }?.resume(returning: false)
         }
     }
 
@@ -906,8 +920,8 @@ final class AmbientDuckControl: Sendable {
             guard state.proof != .pending, !state.waiters.isEmpty else {
                 return (result, [CheckedContinuation<Bool, Never>](), false)
             }
-            defer { state.waiters = [] }
-            return (result, state.waiters, state.proof == .kept)
+            defer { state.waiters = [:] }
+            return (result, Array(state.waiters.values), state.proof == .kept)
         }
         waiters.forEach { $0.resume(returning: kept) }
         return result

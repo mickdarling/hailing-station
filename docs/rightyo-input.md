@@ -719,13 +719,15 @@ RightyO does not advertise v2 or v3 for a coaching listener, a tool replay, or a
 - **Off needs no ack.** Audio flows again at once; an ack still owed for the earlier on is counted when it comes and opens nothing.
 - **The deadline.** Each on-write must be acked within 5 seconds (fixed, not configurable). If not, and privacy is still wished for, the child is killed at once (as at the start deadline), having heard nothing since the write; `confirm-privacy-unavailable/` plays and its run ends with `privacy unacknowledged`. Privacy itself stays on.
 - **`at_ms` is not compared.** It is the child's own audio clock and unbounded; `haild` does no arithmetic on it.
-- The device is told `duck_mode` at once, as before: nothing is heard while the ack is awaited. The privacy-on clip waiting for the ack comes with S-8 HS-C.
+- The device is told `duck_mode` at once, as before: nothing is heard while the ack is awaited.
+
+**The confirmation follows the ack (S-8 HS-C).** `confirm-privacy-on/` plays only once every child of the connection (each a reload has not swapped out) has shown it keeps privacy: its ack, or a confirmed start-private `started`. The clip may therefore come up to the ack deadline (5 s, normally tens of milliseconds) after the entry, and the reply playing is stopped then, just before it. The wait always ends, by the ack, the deadline, a refusal, the wish withdrawn or the run's end, so later clips are never held for good. When it ends without the proof, no privacy-on clip plays (a reply playing is still stopped while privacy stays on) and the entry is logged `ambient_duck_confirmed on=true unacknowledged` (with `reason=device` for the app's switch). A child refused at its deadline then says `confirm-privacy-unavailable/` once, on its own. An off before the ack plays only `confirm-privacy-off/`. A run refused at the deadline is logged `ambient_privacy_start outcome=refused reason=unacknowledged`, and a child already refused this way is written no further on-line.
 
 **A child that cannot keep privacy never ends it.** Only the owner's voice exit does (Mick, round 4), and later the app's switch (S-6). The child is refused instead. That covers:
 
 - a start-private child whose `started` says anything else (no `duck`, a v1 or v2, a v3 without `private: true`), or that sends no `started` within the deadline: killed at once (SIGTERM then SIGKILL, no grace), its run ends with `privacy unconfirmedStart`, logged `ambient_privacy_start outcome=refused reason=unconfirmed`;
 - a child launched while privacy was off, for which privacy came on before its `started` (an entry while a child is between spawn and `started` is taken by that child), that did not advertise v3: killed the same way, its run ends with `privacy unsupportedChild`, logged `ambient_privacy child=unsupported_version kept=true`. One that did advertise v3 is written `{"duck":true}` at `started`, and hears audio once it acks;
-- a child that does not ack an on-write within 5 s: killed the same way, its run ends with `privacy unacknowledged`;
+- a child that does not ack an on-write within 5 s: killed the same way, its run ends with `privacy unacknowledged`, logged `ambient_privacy_start outcome=refused reason=unacknowledged`;
 - a start that fails outright while private (the child cannot be launched).
 
 Then no stream runs and nothing records:
@@ -768,7 +770,7 @@ Privacy ends only on the owner's exit (RightyO's `exit`, or the app's switch, S-
 With ambient listening on, `haild` advertises `set_privacy` (`docs/reply-protocol.md`), and the app shows a privacy switch while it is listening.
 
 - **Trust:** the paired owner device, the same gate as `ambient_input` (Mick's decision). No voiceprint is asked for, and it is not a voice entry.
-- **On** takes the owner's entry path with reason `device`: privacy is written to every child of the connection (so a respawn or reload starts private), every request is held back, a reply playing is stopped, and only `confirm-privacy-on/` plays. The device is told `duck_mode` on with `reason: "device"`. If no child can take privacy (a v1 or older RightyO), it fails closed: privacy stays off, the device is told off, and `confirm-not-sent/` plays.
+- **On** takes the owner's entry path with reason `device`: privacy is written to every child of the connection (so a respawn or reload starts private), every request is held back, and once every child acked it (S-8 HS-C) a reply playing is stopped and only `confirm-privacy-on/` plays; without the ack no privacy-on clip plays. The device is told `duck_mode` on with `reason: "device"`. If no child can take privacy (a v1 or older RightyO), it fails closed: privacy stays off, the device is told off, and `confirm-not-sent/` plays.
 - **Off** takes the owner's exit path with reason `device`: `{"duck":false}` is written to every child of the connection, as for the voice exit, the device is told off, and `confirm-privacy-off/` plays when a child took it. It is the way out when the voice exit cannot be heard, for example from a child respawned start-private that has not bound the owner's voiceprint.
 - **Its own connection only.** The command carries no connection; `haild` uses the sending connection's id. On is acted on only while that connection holds the active ambient stream. Off is also acted on after its stream ended, so the switch stays the way out when the host stopped listening because no child could keep privacy.
 - **Only a change.** A switch to the state already held does nothing: nothing is logged, written, played or sent back. A switch applies only to the privacy arming it read, matched under the lock that changes privacy, so if the owner's voice changed it first, the switch does nothing more.
@@ -789,7 +791,7 @@ These reserved folders play nothing until Mick records them:
 
 | Folder | Words | When |
 | --- | --- | --- |
-| `confirm-privacy-on/` | "Privacy on. I'm only listening for my name." | entry, and re-entry while on (so worded as a status) |
+| `confirm-privacy-on/` | "Privacy on. I'm only listening for my name." | entry, once every child acked it (S-8 HS-C), and re-entry while on (so worded as a status) |
 | `confirm-privacy-off/` | "Recording again." | RightyO's exit |
 | `confirm-privacy-unavailable/` | "I can't listen privately right now." | a child that cannot keep privacy was refused (every time; not for a child a reload already retired) |
 | `confirm-privacy-status/` | "Privacy on. I'm only listening for my name." | RightyO's status event while private |

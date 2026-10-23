@@ -21,8 +21,10 @@ extension AmbientRightyoRouter {
 
     /// Privacy mode's commands (#735 S-2) for every child of `connection` at once, each confirmed with a clip when
     /// there is one, in the order said:
-    /// - `enter`: `setDuck(true)`, which only a child that advertised `duck` v2 takes. Taken, or already on ("still
-    ///   on"), it plays `confirm-privacy-on/`. Taken by none while off
+    /// - `enter`: `setDuck(true)`, which only a child that advertised `duck` v3 takes. Taken, it waits until every
+    ///   child proved it keeps privacy (S-8 HS-C: its ack, within the 5 s deadline), then plays `confirm-privacy-on/`;
+    ///   already on ("still on") plays it at once. Not proved (no ack, refused, or withdrawn first), no clip: logged
+    ///   `unacknowledged`, and a refused child's `unavailable` speaks for it. Taken by none while off
     ///   (a v1 RightyO, which still transcribes, or no control descriptor) it is refused, fail closed: privacy stays
     ///   off and `confirm-not-sent/` plays, logged `refused=unsupported_version`. Taken or still on, a reply playing on
     ///   the connection is stopped first, as the owner's stop does (`playback=` in the log), then only the clip plays;
@@ -60,11 +62,14 @@ extension AmbientRightyoRouter {
                 on = duckMode(connection: connection)
             }
             chain.enqueue { [weak self, weak listener, reported, on, silent] in
-                var (persona, outcome) = Self.duckConfirmation(command, reported: reported, on: on)
+                // Bounded by the ack deadline or the run's end, so the chain never waits forever.
+                let waits = command == .enter && reported > 0
+                let kept = waits ? await self?.privacyKept(connection: connection) ?? false : true
+                var (persona, outcome) = Self.duckConfirmation(command, reported: reported, on: on, kept: kept)
                 if silent { (persona, outcome) = (nil, "unavailable retired") }
                 // Privacy taken (or still on) silences a reply playing on this connection first (Mick, round 2),
-                // through the owner's stop path; a refused entry leaves playback alone.
-                if command == .enter, on {
+                // through the owner's stop path; a refused entry, or one withdrawn before its ack, leaves it alone.
+                if command == .enter, on, kept || self?.duckMode(connection: connection) == true {
                     let playback = await listener?.stopReplyPlayback(connection: connection)
                     outcome += " playback=\(playback ?? "no_connection")"
                 }
@@ -78,10 +83,12 @@ extension AmbientRightyoRouter {
     }
 
     /// The clip folder that answers a privacy command, or nil for none, and the log token for what happened, given
-    /// how many children took it and whether privacy is on afterwards.
-    static func duckConfirmation(_ command: PrivacyCommand, reported: Int, on: Bool) -> (String?, String) {
+    /// how many children took it, whether privacy is on afterwards, and whether every child proved it keeps it (S-8).
+    static func duckConfirmation(_ command: PrivacyCommand, reported: Int, on: Bool,
+                                 kept: Bool = true) -> (String?, String) {
         switch command {
-        case .enter where reported > 0: (AmbientStopConfirmation.privacyOn, "on=true")
+        case .enter where reported > 0:
+            kept ? (AmbientStopConfirmation.privacyOn, "on=true") : (nil, "on=true unacknowledged")
         case .enter where on: (AmbientStopConfirmation.privacyOn, "on=true still_on")
         case .enter: (AmbientStopConfirmation.notSent, "on=true refused=unsupported_version")
         case .exit: (reported > 0 ? AmbientStopConfirmation.privacyOff : nil, "on=false")
@@ -108,8 +115,9 @@ extension AmbientRightyoRouter {
     /// the lock that changes it. If the owner's voice changed it since it was read, this does nothing: no second
     /// notice wrongly saying `device`, no child write, no log line and no clip.
     /// - on: the owner's entry path with reason `device`. `setDuck(true)` writes the children (so a respawn or reload
-    ///   starts private, S-2b), holds every request back and tells the device once a child took it; then a reply
-    ///   playing is stopped and only `confirm-privacy-on/` plays. Taken by no child (a v1 or older
+    ///   starts private, S-2b), holds every request back and tells the device once a child took it; once every child
+    ///   acked (S-8 HS-C), a reply playing is stopped and only `confirm-privacy-on/` plays; not acked, no clip
+    ///   (`unacknowledged`). Taken by no child (a v1 or older
     ///   RightyO), it fails closed: privacy stays off, the device is told off so its switch settles on not private,
     ///   `confirm-not-sent/` plays, and playback is left alone.
     /// - off: the owner's exit path with reason `device`. `setDuck(false)` tells the children and the device, then
@@ -125,8 +133,11 @@ extension AmbientRightyoRouter {
             var (persona, outcome): (String?, String) = (nil, "on=\(on) reason=device")
             switch (on, reported > 0) {
             case (true, true):
+                let kept = await privacyKept(connection: connection)
+                if !kept { outcome += " unacknowledged" }
+                guard kept || duckMode(connection: connection) else { break }
                 let playback = await listener?.stopReplyPlayback(connection: connection) ?? "no_connection"
-                (persona, outcome) = (AmbientStopConfirmation.privacyOn, outcome + " playback=\(playback)")
+                (persona, outcome) = (kept ? AmbientStopConfirmation.privacyOn : nil, outcome + " playback=\(playback)")
             case (true, false):
                 let device = await listener?.showDuckMode(false, reason: "device", expires: nil,
                                                           connection: connection) ?? "no_connection"
