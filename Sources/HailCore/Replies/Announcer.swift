@@ -94,7 +94,7 @@ extension ReplyPlaybackController {
 public final class LocalAnnouncementRenderer: AnnouncementRendering {
     private let synthesizer = AVSpeechSynthesizer()
     private static let segmentFrames = 24_000 // 1 s at 24 kHz per payload; local, so no wire frame cap applies.
-    static let renderDeadline: Duration = .seconds(10)
+    static let renderDeadline: Duration = .seconds(20) // A loaded host took 9 s to render one (#838 review).
 
     public init() {}
 
@@ -125,16 +125,15 @@ public final class LocalAnnouncementRenderer: AnnouncementRendering {
     }
 
     /// The synthesizer calls back off the main actor, so samples are gathered under a lock, as plain values. If it
-    /// never ends the utterance, the deadline does, so the cue falls back instead of hanging (#838 review).
+    /// hasn't ended the utterance by the deadline, nothing is played (never a cut-off cue) and the cue falls back
+    /// instead of hanging; late callbacks are ignored (#838 review).
     private func spoken(_ text: String) async -> ([Int16], Int) {
         let utterance = AVSpeechUtterance(string: text)
         let gathered = SpokenSamples()
         return await withCheckedContinuation { continuation in
-            Task { @MainActor [synthesizer] in
+            Task {
                 try? await Task.sleep(for: Self.renderDeadline)
-                guard let partial = gathered.finish() else { return }
-                synthesizer.stopSpeaking(at: .immediate)
-                continuation.resume(returning: partial)
+                if gathered.finish() != nil { continuation.resume(returning: ([], 0)) }
             }
             // Sendable, so it never inherits the main actor: the synthesizer may call back on any thread (#838 review).
             synthesizer.write(utterance) { @Sendable buffer in

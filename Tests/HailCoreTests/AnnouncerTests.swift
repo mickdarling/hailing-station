@@ -97,7 +97,6 @@ import Testing
                           payload: .audio(payload))
         return HostReplyEvent(endpointID: "main", frame: frame)
     }
-
     private func settle() async {
         for _ in 0..<5 { await Task.yield() }
     }
@@ -172,7 +171,8 @@ private final class FailingPlayer: ReplyAudioPlaying {
         for _ in 0..<10 { await Task.yield() }
         #expect(renderer.rendered == [.replyAudioLost])
         #expect(player.scheduled.last?.isFinal == true, "the cue played through the player")
-        controller.toggleMute() // A later change re-runs the watch; the reply is not announced again.
+        controller.ingest(HostReplyEvent(endpointID: "main", frame: Frame( // A new status re-runs the watch.
+            timestamp: 1, target: reply.targetID, source: reply.hostID, payload: .text(TextPayload(text: "Next")))))
         for _ in 0..<10 { await Task.yield() }
         #expect(renderer.rendered == [.replyAudioLost])
         withExtendedLifetime(announcer) {}
