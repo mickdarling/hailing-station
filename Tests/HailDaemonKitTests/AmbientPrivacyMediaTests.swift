@@ -47,7 +47,7 @@ import Testing
     }
 
     /// Before the child's `started`, media lines are written at once and the privacy wish is kept, written at
-    /// `started` (#735): the child takes media off, then privacy, and hears audio only once it has taken it.
+    /// `started` (#735): media off is written, then privacy at `started`; no audio reaches the child before then.
     @Test func privacyBeforeStartedIsWrittenAtStarted() async throws {
         let rig = try await DuckRig(script: AmbientPrivacyReplyQuiet.held)
         defer { rig.close() }
@@ -58,7 +58,12 @@ import Testing
         #expect(!pipeline.childStarted)
         #expect(router.setDuck(true, connection: connection, reason: "voice") == 1)
         let lines = ["{\"media\":true}", "{\"media\":false}", "{\"duck\":true}"]
-        #expect(await eventually { (try? rig.fake.recorded("control.txt")) == lines.map { $0 + "\n" }.joined() })
+        let (two, three) = (lines.prefix(2).map { $0 + "\n" }.joined(), lines.map { $0 + "\n" }.joined())
+        // The child has both lines but holds its `started` until `go`: the wish is kept, and no audio reaches it.
+        #expect(await eventually { (try? rig.fake.recorded("control.txt")) == two })
+        #expect(!pipeline.childStarted && !pipeline.hearsAudio)
+        try Data().write(to: rig.fake.directory.appendingPathComponent("go"))
+        #expect(await eventually { (try? rig.fake.recorded("control.txt")) == three })
         #expect(await eventually { pipeline.childStarted && pipeline.hearsAudio })
         await rig.finish()
     }
@@ -68,9 +73,9 @@ import Testing
 enum AmbientPrivacyReplyQuiet {
     static let script = "/bin/cat <&3 > control.txt &\n"
         + AmbientPrivacyEntryTests.fixture(saying: "Rightyo, archive the project.", advertises: true)
-    /// Holds its `started` until it has read two control lines.
+    /// Records two control lines, then holds its `started` until the test creates `go`.
     static let held = "IFS= read -r a <&3; IFS= read -r b <&3; printf '%s\\n%s\\n' \"$a\" \"$b\" > control.txt\n"
-        + "/bin/cat <&3 >> control.txt &\n"
+        + "while [ ! -e go ]; do /bin/sleep 0.05; done\n/bin/cat <&3 >> control.txt &\n"
         + AmbientPrivacyEntryTests.fixture(saying: "Rightyo, archive the project.", advertises: true)
 }
 #endif

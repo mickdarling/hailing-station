@@ -720,8 +720,8 @@ final class AmbientDuckControl: Sendable {
     func release() { state.withLock { $0.wanted = false } }
     /// The start deadline passed before `started` (#735 S-2b).
     var expired: Bool { state.withLock { $0.expired } }
-    /// The child's first `started` was read (tests).
-    var started: Bool { state.withLock { $0.started } }
+    /// The child's first `started` was read, not the start deadline passed (tests).
+    var started: Bool { state.withLock { $0.started && !$0.expired } }
 
     /// Ends the wait for `started` at the deadline: true when it had not come (the child must be killed); a later
     /// `started` is then ignored, and the wish stays on.
