@@ -30,7 +30,8 @@ On `main` today:
   off when no child can take it. Privacy does not survive a restart (#809 records "Privacy no longer survives a
   restart"). Mick decided on 2026-10-22 that a network drop must never turn privacy into public, so in this design
   a device that was private comes back private or not listening (Owner privacy, Reconnects). Part 10 has proposed
-  that as S-7a0 to S-7c. S-7a0's hello field, `hostInstance`, is merged (#829); the rest is not built.
+  that as S-7a0 to S-7c. S-7a0's hello field `hostInstance` is merged (#829); haild sends it in S-7a and the app
+  reads it in S-7b. No behaviour is built yet.
 
 ## Owner devices
 
@@ -181,8 +182,8 @@ haild keeps, in memory only, each approved key's last privacy report.
     them unpaused while its key is private.
 - **Reconnects:** Mick decided on 2026-10-22: "A network drop should not change it from being private to being
   public." A reconnect never brings a device back listening in public while it was private. Proposed by Part 10 as
-  S-7a0 to S-7c. S-7a0's hello field (`hostInstance`) is merged in #829, and the app does not use it yet; S-7a to
-  S-7c are not built.
+  S-7a0 to S-7c. S-7a0's hello field `hostInstance` is merged (#829); haild sends it in S-7a and the app reads it
+  in S-7b. No behaviour is built yet.
   - A reconnect leaves the key's report as it was (Clearing). The host starts every connection public and not
     listening. That is listening privacy, per connection; the key's report governs only proactive delivery.
   - **The owner's wish (S-7b):** the app keeps the owner's latest privacy choice for each saved host. A privacy-on
@@ -224,11 +225,11 @@ haild keeps, in memory only, each approved key's last privacy report.
   - **A restart is not a drop (S-7a0):** haild puts a random per-launch instance id in its hello, a protocol field of
     its own. When the id for a saved host changes, the app clears the wish (#809), does not resume, and says "The
     Mac restarted. Listening is off and privacy ended."
-  - **A host without the instance id** (one from before S-7a0, such as the merged S-6 host) cannot tell a restart
-    from a drop, so the app fails closed: it keeps the wish and never resumes. That is never less private than #809,
-    only more: a kept wish makes the next listen ask for privacy first. Such a host also lacks S-7a, so it cannot
-    confirm privacy with no stream; the next listen then stays not listening, says "This Mac can't confirm privacy
-    before listening.", and offers "Listen publicly". Updating haild removes the case.
+  - **A host without the instance id** (one that does not send the id, such as today's haild) cannot tell a restart from
+    a drop, so the app fails closed: it keeps the wish and never resumes. That is never less private than #809, only
+    more: a kept wish makes the next listen ask for privacy first. Such a host also lacks S-7a, so it cannot confirm
+    privacy with no stream; the next listen then stays not listening, says "This Mac can't confirm privacy before
+    listening.", and offers "Listen publicly". Updating haild removes the case.
   - A reconnect that does not prove (no `owner_device` in the host's hello, no challenge, or the voice-only reconnect
     after `superseded`) follows the same path, since the wish is per host, not per key. A host the app has not saved
     starts not listening.
@@ -490,7 +491,8 @@ rechecked at 6fabeb2 for this revision:
 
 The privacy semantics it defers to are Part 10's, merged on `main` (#807, #808, #813, #815 to #817). Part 10 signed off
 on this section on 2026-10-22, before Mick's reconnect decision. The reconnect path is Part 10's proposal (S-7a0 to
-S-7c), which Jarvis put in the privacy deploy set; only S-7a0's hello field is merged (#829). The public resume is
-Jarvis's answer of 2026-10-22. The restart and reconnect rules follow Mick's 2026-10-22 decisions, and #809 records that
-privacy no longer survives a restart. The words "listening is off until he turns it on from the app" and "A network drop
-should not change it from being private to being public." are as relayed by Jarvis, not quoted from an issue.
+S-7c), which Jarvis put in the privacy deploy set; only S-7a0's hello field is merged (#829), and no behaviour is built.
+The public resume is Jarvis's answer of 2026-10-22. The restart and reconnect rules follow Mick's 2026-10-22 decisions,
+and #809 records that privacy no longer survives a restart. The words "listening is off until he turns it on from the
+app" and "A network drop should not change it from being private to being public." are as relayed by Jarvis, not quoted
+from an issue.
