@@ -32,12 +32,12 @@ import Testing
         let stalled = buffer.played(half)
         #expect(stalled, "the queue ran dry before the final audio: a stall")
         #expect(buffer.isCatchingUp)
-        #expect(buffer.policy.target == .milliseconds(500))
-        // A late frame shorter than the target is held, not played as it lands.
-        let playsEarly = buffer.queued([.milliseconds(250)], startsReply: false, endsReply: false)
+        #expect(buffer.policy.target == .milliseconds(1_500))
+        // One late segment is held, not played as it lands: a second one plays it on.
+        let playsEarly = buffer.queued([.seconds(1)], startsReply: false, endsReply: false)
         #expect(!playsEarly)
         #expect(buffer.isCatchingUp)
-        let playsOnTarget = buffer.queued([.milliseconds(250)], startsReply: false, endsReply: false)
+        let playsOnTarget = buffer.queued([.seconds(1)], startsReply: false, endsReply: false)
         #expect(playsOnTarget)
         #expect(!buffer.isCatchingUp)
     }
@@ -55,7 +55,7 @@ import Testing
         var buffer = ReplyPlayoutBuffer()
         _ = buffer.queued([half], startsReply: true, endsReply: false)
         var frame = half
-        for expected in [Duration.milliseconds(500), .seconds(1), .seconds(2), .seconds(2)] {
+        for expected in [Duration.milliseconds(1_500), .seconds(2), .seconds(2)] {
             let stalled = buffer.played(frame)
             #expect(stalled)
             #expect(buffer.policy.target == expected)
@@ -71,18 +71,18 @@ import Testing
         _ = buffer.played(half)
         let again = buffer.played(half)
         #expect(!again, "nothing was queued: no new stall")
-        #expect(buffer.policy.target == .milliseconds(500))
+        #expect(buffer.policy.target == .milliseconds(1_500))
     }
 
     @Test func cleanRepliesLowerTheTargetAStepAtATime() {
         var buffer = ReplyPlayoutBuffer()
         stall(&buffer)
         stall(&buffer)
-        #expect(buffer.policy.target == .seconds(1))
+        #expect(buffer.policy.target == .seconds(2))
         for _ in 0..<(ReplyPlayoutPolicy.cleanRepliesPerStep - 1) { playCleanReply(&buffer) }
-        #expect(buffer.policy.target == .seconds(1), "not yet enough clean replies")
+        #expect(buffer.policy.target == .seconds(2), "not yet enough clean replies")
         playCleanReply(&buffer)
-        #expect(buffer.policy.target == .milliseconds(500))
+        #expect(buffer.policy.target == .milliseconds(1_500))
         for _ in 0..<ReplyPlayoutPolicy.cleanRepliesPerStep { playCleanReply(&buffer) }
         #expect(buffer.policy.target == .zero)
     }
@@ -110,15 +110,16 @@ import Testing
         buffer.cleared()
         #expect(!buffer.isCatchingUp)
         #expect(buffer.ahead == .zero)
-        #expect(buffer.policy.target == .milliseconds(500))
+        #expect(buffer.policy.target == .milliseconds(1_500))
         let late = buffer.played(half)
         #expect(!late, "a completion after a clear is not a stall")
     }
 
-    /// Queues one half-second frame and plays it with nothing behind it: one stall. A new reply then ends cleanly.
+    /// Queues one segment long enough to meet any target and plays it with nothing behind it: one stall. A new reply
+    /// then ends cleanly.
     private func stall(_ buffer: inout ReplyPlayoutBuffer, newReply: Bool = false) {
-        _ = buffer.queued([half], startsReply: newReply, endsReply: false)
-        _ = buffer.played(half)
+        _ = buffer.queued([.seconds(3)], startsReply: newReply, endsReply: false)
+        _ = buffer.played(.seconds(3))
         guard newReply else { return }
         _ = buffer.queued([half], startsReply: false, endsReply: true)
         _ = buffer.played(half)

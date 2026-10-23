@@ -29,6 +29,7 @@ public final class PCM16AudioPlayer: ReplyAudioPlaying {
     /// Audio queued while holding, not yet handed to the gap meter: the stall is measured when it plays on.
     fileprivate var heldDuration: Duration = .zero
     public var onCatchingUpChanged: (@MainActor (Bool) -> Void)?
+    public var isCatchingUp: Bool { playout.isCatchingUp }
     #if os(iOS)
     private var didConfigureAudioSession = false
     #endif

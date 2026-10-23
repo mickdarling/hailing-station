@@ -35,7 +35,7 @@ extension ReplyPlaybackController {
         if activeKey != nil {
             do {
                 try player.resume()
-                status = isMuted ? "Muted" : "Playing"
+                status = playingStatus
                 drain()
             } catch {
                 isPaused = true
@@ -61,7 +61,7 @@ extension ReplyPlaybackController {
             do {
                 try player.resume()
                 isPaused = false
-                status = isMuted ? "Muted" : "Playing"
+                status = playingStatus
                 drain()
             } catch {
                 status = "Playback could not resume"
@@ -76,7 +76,7 @@ extension ReplyPlaybackController {
     public func toggleMute() {
         isMuted.toggle()
         player.setMuted(isMuted)
-        status = isCaptureSuppressed ? "Paused while listening" : (isMuted ? "Muted" : "Playing")
+        status = isCaptureSuppressed ? "Paused while listening" : playingStatus
     }
 
     public func replayLatest() {

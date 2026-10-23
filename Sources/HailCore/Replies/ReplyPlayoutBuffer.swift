@@ -1,9 +1,11 @@
 /// How long a stalled reply waits before it plays on (#825, Mick: "if there's a problem, you can pick up more smoothly
 /// afterwards"). A reply always starts the moment its first audio arrives; this target applies only after the queued
-/// audio ran dry mid-reply. Each stall raises it a step, for the rest of that reply and the next ones, and replies
-/// that play through cleanly lower it again a step at a time.
+/// audio ran dry mid-reply. A stall raises it a step, for the rest of that reply and the next ones, and replies that
+/// play through cleanly lower it again a step at a time.
 public struct ReplyPlayoutPolicy: Equatable, Sendable {
-    public static let steps: [Duration] = [.milliseconds(500), .seconds(1), .seconds(2)]
+    /// Streamed segments are about 1 s each, so a lower step would be met by any one late segment and change nothing
+    /// heard: the first step waits for a second segment (#825 review). S0's measurements on a bad link may tune these.
+    public static let steps: [Duration] = [.milliseconds(1_500), .seconds(2)]
     /// Clean replies in a row that lower the target one step.
     public static let cleanRepliesPerStep = 3
 
@@ -91,24 +93,41 @@ public struct ReplyPlayoutBuffer: Equatable, Sendable {
 @MainActor
 public protocol ReplyCatchUpReporting: AnyObject {
     var onCatchingUpChanged: (@MainActor (Bool) -> Void)? { get set }
+    /// Holding a stalled reply right now.
+    var isCatchingUp: Bool { get }
 }
 
 extension ReplyPlaybackController {
     static let catchingUpStatus = "Catching up…"
 
-    /// The status says when a stalled reply is held to catch up (#825), and goes back to playing when it plays on.
-    func observeCatchUp() {
-        (player as? any ReplyCatchUpReporting)?.onCatchingUpChanged = { [weak self] in self?.catchingUpChanged($0) }
+    /// The player, or the one inside the echo guard the app wraps it in (#825 review): the guard already hands out
+    /// its inner player for gap counts, and that same object holds stalled replies.
+    private var catchUpReporter: (any ReplyCatchUpReporting)? {
+        player as? any ReplyCatchUpReporting
+            ?? (player as? EchoGuardedReplyPlayer)?.gapReporter as? any ReplyCatchUpReporting
     }
 
-    func catchingUpChanged(_ catchingUp: Bool) {
-        guard let key = activeKey else { return }
-        if catchingUp {
-            status = Self.catchingUpStatus
-            setPresentationStatus(Self.catchingUpStatus, for: key)
-        } else if status == Self.catchingUpStatus {
-            status = isMuted ? "Muted" : "Playing"
-            setPresentationStatus(nil, for: key)
-        }
+    /// The status while a reply plays: "Catching up…" whenever the player holds it, whatever frames arrive meanwhile.
+    var playingStatus: String {
+        catchUpReporter?.isCatchingUp == true ? Self.catchingUpStatus : (isMuted ? "Muted" : "Playing")
+    }
+
+    /// The status says when a stalled reply is held to catch up (#825), and goes back to playing when it plays on.
+    func observeCatchUp() {
+        catchUpReporter?.onCatchingUpChanged = { [weak self] _ in self?.catchingUpChanged() }
+    }
+
+    /// A pause, or listening's suppression, keeps its own status; the hold shows again when playback goes on.
+    private func catchingUpChanged() {
+        guard activeKey != nil, !isPaused, !isCaptureSuppressed else { return }
+        status = playingStatus
+    }
+
+    /// A reply abandoned while held (#469, #825 review) would leave its held tail waiting on a paused player, to play
+    /// in front of the next reply, perhaps much later and from another host. Its entry already says its audio didn't
+    /// arrive, so the tail is dropped here, before the next reply is scheduled. Audio not held still plays out.
+    func dropAbandonedHold() {
+        guard activeKey == nil, catchUpReporter?.isCatchingUp == true else { return }
+        player.cancel()
     }
 }
