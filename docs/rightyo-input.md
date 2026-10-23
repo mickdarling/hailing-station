@@ -691,11 +691,11 @@ A matching turn is checked in transcripts, so entry never waits for a request to
 
 - an enrolled session;
 - a turn RightyO attributed to the owner, in the transcript and, on the request path, in the attention record too;
-- that attribution coming from a live voiceprint, as the transcript's top-level `"role_source": "voiceprint"` says. An inferred or label-configured owner does not qualify.
+- that attribution coming from a live voiceprint binding, as the transcript's top-level `"role_source"` says: `"voiceprint"` (every word under the owner's bound label) or `"voiceprint_label"` (the same binding, with some words inferred under it, as most short commands are; RightyO sends it only for an entry-shaped turn whose whole span, inferred words included, passes its owner voice check, rightyo#250; #735, Mick: "I should be the only one to be able to turn it on"). A label-configured owner, or any other value, does not qualify.
 
 How a refusal sounds depends on who spoke:
 
-- **The owner role without a live voiceprint** (label-only or inferred) is refused audibly, so the owner never believes privacy is on when it is not. It plays `confirm-privacy-refused/` ("I couldn't turn on privacy."), or `confirm-not-sent/` until that clip is recorded, and is logged `refused=unverified_owner`.
+- **The owner role without a live voiceprint** (label-only, or no `role_source`) is refused audibly, so the owner never believes privacy is on when it is not. It plays `confirm-privacy-refused/` ("I couldn't turn on privacy."), or `confirm-not-sent/` until that clip is recorded, and is logged `refused=unverified_owner`.
 - **Anyone else** (a guest, a TV, an unlabelled turn, an anonymous session) is refused silently, logged `refused=not_owner`.
 
 Either way the turn is held back from the agent and changes nothing, media mode included. Until RightyO sends `role_source`, every entry is refused: the host fails closed, audibly for the owner.
