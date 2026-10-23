@@ -102,7 +102,8 @@ public struct RightyoInputEvent: Codable, Sendable {
     /// Privacy mode (#735, internally duck): `duck` on `started` (raw; `privacyVersion` reads it), then, from a
     /// version 2 producer, `privacy` events carrying only `action`, `exit` or `status`, and from a version 3 one the
     /// `on` ack with its `at_ms`. Never any words. `role_source` rides on a `transcript`: `voiceprint` says its owner
-    /// role came from a live voiceprint, not a label or inference.
+    /// role came from a live voiceprint, not a label or inference; `voiceprint_label` the same binding with some words
+    /// inferred under it (#735). Any other value is kept and means neither.
     let acknowledgement, acknowledge, speakerNames, speakerName, ownerVoice, duck: JSONValue?
     let action, roleSource: String?
     public static func decode(_ data: Data) throws -> Self {

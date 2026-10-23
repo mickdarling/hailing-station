@@ -64,6 +64,20 @@ import Testing
         #expect(seen == [command] && delivered == 0)
     }
 
+    /// The owner's bound label with an inferred word (RightyO `voiceprint_label`, #735; Mick: entry needs his voice)
+    /// enters, as most short commands carry one; another speaker's turn carrying it is still refused, and an unknown
+    /// source is no voiceprint (`unverified`).
+    @Test(arguments: [
+        ("owner", "voiceprint_label", PrivacyCommand.enter), ("guest", "voiceprint_label", .refused),
+        ("owner", "voiceprint_guess", .unverified)
+    ])
+    func theOwnersBoundLabelEntersWithAnInferredWord(_ who: String, _ source: String,
+                                                     _ command: PrivacyCommand) async throws {
+        let script = Self.fixture(saying: "privacy mode", guest: who == "guest", roleSource: source)
+        let (seen, delivered) = try await run(script, enrolled: true)
+        #expect(seen == [command] && delivered == 0)
+    }
+
     /// A lone name in one turn, then the phrase in the next.
     @Test func aSplitNameEntersFromTheSecondTurn() async throws {
         let (seen, delivered) = try await run(Self.fixture(saying: "go private", splitName: true), enrolled: true)

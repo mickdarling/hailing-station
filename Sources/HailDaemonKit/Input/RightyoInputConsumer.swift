@@ -711,14 +711,22 @@ extension RightyoInputConsumer {
         if privacyHeld.count > 32 { privacyHeld.removeFirst(privacyHeld.count - 32) }
     }
 
+    /// RightyO's `role_source` values that put the owner's own voice behind a turn (#735): its label live-bound to the
+    /// enrolled owner, every word (`voiceprint`) or some by inference (`voiceprint_label`). RightyO sends the
+    /// second only when the turn's whole span passes its owner voice check (rightyo#250). Any other value is not.
+    static let ownVoice: Set<String> = ["voiceprint", "voiceprint_label"]
+
     /// Entry is the live enrolled owner's alone (Mick, round 2: "only my registered voice should be able to turn
-    /// privacy mode on"), the exit's trust bar: an enrolled session, and a turn RightyO attributed to the owner from a
-    /// live voiceprint (`role_source: "voiceprint"`; never an inferred or label-configured owner). Anyone else's
+    /// privacy mode on"; 2026-10-23: "I should be the only one to be able to turn it on"): an enrolled session, and a
+    /// turn RightyO attributed to the owner from a live voiceprint binding (`ownVoice`: `voiceprint`, or
+    /// `voiceprint_label` when some words carry the bound label by inference, as most short commands do; never a
+    /// label-configured owner). Anyone else's
     /// phrase, negated or not, is `refused`: held back, logged, and silent (Mick). An owner-role turn without that source
     /// is `unverified`: refused too, fail closed, but audibly, so the owner never believes privacy is on when it is not.
     /// A negation changes nothing, so an owner-role turn's needs no voiceprint. A `partial` command (it starts with
     /// one and goes on) is the owner role's `hint`, held back; anyone else's is no privacy turn at all (nil) and goes
     /// on as an ordinary request, since only the owner's commands count (Mick).
+
     private func privacyCommand(_ match: PrivacyEntry.Match, owner: Bool, voiceprint: Bool) -> PrivacyCommand? {
         let owner = speakers == "enrolled" && owner
         switch match {
@@ -774,7 +782,9 @@ extension RightyoInputConsumer {
             }
             finals[turn.utteranceId] = try RightyoInputEvent.fingerprint(turn)
             if turn.role == "owner" { owners.insert(turn.utteranceId) }
-            if turn.role == "owner", event.roleSource == "voiceprint" { voiceprintOwners.insert(turn.utteranceId) }
+            if turn.role == "owner", let source = event.roleSource, Self.ownVoice.contains(source) {
+                voiceprintOwners.insert(turn.utteranceId)
+            }
         case "attention": try attention(event)
         case "override": try supersede(event)
         case "dismiss": try dismiss(event)
