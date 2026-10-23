@@ -19,22 +19,23 @@ import Testing
     \(FakeRightyo.ackingTail)
     """
 
-    /// 1. The entry's bound is 3 s here; a reload at about 1.5 s registers a child that confirms its private start at
-    /// about 3.5 s, past the entry's bound but inside its own (3 s from its registration). It is not killed, nothing
-    /// is refused, and "privacy on" plays once it confirms. (a8de9f2 killed it at the entry's bound: `timeout`.)
+    /// 1. The entry's bound is 6 s here; a reload at about 4 s registers a child that confirms its private start at
+    /// about 6.5 s, past the entry's bound but inside its own (6 s from its registration: 3.5 s to spare on a loaded
+    /// runner; the old child, which never acks, is not refused by its own ack deadline meanwhile). It is not killed,
+    /// nothing is refused, and "privacy on" plays once it confirms. (a8de9f2 killed it at the entry's bound.)
     @Test func aReloadLateInAnEntryIsWaitedForNotKilled() async throws {
         let first = AmbientDuckReloadTests.entry
             .replacingOccurrences(of: FakeRightyo.ackingTail,
                                   with: AmbientPrivacyConfirmAfterAckTests.holdAcks + FakeRightyo.ackingTail)
         let rig = try await DuckRig(script: AmbientDuckReloadTests.staged(first, Self.heldStartPrivate),
-                                    clips: AmbientDuckModeTests.clips, confirmTimeout: 3)
+                                    clips: AmbientDuckModeTests.clips, confirmTimeout: 6)
         defer { rig.close() }
         #expect(await eventually { rig.details("ambient_duck").count == 1 })
         let entered = ContinuousClock.now
-        try await Task.sleep(for: .milliseconds(1_500))
+        try await Task.sleep(for: .milliseconds(4_000))
         #expect(await rig.env.router.reload() == .reloaded)
-        #expect(entered.duration(to: .now) < .seconds(3), "the reload must land inside the entry's bound")
-        try await Task.sleep(until: entered.advanced(by: .milliseconds(3_500)))
+        #expect(entered.duration(to: .now) < .seconds(6), "the reload must land inside the entry's bound")
+        try await Task.sleep(until: entered.advanced(by: .milliseconds(6_500)))
         #expect(rig.details("ambient_duck_confirmed").isEmpty)
         FileManager.default.createFile(atPath: rig.fake.directory.appendingPathComponent("go2").path, contents: nil)
         #expect(await eventually { !rig.details("ambient_duck_confirmed").isEmpty })

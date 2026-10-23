@@ -114,13 +114,15 @@ final class DuckRig: Sendable {
     let stream = UUID()
     private let events: DuckEvents
 
+    /// Start and ack deadlines unless a test sets its own (#836): past any loaded runner's stall.
+    static let deadline: TimeInterval = 30
+
     /// `script`, when given, replaces the fixture saying `words` as the fake's whole behaviour.
     init(saying words: String = "", advertises: Bool = false, version: Int = 3, script: String? = nil,
          enrolled: Bool = true,
          clips: AmbientAckLibrary? = nil, timeout: TimeInterval = AmbientRightyoRouter.defaultDuckTimeout,
          capabilities: [String] = [],
-         startDeadline: TimeInterval = RightyoAmbientPipeline.defaultStartDeadline,
-         ackDeadline: TimeInterval = RightyoAmbientPipeline.ackDeadline,
+         startDeadline: TimeInterval = DuckRig.deadline, ackDeadline: TimeInterval = DuckRig.deadline,
          confirmTimeout: TimeInterval? = nil) async throws {
         fake = try FakeRightyo(script ?? FakeRightyo.ackingControl() + "\n" + AmbientPrivacyEntryTests.fixture(
             saying: words, enrolled: enrolled, advertises: advertises, version: version))
