@@ -84,7 +84,8 @@ struct AmbientPrivacyLedger<Child: AnyObject> {
     }
 
     /// Whether a status may say privacy is on, given that it is armed (#735 S-8 HS-C, 6362119223): only once it was
-    /// announced. An open entry not yet proven, or "unavailable" as the last word, is not private to the owner.
+    /// announced. An open entry not yet proven, or "unavailable" as the last word, is not private to the owner. So a
+    /// status asked before a re-entry or a refusal that opens or decides first is silent; their own clip follows.
     var heardOn: Bool { entries.values.allSatisfy(\.withdrawn) && said != .unavailable }
 
     /// An off: every open entry is withdrawn, and "Recording again." is the last word.

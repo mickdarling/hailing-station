@@ -19,5 +19,36 @@ import Testing
             "status on=false confirm=unreported"
         ])
     }
+
+    /// Behind a proven entry, the status says privacy is on, after "Privacy on".
+    @Test func aStatusAfterAProvenEntrySaysOn() async throws {
+        let rig = try await DuckRig(script: FakeRightyo.ackingControl() + "\n"
+                                        + AmbientPrivacyEventTests.enterThen(["status"]),
+                                    clips: AmbientDuckModeTests.clips)
+        defer { rig.close() }
+        #expect(await eventually { rig.details("ambient_duck_confirmed").count == 2 })
+        await rig.finish()
+        #expect(rig.details("ambient_duck_confirmed") == [
+            "on=true playback=idle " + AmbientPrivacyAnnounceTests.privacyOn,
+            "status on=true confirm=confirmprivacystatus/0:sent"
+        ])
+    }
+
+    /// A media-mode entry refused while privacy is armed but unproven (#839 keys): its status clip is decided behind
+    /// the entry, which says "unavailable" here, so it is silent and never says privacy is on.
+    @Test func aMediaRefusalBeforeTheAckNeverSaysPrivacyOn() async throws {
+        let rig = try await DuckRig(script: AmbientPrivacyConfirmAfterAckTests.neverAcked,
+                                    clips: AmbientDuckModeTests.clips, ackDeadline: 0.5)
+        defer { rig.close() }
+        #expect(await eventually { rig.details("ambient_duck").count == 1 })
+        let connection = try #require(rig.connection())
+        rig.env.router.voiceMedia(on: connection, listener: rig.env.listener)(true)
+        #expect(await eventually { !rig.details("ambient_media_confirmed").isEmpty })
+        await rig.finish()
+        #expect(rig.details("ambient_media_confirmed") == ["on=true confirm=unreported"])
+        #expect(rig.details("ambient_media") == ["on=true reason=voice reported=0 refused=private"])
+        #expect(!rig.details("ambient_duck_confirmed").contains { $0.contains("confirmprivacyon") })
+        #expect(rig.details("ambient_duck_confirmed").contains { $0.hasSuffix("confirmprivacyunavailable/0:sent") })
+    }
 }
 #endif
