@@ -114,7 +114,9 @@ extension ReplyPlaybackController {
         idleWatch.audioInterrupted = began
         syncIdleHold()
     }
+}
 
+extension ReplyPlaybackController {
     /// Drains after `key`'s frame arrived; if it is the head's, the head is alive and its timeout starts again.
     func drain(noting key: ReplyStreamKey) {
         drain()
@@ -140,7 +142,7 @@ extension ReplyPlaybackController {
     var isIdleHeld: Bool { isPaused || isCaptureSuppressed || idleWatch.audioInterrupted }
 
     func idleDeadline() -> ContinuousClock.Instant {
-        max(idleWatch.bufferedUntil, idleWatch.aheadUntil, idleWatch.lastFrameAt).advanced(by: Self.streamIdleTimeout)
+        idleDeadline(idleWatch)
     }
 
     /// Paused, listening or interrupted, the player holds its audio (Codex P1s on #473): the unplayed duration

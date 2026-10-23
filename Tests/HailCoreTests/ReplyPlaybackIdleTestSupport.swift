@@ -16,6 +16,8 @@ final class IdleRig {
     }
     private var timers: [Timer] = []
 
+    var liveDeadlineCount: Int { timers.filter(\.live).count }
+
     init() {
         controller = ReplyPlaybackController(player: player)
         controller.onStreamAbandoned = { [unowned self] in abandoned += 1 }

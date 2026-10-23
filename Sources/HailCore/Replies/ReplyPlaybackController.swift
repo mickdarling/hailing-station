@@ -42,7 +42,9 @@ public final class ReplyPlaybackController {
 
     public internal(set) var replies: [ReplyPresentation] = []
     public internal(set) var isPaused = false
-    public internal(set) var isMuted = false { didSet { pendingMuteAfter = nil } } // a change ends a waiting mute
+    public internal(set) var isMuted = false {
+        didSet { pendingMuteAfter = nil; cancelMutedFirstAudio() }
+    }
     public internal(set) var isCaptureSuppressed = false
     public internal(set) var status = "No replies yet"
 
@@ -61,11 +63,14 @@ public final class ReplyPlaybackController {
     var presentationStatuses: [String: String] = [:]
     /// The head stream's idle watch, its injectable clock and scheduler, and its diagnostics hook (#469, `+Idle`).
     @ObservationIgnored var idleWatch = ReplyIdleWatch()
+    @ObservationIgnored var firstAudio: [ReplyStreamKey: ReplyIdleWatch] = [:] // arrival deadlines (#825)
     @ObservationIgnored var idleNow: @MainActor () -> ContinuousClock.Instant = { .now }
     @ObservationIgnored var idleScheduler: @MainActor (Duration, @escaping @MainActor () -> Void)
         -> @MainActor () -> Void = ReplyPlaybackController.sleepThenFire
     @ObservationIgnored public var onStreamAbandoned: (@MainActor () -> Void)?
-    @ObservationIgnored var pendingMuteAfter: ReplyStreamKey? // a voice mute waiting for this reply (#404, `+Stop`)
+    @ObservationIgnored var pendingMuteAfter: ReplyStreamKey? { // a waiting voice mute (#404, `+Stop`)
+        didSet { cancelMutedFirstAudio() }
+    }
 
     var presentationKeysToRetain: Set<ReplyStreamKey> {
         var keys = Set(queue)
@@ -96,16 +101,12 @@ public final class ReplyPlaybackController {
         if case .control(let control) = event.frame.payload { return handlePlaybackControl(control, event) }
         guard remember(event.frame.id), let descriptor = descriptor(in: event.frame) else { return }
         guard case .audio(let audio) = event.frame.payload else {
-            let presentationID = upsertPresentation(event, descriptor: descriptor)
-            let key = ReplyStreamKey(endpointID: event.endpointID, replyID: descriptor.id)
-            if presentationStatuses[presentationID] == nil,
-               streams[key] == nil, !completed.contains(key) {
-                presentationStatuses[presentationID] = "Received"
-            }
+            receiveText(event, descriptor: descriptor)
             return
         }
         let key = ReplyStreamKey(endpointID: event.endpointID, replyID: descriptor.id)
         guard !completed.contains(key) else { return }
+        cancelFirstAudio(for: [key])
         guard !refuseUnplayableAudio(audio, event: event, descriptor: descriptor, key: key) else { return }
         var stream = streams[key] ?? ReplyStreamState()
         if let existing = stream.segments[audio.sequence], existing != audio {

@@ -19,7 +19,6 @@ public final class Announcer {
     public enum Fallback: String, Sendable {
         case muted, renderFailed = "render_failed", playerFailed = "player_failed"
     }
-
     private let playback: ReplyPlaybackController
     private let renderer: any AnnouncementRendering
     private let fallback: @MainActor (Announcement, Fallback) -> Void
@@ -30,7 +29,6 @@ public final class Announcer {
                 fallback: @escaping @MainActor (Announcement, Fallback) -> Void) {
         (self.playback, self.renderer, self.fallback) = (playback, renderer, fallback)
     }
-
     public func announce(_ announcement: Announcement) {
         guard !playback.isMuted else { return fallBack(announcement, .muted) }
         Task { @MainActor in
@@ -44,23 +42,25 @@ public final class Announcer {
             }
         }
     }
-
     /// Announces once each reply whose audio did not play (#825), while `when` allows: a stream that ended early, or
-    /// audio in a format the app can't play yet, is spoken; a failed playback goes straight to the fallback, since the
-    /// player that failed would fail this too (#838 review).
+    /// unplayable or undecodable audio is spoken; player failures and unknown statuses use the fallback (#825).
     public func watchReplyAudio(when allowed: @escaping @MainActor () -> Bool) {
         let lost = withObservationTracking { playback.lostAudioStatuses } onChange: { [weak self] in
             Task { @MainActor in self?.watchReplyAudio(when: allowed) }
         }
         for (id, status) in lost where announcedReplies.insert(id).inserted && allowed() {
-            switch status {
-            case ReplyPlaybackController.abandonedStatus: announce(.replyAudioLost)
-            case "Playback failed": fallBack(.replyAudioFailed, .playerFailed)
-            default: announce(.replyAudioFailed) // Its format: the player itself was never tried.
-            }
+            announceAudioProblem(status)
         }
     }
-
+    func announceAudioProblem(_ status: String?) {
+        switch status {
+        case ReplyPlaybackController.abandonedStatus: announce(.replyAudioLost)
+        case ReplyPlaybackController.audioFormatNotPlayable, ReplyPlaybackController.audioCouldNotBeDecoded:
+            announce(.replyAudioFailed)
+        case ReplyPlaybackController.playbackFailed: fallBack(.replyAudioFailed, .playerFailed)
+        default: fallBack(.replyAudioFailed, .playerFailed)
+        }
+    }
     private func fallBack(_ announcement: Announcement, _ reason: Fallback) {
         Self.log.notice("announcement_suppressed key=\(announcement.rawValue) reason=\(reason.rawValue)")
         fallback(announcement, reason)
@@ -107,7 +107,6 @@ public final class LocalAnnouncementRenderer: AnnouncementRendering {
         (self.makeSynthesizer, self.synthesizer, self.waitForDeadline) =
             (makeSynthesizer, makeSynthesizer(), waitForDeadline)
     }
-
     public func audio(for announcement: Announcement) async throws -> [AudioPayload] {
         // A clip that exists but can't be read falls back to the system voice, never to silence.
         var audio = try? clip(announcement)
