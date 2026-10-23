@@ -3,9 +3,9 @@ import SwiftUI
 
 /// Includes a stream that ended without its final audio (#469), so a lost reply is announced too (#825, #822).
 private let terminalPlaybackFailures: Set<String> = [
-    "Playback could not resume", "Audio format is not yet playable",
-    "Conflicting audio segment refused", "Playback failed", "Replay failed",
-    ReplyPlaybackController.endedWithoutFinalAudio
+    "Playback could not resume", ReplyPlaybackController.audioFormatNotPlayable,
+    "Conflicting audio segment refused", ReplyPlaybackController.playbackFailed, "Replay failed",
+    ReplyPlaybackController.audioCouldNotBeDecoded, ReplyPlaybackController.endedWithoutFinalAudio
 ]
 private let replayRefusalNotices = [
     "Replay available after listening": "Replay was not started while listening",
@@ -89,8 +89,9 @@ extension TranscriptionLabView {
         guard StationPlatform.voiceOverRunning else { return }
         if current == "Replaying" { deferredReplayNotice = nil }
         if let current, [
-                "Paused", "Muted", "Played", "Playback failed", "Replay failed",
-                "Playback could not resume", "Audio format is not yet playable",
+                "Paused", "Muted", "Played", ReplyPlaybackController.playbackFailed, "Replay failed",
+                "Playback could not resume", ReplyPlaybackController.audioFormatNotPlayable,
+                ReplyPlaybackController.audioCouldNotBeDecoded,
                 "Conflicting audio segment refused", "Replay available after listening",
                 "Replay available when this reply finishes", ReplyPlaybackController.endedWithoutFinalAudio
         ].contains(current) {
