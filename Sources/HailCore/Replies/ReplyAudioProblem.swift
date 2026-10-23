@@ -59,7 +59,7 @@ extension ReplyPlaybackController {
             queue.removeAll { cancelled.contains($0) }
             playbackOrder.removeAll()
             activeKey = nil
-            isPaused = false
+            // The user's pause survives cancellation; drain rebuilds its idle hold (#825).
             idleWatch.cancel?()
             idleWatch.cancel = nil
             idleWatch.key = nil
