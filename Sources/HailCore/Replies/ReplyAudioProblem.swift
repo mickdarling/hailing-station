@@ -35,6 +35,8 @@ extension ReplyPlaybackController {
             presentationStatuses[presentationID] = Self.audioFormatNotPlayable
             return true
         }
+        // An accepted copy wins: let ingest refuse conflicts without retiring its stream (#825).
+        guard streams[key]?.segments[audio.sequence] == nil else { return false }
         // Decode bounds rates and byte size; leave conversion to schedule, once per frame (#825).
         guard audio.bytes.isEmpty || !audio.bytes.count.isMultiple(of: 2) else { return false }
         let presentationID = upsertPresentation(event, descriptor: descriptor)
