@@ -93,12 +93,14 @@ extension ReplyPlaybackController {
 @MainActor
 public final class LocalAnnouncementRenderer: AnnouncementRendering {
     private let synthesizer = AVSpeechSynthesizer()
-    private static let segmentFrames = 24_000 // 1 s of 24 kHz audio per payload, under the 64 KiB frame cap.
+    private static let segmentFrames = 24_000 // 1 s at 24 kHz per payload; local, so no wire frame cap applies.
+    static let renderDeadline: Duration = .seconds(10)
 
     public init() {}
 
     public func audio(for announcement: Announcement) async throws -> [AudioPayload] {
-        var audio = try clip(announcement)
+        // A clip that exists but can't be read falls back to the system voice, never to silence.
+        var audio = try? clip(announcement)
         if audio == nil { audio = await spoken(announcement.fallbackText) }
         guard let (samples, rate) = audio, !samples.isEmpty, rate > 0 else { throw ReplyAudioPlayerError.invalidBuffer }
         let stream = UUID()
@@ -122,12 +124,20 @@ public final class LocalAnnouncementRenderer: AnnouncementRendering {
         return (Self.int16Samples(buffer), Int(buffer.format.sampleRate))
     }
 
-    /// The synthesizer calls back off the main actor, so samples are gathered under a lock, as plain values.
+    /// The synthesizer calls back off the main actor, so samples are gathered under a lock, as plain values. If it
+    /// never ends the utterance, the deadline does, so the cue falls back instead of hanging (#838 review).
     private func spoken(_ text: String) async -> ([Int16], Int) {
         let utterance = AVSpeechUtterance(string: text)
         let gathered = SpokenSamples()
         return await withCheckedContinuation { continuation in
-            synthesizer.write(utterance) { buffer in
+            Task { @MainActor [synthesizer] in
+                try? await Task.sleep(for: Self.renderDeadline)
+                guard let partial = gathered.finish() else { return }
+                synthesizer.stopSpeaking(at: .immediate)
+                continuation.resume(returning: partial)
+            }
+            // Sendable, so it never inherits the main actor: the synthesizer may call back on any thread (#838 review).
+            synthesizer.write(utterance) { @Sendable buffer in
                 guard let pcm = buffer as? AVAudioPCMBuffer, pcm.frameLength > 0 else {
                     // A zero-length buffer ends the utterance.
                     if let result = gathered.finish() { continuation.resume(returning: result) }

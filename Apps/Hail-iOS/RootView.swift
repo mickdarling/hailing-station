@@ -173,9 +173,9 @@ struct LabsView: View {
 }
 
 extension RootView {
-    /// Spoken cues the station makes itself, through the reply player (#825 S4b); one that can't be heard is never
-    /// lost: a haptic, a banner, and VoiceOver say it (#822).
+    /// Spoken cues the station makes itself, through the reply player (#825 S4b); never lost when unheard (#822).
     func startAnnouncer() {
+        guard announcer == nil else { return } // Once: a second would announce every existing problem again.
         let announcer = Announcer(playback: playback, renderer: LocalAnnouncementRenderer()) { announcement, _ in
             #if os(iOS)
             UINotificationFeedbackGenerator().notificationOccurred(.warning)
@@ -188,12 +188,12 @@ extension RootView {
     }
     @ViewBuilder var announcementBannerView: some View {
         if let banner = announcementBanner {
-            Label(banner, systemImage: "speaker.slash")
+            Button { announcementBanner = nil } label: { Label(banner, systemImage: "speaker.slash") }
+                .buttonStyle(.plain)
                 .font(.subheadline.weight(.semibold))
                 .padding(EdgeInsets(top: 10, leading: 14, bottom: 10, trailing: 14))
                 .background(.regularMaterial, in: Capsule())
                 .padding(.top, 8)
-                .onTapGesture { announcementBanner = nil }
                 .accessibilityIdentifier("station.announcement-banner")
         }
     }

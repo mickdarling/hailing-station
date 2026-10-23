@@ -144,3 +144,57 @@ private final class FailingPlayer: ReplyAudioPlaying {
     func setMuted(_ muted: Bool) {}
     func replaceQueue(with payloads: [AudioPayload], onPlayed: (@MainActor @Sendable () -> Void)?) {}
 }
+
+/// #838 review: the main path. A reply whose stream ended without its final audio is spoken as `replyAudioLost`,
+/// through the player, once, however its status changes after.
+@MainActor
+@Suite struct AnnouncerAbandonTests {
+    @Test func aStreamThatEndedEarlyIsSpokenOnce() async {
+        let player = AbandonPlayer()
+        let controller = ReplyPlaybackController(player: player)
+        var now = ContinuousClock.now
+        var timers: [(due: ContinuousClock.Instant, fire: @MainActor () -> Void)] = []
+        controller.idleNow = { now }
+        controller.idleScheduler = { delay, fire in
+            timers.append((now.advanced(by: delay), fire))
+            return {}
+        }
+        let renderer = CountingRenderer()
+        let announcer = Announcer(playback: controller, renderer: renderer) { _, _ in }
+        announcer.watchReplyAudio { true }
+        let reply = ReplyDescriptor(id: UUID(), hostID: "main-mac", targetID: "tmux:codex", audioStreamID: UUID())
+        let payload = AudioPayload(codec: .pcm16, sampleRate: 24_000, channels: 1, sequence: 0,
+                                   streamID: reply.audioStreamID, isFinal: false, bytes: Data([1, 0]), reply: reply)
+        controller.ingest(HostReplyEvent(endpointID: "main", frame: Frame(
+            timestamp: 0, target: reply.targetID, source: reply.hostID, payload: .audio(payload))))
+        now = now.advanced(by: .seconds(30))
+        for timer in timers where timer.due <= now { timer.fire() }
+        for _ in 0..<10 { await Task.yield() }
+        #expect(renderer.rendered == [.replyAudioLost])
+        #expect(player.scheduled.last?.isFinal == true, "the cue played through the player")
+        controller.toggleMute() // A later change re-runs the watch; the reply is not announced again.
+        for _ in 0..<10 { await Task.yield() }
+        #expect(renderer.rendered == [.replyAudioLost])
+        withExtendedLifetime(announcer) {}
+    }
+}
+@MainActor
+private final class CountingRenderer: AnnouncementRendering {
+    var rendered: [Announcement] = []
+    func audio(for announcement: Announcement) async throws -> [AudioPayload] {
+        rendered.append(announcement)
+        return [AudioPayload(codec: .pcm16, sampleRate: 24_000, channels: 1, sequence: 0, streamID: UUID(),
+                             isFinal: true, bytes: Data([1, 0]))]
+    }
+}
+
+@MainActor
+private final class AbandonPlayer: ReplyAudioPlaying {
+    var scheduled: [AudioPayload] = []
+    func schedule(_ payload: AudioPayload, onPlayed: (@MainActor @Sendable () -> Void)?) { scheduled.append(payload) }
+    func cancel() {}
+    func pause() {}
+    func resume() {}
+    func setMuted(_ muted: Bool) {}
+    func replaceQueue(with payloads: [AudioPayload], onPlayed: (@MainActor @Sendable () -> Void)?) {}
+}
