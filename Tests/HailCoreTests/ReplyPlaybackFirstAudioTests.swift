@@ -71,8 +71,11 @@ import Testing
             }
             rig.controller.ingest(firstAudioText(reply))
             #expect(rig.liveDeadlineCount == 1)
-            if pendingVoiceMute { rig.controller.ingest(firstAudioControl(.setReplyMute(muted: true))) }
-            else { rig.controller.toggleMute() }
+            if pendingVoiceMute {
+                rig.controller.ingest(firstAudioControl(.setReplyMute(muted: true)))
+            } else {
+                rig.controller.toggleMute()
+            }
             #expect(rig.liveDeadlineCount == 0)
             let muted = idleReply()
             rig.controller.ingest(firstAudioText(muted))
