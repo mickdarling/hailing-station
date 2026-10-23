@@ -22,12 +22,20 @@ import Testing
         )
         #expect(device == .hello(HelloInfo(versions: [1], capabilities: [], deviceName: "x")))
         // Anything that is not a UUID fails the hello.
-        for bad in [#""restarted-at-noon""#, "42", "null-ish", #""""#] {
+        for bad in [#""restarted-at-noon""#, "42", "true", #""""#] {
             #expect(throws: DecodingError.self) {
                 try decodeControl(#"{"command":"hello","hello":{"versions":[1],"capabilities":[],"deviceName":"x","#
                     + #""hostInstance":\#(bad)}}"#)
             }
         }
+    }
+
+    /// An explicit null is the same as no key: no instance, which proves nothing (the schema refuses it as a type).
+    @Test func anExplicitNullIsNoInstance() throws {
+        let hello = try decodeControl(
+            #"{"command":"hello","hello":{"versions":[1],"capabilities":[],"deviceName":"x","hostInstance":null}}"#
+        )
+        #expect(hello == .hello(HelloInfo(versions: [1], capabilities: [], deviceName: "x")))
     }
 
     @Test func withoutAnInstanceTheHelloIsByteIdenticalToAnOlderBuilds() throws {
