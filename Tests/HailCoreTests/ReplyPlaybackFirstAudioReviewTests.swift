@@ -10,8 +10,9 @@ import Testing
     func pendingLossSurvivesPresentationPressure(promisedFillers: Bool) async throws {
         let rig = IdleRig(), reply = idleReply()
         let renderer = CountingRenderer(), fallback = FirstAudioFallbacks()
+        let observed = ObservedReplyLosses()
         let announcer = Announcer(playback: rig.controller, renderer: renderer) { fallback.record($0, $1) }
-        announcer.watchReplyAudio { true }
+        announcer.watchReplyAudio { observed.record(rig.controller); return true }
         rig.controller.ingest(firstAudioText(reply))
         let id = try #require(rig.controller.replies.first?.id)
         for _ in 0...ReplyPlaybackController.presentationLimit {
@@ -21,7 +22,9 @@ import Testing
         }
         let expected = promisedFillers ? ReplyPlaybackController.presentationLimit + 2 : 1
         #expect(rig.liveDeadlineCount == expected)
+        await settleFirstAudio() // re-arm observation after the history updates
         rig.advance(by: .seconds(20))
+        rig.controller.ingest(lossRaceText()) // queued before the Announcer can observe expiry
         #expect(rig.controller.lostAudioStatuses[id] == ReplyPlaybackController.abandonedStatus)
         #expect(rig.controller.lostAudioStatuses.count == expected)
         #expect(rig.abandoned == expected)
@@ -29,6 +32,13 @@ import Testing
         #expect(renderer.rendered == Array(repeating: .replyAudioLost, count: expected))
         #expect(rig.player.scheduled.last?.isFinal == true, "the loss cue reaches the reply player")
         #expect(fallback.announcements.isEmpty)
+        playLossCues(rig, count: expected)
+        #expect(observed.statuses.count == expected)
+        #expect(observed.statuses[id] == ReplyPlaybackController.abandonedStatus)
+        #expect(rig.controller.presentationKeysToRetain.isEmpty, "every observed loss was acknowledged")
+        announcer.watchReplyAudio { true }
+        await settleFirstAudio()
+        #expect(renderer.rendered.count == expected, "each expired reply is announced exactly once")
         withExtendedLifetime(announcer) {}
     }
 

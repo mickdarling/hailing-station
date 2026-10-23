@@ -183,8 +183,8 @@ extension ReplyPlaybackController {
     /// Ends the stuck head as if it had finished. The player is not cancelled: anything still buffered plays out,
     /// and the next reply follows it. Later frames of the abandoned stream are ignored.
     private func abandonHead(_ key: ReplyStreamKey) {
-        setPresentationStatus(Self.abandonedStatus, for: key)
-        onStreamAbandoned?() // recorded now: a trim below may drop the status before an observer sees it (#473)
+        recordAudioLoss(for: key)
+        onStreamAbandoned?()
         rollbackPlaybackStart(for: key)
         streams[key] = nil
         queue.removeFirst()

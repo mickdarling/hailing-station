@@ -65,6 +65,7 @@ public final class ReplyPlaybackController {
     @ObservationIgnored var idleWatch = ReplyIdleWatch()
     @ObservationIgnored var firstAudio: [ReplyStreamKey: ReplyIdleWatch] = [:] // arrival deadlines (#825)
     @ObservationIgnored var cancelledFirstAudio: Set<ReplyStreamKey> = [] // mute cancels the claim, not the reply
+    @ObservationIgnored var undeliveredLosses: [ReplyStreamKey] = [] // ordered, bounded set awaiting observation
     @ObservationIgnored var idleNow: @MainActor () -> ContinuousClock.Instant = { .now }
     @ObservationIgnored var idleScheduler: @MainActor (Duration, @escaping @MainActor () -> Void)
         -> @MainActor () -> Void = ReplyPlaybackController.sleepThenFire
@@ -74,7 +75,7 @@ public final class ReplyPlaybackController {
     }
 
     var presentationKeysToRetain: Set<ReplyStreamKey> {
-        var keys = Set(queue).union(firstAudio.keys).union(cancelledFirstAudio)
+        var keys = Set(queue).union(firstAudio.keys).union(cancelledFirstAudio).union(undeliveredLosses)
         keys.formUnion(playbackOrder)
         if let activeKey { keys.insert(activeKey) }
         if let lastKey { keys.insert(lastKey) }

@@ -51,8 +51,9 @@ public final class Announcer {
         let lost = withObservationTracking { playback.lostAudioStatuses } onChange: { [weak self] in
             Task { @MainActor in self?.watchReplyAudio(when: allowed) }
         }
-        for (id, status) in lost where announcedReplies.insert(id).inserted && allowed() {
-            announceAudioProblem(status)
+        for (id, status) in lost where announcedReplies.insert(id).inserted {
+            if allowed() { announceAudioProblem(status) }
+            playback.acknowledgeAudioLoss(id) // VoiceOver owns the deferred announcement when not allowed (#86).
         }
     }
 

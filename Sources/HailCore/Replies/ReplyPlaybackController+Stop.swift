@@ -136,10 +136,9 @@ extension ReplyPlaybackController {
         guard streams[key] == nil, !completed.contains(key), !isMuted, pendingMuteAfter == nil else { return }
         // Disconnect/replace does not cancel the existing idle watch either (#825): both report missing audio.
         // Pause and capture suppression hold scheduling, not frame arrival; first audio cancels this at ingest.
-        setPresentationStatus(Self.abandonedStatus, for: key)
+        recordAudioLoss(for: key)
         completed.insert(key)
         onStreamAbandoned?()
-        // Leave recorded losses for observation; the next presentation update applies the usual history trim.
     }
 }
 
@@ -149,6 +148,18 @@ extension ReplyStreamKey {
 }
 
 extension ReplyPlaybackController {
+    /// Retain a loss across trims until observed (#825 / #838). Without a consumer, evict the oldest first.
+    func recordAudioLoss(for key: ReplyStreamKey) {
+        if !undeliveredLosses.contains(key) { undeliveredLosses.append(key) }
+        if undeliveredLosses.count > Self.seenFrameLimit { undeliveredLosses.removeFirst() }
+        setPresentationStatus(Self.abandonedStatus, for: key)
+    }
+
+    /// Observation releases retention; the next ordinary history trim may remove this presentation and status.
+    func acknowledgeAudioLoss(_ id: String) {
+        undeliveredLosses.removeAll { "\($0.endpointID)|\($0.replyID.uuidString.lowercased())" == id }
+    }
+
     /// The recorded status of every reply whose audio did not play, by presentation id, observably.
     var lostAudioStatuses: [String: String] { presentationStatuses.filter { Self.audioProblem($0.value) != nil } }
 
