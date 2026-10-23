@@ -56,13 +56,21 @@ import Testing
     }
 
     /// Typed input from the device (not ambient): the host dispatches it and owns its reply record. Returns its id.
+    /// Found by its own frame (its utterance), not by a count and `.last`: the `quiet` fake's ambient request may land
+    /// at any time, making the count jump by two or `.last` the ambient request's id (#735 timing flake).
     static func typedRequest(on rig: DuckRig) async throws -> UUID {
-        let before = await rig.env.rig.adapter.contexts.count
-        try await recipientSocketSend(sessionFrame(target: RecipientTestRig.target,
-                                                   payload: .text(TextPayload(text: "synthetic input"))),
-                                      on: rig.socket)
-        #expect(await eventually { await rig.env.rig.adapter.contexts.count == before + 1 })
-        return try #require(await rig.env.rig.adapter.contexts.last).id
+        let frame = sessionFrame(target: RecipientTestRig.target, payload: .text(TextPayload(text: "synthetic input")))
+        try await recipientSocketSend(frame, on: rig.socket)
+        #expect(await eventually { await rig.env.rig.adapter.contexts.contains { $0.utteranceID == frame.id } })
+        let id = try #require(await rig.env.rig.adapter.contexts.first { $0.utteranceID == frame.id }).id
+        // Its reply record must be pending before privacy is entered next, so the entry's drop counts it.
+        #expect(await eventually {
+            for peer in await rig.env.listener.peers.values where await peer.session.replyRequests[id] != nil {
+                return true
+            }
+            return false
+        })
+        return id
     }
 
     @Test func aReplySentAfterEntryIsRefusedAndNeverReachesTheDevice() async throws {
