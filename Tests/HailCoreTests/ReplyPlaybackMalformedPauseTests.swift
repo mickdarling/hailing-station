@@ -20,6 +20,7 @@ import Testing
         controller.ingest(formatAudioEvent(failed, codec: .pcm16, byteCount: byteCount, sequence: 1))
         #expect(rig.player.cancelCount == 1)
         #expect(controller.isPaused && !controller.isReplyAudioOutputBusy)
+        #expect(controller.status == (whileListening ? "Paused while listening" : "Paused"))
         #expect(controller.activeKey == nil && controller.playbackOrder.isEmpty)
         #expect(controller.queue.count == 1)
         #expect(controller.streams[try #require(controller.queue.first)]?.nextSequence == 0)
@@ -48,6 +49,7 @@ import Testing
         controller.ingest(formatAudioEvent(queued, codec: .pcm16, byteCount: 2))
         controller.togglePause()
         controller.ingest(formatAudioEvent(failed, codec: .pcm16, byteCount: 1, sequence: 1))
+        #expect(controller.status == "Paused")
         controller.ingest(formatAudioEvent(newest, codec: .pcm16, byteCount: 2))
         #expect(!controller.isPaused)
         #expect(player.scheduled.compactMap { $0.reply?.id } == [failed.id, newest.id])
@@ -65,6 +67,7 @@ import Testing
         player.failingSequence = 1
         controller.ingest(formatAudioEvent(failed, codec: .pcm16, byteCount: 2, sequence: 1))
         #expect(controller.isPaused && player.cancelCount == 0)
+        #expect(controller.status == "Paused")
         #expect(controller.lastPlaybackError == nil && player.scheduled.count == 1)
         controller.togglePause()
         #expect(!controller.isPaused && player.cancelCount == 1)
@@ -72,5 +75,20 @@ import Testing
         #expect(player.scheduled.compactMap { $0.reply?.id } == [failed.id, queued.id])
         player.completeNextReply()
         #expect(controller.statusForControls == "Played")
+    }
+
+    @Test(arguments: [false, true], [false, true])
+    func failureRetirementKeepsPausedStatus(whileListening: Bool, hasQueuedReply: Bool) throws {
+        for muted in [false, true] {
+            let controller = ReplyPlaybackController(player: FormatTestPlayer())
+            controller.ingest(formatAudioEvent(formatReply(), codec: .pcm16, byteCount: 2, isFinal: false))
+            if hasQueuedReply { controller.ingest(formatAudioEvent(formatReply(), codec: .pcm16, byteCount: 2)) }
+            if muted { controller.toggleMute() }
+            controller.togglePause()
+            if whileListening { controller.beginCaptureSuppression() }
+            controller.failPlayback(for: try #require(controller.activeKey))
+            #expect(controller.isPaused && controller.activeKey == nil)
+            #expect(controller.status == (whileListening ? "Paused while listening" : "Paused"))
+        }
     }
 }

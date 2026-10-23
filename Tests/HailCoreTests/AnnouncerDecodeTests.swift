@@ -41,9 +41,11 @@ import Testing
         for _ in 0..<10 { await Task.yield() }
         #expect(renderer.rendered == [.replyAudioFailed])
         #expect(controller.isPaused)
+        #expect(controller.status == (whileListening ? "Paused while listening" : "Paused"))
         #expect(player.scheduled.count == 1)
         if whileListening { controller.endCaptureSuppression() }
         #expect(controller.isPaused && player.scheduled.count == 1)
+        #expect(controller.status == "Paused")
         controller.togglePause()
         #expect(!controller.isPaused)
         #expect(player.scheduled.count == 2 && player.scheduled.last?.reply == nil)

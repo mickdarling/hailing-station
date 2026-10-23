@@ -71,7 +71,11 @@ extension ReplyPlaybackController {
         queue.removeAll { $0 == key }
         completed.insert(key)
         if activeKey == nil {
-            status = queue.isEmpty ? (isMuted ? "Muted" : "Ready for replies") : "Waiting for audio"
+            if isCaptureSuppressed || isPaused {
+                status = isCaptureSuppressed ? "Paused while listening" : "Paused"
+            } else {
+                status = queue.isEmpty ? (isMuted ? "Muted" : "Ready for replies") : "Waiting for audio"
+            }
         }
     }
 }
