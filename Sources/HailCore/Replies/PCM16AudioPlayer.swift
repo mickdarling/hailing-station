@@ -10,6 +10,7 @@ public enum ReplyAudioPlayerError: Error, Equatable, Sendable {
 
 extension PCM16AudioPlayer: CaptureRoutedReplies {}
 extension PCM16AudioPlayer: PlayoutGapReporting {}
+extension PCM16AudioPlayer: ReplyCatchUpReporting {}
 
 /// AVAudioEngine renderer for the raw signed 16-bit, mono stream produced by the current vbsay bridge.
 @MainActor
@@ -18,9 +19,17 @@ public final class PCM16AudioPlayer: ReplyAudioPlaying {
     /// The engine replies play through: our own, or a voice-processing capture engine while ambient listening runs,
     /// so its echo canceller hears the reply as the far end (#269).
     private var engine: AVAudioEngine
-    private let node = AVAudioPlayerNode()
+    fileprivate let node = AVAudioPlayerNode()
     private let sourceFormat: AVAudioFormat
-    private var gapMeter = PlayoutGapMeter()
+    fileprivate var gapMeter = PlayoutGapMeter()
+    /// What is queued, and whether a stalled reply is held until it catches up (#825, `ReplyPlayoutBuffer`).
+    fileprivate var playout = ReplyPlayoutBuffer()
+    /// Bumped whenever the queue is dropped, so completions of buffers from before never count as played.
+    fileprivate var playoutGeneration: UInt = 0
+    /// Audio queued while holding, not yet handed to the gap meter: the stall is measured when it plays on.
+    fileprivate var heldDuration: Duration = .zero
+    public var onCatchingUpChanged: (@MainActor (Bool) -> Void)?
+    public var isCatchingUp: Bool { playout.isCatchingUp }
     #if os(iOS)
     private var didConfigureAudioSession = false
     #endif
@@ -42,13 +51,23 @@ public final class PCM16AudioPlayer: ReplyAudioPlaying {
         let wasPlaying = node.isPlaying && engine.isRunning
         try prepare()
         schedule(buffers, onPlayed: onPlayed)
+        let wasCatchingUp = playout.isCatchingUp
+        guard playout.queued(buffers.map { Self.duration(of: [$0]) }, startsReply: payload.sequence == 0,
+                             endsReply: payload.isFinal) else {
+            heldDuration += Self.duration(of: buffers) // Held: a stalled reply plays on once it catches up (#825).
+            return
+        }
         // New audio plays the node even after a pause the controller never resumed (a reply arriving while paused),
-        // or after the system stopped it (an interruption): neither stretch was heard as a gap.
-        if !wasPlaying { gapMeter.restarted(at: .now) }
+        // or after the system stopped it (an interruption): neither stretch was heard as a gap. Playing on after a
+        // stall is neither: the stall was heard, and the meter counts it.
+        if !wasPlaying, !wasCatchingUp { gapMeter.restarted(at: .now) }
         gapMeter.scheduled(
-            Self.duration(of: buffers), at: .now, startsReply: payload.sequence == 0, endsReply: payload.isFinal
+            heldDuration + Self.duration(of: buffers), at: .now, startsReply: payload.sequence == 0,
+            endsReply: payload.isFinal
         )
+        heldDuration = .zero
         if !node.isPlaying { node.play() }
+        if wasCatchingUp { onCatchingUpChanged?(false) }
     }
 
     public func pause() {
@@ -57,6 +76,7 @@ public final class PCM16AudioPlayer: ReplyAudioPlaying {
     }
 
     public func cancel() {
+        dropPlayout()
         node.stop()
         node.reset()
         gapMeter.cleared()
@@ -64,8 +84,9 @@ public final class PCM16AudioPlayer: ReplyAudioPlaying {
 
     public func resume() throws {
         try prepare()
-        node.play()
         gapMeter.resumed(at: .now)
+        guard !playout.isCatchingUp else { return } // Still catching up: it plays on when enough is queued (#825).
+        node.play()
     }
 
     public func takePlayoutGaps() -> PlayoutGapMeter.Gaps { gapMeter.take() }
@@ -84,6 +105,7 @@ public final class PCM16AudioPlayer: ReplyAudioPlaying {
     public func replaceQueue(
         with payloads: [AudioPayload], onPlayed: (@MainActor @Sendable () -> Void)?
     ) throws {
+        dropPlayout()
         node.stop()
         node.reset()
         gapMeter.cleared()
@@ -92,6 +114,8 @@ public final class PCM16AudioPlayer: ReplyAudioPlaying {
             let completion = index == payloads.indices.last ? onPlayed : nil
             let buffers = try PCM16PlaybackBuffers.forPayload(payload)
             schedule(buffers, onPlayed: completion)
+            _ = playout.queued(buffers.map { Self.duration(of: [$0]) }, startsReply: index == 0,
+                               endsReply: payload.isFinal)
             gapMeter.scheduled(
                 Self.duration(of: buffers), at: .now, startsReply: index == 0, endsReply: payload.isFinal
             )
@@ -99,16 +123,19 @@ public final class PCM16AudioPlayer: ReplyAudioPlaying {
         node.play()
     }
 
+    /// Every buffer reports when it has played, so a queue that runs dry mid-reply is seen (#825); the last also
+    /// fires `onPlayed`, including when a stop flushes it.
     private func schedule(
         _ buffers: [AVAudioPCMBuffer], onPlayed: (@MainActor @Sendable () -> Void)?
     ) {
         for (index, buffer) in buffers.enumerated() {
-            if index == buffers.indices.last, let onPlayed {
-                node.scheduleBuffer(buffer, completionCallbackType: .dataPlayedBack) { _ in
-                    Task { @MainActor in onPlayed() }
+            let finished = index == buffers.indices.last ? onPlayed : nil
+            let (duration, generation) = (Self.duration(of: [buffer]), playoutGeneration)
+            node.scheduleBuffer(buffer, completionCallbackType: .dataPlayedBack) { [weak self] _ in
+                Task { @MainActor in
+                    self?.bufferPlayed(duration, generation: generation)
+                    finished?()
                 }
-            } else {
-                node.scheduleBuffer(buffer)
             }
         }
     }
@@ -118,6 +145,7 @@ public final class PCM16AudioPlayer: ReplyAudioPlaying {
     func route(through capture: AVAudioEngine?) {
         let target = capture ?? ownEngine
         guard target !== engine else { return }
+        dropPlayout()
         node.stop()
         gapMeter.cleared()
         engine.detach(node)
@@ -131,6 +159,7 @@ public final class PCM16AudioPlayer: ReplyAudioPlaying {
     /// that was playing through it, so the playback queue advances; the next `schedule` plays the node again.
     func captureEngineRestarted(_ capture: AVAudioEngine) {
         guard engine === capture else { return }
+        dropPlayout()
         node.stop()
         gapMeter.cleared()
     }
@@ -167,6 +196,26 @@ public final class PCM16AudioPlayer: ReplyAudioPlaying {
         try session.setActive(true)
         #endif
         if !engine.isRunning { try engine.start() }
+    }
+}
+
+/// Smooth stall recovery (#825): the player holds a reply whose queue ran dry until it catches up.
+extension PCM16AudioPlayer {
+    /// One buffer finished playing. A queue run dry before the reply's final audio holds playback, rather than
+    /// letting each late frame play the moment it lands, which is the stutter.
+    fileprivate func bufferPlayed(_ duration: Duration, generation: UInt) {
+        guard generation == playoutGeneration, playout.played(duration) else { return }
+        node.pause()
+        onCatchingUpChanged?(true)
+    }
+
+    /// The queue is dropped: completions from before never count, and nothing is held.
+    fileprivate func dropPlayout() {
+        let wasCatchingUp = playout.isCatchingUp
+        playout.cleared()
+        playoutGeneration &+= 1
+        heldDuration = .zero
+        if wasCatchingUp { onCatchingUpChanged?(false) }
     }
 }
 

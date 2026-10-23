@@ -36,8 +36,7 @@ struct ReplyStreamState {
 @MainActor
 @Observable
 public final class ReplyPlaybackController {
-    /// The error behind the most recent "Playback failed", for diagnostics (domain and code only, #282).
-    @ObservationIgnored private(set) var lastPlaybackError: NSError?
+    @ObservationIgnored private(set) var lastPlaybackError: NSError? // behind the last "Playback failed" (#282)
     public static let presentationLimit = 100
     public static let seenFrameLimit = 1_024
 
@@ -77,10 +76,10 @@ public final class ReplyPlaybackController {
     }
 
     var hasQueuedPlayback: Bool { !queue.isEmpty }
-
     public init(player: any ReplyAudioPlaying) {
         self.player = player
         observeAudioInterruptions(on: .default)
+        observeCatchUp()
     }
 
     public var latest: ReplyPresentation? { replies.last }
@@ -162,6 +161,7 @@ public final class ReplyPlaybackController {
 
     func drain() {
         watchHeadIfChanged() // before any segment of a new head is scheduled (#469)
+        dropAbandonedHold() // an abandoned reply's held tail never plays before the next (#825)
         applyPendingMuteIfDue() // before the next reply starts, so it plays silently (#404)
         guard !isCaptureSuppressed, !isPaused else {
             status = isCaptureSuppressed ? "Paused while listening" : "Paused"
@@ -189,7 +189,7 @@ public final class ReplyPlaybackController {
             streams[key] = stream
             noteScheduled(segment)
             setPresentationStatus(nil, for: key)
-            status = isMuted ? "Muted" : "Playing"
+            status = playingStatus
             guard segment.isFinal else { continue }
             lastAudio = (0..<stream.nextSequence).compactMap { stream.segments[$0] }
             lastKey = key
