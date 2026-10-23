@@ -114,6 +114,7 @@ struct ConversationChatView: View {
                 }
                 messageContent(entry, segments: segments, isYou: isYou)
                 replyDetails(entry)
+                audioProblemNote(entry)
                 if entry.speaker == .haili, entry.id == controlledReplyID {
                     replyControls
                 }
