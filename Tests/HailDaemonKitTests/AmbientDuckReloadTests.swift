@@ -94,7 +94,12 @@ import Testing
         if version >= 3 {
             #expect(await eventually { (try? rig.fake.recorded("control.txt")) == "{\"duck\":true}\n" })
         } else {
-            #expect(await eventually { rig.details("ambient_privacy") == ["child=unsupported_version kept=true"] })
+            // With 2, the retiring old child is refused too: while the new one may still keep privacy, in silence
+            // (round 4's state rule, `superseded_by_keep`).
+            let refused = "child=unsupported_version kept=true"
+            let quiet: Set = [refused, "unavailable=superseded_by_keep"]
+            #expect(await eventually { rig.details("ambient_privacy").contains(refused) })
+            #expect(rig.details("ambient_privacy").allSatisfy(quiet.contains), "\(rig.allEvents())")
             #expect(try rig.fake.recorded("control.txt") == "")
         }
         #expect(rig.env.router.duckMode(connection: connection))

@@ -4,40 +4,42 @@ import Synchronization
 import Testing
 @testable import HailDaemonKit
 
-/// Close first, then decide (#735 S-8 HS-C round 3), on the real duck control and the router's own close, verdict and
-/// announcement, step by step: each of key 2's windows, deterministically. Synthetic only.
+/// Close first, then decide (#735 S-8 HS-C round 3), on the real duck control and the router's own ledger (round 4),
+/// step by step: each of key 2's windows, deterministically. Synthetic only.
 @Suite(.serialized, .timeLimit(.minutes(1)), .frozenGuardBudget) struct AmbientPrivacyCloseFirstTests {
     static let started = Data(#"{"type": "session", "duck": {"version": 3}, "phase": "started"}"#.utf8)
+    typealias Ledger = AmbientPrivacyLedger<Child>
+    final class Child {}
 
-    /// A started v3 child with entry `entry` open and its on-line written.
-    static func written(entry: Int = 1) -> AmbientDuckControl {
+    /// A started v3 child with an entry open on it and its on-line written.
+    static func written(_ ledger: inout Ledger, wasOn: Bool = false) -> AmbientDuckControl {
         let duck = AmbientDuckControl()
         _ = duck.observe(started: started, write: { _ in true })
-        duck.open(entry: entry)
+        _ = ledger.open(on: [(Child(), duck)], wasOn: wasOn, at: 0)
         #expect(duck.report(true, write: { _ in true }))
         return duck
     }
 
-    /// The router's close and verdict for one listening child: the clip and tokens.
-    static func announce(_ entry: Int, _ duck: AmbientDuckControl, withdrawn: Bool = false, timedOut: Bool = false,
-                         wasOn: Bool = false) -> (String?, String)? {
-        guard let closed = AmbientRightyoRouter.closeEntry(entry, children: [.init(duck: duck, listening: true)],
-                                                           withdrawn: withdrawn, timedOut: timedOut) else { return nil }
-        let answers = closed.map(\.0)
-        let answer = AmbientRightyoRouter.privacyVerdict(answers, withdrawn: withdrawn)
-        return AmbientRightyoRouter.announcement(answer, claimed: answers.contains(where: \.claimed), wasOn: wasOn)
+    /// The router's close of `entry` at `now` with every child listening: the clip and tokens, nil while it waits.
+    static func announce(_ entry: Int, _ ledger: inout Ledger, now: Double = 0,
+                         listening: @escaping (Child) -> Bool = { _ in true }) -> (String?, String)? {
+        guard case .decided(let decision) = ledger.close(entry, now: now, bound: 16, listening: listening) else {
+            return nil
+        }
+        return (decision.clip, decision.tokens)
     }
 
     /// 1. Key 2's window: the child has proved it (round 2's verdict read `kept` here), then a duplicate ack refuses it
     /// before the close. The close reads the refusal with the claim: "unavailable", said once, never "privacy on".
     @Test func aDuplicateAckBeforeTheCloseSaysUnavailable() throws {
-        let duck = Self.written()
+        var ledger = Ledger()
+        let duck = Self.written(&ledger)
         #expect(duck.acknowledge() == .counted)
         #expect(duck.settled == .kept)
         #expect(duck.acknowledge() == .excess)
         #expect(duck.refuseIfWished())
         #expect(!duck.takeAnnouncement())
-        let (clip, tokens) = try #require(Self.announce(1, duck))
+        let (clip, tokens) = try #require(Self.announce(1, &ledger))
         #expect(clip == AmbientStopConfirmation.privacyUnavailable && tokens == " refused")
         #expect(!duck.takeAnnouncement())
     }
@@ -45,73 +47,78 @@ import Testing
     /// 1b. The same duplicate just after the close is a new event: "privacy on" was true at the close, and the child's
     /// own "unavailable" follows it on the connection's chain (it is not absorbed).
     @Test func aDuplicateAckAfterTheCloseIsSaidByTheChild() throws {
-        let duck = Self.written()
+        var ledger = Ledger()
+        let duck = Self.written(&ledger)
         #expect(duck.acknowledge() == .counted)
-        let (clip, tokens) = try #require(Self.announce(1, duck))
+        let (clip, tokens) = try #require(Self.announce(1, &ledger))
         #expect(clip == AmbientStopConfirmation.privacyOn && tokens.isEmpty)
         #expect(duck.acknowledge() == .excess && duck.refuseIfWished())
-        #expect(duck.takeAnnouncement())
+        #expect(ledger.refusal(of: duck, on: true, holders: [duck]) == (true, nil))
+        #expect(ledger.said == .unavailable)
     }
 
     /// 3. The bound racing an ack, the ack decided first under the duck lock: kept, "privacy on", nothing refused.
-    /// Decided the other way, the bound refuses it ("unavailable", `timeout`), and the late ack proves nothing.
+    /// Decided the other way, the child's own bound refuses it ("unavailable", `timeout`), and the late ack proves
+    /// nothing. Before its bound, the close waits.
     @Test func aTimeoutRacingAnAckIsDecidedByWhicheverCameFirst() throws {
-        let acked = Self.written()
+        var ledger = Ledger()
+        let acked = Self.written(&ledger)
         #expect(acked.acknowledge() == .counted)
-        let (on, _) = try #require(Self.announce(1, acked, timedOut: true))
+        let (on, _) = try #require(Self.announce(1, &ledger, now: 16))
         #expect(on == AmbientStopConfirmation.privacyOn && acked.settled == .kept)
-        let late = Self.written()
-        let (unavailable, tokens) = try #require(Self.announce(1, late, timedOut: true))
+        let late = Self.written(&ledger)
+        #expect(Self.announce(2, &ledger, now: 15.9) == nil)
+        let (unavailable, tokens) = try #require(Self.announce(2, &ledger, now: 16))
         #expect(unavailable == AmbientStopConfirmation.privacyUnavailable && tokens == " timeout")
         _ = late.acknowledge()
         #expect(late.settled == .refused(.unacknowledged))
     }
 
     /// 4. Off then on mid-wait: the first entry is withdrawn, silent and logged, never refusing the child that now
-    /// waits on the second entry's ack, even at its bound; that ack then says "privacy on" for the second entry.
+    /// waits on the second entry's ack, even past its bound; that ack then says "privacy on" for the second entry.
     @Test func offThenOnMidWaitKeepsTheHealthyChild() throws {
-        let duck = Self.written()
+        var ledger = Ledger()
+        let duck = Self.written(&ledger)
         _ = duck.report(false, write: { _ in true })
-        duck.open(entry: 2)
+        ledger.withdrawAll()
+        _ = ledger.open(on: [(Child(), duck)], wasOn: false, at: 1)
         #expect(duck.report(true, write: { _ in true }))
-        let withdrawn = try #require(Self.announce(1, duck, withdrawn: true, timedOut: true))
+        let withdrawn = try #require(Self.announce(1, &ledger, now: 16))
         #expect(withdrawn.0 == nil && withdrawn.1 == " withdrawn")
         #expect(duck.settled == nil)
-        #expect(Self.announce(2, duck) == nil)
+        #expect(Self.announce(2, &ledger, now: 16) == nil)
         #expect(duck.acknowledge() == .counted && duck.acknowledge() == .counted)
-        #expect(Self.announce(2, duck)?.0 == AmbientStopConfirmation.privacyOn)
+        #expect(Self.announce(2, &ledger)?.0 == AmbientStopConfirmation.privacyOn)
     }
 
-    /// 4b. A re-entry while still waiting: the newest open entry owns the pending proof, so the older one's bound
-    /// leaves the child alone (it says `timeout`); the newer entry decides it.
-    @Test func anOlderEntrysBoundLeavesTheNewestEntrysProof() throws {
-        let duck = Self.written()
-        duck.open(entry: 2)
-        let older = try #require(Self.announce(1, duck, timedOut: true))
-        #expect(older.0 == AmbientStopConfirmation.privacyUnavailable && older.1 == " timeout")
+    /// 4b. A re-entry while still waiting (round 4, finding 5): the older entry closes in silence
+    /// (`superseded_by_newer`), never refusing the proof the newest entry owns; the newer entry says "privacy on".
+    @Test func anOlderEntryUnderANewerOneSaysNothing() throws {
+        var ledger = Ledger()
+        let duck = Self.written(&ledger)
+        _ = ledger.open(on: [(Child(), duck)], wasOn: true, at: 1)
+        let older = try #require(Self.announce(1, &ledger, now: 16))
+        #expect(older.0 == nil && older.1 == " superseded_by_newer")
         #expect(duck.settled == nil)
         #expect(duck.acknowledge() == .counted)
-        let newer = try #require(Self.announce(2, duck, wasOn: true))
+        let newer = try #require(Self.announce(2, &ledger))
         #expect(newer.0 == AmbientStopConfirmation.privacyOn && newer.1 == " still_on")
     }
 
-    /// 5. A replaced child is known as replaced by the child itself, so its refusal never decides the verdict (its
-    /// successor answers), even once its run is gone.
-    @Test func aReplacedChildStaysReplaced() throws {
-        let old = Self.written()
-        old.markReplaced()
+    /// 5. The state rule (round 4): a child that no longer listens (swapped out, draining or gone) refused while a
+    /// listening child keeps privacy changes nothing: absorbed (`superseded_by_keep`), even once its run is gone.
+    @Test func aRefusalOfAChildNoLongerListeningIsAbsorbed() throws {
+        var ledger = Ledger()
+        let old = AmbientDuckControl(), successor = AmbientDuckControl()
+        let (oldChild, newChild) = (Child(), Child())
+        for duck in [old, successor] { _ = duck.observe(started: Self.started, write: { _ in true }) }
+        _ = ledger.open(on: [(oldChild, old), (newChild, successor)], wasOn: false, at: 0)
+        for duck in [old, successor] { #expect(duck.report(true, write: { _ in true })) }
         #expect(old.acknowledge() == .counted && old.acknowledge() == .excess && old.refuseIfWished())
         old.end()
-        let successor = Self.written()
         #expect(successor.acknowledge() == .counted)
-        let children: [AmbientPrivacyEntryChild] = [.init(duck: old, listening: false),
-                                                    .init(duck: successor, listening: true)]
-        let closed = try #require(AmbientRightyoRouter.closeEntry(1, children: children, withdrawn: false,
-                                                                 timedOut: false))
-        #expect(closed[0].0.retired && closed[0].0.claimed)
-        let answer = AmbientRightyoRouter.privacyVerdict(closed.map(\.0), withdrawn: false)
-        #expect(AmbientRightyoRouter.announcement(answer, claimed: true, wasOn: false)
-            == (AmbientStopConfirmation.privacyOn, " superseded_by_keep"))
+        let decided = try #require(Self.announce(1, &ledger) { $0 === newChild })
+        #expect(decided == (AmbientStopConfirmation.privacyOn, " superseded_by_keep"))
     }
 
     /// 6. Nits: the start deadline after the run's end refuses nothing; re-arming a deadline key cancels the task it

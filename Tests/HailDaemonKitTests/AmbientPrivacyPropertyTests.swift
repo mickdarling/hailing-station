@@ -3,19 +3,22 @@ import Foundation
 import Testing
 @testable import HailDaemonKit
 
-/// A property test of the entry announcement (#735 S-8 HS-C round 3), over the real duck controls and the router's own
-/// close, verdict and announcement, on a simulated clock with seeded random schedules: start timing (before the entry,
-/// after it, or never, with the fresh start deadline), ack timing (prompt, late, never, excess), the real start and ack
-/// deadlines and the derived bound racing acks, a failed on-write, crashes, draining children and reloads, a refused
-/// start, a re-entry while on, and quick off/on. The close and the verdict are separate steps, with anything between
-/// them, and every clip goes on one chain per connection. Over the ordered clip sequence: each entry plays exactly one
-/// of "privacy on" or "unavailable", right after its playback stop (or nothing, logged, only when an off withdrew it);
-/// never "privacy on" while a child it counted was refused or unproven at its close; a refusal said after an entry's
-/// "privacy on" is one decided after its close; every refusal is said exactly once (a replaced child's at most once).
-/// Each failure names its seed. Round two's ordering (the verdict read before the close) fails on these same seeds.
+/// A property test of the entry announcement (#735 S-8 HS-C round 4), over the real duck controls and the router's own
+/// `AmbientPrivacyLedger` (opening, registration, off, the refusal rule and the close), on a simulated clock with
+/// seeded random schedules: start timing (before the entry, after it, or never, with the fresh start deadline), ack
+/// timing (prompt, late, never, excess), the real deadlines and per-child bounds racing acks, a failed on-write,
+/// crashes, pipelines freed while a deadline task still runs, draining children and reloads at any point of an entry,
+/// a refused start, a re-entry while on, and quick off/on. Over the ordered clip sequence: each entry plays exactly
+/// one of "privacy on" or "unavailable" right after its stop, or a logged silence (withdrawn, or superseded by a
+/// newer entry, which then speaks); "privacy on" only while every listening child is proven, and "unavailable" never
+/// while privacy is kept (judged from the world, not the verdict); no child killed by a bound before its own deadline;
+/// every refusal accounted for exactly once; and the last privacy clip matches the final state. Each failure names its
+/// seed. a8de9f2's three faults, each alone, fail on the seeds recorded below.
 @Suite(.serialized, .timeLimit(.minutes(1)), .frozenGuardBudget) struct AmbientPrivacyPropertyTests {
-    static let seeds: [UInt64] = Array(1...200)
+    static let seeds: [UInt64] = Array(1...300)
     static let steps = 150
+    /// The first seed each a8de9f2 fault fails on (round 4, recorded from `roundThreesFaultsAreCaught`).
+    static let recorded: [(PrivacySimFaults, UInt64)] = [(.entryBound, 23), (.weakGuards, 2), (.splitEnqueue, 150)]
 
     @Test func everyEntryIsAnnouncedExactlyOnceInOrder() {
         for seed in Self.seeds {
@@ -24,36 +27,51 @@ import Testing
         }
     }
 
-    /// The model is strong enough to find key 2's window: decided from answers read before the close (81593b3's
-    /// ordering), some seed plays "privacy on" over a refusal the close absorbed. The first is printed.
-    @Test func roundTwosOrderingIsCaught() {
-        let failing = Self.seeds.first { !Self.run(seed: $0, ordering: .roundTwo).isEmpty }
+    /// The model finds each of a8de9f2's faults on its own: the first failing seed is printed.
+    @Test(arguments: [PrivacySimFaults.entryBound, .weakGuards, .splitEnqueue])
+    func roundThreesFaultsAreCaught(_ fault: PrivacySimFaults) {
+        let failing = (1...UInt64(2_000)).first { !Self.run(seed: $0, faults: fault).isEmpty }
         if let failing {
-            print("round two's ordering fails at seed \(failing): \(Self.run(seed: failing, ordering: .roundTwo))")
+            print("a8de9f2 \(fault) fails at seed \(failing): \(Self.run(seed: failing, faults: fault))")
         }
         #expect(failing != nil)
     }
 
-    /// The derived bound (start + ack + margin) only ends a wait no deadline ended: a child that starts just before
-    /// its start deadline, or its fresh one (an entry after the first lapsed unwished), and never acks, is refused by
-    /// its own ack deadline, and the entry says `unacknowledged`, not `timeout`. A 12 s bound would refuse it first.
-    @Test(arguments: [0.0, 11.0]) func theBoundEndsOnlyWhatNoDeadlineEnded(enterAt: Double) {
-        let world = PrivacySimWorld()
-        world.spawn(.v3, writeFails: false, replacing: nil)
-        world.advance(by: enterAt)
-        world.enter()
-        world.advance(by: 9.9)
-        world.start(world.children[0])
-        world.advance(by: 30)
-        world.finish()
-        #expect(world.failures.isEmpty && Self.check(world).isEmpty, "\(world.failures + Self.check(world))")
-        #expect(world.entries[1]?.tokens == " unacknowledged")
-        #expect(world.played == [.stop(1), .unavailable(1)])
+    /// The recorded seeds: each fails with its fault, and passes as fixed.
+    @Test func theRecordedSeedsFailOnRoundThreeAndPassNow() {
+        for (fault, seed) in Self.recorded {
+            #expect(!Self.run(seed: seed, faults: fault).isEmpty, "\(fault) seed \(seed) no longer fails")
+            #expect(Self.run(seed: seed).isEmpty, "seed \(seed): \(Self.run(seed: seed))")
+        }
     }
 
-    static func run(seed: UInt64, ordering: PrivacySimWorld.Ordering = .closeFirst) -> [String] {
+    /// The per-child bound (finding 1): a reload late in an entry (at 14 s; the entry's own bound is at 16 s) registers
+    /// a child that confirms its private start at 20 s, inside its own deadline: it is not killed, and the entry says
+    /// "privacy on". Counted from the entry, as a8de9f2 did, it is killed at 16 s.
+    @Test(arguments: [PrivacySimFaults(), .entryBound])
+    func aReloadLateInAnEntryIsWaitedFor(_ faults: PrivacySimFaults) {
+        let world = PrivacySimWorld(faults: faults)
+        world.spawn(.v3, writeFails: false, replacing: nil)
+        world.start(world.children[0])
+        world.enter()
+        world.ackOwed(world.children[0])
+        world.advance(by: 14)
+        world.spawn(.v3, writeFails: false, replacing: world.children[0])
+        world.advance(by: 6)
+        world.start(world.children[1])
+        world.finish()
+        let failures = world.failures + Self.check(world)
+        if faults.isEmpty {
+            #expect(failures.isEmpty, "\(failures)")
+            #expect(world.played == [.stop(1), .on(1)] && !world.children[1].killed)
+        } else {
+            #expect(failures.contains { $0.contains("before its own deadline") }, "\(failures)")
+        }
+    }
+
+    static func run(seed: UInt64, faults: PrivacySimFaults = []) -> [String] {
         var random = SeededGenerator(state: seed)
-        let world = PrivacySimWorld(ordering: ordering)
+        let world = PrivacySimWorld(faults: faults)
         world.spawn(.v3, writeFails: false, replacing: nil)
         for _ in 0..<steps { step(world, &random) }
         world.finish()
@@ -84,7 +102,7 @@ import Testing
         }
     }
 
-    /// Time (firing deadlines and the bound), a crash or reap, a drain, a spawn or reload, a refusal handler.
+    /// Time (firing deadlines and bounds), a crash or reap, a drain, a spawn or reload, a deferred refusal handler.
     static func worldStep(_ world: PrivacySimWorld, _ action: Int, _ child: PrivacySimChild?,
                           _ random: inout SeededGenerator) {
         switch action {
@@ -93,25 +111,24 @@ import Testing
             world.advance(by: Double.random(in: 0.1...2, using: &random))
         case 7: world.advance(by: Double.random(in: 2...9, using: &random))
         case 8: child.map(world.end)
-        case 9:
-            guard let child else { return }
-            (child.listening, child.drained) = (false, true)
-            child.duck.markRetired()
+        case 9: child.map { ($0.listening, $0.drained) = (false, $0.listening || $0.drained) }
         case 10:
             let kind: PrivacySimChild.Kind = Int.random(in: 0..<4, using: &random) == 0 ? .v2 : .v3
-            let old = Bool.random(using: &random) ? world.live.first(where: \.listening) : nil
+            let old = Bool.random(using: &random) ? world.hearing.first : nil
             world.spawn(kind, writeFails: Int.random(in: 0..<12, using: &random) == 0, replacing: old)
         default: world.runHandler(Int.random(in: 0..<max(1, world.handlers.count), using: &random))
         }
     }
 
-    /// A refused start, the close, the verdict and the chain as separate steps, and a quick off then on.
+    /// A refused start or a late enqueue, the close and the chain as separate steps, and a quick off then on.
     static func chainStep(_ world: PrivacySimWorld, _ action: Int, _ child: PrivacySimChild?,
                           _ random: inout SeededGenerator) {
         switch action {
-        case 12: if Int.random(in: 0..<3, using: &random) == 0 { world.refuseStart() }
+        case 12:
+            if Int.random(in: 0..<3, using: &random) == 0 { return world.refuseStart() }
+            world.flush(Int.random(in: 0..<max(1, world.pending.count), using: &random))
         case 13: world.close()
-        case 14: world.verdict()
+        case 14: world.flush(Int.random(in: 0..<max(1, world.pending.count), using: &random))
         case 15: world.play()
         case 16: progress(world)
         default:
@@ -123,48 +140,7 @@ import Testing
 
     static func progress(_ world: PrivacySimWorld) {
         world.close()
-        world.verdict()
         world.play()
-    }
-
-    /// The invariants over the ordered clip sequence, after the bound.
-    static func check(_ world: PrivacySimWorld) -> [String] {
-        var failures: [String] = []
-        let clips = world.played
-        for entry in world.entries.keys.sorted() {
-            let said = clips.filter { $0 == .on(entry) || $0 == .unavailable(entry) || $0 == .withdrawn(entry) }
-            if said.count != 1 { failures.append("entry \(entry) played \(said.count) clips") }
-            if said == [.withdrawn(entry)], !world.withdrawn.contains(entry) {
-                failures.append("entry \(entry) silent though not withdrawn")
-            }
-            guard let index = clips.firstIndex(where: { $0 == .on(entry) || $0 == .unavailable(entry) }) else {
-                continue
-            }
-            if index == 0 || clips[index - 1] != .stop(entry) {
-                failures.append("entry \(entry) clip without its stop")
-            }
-            if clips[index] == .on(entry) { failures += refusalsAfter(entry, at: index, in: world) }
-        }
-        for child in world.children where child.killed {
-            guard case .refused? = child.duck.settled else { continue }
-            let said = child.said + child.claimed
-            if child.replaced ? said > 1 : said != 1 {
-                failures.append("child \(child.index) refusal said \(said) times")
-            }
-        }
-        return failures
-    }
-
-    /// A refusal said after entry `entry`'s "privacy on" must be one decided after its close (or of a child it never
-    /// counted): an earlier one would leave "privacy on" claiming what that refusal already undid.
-    static func refusalsAfter(_ entry: Int, at index: Int, in world: PrivacySimWorld) -> [String] {
-        guard let state = world.entries[entry], let closed = state.closedTick else { return [] }
-        return world.played[(index + 1)...].compactMap { clip in
-            guard case .own(let child) = clip, child >= 0 else { return nil }
-            let refused = world.children[child]
-            guard refused.refusedTick < closed, state.opened.contains(where: { $0 === refused }) else { return nil }
-            return "entry \(entry)'s privacy on outlived child \(child)'s earlier refusal"
-        }
     }
 }
 #endif

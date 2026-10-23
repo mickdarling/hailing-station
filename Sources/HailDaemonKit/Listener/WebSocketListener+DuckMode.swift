@@ -38,47 +38,47 @@ extension AmbientRightyoRouter {
     ///   (or `confirm-not-sent/`) says so, logged `refused=unverified_owner`.
     /// - `hint`: the owner's turn that starts with a command and goes on: held back, nothing changes, and
     ///   `confirm-privacy-hint/` ("To go private, say 'stop recording' on its own.") says how, logged `hint`.
-    /// - `unavailable`: a child that cannot keep privacy was refused (`duckUnsupported`); privacy stays on, and
-    ///   `confirm-privacy-unavailable/` ("I can't listen privately right now.") says so every time (#822 A), except for
-    ///   a child a reload already retired (`retired`), whose stream lives on in its successor: logged, in silence; and
-    ///   except when the entry it is attributed to says it (`mark`'s child), so it is said once: logged
-    ///   `ambient_privacy unavailable=said_by_entry`.
-    /// Every clip, the entries' and the refusals', goes on the connection's one chain (round 3), so their order is the
-    /// order decided. Nothing reaches the agent. Logs tokens only.
+    /// - `unavailable`: a child that cannot keep privacy was refused (`duckUnsupported`); privacy stays on. By the state
+    ///   rule (round 4, `AmbientPrivacyLedger.refusal`), `confirm-privacy-unavailable/` ("I can't listen privately right
+    ///   now.") says it only when it changed what the owner has: never twice (`said_by_entry`), never while an open
+    ///   entry announces the outcome (carried to it, `said_by_entry`) or a listening child still keeps privacy
+    ///   (`superseded_by_keep`), never after an off (`superseded_by_off`); each silence logged `ambient_privacy`.
+    /// Every clip, the entries' and the refusals', is queued on the connection's one chain under the router's lock
+    /// that decided it (round 4), so their order is the order decided. Nothing reaches the agent. Logs tokens only.
     func voiceDuck(on connection: UUID, listener: WebSocketListener,
-                   retired: @escaping @Sendable () -> Bool = { false },
                    mark: AmbientRunMark? = nil) -> @Sendable (PrivacyCommand) -> Void {
         { [weak self, weak listener] command in
             guard let self else { return }
-            var (reported, on, entry) = (0, false, AmbientPrivacyEntry?.none)
-            let silent = command == .unavailable && retired()
-            if command == .unavailable, !silent, mark?.pipeline?.takePrivacyAnnouncement() == false {
-                emit("ambient_privacy", connection: connection, detail: "unavailable=said_by_entry")
-                return
-            }
-            if command == .exit, !duckMode(connection: connection) {
+            switch command {
+            case .unavailable:
+                announceRefusal(mark?.duck, connection: connection)
+            case .enter, .exit:
+                // An exit applies only while privacy is on, read under the lock that changes it.
+                let switched = switchDuck(command == .enter, connection: connection, reason: "voice",
+                                          whileArming: { command == .enter || $0 != nil }, clip: { [weak self] in
+                    self?.voiceClip(command, $0, connection: connection, listener: listener)
+                })
+                guard switched == nil else { return }
                 emit("ambient_privacy", connection: connection, detail: "exit=ignored state=off")
-                return
-            }
-            if command == .enter || command == .exit {
-                entry = switchDuck(command == .enter, connection: connection, reason: "voice") { _ in true }
-                reported = entry?.reported ?? 0
-            }
-            on = duckMode(connection: connection)
-            privacyClips(connection).enqueue { [weak self, weak listener, reported, on, silent, entry] in
-                var (persona, outcome) = Self.duckConfirmation(command, reported: reported, on: on)
-                if silent { (persona, outcome) = (nil, "unavailable retired") }
-                // Bounded by the configuration's `privacyBound`, so the chain never waits forever.
-                if let entry, entry.entry != nil, let self {
-                    let (clip, tokens) = await announceEntry(entry, connection: connection, listener: listener)
-                    (persona, outcome) = (clip, "on=true" + tokens)
+            default:
+                enqueuePrivacyClip(connection) { [weak self] on in
+                    let entry = AmbientPrivacyEntry(reported: 0, entry: nil, wasOn: on, on: on)
+                    let none: @Sendable () async -> Void = {}
+                    return self?.voiceClip(command, entry, connection: connection, listener: listener) ?? none
                 }
-                var confirm = "unreported"
-                if let persona {
-                    confirm = await self?.confirmVoiceMute(persona, on: connection, listener: listener) ?? "none"
-                }
-                self?.emit("ambient_duck_confirmed", connection: connection, detail: "\(outcome) confirm=\(confirm)")
             }
+        }
+    }
+
+    /// The work that answers a voice command: its clip (`duckConfirmation`), or the entry's announcement.
+    private func voiceClip(_ command: PrivacyCommand, _ entry: AmbientPrivacyEntry, connection: UUID,
+                           listener: WebSocketListener?) -> @Sendable () async -> Void {
+        guard entry.entry == nil else {
+            return entryClip(entry, outcome: "on=true", connection: connection, listener: listener)
+        }
+        let (persona, outcome) = Self.duckConfirmation(command, reported: entry.reported, on: entry.on)
+        return { [weak self, weak listener] in
+            await self?.sayPrivacy(persona, outcome: outcome, connection: connection, listener: listener)
         }
     }
 
@@ -122,28 +122,31 @@ extension AmbientRightyoRouter {
     ///   `confirm-privacy-off/` plays when a child took it.
     /// Logged as state tokens only.
     func switchPrivacy(_ on: Bool, connection: UUID, armedAs armed: UUID?) {
-        guard let entry = switchDuck(on, connection: connection, reason: "device", whileArming: { $0 == armed }) else {
-            return
-        }
         let listener = attachedListener
-        privacyClips(connection).enqueue { [weak self, weak listener] in
-            guard let self else { return }
-            var (persona, outcome): (String?, String) = (nil, "on=\(on) reason=device")
-            switch (on, entry.reported > 0) {
-            case (true, true):
-                let (clip, tokens) = await announceEntry(entry, connection: connection, listener: listener)
-                (persona, outcome) = (clip, outcome + tokens)
-            case (true, false):
+        let clip: (AmbientPrivacyEntry) -> (@Sendable () async -> Void)? = { [weak self] in
+            self?.deviceClip(on, $0, connection: connection, listener: listener)
+        }
+        _ = switchDuck(on, connection: connection, reason: "device", whileArming: { $0 == armed }, clip: clip)
+    }
+
+    private func deviceClip(_ on: Bool, _ entry: AmbientPrivacyEntry, connection: UUID,
+                            listener: WebSocketListener?) -> @Sendable () async -> Void {
+        let outcome = "on=\(on) reason=device"
+        switch (on, entry.reported > 0) {
+        case (true, true): return entryClip(entry, outcome: outcome, connection: connection, listener: listener)
+        case (true, false):
+            return { [weak self, weak listener] in
                 let device = await listener?.showDuckMode(false, reason: "device", expires: nil,
                                                           connection: connection) ?? "no_connection"
-                persona = AmbientStopConfirmation.notSent
-                outcome += " refused=unsupported_version device=\(device)"
-            case (false, true): persona = AmbientStopConfirmation.privacyOff
-            case (false, false): break
+                await self?.sayPrivacy(AmbientStopConfirmation.notSent,
+                                       outcome: outcome + " refused=unsupported_version device=\(device)",
+                                       connection: connection, listener: listener)
             }
-            var confirm = "unreported"
-            if let persona { confirm = await confirmVoiceMute(persona, on: connection, listener: listener) }
-            emit("ambient_duck_confirmed", connection: connection, detail: "\(outcome) confirm=\(confirm)")
+        case (false, let took):
+            let persona = took ? AmbientStopConfirmation.privacyOff : nil
+            return { [weak self, weak listener] in
+                await self?.sayPrivacy(persona, outcome: outcome, connection: connection, listener: listener)
+            }
         }
     }
 

@@ -568,14 +568,10 @@ public final class AmbientRightyoRouter: AmbientAudioSink, AmbientListenerWiring
         var media: [UUID: AmbientMediaTimer] = [:]
         /// Connections whose owner turned duck mode on (#735), kept like `media`. A connection is never in both.
         var duck: [UUID: AmbientDuckTimer] = [:]
-        /// Privacy entries (#735 S-8 HS-C round 2): the last number given per connection, and those still awaiting
-        /// their announcement, each with every child it was opened on (a child registered meanwhile included).
-        var privacyEntries: [UUID: Int] = [:]
-        var privacyOpen: [UUID: [Int: [RightyoAmbientPipeline]]] = [:]
-        /// Round 3: open entries an off withdrew, and those a refused start was attributed to (each says it), per
-        /// connection; and each connection's one chain for privacy clips and child refusals, so their order is total.
-        var privacyWithdrawn: [UUID: Set<Int>] = [:]
-        var privacyStartRefused: [UUID: Set<Int>] = [:]
+        /// Privacy entries and the last word per connection (#735 S-8 HS-C round 4, `AmbientPrivacyLedger`), and each
+        /// connection's one chain for privacy clips and child refusals, queued under this lock as each is decided, so
+        /// their order is the order decided.
+        var privacy: [UUID: AmbientPrivacyLedger<RightyoAmbientPipeline>] = [:]
         var privacyClips: [UUID: SerialTaskChain] = [:]
         /// The reply whose final text, the latest this host delivered, ended with a question (rightyo#199); nil
         /// otherwise, and cleared by audio of any other reply (a text-less acknowledgement clip). The phone plays
@@ -591,6 +587,8 @@ public final class AmbientRightyoRouter: AmbientAudioSink, AmbientListenerWiring
     fileprivate let wake: AsyncStream<Void>.Continuation
     /// Media and duck mode state for devices (#612, #735), sent one at a time in the order the modes changed.
     fileprivate let mediaNotices = SerialTaskChain()
+    /// The origin of the privacy ledgers' clock (#735 S-8 HS-C round 4).
+    let privacyEpoch = ContinuousClock.now
 
     public init(configuration: Configuration, log: @escaping @Sendable (WebSocketListenerEvent) -> Void = { _ in }) {
         (self.configuration, self.log) = (configuration, log)
@@ -670,7 +668,7 @@ public final class AmbientRightyoRouter: AmbientAudioSink, AmbientListenerWiring
             (state.latest[connection], state.inputRoutes[connection]) = (nil, nil)
             state.media.removeValue(forKey: connection)?.timer.cancel()
             state.duck.removeValue(forKey: connection)?.timer?.cancel()
-            if state.privacyOpen[connection] == nil { state.privacyEntries[connection] = nil }
+            if state.privacy[connection]?.entries.isEmpty != false { state.privacy[connection] = nil }
             // Clips already queued still play in order; a later one (none should come) starts a fresh chain.
             state.privacyClips[connection] = nil
             state.listener?.value?.replyHold.set(false, connection: connection)
@@ -777,8 +775,6 @@ extension AmbientRightyoRouter {
             if run.retiredAt == nil {
                 state.retirements += 1
                 state.runs[id]?.retiredAt = state.retirements
-                // Kept on the child itself (round 3), so it still reads as draining once its run is removed.
-                run.pipeline.markRetired()
             }
             return run.pipeline
         }
@@ -992,10 +988,9 @@ extension AmbientRightyoRouter {
         (settings.onHeard, settings.onOverheard) = transcriptRelays(on: connection, listener: listener)
         settings.onVoiceMute = voiceMuted(on: connection, listener: listener)
         settings.onVoiceMedia = voiceMedia(on: connection, listener: listener)
-        // The child this pipeline runs, marked once it exists, so a refusal can tell whether a reload retired it.
+        // The child's privacy state, held once it exists, so its refusal is said by the state rule (round 4).
         let mark = AmbientRunMark()
-        (settings.onVoiceDuck, settings.onDuckUnsupported) = (voiceDuck(on: connection, listener: listener,
-                                                                        retired: retired(mark), mark: mark),
+        (settings.onVoiceDuck, settings.onDuckUnsupported) = (voiceDuck(on: connection, listener: listener, mark: mark),
                                                               duckUnsupported(on: connection))
         // Privacy on (#735 S-2b): the child is launched already private, on a spawn, a respawn or a reload alike.
         settings.startPrivate = state.withLock { $0.duck[connection] != nil }
@@ -1018,7 +1013,7 @@ extension AmbientRightyoRouter {
                                                       listener: listener, audit: configuration.audit,
                                                       selection: selection, streamTarget: configuration.target
                                                   ))
-        mark.set(pipeline)
+        mark.set(pipeline.privacyControl)
         return pipeline
     }
 
@@ -1037,11 +1032,9 @@ extension AmbientRightyoRouter {
         // Duck mode (#735) likewise; the pipeline writes it once the child's `started` says it takes it. Always told,
         // so a child launched start-private (S-2b) whose privacy ended meanwhile is written off once it confirms.
         pipeline.reportDuck(state.duck[connection] != nil)
-        // An entry still awaiting its announcement answers for this child too (#735 S-8 HS-C round 2).
-        for entry in (state.privacyOpen[connection] ?? [:]).keys {
-            pipeline.openPrivacyEntry(entry)
-            state.privacyOpen[connection]?[entry]?.append(pipeline)
-        }
+        // An entry still awaiting its announcement answers for this child too (#735 S-8 HS-C round 2), within the
+        // child's own bound from now (round 4); while private after "unavailable", a recovery entry announces it.
+        registerPrivacy(pipeline, connection: connection, in: &state)
         state.runs[id]?.task = Task { [weak self] in
             if reload { self?.emit("ambient_reloaded", detail: nil) }
             self?.emit("ambient_started", connection: connection, detail: nil)
@@ -1243,19 +1236,9 @@ extension AmbientRightyoRouter {
 
     private func refuse(_ stream: UUID, connection: UUID, reason: String) {
         emit("ambient_refused", detail: reason)
-        // A start refused while private (#735 S-2b): nothing listens, privacy stays on, and the owner is told: by the
-        // latest open entry when there is one (round 3: said once), otherwise on the connection's clip chain.
-        let (onNow, held) = state.withLock { state -> (Bool, Bool) in
-            guard state.duck[connection] != nil else { return (false, false) }
-            guard let entry = state.privacyOpen[connection]?.keys.max() else { return (true, false) }
-            state.privacyStartRefused[connection, default: []].insert(entry)
-            return (true, true)
-        }
-        if held {
-            emit("ambient_privacy", connection: connection, detail: "unavailable=said_by_entry")
-        } else if onNow {
-            privacyUnavailable(on: connection)
-        }
+        // A start refused while private (#735 S-2b): nothing listens, privacy stays on, and the owner is told by the
+        // state rule (round 4), as a child's refusal is.
+        announceRefusal(nil, connection: connection)
         let listener = state.withLock { $0.listener?.value }
         Task { await listener?.ambientFailed(stream: stream, connection: connection,
                                              message: "ambient unavailable: \(reason)") }
@@ -1342,7 +1325,6 @@ extension AmbientRightyoRouter {
             guard active.stream == old.stream, active.pipeline === old.pipeline, !Self.full(state),
                   state.runs[old.run]?.ending == false else { return .busy }
             state.runs[old.run]?.replaced = true
-            old.pipeline.markReplaced()
             // Retired in the same lock, so a take-over start in the meantime finds it as a victim to force out.
             state.retirements += 1
             state.runs[old.run]?.retiredAt = state.retirements
@@ -1531,40 +1513,44 @@ extension AmbientRightyoRouter {
     /// `setDuck`, which also opens a privacy entry (#735 S-8 HS-C round 2) for an on that a child took or that found
     /// privacy already on, under the same lock: the caller must announce it (`announceEntry`), which closes it. With
     /// `announced` false (round 3: `setDuck`, which announces nothing) no entry is opened, so none is left open.
+    /// `clip` (round 4) builds the work that says it, queued on the connection's clip chain under this same lock, so
+    /// the chain's order is the order decided (a voice off and a device on racing can never swap their clips).
     func switchDuck(_ on: Bool, connection: UUID, reason: String, whileArming armed: (UUID?) -> Bool,
-                    announced: Bool = true) -> AmbientPrivacyEntry? {
-        let changed = state.withLock { state -> DuckChange? in
+                    announced: Bool = true,
+                    clip: (AmbientPrivacyEntry) -> (@Sendable () async -> Void)? = { _ in nil })
+    -> AmbientPrivacyEntry? {
+        let decided = state.withLock { state -> (DuckChange, AmbientPrivacyEntry)? in
             guard armed(state.duck[connection]?.token) else { return nil }
             let wasOn = state.duck[connection] != nil
             let reported = changeDuck(on, connection: connection, reason: reason, in: &state)
-            let entry = announced && on && (wasOn || reported != nil) ? openPrivacyEntry(connection, in: &state) : nil
+            let entry = announced && on && (wasOn || reported != nil)
+                ? openPrivacyEntry(connection, wasOn: wasOn, in: &state) : nil
             // An off withdraws every entry still open (round 3): each closes in silence, and never inherits a timeout.
-            if !on, reported != nil, let open = state.privacyOpen[connection]?.keys {
-                state.privacyWithdrawn[connection, default: []].formUnion(open)
+            if !on, reported != nil { state.privacy[connection, default: .init()].withdrawAll() }
+            var change = DuckChange(duck: reported ?? 0, media: nil, still: reported == nil && wasOn, wasOn: wasOn,
+                                    entry: entry)
+            if reported != nil, on, state.media[connection] != nil {
+                change.media = changeMedia(false, connection: connection, reason: "voice", in: &state)
             }
-            guard let reported else { return DuckChange(duck: 0, media: nil, still: wasOn, wasOn: wasOn, entry: entry) }
-            let left = on && state.media[connection] != nil
-            let media = left ? changeMedia(false, connection: connection, reason: "voice", in: &state) : nil
-            return DuckChange(duck: reported, media: media, still: false, wasOn: wasOn, entry: entry)
+            let switched = AmbientPrivacyEntry(reported: change.duck, entry: entry, wasOn: wasOn,
+                                               on: state.duck[connection] != nil)
+            if let work = clip(switched) { Self.clipChain(connection, in: &state).enqueue(work) }
+            return (change, switched)
         }
-        guard let changed else { return nil }
+        guard let (changed, switched) = decided else { return nil }
         let refused = !on || changed.duck > 0 ? "" : changed.still ? " still_on" : " refused=unsupported"
         emit("ambient_duck", connection: connection,
              detail: "on=\(on) reason=\(reason) reported=\(changed.duck)\(refused)")
         if let media = changed.media {
             emit("ambient_media", connection: connection, detail: "on=false reason=voice reported=\(media)")
         }
-        return AmbientPrivacyEntry(reported: changed.duck, entry: changed.entry, wasOn: changed.wasOn)
+        return switched
     }
 
     /// Opens the next privacy entry on every child of `connection`, under the caller's lock.
-    private func openPrivacyEntry(_ connection: UUID, in state: inout State) -> Int {
-        let entry = (state.privacyEntries[connection] ?? 0) + 1
-        let pipelines = state.runs.values.filter { $0.connection == connection }.map(\.pipeline)
-        pipelines.forEach { $0.openPrivacyEntry(entry) }
-        state.privacyEntries[connection] = entry
-        state.privacyOpen[connection, default: [:]][entry] = pipelines
-        return entry
+    private func openPrivacyEntry(_ connection: UUID, wasOn: Bool, in state: inout State) -> Int {
+        state.privacy[connection, default: .init()].open(on: Self.children(of: connection, in: state), wasOn: wasOn,
+                                                         at: privacyNow)
     }
 
     /// Media mode's change under the caller's lock: the timeout, the children, then the device notice, queued under the
@@ -1645,91 +1631,187 @@ extension AmbientRightyoRouter {
     }
 
     /// The children of `connection` that still hear its stream (#735 S-8 HS-C round 2): neither retired by the stream's
-    /// end nor swapped out by a reload. A draining child hears nothing more, so it never answers for privacy.
+    /// end nor swapped out by a reload, nor gone. A draining child hears nothing more, so it never answers for privacy.
     func listeningPipelines(connection: UUID) -> [RightyoAmbientPipeline] {
-        state.withLock { state in
-            state.runs.values.filter { $0.connection == connection && $0.retiredAt == nil }.map(\.pipeline)
-        }
+        state.withLock { Self.listening(connection, in: $0) }
     }
 
-    /// Whether an off withdrew `connection`'s entry `entry` (round 3).
+    fileprivate static func listening(_ connection: UUID, in state: State) -> [RightyoAmbientPipeline] {
+        state.runs.values.filter { $0.connection == connection && $0.retiredAt == nil }.map(\.pipeline)
+    }
+
+    /// Every child of `connection` with its privacy state, retired ones included, for an entry to open on.
+    fileprivate static func children(of connection: UUID, in state: State) -> [(RightyoAmbientPipeline,
+                                                                                AmbientDuckControl)] {
+        state.runs.values.filter { $0.connection == connection }.map { ($0.pipeline, $0.pipeline.privacyControl) }
+    }
+
+    /// Now on the privacy ledgers' clock (round 4), in seconds.
+    var privacyNow: Double {
+        let elapsed = privacyEpoch.duration(to: .now).components
+        return Double(elapsed.seconds) + Double(elapsed.attoseconds) / 1e18
+    }
+
+    /// Whether `connection`'s entry `entry` no longer waits on its children: an off withdrew it, a newer entry
+    /// supersedes it, or it is closed (round 4).
     func privacyWithdrawn(_ entry: Int, connection: UUID) -> Bool {
-        state.withLock { $0.privacyWithdrawn[connection]?.contains(entry) == true }
+        state.withLock { state in
+            guard let ledger = state.privacy[connection], let open = ledger.entries[entry] else { return true }
+            return open.withdrawn || ledger.last > entry
+        }
     }
 
     /// `connection`'s one chain for privacy clips (#735 S-8 HS-C round 3): entries (voice and device), their stops,
-    /// and child refusals, in one total order.
-    func privacyClips(_ connection: UUID) -> SerialTaskChain {
+    /// and child refusals, in one total order. Taken under the caller's lock (round 4): the chain's own lock only
+    /// creates a task, and is never held while taking the router's, so the order of the two is fixed.
+    fileprivate static func clipChain(_ connection: UUID, in state: inout State) -> SerialTaskChain {
+        if let chain = state.privacyClips[connection] { return chain }
+        let chain = SerialTaskChain()
+        state.privacyClips[connection] = chain
+        return chain
+    }
+
+    /// Queues the clip `work` builds, given whether privacy is on, on `connection`'s chain, under the lock that reads it.
+    func enqueuePrivacyClip(_ connection: UUID, _ work: (Bool) -> @Sendable () async -> Void) {
         state.withLock { state in
-            if let chain = state.privacyClips[connection] { return chain }
-            let chain = SerialTaskChain()
-            state.privacyClips[connection] = chain
-            return chain
+            Self.clipChain(connection, in: &state).enqueue(work(state.duck[connection] != nil))
         }
     }
 
-    /// Closes privacy entry `entry` and decides it in one step under the router's lock (round 3), or nil, closing
-    /// nothing, while it must still wait (`closeEntry`): no refusal lands between the answers read and the close, and
-    /// no child registers or is swapped out meanwhile.
-    func closePrivacyEntry(_ entry: Int, connection: UUID, timedOut: Bool) -> AmbientPrivacyDecision? {
-        state.withLock { state in
-            guard let opened = state.privacyOpen[connection]?[entry] else {
-                return AmbientPrivacyDecision(answer: .withdrawn, claimed: false, refused: [])
+    /// Registers `pipeline` with `connection`'s privacy entries, under the caller's lock (`register`), opening a
+    /// recovery entry, queued on the chain, when it may restore privacy after "unavailable" (round 4).
+    fileprivate func registerPrivacy(_ pipeline: RightyoAmbientPipeline, connection: UUID, in state: inout State) {
+        let on = state.duck[connection] != nil
+        guard on || state.privacy[connection] != nil else { return }
+        let all = Self.children(of: connection, in: state)
+        let recovery = state.privacy[connection, default: .init()].register(pipeline, duck: pipeline.privacyControl,
+                                                                            at: privacyNow, on: on, all: all)
+        guard let recovery else { return }
+        let entry = AmbientPrivacyEntry(reported: 0, entry: recovery, wasOn: true, on: true)
+        Self.clipChain(connection, in: &state).enqueue(entryClip(entry, outcome: "on=true reason=recovery",
+                                                                 connection: connection,
+                                                                 listener: state.listener?.value))
+    }
+
+    /// Closes privacy entry `entry` and decides it in one step under the router's lock (round 3), or says until when
+    /// to wait (`AmbientPrivacyLedger.close`): no refusal lands between the answers read and the close, and no child
+    /// registers or is swapped out meanwhile.
+    func closePrivacyEntry(_ entry: Int, connection: UUID) -> AmbientPrivacyClose<RightyoAmbientPipeline> {
+        let (now, bound) = (privacyNow, configuration.privacyBound)
+        return state.withLock { state in
+            let listening = Set(Self.listening(connection, in: state).map(ObjectIdentifier.init))
+            return state.privacy[connection]?.close(entry, now: now, bound: bound) {
+                listening.contains(ObjectIdentifier($0))
+            } ?? .decided(.init(clip: nil, tokens: " withdrawn"))
+        }
+    }
+
+    /// A refused child's `unavailable` (#822 A), from its privacy state `duck` (held strongly, round 4), or a start
+    /// refused while private (`duck` nil): decided by the state rule (`AmbientPrivacyLedger.refusal`) and, when said,
+    /// queued on the connection's clip chain, both under the router's lock; otherwise logged as the reason it is not.
+    func announceRefusal(_ duck: AmbientDuckControl?, connection: UUID) {
+        let silent = state.withLock { state -> String? in
+            let on = state.duck[connection] != nil
+            guard on || duck != nil else { return nil }
+            let holders = Self.listening(connection, in: state).map(\.privacyControl)
+            var ledger = state.privacy[connection] ?? .init()
+            let (said, token) = ledger.refusal(of: duck, on: on, holders: holders)
+            if on || state.privacy[connection] != nil { state.privacy[connection] = ledger }
+            guard said else { return token }
+            let listener = state.listener?.value
+            Self.clipChain(connection, in: &state).enqueue { [weak self, weak listener] in
+                await self?.sayPrivacy(AmbientStopConfirmation.privacyUnavailable, outcome: "unavailable",
+                                       connection: connection, listener: listener)
             }
-            let withdrawn = state.privacyWithdrawn[connection]?.contains(entry) == true
-            let listening = Set(state.runs.values.filter { $0.connection == connection && $0.retiredAt == nil }
-                .map { ObjectIdentifier($0.pipeline) })
-            let children = opened.map { pipeline in
-                AmbientPrivacyEntryChild(duck: pipeline.privacyControl,
-                                         listening: listening.contains(ObjectIdentifier(pipeline)))
+            return nil
+        }
+        if let silent { emit("ambient_privacy", connection: connection, detail: silent) }
+    }
+
+    /// The work that announces entry `entry` (`announceEntry`) and logs `outcome` with its tokens.
+    func entryClip(_ entry: AmbientPrivacyEntry, outcome: String, connection: UUID,
+                   listener: WebSocketListener?) -> @Sendable () async -> Void {
+        { [weak self, weak listener] in
+            guard let self else { return }
+            let (clip, tokens) = await announceEntry(entry, connection: connection, listener: listener)
+            await sayPrivacy(clip, outcome: outcome + tokens, connection: connection, listener: listener)
+        }
+    }
+
+    /// Plays `persona` (nil: none) and logs `ambient_duck_confirmed` with `outcome` and the clip's token.
+    func sayPrivacy(_ persona: String?, outcome: String, connection: UUID, listener: WebSocketListener?) async {
+        var confirm = "unreported"
+        if let persona { confirm = await confirmVoiceMute(persona, on: connection, listener: listener) }
+        emit("ambient_duck_confirmed", connection: connection, detail: "\(outcome) confirm=\(confirm)")
+    }
+
+    /// Announces privacy entry `entry` on `connection` (round 3): waits for every child that still hears the stream,
+    /// each within its own bound, then closes the entry and reads each child's answer in that one step
+    /// (`closePrivacyEntry`). A clip is queued after a reply playing is stopped on the same chain, so the stop never
+    /// cuts it. Returns the clip and the log tokens after `on=true`. Runs on the connection's clip chain.
+    func announceEntry(_ entry: AmbientPrivacyEntry, connection: UUID,
+                       listener: WebSocketListener?) async -> (String?, String) {
+        guard let number = entry.entry else { return (nil, " withdrawn") }
+        let decision = await decideEntry(number, connection: connection)
+        for pipeline in decision.refused { await pipeline.killRefused() }
+        guard let clip = decision.clip else { return (nil, decision.tokens) }
+        let playback = await listener?.stopReplyPlayback(connection: connection) ?? "no_connection"
+        return (clip, decision.tokens + " playback=\(playback)")
+    }
+
+    private func decideEntry(_ entry: Int, connection: UUID) async -> AmbientPrivacyDecision<RightyoAmbientPipeline> {
+        while true {
+            switch closePrivacyEntry(entry, connection: connection) {
+            case .decided(let decision): return decision
+            case .wait(let until):
+                await waitForPrivacy(entry, connection: connection,
+                                     until: privacyEpoch.advanced(by: .milliseconds(Int64(until * 1_000) + 1)))
             }
-            guard let closed = Self.closeEntry(entry, children: children, withdrawn: withdrawn, timedOut: timedOut)
-            else { return nil }
-            state.privacyOpen[connection]?[entry] = nil
-            if state.privacyOpen[connection]?.isEmpty == true { state.privacyOpen[connection] = nil }
-            state.privacyWithdrawn[connection]?.remove(entry)
-            let startRefused = state.privacyStartRefused[connection]?.remove(entry) != nil
-            let answers = closed.map(\.0)
-            return AmbientPrivacyDecision(
-                answer: Self.privacyVerdict(answers, withdrawn: withdrawn, startRefused: startRefused),
-                claimed: startRefused || answers.contains(where: \.claimed),
-                refused: zip(opened, closed).filter(\.1.refused).map(\.0))
         }
     }
 
-    /// Whether the pipeline `mark` names was swapped out by a reload (#822 A): its stream lives on in the new child, so
-    /// its refusal says nothing. Read from the pipeline itself (round 3), so it holds after its run is removed.
-    func retired(_ mark: AmbientRunMark) -> @Sendable () -> Bool {
-        { mark.pipeline?.isReplaced ?? false }
+    /// Until every listening child answered (or an off withdrew the entry), or `deadline`.
+    private func waitForPrivacy(_ entry: Int, connection: UUID, until deadline: ContinuousClock.Instant) async {
+        await withTaskGroup(of: Void.self) { group in
+            group.addTask { await self.awaitSettled(entry, connection: connection) }
+            group.addTask { try? await Task.sleep(until: deadline) }
+            defer { group.cancelAll() }
+            await group.next()
+        }
     }
 
-    /// A start refused while private (#735 S-2b: the child could not even launch): nothing listens and privacy stays
-    /// on. The owner hears `confirm-privacy-unavailable/` every time (#822 A: no silent change), on the connection's
-    /// clip chain, logged as `voiceDuck` logs it; while an entry is open, that entry says it (round 3). Tokens only.
-    func privacyUnavailable(on connection: UUID) {
-        let listener = state.withLock { $0.listener?.value }
-        privacyClips(connection).enqueue { [weak self, weak listener] in
-            let confirm = await self?.confirmVoiceMute(AmbientStopConfirmation.privacyUnavailable, on: connection,
-                                                       listener: listener) ?? "none"
-            self?.emit("ambient_duck_confirmed", connection: connection, detail: "unavailable confirm=\(confirm)")
+    /// Waits until every child that still hears `connection`'s stream has answered, again after each answer, so a
+    /// child a reload started meanwhile is waited for too; or until an off withdrew `entry`; or cancellation.
+    private func awaitSettled(_ entry: Int?, connection: UUID) async {
+        while !Task.isCancelled, !(entry.map { privacyWithdrawn($0, connection: connection) } ?? false),
+              let next = listeningPipelines(connection: connection).first(where: { $0.privacySettled == nil }) {
+            _ = await next.privacyAnswer()
         }
+    }
+
+    /// Whether every child that hears `connection`'s stream keeps the privacy wished for, once each answered (tests).
+    func privacyKept(connection: UUID) async -> Bool {
+        await awaitSettled(nil, connection: connection)
+        let pipelines = listeningPipelines(connection: connection)
+        return !pipelines.isEmpty && pipelines.allSatisfy { $0.privacySettled == .kept }
     }
 }
 
 /// What `setDuck` changed: how many children took duck mode, how many took media mode's end when it left it, and
 /// whether an entry no child took found duck mode already on.
 private struct DuckChange {
-    let duck: Int, media: Int?, still: Bool
+    var duck: Int, media: Int?, still: Bool
     var wasOn = false, entry: Int?
 }
 
-/// The pipeline a router closure belongs to, set once the pipeline exists (#822 A); weak, so it never keeps one alive.
+/// The privacy state of the child a router closure belongs to, set once its pipeline exists (#822 A). Held strongly
+/// (round 4): a refusal said after the pipeline is freed (a deadline task outlives it) still reads whether it was said,
+/// and the state holds no pipeline, so nothing is kept alive.
 final class AmbientRunMark: Sendable {
-    private struct Weak { weak var value: RightyoAmbientPipeline? }
-    private let held = Mutex(Weak())
+    private let held = Mutex<AmbientDuckControl?>(nil)
 
-    func set(_ pipeline: RightyoAmbientPipeline) { held.withLock { $0.value = pipeline } }
-    var pipeline: RightyoAmbientPipeline? { held.withLock { $0.value } }
+    func set(_ duck: AmbientDuckControl) { held.withLock { $0 = duck } }
+    var duck: AmbientDuckControl? { held.withLock { $0 } }
 }
 
 /// Runs the work given to it one piece at a time, in the order given (#404): each piece starts only once the one

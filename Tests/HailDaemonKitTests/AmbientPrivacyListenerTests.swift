@@ -68,7 +68,11 @@ import Testing
         await rig.finish()
         #expect(rig.details("ambient_duck") == ["on=true reason=voice reported=1", "on=true reason=voice reported=1"])
         let on = "playback=idle confirm=confirmprivacyon/0:sent"
-        #expect(rig.details("ambient_duck_confirmed") == ["on=true " + on, "on=true still_on " + on])
+        // Round 4 (finding 5): the first entry, still open when the re-entry opened, closes in silence and the
+        // re-entry announces the outcome; closed first, it says "privacy on" itself. Either way one clip per state.
+        let confirmed = rig.details("ambient_duck_confirmed"), first = confirmed.first ?? ""
+        #expect(["on=true " + on, "on=true superseded_by_newer confirm=unreported"].contains(first)
+            && confirmed.dropFirst() == ["on=true still_on " + on], "\(confirmed)")
         #expect(rig.details("ambient_privacy").isEmpty)
     }
 
@@ -107,8 +111,9 @@ import Testing
     }
 
     /// Round 4, then #822 A (Mick: no silent state change): a child that cannot keep privacy is refused and "I can't
-    /// listen privately right now." plays every time, a second refused child on the same connection included. With
-    /// S-2b both children were launched start-private and did not confirm it.
+    /// listen privately right now." plays when nothing else keeps privacy, a second refused child on the same
+    /// connection included: with S-2b both children were launched start-private and did not confirm it. The second
+    /// starts after "unavailable", so it is announced as a recovery entry (#735 S-8 HS-C round 4), which says it.
     @Test func theUnavailableClipPlaysForEveryRefusal() async throws {
         let later = AmbientDuckReloadTests.silent(advertises: true, version: 1)
         let clips = AmbientAckLibrary(clips: ["confirmprivacyon": [AmbientDuckModeTests.clip("Privacy on.", 9)],
@@ -127,9 +132,8 @@ import Testing
         #expect(await eventually { rig.details("ambient_duck_confirmed").count == 3 })
         #expect(rig.env.router.duckMode(connection: connection))
         await rig.finish()
-        #expect(Array(rig.details("ambient_duck_confirmed").dropFirst()) == Array(
-            repeating: "unavailable confirm=confirmprivacyunavailable/0:sent", count: 2
-        ))
+        let said = "confirm=confirmprivacyunavailable/0:sent", rest = rig.details("ambient_duck_confirmed").dropFirst()
+        #expect(Array(rest) == ["unavailable " + said, "on=true reason=recovery refused playback=idle " + said])
         #expect(rig.details("ambient_privacy_start") == Array(repeating: "outcome=refused reason=unconfirmed",
                                                               count: 2))
     }

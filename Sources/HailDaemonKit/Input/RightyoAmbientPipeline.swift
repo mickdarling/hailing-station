@@ -342,20 +342,13 @@ extension RightyoAmbientPipeline {
     func privacyAnswer() async -> AmbientPrivacyAnswer { await duck.answer() }
     /// The same, now, without waiting: nil while still to come.
     var privacySettled: AmbientPrivacyAnswer? { duck.settled }
-    /// This child's privacy state, which the router's entries open on and close (#735 S-8 HS-C round 3).
+    /// This child's privacy state, which the router's entries open on and close (#735 S-8 HS-C round 3), and which its
+    /// refusal is said through (round 4: held strongly by the router's closures, so it outlives this pipeline).
     var privacyControl: AmbientDuckControl { duck }
-    /// The router's entry `entry` is open: a refusal from now on is said by it; see the duck.
-    func openPrivacyEntry(_ entry: Int) { duck.open(entry: entry) }
-    /// Whether this child's own `unavailable` is to be said now (false: said already, or an open entry says it).
-    func takePrivacyAnnouncement() -> Bool { duck.takeAnnouncement() }
-    /// A reload swapped this child out, or (`markRetired`) its stream ended so it drains (round 3: kept on the child
-    /// itself, so it holds after its run is removed).
-    func markReplaced() { duck.markReplaced() }
-    func markRetired() { duck.markRetired() }
-    var isReplaced: Bool { duck.replaced }
 
-    /// An entry's close refused this child at the router's bound (round 3): it is killed as at its own deadline, and
-    /// `unavailable` goes through the same path (the entry that claimed it says it; otherwise the child itself).
+    /// An entry's close refused this child at its own bound (round 4: its open + start + ack + margin, so only a child
+    /// whose own deadlines all passed): it is killed as at its own deadline, and `unavailable` goes through the same
+    /// path (the entry that claimed it says it).
     func killRefused() async {
         await child.stop(eofGrace: 0, termGrace: 0)
         onVoiceDuck?(.unavailable)
@@ -813,14 +806,12 @@ final class AmbientDuckControl: Sendable {
         var startLapsed = false
         /// A `started` that cannot keep privacy, until the pipeline refuses the child or releases it: no answer yet.
         var deciding = false
-        /// Refused and killed (any deadline, a `started` that cannot keep it, an excess ack, the router's timeout):
-        /// `unavailable` is said for it once, by itself or by the open entry it is attributed to (`refusedAt`).
+        /// Refused and killed (any deadline, a `started` that cannot keep it, an excess ack, its bound): handled once
+        /// (`announced`), by the open entry it is attributed to (`refusedAt`), or by the router's state rule (round 4).
         var refused = false, announced = false
         var refusedAs: RightyoPrivacyRefusal?, refusedAt: Int?
-        /// The router's privacy entries still awaiting their close (round 2), and whether a reload swapped this child
-        /// out (round 3).
+        /// The router's privacy entries still awaiting their close (round 2).
         var openEntries: Set<Int> = []
-        var replaced = false, retired = false
         /// `answer()` callers waiting for the proof, by id; each is resumed once, outside the lock, with the answer at
         /// that moment (round 3: never re-read after a later change), or `timeout` by its own cancellation, whichever
         /// removes it first.
@@ -992,11 +983,10 @@ final class AmbientDuckControl: Sendable {
 }
 
 /// One child's answer at an entry's close (#735 S-8 HS-C round 3): nil while still to come; whether the close claimed
-/// a refusal attributed to the entry, refused the child at the bound (it must be killed), and whether the child was
-/// retired (a reload swapped it out, or its stream ended and it drains).
+/// a refusal attributed to the entry, and whether it refused the child at its bound (it must be killed).
 struct AmbientPrivacyClosing: Sendable, Equatable {
     let answer: AmbientPrivacyAnswer?
-    let claimed: Bool, refused: Bool, retired: Bool
+    let claimed: Bool, refused: Bool
 }
 
 /// What a child's privacy came to (#735 S-8 HS-C round 2), for the entry's announcement: `kept`; `refused` (killed,
@@ -1007,8 +997,9 @@ enum AmbientPrivacyAnswer: Equatable, Sendable {
     case kept, refused(RightyoPrivacyRefusal?), ended, withdrawn, timeout
 }
 
-/// Deadlines, refusals and announcements (#735 S-8, HS-C round 2): each refusal is said exactly once, by the entry it is
-/// attributed to when one is open, otherwise by the child's own `unavailable`.
+/// Deadlines, refusals and announcements (#735 S-8, HS-C round 2): each refusal is handled exactly once, by the entry it
+/// is attributed to when one is open, otherwise by the child's own `unavailable`, which the router says only when it
+/// changed the owner's state (round 4: no listening child still keeps privacy, and privacy is still on).
 extension AmbientDuckControl {
     /// Ends the wait for `started` at the deadline: true when it had not come (the child must be killed); a later
     /// `started` is then ignored, and the wish stays on.
@@ -1087,13 +1078,23 @@ extension AmbientDuckControl {
     /// What the privacy came to, or nil while still to come (#735 round 2: the property test drives it step by step).
     var settled: AmbientPrivacyAnswer? { state.withLock { $0.proof == .pending ? nil : $0.answer } }
 
-    /// Router entry `entry` awaits its close: a refusal from now on is said by that entry, not by the child.
-    func open(entry: Int) { update { _ = $0.openEntries.insert(entry) } }
+    /// Router entry `entry` awaits its close: a refusal from now on is said by that entry, not by the child. A refusal
+    /// not yet said moves to it too (round 4): the newest entry announces the outcome, so it is never said twice.
+    func open(entry: Int) {
+        update { state in
+            state.openEntries.insert(entry)
+            if state.refused, !state.announced { state.refusedAt = entry }
+        }
+    }
+
+    /// Whether this child may still be keeping privacy (round 4, the state rule): it has proved it, or its proof is
+    /// still to come. A refused, ended or deaf child (an on-line it never took) holds nothing.
+    var holdsPrivacy: Bool { state.withLock { $0.proof != .never } }
 
     /// Closes entry `entry` (#735 S-8 HS-C round 3) and reads this child's answer in the same step, under the lock, so
     /// nothing can land between them: a refusal after it is a new event, never attributed to this entry. With
-    /// `refusePending`, the router's bound has passed: a proof still to come is refused first (the child must then be
-    /// killed), but only by the newest entry still open, which owns that proof; an older one leaves it pending.
+    /// `refusePending`, this child's own bound has passed (round 4): a proof still to come is refused first (the child
+    /// must then be killed), but only by the newest entry still open, which owns that proof; an older one leaves it.
     /// Whichever came first under this lock, the ack or the bound, decides. Claims a refusal attributed to the entry
     /// that is not yet said.
     func close(entry: Int, refusePending: Bool) -> AmbientPrivacyClosing {
@@ -1107,16 +1108,9 @@ extension AmbientDuckControl {
             let claimed = state.refused && state.refusedAt == entry && !state.announced
             if claimed { state.announced = true }
             return AmbientPrivacyClosing(answer: state.proof == .pending ? nil : state.answer, claimed: claimed,
-                                         refused: refusedNow, retired: state.retired)
+                                         refused: refusedNow)
         }
     }
-
-    /// A reload swapped this child out (round 3); read by `replaced`. Either way it is retired: it hears no more.
-    func markReplaced() { update { ($0.replaced, $0.retired) = (true, true) } }
-    var replaced: Bool { state.withLock { $0.replaced } }
-    /// The child's stream ended and it drains (round 3), or a reload replaced it: it hears no more audio.
-    func markRetired() { update { $0.retired = true } }
-    var retired: Bool { state.withLock { $0.retired } }
 
     /// The child's own `unavailable`: true when it is to be said now; false once said, or while the entry it is
     /// attributed to is still open (that entry says it).
