@@ -6,7 +6,7 @@ import Testing
 /// #825 / #850: the card's binding-change and disappearance paths stop ambient capture, not reply playback.
 /// Real store/controller wiring with scripted sockets and capture; no microphone or physical output proof.
 @MainActor
-@Suite struct ReplyPlaybackFirstAudioBindingChangeTests {
+@Suite struct FirstAudioBindingChangeTests {
     @Test(arguments: [false, true], [false, true])
     func ambientStopPreservesOneLossAcrossReconnect(cardDisappears: Bool, lateAudio: Bool) async throws {
         let harness = try BindingChangeRig(), reply = idleReply()
