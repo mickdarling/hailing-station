@@ -4,12 +4,12 @@ import Synchronization
 import Testing
 @testable import HailDaemonKit
 
-/// Privacy mode (internally duck) reaches only a RightyO that advertised `duck` version 2 or higher (#735 S-2). A v1
-/// RightyO still transcribes while ducked, and an older one skips the line, so neither is ever written one, and the
-/// host is told it did not take it (fail closed). Synthetic only.
+/// Privacy mode (internally duck) reaches only a RightyO that advertised `duck` version 3 or higher (#735 S-2, S-8). A
+/// v1 RightyO still transcribes while ducked, a v2 one never acks, and an older one skips the line, so none is ever
+/// written one, and the host is told it did not take it (fail closed). Synthetic only.
 @Suite(.serialized, .timeLimit(.minutes(1)), .frozenGuardBudget) struct AmbientDuckControlTests {
     static let started = #"{"type": "session", "phase": "started", "capabilities": {}}"#
-    static let advertised = #"{"type": "session", "phase": "started", "duck": {"version": 2}}"#
+    static let advertised = #"{"type": "session", "phase": "started", "duck": {"version": 3}}"#
 
     /// Every line a control was asked to write.
     final class Written: Sendable {
@@ -48,7 +48,7 @@ import Testing
         #expect(written.all == [true, false])
     }
 
-    /// A child that starts without `duck` v2 while privacy is wished for (the spawn-to-started race) is refused (the
+    /// A child that starts without `duck` v3 while privacy is wished for (the spawn-to-started race) is refused (the
     /// pipeline kills it), never written, and still counts as private: privacy is never lost (#735 round 2).
     @Test func aWishAnOlderChildCannotTakeIsRefusedAndKeptPrivate() {
         let (control, written) = (AmbientDuckControl(), Written())
@@ -62,23 +62,23 @@ import Testing
     @Test(arguments: [
         #"{"duck": true}"#, #"{"duck": null}"#, #"{"duck": [1]}"#, "[]", "not json", #"{}"#, #"{"duck": {}}"#,
         #"{"duck": {"version": 1}}"#, #"{"duck": {"version": "2"}}"#, #"{"duck": {"version": 1.5}}"#,
-        #"{"duck": {"version": true}}"#
+        #"{"duck": {"version": true}}"#, #"{"duck": {"version": 2}}"#, #"{"duck": {"version": 2, "private": true}}"#
     ])
-    func onlyVersionTwoOrLaterAdvertisesPrivacy(_ line: String) {
+    func onlyVersionThreeOrLaterAdvertisesPrivacy(_ line: String) {
         #expect(!AmbientDuckControl.advertises(Data(line.utf8)))
     }
 
-    @Test(arguments: [2, 3]) func versionTwoOrLaterAdvertisesPrivacy(_ version: Int) {
+    @Test(arguments: [3, 4]) func versionThreeOrLaterAdvertisesPrivacy(_ version: Int) {
         #expect(AmbientDuckControl.advertises(Data(#"{"duck": {"version": \#(version)}}"#.utf8)))
     }
 
-    /// End to end in one pipeline: the entry asks the child to go private; only a v2 child is written the line and
-    /// reports that it took it, never a v1 one. The entry's handling is awaited as a signal, not polled for, and the
+    /// End to end in one pipeline: the entry asks the child to go private; only a v3 child is written the line and
+    /// reports that it took it, never a v2 one (it would not ack). The entry's handling is awaited as a signal, not polled for, and the
     /// teardown graces are short, so a loaded parallel run cannot push it past its time limit.
-    @Test(arguments: [true, false]) func onlyAVersionTwoChildTakesPrivacy(_ advertises: Bool) async throws {
-        let fake = try FakeRightyo("/bin/cat <&3 > control.txt &\n"
+    @Test(arguments: [true, false]) func onlyAVersionThreeChildTakesPrivacy(_ advertises: Bool) async throws {
+        let fake = try FakeRightyo(FakeRightyo.ackingControl() + "\n"
             + AmbientPrivacyEntryTests.fixture(saying: "Rightyo, stop recording.", advertises: true,
-                                               version: advertises ? 2 : 1))
+                                               version: advertises ? 3 : 2))
         defer { fake.cleanUp() }
         try fake.install(fixture: "enrolled-formed-request.jsonl")
         let box = Mutex<RightyoAmbientPipeline?>(nil), took = Mutex<[Bool]>([])

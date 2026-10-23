@@ -5,7 +5,7 @@ import Testing
 @testable import HailDaemonKit
 
 /// RightyO's content-free `privacy` events (#735 S-2, rightyo S-1): `exit` and `status` reach the host only from a
-/// session that advertised `duck` v2, carry `action` and nothing else, and never reach the agent. Synthetic only.
+/// session that advertised `duck` v2 (v3 now, #735 S-8), carry `action` and nothing else, and never reach the agent. Synthetic only.
 @Suite(.serialized, .timeLimit(.minutes(1)), .frozenGuardBudget) struct AmbientPrivacyEventTests {
     /// One `privacy` line echoed by the fake, at `sequence` and `at` ms, with `extra` fields.
     static func line(_ action: String, sequence: Int, at: Int, extra: String = "") -> String {
@@ -23,27 +23,25 @@ import Testing
 
     /// `started` (naming `Rightyo`, advertising `duck` at `version` unless nil), then one `privacy` event per action,
     /// each with `extra` fields, then `stopped`. No transcript and no request.
-    static func events(_ actions: [String], version: Int? = 2, extra: String = "") -> String {
+    static func events(_ actions: [String], version: Int? = 3, extra: String = "") -> String {
         let started = #"-e 's/"phase": "started"/"addressing": {"names": ["Rightyo"]}, "phase": "started"/'"#
             + (version.map(duck) ?? "")
         let lines = actions.enumerated().map { line($1, sequence: $0 + 2, at: 1000, extra: extra) }
         return """
         /usr/bin/sed -n -e '1p' events.jsonl | /usr/bin/sed -e "s/formed-demo/$7/g" \(started)
         \(lines.joined(separator: "\n"))
-        /bin/cat > /dev/null
-        /usr/bin/sed -n -e '$p' events.jsonl | /usr/bin/sed "s/formed-demo/$7/g"
+        \(FakeRightyo.ackingTail)
         """
     }
 
-    /// `started` (v2), the owner's transcript "Stop recording.", then one `privacy` event per action, then `stopped`.
+    /// `started` (v3), the owner's transcript "Stop recording.", then one `privacy` event per action, then `stopped`.
     static func enterThen(_ actions: [String]) -> String {
         let lines = actions.enumerated().map { line($1, sequence: $0 + 5, at: 2000) }
         return """
         /usr/bin/sed -n -e '1p' -e '4p' events.jsonl | /usr/bin/sed -e "s/formed-demo/$7/g" \
-          -e 's/Rightyo, archive the project./Stop recording./g' \(duck(2))\(voiceprint)
+          -e 's/Rightyo, archive the project./Stop recording./g' \(duck(3))\(voiceprint)
         \(lines.joined(separator: "\n"))
-        /bin/cat > /dev/null
-        /usr/bin/sed -n -e '$p' events.jsonl | /usr/bin/sed -e "s/formed-demo/$7/g" -e 's/"sequence": 7/"sequence": 99/'
+        \(FakeRightyo.ackingTail)
         """
     }
 
@@ -73,7 +71,7 @@ import Testing
     }
 
     @Test func aLaterVersionIsAdmittedToo() async throws {
-        let (seen, _) = try await run(Self.events(["exit"], version: 3))
+        let (seen, _) = try await run(Self.events(["exit"], version: 4))
         #expect(seen == [.exit])
     }
 
@@ -141,7 +139,7 @@ import Testing
 extension AmbientPrivacyEventTests {
     /// `started` advertising natural dismissal and `duck` at `version` unless nil, then a stop phrase's dismissal with
     /// `scope` and `ids` that cites no transcript, then `stopped`.
-    static func privateStop(version: Int? = 2, scope: String = #"[\"playback\"]"#, ids: String = "[]") -> String {
+    static func privateStop(version: Int? = 3, scope: String = #"[\"playback\"]"#, ids: String = "[]") -> String {
         let dismissal = #""dismissal": {"version": 1, "window_ms": 10000, "cooldown_ms": 30000, "#
             + #""cooldown_min_confidence": 0.9}, "#
         let started = #"-e 's/"phase": "started"/\#(dismissal)"phase": "started"/'"# + (version.map(duck) ?? "")
@@ -152,8 +150,7 @@ extension AmbientPrivacyEventTests {
         return """
         /usr/bin/sed -n -e '1p' events.jsonl | /usr/bin/sed -e "s/formed-demo/$7/g" \(started)
         \(stop)
-        /bin/cat > /dev/null
-        /usr/bin/sed -n -e '$p' events.jsonl | /usr/bin/sed "s/formed-demo/$7/g"
+        \(FakeRightyo.ackingTail)
         """
     }
 
@@ -176,10 +173,10 @@ extension AmbientPrivacyEventTests {
     }
 
     /// While private "stop" does nothing (Mick, round 2): RightyO sends no dismissal then, and an uncited one, even
-    /// playback-only on a `duck` v2 session, ends the stream as it did before privacy mode.
+    /// playback-only on a `duck` v3 session, ends the stream as it did before privacy mode.
     @Test(arguments: [
-        (2, #"[\"playback\"]"#, "[]"), (2, #"[\"playback\", \"pending_request\"]"#, "[]"),
-        (2, #"[\"playback\"]"#, #"[\"$7:x\"]"#), (1, #"[\"playback\"]"#, "[]")
+        (3, #"[\"playback\"]"#, "[]"), (3, #"[\"playback\", \"pending_request\"]"#, "[]"),
+        (3, #"[\"playback\"]"#, #"[\"$7:x\"]"#), (1, #"[\"playback\"]"#, "[]")
     ])
     func anUncitedDismissalEndsTheStream(_ version: Int, _ scope: String, _ ids: String) async {
         await #expect(throws: RightyoInputError.self) {

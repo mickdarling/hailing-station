@@ -10,24 +10,22 @@ import Testing
 /// only, and is answered only by the `duck_mode` notice. A switch to the state already held, or for an arming that has
 /// since changed, does nothing at all. Advertised and admitted only with ambient listening. Synthetic only.
 @Suite(.serialized, .timeLimit(.minutes(1)), .frozenGuardBudget) struct AmbientPrivacySwitchTests {
-    /// `started` (naming Rightyo, `duck` v2), then a `privacy` status event, which the host answers with a log line
+    /// `started` (naming Rightyo, `duck` v3), then a `privacy` status event, which the host answers with a log line
     /// only, so a test knows the child's `started` was read. With `request`, the child then waits until the host wrote
     /// it a duck line (when `waitForPrivacy`) and says the owner's formed request. Then `stopped` at the end of audio.
     static func script(request: Bool = false, waitForPrivacy: Bool = false) -> String {
         let started = #"-e 's/"phase": "started"/"addressing": {"names": ["Rightyo"]}, "phase": "started"/'"#
-            + AmbientPrivacyEventTests.duck(2)
+            + AmbientPrivacyEventTests.duck(3)
         let wait = waitForPrivacy ? "while ! /usr/bin/grep -q duck control.txt; do /bin/sleep 0.05; done\n" : ""
         // The fixture's turns and request, each one sequence later for the status event; `stopped` follows the last.
         let later = (2...6).reversed().map { #" -e 's/"sequence": \#($0),/"sequence": \#($0 + 1),/'"# }.joined()
         let said = request ? wait + #"/usr/bin/sed -n -e '2,6p' events.jsonl | /usr/bin/sed -e "s/formed-demo/$7/g""#
             + later + "\n" : ""
         return """
-        /bin/cat <&3 > control.txt &
+        \(FakeRightyo.ackingControl())
         /usr/bin/sed -n -e '1p' events.jsonl | /usr/bin/sed -e "s/formed-demo/$7/g" \(started)
         \(AmbientPrivacyEventTests.line("status", sequence: 2, at: 0))
-        \(said)/bin/cat > /dev/null
-        /usr/bin/sed -n -e '$p' events.jsonl | /usr/bin/sed -e "s/formed-demo/$7/g" \\
-          -e 's/"sequence": 7/"sequence": \(request ? 8 : 3)/'
+        \(said)\(FakeRightyo.ackingTail)
         """
     }
 

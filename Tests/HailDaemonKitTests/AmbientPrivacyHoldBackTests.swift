@@ -41,7 +41,7 @@ import Testing
     /// read the line yet) reach no relay: nothing is shown as heard or overheard and nothing is acknowledged. With
     /// privacy off the same events are overheard, so the check is live.
     @Test(arguments: [true, false]) func whilePrivateNoWordsReachARelay(_ ducking: Bool) async throws {
-        let duck = AmbientPrivacyEventTests.duck(2)
+        let duck = AmbientPrivacyEventTests.duck(3)
         let fake = try FakeRightyo(#"""
         /usr/bin/sed -n -e '1,3p' events.jsonl | /usr/bin/sed -e "s/formed-demo/$7/g" \#(duck)
         /bin/cat > /dev/null
@@ -94,7 +94,7 @@ import Testing
     /// came between), is never overheard. Without the entry the same transcript is.
     @Test(arguments: [true, false]) func anAttentionArrivingWhilePrivateIsNotOverheard(_ entry: Bool) async throws {
         let words = entry ? "Stop recording." : "Rightyo, archive the project."
-        let duck = AmbientPrivacyEventTests.duck(2) + AmbientPrivacyEventTests.voiceprint
+        let duck = AmbientPrivacyEventTests.duck(3) + AmbientPrivacyEventTests.voiceprint
         let fake = try FakeRightyo(#"""
         /usr/bin/sed -n -e '1,2p' events.jsonl | /usr/bin/sed -e "s/formed-demo/$7/g" \#(duck)
         /usr/bin/sed -n -e '4p' events.jsonl | /usr/bin/sed -e "s/formed-demo/$7/g" \#(duck) \
@@ -124,11 +124,11 @@ import Testing
         #expect(overheard.withLock { $0 } == (entry ? 0 : 1))
     }
 
-    /// `started` (v2), the owner's transcript of `words` (from a voiceprint) and its attention, then 33 matching
+    /// `started` (v3), the owner's transcript of `words` (from a voiceprint) and its attention, then 33 matching
     /// transcripts that evict it from the 32 remembered, then its request (with both decisions demoted when `demoted`).
     static func evicted(saying words: String, demoted: Bool = false, guest: Bool = false,
                         voiceprint: Bool = true) -> String {
-        let edit = #"-e "s/formed-demo/$7/g" -e 's/"phase": "started"/"duck": {"version": 2}, "phase": "started"/'"#
+        let edit = #"-e "s/formed-demo/$7/g" -e 's/"phase": "started"/"duck": {"version": 3}, "phase": "started"/'"#
             + (voiceprint ? AmbientPrivacyEventTests.voiceprint : "")
             + (guest ? #" -e 's/"role": "owner"/"role": "participant"/g'"# : "")
             + (demoted ? #" -e 's/"recipient_kind": "system", "role": "owner"/"#

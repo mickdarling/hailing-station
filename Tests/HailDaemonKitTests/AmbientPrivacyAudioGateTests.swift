@@ -4,22 +4,25 @@ import Testing
 @testable import HailDaemonKit
 
 /// Privacy's audio gate (#735 S-2b round 3): while privacy is wished for, a child hears no audio until it has shown it
-/// keeps privacy (a start-private `started` confirming `private`, or a v2 child taking `{"duck":true}`). Dropped
+/// keeps privacy (a start-private `started` confirming `private`, or a v3 child's ack of `{"duck":true}`). Dropped
 /// chunks never reach the child; a child that cannot keep privacy, or never starts, is killed having heard none.
 /// Synthetic only: the fake records every byte it reads to `audio.raw`.
 @Suite(.serialized, .timeLimit(.minutes(1)), .frozenGuardBudget) struct AmbientPrivacyAudioGateTests {
-    /// `started` after `delay` (advertising `duck` v2 when asked, and `private` when launched start-private), then
-    /// every stdin byte to `audio.raw`, then `stopped`; or, with `starts` false, only the recording.
+    /// `started` after `delay` (advertising `duck` v3 when asked, and `private` when launched start-private), then
+    /// every stdin byte to `audio.raw`, then `stopped`; or, with `starts` false, only the recording. Control lines go
+    /// to `control.txt`, and each `{"duck":true}` is acked once `started` is out (#735 S-8).
     static func script(advertises: Bool, delay: String = "0.5", starts: Bool = true) -> String {
-        let duck = advertises
-            ? #" -e 's/"phase": "started"/"duck": {"version": 2'"$PRIV"'}, "phase": "started"/'"# : ""
+        let duck = advertises ? FakeRightyo.duckV3 : ""
         guard starts else { return "/bin/cat > audio.raw" }
         return """
         \(AmbientPrivacyEntryTests.startPrivatePrelude)
+        \(FakeRightyo.ackingControl())
         /bin/sleep \(delay)
         /usr/bin/sed -n -e '1p' events.jsonl | /usr/bin/sed -e "s/formed-demo/$7/g"\(duck)
+        \(FakeRightyo.acksMayFollow)
         /bin/cat > audio.raw
-        /usr/bin/sed -n -e '$p' events.jsonl | /usr/bin/sed "s/formed-demo/$7/g"
+        wait
+        /usr/bin/sed -n -e '$p' events.jsonl | /usr/bin/sed -e "s/formed-demo/$7/g"\(FakeRightyo.lastSequence)
         """
     }
 
@@ -48,8 +51,9 @@ import Testing
         return fake
     }
 
-    /// Entry while a public child is starting: nothing before its `started`; a v2 child then takes privacy and hears
-    /// what follows (it keeps nothing), a child without v2 is killed. Either way, no private audio before `started`.
+    /// Entry while a public child is starting: nothing before its `started`; a v3 child then takes privacy and hears
+    /// what follows once it acks (it keeps nothing), a child without v3 is killed. Either way, no private audio before
+    /// the proof.
     @Test(arguments: [true, false]) func anEntryWhileAChildStartsWithholdsAudio(_ advertises: Bool) async throws {
         let fake = try Self.fake(Self.script(advertises: advertises))
         defer { fake.cleanUp() }
@@ -114,7 +118,7 @@ import Testing
         #expect(Self.heard(fake).isEmpty)
     }
 
-    /// M18d: with no `onDuckUnsupported` handler, a child without v2 is refused (fail closed).
+    /// M18d: with no `onDuckUnsupported` handler, a child without v3 is refused (fail closed).
     @Test func withoutAHandlerTheChildIsRefused() async throws {
         let fake = try Self.fake(Self.script(advertises: false, delay: "0"))
         defer { fake.cleanUp() }
@@ -123,7 +127,7 @@ import Testing
         await #expect(throws: RightyoPrivacyRefusal.unsupportedChild) { _ = try await pipeline.run() }
     }
 
-    /// M18f: when the host says privacy already ended, a child without v2 runs on, public, and hears audio again.
+    /// M18f: when the host says privacy already ended, a child without v3 runs on, public, and hears audio again.
     @Test func whenPrivacyAlreadyEndedTheChildRunsOn() async throws {
         let fake = try Self.fake(Self.script(advertises: false))
         defer { fake.cleanUp() }

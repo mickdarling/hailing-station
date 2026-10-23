@@ -39,7 +39,7 @@ import Testing
     /// MD2: a child confirmed private whose privacy ended during its startup is written `{"duck":false}`, so it never
     /// stays private while the host is public.
     @Test func aConfirmedChildWhosePrivacyEndedIsWrittenOff() async throws {
-        let fake = try Gate.fake("/bin/cat <&3 >> control.txt &\n" + Gate.script(advertises: true))
+        let fake = try Gate.fake(Gate.script(advertises: true))
         defer { fake.cleanUp() }
         let pipeline = try Gate.pipeline(fake, startPrivate: true)
         let run = Task { try await pipeline.run() }

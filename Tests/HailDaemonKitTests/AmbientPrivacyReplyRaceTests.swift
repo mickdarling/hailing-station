@@ -74,18 +74,17 @@ import Testing
     }
 
     /// A fake whose owner's request is accepted before privacy entry (its transcript admitted) and decided after it:
-    /// it emits `started` (v2) and the transcripts, waits until the host writes `{"duck":true}`, then emits the
+    /// it emits `started` (v3) and the transcripts, waits until the host writes `{"duck":true}`, then emits the
     /// attention decision and the request.
     static let decidedAfterEntry = """
     \(AmbientPrivacyEntryTests.startPrivatePrelude)
-    /bin/cat <&3 >> control.txt &
+    \(FakeRightyo.ackingControl(append: true))
     /usr/bin/sed -n -e '1,4p' events.jsonl | /usr/bin/sed -e "s/formed-demo/$7/g" \
-      -e 's/"phase": "started"/"duck": {"version": 2'"$PRIV"'}, "phase": "started"/'
+      -e 's/"phase": "started"/"duck": {"version": 3'"$PRIV"'}, "phase": "started"/'
     while ! /usr/bin/grep -q duck control.txt 2>/dev/null; do /bin/sleep 0.05; done
     /usr/bin/sed -n -e '5,6p' events.jsonl | /usr/bin/sed -e "s/formed-demo/$7/g"
     /usr/bin/touch decided
-    /bin/cat > /dev/null
-    /usr/bin/sed -n -e '$p' events.jsonl | /usr/bin/sed "s/formed-demo/$7/g"
+    \(FakeRightyo.ackingTail)
     """
 
     /// Jarvis: a request accepted before entry and decided after it is never dispatched to the agent, and a reply to

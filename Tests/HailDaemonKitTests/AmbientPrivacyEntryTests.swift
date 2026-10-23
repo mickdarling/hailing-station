@@ -139,9 +139,11 @@ extension AmbientPrivacyEntryTests {
 
     /// The voice-mute fixture with `words` said, the name `Rightyo` advertised, the owner's transcript attributed from
     /// a live voiceprint (`roleSource`, or none when nil), and optionally `duck` (`version`) advertised, every owner role
-    /// turned into a guest's or removed, or the earlier turn made a lone "Rightyo,".
+    /// turned into a guest's or removed, or the earlier turn made a lone "Rightyo,". Its control lines go to
+    /// `control.txt` and each `{"duck":true}` is acked after its own lines (#735 S-8) with a `FakeRightyo.ackingControl`
+    /// prefix.
     static func fixture(saying words: String, enrolled: Bool = true, guest: Bool = false, advertises: Bool = false,
-                        version: Int = 2, splitName: Bool = false, unlabelled: Bool = false,
+                        version: Int = 3, splitName: Bool = false, unlabelled: Bool = false,
                         roleSource: String? = "voiceprint") -> String {
         let source = enrolled ? "Rightyo, archive the project." : "Rightyo, check our discussion."
         let session = enrolled ? "formed-demo" : "tool-demo"
@@ -160,8 +162,7 @@ extension AmbientPrivacyEntryTests {
         return """
         \(startPrivatePrelude)
         /usr/bin/sed -e '$d' -e "s/\(session)/$7/g" -e 's/\(source)/\(words)/g' \(edits) events.jsonl
-        /bin/cat > /dev/null
-        /usr/bin/sed -n -e '$p' events.jsonl | /usr/bin/sed "s/\(session)/$7/g"
+        \(FakeRightyo.ackingTail)
         """
     }
 }
