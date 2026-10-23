@@ -94,6 +94,30 @@ import Testing
         #expect(rig.details("ambient_privacy_start").isEmpty)
     }
 
+    /// Pinned (the third key), end to end: "unavailable" is the last word (the entry's child never acked), and a
+    /// refused start keeps it so (`already_unavailable`). A voice on is still answered aloud (`ended`: no child), never
+    /// a silence. The app's switch turned on while privacy is already on does nothing at all (S-6: a switch matching
+    /// the state held is ignored), so it opens no entry to leave unanswered.
+    @Test func anOwnersRequestWhileUnavailableIsAlwaysAnswered() async throws {
+        let rig = try await Self.rig("/bin/cat > /dev/null\n")
+        defer { rig.close() }
+        let connection = try #require(rig.connection()), router = rig.env.router
+        try FileManager.default.removeItem(at: rig.fake.config)
+        try await recipientSocketSend(audio(UUID(), 0), on: rig.socket)
+        #expect(await eventually { rig.unavailableSilences.last == "unavailable=already_unavailable" })
+        for count in 2...3 {
+            router.voiceDuck(on: connection, listener: rig.env.listener)(.enter)
+            router.ambientPrivacy(true, connection: connection)
+            #expect(await eventually { Announce.said(rig).count == count })
+        }
+        _ = await rig.settledEvents()
+        await rig.finish()
+        #expect(Announce.said(rig) == ["unavailable", "unavailable", "unavailable"])
+        #expect(Array(rig.details("ambient_duck_confirmed").dropFirst())
+            == Array(repeating: "on=true ended playback=idle " + Announce.unavailable, count: 2))
+        #expect(rig.details("ambient_duck").filter { $0.contains("reason=device") }.isEmpty)
+    }
+
     /// The off race, directed: a refusal decided while private but handled after the device's off says nothing, so
     /// "Recording again." is the last word while privacy stays off.
     @Test func nothingAfterTheOffImpliesPrivacy() async throws {

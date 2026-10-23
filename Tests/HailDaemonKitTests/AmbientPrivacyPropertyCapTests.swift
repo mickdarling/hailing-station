@@ -102,5 +102,22 @@ extension AmbientPrivacyPropertyTests {
         #expect(world.played == [.stop(1), .on(1), .own(-1)])
         #expect((world.failures + Self.check(world)).isEmpty)
     }
+
+    /// Pinned (the third key): an owner's request while "unavailable" is the last word, even after a refused start
+    /// kept it so (`already_unavailable`), is always answered: a voice on and then a device on (one switch path in the
+    /// model) each play their stop and a clip, never a silence.
+    @Test func anOwnersRequestWhileUnavailableIsAlwaysAnswered() {
+        let world = AmbientPrivacyRecoveryTests.unavailable()
+        world.refuseStart()
+        #expect(world.chain.isEmpty && world.ledger.said == .unavailable)
+        world.enter()
+        Self.progress(world)
+        world.enter()
+        world.finish()
+        let failures = world.failures + Self.check(world)
+        #expect(failures.isEmpty, "\(failures)")
+        #expect(world.played == [.stop(1), .on(1), .own(0), .stop(2), .unavailable(2), .stop(3), .unavailable(3)])
+        #expect(!world.played.contains(.silent(2)) && !world.played.contains(.silent(3)))
+    }
 }
 #endif

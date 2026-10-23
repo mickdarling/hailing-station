@@ -132,7 +132,9 @@ extension PrivacySimWorld {
             failures.append("entry \(entry) said privacy on while a listening child was refused or unproven")
         case AmbientStopConfirmation.privacyUnavailable? where truthful:
             failures.append("entry \(entry) said unavailable while privacy was kept\(decision.tokens)")
-        case nil where decision.tokens.hasSuffix("already_unavailable") && (truthful || ledger.said != .unavailable):
+        // Only a recovery entry may stay silent as already unavailable: an owner's request is always answered.
+        case nil where decision.tokens.hasSuffix("already_unavailable")
+            && (truthful || ledger.said != .unavailable || !recoveries.contains(entry)):
             failures.append("entry \(entry) silent as already unavailable\(decision.tokens)")
         case nil where !withdrawn && !decision.tokens.contains("superseded_by_newer")
             && !decision.tokens.hasSuffix("already_unavailable"):
