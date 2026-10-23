@@ -1411,18 +1411,28 @@ extension AmbientRightyoRouter {
     /// `confirm-media-on/` or `confirm-media-off/` clip when there is one, in the order said. A change no child
     /// took (an older RightyO or a full pipe) is not confirmed, so the owner never hears a mode that is not in force.
     /// Logs tokens only.
-    /// While private (#735) a media-mode entry is refused, and the owner hears `confirm-privacy-status/` instead.
+    /// While private (#735) a media-mode entry is refused, and the owner hears `confirm-privacy-status/` instead, but
+    /// only once privacy was announced (6362119223): it is queued on the privacy chain, behind its entries, and decided
+    /// when it plays, as a status is; unannounced, it is silent and the entry's own clip answers.
     func voiceMedia(on connection: UUID, listener: WebSocketListener) -> @Sendable (Bool) -> Void {
         let chain = SerialTaskChain()
         return { [weak self, weak listener] on in
             let reported = self?.setMedia(on, connection: connection, reason: "voice") ?? 0
-            let refused = on && reported == 0 && self?.duckMode(connection: connection) == true
+            if on, reported == 0, self?.duckMode(connection: connection) == true {
+                self?.enqueuePrivacyClip(connection) { _ in { [weak self, weak listener] in
+                    guard let self else { return }
+                    var confirm = "unreported"
+                    if privacyHeardOn(connection: connection) {
+                        confirm = await confirmVoiceMute(AmbientStopConfirmation.privacyStatus, on: connection,
+                                                         listener: listener)
+                    }
+                    emit("ambient_media_confirmed", connection: connection, detail: "on=true confirm=\(confirm)")
+                } }
+                return
+            }
             chain.enqueue { [weak self, weak listener] in
                 var confirm = "unreported"
-                if refused {
-                    confirm = await self?.confirmVoiceMute(AmbientStopConfirmation.privacyStatus, on: connection,
-                                                           listener: listener) ?? "none"
-                } else if reported > 0 {
+                if reported > 0 {
                     let persona = on ? AmbientStopConfirmation.mediaOn : AmbientStopConfirmation.mediaOff
                     confirm = await self?.confirmVoiceMute(persona, on: connection, listener: listener) ?? "none"
                 }
@@ -1669,6 +1679,13 @@ extension AmbientRightyoRouter {
         let chain = SerialTaskChain()
         state.privacyClips[connection] = chain
         return chain
+    }
+
+    /// Whether `connection` is private as the owner heard it (6362119223): armed, and announced (`heardOn`). Read when
+    /// a status clip plays, behind every entry queued before it on the chain, so it reports the decided state. Fails
+    /// closed: no ledger (an arming no entry announced) is not heard.
+    func privacyHeardOn(connection: UUID) -> Bool {
+        state.withLock { $0.duck[connection] != nil && $0.privacy[connection]?.heardOn == true }
     }
 
     /// Queues the clip `work` builds, given whether privacy is on, on `connection`'s chain, under the lock that reads it.
