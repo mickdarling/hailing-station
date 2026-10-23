@@ -32,10 +32,12 @@ import Testing
         rig.env.router.switchPrivacy(true, connection: UUID(), armedAs: nil)
         #expect(await eventually { rig.details("ambient_duck_confirmed").count == 2 })
         #expect(began.duration(to: .now) < .seconds(2))
+        // Each connection has its own clip chain (round 3): the other's clip never waits behind this one.
         let confirmed = rig.details("ambient_duck_confirmed")
-        #expect(confirmed.first == "on=true reason=device refused playback=idle " + Self.unavailable)
-        #expect(confirmed.last?.hasPrefix("on=true reason=device refused=unsupported_version") == true)
-        #expect(rig.details("ambient_privacy_start") == ["outcome=refused reason=unconfirmed"])
+        #expect(confirmed.contains("on=true reason=device refused playback=idle " + Self.unavailable))
+        #expect(confirmed.first?.hasPrefix("on=true reason=device refused=unsupported_version") == true)
+        // The run's own end is logged after its refusal was said.
+        #expect(await eventually { rig.details("ambient_privacy_start") == ["outcome=refused reason=unconfirmed"] })
         await rig.finish()
         #expect(Self.said(rig) == ["unavailable"])
     }

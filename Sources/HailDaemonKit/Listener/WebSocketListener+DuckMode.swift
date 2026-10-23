@@ -41,32 +41,34 @@ extension AmbientRightyoRouter {
     /// - `unavailable`: a child that cannot keep privacy was refused (`duckUnsupported`); privacy stays on, and
     ///   `confirm-privacy-unavailable/` ("I can't listen privately right now.") says so every time (#822 A), except for
     ///   a child a reload already retired (`retired`), whose stream lives on in its successor: logged, in silence; and
-    ///   except while the entry it is attributed to is open (`mark`'s child): that entry says it, so it is said once.
-    /// Nothing reaches the agent. Logs tokens only.
+    ///   except when the entry it is attributed to says it (`mark`'s child), so it is said once: logged
+    ///   `ambient_privacy unavailable=said_by_entry`.
+    /// Every clip, the entries' and the refusals', goes on the connection's one chain (round 3), so their order is the
+    /// order decided. Nothing reaches the agent. Logs tokens only.
     func voiceDuck(on connection: UUID, listener: WebSocketListener,
                    retired: @escaping @Sendable () -> Bool = { false },
                    mark: AmbientRunMark? = nil) -> @Sendable (PrivacyCommand) -> Void {
-        let chain = SerialTaskChain()
-        return { [weak self, weak listener] command in
+        { [weak self, weak listener] command in
+            guard let self else { return }
             var (reported, on, entry) = (0, false, AmbientPrivacyEntry?.none)
-            // Read now, while the refused child's run is still registered: once it ends, the router removes it.
             let silent = command == .unavailable && retired()
-            if command == .unavailable, !silent, mark?.pipeline?.takePrivacyAnnouncement() == false { return }
-            if let self {
-                if command == .exit, !duckMode(connection: connection) {
-                    emit("ambient_privacy", connection: connection, detail: "exit=ignored state=off")
-                    return
-                }
-                if command == .enter || command == .exit {
-                    entry = switchDuck(command == .enter, connection: connection, reason: "voice") { _ in true }
-                    reported = entry?.reported ?? 0
-                }
-                on = duckMode(connection: connection)
+            if command == .unavailable, !silent, mark?.pipeline?.takePrivacyAnnouncement() == false {
+                emit("ambient_privacy", connection: connection, detail: "unavailable=said_by_entry")
+                return
             }
-            chain.enqueue { [weak self, weak listener, reported, on, silent, entry] in
+            if command == .exit, !duckMode(connection: connection) {
+                emit("ambient_privacy", connection: connection, detail: "exit=ignored state=off")
+                return
+            }
+            if command == .enter || command == .exit {
+                entry = switchDuck(command == .enter, connection: connection, reason: "voice") { _ in true }
+                reported = entry?.reported ?? 0
+            }
+            on = duckMode(connection: connection)
+            privacyClips(connection).enqueue { [weak self, weak listener, reported, on, silent, entry] in
                 var (persona, outcome) = Self.duckConfirmation(command, reported: reported, on: on)
                 if silent { (persona, outcome) = (nil, "unavailable retired") }
-                // Bounded by `privacyConfirmTimeout`, so the chain never waits forever.
+                // Bounded by the configuration's `privacyBound`, so the chain never waits forever.
                 if let entry, entry.entry != nil, let self {
                     let (clip, tokens) = await announceEntry(entry, connection: connection, listener: listener)
                     (persona, outcome) = (clip, "on=true" + tokens)
@@ -124,7 +126,7 @@ extension AmbientRightyoRouter {
             return
         }
         let listener = attachedListener
-        privacySwitches.enqueue { [weak self, weak listener] in
+        privacyClips(connection).enqueue { [weak self, weak listener] in
             guard let self else { return }
             var (persona, outcome): (String?, String) = (nil, "on=\(on) reason=device")
             switch (on, entry.reported > 0) {

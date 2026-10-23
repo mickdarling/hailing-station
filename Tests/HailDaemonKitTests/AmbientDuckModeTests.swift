@@ -121,7 +121,7 @@ final class DuckRig: Sendable {
          capabilities: [String] = [],
          startDeadline: TimeInterval = RightyoAmbientPipeline.defaultStartDeadline,
          ackDeadline: TimeInterval = RightyoAmbientPipeline.ackDeadline,
-         confirmTimeout: TimeInterval = AmbientRightyoRouter.privacyConfirmTimeout) async throws {
+         confirmTimeout: TimeInterval? = nil) async throws {
         fake = try FakeRightyo(script ?? FakeRightyo.ackingControl() + "\n" + AmbientPrivacyEntryTests.fixture(
             saying: words, enrolled: enrolled, advertises: advertises, version: version))
         try fake.install(fixture: enrolled ? "enrolled-formed-request.jsonl" : "tool-events.jsonl")

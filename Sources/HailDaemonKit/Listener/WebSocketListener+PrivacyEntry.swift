@@ -2,17 +2,36 @@
 import Foundation
 
 /// What `switchDuck` did (#735 S-8 HS-C round 2): how many children took it, the privacy entry it opened (nil when
-/// none: an off, or an on no child took while privacy was off), and whether privacy was already on.
+/// none: an off, or an on no child took while privacy was off), whether privacy was already on, and when it opened
+/// (round 3: its bound runs from then, not from when the clip chain reaches it).
 struct AmbientPrivacyEntry: Sendable {
     let reported: Int
     let entry: Int?
     let wasOn: Bool
+    var opened = ContinuousClock.now
 }
 
-/// One child's answer for `privacyVerdict`: whether it still hears the stream, and whether a reload swapped it out.
+/// One child's answer for `privacyVerdict`, read at the entry's close (round 3): whether it still hears the stream,
+/// whether it was retired (a reload swapped it out, or it drains: it hears nothing more), whether the close claimed its
+/// refusal, and whether the bound refused it.
 struct AmbientPrivacyChildAnswer {
     let answer: AmbientPrivacyAnswer
-    let listening: Bool, replaced: Bool
+    let listening: Bool, retired: Bool
+    var claimed = false, refusedAtBound = false
+}
+
+/// One child an entry was opened on, as its close sees it.
+struct AmbientPrivacyEntryChild {
+    let duck: AmbientDuckControl
+    let listening: Bool
+}
+
+/// An entry's close and verdict (round 3): the answer, whether it says a refusal it claimed, and the children the bound
+/// refused (to be killed).
+struct AmbientPrivacyDecision {
+    let answer: AmbientPrivacyAnswer
+    let claimed: Bool
+    let refused: [RightyoAmbientPipeline]
 }
 
 extension AmbientPrivacyAnswer {
@@ -29,103 +48,124 @@ extension AmbientPrivacyAnswer {
     }
 }
 
-/// Every privacy entry is announced within a bound (#735 S-8 HS-C round 2, Mick: "We should not change state unless
-/// we're announcing it."): exactly one of `confirm-privacy-on/` or `confirm-privacy-unavailable/` plays for it.
+/// Every privacy entry is announced within a bound (#735 S-8 HS-C, Mick: "We should not change state unless we're
+/// announcing it."): exactly one of `confirm-privacy-on/` or `confirm-privacy-unavailable/` plays for it, on the
+/// connection's one clip chain (round 3), or, only when an off withdrew it, nothing (logged `withdrawn`).
 extension AmbientRightyoRouter {
-    /// Twelve seconds: past the ack deadline (5 s) and the start deadline (10 s), so it only ends a wait no deadline
-    /// ended. Tests shorten it through the configuration.
-    static let privacyConfirmTimeout: TimeInterval = 12
+    /// The margin past a child's start and ack deadlines (round 3): the bound is start + ack + this (16 s by default),
+    /// so it only ends a wait no deadline ended, even for a child that starts just before its start deadline.
+    static let privacyConfirmMargin: TimeInterval = 1
 
-    /// Announces privacy entry `entry` on `connection` once its children answered: kept by every child that still
-    /// hears the stream, a reply playing is stopped and `confirm-privacy-on/` plays. Otherwise, while privacy is still
-    /// on or a refusal is attributed to this entry, a reply playing is stopped and `confirm-privacy-unavailable/`
-    /// plays, the refused child's own `unavailable` held back for it; withdrawn first (an off, which says
-    /// "Recording again."), nothing plays. Returns the clip and the log tokens after `on=true`.
+    /// Announces privacy entry `entry` on `connection` (round 3): waits within the bound for every child that still
+    /// hears the stream, then closes the entry and reads each child's answer in that one step (`closePrivacyEntry`),
+    /// so a refusal after it is the child's own, said after this clip on the same chain. Kept by every listening
+    /// child: a reply playing is stopped and `confirm-privacy-on/` plays. Withdrawn by an off ("Recording again."):
+    /// nothing, unless it claimed a refusal. Otherwise the stop, then `confirm-privacy-unavailable/`. Returns the clip
+    /// and the log tokens after `on=true`. Runs on the connection's clip chain.
     func announceEntry(_ entry: AmbientPrivacyEntry, connection: UUID,
                        listener: WebSocketListener?) async -> (String?, String) {
-        let answer = await privacyAnswer(connection: connection)
-        let claimed = entry.entry.map { closePrivacyEntry($0, connection: connection) } ?? false
-        var (clip, outcome) = Self.announcement(answer, claimed: claimed, on: duckMode(connection: connection),
-                                                wasOn: entry.wasOn)
+        guard let number = entry.entry else { return (nil, " withdrawn") }
+        let decision = await decideEntry(number, connection: connection, opened: entry.opened)
+        for pipeline in decision.refused { await pipeline.killRefused() }
+        var (clip, outcome) = Self.announcement(decision.answer, claimed: decision.claimed, wasOn: entry.wasOn)
         guard clip != nil else { return (nil, outcome) }
-        // Stopped on this chain before the clip is queued, so the stop can never cut the clip.
+        // Stopped on this chain right before the clip is queued, so the stop can never cut the clip.
         outcome += " playback=\(await listener?.stopReplyPlayback(connection: connection) ?? "no_connection")"
         return (clip, outcome)
     }
 
-    /// The entry's clip and log tokens, given its answer, whether it took over a refusal attributed to it (`claimed`),
-    /// and whether privacy is still on: `confirm-privacy-on/` when kept, otherwise `confirm-privacy-unavailable/`
-    /// unless it was withdrawn with no refusal to say. The two silences are logged, so neither is lost: `withdrawn`
-    /// (an off closed it, and "Recording again." is its announcement), and `superseded_by_keep` (a draining or
-    /// replaced child's refusal, taken over by an entry every listening child kept).
-    static func announcement(_ answer: AmbientPrivacyAnswer, claimed: Bool, on: Bool,
-                             wasOn: Bool) -> (String?, String) {
-        if answer == .kept {
-            let tokens = (wasOn ? " still_on" : "") + (claimed ? " superseded_by_keep" : "")
-            return (AmbientStopConfirmation.privacyOn, tokens)
+    /// The entry's clip and log tokens, given its answer, whether it says a refusal it claimed, and whether privacy was
+    /// already on: `confirm-privacy-on/` when kept (`superseded_by_keep` only for a draining or replaced child's
+    /// refusal: the verdict counts any other), nothing when withdrawn with no refusal to say, else `confirm-privacy-unavailable/`.
+    static func announcement(_ answer: AmbientPrivacyAnswer, claimed: Bool, wasOn: Bool) -> (String?, String) {
+        switch answer {
+        case .kept:
+            return (AmbientStopConfirmation.privacyOn,
+                    (wasOn ? " still_on" : "") + (claimed ? " superseded_by_keep" : ""))
+        case .withdrawn:
+            return claimed ? (AmbientStopConfirmation.privacyUnavailable, " withdrawn claimed") : (nil, " withdrawn")
+        default:
+            return (AmbientStopConfirmation.privacyUnavailable, " \(answer.token)")
         }
-        guard claimed || on else { return (nil, answer == .withdrawn ? " withdrawn" : " withdrawn \(answer.token)") }
-        return (AmbientStopConfirmation.privacyUnavailable, " \(answer.token)")
     }
 
-    /// The connection's answer from its children's (#735 S-8 HS-C round 2): a refusal of a child not swapped out
-    /// decides it; then privacy off is `withdrawn`; then the children still hearing the stream, those that ended
-    /// dropping out: all kept is `kept`, none left is `ended`, else the first that was not kept.
-    static func privacyVerdict(_ answers: [AmbientPrivacyChildAnswer], on: Bool) -> AmbientPrivacyAnswer {
+    /// The entry's answer from its children's at the close (round 3): withdrawn by an off; `timeout` when the bound
+    /// refused one; then a refusal of a child not retired (one that listened to the end, even once its run is gone;
+    /// a draining or replaced child hears nothing more, so its refusal is its own, or `superseded_by_keep`); then a
+    /// refused start the entry claimed; then the listening children, those that ended dropping out: all kept is
+    /// `kept`, none left is `ended`, else the first that was not. Belt and braces (key 1): never `kept` while a claimed
+    /// child that was not retired is counted.
+    static func privacyVerdict(_ answers: [AmbientPrivacyChildAnswer], withdrawn: Bool,
+                               startRefused: Bool = false) -> AmbientPrivacyAnswer {
+        if withdrawn { return .withdrawn }
+        if answers.contains(where: \.refusedAtBound) { return .timeout }
         let refusal = answers.first { child in
             guard case .refused = child.answer else { return false }
-            return !child.replaced
+            return !child.retired
         }
         if let refusal { return refusal.answer }
-        guard on else { return .withdrawn }
+        if startRefused || answers.contains(where: { $0.claimed && !$0.retired }) { return .refused(nil) }
         let present = answers.filter { $0.listening && $0.answer != .ended }.map(\.answer)
         return present.first { $0 != .kept } ?? (present.isEmpty ? .ended : .kept)
     }
 
-    /// What `connection`'s privacy came to, within `privacyConfirmTimeout`. Past it, every child whose proof is still
-    /// to come is refused, killed and announced as at its own deadline, and the answer is `timeout`.
-    func privacyAnswer(connection: UUID) async -> AmbientPrivacyAnswer {
-        let timeout = configuration.privacyConfirmTimeout
-        let answer = await withTaskGroup(of: AmbientPrivacyAnswer?.self) { group in
-            group.addTask { await self.awaitPrivacy(connection: connection) }
-            group.addTask {
-                try? await Task.sleep(for: .seconds(timeout))
-                return Task.isCancelled ? nil : .timeout
-            }
-            defer { group.cancelAll() }
-            while let next = await group.next() {
-                if let next { return next }
-            }
-            return AmbientPrivacyAnswer.timeout
+    /// Closes entry `entry` on its children (round 3), or nil, closing nothing, while a listening child's proof is
+    /// still to come and neither the bound nor an off has ended the wait. Each child is closed and read in one step
+    /// under its lock; with `timedOut`, a proof still to come is refused there (the ack or the bound, whichever came
+    /// first). The caller holds the router's lock, so no child registers or is swapped out meanwhile.
+    static func closeEntry(_ entry: Int, children: [AmbientPrivacyEntryChild], withdrawn: Bool,
+                           timedOut: Bool) -> [(AmbientPrivacyChildAnswer, refused: Bool)]? {
+        if !withdrawn, !timedOut, children.contains(where: { $0.listening && $0.duck.settled == nil }) { return nil }
+        return children.map { child in
+            let closing = child.duck.close(entry: entry, refusePending: timedOut && !withdrawn && child.listening)
+            let answer = AmbientPrivacyChildAnswer(answer: closing.answer ?? .timeout, listening: child.listening,
+                                                   retired: closing.retired, claimed: closing.claimed,
+                                                   refusedAtBound: closing.refused)
+            return (answer, closing.refused)
         }
-        if answer == .timeout {
-            for pipeline in listeningPipelines(connection: connection) { await pipeline.refuseUnproven() }
-        }
-        return answer
     }
 
-    /// Whether every child of `connection` keeps the privacy wished for (#735 S-8 HS-C), as `privacyAnswer` says.
-    func privacyKept(connection: UUID) async -> Bool { await privacyAnswer(connection: connection) == .kept }
+    /// Waits for entry `entry` within the bound, start + ack + margin from its opening, then closes it
+    /// (`closePrivacyEntry`); a child a reload registered meanwhile, still to prove, sends it back to waiting.
+    private func decideEntry(_ entry: Int, connection: UUID,
+                             opened: ContinuousClock.Instant) async -> AmbientPrivacyDecision {
+        let deadline = opened.advanced(by: .seconds(configuration.privacyBound))
+        while true {
+            let timedOut = await waitForPrivacy(entry, connection: connection, until: deadline)
+            if let decision = closePrivacyEntry(entry, connection: connection, timedOut: timedOut) { return decision }
+        }
+    }
 
-    /// Waits for every child that still hears `connection`'s stream, again after each answer, so a child a reload
-    /// started meanwhile is waited for too and the answer comes from the children present at the end, never from one
-    /// swapped out. A refused child (not swapped out) decides it; a child that ended drops out; with none left, `ended`.
-    /// Each answer is read again at the end, so a child refused after it first answered `kept` is not counted kept.
-    private func awaitPrivacy(connection: UUID) async -> AmbientPrivacyAnswer {
-        var answers: [ObjectIdentifier: (pipeline: RightyoAmbientPipeline, answer: AmbientPrivacyAnswer)] = [:]
-        var listening = listeningPipelines(connection: connection)
-        while let next = listening.first(where: { answers[ObjectIdentifier($0)] == nil }) {
-            let answer = await next.privacyAnswer()
-            if Task.isCancelled { return .timeout }
-            answers[ObjectIdentifier(next)] = (next, answer)
-            listening = listeningPipelines(connection: connection)
+    /// True when the bound passed before every listening child answered (or an off withdrew the entry).
+    private func waitForPrivacy(_ entry: Int, connection: UUID, until deadline: ContinuousClock.Instant) async -> Bool {
+        await withTaskGroup(of: Bool.self) { group in
+            group.addTask {
+                await self.awaitSettled(entry, connection: connection)
+                return false
+            }
+            group.addTask {
+                try? await Task.sleep(until: deadline)
+                return !Task.isCancelled
+            }
+            defer { group.cancelAll() }
+            return await group.next() ?? true
         }
-        let present = Set(listening.map(ObjectIdentifier.init))
-        let children = answers.map { id, child in
-            AmbientPrivacyChildAnswer(answer: child.pipeline.privacySettled ?? child.answer,
-                                      listening: present.contains(id), replaced: isReplaced(child.pipeline))
+    }
+
+    /// Waits until every child that still hears `connection`'s stream has answered, again after each answer, so a
+    /// child a reload started meanwhile is waited for too; or until an off withdrew `entry`; or cancellation.
+    private func awaitSettled(_ entry: Int?, connection: UUID) async {
+        while !Task.isCancelled, !(entry.map { privacyWithdrawn($0, connection: connection) } ?? false),
+              let next = listeningPipelines(connection: connection).first(where: { $0.privacySettled == nil }) {
+            _ = await next.privacyAnswer()
         }
-        return Self.privacyVerdict(children, on: duckMode(connection: connection))
+    }
+
+    /// Whether every child that hears `connection`'s stream keeps the privacy wished for, once each answered (tests).
+    func privacyKept(connection: UUID) async -> Bool {
+        await awaitSettled(nil, connection: connection)
+        let pipelines = listeningPipelines(connection: connection)
+        return !pipelines.isEmpty && pipelines.allSatisfy { $0.privacySettled == .kept }
     }
 }
 #endif

@@ -25,7 +25,7 @@ func ambientRig(
     destinations: VoiceDestinations? = nil, shortcuts: ShortcutRunner = ShortcutRunner(),
     routes: VoiceRoutes? = nil, startDeadline: TimeInterval = RightyoAmbientPipeline.defaultStartDeadline,
     ackDeadline: TimeInterval = RightyoAmbientPipeline.ackDeadline,
-    confirmTimeout: TimeInterval = AmbientRightyoRouter.privacyConfirmTimeout,
+    confirmTimeout: TimeInterval? = nil,
     onEvent: (@Sendable (WebSocketListenerEvent) -> Void)? = nil
 ) async throws -> AmbientWiringRig {
     let rig = try await RecipientTestRig.make()
