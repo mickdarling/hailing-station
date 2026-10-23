@@ -488,9 +488,9 @@ rechecked at 6fabeb2 for this revision:
   active stream;
 - no report of the app's mute state to the host.
 
-The privacy semantics it defers to are Part 10's, merged on `main` (#807, #808, #813, #815 to #817). Part 10 signed
-off on this section on 2026-10-22, before Mick's reconnect decision. The reconnect path is Part 10's proposal (S-7a0
-to S-7c), which Jarvis put in the privacy deploy set; only S-7a0's hello field is merged (#829). The public resume is Jarvis's answer of
-2026-10-22. The restart and reconnect rules follow Mick's 2026-10-22 decisions, and #809 records that privacy no
-longer survives a restart. The words "listening is off until he turns it on from the app" and "A network drop should
-not change it from being private to being public." are as relayed by Jarvis, not quoted from an issue.
+The privacy semantics it defers to are Part 10's, merged on `main` (#807, #808, #813, #815 to #817). Part 10 signed off
+on this section on 2026-10-22, before Mick's reconnect decision. The reconnect path is Part 10's proposal (S-7a0 to
+S-7c), which Jarvis put in the privacy deploy set; only S-7a0's hello field is merged (#829). The public resume is
+Jarvis's answer of 2026-10-22. The restart and reconnect rules follow Mick's 2026-10-22 decisions, and #809 records that
+privacy no longer survives a restart. The words "listening is off until he turns it on from the app" and "A network drop
+should not change it from being private to being public." are as relayed by Jarvis, not quoted from an issue.
