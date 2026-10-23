@@ -106,6 +106,12 @@ The wire carries two things for this, and each names a device only by its class 
   or `ambient moved to another device` when the new device did not give a class. It is an ordinary
   `ambient`-prefixed refusal, so an older device stops as it did before. A newer device shows it as a move, not as
   an error (`AmbientTakeOver.moved(_:)`).
+
+**The host's launch (`hello.hostInstance`, #735 S-7a0).** `haild`'s hello may carry `hostInstance`, a random UUID
+made once per `haild` process. A device compares it with the last one it saw for that host: the same id means the
+connection only dropped; a new id means the host restarted, so privacy (in memory only, #809) has ended and the
+device does not resume. Optional, so an older host's hello is unchanged; a device never sends it. Schema and decoder
+are strict: anything that is not a UUID fails the hello. It is advisory until the transport is authenticated (TLS).
 - `{"command": "ambient_moved_here", "from": "<class>"}` tells the new device that its stream took over from a
   device of that class. `from` is optional. The decoder and the schema refuse any other key and any value outside
   the vocabulary. The command grants no authority. A device advertises `ambient_takeover`

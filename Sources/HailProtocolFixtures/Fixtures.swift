@@ -181,6 +181,13 @@ public enum Fixtures {
                 versions: [1], capabilities: ["audio.opus", "text"], deviceName: "iPad Pro"
             )))
         )),
+        Example(name: "control-hello-host", frame: Frame(
+            id: id(242), timestamp: 1_758_200_000_010, source: "haild",
+            payload: .control(.hello(HelloInfo(
+                versions: [1], capabilities: ["audio.opus", "text"], deviceName: "Mac",
+                hostInstance: UUID(uuidString: "5E5E5E5E-0000-4000-8000-000000000001")
+            )))
+        )),
         Example(name: "control-targets", frame: Frame(
             id: id(7), timestamp: 1_758_200_000_050, source: "host",
             payload: .control(.targets([

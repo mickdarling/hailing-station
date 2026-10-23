@@ -32,12 +32,18 @@ public struct HelloInfo: Codable, Sendable, Equatable {
     /// The device's class only (#366): `phone`, `pad` or `mac` from `AmbientTakeOver.deviceKinds`, never its
     /// name. Optional, so an older peer's hello is unchanged; a value outside the vocabulary fails the hello.
     public var deviceKind: String?
+    /// The host's launch, sent only by `haild` (#735 S-7a0): a random UUID made once per process, so a device can tell
+    /// a host that restarted (privacy ended, #809) from a connection that only dropped. Optional, so an older peer's
+    /// hello is unchanged; anything that is not a UUID fails the hello.
+    public var hostInstance: UUID?
 
-    public init(versions: [Int], capabilities: [String], deviceName: String, deviceKind: String? = nil) {
+    public init(versions: [Int], capabilities: [String], deviceName: String, deviceKind: String? = nil,
+                hostInstance: UUID? = nil) {
         self.versions = versions
         self.capabilities = capabilities
         self.deviceName = deviceName
         self.deviceKind = AmbientTakeOver.deviceKind(deviceKind)
+        self.hostInstance = hostInstance
     }
 
     public init(from decoder: any Decoder) throws {
@@ -47,6 +53,7 @@ public struct HelloInfo: Codable, Sendable, Equatable {
         deviceName = try container.decode(String.self, forKey: .deviceName)
         let rawKind = try container.decodeIfPresent(String.self, forKey: .deviceKind)
         deviceKind = AmbientTakeOver.deviceKind(rawKind)
+        hostInstance = try container.decodeIfPresent(UUID.self, forKey: .hostInstance)
         // Strict: we control every client, so a kind outside the vocabulary is a bug, not a future value.
         guard rawKind == nil || deviceKind != nil else {
             let context = DecodingError.Context(
@@ -60,7 +67,7 @@ public struct HelloInfo: Codable, Sendable, Equatable {
         }
     }
 
-    private enum CodingKeys: String, CodingKey { case versions, capabilities, deviceName, deviceKind }
+    private enum CodingKeys: String, CodingKey { case versions, capabilities, deviceName, deviceKind, hostInstance }
 }
 
 /// Closed set of error codes. Unknown strings decode to `.unknown` so a newer peer's code is kept, not lost.

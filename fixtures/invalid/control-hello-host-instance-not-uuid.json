@@ -1,0 +1,1 @@
+{"id":"0B0B0B0B-0000-4000-8000-000000000242","payload":{"command":"hello","hello":{"capabilities":["audio.opus","text"],"deviceName":"Mac","hostInstance":"restarted-at-noon","versions":[1]}},"source":"haild","ts":1758200000010,"type":"control","v":1}
