@@ -1,9 +1,11 @@
 import HailCore
 import SwiftUI
 
+/// Includes a stream that ended without its final audio (#469), so a lost reply is announced too (#825, #822).
 private let terminalPlaybackFailures: Set<String> = [
     "Playback could not resume", "Audio format is not yet playable",
-    "Conflicting audio segment refused", "Playback failed", "Replay failed"
+    "Conflicting audio segment refused", "Playback failed", "Replay failed",
+    ReplyPlaybackController.endedWithoutFinalAudio
 ]
 private let replayRefusalNotices = [
     "Replay available after listening": "Replay was not started while listening",
@@ -90,7 +92,7 @@ extension TranscriptionLabView {
                 "Paused", "Muted", "Played", "Playback failed", "Replay failed",
                 "Playback could not resume", "Audio format is not yet playable",
                 "Conflicting audio segment refused", "Replay available after listening",
-                "Replay available when this reply finishes"
+                "Replay available when this reply finishes", ReplyPlaybackController.endedWithoutFinalAudio
         ].contains(current) {
             if let notice = replayRefusalNotices[current] {
                 deferredReplayNotice = notice

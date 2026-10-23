@@ -3,7 +3,8 @@ import Foundation
 import HailProtocol
 import Testing
 
-/// #825, #822: a reply whose audio did not play says so, never silently; a reply that played does not.
+/// #825, #822: a reply whose audio did not play says so on its entry; a reply that played, or whose only trouble was
+/// passing, does not.
 @MainActor
 @Suite struct ReplyAudioProblemTests {
     @Test func aStreamEndedWithoutItsFinalAudioDidNotArrive() {
@@ -13,7 +14,6 @@ import Testing
         rig.advance(by: .seconds(25))
         let id = presentationID(stuck)
         #expect(rig.controller.audioProblem(replyID: id) == ReplyPlaybackController.audioDidNotArrive)
-        #expect(rig.controller.audioProblems == [id: ReplyPlaybackController.audioDidNotArrive])
     }
 
     @Test func aReplyThatFailedToPlayCouldNotPlay() {
@@ -29,12 +29,18 @@ import Testing
         rig.controller.ingest(idleAudio(reply, sequence: 0, final: true, byte: 1))
         rig.player.completeReply()
         #expect(rig.controller.audioProblem(replyID: presentationID(reply)) == nil)
-        #expect(rig.controller.audioProblems.isEmpty)
     }
 
+    /// #837 review: a refused duplicate segment is not lost audio (the first copy plays), nor a replay or resume that
+    /// failed after the reply was heard.
     @Test func onlyLostAudioStatusesCount() {
         #expect(ReplyPlaybackController.audioProblem("Played") == nil)
         #expect(ReplyPlaybackController.audioProblem("Waiting for audio") == nil)
+        #expect(ReplyPlaybackController.audioProblem("Conflicting audio segment refused") == nil)
+        #expect(ReplyPlaybackController.audioProblem("Replay failed") == nil)
+        #expect(ReplyPlaybackController.audioProblem("Playback could not resume") == nil)
+        #expect(ReplyPlaybackController.audioProblem("Audio format is not yet playable")
+            == ReplyPlaybackController.audioCouldNotPlay)
         #expect(ReplyPlaybackController.audioProblem("Playback failed") == ReplyPlaybackController.audioCouldNotPlay)
         #expect(ReplyPlaybackController.audioProblem(ReplyPlaybackController.abandonedStatus)
             == ReplyPlaybackController.audioDidNotArrive)
