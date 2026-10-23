@@ -35,8 +35,8 @@ extension ReplyPlaybackController {
             presentationStatuses[presentationID] = Self.audioFormatNotPlayable
             return true
         }
-        // Decode already bounds rates and byte size; use the converter's remaining requirements (#825).
-        guard (try? PCM16BufferConverter.buffer(audio)) == nil else { return false }
+        // Decode bounds rates and byte size; leave conversion to schedule, once per frame (#825).
+        guard audio.bytes.isEmpty || !audio.bytes.count.isMultiple(of: 2) else { return false }
         let presentationID = upsertPresentation(event, descriptor: descriptor)
         failPlayback(for: key)
         presentationStatuses[presentationID] = Self.audioCouldNotBeDecoded
@@ -46,13 +46,32 @@ extension ReplyPlaybackController {
 
     func failPlayback(for key: ReplyStreamKey) {
         if playbackOrder.contains(key) {
-            player.cancel()
+            // The player cannot remove one reply's buffers: its cancel cuts off every entry, even Replay (#825).
+            let cancelled = Set(playbackOrder)
             playbackGeneration &+= 1
-            rollbackPlaybackStart(for: key)
+            player.cancel()
+            for interrupted in cancelled {
+                let interruptedStatus = streams[interrupted] == nil ? "Replay failed" : Self.playbackFailed
+                setPresentationStatus(interruptedStatus, for: interrupted)
+                streams[interrupted] = nil
+                completed.insert(interrupted)
+            }
+            queue.removeAll { cancelled.contains($0) }
+            playbackOrder.removeAll()
+            activeKey = nil
             isPaused = false
+            idleWatch.cancel?()
+            idleWatch.cancel = nil
+            idleWatch.key = nil
+            idleWatch.aheadUntil = idleNow()
+            idleWatch.bufferedUntil = idleNow()
+            idleWatch.heldRemaining = nil
         }
         streams[key] = nil
         queue.removeAll { $0 == key }
         completed.insert(key)
+        if activeKey == nil {
+            status = queue.isEmpty ? (isMuted ? "Muted" : "Ready for replies") : "Waiting for audio"
+        }
     }
 }
