@@ -18,6 +18,8 @@ final class PrivacySimWorld {
     /// children whose `unavailable` handler has not yet run (a deadline task: kill, then the handler).
     var chain: [PrivacySimItem] = [], pending: [PrivacySimItem] = [], played: [PrivacySimClip] = []
     var handlers: [PrivacySimChild] = [], failures: [String] = []
+    /// The recovery entries a registration opened (round 4).
+    var recoveries: Set<Int> = []
 
     init(faults: PrivacySimFaults = []) { self.faults = faults }
 

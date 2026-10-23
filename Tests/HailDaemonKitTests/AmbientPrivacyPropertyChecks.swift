@@ -27,7 +27,37 @@ extension AmbientPrivacyPropertyTests {
                     + "claimed \(child.claimed), carried \(child.carried), silenced \(child.silenced))")
             }
         }
-        return failures + lastClipMatches(world)
+        return failures + lastClipMatches(world) + recoveryAndOff(world)
+    }
+
+    /// The privacy state each played clip leaves, in order (nil for a stop or a silence).
+    static func states(_ world: PrivacySimWorld) -> [(PrivacySimClip, AmbientPrivacySaid)] {
+        world.played.compactMap { clip in
+            switch clip {
+            case .on: (clip, .on)
+            case .unavailable, .own: (clip, .unavailable)
+            case .off, .offNotice: (clip, .off)
+            default: nil
+            }
+        }
+    }
+
+    /// No flapping: a recovery entry's "privacy on" follows an "unavailable" directly, so there is at most one per
+    /// unavailable-to-on transition. After an off: once the last "Recording again." plays with privacy off at the end,
+    /// nothing after it says "privacy on" or "unavailable".
+    static func recoveryAndOff(_ world: PrivacySimWorld) -> [String] {
+        let said = states(world)
+        var failures: [String] = []
+        for (index, (clip, _)) in said.enumerated() {
+            guard case .on(let entry) = clip, world.recoveries.contains(entry) else { continue }
+            if index == 0 || said[index - 1].1 != .unavailable {
+                failures.append("recovery entry \(entry) said privacy on without an unavailable before it")
+            }
+        }
+        if !world.on, let last = said.lastIndex(where: { $0.1 == .off }), last < said.count - 1 {
+            failures.append("after the last off, \(said[(last + 1)...].map(\.1)) while privacy stays off")
+        }
+        return failures
     }
 
     /// An entry silent as superseded by a newer one is answered by a later entry's clip, or by an off.

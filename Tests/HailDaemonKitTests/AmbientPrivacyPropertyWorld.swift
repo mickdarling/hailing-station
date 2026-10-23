@@ -52,6 +52,7 @@ extension PrivacySimWorld {
         arm(.start, child, after: Self.startDeadline)
         _ = report(child, on)
         if let entry = ledger.register(child, duck: child.duck, at: time, on: on, all: live.map { ($0, $0.duck) }) {
+            recoveries.insert(entry)
             chain.append(.entry(entry))
         }
     }
