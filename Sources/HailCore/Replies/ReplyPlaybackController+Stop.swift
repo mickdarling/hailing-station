@@ -40,7 +40,7 @@ extension ReplyPlaybackController {
     /// The player is shared, so whatever it was playing or holding stops too, whichever host sent it. Every
     /// stopped reply is marked complete, so its later frames are ignored instead of starting it again.
     func stopPlayback(from endpointID: HostEndpoint.Identifier?) {
-        let pending = Set(queue).union(firstAudio.keys)
+        let pending = Set(queue).union(firstAudio.keys).union(cancelledFirstAudio)
         let stopped = Set(playbackOrder).union(pending.filter { endpointID == nil || $0.endpointID == endpointID })
         cancelFirstAudio(for: stopped)
         guard !stopped.isEmpty else { return }
@@ -64,7 +64,7 @@ extension ReplyPlaybackController {
     /// new one are skipped and marked complete, so their later frames are ignored instead of starting them.
     func supersedePausedReplies() {
         guard isPaused else { return }
-        let skipped = Set(playbackOrder).union(queue).union(firstAudio.keys)
+        let skipped = Set(playbackOrder).union(queue).union(firstAudio.keys).union(cancelledFirstAudio)
         cancelFirstAudio(for: skipped)
         if !skipped.isEmpty {
             player.cancel()
@@ -90,7 +90,8 @@ extension ReplyPlaybackController {
         guard streams[key] == nil, !completed.contains(key) else { return }
         if presentationStatuses[id] == nil { presentationStatuses[id] = "Received" }
         guard descriptor.audioStreamID != nil, presentationStatuses[id] == "Received",
-              firstAudio[key] == nil, !isMuted, pendingMuteAfter == nil else { return }
+              firstAudio[key] == nil, !cancelledFirstAudio.contains(key) else { return }
+        if isMuted || pendingMuteAfter != nil { return retainCancelledFirstAudio([key]) }
         let now = idleNow()
         let watch = ReplyIdleWatch(key: key, bufferedUntil: now, lastFrameAt: now, aheadUntil: now)
         firstAudio[key] = watch
@@ -101,11 +102,28 @@ extension ReplyPlaybackController {
 
     func cancelFirstAudio(for keys: Set<ReplyStreamKey>) {
         for key in keys { firstAudio.removeValue(forKey: key)?.cancel?() }
+        cancelledFirstAudio.subtract(keys)
     }
 
     func cancelMutedFirstAudio() {
         // Mute is terminal-local today; prefer no loss claim even if a host withholds audio (#825).
-        if isMuted || pendingMuteAfter != nil { cancelFirstAudio(for: Set(firstAudio.keys)) }
+        guard isMuted || pendingMuteAfter != nil else { return }
+        let keys = Set(firstAudio.keys)
+        cancelFirstAudio(for: keys)
+        retainCancelledFirstAudio(keys)
+    }
+
+    private func retainCancelledFirstAudio(_ keys: Set<ReplyStreamKey>) {
+        cancelledFirstAudio.formUnion(keys)
+        // Bound the mute-only pending window like frame history. Retire overflow rather than forget its identity:
+        // repeated text cannot revive its loss claim, and late audio cannot restart a retired reply.
+        let excess = max(0, cancelledFirstAudio.count - Self.seenFrameLimit)
+        let retired = Set(cancelledFirstAudio.prefix(excess))
+        for key in retired {
+            completed.insert(key)
+            setPresentationStatus("Skipped", for: key)
+        }
+        cancelledFirstAudio.subtract(retired)
     }
 
     func idleDeadline(_ watch: ReplyIdleWatch) -> ContinuousClock.Instant {
@@ -121,6 +139,28 @@ extension ReplyPlaybackController {
         setPresentationStatus(Self.abandonedStatus, for: key)
         completed.insert(key)
         onStreamAbandoned?()
-        trimPresentations()
+        // Leave recorded losses for observation; the next presentation update applies the usual history trim.
+    }
+}
+
+extension ReplyStreamKey {
+    static let announcementEndpoint: HostEndpoint.Identifier = "local-announcement"
+    var isAnnouncement: Bool { endpointID == Self.announcementEndpoint }
+}
+
+extension ReplyPlaybackController {
+    /// The recorded status of every reply whose audio did not play, by presentation id, observably.
+    var lostAudioStatuses: [String: String] { presentationStatuses.filter { Self.audioProblem($0.value) != nil } }
+
+    /// Queues a local announcement behind any reply (#825 S4b). It plays through the same player, so it shares the
+    /// echo canceller, pause and mute, and playback reports it as assistant speech like a reply; it is never a reply
+    /// entry, and never what Replay replays.
+    func enqueueAnnouncement(_ audio: [AudioPayload]) {
+        let key = ReplyStreamKey(endpointID: ReplyStreamKey.announcementEndpoint, replyID: UUID())
+        var stream = ReplyStreamState()
+        for payload in audio { stream.segments[payload.sequence] = payload }
+        streams[key] = stream
+        queue.append(key)
+        drain()
     }
 }

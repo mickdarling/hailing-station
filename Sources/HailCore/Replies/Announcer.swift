@@ -19,6 +19,7 @@ public final class Announcer {
     public enum Fallback: String, Sendable {
         case muted, renderFailed = "render_failed", playerFailed = "player_failed"
     }
+
     private let playback: ReplyPlaybackController
     private let renderer: any AnnouncementRendering
     private let fallback: @MainActor (Announcement, Fallback) -> Void
@@ -29,6 +30,7 @@ public final class Announcer {
                 fallback: @escaping @MainActor (Announcement, Fallback) -> Void) {
         (self.playback, self.renderer, self.fallback) = (playback, renderer, fallback)
     }
+
     public func announce(_ announcement: Announcement) {
         guard !playback.isMuted else { return fallBack(announcement, .muted) }
         Task { @MainActor in
@@ -42,6 +44,7 @@ public final class Announcer {
             }
         }
     }
+
     /// Announces once each reply whose audio did not play (#825), while `when` allows: a stream that ended early, or
     /// unplayable or undecodable audio is spoken; player failures and unknown statuses use the fallback (#825).
     public func watchReplyAudio(when allowed: @escaping @MainActor () -> Bool) {
@@ -52,6 +55,7 @@ public final class Announcer {
             announceAudioProblem(status)
         }
     }
+
     func announceAudioProblem(_ status: String?) {
         switch status {
         case ReplyPlaybackController.abandonedStatus: announce(.replyAudioLost)
@@ -61,31 +65,10 @@ public final class Announcer {
         default: fallBack(.replyAudioFailed, .playerFailed)
         }
     }
+
     private func fallBack(_ announcement: Announcement, _ reason: Fallback) {
         Self.log.notice("announcement_suppressed key=\(announcement.rawValue) reason=\(reason.rawValue)")
         fallback(announcement, reason)
-    }
-}
-
-extension ReplyStreamKey {
-    static let announcementEndpoint: HostEndpoint.Identifier = "local-announcement"
-    var isAnnouncement: Bool { endpointID == Self.announcementEndpoint }
-}
-
-extension ReplyPlaybackController {
-    /// The recorded status of every reply whose audio did not play, by presentation id, observably.
-    var lostAudioStatuses: [String: String] { presentationStatuses.filter { Self.audioProblem($0.value) != nil } }
-
-    /// Queues a local announcement behind any reply (#825 S4b). It plays through the same player, so it shares the
-    /// echo canceller, pause and mute, and playback reports it as assistant speech like a reply; it is never a reply
-    /// entry, and never what Replay replays.
-    func enqueueAnnouncement(_ audio: [AudioPayload]) {
-        let key = ReplyStreamKey(endpointID: ReplyStreamKey.announcementEndpoint, replyID: UUID())
-        var stream = ReplyStreamState()
-        for payload in audio { stream.segments[payload.sequence] = payload }
-        streams[key] = stream
-        queue.append(key)
-        drain()
     }
 }
 
@@ -98,15 +81,18 @@ public final class LocalAnnouncementRenderer: AnnouncementRendering {
     private let waitForDeadline: @MainActor () async -> Void
     private static let segmentFrames = 24_000 // 1 s at 24 kHz per payload; local, so no wire frame cap applies.
     static let renderDeadline: Duration = .seconds(20) // A loaded host took 9 s to render one (#838 review).
+
     public convenience init() {
         self.init(makeSynthesizer: { AVSpeechSynthesizer() },
                   waitForDeadline: { try? await Task.sleep(for: Self.renderDeadline) })
     }
+
     init(makeSynthesizer: @escaping @MainActor () -> AVSpeechSynthesizer,
          waitForDeadline: @escaping @MainActor () async -> Void) {
         (self.makeSynthesizer, self.synthesizer, self.waitForDeadline) =
             (makeSynthesizer, makeSynthesizer(), waitForDeadline)
     }
+
     public func audio(for announcement: Announcement) async throws -> [AudioPayload] {
         // A clip that exists but can't be read falls back to the system voice, never to silence.
         var audio = try? clip(announcement)
