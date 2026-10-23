@@ -75,7 +75,7 @@ enum AmbientPrivacyReplyQuiet {
         + AmbientPrivacyEntryTests.fixture(saying: "Rightyo, archive the project.", advertises: true)
     /// Records two control lines, then holds its `started` until the test creates `go`.
     static let held = "IFS= read -r a <&3; IFS= read -r b <&3; printf '%s\\n%s\\n' \"$a\" \"$b\" > control.txt\n"
-        + "while [ ! -e go ]; do /bin/sleep 0.05; done\n/bin/cat <&3 >> control.txt &\n"
+        + "while [ ! -e go ]; do /bin/sleep 0.05; done\n" + FakeRightyo.ackingControl(append: true) + "\n"
         + AmbientPrivacyEntryTests.fixture(saying: "Rightyo, archive the project.", advertises: true)
 }
 #endif

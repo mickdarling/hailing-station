@@ -21,6 +21,19 @@ extension AmbientPrivacyAckGateTests {
         #expect(written.all == [true, false, true] && writes == [1, 2])
     }
 
+    /// An ack that comes after the off it raced consumes its own write only and never sets `keeps`: the next on is
+    /// written again (not skipped as already kept) and needs its own ack.
+    @Test func aLateAckAfterOffKeepsNothing() {
+        let (control, written) = (AmbientDuckControl(), AmbientDuckControlTests.Written())
+        #expect(control.observe(started: Self.started, write: written.write) == .kept)
+        #expect(control.report(true, write: written.write) && !control.mayHearAudio)
+        #expect(control.report(false, write: written.write) && control.mayHearAudio)
+        #expect(control.acknowledge() == .counted && control.mayHearAudio)
+        #expect(control.report(true, write: written.write) && !control.mayHearAudio)
+        #expect(written.all == [true, false, true])
+        #expect(control.acknowledge() == .counted && control.mayHearAudio)
+    }
+
     /// 3. An ack with no on-write outstanding is excess, never counted: one sent ahead does not open the gate for the
     /// next write, nor does one more after the proof.
     @Test func anExcessAckIsNeverBanked() {
