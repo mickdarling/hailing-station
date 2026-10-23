@@ -27,6 +27,12 @@ import Testing
     static func staged(_ first: String, _ later: String) -> String {
         record + "if [ -f first.done ]; then\n\(later)\nelse\n/usr/bin/touch first.done\n\(first)\nfi"
     }
+    /// Whether the first launch of a `staged` script took its branch. A run starts (`ambient_started`) before its
+    /// shell does: a second launch before this would run `first` too.
+    static func firstLaunched(_ rig: DuckRig) async -> Bool {
+        let path = rig.fake.directory.appendingPathComponent("first.done").path
+        return await eventually { FileManager.default.fileExists(atPath: path) }
+    }
     static let entry = AmbientPrivacyEntryTests.fixture(saying: "Rightyo, stop recording.", advertises: true)
 
     /// While private (#735 S-2b) a reloaded child is launched start-private and, once its `started` confirms it, is
@@ -79,6 +85,7 @@ import Testing
         defer { rig.close() }
         #expect(await eventually { rig.connection() != nil })
         let connection = try #require(rig.connection())
+        #expect(await Self.firstLaunched(rig))
         #expect(await rig.env.router.reload() == .reloaded)
         // The new child, still starting, takes the entry. The retiring old child also counts if its own `started`
         // has not been read yet (#807 key 2's nit (b), tracked on #735), so 1 or 2: waiting on that read is a race.
@@ -105,7 +112,7 @@ import Testing
         #expect(await eventually { !rig.env.router.duckMode(connection: connection) })
         try await Task.sleep(for: .milliseconds(1_500))
         #expect(rig.details("ambient_duck") == ["on=true reason=voice reported=1"])
-        await rig.env.router.settle()
+        await rig.settle()
         await rig.env.listener.stop(reason: "synthetic test complete")
     }
 

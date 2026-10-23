@@ -67,8 +67,8 @@ import Testing
         #expect(rig.env.router.duckMode(connection: connection))
         await rig.finish()
         #expect(rig.details("ambient_duck") == ["on=true reason=voice reported=1", "on=true reason=voice reported=1"])
-        #expect(rig.details("ambient_duck_confirmed") == ["on=true playback=idle confirm=confirmprivacyon/0:sent",
-                                                          "on=true playback=idle confirm=confirmprivacyon/0:sent"])
+        let on = "playback=idle confirm=confirmprivacyon/0:sent"
+        #expect(rig.details("ambient_duck_confirmed") == ["on=true " + on, "on=true still_on " + on])
         #expect(rig.details("ambient_privacy").isEmpty)
     }
 

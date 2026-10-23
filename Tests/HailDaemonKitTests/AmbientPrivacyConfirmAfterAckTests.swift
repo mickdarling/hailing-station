@@ -5,12 +5,14 @@ import Testing
 @testable import HailDaemonKit
 
 /// The privacy-on confirmation follows the child's ack (#735 S-8 HS-C): `confirm-privacy-on/` plays only once every
-/// child proved it keeps privacy. Without the proof no privacy-on clip plays, and a refused child's "I can't listen
-/// privately right now." speaks once. The device's `duck_mode` stays immediate. Synthetic only.
+/// child proved it keeps privacy. Without the proof no privacy-on clip plays, and "I can't listen privately right now."
+/// speaks once instead (round 2: the entry says it for a refusal attributed to it). The device's `duck_mode` stays
+/// immediate. Synthetic only.
 @Suite(.serialized, .timeLimit(.minutes(1)), .frozenGuardBudget) struct AmbientPrivacyConfirmAfterAckTests {
     static let holdAcks = "while [ ! -e go ]; do /bin/sleep 0.02; done\n"
     static let privacyOn = "Privacy on. I'm only listening for my name."
     static let unavailable = "unavailable confirm=confirmprivacyunavailable/0:sent"
+    static let saidUnavailable = "confirm=confirmprivacyunavailable/0:sent"
 
     /// The owner's entry; the child acks it only once the test creates `go`.
     static let heldEntry = FakeRightyo.ackingControl() + "\n" + AmbientPrivacyEventTests.enterThen([])
@@ -36,7 +38,8 @@ import Testing
                                     capabilities: [DuckMode.capability])
         defer { rig.close() }
         #expect(await eventually { rig.details("ambient_duck_device") == ["on=true device=sent"] })
-        #expect(Self.control(rig) == "{\"duck\":true}\n")
+        // The fake records its control lines from a background reader, which may lag the device notice.
+        #expect(await eventually { Self.control(rig) == "{\"duck\":true}\n" })
         try await Task.sleep(for: .milliseconds(300))
         #expect(rig.details("ambient_duck_confirmed").isEmpty)
         AmbientPrivacyAckGateTests.go(rig.fake)
@@ -51,13 +54,14 @@ import Testing
     @Test func noAckByTheDeadlineSaysOnlyUnavailable() async throws {
         let rig = try await DuckRig(script: Self.neverAcked, clips: AmbientDuckModeTests.clips, ackDeadline: 0.3)
         defer { rig.close() }
-        #expect(await eventually { rig.details("ambient_duck_confirmed").count == 2 })
+        #expect(await eventually { rig.details("ambient_duck_confirmed").count == 1 })
         let (_, words) = try await AmbientPrivacySwitchTests.untilWords(rig.socket, step: "unavailable")
         #expect(words == "I can't listen privately right now.")
         let settled = await rig.settledEvents()
         await rig.finish()
-        #expect(rig.details("ambient_duck_confirmed") == ["on=true unacknowledged playback=idle confirm=unreported",
-                                                          Self.unavailable])
+        #expect(rig.details("ambient_duck_confirmed") == [
+            "on=true unacknowledged playback=idle confirm=confirmprivacyunavailable/0:sent"
+        ])
         #expect(!settled.contains { $0.contains("confirmprivacyon") })
         #expect(rig.details("ambient_privacy_start") == ["outcome=refused reason=unacknowledged"])
         #expect(Self.control(rig) == "{\"duck\":true}\n")
@@ -71,7 +75,7 @@ import Testing
         defer { rig.close() }
         #expect(await eventually { rig.details("ambient_duck_confirmed").count == 2 })
         await rig.finish()
-        #expect(rig.details("ambient_duck_confirmed") == ["on=true unacknowledged confirm=unreported",
+        #expect(rig.details("ambient_duck_confirmed") == ["on=true withdrawn confirm=unreported",
                                                           "on=false confirm=confirmprivacyoff/0:sent"])
         #expect(rig.details("ambient_ended").count == 1 && rig.details("ambient_privacy_start").isEmpty)
     }
@@ -108,15 +112,14 @@ import Testing
         #expect(await eventually { rig.details("ambient_duck_confirmed") == [statusOff] })
         let connection = try #require(rig.connection())
         try await AmbientPrivacySwitchTests.send(true, on: rig.socket)
-        #expect(await eventually { rig.details("ambient_duck_confirmed").count == 3 })
+        #expect(await eventually { rig.details("ambient_duck_confirmed").count == 2 })
         let settled = await rig.settledEvents()
         #expect(rig.env.router.duckMode(connection: connection))
         await rig.finish()
         #expect(!settled.contains { $0.contains("confirmprivacyon") })
-        #expect(Set(rig.details("ambient_duck_confirmed")) == [
-            statusOff, "on=true reason=device unacknowledged playback=idle confirm=unreported", Self.unavailable
+        #expect(rig.details("ambient_duck_confirmed") == [
+            statusOff, "on=true reason=device unacknowledged playback=idle " + Self.saidUnavailable
         ])
-        #expect(rig.details("ambient_duck_confirmed").filter { $0 == Self.unavailable }.count == 1)
     }
 
     /// A reload swaps out the child before it acked: its successor, started private (its `started` is the proof),

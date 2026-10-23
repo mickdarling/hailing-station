@@ -489,6 +489,8 @@ public final class AmbientRightyoRouter: AmbientAudioSink, AmbientListenerWiring
         public var startDeadline: TimeInterval = RightyoAmbientPipeline.defaultStartDeadline
         /// How long each child has to ack a `{"duck":true}` (#735 S-8). Not configurable: tests only shorten it.
         var ackDeadline: TimeInterval = RightyoAmbientPipeline.ackDeadline
+        /// The bound on a privacy entry's announcement (#735 S-8 HS-C round 2). Not configurable: tests only shorten it.
+        var privacyConfirmTimeout: TimeInterval = AmbientRightyoRouter.privacyConfirmTimeout
         /// The owner's allowlisted note destinations (#552); nil leaves spoken notes off.
         public var destinations: VoiceDestinations?
         var notes = VoiceNoteRunner()
@@ -562,6 +564,10 @@ public final class AmbientRightyoRouter: AmbientAudioSink, AmbientListenerWiring
         var media: [UUID: AmbientMediaTimer] = [:]
         /// Connections whose owner turned duck mode on (#735), kept like `media`. A connection is never in both.
         var duck: [UUID: AmbientDuckTimer] = [:]
+        /// Privacy entries (#735 S-8 HS-C round 2): the last number given per connection, and those still awaiting
+        /// their announcement, each with every child it was opened on (a child registered meanwhile included).
+        var privacyEntries: [UUID: Int] = [:]
+        var privacyOpen: [UUID: [Int: [RightyoAmbientPipeline]]] = [:]
         /// The reply whose final text, the latest this host delivered, ended with a question (rightyo#199); nil
         /// otherwise, and cleared by audio of any other reply (a text-less acknowledgement clip). The phone plays
         /// replies in order and reports one end when its queue drains, so that reply is the one just heard.
@@ -657,6 +663,7 @@ public final class AmbientRightyoRouter: AmbientAudioSink, AmbientListenerWiring
             (state.latest[connection], state.inputRoutes[connection]) = (nil, nil)
             state.media.removeValue(forKey: connection)?.timer.cancel()
             state.duck.removeValue(forKey: connection)?.timer?.cancel()
+            if state.privacyOpen[connection] == nil { state.privacyEntries[connection] = nil }
             state.listener?.value?.replyHold.set(false, connection: connection)
             if let active = state.active, state.runs[active.run]?.connection == connection { state.active = nil }
             return state.runs.filter { $0.value.connection == connection }.map(\.key)
@@ -977,7 +984,7 @@ extension AmbientRightyoRouter {
         // The child this pipeline runs, marked once it exists, so a refusal can tell whether a reload retired it.
         let mark = AmbientRunMark()
         (settings.onVoiceDuck, settings.onDuckUnsupported) = (voiceDuck(on: connection, listener: listener,
-                                                                        retired: retired(mark)),
+                                                                        retired: retired(mark), mark: mark),
                                                               duckUnsupported(on: connection))
         // Privacy on (#735 S-2b): the child is launched already private, on a spawn, a respawn or a reload alike.
         settings.startPrivate = state.withLock { $0.duck[connection] != nil }
@@ -1019,6 +1026,11 @@ extension AmbientRightyoRouter {
         // Duck mode (#735) likewise; the pipeline writes it once the child's `started` says it takes it. Always told,
         // so a child launched start-private (S-2b) whose privacy ended meanwhile is written off once it confirms.
         pipeline.reportDuck(state.duck[connection] != nil)
+        // An entry still awaiting its announcement answers for this child too (#735 S-8 HS-C round 2).
+        for entry in (state.privacyOpen[connection] ?? [:]).keys {
+            pipeline.openPrivacyEntry(entry)
+            state.privacyOpen[connection]?[entry]?.append(pipeline)
+        }
         state.runs[id]?.task = Task { [weak self] in
             if reload { self?.emit("ambient_reloaded", detail: nil) }
             self?.emit("ambient_started", connection: connection, detail: nil)
@@ -1490,14 +1502,22 @@ extension AmbientRightyoRouter {
     /// `setDuck`, only while `connection`'s privacy arming (its token, nil while off) still passes `armed`, checked
     /// under the lock that changes it (#735 S-6). Nil when it does not: nothing changes, is logged, written or sent.
     func setDuck(_ on: Bool, connection: UUID, reason: String, whileArming armed: (UUID?) -> Bool) -> Int? {
+        switchDuck(on, connection: connection, reason: reason, whileArming: armed)?.reported
+    }
+
+    /// `setDuck`, which also opens a privacy entry (#735 S-8 HS-C round 2) for an on that a child took or that found
+    /// privacy already on, under the same lock: the caller must announce it (`announceEntry`), which closes it.
+    func switchDuck(_ on: Bool, connection: UUID, reason: String,
+                    whileArming armed: (UUID?) -> Bool) -> AmbientPrivacyEntry? {
         let changed = state.withLock { state -> DuckChange? in
             guard armed(state.duck[connection]?.token) else { return nil }
-            guard let reported = changeDuck(on, connection: connection, reason: reason, in: &state) else {
-                return DuckChange(duck: 0, media: nil, still: state.duck[connection] != nil)
-            }
+            let wasOn = state.duck[connection] != nil
+            let reported = changeDuck(on, connection: connection, reason: reason, in: &state)
+            let entry = on && (wasOn || reported != nil) ? openPrivacyEntry(connection, in: &state) : nil
+            guard let reported else { return DuckChange(duck: 0, media: nil, still: wasOn, wasOn: wasOn, entry: entry) }
             let left = on && state.media[connection] != nil
             let media = left ? changeMedia(false, connection: connection, reason: "voice", in: &state) : nil
-            return DuckChange(duck: reported, media: media, still: false)
+            return DuckChange(duck: reported, media: media, still: false, wasOn: wasOn, entry: entry)
         }
         guard let changed else { return nil }
         let refused = !on || changed.duck > 0 ? "" : changed.still ? " still_on" : " refused=unsupported"
@@ -1506,7 +1526,17 @@ extension AmbientRightyoRouter {
         if let media = changed.media {
             emit("ambient_media", connection: connection, detail: "on=false reason=voice reported=\(media)")
         }
-        return changed.duck
+        return AmbientPrivacyEntry(reported: changed.duck, entry: changed.entry, wasOn: changed.wasOn)
+    }
+
+    /// Opens the next privacy entry on every child of `connection`, under the caller's lock.
+    private func openPrivacyEntry(_ connection: UUID, in state: inout State) -> Int {
+        let entry = (state.privacyEntries[connection] ?? 0) + 1
+        let pipelines = state.runs.values.filter { $0.connection == connection }.map(\.pipeline)
+        pipelines.forEach { $0.openPrivacyEntry(entry) }
+        state.privacyEntries[connection] = entry
+        state.privacyOpen[connection, default: [:]][entry] = pipelines
+        return entry
     }
 
     /// Media mode's change under the caller's lock: the timeout, the children, then the device notice, queued under the
@@ -1586,24 +1616,27 @@ extension AmbientRightyoRouter {
         }
     }
 
-    /// Whether every child of `connection` keeps the privacy wished for (#735 S-8 HS-C), for the privacy-on clip: waits
-    /// for each run a reload has not swapped out, true only when all of them kept it; false when any did not, or there
-    /// is no run. A child a reload swapped out while waited for is answered for by the runs that follow it, at most
-    /// a few times. Always resolves: each child answers by its ack deadline, a refusal, the wish withdrawn or its end.
-    func privacyKept(connection: UUID) async -> Bool {
-        var awaited = Set<ObjectIdentifier>()
-        for _ in 0..<4 {
-            let pipelines = state.withLock { state in
-                state.runs.values.filter { $0.connection == connection && !$0.replaced }.map(\.pipeline)
-            }
-            // Nothing new since the last pass (or no run at all): the earlier answer stands.
-            guard pipelines.contains(where: { !awaited.contains(ObjectIdentifier($0)) }) else { return false }
-            awaited.formUnion(pipelines.map(ObjectIdentifier.init))
-            var kept = true
-            for pipeline in pipelines where kept { kept = await pipeline.privacyKept() }
-            if kept { return true }
+    /// The children of `connection` that still hear its stream (#735 S-8 HS-C round 2): neither retired by the stream's
+    /// end nor swapped out by a reload. A draining child hears nothing more, so it never answers for privacy.
+    func listeningPipelines(connection: UUID) -> [RightyoAmbientPipeline] {
+        state.withLock { state in
+            state.runs.values.filter { $0.connection == connection && $0.retiredAt == nil }.map(\.pipeline)
         }
-        return false
+    }
+
+    /// Whether `pipeline`'s run was swapped out by a reload (its refusal says nothing for the stream).
+    func isReplaced(_ pipeline: RightyoAmbientPipeline) -> Bool {
+        state.withLock { $0.runs.values.contains { $0.pipeline === pipeline && $0.replaced } }
+    }
+
+    /// Closes privacy entry `entry` on every child it was opened on; true when one of them had a refusal attributed to
+    /// it and not yet said, which the entry now says.
+    func closePrivacyEntry(_ entry: Int, connection: UUID) -> Bool {
+        let pipelines = state.withLock { state in
+            defer { if state.privacyOpen[connection]?.isEmpty == true { state.privacyOpen[connection] = nil } }
+            return state.privacyOpen[connection]?.removeValue(forKey: entry) ?? []
+        }
+        return pipelines.map { $0.closePrivacyEntry(entry) }.contains(true)
     }
 
     /// Whether the run of the pipeline `mark` names was swapped out by a reload (#822 A): its stream lives on in the
@@ -1634,6 +1667,7 @@ extension AmbientRightyoRouter {
 /// whether an entry no child took found duck mode already on.
 private struct DuckChange {
     let duck: Int, media: Int?, still: Bool
+    var wasOn = false, entry: Int?
 }
 
 /// The pipeline a router closure belongs to, set once the pipeline exists (#822 A); weak, so it never keeps one alive.

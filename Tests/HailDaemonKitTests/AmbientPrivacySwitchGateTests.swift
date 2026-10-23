@@ -92,7 +92,7 @@ import Testing
         try await AmbientPrivacySwitchTests.send(true, on: rig.socket)
         #expect(try await AmbientPrivacySwitchTests.untilPong(rig.socket, step: "on without a stream").isEmpty)
         #expect(!router.duckMode(connection: connection))
-        await rig.env.router.settle()
+        await rig.settle()
         await rig.env.listener.stop(reason: "synthetic test complete")
         #expect(rig.details("ambient_duck") == ["on=true reason=device reported=1",
                                                 "on=false reason=device reported=0"])

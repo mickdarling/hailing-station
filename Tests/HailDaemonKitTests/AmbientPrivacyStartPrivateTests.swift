@@ -92,7 +92,7 @@ import Testing
         let first = try rig.fake.recorded("argv.txt").split(separator: "\n").first
         #expect(first?.contains("--start-private") == false)
         try await recipientSocketSend(audio(next, 1, final: true), on: rig.socket)
-        await rig.env.router.settle()
+        await rig.settle()
         #expect(rig.details("ambient_privacy_start").isEmpty)
         await rig.env.listener.stop(reason: "synthetic test complete")
     }
@@ -161,7 +161,7 @@ import Testing
                 == Array(repeating: "unavailable confirm=confirmprivacyunavailable/0:sent", count: 2))
         #expect(rig.env.router.duckMode(connection: connection))
         #expect(rig.details("ambient_duck") == ["on=true reason=voice reported=1"])
-        await rig.env.router.settle()
+        await rig.settle()
         await rig.env.listener.stop(reason: "synthetic test complete")
     }
 
@@ -176,13 +176,13 @@ import Testing
         let connection = try #require(rig.connection())
         #expect(await rig.env.router.reload() == .reloaded)
         #expect(await eventually { rig.details("ambient_ended").contains("privacy unconfirmedStart") })
-        let unavailable = "unavailable confirm=confirmprivacyunavailable/0:sent"
-        #expect(await eventually { rig.details("ambient_duck_confirmed").contains(unavailable) })
+        let unavailable = "confirm=confirmprivacyunavailable/0:sent"
+        #expect(await eventually { rig.details("ambient_duck_confirmed").contains { $0.hasSuffix(unavailable) } })
         #expect(rig.env.router.duckMode(connection: connection))
         await rig.finish()
-        // The entry's own confirmation waits for the first child's ack (#735 S-8 HS-C), on its own chain, so it may
-        // come either side of the refusal; the refusal is said once.
-        #expect(rig.details("ambient_duck_confirmed").filter { $0 == unavailable }.count == 1)
+        // The entry's own confirmation waits for the first child's ack (#735 S-8 HS-C). Still open at the refusal, the
+        // entry says it (round 2); already announced, the refusal says it itself. Either way, once.
+        #expect(rig.details("ambient_duck_confirmed").filter { $0.hasSuffix(unavailable) }.count == 1)
     }
 }
 #endif
