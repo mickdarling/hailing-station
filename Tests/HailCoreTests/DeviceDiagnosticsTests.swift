@@ -144,6 +144,8 @@ import Testing
         #expect(DeviceDiagnostics.token("pad", for: .device) == .token("pad"))
         #expect(DeviceDiagnostics.interruptionReason(0) == "default")
         #expect(DeviceDiagnostics.playbackFailure("Playback failed") == "playback_failed")
+        #expect(DeviceDiagnostics.playbackFailure("Audio couldn't be decoded") == "format_unplayable")
+        #expect(DeviceDiagnostics.token("format_unplayable", for: .code) == .token("format_unplayable"))
         #expect(DeviceDiagnostics.playbackFailure("Playing") == nil)
         #expect(DeviceDiagnostics.scalars(["a": UInt(2), "b": "text", 3: UInt(1)]) == ["a": 2])
         #expect(AmbientListeningController.diagnosticCause(HostConnectionFailure.remote("rate_limited: ambient x"))

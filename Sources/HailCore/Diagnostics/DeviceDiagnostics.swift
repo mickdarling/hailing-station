@@ -232,8 +232,9 @@ extension DeviceDiagnostics {
 
     nonisolated static func playbackFailure(_ status: String) -> String? {
         [
-            "Playback failed": "playback_failed", "Playback could not resume": "resume_failed",
-            "Replay failed": "replay_failed", "Audio format is not yet playable": "format_unplayable",
+            ReplyPlaybackController.playbackFailed: "playback_failed", "Playback could not resume": "resume_failed",
+            "Replay failed": "replay_failed", ReplyPlaybackController.audioFormatNotPlayable: "format_unplayable",
+            ReplyPlaybackController.audioCouldNotBeDecoded: "format_unplayable",
             "Conflicting audio segment refused": "conflicting_segment"
         ][status]
     }
