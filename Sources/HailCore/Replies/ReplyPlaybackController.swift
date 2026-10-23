@@ -77,10 +77,10 @@ public final class ReplyPlaybackController {
     }
 
     var hasQueuedPlayback: Bool { !queue.isEmpty }
-
     public init(player: any ReplyAudioPlaying) {
         self.player = player
         observeAudioInterruptions(on: .default)
+        observeCatchUp()
     }
 
     public var latest: ReplyPresentation? { replies.last }
