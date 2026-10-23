@@ -137,8 +137,8 @@ import Testing
     }
 
     /// A failed start while private (the child cannot even launch) is refused; privacy stays on and the owner hears
-    /// "I can't listen privately right now." once per connection, however many starts fail.
-    @Test func aFailedStartWhilePrivateKeepsPrivacyAndSaysSoOnce() async throws {
+    /// "I can't listen privately right now." for every start that fails (#822 A: no silent state change).
+    @Test func aFailedStartWhilePrivateKeepsPrivacyAndSaysSoEachTime() async throws {
         let rig = try await DuckRig(script: "/bin/cat <&3 >> control.txt &\n" + AmbientDuckReloadTests.entry,
                                     clips: AmbientDuckModeTests.clips)
         defer { rig.close() }
@@ -156,7 +156,7 @@ import Testing
         }
         #expect(await eventually { rig.details("ambient_duck_confirmed").count == 3 })
         #expect(Array(rig.details("ambient_duck_confirmed").dropFirst()).sorted()
-                == ["unavailable confirm=confirmprivacyunavailable/0:sent", "unavailable repeat confirm=unreported"])
+                == Array(repeating: "unavailable confirm=confirmprivacyunavailable/0:sent", count: 2))
         #expect(rig.env.router.duckMode(connection: connection))
         #expect(rig.details("ambient_duck") == ["on=true reason=voice reported=1"])
         await rig.env.router.settle()
