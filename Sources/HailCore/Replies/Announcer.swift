@@ -45,17 +45,18 @@ public final class Announcer {
         }
     }
 
-    /// Announces once each reply whose audio did not play (#825), while `when` allows: a stream that ended early is
-    /// spoken; a failed playback goes straight to the fallback, since the player that failed would play this too.
+    /// Announces once each reply whose audio did not play (#825), while `when` allows: a stream that ended early, or
+    /// audio in a format the app can't play yet, is spoken; a failed playback goes straight to the fallback, since the
+    /// player that failed would fail this too (#838 review).
     public func watchReplyAudio(when allowed: @escaping @MainActor () -> Bool) {
-        let problems = withObservationTracking { playback.audioProblems } onChange: { [weak self] in
+        let lost = withObservationTracking { playback.lostAudioStatuses } onChange: { [weak self] in
             Task { @MainActor in self?.watchReplyAudio(when: allowed) }
         }
-        for (id, problem) in problems where announcedReplies.insert(id).inserted && allowed() {
-            if problem == ReplyPlaybackController.audioDidNotArrive {
-                announce(.replyAudioLost)
-            } else {
-                fallBack(.replyAudioFailed, .playerFailed)
+        for (id, status) in lost where announcedReplies.insert(id).inserted && allowed() {
+            switch status {
+            case ReplyPlaybackController.abandonedStatus: announce(.replyAudioLost)
+            case "Playback failed": fallBack(.replyAudioFailed, .playerFailed)
+            default: announce(.replyAudioFailed) // Its format: the player itself was never tried.
             }
         }
     }
@@ -72,8 +73,8 @@ extension ReplyStreamKey {
 }
 
 extension ReplyPlaybackController {
-    /// Every reply whose audio did not play, by presentation id, observably.
-    var audioProblems: [String: String] { presentationStatuses.compactMapValues(Self.audioProblem) }
+    /// The recorded status of every reply whose audio did not play, by presentation id, observably.
+    var lostAudioStatuses: [String: String] { presentationStatuses.filter { Self.audioProblem($0.value) != nil } }
 
     /// Queues a local announcement behind any reply (#825 S4b). It plays through the same player, so it shares the
     /// echo canceller, pause and mute, and playback reports it as assistant speech like a reply; it is never a reply
