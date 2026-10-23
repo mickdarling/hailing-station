@@ -235,6 +235,8 @@ public final class RightyoAmbientPipeline: Sendable {
 
     /// Whether audio now reaches the child (#735 S-2b; tests).
     var hearsAudio: Bool { duck.mayHearAudio }
+    /// Whether haild has read the child's first `started` (#735; tests): a privacy wish before it is kept, not written.
+    var childStarted: Bool { duck.started }
 
     /// Reports the assistant's spoken reply on this stream's device (rightyo#124); false when reply control is off
     /// or the report was dropped. Never blocks.
@@ -718,6 +720,8 @@ final class AmbientDuckControl: Sendable {
     func release() { state.withLock { $0.wanted = false } }
     /// The start deadline passed before `started` (#735 S-2b).
     var expired: Bool { state.withLock { $0.expired } }
+    /// The child's first `started` was read, not the start deadline passed (tests).
+    var started: Bool { state.withLock { $0.started && !$0.expired } }
 
     /// Ends the wait for `started` at the deadline: true when it had not come (the child must be killed); a later
     /// `started` is then ignored, and the wish stays on.
