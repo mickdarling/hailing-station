@@ -101,7 +101,6 @@ import Testing
         for _ in 0..<5 { await Task.yield() }
     }
 }
-
 @MainActor
 private struct FakeRenderer: AnnouncementRendering {
     var fails = false
@@ -133,7 +132,6 @@ private final class AnnouncePlayer: ReplyAudioPlaying {
         replaced = payloads
     }
 }
-
 private final class FailingPlayer: ReplyAudioPlaying {
     struct Failure: Error {}
     func schedule(_ payload: AudioPayload, onPlayed: (@MainActor @Sendable () -> Void)?) throws { throw Failure() }
@@ -171,8 +169,11 @@ private final class FailingPlayer: ReplyAudioPlaying {
         for _ in 0..<10 { await Task.yield() }
         #expect(renderer.rendered == [.replyAudioLost])
         #expect(player.scheduled.last?.isFinal == true, "the cue played through the player")
-        controller.ingest(HostReplyEvent(endpointID: "main", frame: Frame( // A new status re-runs the watch.
-            timestamp: 1, target: reply.targetID, source: reply.hostID, payload: .text(TextPayload(text: "Next")))))
+        // Another reply's "Received" status re-runs the watch; the abandoned one is not spoken again.
+        let next = ReplyDescriptor(id: UUID(), hostID: "main-mac", targetID: "tmux:codex")
+        let text = Frame(timestamp: 1, target: next.targetID, source: next.hostID,
+                         payload: .text(TextPayload(text: "Next", reply: next)))
+        controller.ingest(HostReplyEvent(endpointID: "main", frame: text))
         for _ in 0..<10 { await Task.yield() }
         #expect(renderer.rendered == [.replyAudioLost])
         withExtendedLifetime(announcer) {}
@@ -187,7 +188,6 @@ private final class CountingRenderer: AnnouncementRendering {
                              isFinal: true, bytes: Data([1, 0]))]
     }
 }
-
 @MainActor
 private final class AbandonPlayer: ReplyAudioPlaying {
     var scheduled: [AudioPayload] = []
