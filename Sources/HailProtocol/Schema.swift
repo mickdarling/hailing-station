@@ -189,7 +189,11 @@ public enum Schema {
                 ]),
                 "capabilities": .object(["type": .string("array"), "items": .object(["type": .string("string")])]),
                 "deviceName": .object(["type": .string("string")]),
-                "deviceKind": .object(["enum": .array(AmbientTakeOver.deviceKinds.map(JSONValue.string))])
+                "deviceKind": .object(["enum": .array(AmbientTakeOver.deviceKinds.map(JSONValue.string))]),
+                "hostInstance": .object([
+                    "type": .string("string"), "format": .string("uuid"),
+                    "pattern": .string("^[0-9A-Fa-f]{8}-[0-9A-Fa-f]{4}-[0-9A-Fa-f]{4}-[0-9A-Fa-f]{4}-[0-9A-Fa-f]{12}$")
+                ])
             ]),
             "targets": .object([
                 "type": .string("array"),
