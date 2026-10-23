@@ -458,6 +458,9 @@ The stack these build on has merged; owner privacy (slice 3) also waits for S-7.
    asks for privacy first? #809 settled that privacy does not survive a host restart; this is the app being killed,
    with the host still running. Until you decide, a listen you start by hand after a relaunch starts public, except
    on a proven device once the owner-device slice reads its key's report (Reconnects).
+8. **Privacy turned on mid-listen that the Mac does not confirm:** today the stream carries on in public after a
+   refusal. Proposed: audio pauses while the on waits, and listening stops if it is refused or times out (Reconnects).
+   Is that what you want?
 
 ## Verification
 
