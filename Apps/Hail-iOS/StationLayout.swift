@@ -83,12 +83,12 @@ extension RootView {
         let fits = StationPlatform.supportsWideLayout && horizontalSizeClass == .regular
             && !dynamicTypeSize.isAccessibilitySize && size.height >= 600
         if expanded {
-            // At accessibility sizes nothing fits one screen (#819 review): the chat takes most of it, and the station
-            // scrolls to Tap to talk below.
-            let large = dynamicTypeSize.isAccessibilitySize
+            // At accessibility sizes, or on a short portrait screen such as an iPhone SE, nothing fits one screen (#819
+            // review): the chat takes most of it, and the station scrolls to Tap to talk below.
+            let scrolls = dynamicTypeSize.isAccessibilitySize || (size.height < 700 && size.width <= size.height)
             return StationFit(
-                fitsOneScreen: !large, isWide: false, height: large ? nil : size.height, denseType: fits,
-                beside: !large && size.width > size.height, chatHeight: max(340, size.height * 0.7)
+                fitsOneScreen: !scrolls, isWide: false, height: scrolls ? nil : size.height, denseType: fits,
+                beside: !scrolls && size.width > size.height, chatHeight: max(340, size.height * 0.7)
             )
         }
         return StationFit(
