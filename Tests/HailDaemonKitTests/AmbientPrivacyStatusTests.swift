@@ -6,6 +6,15 @@ import Testing
 /// A status asked while a privacy entry is still unproven (#735 6362119223): decided when its clip plays, behind the
 /// entry, so it never says privacy is on unless "Privacy on" was said. Synthetic only.
 @Suite(.serialized, .timeLimit(.minutes(1)), .frozenGuardBudget) struct AmbientPrivacyStatusTests {
+    /// The ledger fails closed (third key): a status may say on only after "Privacy on", never with nothing yet
+    /// announced or after an off.
+    @Test func theLedgerHearsOnOnlyAfterPrivacyOn() {
+        var ledger = AmbientPrivacyLedger<NSObject>()
+        #expect(ledger.said == nil && !ledger.heardOn)
+        ledger.withdrawAll()
+        #expect(ledger.said == .off && !ledger.heardOn)
+    }
+
     /// Behind an entry that said "unavailable" (its only child exited before the ack), the status is not on.
     @Test func aStatusBehindAnUnavailableEntryIsNotOn() async throws {
         let script = AmbientPrivacyEventTests.enterThen(["status"], acked: false)
