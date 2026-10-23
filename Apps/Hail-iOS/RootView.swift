@@ -17,7 +17,7 @@ struct RootView: View {
     /// The "Diagnostics logging" log (#234): off by default; records and sends nothing until turned on.
     @State var diagnostics = DeviceDiagnostics()
     @State var announcer: Announcer?
-    @State var announcementBanner: String? // A cue that could not be heard (#825 S4b), shown until tapped.
+    @State var announcementBanners = AnnouncementBanners()
     @State var selectedHostID: HostEndpoint.Identifier?
     @State var selectedTargetID: String?
     @State var rememberedSelection: DestinationSelection?
@@ -51,7 +51,7 @@ struct RootView: View {
             content
         }
         .modifier(StationMenuStatusPublisher(connections: connections, destination: destination?.label))
-        .overlay(alignment: .top) { announcementBannerView }
+        .overlay(alignment: .top) { AnnouncementBannerView(banners: $announcementBanners) }
         .onChange(of: scenePhase) { _, phase in
             scenePhaseRevision &+= 1
             selectionRevision &+= 1
@@ -180,21 +180,10 @@ extension RootView {
             #if os(iOS)
             UINotificationFeedbackGenerator().notificationOccurred(.warning)
             #endif
-            announcementBanner = announcement.fallbackText
+            announcementBanners.append(announcement.fallbackText)
             StationPlatform.announce(announcement.fallbackText)
         }
         announcer.watchReplyAudio { !StationPlatform.voiceOverRunning } // VoiceOver hears the deferred ones (#86).
         self.announcer = announcer
-    }
-    @ViewBuilder var announcementBannerView: some View {
-        if let banner = announcementBanner {
-            Button { announcementBanner = nil } label: { Label(banner, systemImage: "speaker.slash") }
-                .buttonStyle(.plain)
-                .font(.subheadline.weight(.semibold))
-                .padding(EdgeInsets(top: 10, leading: 14, bottom: 10, trailing: 14))
-                .background(.regularMaterial, in: Capsule())
-                .padding(.top, 8)
-                .accessibilityIdentifier("station.announcement-banner")
-        }
     }
 }
