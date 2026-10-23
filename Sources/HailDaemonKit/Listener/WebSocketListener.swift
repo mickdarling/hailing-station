@@ -482,6 +482,11 @@ public final class AmbientRightyoRouter: AmbientAudioSink, AmbientListenerWiring
         public var replyControl = false
         /// How long the owner's spoken media mode (#551) lasts before it turns itself off.
         public var mediaTimeout: TimeInterval = AmbientRightyoRouter.defaultMediaTimeout
+        /// #735 meeting mode (rightyo#227): the host-only session state's auto-end, three hours by default.
+        public var meetingTimeout: TimeInterval = AmbientRightyoRouter.defaultMeetingTimeout
+        /// MM-C opens/closes its encrypted record here (#735 meeting mode (rightyo#227)); no record is built yet.
+        /// Called in change order, outside the state lock, once per real change. It must return at once.
+        public var onMeetingChange: (@Sendable (UUID, Bool, MeetingProfile, String) -> Void)?
         /// How long the owner's spoken duck mode (#735) lasts before it turns itself off: host.json
         /// `ambient.duckTimeout`, or `defaultDuckTimeout`.
         public var duckTimeout: TimeInterval = AmbientRightyoRouter.defaultDuckTimeout
@@ -539,7 +544,7 @@ public final class AmbientRightyoRouter: AmbientAudioSink, AmbientListenerWiring
     /// Segments of the newest start kept while it makes room: 6.4 s of 100 ms segments; the oldest is dropped.
     public static let maxQueuedSegments = 64
 
-    fileprivate struct State {
+    struct State {
         var listener: WeakListener?
         var active: Active?
         var runs: [UUID: Run] = [:]
@@ -566,6 +571,8 @@ public final class AmbientRightyoRouter: AmbientAudioSink, AmbientListenerWiring
         /// Connections whose owner turned media mode on (#551), each with its timeout; dropped (and the timeout
         /// cancelled) when it ends, times out or the connection stops. Every child registered meanwhile is told.
         var media: [UUID: AmbientMediaTimer] = [:]
+        /// #735 meeting mode (rightyo#227): the profile, start and guarded timeout; exclusive with media and privacy.
+        var meeting: [UUID: AmbientMeetingTimer] = [:]
         /// Connections whose owner turned duck mode on (#735), kept like `media`. A connection is never in both.
         var duck: [UUID: AmbientDuckTimer] = [:]
         /// Privacy entries and the last word per connection (#735 S-8 HS-C round 4, `AmbientPrivacyLedger`), and each
@@ -578,10 +585,12 @@ public final class AmbientRightyoRouter: AmbientAudioSink, AmbientListenerWiring
         /// replies in order and reports one end when its queue drains, so that reply is the one just heard.
         var replyAsked: UUID?
     }
-    fileprivate struct WeakListener { weak var value: WebSocketListener? }
+    struct WeakListener { weak var value: WebSocketListener? }
 
     public let configuration: Configuration
-    fileprivate let state = Mutex(State())
+    let state = Mutex(State())
+    /// #735 meeting mode (rightyo#227): hooks and confirmations in the order state changed.
+    let meetingChanges = SerialTaskChain()
     fileprivate let log: @Sendable (WebSocketListenerEvent) -> Void
     /// Wakes the worker; signals coalesce, the events themselves are in `State.queue`.
     fileprivate let wake: AsyncStream<Void>.Continuation
@@ -667,6 +676,7 @@ public final class AmbientRightyoRouter: AmbientAudioSink, AmbientListenerWiring
         let streams = state.withLock { state -> [UUID] in
             (state.latest[connection], state.inputRoutes[connection]) = (nil, nil)
             state.media.removeValue(forKey: connection)?.timer.cancel()
+            endMeeting(connection: connection, reason: "connection", in: &state)
             state.duck.removeValue(forKey: connection)?.timer?.cancel()
             if state.privacy[connection]?.entries.isEmpty != false { state.privacy[connection] = nil }
             // Clips already queued still play in order; a later one (none should come) starts a fresh chain.
@@ -738,7 +748,7 @@ public final class AmbientRightyoRouter: AmbientAudioSink, AmbientListenerWiring
 
 extension AmbientRightyoRouter {
     /// Keyed by its own id, not its stream's: a reload (#405) gives one stream a second run.
-    fileprivate struct Run {
+    struct Run {
         let stream: UUID
         let connection: UUID
         let pipeline: RightyoAmbientPipeline
@@ -757,7 +767,7 @@ extension AmbientRightyoRouter {
     }
     /// The stream whose child is fed audio now: its run, when the stream itself started and the selection generation
     /// it opened on (#636), both kept across reloads.
-    fileprivate struct Active {
+    struct Active {
         let stream: UUID
         let run: UUID
         let pipeline: RightyoAmbientPipeline
@@ -988,6 +998,7 @@ extension AmbientRightyoRouter {
         (settings.onHeard, settings.onOverheard) = transcriptRelays(on: connection, listener: listener)
         settings.onVoiceMute = voiceMuted(on: connection, listener: listener)
         settings.onVoiceMedia = voiceMedia(on: connection, listener: listener)
+        settings.onVoiceMeeting = voiceMeeting(on: connection, listener: listener)
         // The child's privacy state, held once it exists, so its refusal is said by the state rule (round 4).
         let mark = AmbientRunMark()
         (settings.onVoiceDuck, settings.onDuckUnsupported) = (voiceDuck(on: connection, listener: listener, mark: mark),
@@ -1028,7 +1039,9 @@ extension AmbientRightyoRouter {
         state.runs[id] = Run(stream: stream, connection: connection, pipeline: pipeline)
         // A new or reloaded child starts with media mode off (#551). Told under the same lock `setMedia` changes it
         // under, so it can never miss a change made while it was starting.
-        if state.media[connection] != nil { pipeline.reportMedia(true) }
+        if state.media[connection] != nil || state.meeting[connection] != nil {
+            reportModes(to: pipeline, connection: connection, in: state)
+        }
         // Duck mode (#735) likewise; the pipeline writes it once the child's `started` says it takes it. Always told,
         // so a child launched start-private (S-2b) whose privacy ended meanwhile is written off once it confirms.
         pipeline.reportDuck(state.duck[connection] != nil)
@@ -1485,8 +1498,8 @@ extension AmbientRightyoRouter {
     /// Turns media mode on or off for `connection` and tells its children; returns how many took it. On (re)arms the
     /// timeout and any change cancels the one before; `expected`, when given, makes this an expiry that applies only
     /// while that timeout is still the current one. The children are written under the lock (a write never blocks),
-    /// so a child `register` adds at the same moment either is written here or sees the new state. Media mode a child
-    /// took leaves duck mode (#735): the two are exclusive.
+    /// so a child `register` adds at the same moment either is written here or sees the new state. Privacy refuses
+    /// entry; entering media ends meeting mode (#735 meeting mode (rightyo#227)) without dropping the child's gate.
     @discardableResult
     func setMedia(_ on: Bool, connection: UUID, reason: String, expected: UUID? = nil) -> Int {
         let changed = state.withLock { state -> Int?? in
@@ -1542,6 +1555,7 @@ extension AmbientRightyoRouter {
             if reported != nil, on, state.media[connection] != nil {
                 change.media = changeMedia(false, connection: connection, reason: "voice", in: &state)
             }
+            if reported != nil, on { endMeeting(connection: connection, reason: "privacy", in: &state) }
             let switched = AmbientPrivacyEntry(reported: change.duck, entry: entry, wasOn: wasOn,
                                                on: state.duck[connection] != nil)
             if let work = clip(switched) { Self.clipChain(connection, in: &state).enqueue(work) }
@@ -1565,7 +1579,7 @@ extension AmbientRightyoRouter {
 
     /// Media mode's change under the caller's lock: the timeout, the children, then the device notice, queued under the
     /// same lock so a timeout's off and a spoken on reach the device in the order the mode changed. How many took it.
-    private func changeMedia(_ on: Bool, connection: UUID, reason: String, in state: inout State) -> Int {
+    func changeMedia(_ on: Bool, connection: UUID, reason: String, in state: inout State) -> Int {
         let token = UUID(), timeout = configuration.mediaTimeout
         state.media.removeValue(forKey: connection)?.timer.cancel()
         if on {
@@ -1576,7 +1590,8 @@ extension AmbientRightyoRouter {
             }
             state.media[connection] = AmbientMediaTimer(token: token, timer: timer)
         }
-        let reported = state.runs.values.filter { $0.connection == connection && $0.pipeline.reportMedia(on) }.count
+        if on { endMeeting(connection: connection, reason: "media", report: false, in: &state) }
+        let reported = reportModes(connection: connection, in: state)
         // The device sees on only once a child took it, so it never shows a mode not in force; off always (#612).
         if !on || reported > 0 {
             let expires = on ? Int64((Date().timeIntervalSince1970 + timeout) * 1_000) : nil

@@ -187,6 +187,7 @@ extension AmbientWiringStopConfirmationTests {
                                         "confirmmediaon", "confirmmediaoff", "confirmsaved", "confirmnotsaved",
                                         "confirmnotsent", "confirmprivacyon", "confirmprivacyoff",
                                         "confirmprivacystatus", "confirmstillrecording", "confirmprivacyrefused",
-                                        "confirmprivacyhint", "confirmprivacyunavailable"]
+                                        "confirmprivacyhint", "confirmprivacyunavailable", "confirmmeetingon", "confirmmeetingoff",
+                                        "confirmmeetingended", "confirmrubberduckon", "confirmrubberduckoff"]
 }
 #endif

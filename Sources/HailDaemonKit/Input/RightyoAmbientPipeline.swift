@@ -108,6 +108,9 @@ public final class RightyoAmbientPipeline: Sendable {
         /// Called once per admitted request that is the owner's spoken media mode on (true) or off (#551), handled
         /// like `onVoiceMute`. It must return at once.
         public var onVoiceMedia: (@Sendable (Bool) -> Void)?
+        /// #735 meeting mode (rightyo#227), handled like media mode; off carries no requested profile.
+        /// It must return at once.
+        public var onVoiceMeeting: (@Sendable (Bool, MeetingProfile?) -> Void)?
         /// Privacy mode (#735, internally duck), handled like `onVoiceMute`: called once per safety-set command in a
         /// transcript or request (`enter`; `stillRecording` when negated; `refused` from anyone but the owner;
         /// `unverified` from the owner role without a live voiceprint; `hint` for the owner's turn that starts with a
@@ -176,6 +179,7 @@ public final class RightyoAmbientPipeline: Sendable {
     private let onDismiss: (@Sendable (RightyoDismissReceipt) -> Void)?
     private let onVoiceMute: (@Sendable (Bool) -> Void)?
     private let onVoiceMedia: (@Sendable (Bool) -> Void)?
+    private let onVoiceMeeting: (@Sendable (Bool, MeetingProfile?) -> Void)?
     private let onVoiceDuck: (@Sendable (PrivacyCommand) -> Void)?
     private let duck: AmbientDuckControl
     /// The deadline for `started` while privacy is wished for (#735 S-2b), and whether this child was launched
@@ -218,6 +222,7 @@ public final class RightyoAmbientPipeline: Sendable {
         (self.child, self.session) = (child, session)
         onDismiss = configuration.onDismiss
         (onVoiceMute, onVoiceMedia) = (configuration.onVoiceMute, configuration.onVoiceMedia)
+        onVoiceMeeting = configuration.onVoiceMeeting
         onVoiceDuck = configuration.onVoiceDuck
         (self.duck, onDuckUnsupported) = (duck, configuration.onDuckUnsupported)
         (startDeadline, startsPrivate) = (configuration.startDeadline, configuration.startPrivate)
@@ -286,6 +291,7 @@ public final class RightyoAmbientPipeline: Sendable {
                 if event.type == "request", let command = await consumer.lastVoiceMedia {
                     onVoiceMedia?(command == .on)
                 }
+                await observeMeeting(event)
                 try await observePrivacy()
                 if event.type == "request", let note = await consumer.lastVoiceDestination {
                     onVoiceDestination?(note.destination, note.target, note.text)
@@ -307,6 +313,15 @@ public final class RightyoAmbientPipeline: Sendable {
 
 /// Privacy mode (#735) in the event loop, beside the type so its body stays within the length limit.
 extension RightyoAmbientPipeline {
+    /// Hands an admitted meeting command to the host (#735 meeting mode (rightyo#227)), never to the agent.
+    private func observeMeeting(_ event: RightyoInputEvent) async {
+        guard event.type == "request", let command = await consumer.lastVoiceMeeting else { return }
+        switch command {
+        case .on(let profile): onVoiceMeeting?(true, profile)
+        case .off: onVoiceMeeting?(false, nil)
+        }
+    }
+
     /// Hands one raw mono 16 kHz s16le chunk to the child without blocking; false once input has closed or for
     /// a chunk that is empty, odd-length or larger than the backlog. Overload drops the oldest pending audio.
     /// While privacy is wished for and this child has not yet shown it keeps it (#735 S-2b round 3: a `started` that

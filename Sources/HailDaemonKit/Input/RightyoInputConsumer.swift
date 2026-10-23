@@ -121,6 +121,39 @@ enum VoiceMedia {
     }
 }
 
+/// The session's participant profile (#735 meeting mode (rightyo#227)); both use the same host state and child gate.
+public enum MeetingProfile: String, Sendable { case meeting, rubberDuck }
+
+/// The owner's spoken meeting mode (#735 meeting mode (rightyo#227)): a whole turn, trimmed as media mode
+/// trims. Rubber duck is the same state with one participant. Matched on heard words only; nothing is logged.
+enum VoiceMeeting {
+    enum Command: Sendable, Equatable { case on(MeetingProfile), off }
+
+    static let meetingPhrases: Set<String> = [
+        "meeting mode", "meeting mode on", "start meeting mode", "start the meeting"
+    ]
+    static let rubberDuckPhrases: Set<String> = [
+        "rubber duck mode", "rubber duck mode on", "let me think out loud"
+    ]
+    static let offPhrases: Set<String> = [
+        "meeting mode off", "end meeting mode", "end the meeting", "the meeting's over",
+        "rubber duck mode off", "end rubber duck mode", "done thinking", "i'm done thinking"
+    ]
+
+    /// The command a whole turn says, given the session's keyed addressing `names`; nil for anything else.
+    static func command(in heard: String, names: Set<String>) -> Command? {
+        var words = heard.lowercased().split { !$0.isLetter && $0 != "'" }.map(String.init)
+        while words.last == "please" { words.removeLast() }
+        for candidate in VoiceMute.candidates(words, names: names) {
+            let phrase = candidate.joined(separator: " ")
+            if meetingPhrases.contains(phrase) { return .on(.meeting) }
+            if rubberDuckPhrases.contains(phrase) { return .on(.rubberDuck) }
+            if offPhrases.contains(phrase) { return .off }
+        }
+        return nil
+    }
+}
+
 /// What privacy mode (#735, internally duck) asks the host to do. `enter` is a safety-set entry command
 /// (`PrivacyEntry`) in the live enrolled owner's turn, and `stillRecording` a negated one ("don't stop recording"), which only plays
 /// "Still recording."; `exit` and `status` are RightyO's content-free `privacy` events (rightyo S-1), which RightyO
@@ -295,6 +328,14 @@ enum AmbientStopConfirmation {
     /// Media mode (#551): "Media mode on." and "Media mode off."
     static let mediaOn = RightyoAddressing.key("confirm-media-on")
     static let mediaOff = RightyoAddressing.key("confirm-media-off")
+    /// #735 meeting mode (rightyo#227): "Meeting mode on. I'll stay quiet unless you ask me by name.",
+    /// "Meeting mode off." and "Meeting mode ended.". Rubber duck falls back to the meeting keys until recorded.
+    /// None may contain a privacy exit phrase ("I'm back", "start listening", "privacy off").
+    static let meetingOn = RightyoAddressing.key("confirm-meeting-on")
+    static let meetingOff = RightyoAddressing.key("confirm-meeting-off")
+    static let meetingEnded = RightyoAddressing.key("confirm-meeting-ended")
+    static let rubberDuckOn = RightyoAddressing.key("confirm-rubber-duck-on")
+    static let rubberDuckOff = RightyoAddressing.key("confirm-rubber-duck-off")
     /// A spoken note (#552): "Saved." once its Shortcut succeeded, "That didn't save." when it did not.
     static let saved = RightyoAddressing.key("confirm-saved"), notSaved = RightyoAddressing.key("confirm-not-saved")
     /// An ambient request the owner addressed to a voice route that did not take it (#636): "Nothing was sent."
@@ -317,7 +358,8 @@ enum AmbientStopConfirmation {
     static let privacyUnavailable = RightyoAddressing.key("confirm-privacy-unavailable")
     static let reserved: Set<String> = [stopped, idle, muted, unmuted, mediaOn, mediaOff, saved, notSaved, notSent,
                                         privacyOn, privacyOff, privacyStatus, stillRecording, privacyRefused,
-                                        privacyHint, privacyUnavailable]
+                                        privacyHint, privacyUnavailable, meetingOn, meetingOff, meetingEnded,
+                                        rubberDuckOn, rubberDuckOff]
 
     /// Why a playback stop is not confirmed, as a log token, or nil when it is: only the enrolled owner's stop, and
     /// only on a connection still there to hear it.
@@ -340,9 +382,9 @@ enum AmbientStopConfirmation {
     }
 
     /// The next clip for `persona`; an idle stop without its own clips says "Stopped." instead, and a privacy refusal
-    /// without its own "Nothing was sent.".
+    /// without its own "Nothing was sent.". Rubber duck without its own uses the matching meeting clip (#735).
     static func clip(_ persona: String, in library: AmbientAckLibrary) -> Pick? {
-        let fallback = [idle: stopped, privacyRefused: notSent][persona]
+        let fallback = [idle: stopped, privacyRefused: notSent, rubberDuckOn: meetingOn, rubberDuckOff: meetingOff][persona]
         for candidate in [persona] + (fallback.map { [$0] } ?? []) {
             if let (index, clip) = library.nextReserved(candidate) {
                 return Pick(persona: candidate, index: index, clip: clip)
@@ -494,7 +536,9 @@ public actor RightyoInputConsumer {
     private(set) var lastVoiceMute: VoiceMute.Command?
     /// The owner's spoken media mode (#551), held back like `lastVoiceMute`. Nil for any other line.
     private(set) var lastVoiceMedia: VoiceMedia.Command?
-    /// Whether media phrases are commands (#551): only when the child has a control descriptor to carry them.
+    /// #735 meeting mode (rightyo#227), held back like media mode. Nil for any other line.
+    private(set) var lastVoiceMeeting: VoiceMeeting.Command?
+    /// Whether media (#551) and meeting (#735 meeting mode (rightyo#227)) phrases are commands: only with control.
     private let mediaCommands: Bool
     /// Privacy mode (#735, internally duck): what the latest event asked, held back from the agent like
     /// `lastVoiceMute`; nil for any other line. Only with `duckActive` (a host that handles privacy), which says
@@ -568,6 +612,7 @@ public actor RightyoInputConsumer {
         lastReceipt = nil
         lastDismissal = nil
         lastVoiceMute = nil
+        lastVoiceMeeting = nil
         (lastVoiceMedia, lastVoiceDestination, lastRouteRefusal, lastPrivacy) = (nil, nil, nil, nil)
         lastPrivacyAck = nil
         do {
@@ -657,7 +702,8 @@ public actor RightyoInputConsumer {
 }
 
 extension RightyoInputConsumer {
-    /// Leaves a spoken mute (#404) or media mode (#551) in `lastVoiceMute` or `lastVoiceMedia`; true when `turn` was
+    /// Leaves a spoken mute (#404), media (#551) or meeting (#735 meeting mode (rightyo#227)) command in its `lastVoice`
+    /// slot; true when `turn` was
     /// one. Media mode follows the mute's rule: it only changes what this host's RightyO attends to. Without
     /// `mediaCommands` (no control descriptor to carry it) a media phrase is a request like any other. A note to a
     /// destination (#552) writes the owner's data, so it needs an enrolled session and the owner's turn; it is left
@@ -674,8 +720,10 @@ extension RightyoInputConsumer {
             lastVoiceMute = command
         } else if mediaCommands, let command = VoiceMedia.command(in: heard, names: voiceNames) {
             lastVoiceMedia = command
+        } else if mediaCommands, let command = VoiceMeeting.command(in: heard, names: voiceNames) {
+            lastVoiceMeeting = command
         }
-        return lastVoiceMute != nil || lastVoiceMedia != nil
+        return lastVoiceMute != nil || lastVoiceMedia != nil || lastVoiceMeeting != nil
     }
 }
 extension RightyoInputConsumer {
