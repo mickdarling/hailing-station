@@ -195,11 +195,15 @@ haild keeps, in memory only, each approved key's last privacy report.
     haild's memory, so a restart wipes it, and this cannot conflict with #809. It closes the relaunch gap for proven
     devices.
   - A privacy-on that times out (the 10-second wait in #817) or is refused leaves the wish on. The way out is the
-    S-7c card's "Listen publicly", a deliberate tap only. It clears the wish, sends `set_privacy {off}` (a timeout
-    may mean the host did go private and only its notice was lost), and waits for the host's off notice before any
-    audio or announcement: then "Privacy is off. Listening publicly." If the host cannot be reached, it says
-    "Privacy is off on this phone. Listening is off." and does not stream. It says nothing about the key's
-    proactive-delivery privacy, which only "End privacy" clears. The switch stays bound to the host.
+    S-7c card's "Listen publicly", a deliberate tap only. It clears the wish and sends `set_privacy {off}`, since a
+    timeout may mean the host did go private and only its notice was lost. That is the same off as "End privacy",
+    so on a proven connection it also clears the key's report (Clearing) and proactive updates resume.
+  - Before any audio or announcement, the app waits up to 10 seconds for the host's answer. haild answers every
+    `set_privacy` with the connection's current `duck_mode`, even when nothing changed and no stream is running
+    (S-7a; on `main` such an off does nothing and sends nothing). On the off notice: "Privacy is off. Listening
+    publicly." and, if its key was private, "Updates resume." With no answer: "The Mac didn't answer. Listening is
+    off." With no connection: "Can't reach the Mac. Listening is off." Neither streams. The switch stays bound to
+    the host.
   - **Privacy turned on mid-listen** (proposed for S-7b, pending Mick): from the tap, before `set_privacy {on}` is
     sent, the app stops sending audio, and audio captured while it waits is dropped, never buffered or flushed. On
     the notice it carries on privately; on a timeout or refusal it stops listening, and S-7c says "Privacy wasn't
