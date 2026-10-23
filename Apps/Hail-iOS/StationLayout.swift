@@ -157,6 +157,14 @@ extension RootView {
         ambientListeningSurface
     }
 
+    /// The chat's header shows the player's controls for a reply from another destination (as `ConversationChatView`
+    /// decides), at its trailing edge.
+    var chatShowsOtherReplyControls: Bool {
+        guard let thread = chatThread, let current = playback.presentationForControls else { return false }
+        return !connections.conversation.entries(endpointID: thread.hostID, targetID: thread.targetID, addressed: true)
+            .contains { $0.id == current.id }
+    }
+
     /// The chat for the confirmed destination. Without one, the latest reply keeps its own card so its playback
     /// controls are never out of reach.
     @ViewBuilder

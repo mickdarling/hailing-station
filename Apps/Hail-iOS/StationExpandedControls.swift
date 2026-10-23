@@ -1,13 +1,10 @@
 import HailCore
 import SwiftUI
 
-// The full-screen conversation (#819): the chat takes the whole station, with only what must stay reachable: a slim
-// header (the destination, and a way back to the ambient card while it listens), the privacy switch (#735 S-6), and
-// Tap to talk in one row. Surfaces that own audio stay mounted, so removing the ambient card never ends listening and
-// removing Tap to talk never ends a capture. It applies only while there is a chat to carry the toggle.
+// The full-screen conversation (#819): the chat takes the station, with only a slim header, the privacy switch (#735
+// S-6) and Tap to talk in one row. Audio-owning surfaces stay mounted, so neither listening nor a capture ever ends.
 
-/// Where the device remembers the choice, in its own defaults.
-private let stationExpansionKey = "station.chatExpanded"
+private let stationExpansionKey = "station.chatExpanded" // The device's remembered choice, in its own defaults.
 @MainActor private var stationExpansionWasReset = false
 
 private struct StationCompactTalkKey: EnvironmentKey { static let defaultValue = false }
@@ -61,8 +58,7 @@ struct StationExpandToggle: View {
 /// Pinch out to expand the chat, in to bring the station back (#819). Simultaneous, so scrolling stays untouched.
 struct StationExpandPinch: ViewModifier {
     @Binding var expanded: Bool
-    /// Off where there is no chat to expand.
-    let enabled: Bool
+    let enabled: Bool // Off where there is no chat to expand.
 
     func body(content: Content) -> some View {
         content.simultaneousGesture(
@@ -173,16 +169,19 @@ extension RootView {
         }
     }
 
-    /// The chat with its full-screen toggle and pinch (#819). Only on the chat itself (#819 review): on a held reply's
-    /// card, with no chat to expand, a toggle would do nothing but quietly change the remembered choice.
+    /// The chat with its full-screen toggle and pinch (#819), only on the chat: elsewhere it would do nothing visible.
     func expandableChat(_ expanded: Binding<Bool>) -> some View {
-        let hasChat = chatThread != nil
-        return chatSurface
-            // Beside the "Conversation" title, clear of the newest message (#819 review).
-            .overlay(alignment: .topTrailing) {
-                if hasChat { StationExpandToggle(expanded: expanded).padding(8) }
-            }
-            .modifier(StationExpandPinch(expanded: expanded, enabled: hasChat))
+        let hasChat = chatThread != nil, aside = chatShowsOtherReplyControls
+        // Beside the "Conversation" title, clear of the newest message (#819 review); in its own row above the chat
+        // while another destination's reply controls hold the title's trailing edge, so it covers nothing.
+        return VStack(alignment: .trailing, spacing: 4) {
+            if hasChat && aside { StationExpandToggle(expanded: expanded) }
+            chatSurface
+                .overlay(alignment: .topTrailing) {
+                    if hasChat && !aside { StationExpandToggle(expanded: expanded).padding(8) }
+                }
+                .modifier(StationExpandPinch(expanded: expanded, enabled: hasChat))
+        }
     }
 }
 
