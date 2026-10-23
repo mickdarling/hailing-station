@@ -36,6 +36,8 @@ import Testing
         defer { rig.close() }
         #expect(await eventually { rig.connection() != nil })
         let connection = try #require(rig.connection()), router = rig.env.router
+        // The run registers before haild reads the child's `started`; a wish before it waits for it (below).
+        #expect(await eventually { router.activePipeline?.childStarted == true })
         #expect(await eventually { router.setMedia(true, connection: connection, reason: "voice") == 1 })
         #expect(router.setDuck(true, connection: connection, reason: "voice") == 1)
         #expect(router.duckMode(connection: connection) && !router.mediaMode(connection: connection))
@@ -43,11 +45,37 @@ import Testing
         #expect(await eventually { (try? rig.fake.recorded("control.txt")) == lines.map { $0 + "\n" }.joined() })
         await rig.finish()
     }
+
+    /// Before the child's `started`, media lines are written at once and the privacy wish is kept, written at
+    /// `started` (#735): media off is written, then privacy at `started`; no audio reaches the child before then.
+    @Test func privacyBeforeStartedIsWrittenAtStarted() async throws {
+        let rig = try await DuckRig(script: AmbientPrivacyReplyQuiet.held)
+        defer { rig.close() }
+        #expect(await eventually { rig.connection() != nil })
+        let connection = try #require(rig.connection()), router = rig.env.router
+        #expect(router.setMedia(true, connection: connection, reason: "voice") == 1)
+        let pipeline = try #require(router.activePipeline)
+        #expect(!pipeline.childStarted)
+        #expect(router.setDuck(true, connection: connection, reason: "voice") == 1)
+        let lines = ["{\"media\":true}", "{\"media\":false}", "{\"duck\":true}"]
+        let (two, three) = (lines.prefix(2).map { $0 + "\n" }.joined(), lines.map { $0 + "\n" }.joined())
+        // The child has both lines but holds its `started` until `go`: the wish is kept, and no audio reaches it.
+        #expect(await eventually { (try? rig.fake.recorded("control.txt")) == two })
+        #expect(!pipeline.childStarted && !pipeline.hearsAudio)
+        try Data().write(to: rig.fake.directory.appendingPathComponent("go"))
+        #expect(await eventually { (try? rig.fake.recorded("control.txt")) == three })
+        #expect(await eventually { pipeline.childStarted && pipeline.hearsAudio })
+        await rig.finish()
+    }
 }
 
 /// A fake that takes control lines and forms one ordinary synthetic request, advertising `duck` v2.
 enum AmbientPrivacyReplyQuiet {
     static let script = "/bin/cat <&3 > control.txt &\n"
+        + AmbientPrivacyEntryTests.fixture(saying: "Rightyo, archive the project.", advertises: true)
+    /// Records two control lines, then holds its `started` until the test creates `go`.
+    static let held = "IFS= read -r a <&3; IFS= read -r b <&3; printf '%s\\n%s\\n' \"$a\" \"$b\" > control.txt\n"
+        + "while [ ! -e go ]; do /bin/sleep 0.05; done\n/bin/cat <&3 >> control.txt &\n"
         + AmbientPrivacyEntryTests.fixture(saying: "Rightyo, archive the project.", advertises: true)
 }
 #endif

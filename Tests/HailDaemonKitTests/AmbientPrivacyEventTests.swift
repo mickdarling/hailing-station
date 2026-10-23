@@ -47,8 +47,8 @@ import Testing
         """
     }
 
-    private func run(_ script: String, ducking: Bool = true,
-                     allowSynthetic: Bool = true) async throws -> ([PrivacyCommand], Int) {
+    func run(_ script: String, ducking: Bool = true,
+             allowSynthetic: Bool = true) async throws -> ([PrivacyCommand], Int) {
         let fake = try FakeRightyo(script)
         defer { fake.cleanUp() }
         try fake.install(fixture: "enrolled-formed-request.jsonl")

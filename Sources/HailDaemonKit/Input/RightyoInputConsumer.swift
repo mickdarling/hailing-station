@@ -500,11 +500,16 @@ public actor RightyoInputConsumer {
     /// `lastVoiceMute`; nil for any other line. Only with `duckActive` (a host that handles privacy), which says
     /// whether privacy is on.
     private(set) var lastPrivacy: PrivacyCommand?
+    /// The `at_ms` of a `privacy` `on` ack (#735 S-8), the duck applied at that received-audio position; nil for any
+    /// other line. Decoded only: nothing waits on it yet, and it never sets `lastPrivacy`.
+    private(set) var lastPrivacyAck: Int?
     private let duckActive: (@Sendable () -> Bool)?
     /// Utterances whose transcript already carried a safety-set phrase: their request is held back with nothing more.
     private var privacyHeld: [String] = []
     /// `started` advertised `duck` version 2 or higher ("keeps nothing", rightyo S-1): only then is `privacy` admitted.
     private var privacyCapable = false
+    /// `started` advertised `duck` version 3 or higher (#735 S-8, "acks every on-line"): only then is `on` admitted.
+    private var privacyAcks = false
     /// Utterances whose transcript RightyO attributed to the owner from a live voiceprint (`role_source`): only these
     /// may enter privacy. A subset of `finals`, so its cap bounds this.
     private var voiceprintOwners = Set<String>()
@@ -564,6 +569,7 @@ public actor RightyoInputConsumer {
         lastDismissal = nil
         lastVoiceMute = nil
         (lastVoiceMedia, lastVoiceDestination, lastRouteRefusal, lastPrivacy) = (nil, nil, nil, nil)
+        lastPrivacyAck = nil
         do {
             guard try admit(event) else { return false }
             if event.type == "override" { return true }
@@ -634,7 +640,8 @@ public actor RightyoInputConsumer {
                 voiceNames = VoiceMute.names(in: event.addressing)
                 forming = event.requestForming != nil
                 (dismissible, conversational) = (event.dismissal != nil, event.conversation != nil)
-                privacyCapable = RightyoInputEvent.privacyVersion(event.duck).map { $0 >= 2 } ?? false
+                let duck = RightyoInputEvent.privacyVersion(event.duck) ?? 0
+                (privacyCapable, privacyAcks) = (duck >= 2, duck >= 3)
             }
         } else if !started { throw RightyoInputError.invalidLifecycle }
         try correlate(event)
@@ -724,13 +731,18 @@ extension RightyoInputConsumer {
     /// RightyO's content-free `privacy` event (rightyo S-1), refused (ending the stream, fail closed) unless the
     /// session advertised `duck` v2. The exit is trusted as RightyO's own check: it emits one only for the enrolled
     /// owner's voice saying the name and an exit phrase, matched locally while it keeps nothing; the host hears no
-    /// words then and cannot re-check. Any speaker may ask the status. Neither ever reaches the agent. A transcript
+    /// words then and cannot re-check. Any speaker may ask the status. Neither ever reaches the agent. The `on` ack
+    /// (#735 S-8) is admitted only from `duck` v3 and only lands in `lastPrivacyAck`: it plays no clip. A transcript
     /// goes to `notePrivacyPhrase`.
     private func notePrivacy(_ event: RightyoInputEvent) throws {
         if event.type == "transcript", let turn = event.turn { notePrivacyPhrase(turn) }
         guard event.type == "privacy" else { return }
-        guard privacyCapable else { throw RightyoInputError.invalidEvent }
-        if duckActive != nil { lastPrivacy = event.action == "exit" ? .exit : .status }
+        guard privacyCapable, event.action != "on" || privacyAcks else { throw RightyoInputError.invalidEvent }
+        if event.action == "on" {
+            lastPrivacyAck = event.atMs
+        } else if duckActive != nil {
+            lastPrivacy = event.action == "exit" ? .exit : .status
+        }
     }
 }
 /// Correlation against admitted records lives here so the actor body stays within the type-length limit.

@@ -100,8 +100,9 @@ public struct RightyoInputEvent: Codable, Sendable {
     /// `AmbientOwnerVoiceRelay`), then `owner_voice` events carrying only `state`.
     ///
     /// Privacy mode (#735, internally duck): `duck` on `started` (raw; `privacyVersion` reads it), then, from a
-    /// version 2 producer, `privacy` events carrying only `action`, `exit` or `status`. Never any words. `role_source`
-    /// rides on a `transcript`: `voiceprint` says its owner role came from a live voiceprint, not a label or inference.
+    /// version 2 producer, `privacy` events carrying only `action`, `exit` or `status`, and from a version 3 one the
+    /// `on` ack with its `at_ms`. Never any words. `role_source` rides on a `transcript`: `voiceprint` says its owner
+    /// role came from a live voiceprint, not a label or inference.
     let acknowledgement, acknowledge, speakerNames, speakerName, ownerVoice, duck: JSONValue?
     let action, roleSource: String?
     public static func decode(_ data: Data) throws -> Self {
@@ -290,13 +291,14 @@ extension RightyoInputEvent {
         decision.recipientKind == "system" || (decision.followUp == true && decision.recipientKind == "unknown")
     }
 
-    /// `conversation` rides only on `started`; `state`, `at_ms` and `until_ms` ride only on `conversation`.
+    /// `conversation` rides only on `started`; `state`, `at_ms` and `until_ms` ride only on `conversation`, except
+    /// `state` on `owner_voice` and `at_ms` on a `privacy` ack (`validatePrivacy`).
     func validateConversation(session: String) throws {
         if conversation != nil || ownerVoice != nil, type != "session" || phase != "started" {
             throw RightyoInputError.invalidEvent
         }
         guard type == "conversation" else {
-            guard state == nil || type == "owner_voice", atMs == nil, untilMs == nil else {
+            guard state == nil || type == "owner_voice", atMs == nil || type == "privacy", untilMs == nil else {
                 throw RightyoInputError.invalidEvent
             }
             try validatePrivacy()
@@ -341,8 +343,11 @@ extension RightyoInputEvent {
 /// Privacy mode (#735 S-2, rightyo S-1). A producer that advertises `duck` version 2 or higher at `started` keeps
 /// nothing while private and sends only `privacy` events: `exit` once the enrolled owner said the name and an exit
 /// phrase, `status` for anyone asking what mode it is in. Each is content-free: `action` and the envelope, nothing else.
+/// Version 3 (#735 S-8) adds `on`, the ack of an applied `{"duck":true}`, which also carries `at_ms`: the
+/// received-audio position RightyO stamped the duck at, a non-negative integer on its own clock (so not bounded by
+/// `emitted_at_ms`).
 extension RightyoInputEvent {
-    static let privacyActions: Set<String> = ["exit", "status"]
+    static let privacyActions: Set<String> = ["on", "exit", "status"]
 
     /// The `version` of a `duck` advertisement, `{"version": N}`; nil for anything else.
     static func privacyVersion(_ duck: JSONValue?) -> Int64? {
@@ -351,7 +356,8 @@ extension RightyoInputEvent {
     }
 
     /// `duck` rides only on `started` and `action` only on `privacy`, which carries no other optional field this
-    /// decoder knows. Whether the session advertised it is the consumer's rule.
+    /// decoder knows but the `on` ack's `at_ms`, required there and nowhere else. Whether the session advertised the
+    /// version is the consumer's rule.
     func validatePrivacy() throws {
         if duck != nil, type != "session" || phase != "started" { throw RightyoInputError.invalidEvent }
         if roleSource != nil, type != "transcript" { throw RightyoInputError.invalidEvent }
@@ -359,13 +365,14 @@ extension RightyoInputEvent {
             guard action == nil else { throw RightyoInputError.invalidEvent }
             return
         }
-        guard let action, Self.privacyActions.contains(action), turn == nil, decision == nil, context == nil,
-              requestId == nil, utteranceId == nil, phase == nil, capabilities == nil, state == nil, atMs == nil,
-              untilMs == nil, reason == nil, speakerId == nil, role == nil, scope == nil, speechEndMs == nil,
-              confidence == nil, decisionAtMs == nil, cooldownUntilMs == nil, withdrawnRequestIds == nil,
-              supersededRequestId == nil, byUtteranceId == nil, requestForming == nil, formedRequest == nil,
-              dismissal == nil, addressing == nil, conversation == nil, acknowledgement == nil, acknowledge == nil,
-              speakerNames == nil, speakerName == nil, ownerVoice == nil, duck == nil else {
+        guard let action, Self.privacyActions.contains(action), (action == "on") == (atMs != nil),
+              (atMs ?? 0) >= 0, turn == nil, decision == nil, context == nil, requestId == nil, utteranceId == nil,
+              phase == nil, capabilities == nil, state == nil, untilMs == nil, reason == nil, speakerId == nil,
+              role == nil, scope == nil, speechEndMs == nil, confidence == nil, decisionAtMs == nil,
+              cooldownUntilMs == nil, withdrawnRequestIds == nil, supersededRequestId == nil, byUtteranceId == nil,
+              requestForming == nil, formedRequest == nil, dismissal == nil, addressing == nil, conversation == nil,
+              acknowledgement == nil, acknowledge == nil, speakerNames == nil, speakerName == nil, ownerVoice == nil,
+              duck == nil else {
             throw RightyoInputError.invalidEvent
         }
     }
