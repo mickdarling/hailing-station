@@ -134,9 +134,9 @@ final class ScriptedOutputSession {
         let snapshot = current
         AudioOutputRouteDriver.process(snapshot, state: &state, observeDecision: { decision in
             self.preservedChoices.append(decision.preservedRouteChoice)
-        }) { effect in
+        }, perform: { effect in
             try self.perform(effect, route: snapshot)
-        }
+        })
     }
 
     func drainEchoes() {

@@ -94,9 +94,9 @@ public final class AVAudioSessionBackend: AudioSessionBackend {
                 print("Output route left unchanged: user choice or ambiguous cause (#852)")
             }
             #endif
-        }) { effect in
+        }, perform: { effect in
             try AudioOutputSessionRouting.apply(effect, to: session)
-        }
+        })
     }
 
     nonisolated private static func interruptionEvent(_ notification: Notification) -> AudioSessionBackendEvent {
