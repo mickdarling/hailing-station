@@ -74,19 +74,27 @@ import Testing
     }
 
     /// N4: a start no longer current (torn down or superseded mid-launch) takes nothing, but its child is gated
-    /// while a mode is held anywhere: no move, no hook, no clip.
+    /// while a mode is held anywhere: no move, no hook, no clip. The holder runs no child, so its entry writes none
+    /// (`0`) and the carried child, another connection's, holds no mode: its one control line is the carry's gate.
     @Test func aStartNoLongerCurrentIsStillGated() async throws {
         let rig = try await RestoreRig(phrase: nil)
         defer { rig.close() }
-        _ = try await rig.start()
+        let (_, listening) = try await rig.start()
         let (_, holder) = try await rig.connect()
         #expect(rig.router.setMeeting(on: true, connection: holder, reason: "voice") == 0)
-        let router = rig.router, pipeline = try #require(rig.router.activePipeline)
-        router.state.withLock { router.carryModes(to: UUID(), stream: UUID(), pipeline: pipeline, in: &$0) }
+        let router = rig.router, pipeline = try #require(rig.router.activePipeline), late = UUID()
+        #expect(router.activeConnection() == listening && !router.meetingMode(connection: listening))
+        #expect(rig.control(1)?.isEmpty != false, "no control line before the late start")
+        router.state.withLock { router.carryModes(to: late, stream: UUID(), pipeline: pipeline, in: &$0) }
         #expect(await eventually { rig.control(1) == RestoreRig.gate }, "late child gated marker")
-        #expect(router.meetingMode(connection: holder) && rig.changes.count == 1)
+        // The holder's hook and clip are queued; the late start's would follow them. Counted only once drained.
+        await rig.drainMeetingChanges(clips: [holder, late])
+        #expect(router.meetingMode(connection: holder) && !router.meetingMode(connection: late) && rig.parked == nil)
+        #expect(rig.changes.map(\.reason) == ["voice"] && rig.changes.first?.connection == holder)
         #expect(rig.details("ambient_mode_moved").isEmpty && rig.details("meeting_restored").isEmpty)
+        #expect(rig.details("ambient_meeting_confirmed") == ["on=true profile=meeting confirm=unreported"])
         await rig.finish()
+        #expect(rig.control(1) == RestoreRig.gate)
     }
 
     /// N5: privacy taken on any connection ends every meeting daemon-wide, live holders included, with no clip; after
@@ -112,6 +120,7 @@ import Testing
         await rig.drop(held, holder)
         #expect(rig.parked == nil)
         let (_, later) = try await rig.start()
+        await rig.drainMeetingChanges()
         #expect(!router.meetingMode(connection: later) && rig.details("meeting_restored").isEmpty)
         await rig.finish()
     }
