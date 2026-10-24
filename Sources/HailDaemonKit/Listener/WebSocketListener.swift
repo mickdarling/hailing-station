@@ -593,7 +593,7 @@ public final class AmbientRightyoRouter: AmbientAudioSink, AmbientListenerWiring
 
     public let configuration: Configuration
     let state = Mutex(State())
-    /// #735 meeting mode (rightyo#227): hooks and confirmations in the order state changed.
+    /// #735 meeting mode (rightyo#227): MM-C's hooks in the order state changed; never a clip (review round 2).
     let meetingChanges = SerialTaskChain()
     fileprivate let log: @Sendable (WebSocketListenerEvent) -> Void
     /// Wakes the worker; signals coalesce, the events themselves are in `State.queue`.
@@ -1042,10 +1042,14 @@ extension AmbientRightyoRouter {
     /// it always precedes that run's `ambient_ended`, even when a child exits at once beside another live run (#273).
     /// A reload's run (#405) emits `ambient_reloaded` first for the same reason: a new child that fails at once must
     /// leave its failure, not the reload, as the last event.
-    fileprivate func register(_ pipeline: RightyoAmbientPipeline, stream: UUID, connection: UUID, reload: Bool = false,
-                              in state: inout State) -> UUID {
+    func register(_ pipeline: RightyoAmbientPipeline, stream: UUID, connection: UUID, reload: Bool = false,
+                  in state: inout State) -> UUID {
         let id = UUID()
         state.runs[id] = Run(stream: stream, connection: connection, pipeline: pipeline)
+        // Torn down while this child was being made (#735 meeting mode review round 2): `stop(connection:)` found no
+        // run to mark, so the child is marked now, and its late mode entries are refused like a retiring child's. A
+        // newer stream on the same connection is still live (`latest` names it), so only a cleared `latest` counts.
+        if state.latest[connection] == nil { state.closed.insert(connection) }
         // A new or reloaded child starts with media mode off (#551). Told under the same lock `setMedia` changes it
         // under, so it can never miss a change made while it was starting.
         if state.media[connection] != nil || state.meeting[connection] != nil {
@@ -1709,7 +1713,7 @@ extension AmbientRightyoRouter {
     /// `connection`'s one chain for privacy clips (#735 S-8 HS-C round 3): entries (voice and device), their stops,
     /// and child refusals, in one total order. Taken under the caller's lock (round 4): the chain's own lock only
     /// creates a task, and is never held while taking the router's, so the order of the two is fixed.
-    fileprivate static func clipChain(_ connection: UUID, in state: inout State) -> SerialTaskChain {
+    static func clipChain(_ connection: UUID, in state: inout State) -> SerialTaskChain {
         if let chain = state.privacyClips[connection] { return chain }
         let chain = SerialTaskChain()
         state.privacyClips[connection] = chain

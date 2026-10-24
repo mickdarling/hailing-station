@@ -3,11 +3,12 @@ import Foundation
 import Testing
 @testable import HailDaemonKit
 
-/// #735 meeting mode (rightyo#227) review round 1: a clip privacy supersedes, a same-profile renewal, and a command
-/// after teardown. Synthetic only.
+/// #735 meeting mode (rightyo#227) review rounds 1 and 2: a clip privacy supersedes, clips apart from hooks, a renewal,
+/// and commands after teardown. Synthetic only.
 @Suite(.serialized, .timeLimit(.minutes(1)), .frozenGuardBudget) struct AmbientVoiceMeetingRaceTests {
     /// Review round 1: an on clip still queued when privacy begins is superseded, never heard after "Privacy on".
-    /// The latch holds the meeting chain, so the clip is decided only after privacy's own clip has played.
+    /// The latch holds the connection's clip chain, so the clip is decided only once privacy has begun; privacy's
+    /// own clip, queued behind it on the same chain, is then the only one heard.
     @Test func privacyRightAfterAnEntrySupersedesItsClip() async throws {
         let rig = try await MeetingRig(clips: MeetingRig.privacyClips)
         defer { rig.close() }
@@ -15,14 +16,14 @@ import Testing
         let connection = try #require(rig.connection()), router = rig.env.router, listener = rig.env.listener
         #expect(await eventually { router.activePipeline?.childStarted == true }, "privacy child started marker")
         let latch = MeetingLatch()
-        router.meetingChanges.enqueue { await latch.wait() }
+        router.enqueuePrivacyClip(connection) { _ in { await latch.wait() } }
         #expect(router.setMeeting(on: true, profile: .rubberDuck, connection: connection, reason: "voice") == 1)
         #expect(router.setDuck(true, connection: connection, reason: "voice") == 1)
         router.enqueuePrivacyClip(connection) { _ in {
             _ = await router.confirmVoiceMute(AmbientStopConfirmation.privacyOn, on: connection, listener: listener)
         } }
-        #expect(try await rig.confirmation() == MeetingRig.privacyOn.text)
         latch.open()
+        #expect(try await rig.confirmation() == MeetingRig.privacyOn.text)
         await rig.drainMeetingChanges()
         #expect(rig.details("ambient_meeting_confirmed") == ["on=true profile=meeting confirm=confirmmeetingon/0:sent",
                                                              "on=true profile=rubberDuck confirm=superseded"])
@@ -30,6 +31,31 @@ import Testing
         // The MM-C hook still hears every change, in order.
         #expect(rig.changes == ["on=true profile=meeting reason=voice", "on=true profile=rubberDuck reason=voice",
                                 "on=false profile=rubberDuck reason=privacy"])
+        await rig.finish()
+    }
+
+    /// Review round 2: a clip held on connection A's chain holds neither A's hook nor another connection's. B's
+    /// hook runs while A's clip still waits; A's clip then plays once released.
+    @Test func aSlowClipNeverHoldsAnotherConnectionsHook() async throws {
+        let rig = try await MeetingRig()
+        defer { rig.close() }
+        #expect(try await rig.confirmation() == MeetingRig.on.text)
+        let connection = try #require(rig.connection()), router = rig.env.router, other = UUID()
+        let latch = MeetingLatch()
+        router.enqueuePrivacyClip(connection) { _ in { await latch.wait() } }
+        #expect(router.setMeeting(on: true, profile: .rubberDuck, connection: connection, reason: "voice") == 1)
+        #expect(router.setMeeting(on: true, connection: other, reason: "voice") == 0)
+        #expect(await eventually { rig.changes.count == 3 }, "other connection hook marker")
+        #expect(!latch.isOpen && rig.details("ambient_meeting_confirmed", on: connection).count == 1)
+        #expect(rig.changeConnections == [connection, connection, other])
+        #expect(rig.changes == ["on=true profile=meeting reason=voice", "on=true profile=rubberDuck reason=voice",
+                                "on=true profile=meeting reason=voice"])
+        latch.open()
+        #expect(try await rig.confirmation() == MeetingRig.on.text)
+        #expect(router.setMeeting(on: false, connection: other, reason: "voice") == 0)
+        await rig.drainMeetingChanges()
+        #expect(rig.details("ambient_meeting_confirmed", on: connection).last
+                == "on=true profile=rubberDuck confirm=confirmmeetingon/0:sent")
         await rig.finish()
     }
 
@@ -58,26 +84,58 @@ import Testing
         await rig.finish()
     }
 
-    /// Review round 1: a meeting command a retiring child says after its connection was torn down is refused. No
-    /// timer, no child write, no hook and no clip; the closed mark goes with that child.
-    @Test func aMeetingCommandAfterTeardownDoesNothing() async throws {
-        let rig = try await MeetingRig(phrases: ["meeting mode off", "meeting mode"])
+    /// Review rounds 1 and 2: a meeting or media command a retiring child says after its connection was torn down
+    /// is refused. No timer, no child write, no hook, no device notice and no clip; the closed mark goes with that
+    /// child.
+    @Test(arguments: [("meeting mode", "ambient_meeting", "on=true profile=meeting reason=voice reported=0"),
+                      ("media mode", "ambient_media", "on=true reason=voice reported=0")])
+    func aModeCommandAfterTeardownDoesNothing(_ phrase: String, _ event: String, _ refusal: String) async throws {
+        let rig = try await MeetingRig(phrases: ["meeting mode off", phrase])
         defer { rig.close() }
-        #expect(await eventually { rig.connection() != nil }, "late meeting connection marker")
+        #expect(await eventually { rig.connection() != nil }, "late command connection marker")
         let connection = try #require(rig.connection()), router = rig.env.router
         rig.pair.close()
         #expect(await eventually { router.state.withLock { $0.closed.contains(connection) } }, "teardown marker")
         try rig.releaseOff()
-        #expect(await eventually {
-            rig.details("ambient_meeting") == ["on=true profile=meeting reason=voice reported=0 refused=closed"]
-        }, "late meeting refusal marker")
-        #expect(!router.meetingMode(connection: connection))
-        #expect(router.state.withLock { $0.meeting.isEmpty })
-        await boundedSettle(router, step: "late meeting child")
+        #expect(await eventually { rig.details(event) == [refusal + " refused=closed"] }, "late command refusal marker")
+        #expect(!router.meetingMode(connection: connection) && !router.mediaMode(connection: connection))
+        #expect(router.state.withLock { $0.meeting.isEmpty && $0.media.isEmpty })
+        await boundedSettle(router, step: "late command child")
         #expect(rig.changes.isEmpty && rig.details("ambient_meeting_confirmed").isEmpty)
+        #expect(rig.details("ambient_media_device").isEmpty)
         #expect(!((try? rig.fake.recorded("control.txt")) ?? "").contains("media"))
         #expect(router.state.withLock { $0.closed.isEmpty })
-        await bounded("late meeting listener") { await rig.env.listener.stop(reason: "synthetic test complete") }
+        await bounded("late command listener") { await rig.env.listener.stop(reason: "synthetic test complete") }
+    }
+
+    /// Review round 2: a child registered after `stop(connection:)` found nothing to mark (its start was still
+    /// making it) is marked closed under the registering lock, so its mode entries are refused; the mark goes with it.
+    @Test func aChildRegisteredAfterTeardownIsClosed() async throws {
+        let fake = try FakeRightyo(AmbientWiringVoiceMuteTests.fixture(saying: "Rightyo, check our discussion."))
+        defer { fake.cleanUp() }
+        try fake.install(fixture: "tool-events.jsonl")
+        let events = DuckEvents()
+        let env = try await ambientRig(fake, timing: .init(eofGrace: 20, termGrace: 20), replyControl: true,
+                                       onEvent: { event in events.list.withLock { $0.append(event) } })
+        let connection = UUID(), router = env.router
+        let pipeline = try RightyoAmbientPipeline(
+            configuration: .init(executable: fake.executable, config: fake.config, target: "tmux:demo",
+                                 binding: "pinned", connection: connection, allowSynthetic: true,
+                                 timing: .init(eofGrace: 20, termGrace: 20)),
+            dispatcher: RecordingAmbientDispatcher())
+        router.stop(connection: connection)
+        #expect(router.state.withLock { !$0.closed.contains(connection) })
+        _ = router.state.withLock { router.register(pipeline, stream: UUID(), connection: connection, in: &$0) }
+        #expect(router.state.withLock { $0.closed.contains(connection) })
+        #expect(router.setMeeting(on: true, connection: connection, reason: "voice") == 0)
+        #expect(router.setMedia(true, connection: connection, reason: "voice") == 0)
+        #expect(!router.meetingMode(connection: connection) && !router.mediaMode(connection: connection))
+        let refusals = events.list.withLock { $0.filter { $0.detail?.hasSuffix("refused=closed") == true }.count }
+        #expect(refusals == 2)
+        pipeline.finishInput()
+        await boundedSettle(router, step: "late registered child")
+        #expect(router.state.withLock { $0.closed.isEmpty })
+        await bounded("late registered listener") { await env.listener.stop(reason: "synthetic test complete") }
     }
 }
 #endif

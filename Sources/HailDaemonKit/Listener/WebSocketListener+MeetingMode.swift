@@ -101,7 +101,7 @@ extension AmbientRightyoRouter {
                 : reportModes(connection: connection, in: state)
             let change = AmbientMeetingChange(on: true, profile: profile, reason: reason, reported: reported,
                                               token: token, renewed: current?.profile == profile)
-            meetingChanged(change, connection: connection, listener: state.listener?.value)
+            meetingChanged(change, connection: connection, in: &state)
             return (reported, nil)
         }
         if let refused = decided.refused {
@@ -119,24 +119,29 @@ extension AmbientRightyoRouter {
         meeting.timer.cancel()
         let reported = report && reason != "connection" ? reportModes(connection: connection, in: state) : 0
         meetingChanged(AmbientMeetingChange(on: false, profile: meeting.profile, reason: reason, reported: reported),
-                       connection: connection, listener: state.listener?.value)
+                       connection: connection, in: &state)
         return reported
     }
 
-    /// MM-C's seam and the owner's confirmation, queued under the state lock and run outside it, in change order.
-    /// Only voice/timeout changes a child took play a clip; a renewal plays its clip with no hook. Missing clips log
-    /// `no_clips` and never undo the mode. An on clip is checked again just before it plays (review round 1): one
-    /// whose meeting has since ended, been replaced or gone private is `superseded`, never heard after "Privacy on".
-    private func meetingChanged(_ change: AmbientMeetingChange, connection: UUID, listener: WebSocketListener?) {
+    /// MM-C's seam and the owner's confirmation, both queued under the state lock in change order. The hook and its
+    /// log run on the router-wide `meetingChanges`, which never awaits a clip, so one connection's slow clip cannot
+    /// hold another's hook (review round 2). Only voice/timeout changes a child took play a clip, on the connection's
+    /// own clip chain beside its privacy clips; a renewal plays its clip with no hook. Missing clips log `no_clips`
+    /// and never undo the mode. An on clip is checked again just before it plays (review round 1): one whose meeting
+    /// has since ended, been replaced or gone private is `superseded`, never heard after "Privacy on".
+    private func meetingChanged(_ change: AmbientMeetingChange, connection: UUID, in state: inout State) {
         let hook = change.renewed ? nil : configuration.onMeetingChange
-        meetingChanges.enqueue { [weak self, weak listener] in
+        meetingChanges.enqueue { [weak self] in
             hook?(connection, change.on, change.profile, change.reason)
-            guard let self else { return }
             let renewed = change.renewed ? " renewed=true" : ""
-            emit("ambient_meeting", connection: connection,
-                 detail: "on=\(change.on) profile=\(change.profile.rawValue) reason=\(change.reason) "
-                    + "reported=\(change.reported)\(renewed)")
-            guard change.reason == "voice" || change.reason == "timeout" else { return }
+            self?.emit("ambient_meeting", connection: connection,
+                       detail: "on=\(change.on) profile=\(change.profile.rawValue) reason=\(change.reason) "
+                          + "reported=\(change.reported)\(renewed)")
+        }
+        guard change.reason == "voice" || change.reason == "timeout" else { return }
+        let listener = state.listener?.value
+        Self.clipChain(connection, in: &state).enqueue { [weak self, weak listener] in
+            guard let self else { return }
             var confirm = "unreported"
             if change.reported > 0, !meetingCurrent(change, connection: connection) {
                 confirm = "superseded"

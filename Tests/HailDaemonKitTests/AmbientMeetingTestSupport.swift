@@ -96,8 +96,10 @@ final class MeetingRig: Sendable {
     }
 
     func connection() -> UUID? { env.router.activeConnection() }
-    func details(_ name: String) -> [String] {
-        events.list.withLock { $0.filter { $0.event == name }.map { $0.detail ?? "" } }
+    func details(_ name: String, on connection: UUID? = nil) -> [String] {
+        events.list.withLock {
+            $0.filter { $0.event == name && (connection == nil || $0.sessionID == connection) }.map { $0.detail ?? "" }
+        }
     }
     /// Every later child of the fake replays its turns; from now on its first says an ordinary request instead, so
     /// a new or reloaded child does not repeat the meeting command (a renewal) on its own.
@@ -108,11 +110,17 @@ final class MeetingRig: Sendable {
             .write(to: url, atomically: true, encoding: .utf8)
     }
     func releaseOff() throws { try Data().write(to: fake.directory.appendingPathComponent("next-turn")) }
-    /// Waits (bounded) for every hook and clip queued on the meeting chain so far: a sentinel queued behind them.
+    /// Waits (bounded) for every hook queued so far and every clip queued on the rig's connection so far: a
+    /// sentinel behind each, on the router-wide hook chain and on the connection's own clip chain.
     func drainMeetingChanges() async {
-        let drained = MeetingLatch()
-        env.router.meetingChanges.enqueue { drained.open() }
-        #expect(await eventually { drained.isOpen }, "meeting chain drained marker")
+        let hooks = MeetingLatch(), clips = MeetingLatch()
+        env.router.meetingChanges.enqueue { hooks.open() }
+        if let connection = connection() {
+            env.router.enqueuePrivacyClip(connection) { _ in { clips.open() } }
+        } else {
+            Issue.record("no connection whose clips to drain")
+        }
+        #expect(await eventually { hooks.isOpen && clips.isOpen }, "meeting chains drained marker")
     }
     func confirmation() async throws -> String? {
         for _ in 0..<6 {
