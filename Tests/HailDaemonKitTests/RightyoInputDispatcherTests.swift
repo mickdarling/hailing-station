@@ -62,11 +62,11 @@ extension RightyoInputConsumerTests {
     }
 
     @Test func dispatcherRefusalIsTerminalAndNeverRetried() async throws {
-        let dispatcher = RecordingDispatcher(refusal: RightyoInputError.confirmationRequired)
+        let dispatcher = RecordingDispatcher(refusal: LocalDispatchRefusal.bindingMismatch)
         let consumer = try dispatching(dispatcher)
         _ = try await consumer.consume(start())
         let attended = try await preparedRequest(consumer)
-        await #expect(throws: RightyoInputError.confirmationRequired) { try await consumer.consume(attended) }
+        await #expect(throws: LocalDispatchRefusal.bindingMismatch) { try await consumer.consume(attended) }
         #expect(await consumer.lastReceipt == nil)
         #expect(try await !consumer.consume(attended))
         await #expect(throws: RightyoInputError.invalidLifecycle) {

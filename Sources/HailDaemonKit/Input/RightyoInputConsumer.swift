@@ -1,6 +1,9 @@
 public import Foundation
 import HailProtocol
+import OSLog
 import Synchronization
+
+private let inputLogger = Logger(subsystem: "com.mickdarling.hailing-station", category: "rightyo-input")
 
 // The delivery-step protocol and its direct implementation stay beside the consumer that owns their contract.
 // swiftlint:disable file_length
@@ -299,6 +302,8 @@ enum AmbientStopConfirmation {
     static let saved = RightyoAddressing.key("confirm-saved"), notSaved = RightyoAddressing.key("confirm-not-saved")
     /// An ambient request the owner addressed to a voice route that did not take it (#636): "Nothing was sent."
     static let notSent = RightyoAddressing.key("confirm-not-sent")
+    /// A guarded request needs confirmation at the Mac; until recorded, says "Nothing was sent."
+    static let needsConfirmation = RightyoAddressing.key("confirm-needs-confirmation")
     /// Privacy mode (#735, internally duck): `confirm-privacy-on/` ("Privacy on. I'm only listening for my name.") is
     /// worded as a status, since it also answers an entry said while privacy is already on; `confirm-privacy-off/`
     /// ("Recording again."); `confirm-privacy-status/` answers RightyO's status event while private, and
@@ -316,6 +321,7 @@ enum AmbientStopConfirmation {
     /// "I can't listen privately right now.": a child that cannot keep privacy was refused; privacy stays on.
     static let privacyUnavailable = RightyoAddressing.key("confirm-privacy-unavailable")
     static let reserved: Set<String> = [stopped, idle, muted, unmuted, mediaOn, mediaOff, saved, notSaved, notSent,
+                                        needsConfirmation,
                                         privacyOn, privacyOff, privacyStatus, stillRecording, privacyRefused,
                                         privacyHint, privacyUnavailable]
 
@@ -339,10 +345,10 @@ enum AmbientStopConfirmation {
         let persona: String, index: Int, clip: AmbientAckClip
     }
 
-    /// The next clip for `persona`; an idle stop without its own clips says "Stopped." instead, and a privacy refusal
-    /// without its own "Nothing was sent.".
+    /// The next clip for `persona`; an idle stop falls back to "Stopped.", a privacy or confirmation refusal to
+    /// "Nothing was sent.".
     static func clip(_ persona: String, in library: AmbientAckLibrary) -> Pick? {
-        let fallback = [idle: stopped, privacyRefused: notSent][persona]
+        let fallback = [idle: stopped, privacyRefused: notSent, needsConfirmation: notSent][persona]
         for candidate in [persona] + (fallback.map { [$0] } ?? []) {
             if let (index, clip) = library.nextReserved(candidate) {
                 return Pick(persona: candidate, index: index, clip: clip)
@@ -393,7 +399,7 @@ final class HostPhrases: Sendable {
 }
 #endif
 /// The final delivery step of an admitted request. The consumer keeps every validation and correlation rule
-/// in front of this call and treats any thrown error as terminal; implementations must not retry on their own.
+/// in front of this call; request refusals do not end the stream. Implementations must not retry on their own.
 /// `RightyoHostDispatcher` is the direct path; `haild rightyo --reply-to` supplies a reply-socket dispatcher.
 public protocol RightyoDispatching: Sendable {
     func dispatch(text: String, target: String, binding: String) async throws -> RightyoDispatchReceipt
@@ -424,6 +430,18 @@ public struct RightyoHostDispatcher: RightyoDispatching {
             throw RightyoInputError.confirmationRequired
         }
         return RightyoDispatchReceipt(request: nil)
+    }
+}
+
+/// Carries only known guard rule names across either dispatcher's unchanged error boundary, scoped to one request.
+final class RightyoGuardRefusal: Sendable {
+    @TaskLocal static var current: RightyoGuardRefusal?
+    /// The listener records the refusal together with its playback outcome; standalone consumers log here.
+    @TaskLocal static var logsLocally = true
+    let hits = Mutex<[String]>([])
+    func record(_ names: [String], patterns: [GuardPattern]) {
+        let known = Set(patterns.filter { DangerousPatternGuard.defaults.contains($0) }.map(\.name))
+        hits.withLock { $0 = names.map { known.contains($0) ? $0 : "custom" } }
     }
 }
 /// Why a target id cannot be named in the reply block (#188 item 1); refused at startup, before any event. The
@@ -519,6 +537,7 @@ public actor RightyoInputConsumer {
     /// The owner's voice routes (#636); nil leaves every request on `target`. A request the owner addressed to a route
     /// that cannot take it is held back, its reason left in `lastRouteRefusal` like a dismissal, and ends nothing.
     private let routing: RightyoVoiceRouting?
+    /// The latest route or per-request dispatch refusal, including one on the stream's own target.
     private(set) var lastRouteRefusal: RightyoVoiceRouting.Refusal?
     /// `streamBudgetMs` is an optional ceiling on producer stream time; the default is no ceiling (#188).
     /// `dispatcher` replaces the direct `HailHost.send` step (#188 item 1); without it, `host` delivers directly
@@ -875,8 +894,7 @@ extension RightyoInputConsumer {
 /// The owner's voice routes for ambient requests (#636), and how to read a route's current binding: listed, alive and
 /// at the binding its policy allows, or nil. The routes only name targets; the host still checks each delivery.
 public struct RightyoVoiceRouting: Sendable {
-    /// Why a request the owner addressed to a route was not sent. Nothing went anywhere; the listener logs the reason
-    /// only, and slice 5 tells the owner.
+    /// Why one ambient request was not sent. Nothing went anywhere; the listener logs tokens and tells the owner.
     public enum Refusal: Sendable, Equatable {
         /// The route is offline, or refused the request before it was handed off. Carries the route's name.
         case notDelivered(String)
@@ -884,6 +902,9 @@ public struct RightyoVoiceRouting: Sendable {
         case nothingToSay(String)
         /// Opening words that sound like a route's name but are none of its spellings.
         case unclear
+        /// One request refused by policy or capacity; no target name or read-back text is retained.
+        case confirmationRequired([String])
+        case capacityExceeded
     }
 
     public let routes: VoiceRoutes
@@ -936,28 +957,47 @@ extension RightyoInputConsumer {
 
     /// Types the prompt, its reply block naming `address.target`. A routed request the host refuses before its
     /// handoff (any `LocalDispatchRefusal`: offline, rebound, policy, lockdown, rate) is a route refusal that ends
-    /// nothing; any other failure (audit, size, cancellation, listener stop) ends the consumer, as before.
+    /// nothing. Confirmation and capacity refuse only one request on the own target too; other failures end it.
     func deliver(
         _ event: RightyoInputEvent, to address: Address, with dispatcher: any RightyoDispatching
     ) async throws -> Bool {
+        let guardRefusal = RightyoGuardRefusal()
         do {
             try Task.checkCancellation()
-            lastReceipt = try await dispatcher.dispatch(
-                text: event.prompt(speakers: speakers, target: address.target), target: address.target,
-                binding: address.binding, routed: address.route != nil
-            )
+            lastReceipt = try await RightyoGuardRefusal.$current.withValue(guardRefusal) {
+                try await dispatcher.dispatch(
+                    text: event.prompt(speakers: speakers, target: address.target), target: address.target,
+                    binding: address.binding, routed: address.route != nil
+                )
+            }
             return true
+        } catch RightyoInputError.confirmationRequired {
+            return refuse(.confirmationRequired(guardRefusal.hits.withLock { $0 }))
         } catch let refusal as LocalDispatchRefusal where !refusal.handedOff {
+            if refusal == .confirmationRequired {
+                return refuse(.confirmationRequired(guardRefusal.hits.withLock { $0 }))
+            }
+            if refusal == .capacityExceeded {
+                return refuse(.capacityExceeded)
+            }
             guard let route = address.route else {
                 terminal = true
                 throw refusal
             }
-            lastRouteRefusal = .notDelivered(route.name)
-            return false
+            return refuse(.notDelivered(route.name))
         } catch {
             terminal = true
             throw error
         }
+    }
+
+    /// Standalone refusals leave a token log; listener-owned runs log once with their playback outcome.
+    private func refuse(_ refusal: RightyoVoiceRouting.Refusal) -> Bool {
+        lastRouteRefusal = refusal
+        if RightyoGuardRefusal.logsLocally {
+            inputLogger.notice("rightyo_request_refused \(refusal.token, privacy: .public)")
+        }
+        return false
     }
 }
 
@@ -968,6 +1008,8 @@ extension RightyoVoiceRouting.Refusal {
         case .notDelivered(let name): "voice route: \(name) couldn't take it; nothing was sent"
         case .nothingToSay(let name): "voice route: nothing to send to \(name)"
         case .unclear: "voice route: which session? Nothing was sent"
+        case .confirmationRequired: "request requires confirmation at the Mac; nothing was sent"
+        case .capacityExceeded: "request capacity reached; nothing was sent"
         }
     }
 
@@ -977,6 +1019,16 @@ extension RightyoVoiceRouting.Refusal {
         case .notDelivered: "reason=not_delivered"
         case .nothingToSay: "reason=nothing_to_say"
         case .unclear: "reason=unclear"
+        case .confirmationRequired(let hits):
+            "reason=confirmation_required rules=\(Self.ruleTokens(hits))"
+        case .capacityExceeded: "reason=capacity_exceeded"
         }
+    }
+
+    /// Only the policy's built-in rule names may become log tokens. Custom names can contain arbitrary text.
+    private static func ruleTokens(_ hits: [String]) -> String {
+        let named = Set(DangerousPatternGuard.defaults.map(\.name))
+        let tokens = hits.map { named.contains($0) ? $0.replacingOccurrences(of: " ", with: "_") : "custom" }
+        return tokens.isEmpty ? "none" : tokens.joined(separator: "+")
     }
 }

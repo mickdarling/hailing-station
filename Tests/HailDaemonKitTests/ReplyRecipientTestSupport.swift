@@ -18,7 +18,6 @@ actor RecipientContextAdapter: ProviderContextDelivering, ProviderReplyBindingLe
     private var held = false
     private var failing = false
     private var entered = false
-    private var arrival: CheckedContinuation<Void, Never>?
     private var release: CheckedContinuation<Void, Never>?
 
     func listTargets() async throws -> [AdapterTarget] { targets }
@@ -31,8 +30,6 @@ actor RecipientContextAdapter: ProviderContextDelivering, ProviderReplyBindingLe
         contexts.append(context)
         if held {
             entered = true
-            arrival?.resume()
-            arrival = nil
             await withCheckedContinuation { release = $0 }
         }
         if failing { throw ProviderCoordinatorSyntheticError.arbitraryFailure }
@@ -51,9 +48,11 @@ actor RecipientContextAdapter: ProviderContextDelivering, ProviderReplyBindingLe
     }
     func failHandoff() { failing = true }
     func holdHandoff() { held = true; entered = false }
-    func waitForHandoff() async {
-        if entered { return }
-        await withCheckedContinuation { arrival = $0 }
+    @discardableResult func waitForHandoff(within: Duration = .seconds(15)) async -> Bool {
+        let end = ContinuousClock.now + within
+        while !entered, ContinuousClock.now < end, !Task.isCancelled { try? await Task.sleep(for: .milliseconds(10)) }
+        if !entered { Issue.record("adapter handoff did not arrive within \(within) or before cancellation") }
+        return entered
     }
     func releaseHandoff() {
         held = false
@@ -86,14 +85,16 @@ struct RecipientTestRig {
     let clock = RecipientTestClock()
     static let target = "recipient:reply"
 
-    static func make() async throws -> Self {
+    static func make(guardPatterns: [GuardPattern]? = nil) async throws -> Self {
         _ = StallWatchdog.started // #704: names what stalls the pool, on CI only
         let adapter = RecipientContextAdapter()
         let registry = Registry()
         try await registry.register(adapter)
         // Recipient authority is tested here; default guard matching has its own suites.
         // One authored guard reduces unrelated wall-budget exposure in parallel lifecycle tests.
-        var policy = Policy(guardPatterns: [.init(name: "synthetic guard", regex: "^synthetic guarded command$")],
+        var policy = Policy(guardPatterns: guardPatterns ?? [
+            .init(name: "synthetic guard", regex: "^synthetic guarded command$")
+        ],
                             deliveriesPerMinute: 1_000)
         try policy.allow(target, binding: "reply-binding", tier: .open)
         try policy.allow("recipient:other", binding: "other-binding", tier: .open)

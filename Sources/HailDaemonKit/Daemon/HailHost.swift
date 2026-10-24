@@ -146,6 +146,7 @@ public actor HailHost {
                 break
             case .confirm(let reason, let hits):
                 guard delivered.isEmpty else { throw HostError.partial(delivered: delivered, reason: reason) }
+                RightyoGuardRefusal.current?.record(hits, patterns: policy.guardPatterns)
                 return .needsConfirmation(issue(request, reason: reason, guardHits: hits))
             case .denied(let denial):
                 guard delivered.isEmpty else { throw HostError.partial(delivered: delivered, reason: "\(denial)") }
