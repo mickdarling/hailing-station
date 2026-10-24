@@ -88,3 +88,67 @@ enum AudioOutputSessionRouting {
     }
 }
 #endif
+
+/// Shared decision → effects → result loop used by the iOS backend and macOS scripted tests (#852).
+enum AudioOutputRouteDriver {
+    enum Effect: Equatable, Sendable {
+        case setCategory(AudioOutputRoutePolicy.Options)
+        case clearOverride
+    }
+
+    @discardableResult
+    static func process(
+        _ route: AudioOutputRoutePolicy.Route, state: inout AudioOutputRoutePolicy.State,
+        observeDecision: (AudioOutputRoutePolicy.Decision) -> Void = { _ in },
+        perform: (Effect) throws -> Void
+    ) -> Bool {
+        let decision = AudioOutputRoutePolicy.routeChange(route, state: state)
+        state = decision.state
+        observeDecision(decision)
+        do {
+            try apply(decision, route: route, state: &state, perform: perform)
+            if decision.clearOverride { state.restoreAttempted = true }
+            return true
+        } catch {
+            // Failed effects never latch success; the episode guard still absorbs their queued echoes (#852).
+            if decision.clearOverride { state.restoreAttempted = false }
+            return false
+        }
+    }
+
+    private static func apply(
+        _ decision: AudioOutputRoutePolicy.Decision, route: AudioOutputRoutePolicy.Route,
+        state: inout AudioOutputRoutePolicy.State,
+        perform: (Effect) throws -> Void
+    ) throws {
+        if decision.options != route.options || decision.clearOverride {
+            state.pendingEchoes.append(.init(reason: .categoryChange, inputs: route.inputs, outputs: route.outputs))
+            try perform(.setCategory(decision.options))
+        }
+        if decision.clearOverride {
+            state.pendingEchoes.append(.init(reason: .override, inputs: route.inputs, outputs: route.outputs))
+            try perform(.clearOverride)
+        }
+    }
+}
+
+/// Correlates effect notifications with their previous route; each token lives for at most three events (#852).
+struct AudioOutputRouteEcho: Equatable, Sendable {
+    typealias Policy = AudioOutputRoutePolicy
+    var reason: Policy.Reason
+    var inputs: [Policy.Port]
+    var outputs: [Policy.Port]
+    var remaining = 3
+
+    static func consume(_ route: Policy.Route, pending: inout [Self]) -> Bool {
+        let match = pending.firstIndex {
+            $0.reason == route.reason && $0.inputs == route.previousInputs && $0.outputs == route.previousOutputs
+                && (route.reason != .override || route.inputs == $0.inputs)
+        }
+        if let match { pending.remove(at: match) }
+        // Age on every notification, even unrelated ones; missing echoes must never exempt a later choice.
+        for index in pending.indices { pending[index].remaining -= 1 }
+        pending.removeAll { $0.remaining == 0 }
+        return match != nil
+    }
+}

@@ -44,6 +44,7 @@ struct AudioOutputRoutePolicy: Sendable {
         var restoreAttempted = false
         var attemptedInEpisode = false
         var inputLossPending = false
+        var pendingEchoes: [AudioOutputRouteEcho] = []
         var lastInputs: [Port]?
         var lastOutputs: [Port]?
     }
@@ -66,10 +67,11 @@ struct AudioOutputRoutePolicy: Sendable {
     static func routeChange(_ route: Route, state: State) -> Decision {
         var result = Decision(options: route.options, state: state)
         if route.outputs.contains(where: \.isExternalOutput) { result.state.userChoseBuiltIn = false }
+        let ownEcho = AudioOutputRouteEcho.consume(route, pending: &result.state.pendingEchoes)
         // The background keepalive owns playback/mixWithOthers; never reconfigure it (#282, #352, #852).
         guard route.category == .playAndRecord else { return result }
-        let preserveChoice = preservesRouteChoice(route, state: state)
-        updateEpisode(route, state: &result.state)
+        let preserveChoice = !ownEcho && preservesRouteChoice(route)
+        if !ownEcho { updateEpisode(route, state: &result.state) }
         let lostUSBInput = route.previousInputs.contains(.usbAudio) && !route.inputs.contains(.usbAudio)
             && !route.previousOutputs.contains(.usbAudio)
         if route.outputs.contains(where: \.isExternalOutput) {
@@ -91,7 +93,8 @@ struct AudioOutputRoutePolicy: Sendable {
             result.options = configurationOptions(outputs: route.outputs, options: route.options)
             return result
         }
-        let inputChanged = (state.lastInputs ?? route.previousInputs) != route.inputs
+        guard !ownEcho else { return result }
+        let inputChanged = previousInputs(route, state: state) != route.inputs
         guard route.reason.permitsRecovery, route.reason == .newDeviceAvailable || inputChanged,
               result.state.externalOutputSeen, result.state.hardwareChangePending,
               !result.state.attemptedInEpisode, !result.state.restoreAttempted else { return result }
@@ -105,19 +108,21 @@ struct AudioOutputRoutePolicy: Sendable {
         return result
     }
 
-    private static func preservesRouteChoice(_ route: Route, state: State) -> Bool {
+    private static func preservesRouteChoice(_ route: Route) -> Bool {
+        // Notification history wins over cached observations, including after an input-loss blip (#852).
         let hasPreviousRoute = !route.previousInputs.isEmpty || !route.previousOutputs.isEmpty
-        let previousInputs = hasPreviousRoute ? route.previousInputs : (state.lastInputs ?? [])
-        let inputsKnown = hasPreviousRoute || state.lastInputs != nil
-        let previousOutputs = route.previousOutputs.isEmpty ? (state.lastOutputs ?? []) : route.previousOutputs
-        // Known built-in → built-in echoes are not new choices. Missing history cannot prove hardware (#852).
         return route.reason == .override && route.outputs.allSatisfy(\.isBuiltInOutput)
-            && (!inputsKnown || previousInputs == route.inputs)
-            && (previousOutputs.isEmpty || !previousOutputs.allSatisfy(\.isBuiltInOutput))
+            && (!hasPreviousRoute || route.previousInputs == route.inputs)
+    }
+
+    private static func previousInputs(_ route: Route, state: State) -> [Port] {
+        // Use cached observations only when the notification has no previous route at all (#852).
+        let hasPreviousRoute = !route.previousInputs.isEmpty || !route.previousOutputs.isEmpty
+        return hasPreviousRoute ? route.previousInputs : (state.lastInputs ?? [])
     }
 
     private static func updateEpisode(_ route: Route, state: inout State) {
-        let previousInputs = state.lastInputs ?? route.previousInputs
+        let previousInputs = previousInputs(route, state: state)
         let inputChanged = previousInputs != route.inputs
         let inputsKnown = state.lastInputs != nil || !route.previousInputs.isEmpty || !route.previousOutputs.isEmpty
         if inputChanged, inputsKnown, route.reason != .categoryChange {
@@ -140,43 +145,5 @@ struct AudioOutputRoutePolicy: Sendable {
         // Only hardware/input evidence re-arms attempts; observing external output alone does not (#852).
         state.lastInputs = route.inputs
         state.lastOutputs = route.outputs
-    }
-}
-
-/// Shared decision → effects → result loop used by the iOS backend and macOS scripted tests (#852).
-enum AudioOutputRouteDriver {
-    enum Effect: Equatable, Sendable {
-        case setCategory(AudioOutputRoutePolicy.Options)
-        case clearOverride
-    }
-
-    @discardableResult
-    static func process(
-        _ route: AudioOutputRoutePolicy.Route, state: inout AudioOutputRoutePolicy.State,
-        observeDecision: (AudioOutputRoutePolicy.Decision) -> Void = { _ in },
-        perform: (Effect) throws -> Void
-    ) -> Bool {
-        let decision = AudioOutputRoutePolicy.routeChange(route, state: state)
-        state = decision.state
-        observeDecision(decision)
-        do {
-            try apply(decision, currentOptions: route.options, perform: perform)
-            if decision.clearOverride { state.restoreAttempted = true }
-            return true
-        } catch {
-            // Failed effects never latch success; the episode guard still absorbs their queued echoes (#852).
-            if decision.clearOverride { state.restoreAttempted = false }
-            return false
-        }
-    }
-
-    private static func apply(
-        _ decision: AudioOutputRoutePolicy.Decision, currentOptions: AudioOutputRoutePolicy.Options,
-        perform: (Effect) throws -> Void
-    ) throws {
-        if decision.options != currentOptions || decision.clearOverride {
-            try perform(.setCategory(decision.options))
-        }
-        if decision.clearOverride { try perform(.clearOverride) }
     }
 }
