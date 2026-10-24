@@ -43,6 +43,15 @@ public final class DeviceDiagnostics {
     @ObservationIgnored private let clock: @Sendable () -> ContinuousClock.Instant
     @ObservationIgnored var observers: [any NSObjectProtocol] = []
     @ObservationIgnored var lastPlayback: (busy: Bool, failures: Set<String>) = (false, [])
+    // Output port type at playback start (#852); nil keeps macOS unchanged. Injectable without AVAudioSession.
+    @ObservationIgnored var outputRoute: @MainActor () -> String? = {
+        #if os(iOS)
+        let output = AVAudioSession.sharedInstance().currentRoute.outputs.first?.portType
+        return output.map(DeviceDiagnostics.route) ?? "none"
+        #else
+        return nil
+        #endif
+    }
     /// Called after an event is buffered, so the connection store can schedule a send.
     @ObservationIgnored public var onPending: (@MainActor () -> Void)?
 
@@ -278,7 +287,7 @@ extension DeviceDiagnostics {
                 ?? (playback.player as? EchoGuardedReplyPlayer)?.gapReporter
             let gaps = reporter?.takePlayoutGaps()
             if busy {
-                record(.replyPlaybackStart)
+                record(.replyPlaybackStart, outputRoute().map { [.route: Self.token($0, for: .route)] } ?? [:])
             } else if let gaps {
                 record(.replyPlaybackEnd, [.count: .integer(Int64(gaps.count)), .ms: .integer(gaps.milliseconds)])
             } else {
