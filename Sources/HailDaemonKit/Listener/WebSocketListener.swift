@@ -1651,7 +1651,9 @@ extension AmbientRightyoRouter {
     /// privacy already on, under the same lock: the caller must announce it (`announceEntry`), which closes it. With
     /// `announced` false (round 3: `setDuck`, which announces nothing) no entry is opened, so none is left open.
     /// `clip` (round 4) builds the work that says it, queued on the connection's clip chain under this same lock, so
-    /// the chain's order is the order decided (a voice off and a device on racing can never swap their clips).
+    /// the chain's order is the order decided (a voice off and a device on racing can never swap their clips). The clip
+    /// waits there for the change's device notice to be sent (#875), so the device is told before it hears the clip:
+    /// "Recording again." never plays while the app still shows private.
     func switchDuck(_ on: Bool, connection: UUID, reason: String, whileArming armed: (UUID?) -> Bool,
                     announced: Bool = true,
                     clip: (AmbientPrivacyEntry) -> (@Sendable () async -> Void)? = { _ in nil })
@@ -1659,7 +1661,8 @@ extension AmbientRightyoRouter {
         let decided = state.withLock { state -> (DuckChange, AmbientPrivacyEntry)? in
             guard armed(state.duck[connection]?.token) else { return nil }
             let wasOn = state.duck[connection] != nil
-            let reported = changeDuck(on, connection: connection, reason: reason, in: &state)
+            let duck = changeDuck(on, connection: connection, reason: reason, in: &state)
+            let reported = duck?.reported
             let entry = announced && on && (wasOn || reported != nil)
                 ? openPrivacyEntry(connection, wasOn: wasOn, in: &state) : nil
             // An off withdraws every entry still open (round 3): each closes in silence, and never inherits a timeout.
@@ -1676,7 +1679,13 @@ extension AmbientRightyoRouter {
             }
             let switched = AmbientPrivacyEntry(reported: change.duck, entry: entry, wasOn: wasOn,
                                                on: state.duck[connection] != nil)
-            if let work = clip(switched) { Self.clipChain(connection, in: &state).enqueue(work) }
+            if let work = clip(switched) {
+                let notice = duck?.notice
+                Self.clipChain(connection, in: &state).enqueue {
+                    await notice?.value
+                    await work()
+                }
+            }
             return (change, switched)
         }
         guard let (changed, switched) = decided else { return nil }
@@ -1820,7 +1829,9 @@ extension AmbientRightyoRouter {
 
     /// Duck mode's change under the caller's lock, as `changeMedia`; nil when it was to turn on and no child took it,
     /// in which case every child's wish is withdrawn and nothing else changes (the fail-safe for an older RightyO).
-    private func changeDuck(_ on: Bool, connection: UUID, reason: String, in state: inout State) -> Int? {
+    /// Otherwise how many children took it, and the device notice's place on `mediaNotices`, done once it is sent.
+    private func changeDuck(_ on: Bool, connection: UUID, reason: String,
+                            in state: inout State) -> (reported: Int, notice: Task<Void, Never>)? {
         let runs = state.runs.values.filter { $0.connection == connection }
         let reported = runs.filter { $0.pipeline.reportDuck(on) }.count
         guard !on || reported > 0 else {
@@ -1847,12 +1858,12 @@ extension AmbientRightyoRouter {
                 self?.emit("ambient_privacy_replies", connection: connection, detail: "released=true")
             }
         }
-        mediaNotices.enqueue { [weak self, weak listener] in
+        let notice = mediaNotices.queued { [weak self, weak listener] in
             let sent = await listener?.showDuckMode(on, reason: reason, expires: nil, connection: connection)
             self?.emit("ambient_duck_device", connection: connection,
                        detail: "on=\(on) device=\(sent ?? "no_connection")")
         }
-        return reported
+        return (reported, notice)
     }
 }
 
@@ -2111,12 +2122,17 @@ final class AmbientRunMark: Sendable {
 final class SerialTaskChain: Sendable {
     private let last = Mutex<Task<Void, Never>?>(nil)
 
-    func enqueue(_ work: @escaping @Sendable () async -> Void) {
+    func enqueue(_ work: @escaping @Sendable () async -> Void) { _ = queued(work) }
+
+    /// `enqueue`, returning the piece's task: done once the piece, and so every piece before it, has returned (#875).
+    func queued(_ work: @escaping @Sendable () async -> Void) -> Task<Void, Never> {
         last.withLock { last in
-            last = Task { [last] in
+            let task = Task { [last] in
                 await last?.value
                 await work()
             }
+            last = task
+            return task
         }
     }
 }

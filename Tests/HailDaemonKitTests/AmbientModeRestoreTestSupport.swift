@@ -123,6 +123,18 @@ final class RestoreRig: Sendable {
         detail?.split(separator: " ").first { $0.hasPrefix("remaining=") }.flatMap { Int($0.dropFirst(10)) }
     }
 
+    /// Waits (bounded) for every hook and meeting log queued so far on the router-wide hook chain, and every clip
+    /// queued so far on each of `clips`' own chains: a sentinel behind each. Only after it is a hook count, or a log's
+    /// absence, evidence rather than a race with the chain.
+    func drainMeetingChanges(clips connections: [UUID] = []) async {
+        let hooks = MeetingLatch(), clips = connections.map { _ in MeetingLatch() }
+        router.meetingChanges.enqueue { hooks.open() }
+        for (connection, latch) in zip(connections, clips) {
+            router.enqueuePrivacyClip(connection) { _ in { latch.open() } }
+        }
+        #expect(await eventually { hooks.isOpen && clips.allSatisfy { $0.isOpen } }, "restore chains drained marker")
+    }
+
     func control(_ spawn: Int) -> String? { try? fake.recorded("control.\(spawn).txt") }
     func details(_ name: String) -> [String] {
         events.list.withLock { $0.filter { $0.event == name }.map { $0.detail ?? "" } }

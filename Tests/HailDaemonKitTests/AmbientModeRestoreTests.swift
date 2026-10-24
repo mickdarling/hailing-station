@@ -101,11 +101,13 @@ import Testing
         #expect(await eventually { rig.router.mediaMode(connection: dropped) }, "media on marker")
         await rig.drop(first, dropped)
         #expect(rig.parked?.media != nil && rig.parked?.meeting == nil)
+        await rig.drainMeetingChanges()
         #expect(rig.details("ambient_media_parked").count == 1)
         let (socket, connection) = try await rig.start()
         #expect(await eventually { rig.control(2) == RestoreRig.gate }, "restored media child marker")
         #expect(await eventually { rig.details("media_restored").count == 1 }, "media restored log marker")
         #expect(rig.details("media_restored").first?.contains("device_match=true") == true)
+        await rig.drainMeetingChanges()
         #expect(rig.router.mediaMode(connection: connection) && rig.parked == nil && rig.changes.isEmpty)
         // No clip: a stray frame fails the barrier.
         try await barrier(on: socket, step: "silent media restore")
@@ -137,6 +139,7 @@ import Testing
         defer { rig.close() }
         #expect(rig.parked == nil)
         let (_, connection) = try await rig.start()
+        await rig.drainMeetingChanges()
         #expect(!rig.router.meetingMode(connection: connection) && rig.details("meeting_restored").isEmpty)
         await rig.finish()
         #expect(rig.control(1)?.contains("media") == false)
@@ -152,6 +155,7 @@ import Testing
         #expect(await eventually { router.status().liveChildren == 1 }, "dropped child reaped marker")
         await bounded("restored child reload") { #expect(await router.reload() == .reloaded) }
         #expect(await eventually { rig.control(3) == RestoreRig.gate }, "reloaded restored child marker")
+        await rig.drainMeetingChanges()
         #expect(rig.changes.count == 3)
         await rig.finish()
     }
