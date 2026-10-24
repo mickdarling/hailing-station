@@ -1001,12 +1001,12 @@ extension AmbientRightyoRouter {
         }
         (settings.onOwnerVoice, settings.environment) = (ownerVoice(on: connection, listener: listener),
                                                          childEnvironment(for: connection))
+        settings.onVoiceRouteRefused = voiceRouteRefused(on: connection, listener: listener)
         // The owner's voice routes (#636), from the same authorizer the listing names them with.
         if let routes = listener.authorizer.voiceRoutes {
             settings.routing = RightyoVoiceRouting(routes: routes) { [weak listener] target in
                 await listener?.voiceRouteBinding(target)
             }
-            settings.onVoiceRouteRefused = voiceRouteRefused(on: connection, listener: listener)
         }
         let pipeline = try RightyoAmbientPipeline(configuration: settings,
                                                   dispatcher: AmbientListenerDispatcher(
@@ -1193,7 +1193,9 @@ extension AmbientRightyoRouter {
         var failure: String?
         let detail: String
         do {
-            let summary = try await pipeline.run()
+            let summary = try await RightyoGuardRefusal.$logsLocally.withValue(false) {
+                try await pipeline.run()
+            }
             let echo = await pipeline.echoDropped
             let gateEnd = state.withLock { $0.runs[id]?.gateEnd.map { "\($0)" } } ?? "none"
             detail = "delivered=\(summary.delivered) written=\(summary.child.writtenBytes)"
@@ -1461,10 +1463,9 @@ extension AmbientRightyoRouter {
         }
     }
 
-    /// An ambient request the owner addressed to a voice route that did not take it (#636, slice 5c): the device that
-    /// said it is told, with one refusal line (`voice_route_refused`, sent only to a device that takes request
-    /// refusals) and one `confirm-not-sent/` clip, in the order said. Logs the reason and both outcomes as tokens;
-    /// never the route's name or the words.
+    /// A route or per-request dispatch refusal (#636, #847): the device that said it gets one refusal line (only if
+    /// it takes request refusals) and a not-sent clip, in order. Confirmation uses `confirm-needs-confirmation/`,
+    /// falling back to `confirm-not-sent/`. Logs tokens and outcomes even when no clip can play, never the words.
     fileprivate func voiceRouteRefused(
         on connection: UUID, listener: WebSocketListener
     ) -> @Sendable (RightyoVoiceRouting.Refusal) -> Void {
@@ -1474,9 +1475,17 @@ extension AmbientRightyoRouter {
                 guard let self else { return }
                 let shown = await listener?.showRouteRefusal(refusal.message, target: configuration.target,
                                                              connection: connection) ?? "no_connection"
-                let confirm = await confirmVoiceMute(AmbientStopConfirmation.notSent, on: connection,
-                                                     listener: listener)
-                emit("ambient_voice_route_refused", connection: connection,
+                let persona: String, event: String
+                switch refusal {
+                case .confirmationRequired:
+                    (persona, event) = (AmbientStopConfirmation.needsConfirmation, "ambient_request_refused")
+                case .capacityExceeded:
+                    (persona, event) = (AmbientStopConfirmation.notSent, "ambient_request_refused")
+                default:
+                    (persona, event) = (AmbientStopConfirmation.notSent, "ambient_voice_route_refused")
+                }
+                let confirm = await confirmVoiceMute(persona, on: connection, listener: listener)
+                emit(event, connection: connection,
                      detail: "\(refusal.token) shown=\(shown) confirm=\(confirm)")
             }
         }

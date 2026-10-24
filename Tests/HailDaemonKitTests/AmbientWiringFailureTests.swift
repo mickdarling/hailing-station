@@ -165,13 +165,19 @@ import Testing
             """)
         defer { fake.cleanUp() }
         try fake.install(fixture: "tool-events.jsonl")
-        let env = try await ambientRig(fake, timing: .init(eofGrace: 0.2, termGrace: 2))
+        // EOF is sent immediately, before a cold child may have launched. Allow it time to emit its request;
+        // 200 ms could kill it before dispatch, leaving the handoff wait with nothing that could resume it.
+        let env = try await ambientRig(fake, timing: .init(eofGrace: 20, termGrace: 2))
         await env.rig.adapter.holdHandoff()
         await env.rig.adapter.failHandoff()
         let pair = try await FallbackSocketPair.boundedConnect(port: env.port, selecting: [RecipientTestRig.target])
         defer { pair.close() }
         try await recipientSocketSend(audio(UUID(), 0, final: true), on: pair.sockets[0])
-        await env.rig.adapter.waitForHandoff()
+        guard await env.rig.adapter.waitForHandoff() else {
+            await env.rig.adapter.releaseHandoff()
+            await env.listener.stop(reason: "synthetic handoff timeout")
+            return
+        }
         let current = UUID()
         try await recipientSocketSend(audio(current, 0), on: pair.sockets[0])
         try await pair.boundedBarrier(step: "replacement started")

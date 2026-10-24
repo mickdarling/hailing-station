@@ -142,7 +142,7 @@ import Testing
         let (confirmed, other) = try await rig(tier: .confirm)
         _ = try await confirmed.consume(start())
         let attended = try await preparedRequest(confirmed)
-        await #expect(throws: RightyoInputError.confirmationRequired) { try await confirmed.consume(attended) }
+        #expect(try await !confirmed.consume(attended))
         #expect(try await !confirmed.consume(attended))
         #expect(await other.deliveries.isEmpty)
     }

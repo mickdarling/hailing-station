@@ -25,10 +25,10 @@ func ambientRig(
     destinations: VoiceDestinations? = nil, shortcuts: ShortcutRunner = ShortcutRunner(),
     routes: VoiceRoutes? = nil, startDeadline: TimeInterval = RightyoAmbientPipeline.defaultStartDeadline,
     ackDeadline: TimeInterval = RightyoAmbientPipeline.ackDeadline,
-    confirmTimeout: TimeInterval? = nil,
+    confirmTimeout: TimeInterval? = nil, guardPatterns: [GuardPattern]? = nil,
     onEvent: (@Sendable (WebSocketListenerEvent) -> Void)? = nil
 ) async throws -> AmbientWiringRig {
-    let rig = try await RecipientTestRig.make()
+    let rig = try await RecipientTestRig.make(guardPatterns: guardPatterns)
     let connected = ConnectedPeerIDs()
     var configuration = AmbientRightyoRouter.Configuration(
         executable: executable ?? fake.executable, config: fake.config, target: RecipientTestRig.target,
@@ -40,7 +40,8 @@ func ambientRig(
     (configuration.ackDeadline, configuration.privacyConfirmTimeout) = (ackDeadline, confirmTimeout)
     configuration.notes.shortcuts = shortcuts
     let router = AmbientRightyoRouter(configuration: configuration, log: { events?.record($0); onEvent?($0) })
-    let gate = AmbientAudioGate(target: RecipientTestRig.target, sink: router, sweepInterval: nil)
+    let gate = AmbientAudioGate(target: RecipientTestRig.target,
+                                sink: GuardClockAmbientSink(router: router), sweepInterval: nil)
     let listener = try WebSocketListener(
         bindAddress: "127.0.0.1", port: 0, host: rig.host,
         authorizer: PersonalTerminalAuthorizer(ambientAudio: gate).naming(routes), hostName: "mac-test",
