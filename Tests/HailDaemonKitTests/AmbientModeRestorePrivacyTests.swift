@@ -40,6 +40,7 @@ import Testing
         #expect(await eventually { rig.changes.count == 4 }, "restored privacy hook marker")
         #expect(rig.changes.map(\.reason) == ["voice", "connection", "resumed", "privacy"])
         await rig.drop(socket, connection)
+        await rig.drainMeetingChanges()
         #expect(rig.parked == nil && rig.details("ambient_meeting_parked").count == 1)
         #expect(rig.changes.count == 4)
         await rig.finish()
@@ -53,6 +54,7 @@ import Testing
         #expect(try await rig.confirmation(on: socket) == MeetingRig.on.text)
         rig.router.state.withLock { $0.duck[connection] = AmbientDuckTimer(token: UUID(), timer: nil) }
         await rig.drop(socket, connection)
+        await rig.drainMeetingChanges()
         #expect(rig.parked == nil && !rig.router.meetingMode(connection: connection))
         #expect(rig.details("ambient_meeting_parked").isEmpty)
         await rig.finish()
@@ -66,6 +68,7 @@ import Testing
         rig.router.state.withLock { $0.duck[connection] = AmbientDuckTimer(token: UUID(), timer: nil) }
         try await recipientSocketSend(audio(UUID(), 0), on: socket)
         #expect(await eventually { rig.parked == nil }, "private start consumed the park marker")
+        await rig.drainMeetingChanges()
         #expect(!rig.router.meetingMode(connection: connection) && rig.details("meeting_restored").isEmpty)
         #expect(await eventually {
             rig.details("ambient_park_discarded") == ["reason=privacy mode=meeting"]
@@ -81,6 +84,7 @@ import Testing
         #expect(rig.router.setMeeting(on: false, connection: UUID(), reason: "voice") == 0)
         #expect(rig.parked == nil)
         let (_, connection) = try await rig.start()
+        await rig.drainMeetingChanges()
         #expect(!rig.router.meetingMode(connection: connection) && rig.details("meeting_restored").isEmpty)
         #expect(await eventually { rig.details("ambient_park_discarded") == ["reason=off mode=meeting"] },
                 "meeting off discard log marker")
