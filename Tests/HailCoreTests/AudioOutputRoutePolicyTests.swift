@@ -101,16 +101,18 @@ extension AudioOutputRoutePolicyTests {
         let original = Policy.Options(defaultToSpeaker: false, mixWithOthers: true)
         let state = Policy.State(externalOutputSeen: true)
         let decision = Policy.routeChange(.init(
-            category: .playback, options: original, outputs: [output], inputs: [.usbAudio],
+            category: .playback, options: original, outputs: [output], inputs: [],
             previousOutputs: [.bluetoothA2DP], reason: reason
         ), state: state)
         #expect(decision.options == original)
         #expect(!decision.clearOverride)
-        // Hardware history stays live while keepalive effects remain disabled (#852).
+        // Capture history stays untouched while keepalive owns an output-only session (#852).
         #expect(decision.reason == .keepalive)
         #expect(!decision.state.userChoseBuiltIn)
-        #expect(decision.state.lastInputs == [.usbAudio])
-        #expect(decision.state.lastOutputs == [output])
+        #expect(decision.state.lastInputs == state.lastInputs)
+        #expect(decision.state.lastOutputs == state.lastOutputs)
+        #expect(decision.state.lastAvailability == state.lastAvailability)
+        #expect(decision.state.inputLossPending == state.inputLossPending)
     }
 
     @Test(arguments: Policy.Reason.allCases)
@@ -175,8 +177,10 @@ extension AudioOutputRoutePolicyTests {
             #expect(!decision.clearOverride)
             #expect(decision.reason == .unsupportedCategory)
             #expect(!decision.state.userChoseBuiltIn)
-            #expect(decision.state.lastInputs == [])
-            #expect(decision.state.lastOutputs == [output])
+            #expect(decision.state.lastInputs == state.lastInputs)
+            #expect(decision.state.lastOutputs == state.lastOutputs)
+            #expect(decision.state.lastAvailability == state.lastAvailability)
+            #expect(decision.state.inputLossPending == state.inputLossPending)
         }
     }
 

@@ -99,7 +99,7 @@ import Testing
         session.options = .init(defaultToSpeaker: true, mixWithOthers: true)
         for reason in Policy.Reason.allCases {
             session.send(.init(
-                category: .playback, outputs: [.speaker], inputs: [.usbAudio],
+                category: .playback, outputs: [.speaker], inputs: [],
                 previousOutputs: [.bluetoothA2DP], reason: reason
             ))
         }

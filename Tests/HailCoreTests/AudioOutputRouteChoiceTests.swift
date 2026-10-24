@@ -79,11 +79,12 @@ import Testing
     }
 
     @Test(arguments: [Policy.Category.playback, .other])
-    func externalObservationClearsChoiceWithoutTouchingOtherCategories(_ category: Policy.Category) {
+    func keepaliveExternalObservationPreservesCaptureChoice(_ category: Policy.Category) {
         let session = ScriptedOutputSession()
         session.state.userChoseBuiltIn = true
         session.send(.init(category: category, outputs: [.headphones], inputs: [], reason: .override))
-        #expect(!session.state.userChoseBuiltIn)
+        #expect(session.state.userChoseBuiltIn)
+        #expect(session.state.externalOutputSeen)
         #expect(session.effects.isEmpty)
     }
 
