@@ -563,10 +563,6 @@ public final class AmbientRightyoRouter: AmbientAudioSink, AmbientListenerWiring
         var working = false
         /// The newest stream the gate started: the only one a queued start may make room or spawn for.
         var newestStart: UUID?
-        /// The stream the gate last took listening from (#735 meeting mode review round 3). The gate reports a
-        /// take-over as two events, its old stream's `superseded` end then the new start, so between them this is
-        /// what tells a take-over (which also clears `latest`) from a teardown.
-        var superseded: UUID?
         var peakQueue = 0
         var worker: Task<Void, Never>?
         /// Each live connection's last input route kind (rightyo#164), for its next child's `RIGHTYO_INPUT_ROUTE`;
@@ -577,9 +573,10 @@ public final class AmbientRightyoRouter: AmbientAudioSink, AmbientListenerWiring
         var media: [UUID: AmbientMediaTimer] = [:]
         /// #735 meeting mode (rightyo#227): the profile, start and guarded timeout; exclusive with media and privacy.
         var meeting: [UUID: AmbientMeetingTimer] = [:]
-        /// Connections `stop(connection:)` tore down while a child of theirs still runs (#735 meeting mode review
-        /// round 1): a late media or meeting entry from that child is refused. Dropped with the last such child, or
-        /// when the gate starts a new stream there, so it never outgrows the children still running.
+        /// Connections `stop(connection:)` tore down (#735 meeting mode review rounds 1 and 4), recorded there and
+        /// never inferred: a late media or meeting entry from a child of theirs, running or still being made, is
+        /// refused. A connection id is never reused, so the mark is never lifted for a live connection; it is only
+        /// pruned once no child and no start can still speak for it (`pruneClosed`).
         var closed: Set<UUID> = []
         /// Connections whose owner turned duck mode on (#735), kept like `media`. A connection is never in both.
         var duck: [UUID: AmbientDuckTimer] = [:]
@@ -628,13 +625,11 @@ public final class AmbientRightyoRouter: AmbientAudioSink, AmbientListenerWiring
     public func ambientAudio(_ event: AmbientAudioEvent) {
         let queued = state.withLock { state -> Bool in
             switch event {
-            case .started(let stream, let connection, _):
-                state.latest[connection] = stream
-                state.closed.remove(connection)
+            // A start never lifts `closed`: a torn-down connection id never comes back (#735), so one that did
+            // would still be dead.
+            case .started(let stream, let connection, _): state.latest[connection] = stream
             // Taken over (#366): the old stream's late failure is not reported to its device as a stop.
-            case .ended(let stream, .superseded):
-                state.latest = state.latest.filter { $0.value != stream }
-                state.superseded = stream
+            case .ended(let stream, .superseded): state.latest = state.latest.filter { $0.value != stream }
             default: break
             }
             if case .started(let stream, _, _) = event { state.newestStart = stream }
@@ -696,8 +691,10 @@ public final class AmbientRightyoRouter: AmbientAudioSink, AmbientListenerWiring
             state.listener?.value?.replyHold.set(false, connection: connection)
             if let active = state.active, state.runs[active.run]?.connection == connection { state.active = nil }
             let streams = state.runs.filter { $0.value.connection == connection }.map(\.key)
-            // A retiring child may still say a mode command; it is refused, never outliving the connection (#735).
-            if !streams.isEmpty { state.closed.insert(connection) }
+            // A retiring child, or one a start is still making, may yet say a mode command; it is refused, never
+            // outliving the connection (#735 review round 4). Pruned at once when neither can exist.
+            state.closed.insert(connection)
+            Self.pruneClosed(in: &state)
             return streams
         }
         streams.forEach { retire($0) }
@@ -839,6 +836,7 @@ extension AmbientRightyoRouter {
         while let event = state.withLock({ state -> AmbientAudioEvent? in
             guard !state.queue.isEmpty else {
                 state.working = false
+                Self.pruneClosed(in: &state)
                 return nil
             }
             state.working = true
@@ -1047,19 +1045,12 @@ extension AmbientRightyoRouter {
     /// so the run's own removal cannot precede its registration. The run's own task emits `ambient_started` first, so
     /// it always precedes that run's `ambient_ended`, even when a child exits at once beside another live run (#273).
     /// A reload's run (#405) emits `ambient_reloaded` first for the same reason: a new child that fails at once must
-    /// leave its failure, not the reload, as the last event.
+    /// leave its failure, not the reload, as the last event. A child whose connection was torn down while it was made
+    /// is registered like any other: `closed`, recorded by `stop(connection:)`, already refuses its mode entries (#735).
     func register(_ pipeline: RightyoAmbientPipeline, stream: UUID, connection: UUID, reload: Bool = false,
                   in state: inout State) -> UUID {
         let id = UUID()
         state.runs[id] = Run(stream: stream, connection: connection, pipeline: pipeline)
-        // Torn down while this start was making its child (#735 meeting mode review rounds 2 and 3): `stop(connection:)`
-        // found no run to mark, so the child is marked now and its late mode entries are refused like a retiring
-        // child's. Only a teardown counts: `latest` is cleared, yet this stream is still the newest start and was never
-        // taken over (a take-over clears `latest` too, but supersedes the stream and moves `newestStart`). A reload
-        // never registers after a teardown (`stop` clears `active`, so `swap` finds nothing), so it never marks.
-        if !reload, state.latest[connection] == nil, state.newestStart == stream, state.superseded != stream {
-            state.closed.insert(connection)
-        }
         // A new or reloaded child starts with media mode off (#551). Told under the same lock `setMedia` changes it
         // under, so it can never miss a change made while it was starting.
         if state.media[connection] != nil || state.meeting[connection] != nil {
@@ -1253,10 +1244,8 @@ extension AmbientRightyoRouter {
         }
         emit("ambient_ended", detail: (replacedNow ? "replaced " : "") + detail)
         let (stillActive, replaced, listener, waiters) = state.withLock { state in
-            let removed = state.runs.removeValue(forKey: id), replaced = removed?.replaced ?? false
-            if let gone = removed?.connection, !state.runs.values.contains(where: { $0.connection == gone }) {
-                state.closed.remove(gone)
-            }
+            let replaced = state.runs.removeValue(forKey: id)?.replaced ?? false
+            Self.pruneClosed(in: &state)
             // By identity, not stream: after a reload (#405) the stream is the same but the active run is not.
             let active = state.active?.run == id
             if active { state.active = nil }
@@ -1541,6 +1530,19 @@ extension AmbientRightyoRouter {
         }
         emit("ambient_media", connection: connection, detail: "on=\(on) reason=\(reason) reported=\(changed.reported)")
         return changed.reported
+    }
+
+    /// Drops each torn-down connection no child can still speak for (#735 meeting mode review round 4): none of its
+    /// runs is left, none of its starts is queued, and the worker is not making a child (it prunes again when idle).
+    /// An inline start runs on the gate's actor, which `stop(connection:)` follows, so it has registered by then. The
+    /// set stays bounded by the children still running and the starts still in flight.
+    static func pruneClosed(in state: inout State) {
+        guard !state.working else { return }
+        state.closed = state.closed.filter { connection in
+            state.runs.values.contains { $0.connection == connection } || state.queue.contains {
+                if case .started(_, connection, _) = $0 { true } else { false }
+            }
+        }
     }
 
     /// Why a media or meeting entry is refused, as a log token, or nil when it may go ahead. Torn down (`closed`,
