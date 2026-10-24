@@ -12,6 +12,7 @@ import Testing
         defer { rig.close() }
         let (first, stale) = try await rig.start()
         #expect(try await rig.confirmation(on: first) == MeetingRig.on.text)
+        await rig.drainMeetingChanges()
         let meetingID = try #require(rig.changes.first?.meetingID)
         let (socket, connection) = try await rig.start()
         #expect(await eventually { rig.control(2) == RestoreRig.gate }, "moved child first line marker")
@@ -35,6 +36,7 @@ import Testing
         #expect(rig.control(1) == RestoreRig.gate)
         // Its later teardown finds nothing to park.
         await rig.drop(first, stale)
+        await rig.drainMeetingChanges()
         #expect(rig.parked == nil && rig.details("ambient_meeting_parked").isEmpty)
         await rig.finish()
     }

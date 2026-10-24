@@ -15,6 +15,7 @@ import Testing
         let (socket, connection) = try await rig.start()
         #expect(try await rig.confirmation(on: socket) == RestoreRig.resumed.text)
         #expect(rig.router.state.withLock { $0.meeting[connection]?.expiresAt } == expiry)
+        await rig.drainMeetingChanges()
         let logged = try #require(RestoreRig.remaining(in: rig.details("meeting_restored").first))
         #expect(abs(logged - Int(expiry.timeIntervalSince(rig.clock.now()))) <= 2)
         // A second drop parks the same instant: drops never extend it.
