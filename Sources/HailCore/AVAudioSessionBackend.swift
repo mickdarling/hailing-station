@@ -88,7 +88,13 @@ public final class AVAudioSessionBackend: AudioSessionBackend {
         isRepairingOutputRoute = true
         defer { isRepairingOutputRoute = false }
         let session = session
-        AudioOutputRouteDriver.process(route, state: &outputRouteState) { effect in
+        AudioOutputRouteDriver.process(route, state: &outputRouteState, observeDecision: { decision in
+            #if DEBUG
+            if decision.preservedRouteChoice {
+                print("Output route left unchanged: user choice or ambiguous cause (#852)")
+            }
+            #endif
+        }) { effect in
             try AudioOutputSessionRouting.apply(effect, to: session)
         }
     }

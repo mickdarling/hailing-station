@@ -4,25 +4,52 @@ import Testing
 @Suite struct AudioOutputRouteEffectTests {
     typealias Policy = AudioOutputRoutePolicy
 
-    @Test func fieldSequenceExecutesOneOverrideClearIncludingEchoes() {
+    @Test(arguments: [[], [Policy.Port.speaker]])
+    func fieldSequenceExecutesOneOverrideClearIncludingEchoes(_ blipOutputs: [Policy.Port]) {
+        let session = ScriptedOutputSession()
+        session.send(Self.speakerChoice)
+        #expect(session.effects.isEmpty)
+        session.send(.init(
+            outputs: [.bluetoothA2DP], inputs: [.usbAudio], previousOutputs: [.speaker],
+            previousInputs: [.usbAudio], reason: .override
+        ))
+        session.options.defaultToSpeaker = true
+        session.send(.init(
+            outputs: blipOutputs, inputs: [], previousOutputs: [.bluetoothA2DP],
+            previousInputs: [.usbAudio], reason: .override
+        ))
+        #expect(!session.state.userChoseBuiltIn)
+        #expect(session.clears == 0)
+        session.send(.init(outputs: [.speaker], inputs: [.usbAudio], reason: .newDeviceAvailable))
+        session.drainEchoes()
+        #expect(session.categories == 2)
+        #expect(session.clears == 1)
+        #expect(session.state.restoreAttempted)
+        #expect(!session.state.userChoseBuiltIn)
+    }
+
+    @Test func inputReturnInCategoryEchoWaitsForAvailability() {
         let session = ScriptedOutputSession()
         session.options.defaultToSpeaker = true
         session.send(.init(
             outputs: [.speaker], inputs: [], previousOutputs: [.bluetoothA2DP],
             previousInputs: [.usbAudio], reason: .override
         ))
+        session.send(.init(outputs: [.speaker], inputs: [.usbAudio], reason: .categoryChange))
+        #expect(session.clears == 0)
         session.send(.init(outputs: [.speaker], inputs: [.usbAudio], reason: .newDeviceAvailable))
         session.drainEchoes()
-        #expect(session.categories == 2)
         #expect(session.clears == 1)
-        #expect(session.state.restoreAttempted)
     }
 
     @Test(arguments: [false, true])
     func failedApplyRetriesOnNextGenuineEpisode(failClear: Bool) {
         let session = ScriptedOutputSession()
         session.failure = failClear ? .clearOverride : .setCategory(.init())
-        session.send(Self.speakerChoice)
+        session.send(.init(
+            outputs: [.speaker], inputs: [.usbAudio], previousOutputs: [.bluetoothA2DP],
+            previousInputs: [.builtInMic], reason: .override
+        ))
         #expect(!session.state.restoreAttempted)
         session.drainEchoes()
         #expect(session.categories == 1)
@@ -39,7 +66,7 @@ import Testing
         #expect(session.state.restoreAttempted)
     }
 
-    @Test func repeatedUserChoiceIsUndoneOnceUntilUSBBlip() {
+    @Test func repeatedUserChoiceAndUSBBlipExecuteZeroEffects() {
         let session = ScriptedOutputSession()
         session.send(Self.speakerChoice)
         session.drainEchoes()
@@ -49,8 +76,8 @@ import Testing
         ))
         session.send(Self.speakerChoice)
         session.drainEchoes()
-        #expect(session.categories == 1)
-        #expect(session.clears == 1)
+        #expect(session.categories == 0)
+        #expect(session.clears == 0)
         session.send(.init(
             outputs: [.speaker], inputs: [.builtInMic], previousOutputs: [.speaker],
             previousInputs: [.usbAudio], reason: .oldDeviceUnavailable
@@ -59,8 +86,9 @@ import Testing
             outputs: [.speaker], inputs: [.usbAudio], previousInputs: [.builtInMic], reason: .newDeviceAvailable
         ))
         session.drainEchoes()
-        #expect(session.categories == 2)
-        #expect(session.clears == 2)
+        #expect(session.categories == 0)
+        #expect(session.clears == 0)
+        #expect(session.state.userChoseBuiltIn)
     }
 
     @Test func playbackKeepaliveExecutesZeroEffects() {
@@ -86,7 +114,7 @@ import Testing
 }
 
 /// Executes the production runner and queues the category/override echoes its effects can cause (#852).
-private final class ScriptedOutputSession {
+final class ScriptedOutputSession {
     typealias Policy = AudioOutputRoutePolicy
     typealias Effect = AudioOutputRouteDriver.Effect
     enum Failure: Error { case scripted }
@@ -94,6 +122,7 @@ private final class ScriptedOutputSession {
     var options = Policy.Options()
     var effects: [Effect] = []
     var failure: Effect?
+    var preservedChoices: [Bool] = []
     private var echoes: [Policy.Route] = []
 
     var categories: Int { effects.filter { if case .setCategory = $0 { true } else { false } }.count }
@@ -103,7 +132,9 @@ private final class ScriptedOutputSession {
         var current = route
         current.options = options
         let snapshot = current
-        AudioOutputRouteDriver.process(snapshot, state: &state) { effect in
+        AudioOutputRouteDriver.process(snapshot, state: &state, observeDecision: { decision in
+            self.preservedChoices.append(decision.preservedRouteChoice)
+        }) { effect in
             try self.perform(effect, route: snapshot)
         }
     }

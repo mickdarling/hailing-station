@@ -16,7 +16,7 @@ struct AudioOutputRoutePolicy: Sendable {
         case newDeviceAvailable, oldDeviceUnavailable, override, categoryChange, routeConfigurationChange, other
 
         var permitsRecovery: Bool {
-            [.newDeviceAvailable, .override, .categoryChange, .routeConfigurationChange].contains(self)
+            [.newDeviceAvailable, .override, .routeConfigurationChange].contains(self)
         }
     }
 
@@ -38,6 +38,8 @@ struct AudioOutputRoutePolicy: Sendable {
 
     struct State: Equatable, Sendable {
         var externalOutputSeen = false
+        var userChoseBuiltIn = false
+        var hardwareChangePending = false
         // Success and the per-episode attempt guard are separate so a throwing effect cannot claim success (#852).
         var restoreAttempted = false
         var attemptedInEpisode = false
@@ -49,6 +51,7 @@ struct AudioOutputRoutePolicy: Sendable {
     struct Decision: Sendable {
         var options: Options
         var clearOverride = false
+        var preservedRouteChoice = false
         var state: State
     }
 
@@ -62,8 +65,10 @@ struct AudioOutputRoutePolicy: Sendable {
 
     static func routeChange(_ route: Route, state: State) -> Decision {
         var result = Decision(options: route.options, state: state)
+        if route.outputs.contains(where: \.isExternalOutput) { result.state.userChoseBuiltIn = false }
         // The background keepalive owns playback/mixWithOthers; never reconfigure it (#282, #352, #852).
         guard route.category == .playAndRecord else { return result }
+        let preserveChoice = preservesRouteChoice(route, state: state)
         updateEpisode(route, state: &result.state)
         let lostUSBInput = route.previousInputs.contains(.usbAudio) && !route.inputs.contains(.usbAudio)
             && !route.previousOutputs.contains(.usbAudio)
@@ -71,27 +76,53 @@ struct AudioOutputRoutePolicy: Sendable {
             result.state.externalOutputSeen = true
             result.options.defaultToSpeaker = false
             return result
-        } else if route.reason == .oldDeviceUnavailable, !lostUSBInput {
+        }
+        result.state.externalOutputSeen = result.state.externalOutputSeen
+            || route.previousOutputs.contains(where: \.isExternalOutput)
+        // (#852) an explicit route choice is never undone; ambiguous cases leave the route alone.
+        if preserveChoice { result.state.userChoseBuiltIn = true }
+        if result.state.userChoseBuiltIn {
+            result.preservedRouteChoice = true
+            return result
+        }
+        if route.reason == .oldDeviceUnavailable, !lostUSBInput {
             // A USB-input-only loss retains even evidence remembered before the speaker fallback (#852).
             result.state.externalOutputSeen = false
             result.options = configurationOptions(outputs: route.outputs, options: route.options)
             return result
         }
-        result.state.externalOutputSeen = result.state.externalOutputSeen
-            || route.previousOutputs.contains(where: \.isExternalOutput)
-        guard route.reason.permitsRecovery, result.state.externalOutputSeen,
+        let inputChanged = (state.lastInputs ?? route.previousInputs) != route.inputs
+        guard route.reason.permitsRecovery, route.reason == .newDeviceAvailable || inputChanged,
+              result.state.externalOutputSeen, result.state.hardwareChangePending,
               !result.state.attemptedInEpisode, !result.state.restoreAttempted else { return result }
         result.options.defaultToSpeaker = false
         guard !route.inputs.isEmpty, !route.outputs.isEmpty,
               route.outputs.allSatisfy(\.isBuiltInOutput) else { return result }
         result.clearOverride = true
         result.state.attemptedInEpisode = true
+        result.state.hardwareChangePending = false
+        result.state.inputLossPending = false
         return result
+    }
+
+    private static func preservesRouteChoice(_ route: Route, state: State) -> Bool {
+        let hasPreviousRoute = !route.previousInputs.isEmpty || !route.previousOutputs.isEmpty
+        let previousInputs = hasPreviousRoute ? route.previousInputs : (state.lastInputs ?? [])
+        let inputsKnown = hasPreviousRoute || state.lastInputs != nil
+        let previousOutputs = route.previousOutputs.isEmpty ? (state.lastOutputs ?? []) : route.previousOutputs
+        // Known built-in → built-in echoes are not new choices. Missing history cannot prove hardware (#852).
+        return route.reason == .override && route.outputs.allSatisfy(\.isBuiltInOutput)
+            && (!inputsKnown || previousInputs == route.inputs)
+            && (previousOutputs.isEmpty || !previousOutputs.allSatisfy(\.isBuiltInOutput))
     }
 
     private static func updateEpisode(_ route: Route, state: inout State) {
         let previousInputs = state.lastInputs ?? route.previousInputs
         let inputChanged = previousInputs != route.inputs
+        let inputsKnown = state.lastInputs != nil || !route.previousInputs.isEmpty || !route.previousOutputs.isEmpty
+        if inputChanged, inputsKnown, route.reason != .categoryChange {
+            state.hardwareChangePending = true
+        }
         if inputChanged, previousInputs.contains(where: { !route.inputs.contains($0) }) {
             state.inputLossPending = true
         }
@@ -101,13 +132,12 @@ struct AudioOutputRoutePolicy: Sendable {
         let inputReturned = state.inputLossPending && inputChanged && !route.inputs.isEmpty
             && ![Reason.override, .categoryChange, .oldDeviceUnavailable].contains(route.reason)
         if newDevice || inputReturned {
+            state.hardwareChangePending = true
             state.restoreAttempted = false
             state.attemptedInEpisode = false
             state.inputLossPending = false
         }
-        // No initiator distinguishes Control Center from a system override (#852). The first choice after
-        // a genuine hardware/input episode may be undone once. External output alone must not re-arm it;
-        // an override with unchanged inputs after repair is the user's choice, including after external return.
+        // Only hardware/input evidence re-arms attempts; observing external output alone does not (#852).
         state.lastInputs = route.inputs
         state.lastOutputs = route.outputs
     }
@@ -123,10 +153,12 @@ enum AudioOutputRouteDriver {
     @discardableResult
     static func process(
         _ route: AudioOutputRoutePolicy.Route, state: inout AudioOutputRoutePolicy.State,
+        observeDecision: (AudioOutputRoutePolicy.Decision) -> Void = { _ in },
         perform: (Effect) throws -> Void
     ) -> Bool {
         let decision = AudioOutputRoutePolicy.routeChange(route, state: state)
         state = decision.state
+        observeDecision(decision)
         do {
             try apply(decision, currentOptions: route.options, perform: perform)
             if decision.clearOverride { state.restoreAttempted = true }

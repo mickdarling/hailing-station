@@ -6,7 +6,8 @@ import Testing
 
     @Test func failedRepairCanRetryAfterAnotherInputBlip() {
         let first = Policy.routeChange(.init(
-            outputs: [.speaker], inputs: [.usbAudio], previousOutputs: [.bluetoothA2DP], reason: .override
+            outputs: [.speaker], inputs: [.usbAudio], previousOutputs: [.bluetoothA2DP],
+            previousInputs: [.builtInMic], reason: .override
         ), state: .init())
         // The original backend saved this state even when applying the decision threw (#852).
         let lost = Policy.routeChange(.init(

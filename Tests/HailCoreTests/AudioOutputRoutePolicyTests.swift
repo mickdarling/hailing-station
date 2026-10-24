@@ -7,7 +7,7 @@ import Testing
         .bluetoothA2DP, .bluetoothLE, .bluetoothHFP, .headphones, .usbAudio, .lineOut, .airPlay, .carAudio
     ]
     static let recoveryReasons: [Policy.Reason] = [
-        .newDeviceAvailable, .override, .categoryChange, .routeConfigurationChange
+        .newDeviceAvailable, .override, .routeConfigurationChange
     ]
 
     @Test(arguments: Policy.Port.allCases)
@@ -39,7 +39,7 @@ import Testing
         // 21:16Z: USB input disappears, then returns; AirPods are remembered from the previous route (#852).
         let blip = Policy.routeChange(.init(
             options: .init(defaultToSpeaker: true), outputs: [.speaker], inputs: [],
-            previousOutputs: [.bluetoothA2DP], reason: .override
+            previousOutputs: [.bluetoothA2DP], previousInputs: [.usbAudio], reason: .override
         ), state: .init())
         #expect(blip.state.externalOutputSeen)
         #expect(!blip.options.defaultToSpeaker)
@@ -63,8 +63,8 @@ import Testing
     func onlyPermittedReasonsRepairBuiltInFallback(_ reason: Policy.Reason, _ output: Policy.Port) {
         let decision = Policy.routeChange(.init(
             options: .init(defaultToSpeaker: true), outputs: [output], inputs: [.usbAudio],
-            previousOutputs: [.bluetoothA2DP], reason: reason
-        ), state: .init())
+            previousOutputs: [.bluetoothA2DP], previousInputs: [.builtInMic], reason: reason
+        ), state: .init(hardwareChangePending: true))
         #expect(decision.clearOverride == Self.recoveryReasons.contains(reason))
         if Self.recoveryReasons.contains(reason) { #expect(!decision.options.defaultToSpeaker) }
     }
@@ -72,7 +72,8 @@ import Testing
     @Test(arguments: Policy.Reason.allCases)
     func reapplyNotificationsCannotLoopEvenWhenTheRepairFails(_ reason: Policy.Reason) {
         let repaired = Policy.routeChange(.init(
-            outputs: [.speaker], inputs: [.usbAudio], previousOutputs: [.bluetoothA2DP], reason: .override
+            outputs: [.speaker], inputs: [.usbAudio], previousOutputs: [.bluetoothA2DP],
+            previousInputs: [.builtInMic], reason: .override
         ), state: .init())
         let ownNotification = Policy.routeChange(.init(
             options: repaired.options, outputs: [.speaker], inputs: [.usbAudio], reason: reason
