@@ -165,7 +165,7 @@ extension AmbientRightyoRouter {
             var change = change
             if let resume, let self {
                 change = await decide(resume, for: change, connection: connection, listener: listener)
-            }
+            } else if change.on, let self { change.recording = recorded(change, connection: connection) }
             hook?(change.hooked(connection))
             let renewed = change.renewed ? " renewed=true" : ""
             self?.emit("ambient_meeting", connection: connection,

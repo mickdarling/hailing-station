@@ -1738,12 +1738,14 @@ extension AmbientRightyoRouter {
         }
     }
 
-    /// Ends every other connection's meeting or media mode and the park, under the caller's lock (review round 2): a
-    /// privacy entry taken anywhere, or a private start, ends them daemon-wide, live holders included, with no clip.
+    /// Ends every other stale holder's meeting or media mode and the park, under the caller's lock (review round 2): a
+    /// privacy entry taken anywhere, or a private start, ends them daemon-wide, with no clip. A connection with a child
+    /// still listening is live, not stale, and keeps its mode and its gate (review round 3): ending it there would only
+    /// make a listener that is not private louder.
     func endEveryMode(reason: String, except connection: UUID, in state: inout State) {
-        Set(state.meeting.keys).union(state.media.keys).subtracting([connection]).forEach {
-            endHeld($0, reason: reason, in: &state)
-        }
+        Set(state.meeting.keys).union(state.media.keys).subtracting([connection])
+            .filter { Self.listening($0, in: state).isEmpty }
+            .forEach { endHeld($0, reason: reason, in: &state) }
         discardParked(meeting: true, media: true, reason: reason, in: &state)
     }
 
@@ -1768,6 +1770,15 @@ extension AmbientRightyoRouter {
                            detail: "on=false device=\(sent ?? "no_connection")")
             }
         }
+    }
+
+    /// The recording state an on-change reports to MM-C (review round 3): the meeting's stored value at hook time, so
+    /// a restore's decision made after a renewal or profile switch still reaches that switch's hook; its own value
+    /// once the meeting is gone. Until that decision lands the stored value is false: it errs toward not recording.
+    func recorded(_ change: AmbientMeetingChange, connection: UUID) -> Bool {
+        state.withLock { state in
+            state.meeting[connection].flatMap { $0.meetingID == change.meetingID ? $0.recording : nil }
+        } ?? change.recording
     }
 
     /// The meeting's guarded auto-end, `delay` from now: the full timeout, or what a restore has left (MM-E).

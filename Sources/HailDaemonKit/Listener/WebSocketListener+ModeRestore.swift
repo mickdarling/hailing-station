@@ -166,14 +166,15 @@ extension AmbientRightyoRouter {
 
     /// A restore's recording decision (MM-E) on the meeting chain, outside the lock: the new connection's claims must
     /// match its source's, and the meeting must have recorded there; once unrecorded, a meeting never records again.
-    /// Stored while that arming is current; logged as ids and booleans, never names.
+    /// Stored on that meeting while the connection holds it, across a renewal or profile switch made before this ran
+    /// (review round 3), so the hook and the state agree; logged as ids and booleans, never names.
     func decide(_ resume: MeetingResume, for change: AmbientMeetingChange, connection: UUID,
                 listener: WebSocketListener?) async -> AmbientMeetingChange {
         let here = await listener?.ambientPeerDevice(connection: connection)
         let match = AmbientPeerDevice.matches(here, await resume.source.device(of: resume.from, listener: listener))
         let recording = match && resume.recording
         state.withLock { state in
-            guard state.meeting[connection]?.token == resume.token else { return }
+            guard state.meeting[connection]?.meetingID == change.meetingID else { return }
             state.meeting[connection]?.recording = recording
         }
         emit("meeting_restored", connection: connection,
