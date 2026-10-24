@@ -106,7 +106,11 @@ extension AudioOutputRoutePolicyTests {
         ), state: state)
         #expect(decision.options == original)
         #expect(!decision.clearOverride)
-        #expect(decision.state == state)
+        // Hardware history stays live while keepalive effects remain disabled (#852).
+        #expect(decision.reason == .keepalive)
+        #expect(!decision.state.userChoseBuiltIn)
+        #expect(decision.state.lastInputs == [.usbAudio])
+        #expect(decision.state.lastOutputs == [output])
     }
 
     @Test(arguments: Policy.Reason.allCases)
@@ -169,7 +173,10 @@ extension AudioOutputRoutePolicyTests {
             ), state: state)
             #expect(decision.options == original)
             #expect(!decision.clearOverride)
-            #expect(decision.state == state)
+            #expect(decision.reason == .unsupportedCategory)
+            #expect(!decision.state.userChoseBuiltIn)
+            #expect(decision.state.lastInputs == [])
+            #expect(decision.state.lastOutputs == [output])
         }
     }
 

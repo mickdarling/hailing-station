@@ -73,14 +73,18 @@ struct AudioOutputRoutePolicy: Sendable {
         var result = Decision(options: route.options, state: state)
         let externalOutput = route.outputs.contains(where: \.isExternalOutput)
         if externalOutput { result.state.userChoseBuiltIn = false }
-        // The background keepalive owns playback/mixWithOthers; never reconfigure it (#282, #352, #852).
-        guard route.category == .playAndRecord else {
-            result.reason = route.category == .playback ? .keepalive : .unsupportedCategory
-            return result
-        }
+        // Track hardware episodes across keepalive so stale caches cannot invent a return on capture resume (#852).
         let episode = updateEpisode(route, state: &result.state)
         result.state.externalOutputSeen = externalOutput || result.state.externalOutputSeen
             || route.previousOutputs.contains(where: \.isExternalOutput)
+        // The background keepalive owns playback/mixWithOthers; never reconfigure it (#282, #352, #852).
+        guard route.category == .playAndRecord else {
+            if !externalOutput, route.reason == .oldDeviceUnavailable, !lostUSBInput(route) {
+                result.state.externalOutputSeen = false
+            }
+            result.reason = route.category == .playback ? .keepalive : .unsupportedCategory
+            return result
+        }
         // Category/configuration notifications can cache evidence, but never cause effects or latch a choice.
         guard route.reason != .categoryChange, route.reason != .routeConfigurationChange else { return result }
         if externalOutput {
