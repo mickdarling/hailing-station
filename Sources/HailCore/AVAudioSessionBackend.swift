@@ -69,7 +69,8 @@ public final class AVAudioSessionBackend: AudioSessionBackend {
             object: session,
             queue: .main
         ) { [weak self, continuation] notification in
-            MainActor.assumeIsolated { self?.repairOutputRoute(notification) }
+            let snapshot = AudioOutputSessionRouting.snapshot(notification)
+            MainActor.assumeIsolated { self?.repairOutputRoute(snapshot) }
             continuation.yield(.routeChanged)
         })
         observers.add(center.addObserver(
@@ -81,16 +82,15 @@ public final class AVAudioSessionBackend: AudioSessionBackend {
         })
     }
 
-    private func repairOutputRoute(_ notification: Notification) {
+    private func repairOutputRoute(_ snapshot: AudioOutputSessionRouting.Snapshot) {
         guard !isRepairingOutputRoute else { return }
-        let route = AudioOutputSessionRouting.route(session, notification: notification)
-        let decision = AudioOutputRoutePolicy.routeChange(route, state: outputRouteState)
-        outputRouteState = decision.state
-        // No public initiator signal distinguishes a Control Center choice from a system override (#852).
-        // Attempt once per fallback, only on the policy's four reasons; never repeatedly force the speaker off.
+        let route = AudioOutputSessionRouting.route(session, snapshot: snapshot)
         isRepairingOutputRoute = true
         defer { isRepairingOutputRoute = false }
-        try? AudioOutputSessionRouting.apply(decision, to: session)
+        let session = session
+        AudioOutputRouteDriver.process(route, state: &outputRouteState) { effect in
+            try AudioOutputSessionRouting.apply(effect, to: session)
+        }
     }
 
     nonisolated private static func interruptionEvent(_ notification: Notification) -> AudioSessionBackendEvent {

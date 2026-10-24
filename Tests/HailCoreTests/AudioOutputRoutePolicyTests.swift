@@ -49,7 +49,7 @@ import Testing
         ), state: blip.state)
         #expect(returned.clearOverride)
         #expect(!returned.options.defaultToSpeaker)
-        #expect(returned.state.restoreAttempted)
+        #expect(returned.state.attemptedInEpisode)
         for reason in Self.recoveryReasons {
             let repeated = Policy.routeChange(.init(
                 options: returned.options, outputs: [.speaker], inputs: [.usbAudio], reason: reason
@@ -60,7 +60,7 @@ import Testing
     }
 
     @Test(arguments: Policy.Reason.allCases, [Policy.Port.speaker, .receiver])
-    func onlyWhitelistedReasonsRepairBuiltInFallback(_ reason: Policy.Reason, _ output: Policy.Port) {
+    func onlyPermittedReasonsRepairBuiltInFallback(_ reason: Policy.Reason, _ output: Policy.Port) {
         let decision = Policy.routeChange(.init(
             options: .init(defaultToSpeaker: true), outputs: [output], inputs: [.usbAudio],
             previousOutputs: [.bluetoothA2DP], reason: reason
@@ -86,10 +86,12 @@ import Testing
     ) {
         let decision = Policy.routeChange(.init(
             options: .init(defaultToSpeaker: true), outputs: [output], inputs: [.usbAudio], reason: reason
-        ), state: .init(externalOutputSeen: true, restoreAttempted: true))
+        ), state: .init(externalOutputSeen: true, restoreAttempted: true,
+                       lastInputs: [.usbAudio], lastOutputs: [output]))
         #expect(!decision.options.defaultToSpeaker)
         #expect(!decision.clearOverride)
-        #expect(decision.state == .init(externalOutputSeen: true))
+        #expect(decision.state.externalOutputSeen)
+        #expect(decision.state.restoreAttempted)
     }
 }
 
@@ -116,12 +118,12 @@ extension AudioOutputRoutePolicyTests {
         #expect(decision.options.defaultToSpeaker)
     }
 
-    @Test func removalForgetsExternalOutputAndSuccessfulRecoveryArmsTheNextIncident() {
+    @Test func removalForgetsExternalOutputAndExternalObservationDoesNotRearm() {
         let remembered = Policy.State(externalOutputSeen: true, restoreAttempted: true)
         let removed = Policy.routeChange(.init(
             outputs: [.speaker], inputs: [.builtInMic], previousOutputs: [.headphones], reason: .oldDeviceUnavailable
         ), state: remembered)
-        #expect(removed.state == .init())
+        #expect(!removed.state.externalOutputSeen)
         #expect(removed.options.defaultToSpeaker)
         let later = Policy.routeChange(.init(
             outputs: [.speaker], inputs: [.builtInMic], reason: .categoryChange
@@ -133,7 +135,7 @@ extension AudioOutputRoutePolicyTests {
         let nextFallback = Policy.routeChange(.init(
             outputs: [.receiver], inputs: [.usbAudio], reason: .routeConfigurationChange
         ), state: restored.state)
-        #expect(nextFallback.clearOverride)
+        #expect(!nextFallback.clearOverride)
     }
 
     @Test func usbMicUnplugDoesNotForgetTheSeparateAirPodsOutput() {

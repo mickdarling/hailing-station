@@ -38,7 +38,12 @@ struct AudioOutputRoutePolicy: Sendable {
 
     struct State: Equatable, Sendable {
         var externalOutputSeen = false
+        // Success and the per-episode attempt guard are separate so a throwing effect cannot claim success (#852).
         var restoreAttempted = false
+        var attemptedInEpisode = false
+        var inputLossPending = false
+        var lastInputs: [Port]?
+        var lastOutputs: [Port]?
     }
 
     struct Decision: Sendable {
@@ -59,30 +64,87 @@ struct AudioOutputRoutePolicy: Sendable {
         var result = Decision(options: route.options, state: state)
         // The background keepalive owns playback/mixWithOthers; never reconfigure it (#282, #352, #852).
         guard route.category == .playAndRecord else { return result }
-        let external = route.outputs.contains(where: \.isExternalOutput)
+        updateEpisode(route, state: &result.state)
         let lostUSBInput = route.previousInputs.contains(.usbAudio) && !route.inputs.contains(.usbAudio)
-            && route.previousOutputs.contains { $0.isExternalOutput && $0 != .usbAudio }
-        if external {
-            result.state = State(externalOutputSeen: true)
+            && !route.previousOutputs.contains(.usbAudio)
+        if route.outputs.contains(where: \.isExternalOutput) {
+            result.state.externalOutputSeen = true
             result.options.defaultToSpeaker = false
             return result
         } else if route.reason == .oldDeviceUnavailable, !lostUSBInput {
-            // Forget disconnected outputs, but retain a separate output across a USB mic unplug (#852).
-            result.state = State()
+            // A USB-input-only loss retains even evidence remembered before the speaker fallback (#852).
+            result.state.externalOutputSeen = false
             result.options = configurationOptions(outputs: route.outputs, options: route.options)
             return result
         }
-        result.state.externalOutputSeen = state.externalOutputSeen
+        result.state.externalOutputSeen = result.state.externalOutputSeen
             || route.previousOutputs.contains(where: \.isExternalOutput)
-        guard route.reason.permitsRecovery, result.state.externalOutputSeen else { return result }
+        guard route.reason.permitsRecovery, result.state.externalOutputSeen,
+              !result.state.attemptedInEpisode, !result.state.restoreAttempted else { return result }
         result.options.defaultToSpeaker = false
-        // Wait out an input-less blip; the returning USB input's notification completes the repair (#852).
         guard !route.inputs.isEmpty, !route.outputs.isEmpty,
-              route.outputs.allSatisfy(\.isBuiltInOutput), !state.restoreAttempted else { return result }
+              route.outputs.allSatisfy(\.isBuiltInOutput) else { return result }
         result.clearOverride = true
-        // Latch *before* applying. It covers synchronous re-entry, queued category/override notifications,
-        // and repeated availability events until external output actually returns (#852).
-        result.state.restoreAttempted = true
+        result.state.attemptedInEpisode = true
         return result
+    }
+
+    private static func updateEpisode(_ route: Route, state: inout State) {
+        let previousInputs = state.lastInputs ?? route.previousInputs
+        let inputChanged = previousInputs != route.inputs
+        if inputChanged, previousInputs.contains(where: { !route.inputs.contains($0) }) {
+            state.inputLossPending = true
+        }
+        let newDevice = route.reason == .newDeviceAvailable
+            && (inputChanged || route.outputs != (state.lastOutputs ?? route.previousOutputs)
+                || (state.inputLossPending && !route.inputs.isEmpty))
+        let inputReturned = state.inputLossPending && inputChanged && !route.inputs.isEmpty
+            && ![Reason.override, .categoryChange, .oldDeviceUnavailable].contains(route.reason)
+        if newDevice || inputReturned {
+            state.restoreAttempted = false
+            state.attemptedInEpisode = false
+            state.inputLossPending = false
+        }
+        // No initiator distinguishes Control Center from a system override (#852). The first choice after
+        // a genuine hardware/input episode may be undone once. External output alone must not re-arm it;
+        // an override with unchanged inputs after repair is the user's choice, including after external return.
+        state.lastInputs = route.inputs
+        state.lastOutputs = route.outputs
+    }
+}
+
+/// Shared decision → effects → result loop used by the iOS backend and macOS scripted tests (#852).
+enum AudioOutputRouteDriver {
+    enum Effect: Equatable, Sendable {
+        case setCategory(AudioOutputRoutePolicy.Options)
+        case clearOverride
+    }
+
+    @discardableResult
+    static func process(
+        _ route: AudioOutputRoutePolicy.Route, state: inout AudioOutputRoutePolicy.State,
+        perform: (Effect) throws -> Void
+    ) -> Bool {
+        let decision = AudioOutputRoutePolicy.routeChange(route, state: state)
+        state = decision.state
+        do {
+            try apply(decision, currentOptions: route.options, perform: perform)
+            if decision.clearOverride { state.restoreAttempted = true }
+            return true
+        } catch {
+            // Failed effects never latch success; the episode guard still absorbs their queued echoes (#852).
+            if decision.clearOverride { state.restoreAttempted = false }
+            return false
+        }
+    }
+
+    private static func apply(
+        _ decision: AudioOutputRoutePolicy.Decision, currentOptions: AudioOutputRoutePolicy.Options,
+        perform: (Effect) throws -> Void
+    ) throws {
+        if decision.options != currentOptions || decision.clearOverride {
+            try perform(.setCategory(decision.options))
+        }
+        if decision.clearOverride { try perform(.clearOverride) }
     }
 }

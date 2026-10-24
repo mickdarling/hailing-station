@@ -5,12 +5,20 @@ import Foundation
 /// AVFoundation translation and effects only; the shared pure policy owns the decisions (#852).
 @MainActor
 enum AudioOutputSessionRouting {
-    private static let ports: [AVAudioSession.Port: AudioOutputRoutePolicy.Port] = [
-        .builtInSpeaker: .speaker, .builtInReceiver: .receiver, .builtInMic: .builtInMic,
-        .bluetoothA2DP: .bluetoothA2DP, .bluetoothLE: .bluetoothLE, .bluetoothHFP: .bluetoothHFP,
-        .headphones: .headphones, .usbAudio: .usbAudio, .lineOut: .lineOut,
-        .airPlay: .airPlay, .carAudio: .carAudio
-    ]
+    struct Snapshot: Sendable {
+        let reasonRaw: UInt
+        let previousInputs: [AudioOutputRoutePolicy.Port]
+        let previousOutputs: [AudioOutputRoutePolicy.Port]
+    }
+
+    nonisolated static func snapshot(_ notification: Notification) -> Snapshot {
+        let previous = notification.userInfo?[AVAudioSessionRouteChangePreviousRouteKey]
+            as? AVAudioSessionRouteDescription
+        return Snapshot(
+            reasonRaw: notification.userInfo?[AVAudioSessionRouteChangeReasonKey] as? UInt ?? 0,
+            previousInputs: portTypes(previous?.inputs ?? []), previousOutputs: portTypes(previous?.outputs ?? [])
+        )
+    }
 
     static func configure(_ session: AVAudioSession, allowsBluetoothHFP: Bool) throws {
         var options: AVAudioSession.CategoryOptions = [.allowBluetoothA2DP]
@@ -21,33 +29,39 @@ enum AudioOutputSessionRouting {
         try session.setCategory(.playAndRecord, mode: .default, options: applying(desired, to: options))
     }
 
-    static func route(_ session: AVAudioSession, notification: Notification) -> AudioOutputRoutePolicy.Route {
-        let previous = notification.userInfo?[AVAudioSessionRouteChangePreviousRouteKey]
-            as? AVAudioSessionRouteDescription
-        let raw = notification.userInfo?[AVAudioSessionRouteChangeReasonKey] as? UInt ?? 0
+    static func route(_ session: AVAudioSession, snapshot: Snapshot) -> AudioOutputRoutePolicy.Route {
         let current = session.currentRoute
         let category: AudioOutputRoutePolicy.Category = session.category == .playAndRecord ? .playAndRecord
             : (session.category == .playback ? .playback : .other)
         return AudioOutputRoutePolicy.Route(
             category: category, options: policyOptions(session.categoryOptions),
             outputs: portTypes(current.outputs), inputs: portTypes(current.inputs),
-            previousOutputs: portTypes(previous?.outputs ?? []),
-            previousInputs: portTypes(previous?.inputs ?? []), reason: reason(raw)
+            previousOutputs: snapshot.previousOutputs,
+            previousInputs: snapshot.previousInputs, reason: reason(snapshot.reasonRaw)
         )
     }
 
-    static func apply(_ decision: AudioOutputRoutePolicy.Decision, to session: AVAudioSession) throws {
-        let options = applying(decision.options, to: session.categoryOptions)
-        // Clearing a speaker override lets iOS choose its normal external route; it cannot select an arbitrary
-        // output port. Reapply without defaultToSpeaker even if the category already matches (#852).
-        if options != session.categoryOptions || decision.clearOverride {
-            try session.setCategory(session.category, mode: session.mode, options: options)
+    static func apply(_ effect: AudioOutputRouteDriver.Effect, to session: AVAudioSession) throws {
+        switch effect {
+        case .setCategory(let desired):
+            try session.setCategory(
+                session.category, mode: session.mode, options: applying(desired, to: session.categoryOptions)
+            )
+        case .clearOverride:
+            try session.overrideOutputAudioPort(.none)
         }
-        if decision.clearOverride { try session.overrideOutputAudioPort(.none) }
     }
 
-    private static func portTypes(_ descriptions: [AVAudioSessionPortDescription]) -> [AudioOutputRoutePolicy.Port] {
-        descriptions.map { ports[$0.portType] ?? .other }
+    nonisolated private static func portTypes(
+        _ descriptions: [AVAudioSessionPortDescription]
+    ) -> [AudioOutputRoutePolicy.Port] {
+        let ports: [AVAudioSession.Port: AudioOutputRoutePolicy.Port] = [
+            .builtInSpeaker: .speaker, .builtInReceiver: .receiver, .builtInMic: .builtInMic,
+            .bluetoothA2DP: .bluetoothA2DP, .bluetoothLE: .bluetoothLE, .bluetoothHFP: .bluetoothHFP,
+            .headphones: .headphones, .usbAudio: .usbAudio, .lineOut: .lineOut,
+            .airPlay: .airPlay, .carAudio: .carAudio
+        ]
+        return descriptions.map { ports[$0.portType] ?? .other }
     }
 
     private static func policyOptions(_ options: AVAudioSession.CategoryOptions) -> AudioOutputRoutePolicy.Options {
