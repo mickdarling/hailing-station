@@ -18,7 +18,9 @@ import Testing
         rig.advance(by: .seconds(1))
         #expect(rig.abandoned == 1)
         #expect(rig.status(of: reply) == ReplyPlaybackController.abandonedStatus)
-        try await waitUntil { await MainActor.run { rig.player.scheduled.count == 1 } }
+        // Buffering also covers scheduling before the await; no wall-clock deadline or executor-yield budget.
+        _ = await rig.player.scheduledBuffers.stream.first { @Sendable _ in true }
+        #expect(rig.player.scheduled.count == 1)
         #expect(renderer.rendered == [.replyAudioLost])
         rig.player.completeReply()
         rig.advance(by: .seconds(40)) // t=60: the other device's turn ends; only now does B's audio reach us.

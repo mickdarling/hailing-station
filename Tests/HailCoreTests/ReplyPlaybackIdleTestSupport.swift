@@ -48,12 +48,14 @@ final class IdleRig {
 
 final class IdlePlayer: ReplyAudioPlaying {
     var scheduled: [AudioPayload] = []
+    let scheduledBuffers = AsyncStream<AudioPayload>.makeStream(bufferingPolicy: .bufferingNewest(1))
     var cancelCount = 0
     private var completions: [@MainActor @Sendable () -> Void] = []
 
     func schedule(_ payload: AudioPayload, onPlayed: (@MainActor @Sendable () -> Void)?) {
         scheduled.append(payload)
         if let onPlayed { completions.append(onPlayed) }
+        scheduledBuffers.continuation.yield(payload)
     }
     func cancel() { cancelCount += 1 }
     func pause() {}
