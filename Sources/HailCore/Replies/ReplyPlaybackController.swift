@@ -10,15 +10,25 @@ public protocol ReplyAudioPlaying: AnyObject {
     func setMuted(_ muted: Bool)
     func replaceQueue(with payloads: [AudioPayload], onPlayed: (@MainActor @Sendable () -> Void)?) throws
 }
-
 public struct ReplyPresentation: Identifiable, Equatable, Sendable {
+    #if DEBUG
+    private var identity: String
+    public var id: String {
+        get { ReplyTraversal.onVisit?(); return identity }
+        set { identity = newValue }
+    }
+    init(id: String, endpointID: HostEndpoint.Identifier, host: String, target: String, transcript: String? = nil) {
+        identity = id; self.endpointID = endpointID
+        self.host = host; self.target = target; self.transcript = transcript
+    }
+    #else
     public var id: String
+    #endif
     public var endpointID: HostEndpoint.Identifier
     public var host: String
     public var target: String
     public var transcript: String?
 }
-
 /// Terminal-owned FIFO arbitration for identified reply streams. Frames may arrive out of order;
 /// only a contiguous sequence is scheduled, and the next reply cannot enter the player until the
 /// current reply's explicit final segment has actually played.
@@ -177,7 +187,6 @@ struct ReplyIdleWatch {
     var heldRemaining: Duration?
     var cancel: (@MainActor () -> Void)?
 }
-
 extension ReplyPlaybackController {
     static func sleepThenFire(
         _ delay: Duration, _ fire: @escaping @MainActor () -> Void
@@ -187,14 +196,5 @@ extension ReplyPlaybackController {
             fire()
         }
         return { task.cancel() }
-    }
-    static func seconds(of segment: AudioPayload) -> Double {
-        Double(segment.bytes.count) / Double(2 * max(1, segment.sampleRate) * max(1, segment.channels))
-    }
-    func idleDeadline(_ watch: ReplyIdleWatch) -> ContinuousClock.Instant {
-        max(watch.bufferedUntil, watch.aheadUntil, watch.lastFrameAt).advanced(by: Self.streamIdleTimeout)
-    }
-    func firstAudioDeadline(_ watch: ReplyIdleWatch) -> ContinuousClock.Instant {
-        min(idleDeadline(watch), watch.bufferedUntil.advanced(by: Self.firstAudioMaxWait))
     }
 }

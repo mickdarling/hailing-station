@@ -6,7 +6,7 @@ import Testing
 /// #825 / #851: another device holds haild's shared audio turn; this device receives no host audio meanwhile.
 /// Injected time, synthetic PCM and a fake player only; no physical cross-device playback proof.
 @MainActor
-@Suite struct FirstAudioRecoveryTests {
+@Suite(.timeLimit(.minutes(1))) struct FirstAudioRecoveryTests {
     @Test func crossDeviceQueuePlaysLateAudioWithoutAnotherNotice() async throws {
         let rig = IdleRig(), reply = idleReply()
         let renderer = CountingRenderer(), fallback = FirstAudioFallbacks()
@@ -18,8 +18,9 @@ import Testing
         rig.advance(by: .seconds(1))
         #expect(rig.abandoned == 1)
         #expect(rig.status(of: reply) == ReplyPlaybackController.abandonedStatus)
-        // Buffering also covers scheduling before the await; no wall-clock deadline or executor-yield budget.
-        _ = await rig.player.scheduledBuffers.stream.first { @Sendable _ in true }
+        // Buffering covers an early event; the deadline cancels the stream wait if scheduling regresses.
+        try #require(await scheduledBeforeDeadline(rig.player.scheduledBuffers.stream),
+                     "Announcer did not schedule the loss cue within 10 seconds")
         #expect(rig.player.scheduled.count == 1)
         #expect(renderer.rendered == [.replyAudioLost])
         rig.player.completeReply()
@@ -106,5 +107,17 @@ import Testing
         #expect(rig.abandoned == 2, "a subsequent mid-stream stall is a separate real loss")
         #expect(rig.controller.undeliveredLosses.count == 1)
         #expect(rig.status(of: reply) == ReplyPlaybackController.abandonedStatus)
+    }
+}
+
+private func scheduledBeforeDeadline(_ buffers: AsyncStream<AudioPayload>) async -> Bool {
+    await withTaskGroup(of: Bool.self) { group in
+        group.addTask { await buffers.first { @Sendable _ in true } != nil }
+        group.addTask {
+            try? await Task.sleep(for: .seconds(10))
+            return false
+        }
+        defer { group.cancelAll() } // AsyncStream.next and Task.sleep both respond to cancellation.
+        return await group.next() ?? false
     }
 }

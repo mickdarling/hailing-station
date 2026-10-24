@@ -7,7 +7,6 @@ import os
 public protocol AnnouncementRendering {
     func audio(for announcement: Announcement) async throws -> [AudioPayload]
 }
-
 /// Speaks short announcements the app makes itself, through the reply queue (#825 S4b, #822). One plays after any reply
 /// already queued, never interrupting or reordering it, and pause and listening's suppression hold it like a reply.
 /// When replies are muted, or no audio can be made, it is never silently lost: `fallback` shows and signals it instead,
@@ -69,9 +68,7 @@ public final class Announcer {
         fallback(announcement, reason)
     }
 }
-
-/// A bundled clip named `announce-<key>` (mono, its words exactly the key's text, #820), or else the system voice
-/// rendered to buffers with `AVSpeechSynthesizer.write`, never `speak`, so nothing is heard outside the reply player.
+/// A mono `announce-<key>` clip (exact text, #820), or `AVSpeechSynthesizer.write` buffers for the reply player.
 @MainActor
 public final class LocalAnnouncementRenderer: AnnouncementRendering {
     private var synthesizer: AVSpeechSynthesizer
@@ -150,7 +147,6 @@ public final class LocalAnnouncementRenderer: AnnouncementRendering {
         return (0..<count).map { Int16(max(-1, min(1, floats[$0])) * Float(Int16.max)) }
     }
 }
-
 private final class SpokenSamples: @unchecked Sendable {
     private let lock = NSLock()
     private var samples: [Int16] = []
@@ -172,7 +168,6 @@ private final class SpokenSamples: @unchecked Sendable {
         }
     }
 }
-
 extension ReplyPlaybackController {
     /// Observation releases retention; the next ordinary history trim may remove this presentation and status.
     func acknowledgeAudioLoss(_ id: String) {
@@ -181,7 +176,6 @@ extension ReplyPlaybackController {
         undeliveredLosses.remove(ReplyStreamKey(endpointID: String(id[..<separator]), replyID: replyID))
     }
 }
-
 extension ReplyPlaybackController {
     var presentationKeysToRetain: Set<ReplyStreamKey> {
         var keys = Set(queue).union(firstAudio.keys).union(cancelledFirstAudio).union(undeliveredLosses)
@@ -189,6 +183,12 @@ extension ReplyPlaybackController {
         if let activeKey { keys.insert(activeKey) }
         if let lastKey { keys.insert(lastKey) }
         return keys
+    }
+    func idleDeadline(_ watch: ReplyIdleWatch) -> ContinuousClock.Instant {
+        max(watch.bufferedUntil, watch.aheadUntil, watch.lastFrameAt).advanced(by: Self.streamIdleTimeout)
+    }
+    func firstAudioDeadline(_ watch: ReplyIdleWatch) -> ContinuousClock.Instant {
+        min(idleDeadline(watch), watch.bufferedUntil.advanced(by: Self.firstAudioMaxWait))
     }
     func armFirstAudio(for key: ReplyStreamKey) {
         guard let watch = firstAudio[key] else { return }

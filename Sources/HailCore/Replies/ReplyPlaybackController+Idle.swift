@@ -1,6 +1,9 @@
 import Foundation
 import HailProtocol
 extension ReplyPlaybackController {
+    static func seconds(of segment: AudioPayload) -> Double {
+        Double(segment.bytes.count) / Double(2 * max(1, segment.sampleRate) * max(1, segment.channels))
+    }
     /// A stream whose terminal marker never comes (haild crashed, the Mac slept, its request expired mid-reply) would
     /// hold the head of the queue until Stop (#469). Once its scheduled audio has played out and this long passes
     /// with no new frame of its own, it is ended and the queue moves on. A live paced reply stays up to 20 s ahead of
@@ -71,7 +74,6 @@ extension ReplyPlaybackController {
         syncIdleHold()
     }
 }
-
 extension ReplyPlaybackController {
     /// Drains after `key`'s frame arrived; if it is the head's, the head is alive and its timeout starts again.
     func drain(noting key: ReplyStreamKey) {
@@ -142,7 +144,6 @@ extension ReplyPlaybackController {
         }
     }
 }
-
 /// #825: ordered membership with constant-time lookup, removal and oldest-first eviction.
 /// Links avoid array shifting and tombstone sweeps on the main actor.
 struct ReplyClaimWindow: Sequence {
@@ -154,6 +155,9 @@ struct ReplyClaimWindow: Sequence {
         var key: ReplyStreamKey?
         let nodes: [ReplyStreamKey: Node]
         mutating func next() -> ReplyStreamKey? {
+            #if DEBUG
+            if key != nil { ReplyTraversal.onVisit?() }
+            #endif
             defer { key = key.flatMap { nodes[$0]?.next } }
             return key
         }
@@ -161,19 +165,10 @@ struct ReplyClaimWindow: Sequence {
     private var nodes: [ReplyStreamKey: Node] = [:]
     private var head: ReplyStreamKey?
     private var tail: ReplyStreamKey?
-    #if DEBUG
-    private(set) var membershipLookups = 0 // deterministic complexity evidence, never a timing assertion
-    #endif
     var count: Int { nodes.count }
     var isEmpty: Bool { nodes.isEmpty }
     func makeIterator() -> Iterator { Iterator(key: head, nodes: nodes) }
-    mutating func contains(_ key: ReplyStreamKey) -> Bool { lookup(key) != nil }
-    private mutating func lookup(_ key: ReplyStreamKey) -> Node? {
-        #if DEBUG
-        membershipLookups += 1
-        #endif
-        return nodes[key]
-    }
+    func contains(_ key: ReplyStreamKey) -> Bool { nodes[key] != nil }
     mutating func append(_ key: ReplyStreamKey) {
         guard !contains(key) else { return }
         nodes[key] = Node(previous: tail)
@@ -181,7 +176,7 @@ struct ReplyClaimWindow: Sequence {
         tail = key
     }
     mutating func remove(_ key: ReplyStreamKey) {
-        guard let node = lookup(key) else { return }
+        guard let node = nodes[key] else { return }
         if let previous = node.previous { nodes[previous]?.next = node.next } else { head = node.next }
         if let next = node.next { nodes[next]?.previous = node.previous } else { tail = node.previous }
         nodes[key] = nil
@@ -194,7 +189,12 @@ struct ReplyClaimWindow: Sequence {
     mutating func subtract(_ keys: Set<ReplyStreamKey>) { for key in keys { remove(key) } }
     mutating func formUnion(_ keys: Set<ReplyStreamKey>) { for key in keys { append(key) } }
 }
-
+#if DEBUG
+/// Scoped DEBUG-only element-visit instrumentation; absent from release builds.
+enum ReplyTraversal {
+    @TaskLocal static var onVisit: (@Sendable () -> Void)?
+}
+#endif
 extension ReplyStreamKey {
     var presentationID: String { "\(endpointID)|\(replyID.uuidString.lowercased())" }
 }
