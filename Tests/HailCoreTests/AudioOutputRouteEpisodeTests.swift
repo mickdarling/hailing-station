@@ -31,16 +31,17 @@ import Testing
         #expect(returned.clearOverride)
     }
 
-    @Test func inputChangeWithoutPriorLossWaitsForAGenuineEpisode() {
+    @Test func builtInOverrideWithChangedInputIsAChoice() {
         let decision = Policy.routeChange(.init(
             outputs: [.speaker], inputs: [.usbAudio], previousOutputs: [.bluetoothA2DP],
             previousInputs: [.builtInMic], reason: .override
         ), state: .init())
         #expect(!decision.clearOverride)
-        #expect(!decision.state.userChoseBuiltIn)
+        #expect(decision.state.userChoseBuiltIn)
+        #expect(decision.reason == .userChoiceAssumed)
     }
 
-    @Test func completedInputLossCanRepairOnAnInputReturnOverride() {
+    @Test func builtInOverrideOnInputReturnIsAChoice() {
         let lost = Policy.routeChange(.init(
             outputs: [], inputs: [], previousOutputs: [.bluetoothA2DP],
             previousInputs: [.usbAudio], reason: .override
@@ -48,12 +49,14 @@ import Testing
         let returned = Policy.routeChange(.init(
             outputs: [.speaker], inputs: [.usbAudio], reason: .override
         ), state: lost.state)
-        // Without notification history the cause is ambiguous: leave the route alone.
+        // A non-empty-input built-in override is a choice, including after an input loss (#852).
         #expect(!returned.clearOverride)
+        #expect(returned.state.userChoseBuiltIn)
         let knownReturn = Policy.routeChange(.init(
             outputs: [.speaker], inputs: [.usbAudio], previousOutputs: [.speaker], reason: .override
         ), state: lost.state)
-        #expect(knownReturn.clearOverride)
+        #expect(!knownReturn.clearOverride)
+        #expect(knownReturn.state.userChoseBuiltIn)
     }
 
     @Test func duplicateHardwareNotificationCannotRepairTwiceWithoutAnyEcho() {

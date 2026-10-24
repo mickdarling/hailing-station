@@ -43,6 +43,15 @@ struct AudioOutputRoutePolicy: Sendable {
         var inputLossPending = false
         var lastInputs: [Port]?
         var lastOutputs: [Port]?
+        var lastAvailability: HardwareRoute?
+    }
+
+    /// Notification identity excludes options, which our own repair changes (#852).
+    struct HardwareRoute: Equatable, Sendable {
+        var inputs: [Port]
+        var outputs: [Port]
+        var previousInputs: [Port]
+        var previousOutputs: [Port]
     }
 
     struct Decision: Sendable {
@@ -84,7 +93,10 @@ struct AudioOutputRoutePolicy: Sendable {
 
     private static func builtInDecision(_ route: Route, episode: Bool, result: Decision) -> Decision {
         var result = result
-        if preservesRouteChoice(route) { result.state.userChoseBuiltIn = true }
+        if preservesRouteChoice(route) {
+            result.state.userChoseBuiltIn = true
+            result.state.inputLossPending = false
+        }
         if result.state.userChoseBuiltIn {
             result.reason = .userChoiceAssumed
             return result
@@ -104,9 +116,9 @@ struct AudioOutputRoutePolicy: Sendable {
 
     private static func preservesRouteChoice(_ route: Route) -> Bool {
         // Even our own failed repair echo is indistinguishable from a user choice: leave it alone (#852).
-        let hasPreviousRoute = !route.previousInputs.isEmpty || !route.previousOutputs.isEmpty
-        return route.reason == .override && !route.outputs.isEmpty && route.outputs.allSatisfy(\.isBuiltInOutput)
-            && (!hasPreviousRoute || route.previousInputs == route.inputs)
+        // Changed non-empty inputs are still a choice; only empty-input overrides are loss blips (#852).
+        route.reason == .override && !route.outputs.isEmpty && route.outputs.allSatisfy(\.isBuiltInOutput)
+            && !route.inputs.isEmpty
     }
 
     private static func lostUSBInput(_ route: Route) -> Bool {
@@ -115,37 +127,46 @@ struct AudioOutputRoutePolicy: Sendable {
             && !route.previousOutputs.contains(.usbAudio)
     }
 
-    private static func previousInputs(_ route: Route, state: State) -> [Port] {
-        // Notification history wins over cache, especially for a choice after an input-loss blip (#852).
+    private static func previousRoute(_ route: Route, state: State) -> HardwareRoute {
+        // Notification history wins over cache even when the current route was already observed (#852).
         let hasPreviousRoute = !route.previousInputs.isEmpty || !route.previousOutputs.isEmpty
-        return hasPreviousRoute ? route.previousInputs : (state.lastInputs ?? [])
+        return HardwareRoute(
+            inputs: route.inputs, outputs: route.outputs,
+            previousInputs: hasPreviousRoute ? route.previousInputs : (state.lastInputs ?? []),
+            previousOutputs: hasPreviousRoute ? route.previousOutputs : (state.lastOutputs ?? [])
+        )
     }
+}
 
+extension AudioOutputRoutePolicy {
     private static func updateEpisode(_ route: Route, state: inout State) -> Bool {
         defer {
             state.lastInputs = route.inputs
             state.lastOutputs = route.outputs
         }
         guard route.reason != .categoryChange, route.reason != .routeConfigurationChange else { return false }
-        let previous = previousInputs(route, state: state)
-        let inputReturned = state.inputLossPending && previous != route.inputs && !route.inputs.isEmpty
+        let previous = previousRoute(route, state: state)
+        let identity = HardwareRoute(inputs: route.inputs, outputs: route.outputs,
+                                     previousInputs: route.previousInputs, previousOutputs: route.previousOutputs)
+        let inputReturned = state.inputLossPending && previous.previousInputs != route.inputs && !route.inputs.isEmpty
             && route.reason != .oldDeviceUnavailable
         let newDevice = route.reason == .newDeviceAvailable
-            && (route.inputs != (state.lastInputs ?? route.previousInputs)
-                || route.outputs != (state.lastOutputs ?? route.previousOutputs)
+            && (route.inputs != previous.previousInputs || route.outputs != previous.previousOutputs
                 || (state.inputLossPending && !route.inputs.isEmpty))
-        let episode = newDevice || inputReturned
+        let episode = (newDevice && state.lastAvailability != identity) || inputReturned
         if episode {
             state.inputLossPending = false
-        } else if route.inputs != (state.lastInputs ?? previous),
-                  previous.contains(where: { !route.inputs.contains($0) }) {
+            state.lastAvailability = identity
+        } else if route.reason != .newDeviceAvailable,
+                  previous.previousInputs.contains(where: { !route.inputs.contains($0) }) {
             state.inputLossPending = true
+            state.lastAvailability = nil
         }
+        // A removal starts a later episode even if availability reports the same route tuple (#852).
+        if route.reason == .oldDeviceUnavailable { state.lastAvailability = nil }
         return episode
     }
-}
 
-extension AudioOutputRoutePolicy {
     private static func recoveryReason(_ route: Route, episode: Bool, state: State) -> DecisionReason {
         guard episode else { return .noHardwareEpisode }
         guard state.externalOutputSeen else { return .noExternalEvidence }
