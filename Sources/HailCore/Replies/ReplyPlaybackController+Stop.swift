@@ -135,14 +135,11 @@ extension ReplyPlaybackController {
 
     private func retainCancelledFirstAudio(_ keys: Set<ReplyStreamKey>) {
         cancelledFirstAudio.formUnion(keys)
-        // Bound the mute-only pending window like frame history. Retire overflow rather than forget its identity:
-        // repeated text cannot revive its loss claim, and late audio cannot restart a retired reply.
+        // Retire mute-only overflow: repeated text cannot revive its claim, nor late audio restart it (#825).
         let excess = max(0, cancelledFirstAudio.count - Self.seenFrameLimit)
         let retired = Set(cancelledFirstAudio.prefix(excess))
-        for key in retired {
-            completed.insert(key)
-            setPresentationStatus("Skipped", for: key)
-        }
+        completed.formUnion(retired)
+        for key in retired { setPresentationStatus("Skipped", for: key) }
         cancelledFirstAudio.subtract(retired)
     }
 
@@ -152,7 +149,12 @@ extension ReplyPlaybackController {
         guard streams[key] == nil, !completed.contains(key), !isMuted, pendingMuteAfter == nil else { return }
         // The host turn may belong to another device: claim silence once, but let late audio play (#825 / #851).
         expiredFirstAudio.append(key)
-        if expiredFirstAudio.count > Self.seenFrameLimit { expiredFirstAudio.removeFirst() }
+        // #825: retire a reply after 1,024 later first-audio claims; never forget its playable identity.
+        if expiredFirstAudio.count > Self.seenFrameLimit {
+            let retired = expiredFirstAudio.removeFirst()
+            completed.insert(retired)
+            setPresentationStatus("Skipped", for: retired)
+        }
         recordAudioLoss(for: key)
         onStreamAbandoned?()
     }

@@ -49,19 +49,9 @@ import Testing
         await harness.store.disconnect(harness.host.id)
     }
 
-    /// Ignore pings from earlier selections of the same target; only this new round trip may settle it.
+    /// Startup publishes ready before sending its ping; answer every ping until this selection completes.
     private func select(_ target: String, on ready: HostConnectionStoreAmbientBindingTests.ReadyStore) async throws {
-        let sent = try await ready.socket.sentFrames().count
-        let selection = Task { try await ready.store.selectTarget(host: ready.endpoint.id, targetID: target) }
-        let ping: @Sendable () async throws -> String? = {
-            try await ready.socket.sentFrames().dropFirst(sent).compactMap { frame -> String? in
-                if case .control(.ping(let nonce)) = frame.payload { return nonce }
-                return nil
-            }.first
-        }
-        try await waitUntil { try await ping() != nil }
-        try await ready.socket.push(.pong(nonce: try #require(try await ping())))
-        try await selection.value
+        try await FirstAudioSelectionPeer().select(target, on: ready)
     }
 
     private func stopAmbient(
@@ -166,5 +156,38 @@ private final class BindingChangeRig {
         )))
         try await waitUntil { await MainActor.run { self.store.snapshots[self.host.id]?.state == .ready } }
         return HostConnectionStoreAmbientBindingTests.ReadyStore(store: store, endpoint: host, socket: socket)
+    }
+}
+
+/// #825: service both startup and selection pings, regardless of their ordering after ready is published.
+@MainActor
+private final class FirstAudioSelectionPeer {
+    private var answered: Set<String> = []
+    private var result: Result<Void, any Error>?
+
+    func select(_ target: String, on ready: HostConnectionStoreAmbientBindingTests.ReadyStore) async throws {
+        let selection = Task {
+            do {
+                try await ready.store.selectTarget(host: ready.endpoint.id, targetID: target)
+                result = .success(())
+            } catch {
+                result = .failure(error)
+            }
+        }
+        defer { selection.cancel() }
+        // Bound the operation itself, not just discovery of one ping. Never await an unfinished task's value.
+        try await waitUntil(timeout: .seconds(10)) {
+            try await self.answerPings(on: ready.socket)
+            return await self.result != nil
+        }
+        try #require(result).get()
+    }
+
+    private func answerPings(on socket: ScriptedSocket) async throws {
+        for frame in try await socket.sentFrames() {
+            if case .control(.ping(let nonce)) = frame.payload, answered.insert(nonce).inserted {
+                try await socket.push(.pong(nonce: nonce))
+            }
+        }
     }
 }
