@@ -40,6 +40,7 @@ func ambientRig(
     (configuration.duckTimeout, configuration.startDeadline) = (duckTimeout, startDeadline)
     (configuration.ackDeadline, configuration.privacyConfirmTimeout) = (ackDeadline, confirmTimeout)
     (configuration.meetingTimeout, configuration.onMeetingChange) = (meeting.timeout, meeting.onChange)
+    if let now = meeting.now { configuration.now = now }
     configuration.notes.shortcuts = shortcuts
     let router = AmbientRightyoRouter(configuration: configuration, log: { events?.record($0); onEvent?($0) })
     let gate = AmbientAudioGate(target: RecipientTestRig.target, sink: router, sweepInterval: nil)
