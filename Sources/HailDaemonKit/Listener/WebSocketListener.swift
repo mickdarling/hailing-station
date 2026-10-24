@@ -635,7 +635,11 @@ public final class AmbientRightyoRouter: AmbientAudioSink, AmbientListenerWiring
     fileprivate let log: @Sendable (WebSocketListenerEvent) -> Void
     /// Wakes the worker; signals coalesce, the events themselves are in `State.queue`.
     fileprivate let wake: AsyncStream<Void>.Continuation
-    /// Media and duck mode state for devices (#612, #735), sent one at a time in the order the modes changed.
+    /// Media and duck mode state for devices (#612, #735), sent one at a time in the order the modes changed, beside
+    /// privacy's reply drop and release. Privacy and media clips wait on their notice's place here (#875, #886), so
+    /// every piece must stay non-blocking: a frame is posted (`WebSocketPeer.post`, which queues it and returns), never
+    /// a blocking send, and no piece ever awaits a clip chain, or a stalled device or clip would hold every
+    /// connection's notices and every clip waiting behind them.
     let mediaNotices = SerialTaskChain()
     /// The origin of the privacy ledgers' clock (#735 S-8 HS-C round 4).
     let privacyEpoch = ContinuousClock.now
@@ -1512,14 +1516,15 @@ extension AmbientRightyoRouter {
     /// The owner's spoken media mode (#551): set for every child of `connection` at once, then confirmed with a
     /// `confirm-media-on/` or `confirm-media-off/` clip when there is one, in the order said. A change no child
     /// took (an older RightyO or a full pipe) is not confirmed, so the owner never hears a mode that is not in force.
-    /// Logs tokens only.
+    /// The clip waits for the change's `media_mode` notice to be sent (#886), so the device is told before it hears
+    /// it: "Media mode on." never plays while the app still shows media mode off. Logs tokens only.
     /// While private (#735) a media-mode entry is refused, and the owner hears `confirm-privacy-status/` instead, but
     /// only once privacy was announced (6362119223): it is queued on the privacy chain, behind its entries, and decided
     /// when it plays, as a status is; unannounced, it is silent and the entry's own clip answers.
     func voiceMedia(on connection: UUID, listener: WebSocketListener) -> @Sendable (Bool) -> Void {
         let chain = SerialTaskChain()
         return { [weak self, weak listener] on in
-            let reported = self?.setMedia(on, connection: connection, reason: "voice") ?? 0
+            let (reported, notice) = self?.switchMedia(on, connection: connection, reason: "voice") ?? (0, nil)
             if on, reported == 0, self?.duckMode(connection: connection) == true {
                 self?.enqueuePrivacyClip(connection) { _ in { [weak self, weak listener] in
                     guard let self else { return }
@@ -1535,6 +1540,7 @@ extension AmbientRightyoRouter {
             chain.enqueue { [weak self, weak listener] in
                 var confirm = "unreported"
                 if reported > 0 {
+                    await notice?.value
                     let persona = on ? AmbientStopConfirmation.mediaOn : AmbientStopConfirmation.mediaOff
                     confirm = await self?.confirmVoiceMute(persona, on: connection, listener: listener) ?? "none"
                 }
@@ -1591,23 +1597,30 @@ extension AmbientRightyoRouter {
     /// entry; entering media ends meeting mode (#735 meeting mode (rightyo#227)) without dropping the child's gate.
     @discardableResult
     func setMedia(_ on: Bool, connection: UUID, reason: String, expected: UUID? = nil) -> Int {
-        let changed = state.withLock { state -> (reported: Int, refused: String?)? in
+        switchMedia(on, connection: connection, reason: reason, expected: expected).reported
+    }
+
+    /// `setMedia`, also returning the change's device notice on `mediaNotices` (#886), done once it is sent; nil when
+    /// nothing changed or no notice was queued.
+    func switchMedia(_ on: Bool, connection: UUID, reason: String, expected: UUID? = nil) -> MediaChange {
+        let changed = state.withLock { state -> (media: MediaChange, refused: String?)? in
             if let expected, state.media[connection]?.token != expected { return nil }
-            if on, let refused = Self.entryRefusal(connection, in: state) { return (0, refused) }
+            if on, let refused = Self.entryRefusal(connection, in: state) { return ((0, nil), refused) }
             // The owner's latest word wins daemon-wide (MM-E): off clears a parked media mode, on a parked meeting.
             if reason == "voice" {
                 discardParked(meeting: on, media: !on, reason: on ? "superseded" : "off", in: &state)
             }
             return (changeMedia(on, connection: connection, reason: reason, in: &state), nil)
         }
-        guard let changed else { return 0 }
+        guard let changed else { return (0, nil) }
         if let refused = changed.refused {
             emit("ambient_media", connection: connection,
                  detail: "on=true reason=\(reason) reported=0 refused=\(refused)")
-            return 0
+            return (0, nil)
         }
-        emit("ambient_media", connection: connection, detail: "on=\(on) reason=\(reason) reported=\(changed.reported)")
-        return changed.reported
+        let reported = changed.media.reported
+        emit("ambient_media", connection: connection, detail: "on=\(on) reason=\(reason) reported=\(reported)")
+        return changed.media
     }
 
     /// Drops each torn-down connection no child can still speak for (#735 meeting mode review round 4): none of its
@@ -1670,7 +1683,7 @@ extension AmbientRightyoRouter {
             var change = DuckChange(duck: reported ?? 0, media: nil, still: reported == nil && wasOn, wasOn: wasOn,
                                     entry: entry)
             if reported != nil, on, state.media[connection] != nil {
-                change.media = changeMedia(false, connection: connection, reason: "voice", in: &state)
+                change.media = changeMedia(false, connection: connection, reason: "voice", in: &state).reported
             }
             if reported != nil, on {
                 endMeeting(connection: connection, reason: "privacy", in: &state)
@@ -1704,9 +1717,14 @@ extension AmbientRightyoRouter {
                                                          at: privacyNow)
     }
 
+    /// One media mode change (#886): how many children took it, and its device notice's place on `mediaNotices`, done
+    /// once it is sent; nil when no notice was queued (an on no child took).
+    typealias MediaChange = (reported: Int, notice: Task<Void, Never>?)
+
     /// Media mode's change under the caller's lock: the timeout, the children, then the device notice, queued under the
-    /// same lock so a timeout's off and a spoken on reach the device in the order the mode changed. How many took it.
-    func changeMedia(_ on: Bool, connection: UUID, reason: String, in state: inout State) -> Int {
+    /// same lock so a timeout's off and a spoken on reach the device in the order the mode changed. How many took it,
+    /// and the notice's task, which a confirmation clip awaits so the device is told first (#886).
+    func changeMedia(_ on: Bool, connection: UUID, reason: String, in state: inout State) -> MediaChange {
         let token = UUID(), timeout = configuration.mediaTimeout
         let expiresAt = configuration.now().addingTimeInterval(timeout)
         state.media.removeValue(forKey: connection)?.timer.cancel()
@@ -1718,16 +1736,15 @@ extension AmbientRightyoRouter {
         if on { endMeeting(connection: connection, reason: "media", report: false, in: &state) }
         let reported = reportModes(connection: connection, in: state)
         // The device sees on only once a child took it, so it never shows a mode not in force; off always (#612).
-        if !on || reported > 0 {
-            let expires = on ? Int64(expiresAt.timeIntervalSince1970 * 1_000) : nil
-            let listener = state.listener?.value
-            mediaNotices.enqueue { [weak self, weak listener] in
-                let sent = await listener?.showMediaMode(on, reason: reason, expires: expires, connection: connection)
-                self?.emit("ambient_media_device", connection: connection,
-                           detail: "on=\(on) device=\(sent ?? "no_connection")")
-            }
+        guard !on || reported > 0 else { return (reported, nil) }
+        let expires = on ? Int64(expiresAt.timeIntervalSince1970 * 1_000) : nil
+        let listener = state.listener?.value
+        let notice = mediaNotices.queued { [weak self, weak listener] in
+            let sent = await listener?.showMediaMode(on, reason: reason, expires: expires, connection: connection)
+            self?.emit("ambient_media_device", connection: connection,
+                       detail: "on=\(on) device=\(sent ?? "no_connection")")
         }
-        return reported
+        return (reported, notice)
     }
 
     /// Whole seconds from `now` to `expiry`, never negative (MM-E).
