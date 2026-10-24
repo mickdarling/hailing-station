@@ -52,7 +52,7 @@ import Testing
             outputs: [.speaker], inputs: [.usbAudio], previousOutputs: [.bluetoothA2DP],
             previousInputs: [.builtInMic], reason: .newDeviceAvailable
         ))
-        #expect(session.applySucceeded == false)
+        #expect(session.applyResult == .failed)
         session.drainEchoes()
         #expect(session.categories == 1)
         session.send(.init(
@@ -65,7 +65,7 @@ import Testing
         session.drainEchoes()
         #expect(session.categories == 2)
         #expect(session.clears == (failClear ? 2 : 1))
-        #expect(session.applySucceeded == true)
+        #expect(session.applyResult == .succeeded)
     }
 
     @Test func repeatedUserChoiceAndUSBBlipExecuteZeroEffects() {
@@ -121,10 +121,11 @@ final class ScriptedOutputSession {
     typealias Policy = AudioOutputRoutePolicy
     typealias Effect = AudioOutputRouteDriver.Effect
     enum Failure: Error { case scripted }
+    enum ApplyResult { case notAttempted, succeeded, failed }
     var state = Policy.State()
     var options = Policy.Options()
     var effects: [Effect] = []
-    var applySucceeded: Bool?
+    var applyResult = ApplyResult.notAttempted
     var failure: Effect?
     var overrideOutputs: [Policy.Port]?
     var decisionReasons: [Policy.DecisionReason] = []
@@ -137,11 +138,11 @@ final class ScriptedOutputSession {
         var current = route
         current.options = options
         let snapshot = current
-        applySucceeded = AudioOutputRouteDriver.process(snapshot, state: &state, observeDecision: { decision in
+        applyResult = AudioOutputRouteDriver.process(snapshot, state: &state, observeDecision: { decision in
             self.decisionReasons.append(decision.reason)
         }, perform: { effect in
             try self.perform(effect, route: snapshot)
-        })
+        }) ? .succeeded : .failed
     }
 
     func drainEchoes() {
