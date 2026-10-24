@@ -15,6 +15,11 @@ struct AudioOutputRoutePolicy: Sendable {
     enum Reason: CaseIterable, Sendable {
         case newDeviceAvailable, oldDeviceUnavailable, override, categoryChange, routeConfigurationChange, other
     }
+    enum DecisionReason: Sendable {
+        // A request precedes effects, which can still fail; it is not proof of a repaired hardware route (#852).
+        case repairRequested, userChoiceAssumed, noHardwareEpisode, keepalive, unsupportedCategory
+        case noExternalEvidence, externalOutputActive, awaitingRoute
+    }
 
     /// Only the flags this policy changes or guards; the iOS adapter preserves every other option (#852).
     struct Options: Equatable, Sendable {
@@ -43,7 +48,7 @@ struct AudioOutputRoutePolicy: Sendable {
     struct Decision: Sendable {
         var options: Options
         var clearOverride = false
-        var preservedRouteChoice = false
+        var reason: DecisionReason = .noHardwareEpisode
         var state: State
     }
 
@@ -60,7 +65,10 @@ struct AudioOutputRoutePolicy: Sendable {
         let externalOutput = route.outputs.contains(where: \.isExternalOutput)
         if externalOutput { result.state.userChoseBuiltIn = false }
         // The background keepalive owns playback/mixWithOthers; never reconfigure it (#282, #352, #852).
-        guard route.category == .playAndRecord else { return result }
+        guard route.category == .playAndRecord else {
+            result.reason = route.category == .playback ? .keepalive : .unsupportedCategory
+            return result
+        }
         let episode = updateEpisode(route, state: &result.state)
         result.state.externalOutputSeen = externalOutput || result.state.externalOutputSeen
             || route.previousOutputs.contains(where: \.isExternalOutput)
@@ -68,21 +76,27 @@ struct AudioOutputRoutePolicy: Sendable {
         guard route.reason != .categoryChange, route.reason != .routeConfigurationChange else { return result }
         if externalOutput {
             result.options.defaultToSpeaker = false
+            result.reason = .externalOutputActive
             return result
         }
+        return builtInDecision(route, episode: episode, result: result)
+    }
+
+    private static func builtInDecision(_ route: Route, episode: Bool, result: Decision) -> Decision {
+        var result = result
         if preservesRouteChoice(route) { result.state.userChoseBuiltIn = true }
         if result.state.userChoseBuiltIn {
-            result.preservedRouteChoice = true
+            result.reason = .userChoiceAssumed
             return result
         }
         if route.reason == .oldDeviceUnavailable, !lostUSBInput(route) {
             result.state.externalOutputSeen = false
             result.options = configurationOptions(outputs: route.outputs, options: route.options)
+            result.reason = .noExternalEvidence
             return result
         }
-        guard episode, result.state.externalOutputSeen,
-              !route.inputs.isEmpty, !route.outputs.isEmpty,
-              route.outputs.allSatisfy(\.isBuiltInOutput) else { return result }
+        result.reason = recoveryReason(route, episode: episode, state: result.state)
+        guard result.reason == .repairRequested else { return result }
         result.options.defaultToSpeaker = false
         result.clearOverride = true
         return result
@@ -128,5 +142,15 @@ struct AudioOutputRoutePolicy: Sendable {
             state.inputLossPending = true
         }
         return episode
+    }
+}
+
+extension AudioOutputRoutePolicy {
+    private static func recoveryReason(_ route: Route, episode: Bool, state: State) -> DecisionReason {
+        guard episode else { return .noHardwareEpisode }
+        guard state.externalOutputSeen else { return .noExternalEvidence }
+        guard !route.inputs.isEmpty, !route.outputs.isEmpty,
+              route.outputs.allSatisfy(\.isBuiltInOutput) else { return .awaitingRoute }
+        return .repairRequested
     }
 }

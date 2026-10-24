@@ -66,7 +66,7 @@ import Testing
             previousInputs: [.usbAudio], reason: .override
         ))
         #expect(session.state.userChoseBuiltIn)
-        #expect(session.preservedChoices.last == true)
+        #expect(session.decisionReasons.last == .userChoiceAssumed)
         #expect(session.effects == effects)
     }
 

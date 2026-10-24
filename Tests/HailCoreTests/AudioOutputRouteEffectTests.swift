@@ -13,6 +13,7 @@ import Testing
             outputs: [.bluetoothA2DP], inputs: [.usbAudio], previousOutputs: [.speaker],
             previousInputs: [.usbAudio], reason: .override
         ))
+        // 21:16Z: input loss followed by availability, with external output in notification history (#852).
         session.options.defaultToSpeaker = true
         session.send(.init(
             outputs: blipOutputs, inputs: [], previousOutputs: [.bluetoothA2DP],
@@ -21,6 +22,7 @@ import Testing
         #expect(!session.state.userChoseBuiltIn)
         #expect(session.clears == 0)
         session.send(.init(outputs: [.speaker], inputs: [.usbAudio], reason: .newDeviceAvailable))
+        #expect(session.decisionReasons.last == .repairRequested)
         session.drainEchoes()
         #expect(session.categories == 1)
         #expect(session.clears == 1)
@@ -102,6 +104,7 @@ import Testing
             ))
         }
         session.drainEchoes()
+        #expect(session.decisionReasons.allSatisfy { $0 == .keepalive })
         #expect(session.categories == 0)
         #expect(session.clears == 0)
         #expect(session.options == .init(defaultToSpeaker: true, mixWithOthers: true))
@@ -124,7 +127,7 @@ final class ScriptedOutputSession {
     var applySucceeded: Bool?
     var failure: Effect?
     var overrideOutputs: [Policy.Port]?
-    var preservedChoices: [Bool] = []
+    var decisionReasons: [Policy.DecisionReason] = []
     private var echoes: [Policy.Route] = []
 
     var categories: Int { effects.filter { if case .setCategory = $0 { true } else { false } }.count }
@@ -135,7 +138,7 @@ final class ScriptedOutputSession {
         current.options = options
         let snapshot = current
         applySucceeded = AudioOutputRouteDriver.process(snapshot, state: &state, observeDecision: { decision in
-            self.preservedChoices.append(decision.preservedRouteChoice)
+            self.decisionReasons.append(decision.reason)
         }, perform: { effect in
             try self.perform(effect, route: snapshot)
         })

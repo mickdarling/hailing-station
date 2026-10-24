@@ -1,9 +1,11 @@
 #if os(iOS)
 import AVFoundation
 import Foundation
+import os
 
 @MainActor
 public final class AVAudioSessionBackend: AudioSessionBackend {
+    private static let log = Logger(subsystem: "com.mickdarling.hailing-station", category: "output-route")
     private let session: AVAudioSession
     private let events: AsyncStream<AudioSessionBackendEvent>
     private let continuation: AsyncStream<AudioSessionBackendEvent>.Continuation
@@ -89,14 +91,24 @@ public final class AVAudioSessionBackend: AudioSessionBackend {
         defer { isRepairingOutputRoute = false }
         let session = session
         AudioOutputRouteDriver.process(route, state: &outputRouteState, observeDecision: { decision in
-            #if DEBUG
-            if decision.preservedRouteChoice {
-                print("Output route left unchanged: user choice or ambiguous cause (#852)")
-            }
-            #endif
+            Self.logRouteDecision(decision.reason)
         }, perform: { effect in
             try AudioOutputSessionRouting.apply(effect, to: session)
         })
+    }
+
+    private static func logRouteDecision(_ reason: AudioOutputRoutePolicy.DecisionReason) {
+        // Fixed messages only: no device names, UIDs, or route payloads in field logs (#852).
+        switch reason {
+        case .repairRequested: break
+        case .userChoiceAssumed: log.info("repair not attempted: user choice assumed")
+        case .noHardwareEpisode: log.info("repair not attempted: no hardware episode")
+        case .keepalive: log.info("repair not attempted: keepalive")
+        case .unsupportedCategory: log.info("repair not attempted: unsupported category")
+        case .noExternalEvidence: log.info("repair not attempted: no external evidence")
+        case .externalOutputActive: log.info("repair not attempted: external output active")
+        case .awaitingRoute: log.info("repair not attempted: awaiting route")
+        }
     }
 
     nonisolated private static func interruptionEvent(_ notification: Notification) -> AudioSessionBackendEvent {

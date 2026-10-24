@@ -12,7 +12,7 @@ import Testing
         session.drainEchoes()
         #expect(session.effects.isEmpty)
         #expect(session.state.userChoseBuiltIn)
-        #expect(session.preservedChoices.last == true)
+        #expect(session.decisionReasons.last == .userChoiceAssumed)
         session.send(.init(
             outputs: [output], inputs: [], previousOutputs: [output],
             previousInputs: [.usbAudio], reason: .oldDeviceUnavailable
@@ -21,7 +21,7 @@ import Testing
         session.drainEchoes()
         #expect(session.effects.isEmpty)
         #expect(session.state.userChoseBuiltIn)
-        #expect(session.preservedChoices.last == true)
+        #expect(session.decisionReasons.last == .userChoiceAssumed)
         session.send(.init(
             outputs: [.bluetoothA2DP], inputs: [.usbAudio], previousOutputs: [output],
             previousInputs: [.usbAudio], reason: .override
@@ -51,7 +51,7 @@ import Testing
         session.drainEchoes()
         #expect(session.effects.isEmpty)
         #expect(session.state.userChoseBuiltIn)
-        #expect(session.preservedChoices.last == true)
+        #expect(session.decisionReasons.last == .userChoiceAssumed)
     }
 
     @Test(arguments: [[], [Policy.Port.usbAudio]])
@@ -65,7 +65,7 @@ import Testing
         session.drainEchoes()
         #expect(session.effects.isEmpty)
         #expect(session.state.userChoseBuiltIn)
-        #expect(session.preservedChoices.last == true)
+        #expect(session.decisionReasons.last == .userChoiceAssumed)
     }
 
     @Test(arguments: [Policy.Reason.categoryChange, .routeConfigurationChange, .newDeviceAvailable])
@@ -93,7 +93,7 @@ import Testing
         session.send(Self.choice(.speaker))
         #expect(session.effects.isEmpty)
         #expect(session.state.userChoseBuiltIn)
-        #expect(session.preservedChoices.last == true)
+        #expect(session.decisionReasons.last == .userChoiceAssumed)
     }
 
     @Test func unknownPreviousOutputLeavesOverrideAlone() {
@@ -106,12 +106,12 @@ import Testing
         ))
         #expect(session.effects.isEmpty)
         #expect(session.state.userChoseBuiltIn)
-        #expect(session.preservedChoices.last == true)
+        #expect(session.decisionReasons.last == .userChoiceAssumed)
     }
 
-    @Test func decisionExposesPrivacySafePreservationFlag() {
+    @Test func decisionExposesUserChoiceReason() {
         let decision = Policy.routeChange(Self.choice(.speaker), state: .init())
-        #expect(decision.preservedRouteChoice)
+        #expect(decision.reason == .userChoiceAssumed)
         #expect(decision.state.userChoseBuiltIn)
         #expect(!decision.clearOverride)
     }
