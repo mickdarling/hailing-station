@@ -64,6 +64,7 @@ public final class ReplyPlaybackController {
     /// The head stream's idle watch, its injectable clock and scheduler, and its diagnostics hook (#469, `+Idle`).
     @ObservationIgnored var idleWatch = ReplyIdleWatch()
     @ObservationIgnored var firstAudio: [ReplyStreamKey: ReplyIdleWatch] = [:] // arrival deadlines (#825)
+    @ObservationIgnored var firstAudioByEndpoint: [HostEndpoint.Identifier: Set<ReplyStreamKey>] = [:]
     @ObservationIgnored var cancelledFirstAudio: Set<ReplyStreamKey> = [] // mute cancels the claim, not the reply
     @ObservationIgnored var undeliveredLosses: [ReplyStreamKey] = [] // ordered, bounded set awaiting observation
     @ObservationIgnored var idleNow: @MainActor () -> ContinuousClock.Instant = { .now }
@@ -82,14 +83,12 @@ public final class ReplyPlaybackController {
         return keys
     }
 
-    var hasQueuedPlayback: Bool { !queue.isEmpty }
     public init(player: any ReplyAudioPlaying) {
         self.player = player
         observeAudioInterruptions(on: .default)
         observeCatchUp()
     }
 
-    public var latest: ReplyPresentation? { replies.last }
     /// An unmuted reply still owns the output path. This is intentionally conservative across
     /// segment gaps: accessibility speech must not compete with a reply that may resume.
     public var isReplyAudioOutputBusy: Bool {
@@ -100,6 +99,7 @@ public final class ReplyPlaybackController {
     }
 
     public func ingest(_ event: HostReplyEvent) {
+        if case .audio = event.frame.payload { noteEndpointAudio(event.endpointID) }
         if case .control(let control) = event.frame.payload { return handlePlaybackControl(control, event) }
         guard remember(event.frame.id), let descriptor = descriptor(in: event.frame) else { return }
         guard case .audio(let audio) = event.frame.payload else {
@@ -184,6 +184,16 @@ public final class ReplyPlaybackController {
             if !key.isAnnouncement { lastKey = key } // Replay replays the last reply, never an announcement (#825).
             completed.insert(key)
             return
+        }
+    }
+}
+
+extension ReplyPlaybackController {
+    func armFirstAudio(for key: ReplyStreamKey) {
+        guard let watch = firstAudio[key] else { return }
+        watch.cancel?()
+        firstAudio[key]?.cancel = idleScheduler(idleNow().duration(to: idleDeadline(watch))) { [weak self] in
+            self?.firstAudioDeadlinePassed(for: key)
         }
     }
 }

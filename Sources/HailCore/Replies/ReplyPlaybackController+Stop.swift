@@ -84,6 +84,9 @@ extension ReplyPlaybackController {
 
 // First-audio arrival watches share the idle clock, scheduler and deadline (#825), independently of the player head.
 extension ReplyPlaybackController {
+    var hasQueuedPlayback: Bool { !queue.isEmpty }
+    public var latest: ReplyPresentation? { replies.last }
+
     func receiveText(_ event: HostReplyEvent, descriptor: ReplyDescriptor) {
         let id = upsertPresentation(event, descriptor: descriptor)
         let key = ReplyStreamKey(endpointID: event.endpointID, replyID: descriptor.id)
@@ -92,16 +95,28 @@ extension ReplyPlaybackController {
         guard descriptor.audioStreamID != nil, presentationStatuses[id] == "Received",
               firstAudio[key] == nil, !cancelledFirstAudio.contains(key) else { return }
         if isMuted || pendingMuteAfter != nil { return retainCancelledFirstAudio([key]) }
+        // ReplyCommand's ReplyBackground.awaitAudioTurn queues detached audio after sending text (#825).
+        // Watch endpoint silence: any audio from that host means its shared audio turn is still in use.
         let now = idleNow()
         let watch = ReplyIdleWatch(key: key, bufferedUntil: now, lastFrameAt: now, aheadUntil: now)
         firstAudio[key] = watch
-        firstAudio[key]?.cancel = idleScheduler(now.duration(to: idleDeadline(watch))) { [weak self] in
-            self?.firstAudioDeadlinePassed(for: key)
+        firstAudioByEndpoint[key.endpointID, default: []].insert(key)
+        armFirstAudio(for: key)
+    }
+
+    func noteEndpointAudio(_ endpointID: HostEndpoint.Identifier) {
+        for key in firstAudioByEndpoint[endpointID] ?? [] {
+            firstAudio[key]?.lastFrameAt = idleNow()
+            armFirstAudio(for: key)
         }
     }
 
     func cancelFirstAudio(for keys: Set<ReplyStreamKey>) {
-        for key in keys { firstAudio.removeValue(forKey: key)?.cancel?() }
+        for key in keys {
+            firstAudio.removeValue(forKey: key)?.cancel?()
+            firstAudioByEndpoint[key.endpointID]?.remove(key)
+            if firstAudioByEndpoint[key.endpointID]?.isEmpty == true { firstAudioByEndpoint[key.endpointID] = nil }
+        }
         cancelledFirstAudio.subtract(keys)
     }
 
@@ -130,7 +145,7 @@ extension ReplyPlaybackController {
         max(watch.bufferedUntil, watch.aheadUntil, watch.lastFrameAt).advanced(by: Self.streamIdleTimeout)
     }
 
-    private func firstAudioDeadlinePassed(for key: ReplyStreamKey) {
+    func firstAudioDeadlinePassed(for key: ReplyStreamKey) {
         guard let watch = firstAudio[key], idleNow() >= idleDeadline(watch) else { return }
         cancelFirstAudio(for: [key])
         guard streams[key] == nil, !completed.contains(key), !isMuted, pendingMuteAfter == nil else { return }
