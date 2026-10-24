@@ -563,6 +563,10 @@ public final class AmbientRightyoRouter: AmbientAudioSink, AmbientListenerWiring
         var working = false
         /// The newest stream the gate started: the only one a queued start may make room or spawn for.
         var newestStart: UUID?
+        /// The stream the gate last took listening from (#735 meeting mode review round 3). The gate reports a
+        /// take-over as two events, its old stream's `superseded` end then the new start, so between them this is
+        /// what tells a take-over (which also clears `latest`) from a teardown.
+        var superseded: UUID?
         var peakQueue = 0
         var worker: Task<Void, Never>?
         /// Each live connection's last input route kind (rightyo#164), for its next child's `RIGHTYO_INPUT_ROUTE`;
@@ -628,7 +632,9 @@ public final class AmbientRightyoRouter: AmbientAudioSink, AmbientListenerWiring
                 state.latest[connection] = stream
                 state.closed.remove(connection)
             // Taken over (#366): the old stream's late failure is not reported to its device as a stop.
-            case .ended(let stream, .superseded): state.latest = state.latest.filter { $0.value != stream }
+            case .ended(let stream, .superseded):
+                state.latest = state.latest.filter { $0.value != stream }
+                state.superseded = stream
             default: break
             }
             if case .started(let stream, _, _) = event { state.newestStart = stream }
@@ -1046,10 +1052,14 @@ extension AmbientRightyoRouter {
                   in state: inout State) -> UUID {
         let id = UUID()
         state.runs[id] = Run(stream: stream, connection: connection, pipeline: pipeline)
-        // Torn down while this child was being made (#735 meeting mode review round 2): `stop(connection:)` found no
-        // run to mark, so the child is marked now, and its late mode entries are refused like a retiring child's. A
-        // newer stream on the same connection is still live (`latest` names it), so only a cleared `latest` counts.
-        if state.latest[connection] == nil { state.closed.insert(connection) }
+        // Torn down while this start was making its child (#735 meeting mode review rounds 2 and 3): `stop(connection:)`
+        // found no run to mark, so the child is marked now and its late mode entries are refused like a retiring
+        // child's. Only a teardown counts: `latest` is cleared, yet this stream is still the newest start and was never
+        // taken over (a take-over clears `latest` too, but supersedes the stream and moves `newestStart`). A reload
+        // never registers after a teardown (`stop` clears `active`, so `swap` finds nothing), so it never marks.
+        if !reload, state.latest[connection] == nil, state.newestStart == stream, state.superseded != stream {
+            state.closed.insert(connection)
+        }
         // A new or reloaded child starts with media mode off (#551). Told under the same lock `setMedia` changes it
         // under, so it can never miss a change made while it was starting.
         if state.media[connection] != nil || state.meeting[connection] != nil {
