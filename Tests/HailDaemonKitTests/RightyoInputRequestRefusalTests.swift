@@ -18,7 +18,8 @@ private struct SessionRequestDispatcher: RightyoDispatching {
 extension RightyoInputConsumerTests {
     @Test(arguments: [false, true])
     func guardRefusalKeepsTheRunForEitherDispatcher(sessionDispatch: Bool) async throws {
-        let (consumer, host, adapter) = try await requestRefusalRig(sessionDispatch: sessionDispatch)
+        let rig = try await requestRefusalRig(sessionDispatch: sessionDispatch)
+        let (consumer, host, adapter) = (rig.consumer, rig.host, rig.adapter)
         _ = try await consumer.consume(start(speakers: "enrolled"))
         let refused = try await request(consumer, 0, saying: "sudo SYNTHETIC_TOKEN")
         #expect(try await !consumer.consume(refused))
@@ -39,9 +40,13 @@ extension RightyoInputConsumerTests {
         try await consumer.finish()
     }
 
-    private func requestRefusalRig(
-        sessionDispatch: Bool
-    ) async throws -> (RightyoInputConsumer, HailHost, FakeAdapter) {
+    private struct RequestRefusalRig {
+        let consumer: RightyoInputConsumer
+        let host: HailHost
+        let adapter: FakeAdapter
+    }
+
+    private func requestRefusalRig(sessionDispatch: Bool) async throws -> RequestRefusalRig {
         let adapter = FakeAdapter(kind: "tmux", targets: [.init(name: "demo", binding: "original")])
         let registry = Registry()
         try await registry.register(adapter)
@@ -61,7 +66,7 @@ extension RightyoInputConsumerTests {
         }
         let consumer = try RightyoInputConsumer(host: nil, target: "tmux:demo", binding: "original", session: session,
                                                 allowSynthetic: true, dispatcher: dispatcher)
-        return (consumer, host, adapter)
+        return RequestRefusalRig(consumer: consumer, host: host, adapter: adapter)
     }
 
     @Test(arguments: [LocalDispatchRefusal.confirmationRequired, .capacityExceeded])

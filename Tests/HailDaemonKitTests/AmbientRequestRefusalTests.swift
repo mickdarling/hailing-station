@@ -143,8 +143,8 @@ import Testing
             ]))
         }
         events.append(try helper.event("session", sequence: 8, extra: ["phase": "stopped", "emitted_at_ms": 30_000]))
-        return try events.map { String(decoding: try JSONEncoder().encode($0), as: UTF8.self) }.joined(separator: "\n")
-            + "\n"
+        let lines = try events.map { String(bytes: try JSONEncoder().encode($0), encoding: .utf8) ?? "" }
+        return lines.joined(separator: "\n") + "\n"
     }
 }
 
