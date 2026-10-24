@@ -99,8 +99,7 @@ extension ReplyPlaybackController {
               firstAudio[key] == nil, !cancelledFirstAudio.contains(key),
               !expiredFirstAudio.contains(key) else { return }
         if isMuted || pendingMuteAfter != nil { return retainCancelledFirstAudio([key]) }
-        // ReplyCommand's ReplyBackground.awaitAudioTurn queues detached audio after sending text (#825).
-        // Watch endpoint silence: any audio from that host means its shared audio turn is still in use.
+        // ReplyBackground.awaitAudioTurn queues detached audio: host audio means its shared turn is in use (#825).
         let now = idleNow()
         // For a first-audio watch, bufferedUntil stays at original text arrival, anchoring the hard cap.
         let watch = ReplyIdleWatch(key: key, bufferedUntil: now, lastFrameAt: now, aheadUntil: now)
@@ -136,10 +135,10 @@ extension ReplyPlaybackController {
     private func retainCancelledFirstAudio(_ keys: Set<ReplyStreamKey>) {
         cancelledFirstAudio.formUnion(keys)
         // Retire mute-only overflow: repeated text cannot revive its claim, nor late audio restart it (#825).
-        let excess = max(0, cancelledFirstAudio.count - Self.seenFrameLimit)
-        let retired = Set(cancelledFirstAudio.prefix(excess))
+        let retired = Set(cancelledFirstAudio.prefix(max(0, cancelledFirstAudio.count - Self.seenFrameLimit)))
         completed.formUnion(retired)
         for key in retired { setPresentationStatus("Skipped", for: key) }
+        undeliveredLosses.removeAll { retired.contains($0) }
         cancelledFirstAudio.subtract(retired)
     }
 
@@ -154,6 +153,7 @@ extension ReplyPlaybackController {
             let retired = expiredFirstAudio.removeFirst()
             completed.insert(retired)
             setPresentationStatus("Skipped", for: retired)
+            undeliveredLosses.removeAll { $0 == retired }
         }
         recordAudioLoss(for: key)
         onStreamAbandoned?()
