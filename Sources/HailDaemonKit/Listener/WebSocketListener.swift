@@ -1027,7 +1027,7 @@ extension AmbientRightyoRouter {
             state.active = Active(stream: stream, run: id, pipeline: pipeline, since: Date(),
                                   selection: selection)
             // Under register's own lock (MM-E): a parked or stale-held mode reaches this child as its first mode write.
-            carryModes(to: connection, stream: stream, in: &state)
+            carryModes(to: connection, stream: stream, pipeline: pipeline, in: &state)
             return true
         }
         guard admitted else {
@@ -1467,10 +1467,11 @@ extension AmbientRightyoRouter {
 }
 
 /// One real meeting change for MM-C (#735 meeting mode restore (MM-E)), in change order. `reason` is `voice`,
-/// `timeout`, `media`, `privacy`, `connection`, `moved` (carried to a newer connection's start), `resumed` (a restore
-/// on the same Hello name and known class, of a meeting that recorded there) or `resumed_unrecorded` (any other: the
-/// gate is up, nothing is recorded). On an on-change `recording` is the meeting's stored state, and says whether MM-C
-/// records the segment, linked by `meetingID`. It is always false for an off.
+/// `timeout`, `media`, `privacy`, `connection`, `moved` (carried to a newer connection's start), `superseded` (a stale
+/// holder that lost to a later-armed mode at a start), `resumed` (a restore on the same Hello name and known class, of
+/// a meeting that recorded there) or `resumed_unrecorded` (any other: the gate is up, nothing is recorded). On an
+/// on-change `recording` is the meeting's stored state, and says whether MM-C records the segment, linked by
+/// `meetingID`. It is always false for an off.
 public struct MeetingChange: Sendable, Equatable {
     public let connection: UUID
     public let on: Bool
@@ -1656,8 +1657,8 @@ extension AmbientRightyoRouter {
             }
             if reported != nil, on {
                 endMeeting(connection: connection, reason: "privacy", in: &state)
-                // Privacy taken on any connection discards every parked mode (MM-E): privacy always wins.
-                discardParked(meeting: true, media: true, reason: "privacy", in: &state)
+                // Privacy taken on any connection ends every mode daemon-wide, held or parked (MM-E): privacy wins.
+                endEveryMode(reason: "privacy", except: connection, in: &state)
             }
             let switched = AmbientPrivacyEntry(reported: change.duck, entry: entry, wasOn: wasOn,
                                                on: state.duck[connection] != nil)
@@ -1737,7 +1738,16 @@ extension AmbientRightyoRouter {
         }
     }
 
-    /// Ends a holder's mode quietly: `moved` (to `connection`, which takes it). No clip and
+    /// Ends every other connection's meeting or media mode and the park, under the caller's lock (review round 2): a
+    /// privacy entry taken anywhere, or a private start, ends them daemon-wide, live holders included, with no clip.
+    func endEveryMode(reason: String, except connection: UUID, in state: inout State) {
+        Set(state.meeting.keys).union(state.media.keys).subtracting([connection]).forEach {
+            endHeld($0, reason: reason, in: &state)
+        }
+        discardParked(meeting: true, media: true, reason: reason, in: &state)
+    }
+
+    /// Ends a holder's mode quietly: `moved` (to `connection`, which takes it), `superseded` or `privacy`. No clip and
     /// no write to its old children (they stay gated); its device is told media mode is off; its later teardown parks
     /// nothing.
     func endHeld(_ holder: UUID, reason: String, to connection: UUID? = nil, in state: inout State) {

@@ -161,12 +161,15 @@ import Testing
     @Test func aStartNoLongerCurrentLeavesThePark() async throws {
         let rig = try await RestoreRig()
         defer { rig.close() }
-        _ = try await Self.meetingDropped(rig)
+        let (first, dropped) = try await rig.start()
+        #expect(try await rig.confirmation(on: first) == MeetingRig.on.text)
         let (router, gone) = (rig.router, UUID())
-        router.state.withLock { router.carryModes(to: gone, stream: UUID(), in: &$0) }
+        let pipeline = try #require(router.activePipeline)
+        await rig.drop(first, dropped)
+        router.state.withLock { router.carryModes(to: gone, stream: UUID(), pipeline: pipeline, in: &$0) }
         #expect(rig.parked?.meeting != nil && !router.meetingMode(connection: gone))
         router.state.withLock { $0.latest[gone] = UUID() }
-        router.state.withLock { router.carryModes(to: gone, stream: UUID(), in: &$0) }
+        router.state.withLock { router.carryModes(to: gone, stream: UUID(), pipeline: pipeline, in: &$0) }
         #expect(rig.parked?.meeting != nil && !router.meetingMode(connection: gone))
         router.state.withLock { $0.latest[gone] = nil }
         await rig.finish()

@@ -54,7 +54,8 @@ import Testing
         await rig.finish()
     }
 
-    @Test func aPrivateStartTakesNothingFromAHolder() async throws {
+    /// Review round 2 (N5): a private start takes nothing, and ends every other holder's mode as a privacy entry does.
+    @Test func aPrivateStartTakesNothingAndEndsTheHoldersMode() async throws {
         let rig = try await RestoreRig()
         defer { rig.close() }
         let (first, holder) = try await rig.start()
@@ -63,8 +64,9 @@ import Testing
         rig.router.state.withLock { $0.duck[connection] = AmbientDuckTimer(token: UUID(), timer: nil) }
         try await recipientSocketSend(audio(UUID(), 0), on: socket)
         #expect(await eventually { rig.details("ambient_started").count == 2 }, "private start marker")
-        #expect(rig.router.meetingMode(connection: holder) && !rig.router.meetingMode(connection: connection))
-        #expect(rig.changes.count == 1 && rig.details("ambient_mode_moved").isEmpty)
+        #expect(!rig.router.meetingMode(connection: holder) && !rig.router.meetingMode(connection: connection))
+        #expect(await eventually { rig.changes.count == 2 }, "private start ended holder marker")
+        #expect(rig.changes.map(\.reason) == ["voice", "privacy"] && rig.details("ambient_mode_moved").isEmpty)
         await rig.finish()
         #expect(rig.control(2)?.contains("media") != true)
     }
@@ -90,7 +92,8 @@ import Testing
     }
 
     /// Several holders: the latest-armed mode moves, and every other holder ends as moved.
-    @Test func theLatestArmedHolderWinsAndTheRestEndMoved() async throws {
+    /// Review round 2 (N7): a holder that loses ends `superseded`, not `moved`: its meeting continues nowhere.
+    @Test func theLatestArmedHolderWinsAndTheRestEndSuperseded() async throws {
         let rig = try await RestoreRig()
         defer { rig.close() }
         let (first, meeting) = try await rig.start()
@@ -101,8 +104,14 @@ import Testing
         #expect(await eventually { rig.control(2) == RestoreRig.gate }, "latest holder gate marker")
         #expect(rig.router.mediaMode(connection: connection) && !rig.router.mediaMode(connection: media))
         #expect(!rig.router.meetingMode(connection: meeting) && !rig.router.meetingMode(connection: connection))
-        #expect(await eventually { rig.changes.count == 2 }, "older holder moved hook marker")
-        #expect(rig.changes.map(\.reason) == ["voice", "moved"])
+        #expect(await eventually { rig.changes.count == 2 }, "older holder superseded hook marker")
+        #expect(rig.changes.map(\.reason) == ["voice", "superseded"])
+        let meetingID = try #require(rig.changes.first?.meetingID)
+        #expect(await eventually {
+            rig.details("ambient_mode_ended") == ["reason=superseded mode=meeting from=\(meeting) meeting=\(meetingID)"]
+        }, "superseded log marker")
+        let moved = ["mode=media from=\(media) to=\(connection)"]
+        #expect(await eventually { rig.details("ambient_mode_moved") == moved }, "media moved marker")
         let restored = "source=live from=\(media)"
         #expect(await eventually { rig.details("media_restored").first?.hasPrefix(restored) == true },
                 "media moved log marker")

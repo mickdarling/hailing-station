@@ -5,7 +5,8 @@ public import Foundation
 /// #735 meeting mode restore (MM-E): `meetingID` is minted at first entry and kept through a profile switch, a park
 /// and a restore; `expiresAt` is the absolute auto-end fixed when armed, so a restore re-arms only the time left.
 /// `recording` is whether this meeting records here: true for an owner's new entry, kept through a profile switch or
-/// a renewal, and decided on the meeting chain for a restore. `armed` is its arming order.
+/// a renewal, and decided on the meeting chain for a restore. Once false it stays false for the rest of that meeting,
+/// even back on the device that recorded it (conservative, review round 2). `armed` is its arming order.
 struct AmbientMeetingTimer {
     let token: UUID
     let timer: Task<Void, Never>
