@@ -8,6 +8,8 @@ public final class AVAudioSessionBackend: AudioSessionBackend {
     private let events: AsyncStream<AudioSessionBackendEvent>
     private let continuation: AsyncStream<AudioSessionBackendEvent>.Continuation
     private let observers = NotificationObserverBag()
+    private var outputRouteState = AudioOutputRoutePolicy.State()
+    private var isRepairingOutputRoute = false
 
     public convenience init() {
         self.init(session: .sharedInstance())
@@ -26,11 +28,7 @@ public final class AVAudioSessionBackend: AudioSessionBackend {
     }
 
     public func configure(allowsBluetoothHFP: Bool) async throws {
-        var options: AVAudioSession.CategoryOptions = [.allowBluetoothA2DP, .defaultToSpeaker]
-        if allowsBluetoothHFP {
-            options.insert(.allowBluetoothHFP)
-        }
-        try session.setCategory(.playAndRecord, mode: .default, options: options)
+        try AudioOutputSessionRouting.configure(session, allowsBluetoothHFP: allowsBluetoothHFP)
     }
 
     public func setActive(_ active: Bool) async throws {
@@ -70,7 +68,8 @@ public final class AVAudioSessionBackend: AudioSessionBackend {
             forName: AVAudioSession.routeChangeNotification,
             object: session,
             queue: .main
-        ) { [continuation] _ in
+        ) { [weak self, continuation] notification in
+            MainActor.assumeIsolated { self?.repairOutputRoute(notification) }
             continuation.yield(.routeChanged)
         })
         observers.add(center.addObserver(
@@ -80,6 +79,18 @@ public final class AVAudioSessionBackend: AudioSessionBackend {
         ) { [continuation] notification in
             continuation.yield(Self.interruptionEvent(notification))
         })
+    }
+
+    private func repairOutputRoute(_ notification: Notification) {
+        guard !isRepairingOutputRoute else { return }
+        let route = AudioOutputSessionRouting.route(session, notification: notification)
+        let decision = AudioOutputRoutePolicy.routeChange(route, state: outputRouteState)
+        outputRouteState = decision.state
+        // No public initiator signal distinguishes a Control Center choice from a system override (#852).
+        // Attempt once per fallback, only on the policy's four reasons; never repeatedly force the speaker off.
+        isRepairingOutputRoute = true
+        defer { isRepairingOutputRoute = false }
+        try? AudioOutputSessionRouting.apply(decision, to: session)
     }
 
     nonisolated private static func interruptionEvent(_ notification: Notification) -> AudioSessionBackendEvent {
