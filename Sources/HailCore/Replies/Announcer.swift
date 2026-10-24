@@ -1,15 +1,12 @@
+import Foundation
 import AVFoundation
 public import HailProtocol
 import os
-
-/// Turns an announcement into reply audio (#825 S4b): a bundled clip, or the system voice rendered to buffers. It never
-/// speaks aloud itself, so every announcement plays through the reply player and the capture engine's echo canceller,
-/// and is never heard by the microphone as speech.
+/// Renders reply audio for the shared player and echo canceller; never speaks directly (#825 S4b).
 @MainActor
 public protocol AnnouncementRendering {
     func audio(for announcement: Announcement) async throws -> [AudioPayload]
 }
-
 /// Speaks short announcements the app makes itself, through the reply queue (#825 S4b, #822). One plays after any reply
 /// already queued, never interrupting or reordering it, and pause and listening's suppression hold it like a reply.
 /// When replies are muted, or no audio can be made, it is never silently lost: `fallback` shows and signals it instead,
@@ -19,18 +16,15 @@ public final class Announcer {
     public enum Fallback: String, Sendable {
         case muted, renderFailed = "render_failed", playerFailed = "player_failed"
     }
-
     private let playback: ReplyPlaybackController
     private let renderer: any AnnouncementRendering
     private let fallback: @MainActor (Announcement, Fallback) -> Void
     private var announcedReplies: Set<String> = []
     private static let log = Logger(subsystem: "com.mickdarling.hailing-station", category: "announcements")
-
     public init(playback: ReplyPlaybackController, renderer: any AnnouncementRendering,
                 fallback: @escaping @MainActor (Announcement, Fallback) -> Void) {
         (self.playback, self.renderer, self.fallback) = (playback, renderer, fallback)
     }
-
     public func announce(_ announcement: Announcement) {
         guard !playback.isMuted else { return fallBack(announcement, .muted) }
         Task { @MainActor in
@@ -44,53 +38,37 @@ public final class Announcer {
             }
         }
     }
-
     /// Announces once each reply whose audio did not play (#825), while `when` allows: a stream that ended early, or
-    /// audio in a format the app can't play yet, is spoken; a failed playback goes straight to the fallback, since the
-    /// player that failed would fail this too (#838 review).
+    /// unplayable or undecodable audio is spoken; player failures and unknown statuses use the fallback (#825).
     public func watchReplyAudio(when allowed: @escaping @MainActor () -> Bool) {
-        let lost = withObservationTracking { playback.lostAudioStatuses } onChange: { [weak self] in
+        let lost = withObservationTracking({ playback.lostAudioStatuses }, onChange: { [weak self] in
             Task { @MainActor in self?.watchReplyAudio(when: allowed) }
-        }
-        for (id, status) in lost where announcedReplies.insert(id).inserted && allowed() {
-            switch status {
-            case ReplyPlaybackController.abandonedStatus: announce(.replyAudioLost)
-            case "Playback failed": fallBack(.replyAudioFailed, .playerFailed)
-            default: announce(.replyAudioFailed) // Its format: the player itself was never tried.
+        })
+        // Skipped losses stay once-only: VoiceOver owned them even if it later turns off (#825, #86).
+        // Keep their statuses eligible for deferred VoiceOver across trims; without app acknowledgement,
+        // only the bounded, oldest-first seenFrameLimit eviction releases their retention (#825, #86).
+        for (id, status) in lost where announcedReplies.insert(id).inserted {
+            if allowed() {
+                announceAudioProblem(status)
+                playback.acknowledgeAudioLoss(id)
             }
         }
     }
-
+    func announceAudioProblem(_ status: String?) {
+        switch status {
+        case ReplyPlaybackController.abandonedStatus: announce(.replyAudioLost)
+        case ReplyPlaybackController.audioFormatNotPlayable, ReplyPlaybackController.audioCouldNotBeDecoded:
+            announce(.replyAudioFailed)
+        case ReplyPlaybackController.playbackFailed: fallBack(.replyAudioFailed, .playerFailed)
+        default: fallBack(.replyAudioFailed, .playerFailed)
+        }
+    }
     private func fallBack(_ announcement: Announcement, _ reason: Fallback) {
         Self.log.notice("announcement_suppressed key=\(announcement.rawValue) reason=\(reason.rawValue)")
         fallback(announcement, reason)
     }
 }
-
-extension ReplyStreamKey {
-    static let announcementEndpoint: HostEndpoint.Identifier = "local-announcement"
-    var isAnnouncement: Bool { endpointID == Self.announcementEndpoint }
-}
-
-extension ReplyPlaybackController {
-    /// The recorded status of every reply whose audio did not play, by presentation id, observably.
-    var lostAudioStatuses: [String: String] { presentationStatuses.filter { Self.audioProblem($0.value) != nil } }
-
-    /// Queues a local announcement behind any reply (#825 S4b). It plays through the same player, so it shares the
-    /// echo canceller, pause and mute, and playback reports it as assistant speech like a reply; it is never a reply
-    /// entry, and never what Replay replays.
-    func enqueueAnnouncement(_ audio: [AudioPayload]) {
-        let key = ReplyStreamKey(endpointID: ReplyStreamKey.announcementEndpoint, replyID: UUID())
-        var stream = ReplyStreamState()
-        for payload in audio { stream.segments[payload.sequence] = payload }
-        streams[key] = stream
-        queue.append(key)
-        drain()
-    }
-}
-
-/// A bundled clip named `announce-<key>` (mono, its words exactly the key's text, #820), or else the system voice
-/// rendered to buffers with `AVSpeechSynthesizer.write`, never `speak`, so nothing is heard outside the reply player.
+/// A mono `announce-<key>` clip (exact text, #820), or `AVSpeechSynthesizer.write` buffers for the reply player.
 @MainActor
 public final class LocalAnnouncementRenderer: AnnouncementRendering {
     private var synthesizer: AVSpeechSynthesizer
@@ -107,7 +85,6 @@ public final class LocalAnnouncementRenderer: AnnouncementRendering {
         (self.makeSynthesizer, self.synthesizer, self.waitForDeadline) =
             (makeSynthesizer, makeSynthesizer(), waitForDeadline)
     }
-
     public func audio(for announcement: Announcement) async throws -> [AudioPayload] {
         // A clip that exists but can't be read falls back to the system voice, never to silence.
         var audio = try? clip(announcement)
@@ -122,7 +99,6 @@ public final class LocalAnnouncementRenderer: AnnouncementRendering {
                                 isFinal: start + step >= samples.count, bytes: bytes)
         }
     }
-
     private func clip(_ announcement: Announcement) throws -> ([Int16], Int)? {
         guard let url = Bundle.main.url(forResource: "announce-\(announcement.rawValue)", withExtension: "caf") else {
             return nil
@@ -133,7 +109,6 @@ public final class LocalAnnouncementRenderer: AnnouncementRendering {
         try file.read(into: buffer)
         return (Self.int16Samples(buffer), Int(buffer.format.sampleRate))
     }
-
     /// The synthesizer calls back off the main actor, so samples are gathered under a lock, as plain values. If it
     /// hasn't ended the utterance by the deadline, nothing is played (never a cut-off cue) and the cue falls back
     /// instead of hanging; late callbacks are ignored (#838 review).
@@ -162,7 +137,6 @@ public final class LocalAnnouncementRenderer: AnnouncementRendering {
             }
         }
     }
-
     /// Mono 16-bit samples from a buffer the synthesizer or a clip produced, in either sample format.
     nonisolated static func int16Samples(_ buffer: AVAudioPCMBuffer) -> [Int16] {
         let count = Int(buffer.frameLength)
@@ -173,14 +147,11 @@ public final class LocalAnnouncementRenderer: AnnouncementRendering {
         return (0..<count).map { Int16(max(-1, min(1, floats[$0])) * Float(Int16.max)) }
     }
 }
-
-/// Samples the synthesizer hands over on its own thread, gathered once and finished once.
 private final class SpokenSamples: @unchecked Sendable {
     private let lock = NSLock()
     private var samples: [Int16] = []
     private var rate = 0
     private var finished = false
-
     func append(_ more: [Int16], rate: Int) {
         lock.withLock {
             guard !finished else { return }
@@ -188,13 +159,42 @@ private final class SpokenSamples: @unchecked Sendable {
             self.rate = rate
         }
     }
-
     /// The gathered samples the first time, nil after.
     func finish() -> ([Int16], Int)? {
         lock.withLock {
             guard !finished else { return nil }
             finished = true
             return (samples, rate)
+        }
+    }
+}
+extension ReplyPlaybackController {
+    /// Observation releases retention; the next ordinary history trim may remove this presentation and status.
+    func acknowledgeAudioLoss(_ id: String) {
+        guard let separator = id.lastIndex(of: "|"),
+              let replyID = UUID(uuidString: String(id[id.index(after: separator)...])) else { return }
+        undeliveredLosses.remove(ReplyStreamKey(endpointID: String(id[..<separator]), replyID: replyID))
+    }
+}
+extension ReplyPlaybackController {
+    var presentationKeysToRetain: Set<ReplyStreamKey> {
+        var keys = Set(queue).union(firstAudio.keys).union(cancelledFirstAudio).union(undeliveredLosses)
+        keys.formUnion(playbackOrder)
+        if let activeKey { keys.insert(activeKey) }
+        if let lastKey { keys.insert(lastKey) }
+        return keys
+    }
+    func idleDeadline(_ watch: ReplyIdleWatch) -> ContinuousClock.Instant {
+        max(watch.bufferedUntil, watch.aheadUntil, watch.lastFrameAt).advanced(by: Self.streamIdleTimeout)
+    }
+    func firstAudioDeadline(_ watch: ReplyIdleWatch) -> ContinuousClock.Instant {
+        min(idleDeadline(watch), watch.bufferedUntil.advanced(by: Self.firstAudioMaxWait))
+    }
+    func armFirstAudio(for key: ReplyStreamKey) {
+        guard let watch = firstAudio[key] else { return }
+        watch.cancel?()
+        firstAudio[key]?.cancel = idleScheduler(idleNow().duration(to: firstAudioDeadline(watch))) { [weak self] in
+            self?.firstAudioDeadlinePassed(for: key)
         }
     }
 }

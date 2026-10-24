@@ -12,18 +12,21 @@ final class IdleRig {
     private struct Timer {
         let due: ContinuousClock.Instant
         let fire: @MainActor () -> Void
-        var live = true
     }
-    private var timers: [Timer] = []
+    private var timers: [Int: Timer] = [:]
+    private var nextTimerID = 0
+
+    var liveDeadlineCount: Int { timers.count }
 
     init() {
         controller = ReplyPlaybackController(player: player)
         controller.onStreamAbandoned = { [unowned self] in abandoned += 1 }
         controller.idleNow = { [unowned self] in now }
         controller.idleScheduler = { [unowned self] delay, fire in
-            let index = timers.count
-            timers.append(Timer(due: now.advanced(by: delay), fire: fire))
-            return { [weak self] in self?.timers[index].live = false }
+            let timerID = nextTimerID
+            nextTimerID += 1
+            timers[timerID] = Timer(due: now.advanced(by: delay), fire: fire)
+            return { [weak self] in self?.timers[timerID] = nil }
         }
     }
 
@@ -32,9 +35,11 @@ final class IdleRig {
         let end = now.advanced(by: duration)
         while now < end {
             now = min(end, now.advanced(by: .milliseconds(100)))
-            for index in timers.indices where timers[index].live && timers[index].due <= now {
-                timers[index].live = false
-                timers[index].fire()
+            // Keep scheduling order, but never rescan cancelled timers for every simulated 100 ms (#825).
+            for timerID in timers.keys.sorted() {
+                guard let timer = timers[timerID], timer.due <= now else { continue }
+                timers[timerID] = nil
+                timer.fire()
             }
         }
     }
@@ -46,12 +51,14 @@ final class IdleRig {
 
 final class IdlePlayer: ReplyAudioPlaying {
     var scheduled: [AudioPayload] = []
+    let scheduledBuffers = AsyncStream<AudioPayload>.makeStream(bufferingPolicy: .bufferingNewest(1))
     var cancelCount = 0
     private var completions: [@MainActor @Sendable () -> Void] = []
 
     func schedule(_ payload: AudioPayload, onPlayed: (@MainActor @Sendable () -> Void)?) {
         scheduled.append(payload)
         if let onPlayed { completions.append(onPlayed) }
+        scheduledBuffers.continuation.yield(payload)
     }
     func cancel() { cancelCount += 1 }
     func pause() {}

@@ -1,7 +1,6 @@
 import Foundation
 public import HailProtocol
 public import Observation
-
 @MainActor
 public protocol ReplyAudioPlaying: AnyObject {
     func schedule(_ payload: AudioPayload, onPlayed: (@MainActor @Sendable () -> Void)?) throws
@@ -11,25 +10,25 @@ public protocol ReplyAudioPlaying: AnyObject {
     func setMuted(_ muted: Bool)
     func replaceQueue(with payloads: [AudioPayload], onPlayed: (@MainActor @Sendable () -> Void)?) throws
 }
-
 public struct ReplyPresentation: Identifiable, Equatable, Sendable {
+    #if DEBUG
+    private var identity: String
+    public var id: String {
+        get { ReplyTraversal.onVisit?(); return identity }
+        set { identity = newValue }
+    }
+    init(id: String, endpointID: HostEndpoint.Identifier, host: String, target: String, transcript: String? = nil) {
+        identity = id; self.endpointID = endpointID
+        self.host = host; self.target = target; self.transcript = transcript
+    }
+    #else
     public var id: String
+    #endif
     public var endpointID: HostEndpoint.Identifier
     public var host: String
     public var target: String
     public var transcript: String?
 }
-
-struct ReplyStreamKey: Hashable {
-    var endpointID: HostEndpoint.Identifier
-    var replyID: UUID
-}
-
-struct ReplyStreamState {
-    var segments: [Int: AudioPayload] = [:]
-    var nextSequence = 0
-}
-
 /// Terminal-owned FIFO arbitration for identified reply streams. Frames may arrive out of order;
 /// only a contiguous sequence is scheduled, and the next reply cannot enter the player until the
 /// current reply's explicit final segment has actually played.
@@ -39,13 +38,13 @@ public final class ReplyPlaybackController {
     @ObservationIgnored private(set) var lastPlaybackError: NSError? // behind the last "Playback failed" (#282)
     public static let presentationLimit = 100
     public static let seenFrameLimit = 1_024
-
     public internal(set) var replies: [ReplyPresentation] = []
     public internal(set) var isPaused = false
-    public internal(set) var isMuted = false { didSet { pendingMuteAfter = nil } } // a change ends a waiting mute
+    public internal(set) var isMuted = false {
+        didSet { pendingMuteAfter = nil; cancelMutedFirstAudio() }
+    }
     public internal(set) var isCaptureSuppressed = false
     public internal(set) var status = "No replies yet"
-
     let player: any ReplyAudioPlaying
     var streams: [ReplyStreamKey: ReplyStreamState] = [:]
     var queue: [ReplyStreamKey] = []
@@ -61,28 +60,25 @@ public final class ReplyPlaybackController {
     var presentationStatuses: [String: String] = [:]
     /// The head stream's idle watch, its injectable clock and scheduler, and its diagnostics hook (#469, `+Idle`).
     @ObservationIgnored var idleWatch = ReplyIdleWatch()
+    @ObservationIgnored var firstAudio: [ReplyStreamKey: ReplyIdleWatch] = [:] // arrival deadlines (#825)
+    @ObservationIgnored var firstAudioByEndpoint: [HostEndpoint.Identifier: Set<ReplyStreamKey>] = [:]
+    @ObservationIgnored var cancelledFirstAudio = ReplyClaimWindow() // mute cancels the claim, not the reply
+    @ObservationIgnored var expiredFirstAudio = ReplyClaimWindow() // bounded silence claims, still playable
+    @ObservationIgnored var undeliveredLosses = ReplyClaimWindow() // awaiting observation, oldest first
+    // #825: inject a small overflow bound in tests; production retains 1,024 claims.
+    @ObservationIgnored var firstAudioClaimLimit = ReplyPlaybackController.seenFrameLimit
     @ObservationIgnored var idleNow: @MainActor () -> ContinuousClock.Instant = { .now }
     @ObservationIgnored var idleScheduler: @MainActor (Duration, @escaping @MainActor () -> Void)
         -> @MainActor () -> Void = ReplyPlaybackController.sleepThenFire
     @ObservationIgnored public var onStreamAbandoned: (@MainActor () -> Void)?
-    @ObservationIgnored var pendingMuteAfter: ReplyStreamKey? // a voice mute waiting for this reply (#404, `+Stop`)
-
-    var presentationKeysToRetain: Set<ReplyStreamKey> {
-        var keys = Set(queue)
-        keys.formUnion(playbackOrder)
-        if let activeKey { keys.insert(activeKey) }
-        if let lastKey { keys.insert(lastKey) }
-        return keys
+    @ObservationIgnored var pendingMuteAfter: ReplyStreamKey? { // a waiting voice mute (#404, `+Stop`)
+        didSet { cancelMutedFirstAudio() }
     }
-
-    var hasQueuedPlayback: Bool { !queue.isEmpty }
     public init(player: any ReplyAudioPlaying) {
         self.player = player
         observeAudioInterruptions(on: .default)
         observeCatchUp()
     }
-
-    public var latest: ReplyPresentation? { replies.last }
     /// An unmuted reply still owns the output path. This is intentionally conservative across
     /// segment gaps: accessibility speech must not compete with a reply that may resume.
     public var isReplyAudioOutputBusy: Bool {
@@ -91,27 +87,25 @@ public final class ReplyPlaybackController {
     public var presentationForControls: ReplyPresentation? {
         presentation(for: activeKey ?? queue.first) ?? latest
     }
-
     public func ingest(_ event: HostReplyEvent) {
+        if case .audio = event.frame.payload { noteEndpointAudio(event.endpointID) }
         if case .control(let control) = event.frame.payload { return handlePlaybackControl(control, event) }
         guard remember(event.frame.id), let descriptor = descriptor(in: event.frame) else { return }
         guard case .audio(let audio) = event.frame.payload else {
-            let presentationID = upsertPresentation(event, descriptor: descriptor)
-            let key = ReplyStreamKey(endpointID: event.endpointID, replyID: descriptor.id)
-            if presentationStatuses[presentationID] == nil,
-               streams[key] == nil, !completed.contains(key) {
-                presentationStatuses[presentationID] = "Received"
-            }
+            receiveText(event, descriptor: descriptor)
             return
         }
         let key = ReplyStreamKey(endpointID: event.endpointID, replyID: descriptor.id)
         guard !completed.contains(key) else { return }
+        cancelFirstAudio(for: [key])
         guard !refuseUnplayableAudio(audio, event: event, descriptor: descriptor, key: key) else { return }
         var stream = streams[key] ?? ReplyStreamState()
         if let existing = stream.segments[audio.sequence], existing != audio {
             setPresentationStatus("Conflicting audio segment refused", for: key)
             return
         }
+        expiredFirstAudio.remove(key)
+        undeliveredLosses.remove(key) // Accepted late audio clears the loss without another notice.
         stream.segments[audio.sequence] = audio
         if streams[key] == nil { supersedePausedReplies(); queue.append(key) }
         streams[key] = stream
@@ -123,11 +117,9 @@ public final class ReplyPlaybackController {
                 ? "Waiting for audio" : "Queued"
         }
     }
-
     private func finished(_ key: ReplyStreamKey, generation: UInt) -> @MainActor @Sendable () -> Void {
         { [weak self] in self?.playbackFinished(key, generation: generation) }
     }
-
     func playbackFinished(_ key: ReplyStreamKey, generation: UInt) {
         guard generation == playbackGeneration,
               let index = playbackOrder.firstIndex(of: key) else { return }
@@ -144,7 +136,6 @@ public final class ReplyPlaybackController {
             status = queue.isEmpty ? (isMuted ? "Muted" : "Played") : "Waiting for audio"
         }
     }
-
     func drain() {
         watchHeadIfChanged() // before any segment of a new head is scheduled (#469)
         dropAbandonedHold() // an abandoned reply's held tail never plays before the next (#825)
@@ -182,5 +173,28 @@ public final class ReplyPlaybackController {
             completed.insert(key)
             return
         }
+    }
+}
+/// The head stream's idle watch (#469): when its scheduled audio runs out, and when its last frame came.
+struct ReplyIdleWatch {
+    var key: ReplyStreamKey?
+    var bufferedUntil = ContinuousClock.now
+    var lastFrameAt = ContinuousClock.now
+    /// Audio the player plays before the head's: a replay (Codex P1 on #473). The head's audio starts after it.
+    var aheadUntil = ContinuousClock.now
+    var audioInterrupted = false
+    /// While paused, listening or interrupted nothing plays out: the unplayed audio, kept until playback resumes.
+    var heldRemaining: Duration?
+    var cancel: (@MainActor () -> Void)?
+}
+extension ReplyPlaybackController {
+    static func sleepThenFire(
+        _ delay: Duration, _ fire: @escaping @MainActor () -> Void
+    ) -> @MainActor () -> Void {
+        let task = Task { @MainActor in
+            guard (try? await Task.sleep(for: delay)) != nil else { return }
+            fire()
+        }
+        return { task.cancel() }
     }
 }
