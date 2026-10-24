@@ -14,10 +14,6 @@ struct AudioOutputRoutePolicy: Sendable {
     enum Category: CaseIterable, Sendable { case playAndRecord, playback, other }
     enum Reason: CaseIterable, Sendable {
         case newDeviceAvailable, oldDeviceUnavailable, override, categoryChange, routeConfigurationChange, other
-
-        var permitsRecovery: Bool {
-            [.newDeviceAvailable, .override, .routeConfigurationChange].contains(self)
-        }
     }
 
     /// Only the flags this policy changes or guards; the iOS adapter preserves every other option (#852).
@@ -39,12 +35,7 @@ struct AudioOutputRoutePolicy: Sendable {
     struct State: Equatable, Sendable {
         var externalOutputSeen = false
         var userChoseBuiltIn = false
-        var hardwareChangePending = false
-        // Success and the per-episode attempt guard are separate so a throwing effect cannot claim success (#852).
-        var restoreAttempted = false
-        var attemptedInEpisode = false
         var inputLossPending = false
-        var pendingEchoes: [AudioOutputRouteEcho] = []
         var lastInputs: [Port]?
         var lastOutputs: [Port]?
     }
@@ -66,84 +57,76 @@ struct AudioOutputRoutePolicy: Sendable {
 
     static func routeChange(_ route: Route, state: State) -> Decision {
         var result = Decision(options: route.options, state: state)
-        if route.outputs.contains(where: \.isExternalOutput) { result.state.userChoseBuiltIn = false }
-        let ownEcho = AudioOutputRouteEcho.consume(route, pending: &result.state.pendingEchoes)
+        let externalOutput = route.outputs.contains(where: \.isExternalOutput)
+        if externalOutput { result.state.userChoseBuiltIn = false }
         // The background keepalive owns playback/mixWithOthers; never reconfigure it (#282, #352, #852).
         guard route.category == .playAndRecord else { return result }
-        let preserveChoice = !ownEcho && preservesRouteChoice(route)
-        if !ownEcho { updateEpisode(route, state: &result.state) }
-        let lostUSBInput = route.previousInputs.contains(.usbAudio) && !route.inputs.contains(.usbAudio)
-            && !route.previousOutputs.contains(.usbAudio)
-        if route.outputs.contains(where: \.isExternalOutput) {
-            result.state.externalOutputSeen = true
+        let episode = updateEpisode(route, state: &result.state)
+        result.state.externalOutputSeen = externalOutput || result.state.externalOutputSeen
+            || route.previousOutputs.contains(where: \.isExternalOutput)
+        // Category/configuration notifications can cache evidence, but never cause effects or latch a choice.
+        guard route.reason != .categoryChange, route.reason != .routeConfigurationChange else { return result }
+        if externalOutput {
             result.options.defaultToSpeaker = false
             return result
         }
-        result.state.externalOutputSeen = result.state.externalOutputSeen
-            || route.previousOutputs.contains(where: \.isExternalOutput)
-        // (#852) an explicit route choice is never undone; ambiguous cases leave the route alone.
-        if preserveChoice { result.state.userChoseBuiltIn = true }
+        if preservesRouteChoice(route) { result.state.userChoseBuiltIn = true }
         if result.state.userChoseBuiltIn {
             result.preservedRouteChoice = true
             return result
         }
-        if route.reason == .oldDeviceUnavailable, !lostUSBInput {
-            // A USB-input-only loss retains even evidence remembered before the speaker fallback (#852).
+        if route.reason == .oldDeviceUnavailable, !lostUSBInput(route) {
             result.state.externalOutputSeen = false
             result.options = configurationOptions(outputs: route.outputs, options: route.options)
             return result
         }
-        guard !ownEcho else { return result }
-        let inputChanged = previousInputs(route, state: state) != route.inputs
-        guard route.reason.permitsRecovery, route.reason == .newDeviceAvailable || inputChanged,
-              result.state.externalOutputSeen, result.state.hardwareChangePending,
-              !result.state.attemptedInEpisode, !result.state.restoreAttempted else { return result }
-        result.options.defaultToSpeaker = false
-        guard !route.inputs.isEmpty, !route.outputs.isEmpty,
+        guard episode, result.state.externalOutputSeen,
+              !route.inputs.isEmpty, !route.outputs.isEmpty,
               route.outputs.allSatisfy(\.isBuiltInOutput) else { return result }
+        result.options.defaultToSpeaker = false
         result.clearOverride = true
-        result.state.attemptedInEpisode = true
-        result.state.hardwareChangePending = false
-        result.state.inputLossPending = false
         return result
     }
 
     private static func preservesRouteChoice(_ route: Route) -> Bool {
-        // Notification history wins over cached observations, including after an input-loss blip (#852).
+        // Even our own failed repair echo is indistinguishable from a user choice: leave it alone (#852).
         let hasPreviousRoute = !route.previousInputs.isEmpty || !route.previousOutputs.isEmpty
-        return route.reason == .override && route.outputs.allSatisfy(\.isBuiltInOutput)
+        return route.reason == .override && !route.outputs.isEmpty && route.outputs.allSatisfy(\.isBuiltInOutput)
             && (!hasPreviousRoute || route.previousInputs == route.inputs)
     }
 
+    private static func lostUSBInput(_ route: Route) -> Bool {
+        // A USB-input-only loss retains evidence remembered before the speaker fallback (#852).
+        route.previousInputs.contains(.usbAudio) && !route.inputs.contains(.usbAudio)
+            && !route.previousOutputs.contains(.usbAudio)
+    }
+
     private static func previousInputs(_ route: Route, state: State) -> [Port] {
-        // Use cached observations only when the notification has no previous route at all (#852).
+        // Notification history wins over cache, especially for a choice after an input-loss blip (#852).
         let hasPreviousRoute = !route.previousInputs.isEmpty || !route.previousOutputs.isEmpty
         return hasPreviousRoute ? route.previousInputs : (state.lastInputs ?? [])
     }
 
-    private static func updateEpisode(_ route: Route, state: inout State) {
-        let previousInputs = previousInputs(route, state: state)
-        let inputChanged = previousInputs != route.inputs
-        let inputsKnown = state.lastInputs != nil || !route.previousInputs.isEmpty || !route.previousOutputs.isEmpty
-        if inputChanged, inputsKnown, route.reason != .categoryChange {
-            state.hardwareChangePending = true
+    private static func updateEpisode(_ route: Route, state: inout State) -> Bool {
+        defer {
+            state.lastInputs = route.inputs
+            state.lastOutputs = route.outputs
         }
-        if inputChanged, previousInputs.contains(where: { !route.inputs.contains($0) }) {
+        guard route.reason != .categoryChange, route.reason != .routeConfigurationChange else { return false }
+        let previous = previousInputs(route, state: state)
+        let inputReturned = state.inputLossPending && previous != route.inputs && !route.inputs.isEmpty
+            && route.reason != .oldDeviceUnavailable
+        let newDevice = route.reason == .newDeviceAvailable
+            && (route.inputs != (state.lastInputs ?? route.previousInputs)
+                || route.outputs != (state.lastOutputs ?? route.previousOutputs)
+                || (state.inputLossPending && !route.inputs.isEmpty))
+        let episode = newDevice || inputReturned
+        if episode {
+            state.inputLossPending = false
+        } else if route.inputs != (state.lastInputs ?? previous),
+                  previous.contains(where: { !route.inputs.contains($0) }) {
             state.inputLossPending = true
         }
-        let newDevice = route.reason == .newDeviceAvailable
-            && (inputChanged || route.outputs != (state.lastOutputs ?? route.previousOutputs)
-                || (state.inputLossPending && !route.inputs.isEmpty))
-        let inputReturned = state.inputLossPending && inputChanged && !route.inputs.isEmpty
-            && ![Reason.override, .categoryChange, .oldDeviceUnavailable].contains(route.reason)
-        if newDevice || inputReturned {
-            state.hardwareChangePending = true
-            state.restoreAttempted = false
-            state.attemptedInEpisode = false
-            state.inputLossPending = false
-        }
-        // Only hardware/input evidence re-arms attempts; observing external output alone does not (#852).
-        state.lastInputs = route.inputs
-        state.lastOutputs = route.outputs
+        return episode
     }
 }

@@ -37,7 +37,6 @@ import Testing
         session.drainEchoes()
         #expect(session.categories == categoriesBeforeBlip + 1)
         #expect(session.clears == 1)
-        #expect(session.state.restoreAttempted)
     }
 
     @Test func twoSuccessiveUserChoicesExecuteZeroEffects() {
@@ -100,7 +99,7 @@ import Testing
     @Test func unknownPreviousOutputLeavesOverrideAlone() {
         let session = ScriptedOutputSession()
         session.options.defaultToSpeaker = true
-        session.state = .init(externalOutputSeen: true, hardwareChangePending: true)
+        session.state = .init(externalOutputSeen: true)
         session.send(.init(
             outputs: [.speaker], inputs: [.usbAudio], previousOutputs: [.other],
             previousInputs: [.usbAudio], reason: .override

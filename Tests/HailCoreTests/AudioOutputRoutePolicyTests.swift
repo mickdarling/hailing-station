@@ -7,7 +7,7 @@ import Testing
         .bluetoothA2DP, .bluetoothLE, .bluetoothHFP, .headphones, .usbAudio, .lineOut, .airPlay, .carAudio
     ]
     static let recoveryReasons: [Policy.Reason] = [
-        .newDeviceAvailable, .override, .routeConfigurationChange
+        .newDeviceAvailable
     ]
 
     @Test(arguments: Policy.Port.allCases)
@@ -42,14 +42,13 @@ import Testing
             previousOutputs: [.bluetoothA2DP], previousInputs: [.usbAudio], reason: .override
         ), state: .init())
         #expect(blip.state.externalOutputSeen)
-        #expect(!blip.options.defaultToSpeaker)
+        #expect(blip.options.defaultToSpeaker)
         #expect(!blip.clearOverride)
         let returned = Policy.routeChange(.init(
             options: blip.options, outputs: [.speaker], inputs: [.usbAudio], reason: .newDeviceAvailable
         ), state: blip.state)
         #expect(returned.clearOverride)
         #expect(!returned.options.defaultToSpeaker)
-        #expect(returned.state.attemptedInEpisode)
         for reason in Self.recoveryReasons {
             let repeated = Policy.routeChange(.init(
                 options: returned.options, outputs: [.speaker], inputs: [.usbAudio], reason: reason
@@ -64,7 +63,7 @@ import Testing
         let decision = Policy.routeChange(.init(
             options: .init(defaultToSpeaker: true), outputs: [output], inputs: [.usbAudio],
             previousOutputs: [.bluetoothA2DP], previousInputs: [.builtInMic], reason: reason
-        ), state: .init(hardwareChangePending: true))
+        ), state: .init())
         #expect(decision.clearOverride == Self.recoveryReasons.contains(reason))
         if Self.recoveryReasons.contains(reason) { #expect(!decision.options.defaultToSpeaker) }
     }
@@ -73,7 +72,7 @@ import Testing
     func reapplyNotificationsCannotLoopEvenWhenTheRepairFails(_ reason: Policy.Reason) {
         let repaired = Policy.routeChange(.init(
             outputs: [.speaker], inputs: [.usbAudio], previousOutputs: [.bluetoothA2DP],
-            previousInputs: [.builtInMic], reason: .override
+            previousInputs: [.builtInMic], reason: .newDeviceAvailable
         ), state: .init())
         let ownNotification = Policy.routeChange(.init(
             options: repaired.options, outputs: [.speaker], inputs: [.usbAudio], reason: reason
@@ -82,17 +81,17 @@ import Testing
     }
 
     @Test(arguments: Self.externalOutputs, Policy.Reason.allCases)
-    func seeingExternalOutputRemovesSpeakerDefaultWithoutClearingAnOverride(
+    func externalOutputCachesEvidenceWithoutClearingAnOverride(
         _ output: Policy.Port, _ reason: Policy.Reason
     ) {
         let decision = Policy.routeChange(.init(
             options: .init(defaultToSpeaker: true), outputs: [output], inputs: [.usbAudio], reason: reason
-        ), state: .init(externalOutputSeen: true, restoreAttempted: true,
+        ), state: .init(externalOutputSeen: true,
                        lastInputs: [.usbAudio], lastOutputs: [output]))
-        #expect(!decision.options.defaultToSpeaker)
+        let cacheOnly = reason == .categoryChange || reason == .routeConfigurationChange
+        #expect(decision.options.defaultToSpeaker == cacheOnly)
         #expect(!decision.clearOverride)
         #expect(decision.state.externalOutputSeen)
-        #expect(decision.state.restoreAttempted)
     }
 }
 
@@ -120,7 +119,7 @@ extension AudioOutputRoutePolicyTests {
     }
 
     @Test func removalForgetsExternalOutputAndExternalObservationDoesNotRearm() {
-        let remembered = Policy.State(externalOutputSeen: true, restoreAttempted: true)
+        let remembered = Policy.State(externalOutputSeen: true)
         let removed = Policy.routeChange(.init(
             outputs: [.speaker], inputs: [.builtInMic], previousOutputs: [.headphones], reason: .oldDeviceUnavailable
         ), state: remembered)
@@ -164,7 +163,7 @@ extension AudioOutputRoutePolicyTests {
     func unrelatedCategoriesRemainUntouched(_ output: Policy.Port, _ reason: Policy.Reason) {
         for speakerDefault in [false, true] {
             let original = Policy.Options(defaultToSpeaker: speakerDefault)
-            let state = Policy.State(externalOutputSeen: true, restoreAttempted: true)
+            let state = Policy.State(externalOutputSeen: true)
             let decision = Policy.routeChange(.init(
                 category: .other, options: original, outputs: [output], inputs: [], reason: reason
             ), state: state)

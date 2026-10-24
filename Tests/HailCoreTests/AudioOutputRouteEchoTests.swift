@@ -45,74 +45,54 @@ import Testing
         #expect(session.state.userChoseBuiltIn)
     }
 
-    @Test func repairEchoesDoNotChooseBuiltInOrPreventNextEpisode() {
+    @Test func externalRepairEchoAllowsLaterGenuineEpisode() {
         let session = ScriptedOutputSession()
+        session.overrideOutputs = [.bluetoothA2DP]
         session.send(Self.repairRoute)
         session.drainEchoes()
         #expect(session.categories == 1)
         #expect(session.clears == 1)
         #expect(!session.state.userChoseBuiltIn)
-        session.send(.init(
-            outputs: [.speaker], inputs: [], previousOutputs: [.speaker],
-            previousInputs: [.usbAudio], reason: .override
-        ))
-        session.send(.init(
-            outputs: [.speaker], inputs: [.usbAudio], previousOutputs: [.speaker], reason: .newDeviceAvailable
-        ))
+        Self.usbCycle(session)
         session.drainEchoes()
         #expect(session.categories == 2)
         #expect(session.clears == 2)
         #expect(!session.state.userChoseBuiltIn)
     }
 
-    @Test func ownEchoTokenDoesNotMatchAnotherPreviousRoute() {
+    @Test(arguments: [0, 4])
+    func builtInRepairEchoConservativelyLatchesEvenAfterUnrelatedEvents(_ intervening: Int) {
         let session = ScriptedOutputSession()
         session.send(Self.repairRoute)
-        session.send(.init(
-            outputs: [.speaker], inputs: [.usbAudio], previousOutputs: [.receiver],
-            previousInputs: [.usbAudio], reason: .override
-        ))
-        #expect(session.state.userChoseBuiltIn)
-        session.drainEchoes()
-        #expect(session.state.userChoseBuiltIn)
-        #expect(session.clears == 1)
-    }
-
-    @Test func consumedEchoTokenCannotHideASubsequentMatchingChoice() {
-        let session = ScriptedOutputSession()
-        session.send(Self.repairRoute)
-        session.drainEchoes()
-        #expect(!session.state.userChoseBuiltIn)
-        session.send(.init(
-            outputs: [.speaker], inputs: [.usbAudio], previousOutputs: [.speaker],
-            previousInputs: [.usbAudio], reason: .override
-        ))
-        #expect(session.state.userChoseBuiltIn)
-        #expect(session.categories == 1)
-        #expect(session.clears == 1)
-    }
-
-    @Test func unusedOwnEchoTokensExpireBeforeLaterUserChoice() {
-        let session = ScriptedOutputSession()
-        session.send(Self.repairRoute)
-        for _ in 0..<3 {
-            session.send(.init(
-                outputs: [.speaker], inputs: [.usbAudio], previousOutputs: [.speaker],
-                previousInputs: [.usbAudio], reason: .routeConfigurationChange
-            ))
+        for _ in 0..<intervening {
+            session.send(.init(outputs: [.speaker], inputs: [.usbAudio], reason: .routeConfigurationChange))
         }
-        session.send(.init(
-            outputs: [.speaker], inputs: [.usbAudio], previousOutputs: [.speaker],
-            previousInputs: [.usbAudio], reason: .override
-        ))
-        #expect(session.state.userChoseBuiltIn)
         session.drainEchoes()
-        #expect(session.clears == 1)
-        #expect(session.categories == 1)
+        #expect(session.state.userChoseBuiltIn)
+        let effects = session.effects
+        Self.usbCycle(session)
+        session.drainEchoes()
+        #expect(session.effects == effects)
+        session.send(.init(outputs: [.bluetoothA2DP], inputs: [.usbAudio], reason: .categoryChange))
+        #expect(!session.state.userChoseBuiltIn)
+        session.overrideOutputs = [.bluetoothA2DP]
+        Self.usbCycle(session)
+        session.drainEchoes()
+        #expect(session.clears == 2)
     }
 
-    private static var repairRoute: Policy.Route {
+    static func usbCycle(_ session: ScriptedOutputSession) {
+        session.send(.init(
+            outputs: [.speaker], inputs: [], previousOutputs: [.speaker],
+            previousInputs: [.usbAudio], reason: .oldDeviceUnavailable
+        ))
+        session.send(.init(
+            outputs: [.speaker], inputs: [.usbAudio], previousOutputs: [.speaker], reason: .newDeviceAvailable
+        ))
+    }
+
+    static var repairRoute: Policy.Route {
         .init(outputs: [.speaker], inputs: [.usbAudio], previousOutputs: [.bluetoothA2DP],
-              previousInputs: [.builtInMic], reason: .override)
+              previousInputs: [.builtInMic], reason: .newDeviceAvailable)
     }
 }

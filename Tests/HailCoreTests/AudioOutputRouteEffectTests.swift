@@ -22,10 +22,10 @@ import Testing
         #expect(session.clears == 0)
         session.send(.init(outputs: [.speaker], inputs: [.usbAudio], reason: .newDeviceAvailable))
         session.drainEchoes()
-        #expect(session.categories == 2)
+        #expect(session.categories == 1)
         #expect(session.clears == 1)
-        #expect(session.state.restoreAttempted)
-        #expect(!session.state.userChoseBuiltIn)
+        // An echo still on built-in output is conservatively treated as a choice (#852).
+        #expect(session.state.userChoseBuiltIn)
     }
 
     @Test func inputReturnInCategoryEchoWaitsForAvailability() {
@@ -48,9 +48,9 @@ import Testing
         session.failure = failClear ? .clearOverride : .setCategory(.init())
         session.send(.init(
             outputs: [.speaker], inputs: [.usbAudio], previousOutputs: [.bluetoothA2DP],
-            previousInputs: [.builtInMic], reason: .override
+            previousInputs: [.builtInMic], reason: .newDeviceAvailable
         ))
-        #expect(!session.state.restoreAttempted)
+        #expect(session.applySucceeded == false)
         session.drainEchoes()
         #expect(session.categories == 1)
         session.send(.init(
@@ -63,7 +63,7 @@ import Testing
         session.drainEchoes()
         #expect(session.categories == 2)
         #expect(session.clears == (failClear ? 2 : 1))
-        #expect(session.state.restoreAttempted)
+        #expect(session.applySucceeded == true)
     }
 
     @Test func repeatedUserChoiceAndUSBBlipExecuteZeroEffects() {
@@ -121,7 +121,9 @@ final class ScriptedOutputSession {
     var state = Policy.State()
     var options = Policy.Options()
     var effects: [Effect] = []
+    var applySucceeded: Bool?
     var failure: Effect?
+    var overrideOutputs: [Policy.Port]?
     var preservedChoices: [Bool] = []
     private var echoes: [Policy.Route] = []
 
@@ -132,7 +134,7 @@ final class ScriptedOutputSession {
         var current = route
         current.options = options
         let snapshot = current
-        AudioOutputRouteDriver.process(snapshot, state: &state, observeDecision: { decision in
+        applySucceeded = AudioOutputRouteDriver.process(snapshot, state: &state, observeDecision: { decision in
             self.preservedChoices.append(decision.preservedRouteChoice)
         }, perform: { effect in
             try self.perform(effect, route: snapshot)
@@ -153,11 +155,12 @@ final class ScriptedOutputSession {
         echo.previousInputs = route.inputs
         echo.previousOutputs = route.outputs
         echo.reason = effect == .clearOverride ? .override : .categoryChange
-        echoes.append(echo)
         if effect == failure {
             failure = nil
             throw Failure.scripted
         }
+        if effect == .clearOverride, let overrideOutputs { echo.outputs = overrideOutputs }
+        echoes.append(echo)
         if case .setCategory(let desired) = effect { options = desired }
     }
 }
