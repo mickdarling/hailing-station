@@ -67,11 +67,9 @@ import Testing
         controller.ingest(event(active, sequence: 0, final: false, byte: 10))
 
         for index in 0...ReplyPlaybackController.presentationLimit {
-            let reply = descriptor(id: UUID(), stream: UUID())
-            let text = Frame(
-                timestamp: Int64(index), target: reply.targetID, source: reply.hostID,
-                payload: .text(TextPayload(text: "Reply \(index)", reply: reply))
-            )
+            let reply = ReplyDescriptor(id: UUID(), hostID: active.hostID, targetID: active.targetID)
+            let text = Frame(timestamp: Int64(index), target: reply.targetID, source: reply.hostID,
+                             payload: .text(TextPayload(text: "Reply \(index)", reply: reply)))
             controller.ingest(HostReplyEvent(endpointID: "main", frame: text))
         }
 
