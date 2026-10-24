@@ -270,16 +270,16 @@ extension DeviceDiagnostics {
             let timeout = Int64(ReplyPlaybackController.streamIdleTimeout / .milliseconds(1))
             self?.record(.replyPlaybackError, [.code: .token(Self.streamAbandoned), .ms: .integer(timeout)])
         }
-        let (busy, failures) = withObservationTracking({
+        let (busy, failures) = withObservationTracking {
             (playback.isReplyAudioOutputBusy, Set(playback.presentationStatuses.compactMap { id, status in
                 Self.playbackFailure(status).map { "\(id)|\($0)" }
             }))
-        }, onChange: { [weak self, weak playback] in
+        } onChange: { [weak self, weak playback] in
             Task { @MainActor in
                 guard let self, let playback else { return }
                 self.watch(playback)
             }
-        })
+        }
         if busy != lastPlayback.busy {
             // Gaps heard since playback began (#737), from a player that counts them: how many, and their total
             // length. Anything counted while not busy (idle) was never heard, so a start drops it.
