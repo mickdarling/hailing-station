@@ -36,6 +36,7 @@ enum AudioOutputSessionRouting {
         return AudioOutputRoutePolicy.Route(
             category: category, options: policyOptions(session.categoryOptions),
             outputs: portTypes(current.outputs), inputs: portTypes(current.inputs),
+            availableInputs: portTypes(session.availableInputs ?? []),
             previousOutputs: snapshot.previousOutputs,
             previousInputs: snapshot.previousInputs, reason: reason(snapshot.reasonRaw)
         )
