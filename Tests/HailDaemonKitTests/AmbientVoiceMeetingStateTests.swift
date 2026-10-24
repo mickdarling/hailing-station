@@ -18,7 +18,10 @@ import Testing
         #expect(rig.changes.last == "on=false profile=meeting reason=privacy")
         let lines = MeetingRig.lines(true) + "{\"duck\":true}\n" + MeetingRig.lines(false)
         #expect(await eventually { (try? rig.fake.recorded("control.txt")) == lines }, "privacy child writes marker")
-        #expect(rig.details("ambient_meeting_confirmed").count == 1)
+        // Review round 1: only once the chain has drained does "no meeting clip" mean anything.
+        await rig.drainMeetingChanges()
+        #expect(rig.details("ambient_meeting_confirmed") == ["on=true profile=meeting confirm=confirmmeetingon/0:sent"])
+        try await barrier(on: rig.socket, step: "no meeting clip after privacy")
         await rig.finish()
     }
 
@@ -57,7 +60,12 @@ import Testing
         #expect(await eventually { rig.changes.count == 3 }, "exclusive hand-off hook marker")
         #expect(rig.changes == ["on=true profile=meeting reason=voice", "on=false profile=meeting reason=media",
                                 "on=true profile=rubberDuck reason=voice"])
-        #expect(rig.details("ambient_meeting_confirmed").count == 2)
+        // The confirmation log follows the clip's send, after the hook: waited for itself, then the chain drained.
+        #expect(await eventually { rig.details("ambient_meeting_confirmed").count == 2 }, "hand-off clip log marker")
+        await rig.drainMeetingChanges()
+        #expect(rig.details("ambient_meeting_confirmed") == ["meeting", "rubberDuck"].map {
+            "on=true profile=\($0) confirm=confirmmeetingon/0:sent"
+        })
         await rig.finish()
     }
 
@@ -75,13 +83,12 @@ import Testing
         await rig.finish()
     }
 
-    @Test func staleTimeoutAndRepeatedCommandsDoNothing() async throws {
+    @Test func staleTimeoutAndAbsentExitDoNothing() async throws {
         let rig = try await MeetingRig()
         defer { rig.close() }
         #expect(try await rig.confirmation() == MeetingRig.on.text)
         let connection = try #require(rig.connection()), router = rig.env.router
         let old = try #require(router.state.withLock { $0.meeting[connection]?.token })
-        #expect(router.setMeeting(on: true, connection: connection, reason: "voice") == 0)
         #expect(router.setMeeting(on: false, connection: connection, reason: "voice") == 1)
         #expect(router.setMeeting(on: false, connection: connection, reason: "voice") == 0)
         #expect(router.setMeeting(on: true, connection: connection, reason: "voice") == 1)
@@ -100,6 +107,7 @@ import Testing
         let rig = try await MeetingRig()
         defer { rig.close() }
         #expect(try await rig.confirmation() == MeetingRig.on.text)
+        try rig.quietLaterChildren()
         let connection = try #require(rig.connection()), router = rig.env.router
         let token = router.state.withLock { $0.meeting[connection]?.token }
         await bounded("meeting child reload") { #expect(await router.reload() == .reloaded) }
@@ -114,6 +122,7 @@ import Testing
         let rig = try await MeetingRig()
         defer { rig.close() }
         #expect(try await rig.confirmation() == MeetingRig.on.text)
+        try rig.quietLaterChildren()
         try await recipientSocketSend(audio(rig.stream, 1, final: true), on: rig.socket)
         await boundedSettle(rig.env.router, step: "meeting first child ended")
         let next = UUID()

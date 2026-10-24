@@ -9,6 +9,26 @@ struct AmbientMeetingTimer {
     let started: Date
 }
 
+/// One meeting change for MM-C's seam and the owner's clip (#735 meeting mode (rightyo#227)). `token` is an
+/// on-change's timeout, which its clip checks again when it plays; `renewed` is a same-profile re-entry.
+struct AmbientMeetingChange: Sendable {
+    let on: Bool
+    let profile: MeetingProfile
+    let reason: String
+    let reported: Int
+    var token: UUID?
+    var renewed = false
+
+    /// The clip it plays: a timeout says "ended"; rubber duck falls back to the meeting clips until recorded.
+    var persona: String {
+        if reason == "timeout" { return AmbientStopConfirmation.meetingEnded }
+        if profile == .rubberDuck {
+            return on ? AmbientStopConfirmation.rubberDuckOn : AmbientStopConfirmation.rubberDuckOff
+        }
+        return on ? AmbientStopConfirmation.meetingOn : AmbientStopConfirmation.meetingOff
+    }
+}
+
 /// Host-only meeting state (#735 meeting mode (rightyo#227)). Recording and a capability-gated device notice are
 /// later slices; the owner's pause and the rest of RightyO's attention policy stay as they are.
 extension AmbientRightyoRouter {
@@ -54,18 +74,19 @@ extension AmbientRightyoRouter {
     }
 
     /// Changes one host session (#735 meeting mode (rightyo#227)), atomically with media/privacy and registration.
-    /// Same-profile entries and absent exits change nothing; a profile switch keeps the original start, rearms the
-    /// timeout and reports one real on-change. `expected` admits only the current timeout's expiry.
+    /// An absent exit changes nothing. A same-profile entry rearms the timeout and replays the on clip as status, as
+    /// media mode does, with no hook: nothing really changed (review round 1). A profile switch keeps the original
+    /// start, rearms the timeout and reports one real on-change. A torn-down or private connection refuses entry.
+    /// `expected` admits only the current timeout's expiry.
     @discardableResult
     func setMeeting(on: Bool, profile: MeetingProfile = .meeting, connection: UUID, reason: String,
                     expected: UUID? = nil) -> Int {
-        let reported = state.withLock { state -> Int? in
-            if let expected, state.meeting[connection]?.token != expected { return 0 }
-            if on, state.duck[connection] != nil { return nil }
-            guard on else { return endMeeting(connection: connection, reason: reason, in: &state) }
-            guard state.meeting[connection]?.profile != profile else { return 0 }
-            let started = state.meeting[connection]?.started ?? Date(), token = UUID()
-            state.meeting.removeValue(forKey: connection)?.timer.cancel()
+        let decided = state.withLock { state -> (reported: Int, refused: String?) in
+            if let expected, state.meeting[connection]?.token != expected { return (0, nil) }
+            if on, let refused = Self.entryRefusal(connection, in: state) { return (0, refused) }
+            guard on else { return (endMeeting(connection: connection, reason: reason, in: &state), nil) }
+            let current = state.meeting.removeValue(forKey: connection), token = UUID()
+            current?.timer.cancel()
             let timeout = configuration.meetingTimeout
             let timer = Task { [weak self] in
                 try? await Task.sleep(for: .seconds(timeout))
@@ -73,19 +94,21 @@ extension AmbientRightyoRouter {
                 self?.setMeeting(on: false, connection: connection, reason: "timeout", expected: token)
             }
             state.meeting[connection] = AmbientMeetingTimer(token: token, timer: timer, profile: profile,
-                                                             started: started)
+                                                             started: current?.started ?? Date())
             // Install meeting first: leaving media writes true once, never a false/true pair.
             let reported = state.media[connection] != nil
                 ? changeMedia(false, connection: connection, reason: "voice", in: &state)
                 : reportModes(connection: connection, in: state)
-            meetingChanged((true, profile), connection: connection, reason: reason, reported: reported,
-                           listener: state.listener?.value)
-            return reported
+            let change = AmbientMeetingChange(on: true, profile: profile, reason: reason, reported: reported,
+                                              token: token, renewed: current?.profile == profile)
+            meetingChanged(change, connection: connection, listener: state.listener?.value)
+            return (reported, nil)
         }
-        if let reported { return reported }
-        emit("ambient_meeting", connection: connection,
-             detail: "on=true profile=\(profile.rawValue) reason=\(reason) reported=0 refused=private")
-        return 0
+        if let refused = decided.refused {
+            emit("ambient_meeting", connection: connection,
+                 detail: "on=true profile=\(profile.rawValue) reason=\(reason) reported=0 refused=\(refused)")
+        }
+        return decided.reported
     }
 
     /// Ends a real session under the caller's lock (#735 meeting mode (rightyo#227)). Media entry supplies its own
@@ -95,37 +118,42 @@ extension AmbientRightyoRouter {
         guard let meeting = state.meeting.removeValue(forKey: connection) else { return 0 }
         meeting.timer.cancel()
         let reported = report && reason != "connection" ? reportModes(connection: connection, in: state) : 0
-        meetingChanged((false, meeting.profile), connection: connection, reason: reason, reported: reported,
-                       listener: state.listener?.value)
+        meetingChanged(AmbientMeetingChange(on: false, profile: meeting.profile, reason: reason, reported: reported),
+                       connection: connection, listener: state.listener?.value)
         return reported
     }
 
     /// MM-C's seam and the owner's confirmation, queued under the state lock and run outside it, in change order.
-    /// Only voice/timeout changes a child took play a clip. Missing clips log `no_clips` and never undo the mode.
-    private func meetingChanged(_ mode: (on: Bool, profile: MeetingProfile), connection: UUID, reason: String,
-                                reported: Int, listener: WebSocketListener?) {
-        let (on, profile) = mode
-        let hook = configuration.onMeetingChange
+    /// Only voice/timeout changes a child took play a clip; a renewal plays its clip with no hook. Missing clips log
+    /// `no_clips` and never undo the mode. An on clip is checked again just before it plays (review round 1): one
+    /// whose meeting has since ended, been replaced or gone private is `superseded`, never heard after "Privacy on".
+    private func meetingChanged(_ change: AmbientMeetingChange, connection: UUID, listener: WebSocketListener?) {
+        let hook = change.renewed ? nil : configuration.onMeetingChange
         meetingChanges.enqueue { [weak self, weak listener] in
-            hook?(connection, on, profile, reason)
+            hook?(connection, change.on, change.profile, change.reason)
             guard let self else { return }
+            let renewed = change.renewed ? " renewed=true" : ""
             emit("ambient_meeting", connection: connection,
-                 detail: "on=\(on) profile=\(profile.rawValue) reason=\(reason) reported=\(reported)")
-            guard reason == "voice" || reason == "timeout" else { return }
+                 detail: "on=\(change.on) profile=\(change.profile.rawValue) reason=\(change.reason) "
+                    + "reported=\(change.reported)\(renewed)")
+            guard change.reason == "voice" || change.reason == "timeout" else { return }
             var confirm = "unreported"
-            if reported > 0 {
-                let persona: String
-                if reason == "timeout" {
-                    persona = AmbientStopConfirmation.meetingEnded
-                } else if profile == .rubberDuck {
-                    persona = on ? AmbientStopConfirmation.rubberDuckOn : AmbientStopConfirmation.rubberDuckOff
-                } else {
-                    persona = on ? AmbientStopConfirmation.meetingOn : AmbientStopConfirmation.meetingOff
-                }
-                confirm = await confirmVoiceMute(persona, on: connection, listener: listener)
+            if change.reported > 0, !meetingCurrent(change, connection: connection) {
+                confirm = "superseded"
+            } else if change.reported > 0 {
+                confirm = await confirmVoiceMute(change.persona, on: connection, listener: listener)
             }
             emit("ambient_meeting_confirmed", connection: connection,
-                 detail: "on=\(on) profile=\(profile.rawValue) confirm=\(confirm)")
+                 detail: "on=\(change.on) profile=\(change.profile.rawValue) confirm=\(confirm)")
+        }
+    }
+
+    /// Whether an on-change is still the connection's meeting, under the lock that changes it: the same timeout, not
+    /// private and not torn down. An off-change has nothing to supersede it.
+    private func meetingCurrent(_ change: AmbientMeetingChange, connection: UUID) -> Bool {
+        guard change.on else { return true }
+        return state.withLock { state in
+            state.meeting[connection]?.token == change.token && Self.entryRefusal(connection, in: state) == nil
         }
     }
 }

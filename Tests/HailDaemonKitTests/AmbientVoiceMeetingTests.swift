@@ -83,6 +83,28 @@ import Testing
         #expect(seen.withLock { $0 } == (delivered == 0 ? [.meeting] : []))
     }
 
+    /// Review round 1: MM-C records a meeting, so its commands need an enrolled session and the owner's turn, as a
+    /// note does. On an anonymous session the phrase is an ordinary request; media and mute stay as they are.
+    @Test(arguments: [(true, "Rightyo, meeting mode."), (true, "Rightyo, end the meeting."),
+                       (false, "Rightyo, meeting mode."), (false, "Rightyo, end the meeting.")])
+    func meetingCommandsNeedAnEnrolledOwner(_ enrolled: Bool, _ words: String) async throws {
+        let fake = try FakeRightyo(AmbientWiringVoiceMuteTests.fixture(saying: words, enrolled: enrolled))
+        defer { fake.cleanUp() }
+        try fake.install(fixture: enrolled ? "enrolled-formed-request.jsonl" : "tool-events.jsonl")
+        let seen = Mutex<[Bool]>([])
+        var settings = RightyoAmbientPipeline.Configuration(
+            executable: fake.executable, config: fake.config, target: "tmux:demo", binding: "pinned",
+            connection: UUID(), allowSynthetic: true, timing: .init(eofGrace: 20, termGrace: 20))
+        settings.replyControl = true
+        settings.onVoiceMeeting = { on, _ in seen.withLock { $0.append(on) } }
+        let pipeline = try RightyoAmbientPipeline(configuration: settings, dispatcher: RecordingAmbientDispatcher())
+        pipeline.finishInput()
+        await bounded("meeting speakers pipeline") {
+            do { #expect(try await pipeline.run().delivered == (enrolled ? 0 : 1)) } catch { Issue.record(error) }
+        }
+        #expect(seen.withLock { $0 } == (enrolled ? [words.contains("end") == false] : []))
+    }
+
     @Test func ownerOnThenOffReachesChildrenAndPlaysClipsInOrder() async throws {
         let rig = try await MeetingRig(phrases: ["meeting mode", "meeting mode off"])
         defer { rig.close() }
@@ -107,7 +129,7 @@ import Testing
     }
 
     @Test func rubberDuckUsesMeetingFallbackClips() async throws {
-        let rig = try await MeetingRig(phrases: ["let me think out loud", "done thinking"])
+        let rig = try await MeetingRig(phrases: ["rubber duck mode", "rubber duck mode off"])
         defer { rig.close() }
         #expect(try await rig.confirmation() == MeetingRig.on.text)
         try rig.releaseOff()

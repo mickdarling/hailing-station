@@ -16,6 +16,14 @@ private final class MeetingChanges: Sendable {
     let list = Mutex<[(UUID, String)]>([])
 }
 
+/// A one-way latch a test opens; work queued behind it on a chain waits (bounded) until it is open.
+final class MeetingLatch: Sendable {
+    private let opened = Mutex(false)
+    var isOpen: Bool { opened.withLock { $0 } }
+    func open() { opened.withLock { $0 = true } }
+    func wait() async { _ = await eventually { self.isOpen } }
+}
+
 /// Synthetic enrolled meeting turns through the loopback listener (#735 meeting mode (rightyo#227)). A marker
 /// releases the second turn only after the test heard the first confirmation; no timing inference separates them.
 final class MeetingRig: Sendable {
@@ -24,9 +32,17 @@ final class MeetingRig: Sendable {
     static let off = AmbientAckClip(pcm: Data(repeating: 7, count: 480), sampleRate: 24_000, text: "Meeting mode off.")
     static let ended = AmbientAckClip(pcm: Data(repeating: 8, count: 480), sampleRate: 24_000,
                                      text: "Meeting mode ended.")
+    static let privacyOn = AmbientAckClip(pcm: Data(repeating: 9, count: 480), sampleRate: 24_000,
+                                         text: "Privacy on. I'm only listening for my name.")
     static var clips: AmbientAckLibrary {
         AmbientAckLibrary(clips: [AmbientStopConfirmation.meetingOn: [on], AmbientStopConfirmation.meetingOff: [off],
                                  AmbientStopConfirmation.meetingEnded: [ended]])
+    }
+    /// The meeting clips and "Privacy on.", for a privacy entry racing a meeting's clip.
+    static var privacyClips: AmbientAckLibrary {
+        AmbientAckLibrary(clips: [AmbientStopConfirmation.meetingOn: [on], AmbientStopConfirmation.meetingOff: [off],
+                                 AmbientStopConfirmation.meetingEnded: [ended],
+                                 AmbientStopConfirmation.privacyOn: [privacyOn]])
     }
     let fake: FakeRightyo
     let env: AmbientWiringRig
@@ -83,11 +99,32 @@ final class MeetingRig: Sendable {
     func details(_ name: String) -> [String] {
         events.list.withLock { $0.filter { $0.event == name }.map { $0.detail ?? "" } }
     }
+    /// Every later child of the fake replays its turns; from now on its first says an ordinary request instead, so
+    /// a new or reloaded child does not repeat the meeting command (a renewal) on its own.
+    func quietLaterChildren() throws {
+        let url = fake.directory.appendingPathComponent("events.jsonl")
+        let events = try String(contentsOf: url, encoding: .utf8)
+        try events.replacingOccurrences(of: "Rightyo, meeting mode.", with: "Rightyo, archive the project.")
+            .write(to: url, atomically: true, encoding: .utf8)
+    }
     func releaseOff() throws { try Data().write(to: fake.directory.appendingPathComponent("next-turn")) }
+    /// Waits (bounded) for every hook and clip queued on the meeting chain so far: a sentinel queued behind them.
+    func drainMeetingChanges() async {
+        let drained = MeetingLatch()
+        env.router.meetingChanges.enqueue { drained.open() }
+        #expect(await eventually { drained.isOpen }, "meeting chain drained marker")
+    }
     func confirmation() async throws -> String? {
         for _ in 0..<6 {
             let frame = try await receiveFrame(on: socket, step: "meeting confirmation")
-            if case .text(let words) = frame.payload { return words.text }
+            if case .text(let words) = frame.payload {
+                // The clip's audio follows its words (`acknowledgementFrames`): taken too, so a barrier sees none.
+                let audio = try await receiveFrame(on: socket, step: "meeting confirmation audio")
+                if case .audio(let pcm) = audio.payload, pcm.reply?.id == words.reply?.id {} else {
+                    Issue.record("expected the confirmation's own audio")
+                }
+                return words.text
+            }
             if case .audio = frame.payload {} else { Issue.record("expected confirmation audio") }
         }
         Issue.record("no meeting confirmation text within six frames")

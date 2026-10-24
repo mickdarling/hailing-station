@@ -126,18 +126,17 @@ public enum MeetingProfile: String, Sendable { case meeting, rubberDuck }
 
 /// The owner's spoken meeting mode (#735 meeting mode (rightyo#227)): a whole turn, trimmed as media mode
 /// trims. Rubber duck is the same state with one participant. Matched on heard words only; nothing is logged.
+/// H-2's duck phrases ("let me think out loud", "done thinking") stay ordinary requests (Mick, H-2): never reused.
 enum VoiceMeeting {
     enum Command: Sendable, Equatable { case on(MeetingProfile), off }
 
     static let meetingPhrases: Set<String> = [
         "meeting mode", "meeting mode on", "start meeting mode", "start the meeting"
     ]
-    static let rubberDuckPhrases: Set<String> = [
-        "rubber duck mode", "rubber duck mode on", "let me think out loud"
-    ]
+    static let rubberDuckPhrases: Set<String> = ["rubber duck mode", "rubber duck mode on"]
     static let offPhrases: Set<String> = [
         "meeting mode off", "end meeting mode", "end the meeting", "the meeting's over",
-        "rubber duck mode off", "end rubber duck mode", "done thinking", "i'm done thinking"
+        "rubber duck mode off", "end rubber duck mode"
     ]
 
     /// The command a whole turn says, given the session's keyed addressing `names`; nil for anything else.
@@ -384,7 +383,8 @@ enum AmbientStopConfirmation {
     /// The next clip for `persona`; an idle stop without its own clips says "Stopped." instead, and a privacy refusal
     /// without its own "Nothing was sent.". Rubber duck without its own uses the matching meeting clip (#735).
     static func clip(_ persona: String, in library: AmbientAckLibrary) -> Pick? {
-        let fallback = [idle: stopped, privacyRefused: notSent, rubberDuckOn: meetingOn, rubberDuckOff: meetingOff][persona]
+        let fallback = [idle: stopped, privacyRefused: notSent, rubberDuckOn: meetingOn,
+                        rubberDuckOff: meetingOff][persona]
         for candidate in [persona] + (fallback.map { [$0] } ?? []) {
             if let (index, clip) = library.nextReserved(candidate) {
                 return Pick(persona: candidate, index: index, clip: clip)
@@ -707,7 +707,8 @@ extension RightyoInputConsumer {
     /// one. Media mode follows the mute's rule: it only changes what this host's RightyO attends to. Without
     /// `mediaCommands` (no control descriptor to carry it) a media phrase is a request like any other. A note to a
     /// destination (#552) writes the owner's data, so it needs an enrolled session and the owner's turn; it is left
-    /// in `lastVoiceDestination`.
+    /// in `lastVoiceDestination`. A meeting command needs the same (review round 1): MM-C records a meeting, so on an
+    /// anonymous session its phrase is a request like any other.
     private func holdsVoiceCommand(_ turn: RightyoInputEvent.Turn) -> Bool {
         let owner = owners.contains(turn.utteranceId)
         if speakers == "enrolled", owner, let note = destinations?.command(in: turn.text, names: voiceNames) {
@@ -720,7 +721,8 @@ extension RightyoInputConsumer {
             lastVoiceMute = command
         } else if mediaCommands, let command = VoiceMedia.command(in: heard, names: voiceNames) {
             lastVoiceMedia = command
-        } else if mediaCommands, let command = VoiceMeeting.command(in: heard, names: voiceNames) {
+        } else if mediaCommands, speakers == "enrolled", owner,
+                  let command = VoiceMeeting.command(in: heard, names: voiceNames) {
             lastVoiceMeeting = command
         }
         return lastVoiceMute != nil || lastVoiceMedia != nil || lastVoiceMeeting != nil

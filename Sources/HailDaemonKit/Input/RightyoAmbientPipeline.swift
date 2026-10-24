@@ -288,10 +288,7 @@ public final class RightyoAmbientPipeline: Sendable {
                 if event.type == "request", let command = await consumer.lastVoiceMute {
                     onVoiceMute?(command == .mute)
                 }
-                if event.type == "request", let command = await consumer.lastVoiceMedia {
-                    onVoiceMedia?(command == .on)
-                }
-                await observeMeeting(event)
+                await observeModes(event)
                 try await observePrivacy()
                 if event.type == "request", let note = await consumer.lastVoiceDestination {
                     onVoiceDestination?(note.destination, note.target, note.text)
@@ -313,12 +310,15 @@ public final class RightyoAmbientPipeline: Sendable {
 
 /// Privacy mode (#735) in the event loop, beside the type so its body stays within the length limit.
 extension RightyoAmbientPipeline {
-    /// Hands an admitted meeting command to the host (#735 meeting mode (rightyo#227)), never to the agent.
-    private func observeMeeting(_ event: RightyoInputEvent) async {
-        guard event.type == "request", let command = await consumer.lastVoiceMeeting else { return }
-        switch command {
+    /// Hands an admitted media (#551) or meeting (#735 meeting mode (rightyo#227)) command to the host, never to the
+    /// agent. A turn is at most one of them.
+    private func observeModes(_ event: RightyoInputEvent) async {
+        guard event.type == "request" else { return }
+        if let command = await consumer.lastVoiceMedia { onVoiceMedia?(command == .on) }
+        switch await consumer.lastVoiceMeeting {
         case .on(let profile): onVoiceMeeting?(true, profile)
         case .off: onVoiceMeeting?(false, nil)
+        case nil: break
         }
     }
 
