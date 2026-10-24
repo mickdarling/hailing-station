@@ -41,9 +41,9 @@ public final class Announcer {
     /// Announces once each reply whose audio did not play (#825), while `when` allows: a stream that ended early, or
     /// unplayable or undecodable audio is spoken; player failures and unknown statuses use the fallback (#825).
     public func watchReplyAudio(when allowed: @escaping @MainActor () -> Bool) {
-        let lost = withObservationTracking { playback.lostAudioStatuses } onChange: { [weak self] in
+        let lost = withObservationTracking({ playback.lostAudioStatuses }, onChange: { [weak self] in
             Task { @MainActor in self?.watchReplyAudio(when: allowed) }
-        }
+        })
         // Skipped losses stay once-only: VoiceOver owned them even if it later turns off (#825, #86).
         // Keep their statuses eligible for deferred VoiceOver across trims; without app acknowledgement,
         // only the bounded, oldest-first seenFrameLimit eviction releases their retention (#825, #86).

@@ -35,19 +35,19 @@ import Testing
         let visits = ClaimTraversalCount()
         // Measure only one due claim, excluding setup, fake-clock timer iteration and assertion scans.
         controller.idleNow = { .now.advanced(by: .seconds(21)) }
-        ReplyTraversal.$onVisit.withValue({ visits.increment() }) {
+        ReplyTraversal.$onVisit.withValue({ visits.increment() }, operation: {
             controller.firstAudioDeadlinePassed(for: key)
-        }
+        })
         let work = visits.value
         #expect(rig.abandoned == 1)
         #expect(controller.presentationStatuses[key.presentationID] == ReplyPlaybackController.abandonedStatus)
         #expect(controller.completed.count == 1, "the oldest expired claim was evicted")
         #expect(work == 0, "expiry must visit no presentation history or claim-window elements")
         // Positive controls prove that ordinary Array searches and Sequence scans really hit the hook.
-        ReplyTraversal.$onVisit.withValue({ visits.increment() }) {
+        ReplyTraversal.$onVisit.withValue({ visits.increment() }, operation: {
             #expect(controller.replies.first { $0.id == key.presentationID } != nil)
             #expect(controller.undeliveredLosses.contains { $0 == key })
-        }
+        })
         #expect(visits.value - work >= controller.replies.count + historyCount)
         return work
     }
