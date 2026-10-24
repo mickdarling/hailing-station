@@ -189,3 +189,10 @@ private final class SpokenSamples: @unchecked Sendable {
         }
     }
 }
+
+extension ReplyPlaybackController {
+    /// Observation releases retention; the next ordinary history trim may remove this presentation and status.
+    func acknowledgeAudioLoss(_ id: String) {
+        undeliveredLosses.removeAll { "\($0.endpointID)|\($0.replyID.uuidString.lowercased())" == id }
+    }
+}

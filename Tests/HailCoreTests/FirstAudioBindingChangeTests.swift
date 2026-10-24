@@ -11,7 +11,7 @@ import Testing
     func ambientStopPreservesOneLossAcrossReconnect(cardDisappears: Bool, lateAudio: Bool) async throws {
         let harness = try BindingChangeRig(), reply = idleReply()
         let ready = try await harness.connect()
-        try await HostConnectionStoreAmbientBindingTests().select(reply.targetID, on: ready)
+        try await select(reply.targetID, on: ready)
         let binding = try #require(harness.store.ambientBinding(host: harness.host.id, targetID: reply.targetID))
         await harness.ambient.turnOn(for: binding)
         #expect(harness.ambient.isListening && harness.store.ambientStreaming)
@@ -38,15 +38,30 @@ import Testing
 
         await harness.store.disconnect(harness.host.id)
         let reconnected = try await harness.connect()
-        try await HostConnectionStoreAmbientBindingTests().select(reply.targetID, on: reconnected)
+        try await select(reply.targetID, on: reconnected)
         let renewed = try #require(harness.store.ambientBinding(host: harness.host.id, targetID: reply.targetID))
         #expect(renewed.connectionGeneration != binding.connectionGeneration)
         try await redeliver(harness, ready: reconnected, original: original, reply: reply, lateAudio: lateAudio)
         harness.playback.advance(by: .seconds(60))
         await settleFirstAudio()
-        expectOneLossAndCue(harness, reply: reply)
+        expectOneLossAndCue(harness, reply: reply, recovered: lateAudio)
         #expect(harness.playback.liveDeadlineCount == 0)
         await harness.store.disconnect(harness.host.id)
+    }
+
+    /// Ignore pings from earlier selections of the same target; only this new round trip may settle it.
+    private func select(_ target: String, on ready: HostConnectionStoreAmbientBindingTests.ReadyStore) async throws {
+        let sent = try await ready.socket.sentFrames().count
+        let selection = Task { try await ready.store.selectTarget(host: ready.endpoint.id, targetID: target) }
+        let ping: @Sendable () async throws -> String? = {
+            try await ready.socket.sentFrames().dropFirst(sent).compactMap { frame -> String? in
+                if case .control(.ping(let nonce)) = frame.payload { return nonce }
+                return nil
+            }.first
+        }
+        try await waitUntil { try await ping() != nil }
+        try await ready.socket.push(.pong(nonce: try #require(try await ping())))
+        try await selection.value
     }
 
     private func stopAmbient(
@@ -61,7 +76,7 @@ import Testing
             await harness.ambient.destinationLost()
         } else {
             // Even reselecting the same target changes the store's binding selection serial.
-            try await HostConnectionStoreAmbientBindingTests().select(reply.targetID, on: ready)
+            try await select(reply.targetID, on: ready)
             let changed = try #require(harness.store.ambientBinding(host: harness.host.id, targetID: reply.targetID))
             #expect(changed != harness.ambient.binding)
             // AmbientListeningCard.onChange(of: binding) forwards the new binding this way.
@@ -79,29 +94,31 @@ import Testing
         try await waitUntil {
             await MainActor.run { harness.store.replyFrames.contains { $0.frame.id == repeated.frame.id } }
         }
-        #expect(harness.playback.liveDeadlineCount == 0, "re-sent text must not re-arm a completed loss")
+        #expect(harness.playback.liveDeadlineCount == 0, "re-sent text must not re-arm an expired claim")
         if lateAudio {
             let audio = idleAudio(reply, sequence: 0, final: true, byte: 7)
             try await ready.socket.push(FrameCoding.encode(audio.frame))
             try await waitUntil {
                 await MainActor.run { harness.store.replyFrames.contains { $0.frame.id == audio.frame.id } }
             }
+            try #require(harness.playback.player.scheduled.last?.reply?.id == reply.id)
+            harness.playback.player.completeReply()
         }
     }
 
-    private func expectOneLossAndCue(_ harness: BindingChangeRig, reply: ReplyDescriptor) {
+    private func expectOneLossAndCue(_ harness: BindingChangeRig, reply: ReplyDescriptor, recovered: Bool = false) {
         let playback = harness.playback
         #expect(playback.abandoned == 1)
         #expect(playback.controller.replies.count == 1)
-        #expect(playback.status(of: reply) == ReplyPlaybackController.abandonedStatus)
-        #expect(Array(playback.controller.lostAudioStatuses.values) == [ReplyPlaybackController.abandonedStatus])
-        #expect(playback.controller.replies.allSatisfy {
-            playback.controller.audioProblem(replyID: $0.id) == ReplyPlaybackController.audioDidNotArrive
-        })
+        #expect(playback.status(of: reply) == (recovered ? "Played" : ReplyPlaybackController.abandonedStatus))
+        let losses = recovered ? [] : [ReplyPlaybackController.abandonedStatus]
+        #expect(Array(playback.controller.lostAudioStatuses.values) == losses)
+        #expect(playback.controller.audioProblem(replyID: playback.controller.replies[0].id) ==
+                (recovered ? nil : ReplyPlaybackController.audioDidNotArrive))
         #expect(harness.renderer.rendered == [.replyAudioLost])
         #expect(harness.fallbacks.announcements.isEmpty)
-        #expect(playback.player.scheduled.count == 1, "only the local Announcer cue reaches the player")
-        #expect(playback.player.scheduled.allSatisfy { $0.reply == nil && $0.isFinal && $0.bytes == Data([1, 0]) })
+        #expect(playback.player.scheduled.count == (recovered ? 2 : 1), "one cue, plus accepted late reply audio")
+        #expect(playback.player.scheduled.first?.bytes == Data([1, 0]))
     }
 }
 

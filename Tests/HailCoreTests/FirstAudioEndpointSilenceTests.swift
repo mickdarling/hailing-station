@@ -21,7 +21,7 @@ import Testing
         #expect(rig.abandoned == 0)
     }
 
-    @Test func skippedQueuedAudioIsLostOnceAfterEndpointSilence() {
+    @Test func silentQueuedAudioIsClaimedOnceAndCanPlayLate() throws {
         let rig = IdleRig(), playing = idleReply(), waiting = idleReply()
         startQueuedReply(rig, playing: playing, waiting: waiting)
         finishLongStream(rig, playing: playing)
@@ -37,7 +37,9 @@ import Testing
         rig.controller.ingest(idleAudio(waiting, sequence: 0, final: true, byte: 2))
         rig.advance(by: .seconds(60))
         #expect(rig.abandoned == 1)
-        #expect(rig.player.scheduled.allSatisfy { $0.reply?.id == playing.id })
+        try #require(rig.player.scheduled.last?.reply?.id == waiting.id)
+        rig.player.completeReply()
+        #expect(rig.status(of: waiting) == "Played")
     }
 
     @Test func onlyMatchingEndpointCanExtendPendingAudio() {

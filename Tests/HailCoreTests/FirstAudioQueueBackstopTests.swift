@@ -6,7 +6,7 @@ import Testing
 /// #825: synthetic host audio queues, injected idle time and a fake player; no physical playback proof.
 @MainActor
 @Suite struct FirstAudioQueueBackstopTests {
-    @Test func continuousOtherRepliesLosePendingAudioAtTenMinutes() {
+    @Test func continuousOtherRepliesLosePendingAudioAtTenMinutes() throws {
         let rig = IdleRig(), waiting = idleReply()
         playOtherReply(rig)
         rig.advance(by: .seconds(1))
@@ -34,7 +34,9 @@ import Testing
         rig.controller.ingest(idleAudio(waiting, sequence: 0, final: true, byte: 2))
         #expect(rig.abandoned == 1)
         #expect(rig.liveDeadlineCount == 0)
-        #expect(rig.player.scheduled.allSatisfy { $0.reply?.id != waiting.id })
+        try #require(rig.player.scheduled.last?.reply?.id == waiting.id)
+        rig.player.completeReply()
+        #expect(rig.status(of: waiting) == "Played")
     }
 
     @Test func audioQueuedBehindNineMinutesStillPlays() throws {

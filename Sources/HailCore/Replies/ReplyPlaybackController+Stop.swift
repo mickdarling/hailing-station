@@ -40,9 +40,10 @@ extension ReplyPlaybackController {
     /// The player is shared, so whatever it was playing or holding stops too, whichever host sent it. Every
     /// stopped reply is marked complete, so its later frames are ignored instead of starting it again.
     func stopPlayback(from endpointID: HostEndpoint.Identifier?) {
-        let pending = Set(queue).union(firstAudio.keys).union(cancelledFirstAudio)
+        let pending = Set(queue).union(firstAudio.keys).union(cancelledFirstAudio).union(expiredFirstAudio)
         let stopped = Set(playbackOrder).union(pending.filter { endpointID == nil || $0.endpointID == endpointID })
         cancelFirstAudio(for: stopped)
+        expiredFirstAudio.removeAll { stopped.contains($0) }
         guard !stopped.isEmpty else { return }
         player.cancel()
         playbackGeneration &+= 1
@@ -64,8 +65,10 @@ extension ReplyPlaybackController {
     /// new one are skipped and marked complete, so their later frames are ignored instead of starting them.
     func supersedePausedReplies() {
         guard isPaused else { return }
-        let skipped = Set(playbackOrder).union(queue).union(firstAudio.keys).union(cancelledFirstAudio)
+        let skipped = Set(playbackOrder).union(queue).union(firstAudio.keys)
+            .union(cancelledFirstAudio).union(expiredFirstAudio)
         cancelFirstAudio(for: skipped)
+        expiredFirstAudio.removeAll { skipped.contains($0) }
         if !skipped.isEmpty {
             player.cancel()
             playbackGeneration &+= 1
@@ -93,7 +96,8 @@ extension ReplyPlaybackController {
         guard streams[key] == nil, !completed.contains(key) else { return }
         if presentationStatuses[id] == nil { presentationStatuses[id] = "Received" }
         guard descriptor.audioStreamID != nil, presentationStatuses[id] == "Received",
-              firstAudio[key] == nil, !cancelledFirstAudio.contains(key) else { return }
+              firstAudio[key] == nil, !cancelledFirstAudio.contains(key),
+              !expiredFirstAudio.contains(key) else { return }
         if isMuted || pendingMuteAfter != nil { return retainCancelledFirstAudio([key]) }
         // ReplyCommand's ReplyBackground.awaitAudioTurn queues detached audio after sending text (#825).
         // Watch endpoint silence: any audio from that host means its shared audio turn is still in use.
@@ -142,24 +146,26 @@ extension ReplyPlaybackController {
         cancelledFirstAudio.subtract(retired)
     }
 
-    func idleDeadline(_ watch: ReplyIdleWatch) -> ContinuousClock.Instant {
-        max(watch.bufferedUntil, watch.aheadUntil, watch.lastFrameAt).advanced(by: Self.streamIdleTimeout)
-    }
-
     func firstAudioDeadlinePassed(for key: ReplyStreamKey) {
         guard let watch = firstAudio[key], idleNow() >= firstAudioDeadline(watch) else { return }
         cancelFirstAudio(for: [key])
         guard streams[key] == nil, !completed.contains(key), !isMuted, pendingMuteAfter == nil else { return }
-        // Disconnect/replace does not cancel the existing idle watch either (#825): both report missing audio.
-        // Pause and capture suppression hold scheduling, not frame arrival; first audio cancels this at ingest.
+        // The host turn may belong to another device: claim silence once, but let late audio play (#825 / #851).
+        expiredFirstAudio.append(key)
+        if expiredFirstAudio.count > Self.seenFrameLimit { expiredFirstAudio.removeFirst() }
         recordAudioLoss(for: key)
-        completed.insert(key)
         onStreamAbandoned?()
     }
+}
 
-    func firstAudioDeadline(_ watch: ReplyIdleWatch) -> ContinuousClock.Instant {
-        min(idleDeadline(watch), watch.bufferedUntil.advanced(by: Self.firstAudioMaxWait))
-    }
+struct ReplyStreamKey: Hashable {
+    var endpointID: HostEndpoint.Identifier
+    var replyID: UUID
+}
+
+struct ReplyStreamState {
+    var segments: [Int: AudioPayload] = [:]
+    var nextSequence = 0
 }
 
 extension ReplyStreamKey {
@@ -173,11 +179,6 @@ extension ReplyPlaybackController {
         if !undeliveredLosses.contains(key) { undeliveredLosses.append(key) }
         if undeliveredLosses.count > Self.seenFrameLimit { undeliveredLosses.removeFirst() }
         setPresentationStatus(Self.abandonedStatus, for: key)
-    }
-
-    /// Observation releases retention; the next ordinary history trim may remove this presentation and status.
-    func acknowledgeAudioLoss(_ id: String) {
-        undeliveredLosses.removeAll { "\($0.endpointID)|\($0.replyID.uuidString.lowercased())" == id }
     }
 
     /// The recorded status of every reply whose audio did not play, by presentation id, observably.

@@ -20,16 +20,6 @@ public struct ReplyPresentation: Identifiable, Equatable, Sendable {
     public var transcript: String?
 }
 
-struct ReplyStreamKey: Hashable {
-    var endpointID: HostEndpoint.Identifier
-    var replyID: UUID
-}
-
-struct ReplyStreamState {
-    var segments: [Int: AudioPayload] = [:]
-    var nextSequence = 0
-}
-
 /// Terminal-owned FIFO arbitration for identified reply streams. Frames may arrive out of order;
 /// only a contiguous sequence is scheduled, and the next reply cannot enter the player until the
 /// current reply's explicit final segment has actually played.
@@ -66,6 +56,7 @@ public final class ReplyPlaybackController {
     @ObservationIgnored var firstAudio: [ReplyStreamKey: ReplyIdleWatch] = [:] // arrival deadlines (#825)
     @ObservationIgnored var firstAudioByEndpoint: [HostEndpoint.Identifier: Set<ReplyStreamKey>] = [:]
     @ObservationIgnored var cancelledFirstAudio: Set<ReplyStreamKey> = [] // mute cancels the claim, not the reply
+    @ObservationIgnored var expiredFirstAudio: [ReplyStreamKey] = [] // bounded silence claims, still playable
     @ObservationIgnored var undeliveredLosses: [ReplyStreamKey] = [] // ordered, bounded set awaiting observation
     @ObservationIgnored var idleNow: @MainActor () -> ContinuousClock.Instant = { .now }
     @ObservationIgnored var idleScheduler: @MainActor (Duration, @escaping @MainActor () -> Void)
@@ -73,14 +64,6 @@ public final class ReplyPlaybackController {
     @ObservationIgnored public var onStreamAbandoned: (@MainActor () -> Void)?
     @ObservationIgnored var pendingMuteAfter: ReplyStreamKey? { // a waiting voice mute (#404, `+Stop`)
         didSet { cancelMutedFirstAudio() }
-    }
-
-    var presentationKeysToRetain: Set<ReplyStreamKey> {
-        var keys = Set(queue).union(firstAudio.keys).union(cancelledFirstAudio).union(undeliveredLosses)
-        keys.formUnion(playbackOrder)
-        if let activeKey { keys.insert(activeKey) }
-        if let lastKey { keys.insert(lastKey) }
-        return keys
     }
 
     public init(player: any ReplyAudioPlaying) {
@@ -115,6 +98,8 @@ public final class ReplyPlaybackController {
             setPresentationStatus("Conflicting audio segment refused", for: key)
             return
         }
+        expiredFirstAudio.removeAll { $0 == key }
+        undeliveredLosses.removeAll { $0 == key } // Accepted late audio clears the loss without another notice.
         stream.segments[audio.sequence] = audio
         if streams[key] == nil { supersedePausedReplies(); queue.append(key) }
         streams[key] = stream
@@ -189,6 +174,22 @@ public final class ReplyPlaybackController {
 }
 
 extension ReplyPlaybackController {
+    var presentationKeysToRetain: Set<ReplyStreamKey> {
+        var keys = Set(queue).union(firstAudio.keys).union(cancelledFirstAudio).union(undeliveredLosses)
+        keys.formUnion(playbackOrder)
+        if let activeKey { keys.insert(activeKey) }
+        if let lastKey { keys.insert(lastKey) }
+        return keys
+    }
+
+    func idleDeadline(_ watch: ReplyIdleWatch) -> ContinuousClock.Instant {
+        max(watch.bufferedUntil, watch.aheadUntil, watch.lastFrameAt).advanced(by: Self.streamIdleTimeout)
+    }
+
+    func firstAudioDeadline(_ watch: ReplyIdleWatch) -> ContinuousClock.Instant {
+        min(idleDeadline(watch), watch.bufferedUntil.advanced(by: Self.firstAudioMaxWait))
+    }
+
     func armFirstAudio(for key: ReplyStreamKey) {
         guard let watch = firstAudio[key] else { return }
         watch.cancel?()
