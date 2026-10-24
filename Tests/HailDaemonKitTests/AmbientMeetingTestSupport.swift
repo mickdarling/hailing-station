@@ -8,7 +8,9 @@ import Testing
 /// Meeting-only rig settings keep the existing event callback as the sole trailing closure of `ambientRig`.
 struct MeetingTestSettings: Sendable {
     var timeout: TimeInterval = AmbientRightyoRouter.defaultMeetingTimeout
-    var onChange: (@Sendable (UUID, Bool, MeetingProfile, String) -> Void)?
+    var onChange: (@Sendable (MeetingChange) -> Void)?
+    /// The router's wall clock (#735 meeting mode restore (MM-E)); nil keeps the real one.
+    var now: (@Sendable () -> Date)?
 }
 
 /// A reference around the noncopyable mutex, captured by the hook without borrowing a half-initialized rig.
@@ -69,8 +71,9 @@ final class MeetingRig: Sendable {
         let events = events, hooks = hooks
         env = try await ambientRig(fake, timing: .init(eofGrace: 20, termGrace: 20), acknowledgements: clips,
                                    replyControl: true, startDeadline: 30, ackDeadline: 30,
-                                   meeting: .init(timeout: timeout, onChange: { connection, on, profile, reason in
-            hooks.list.withLock { $0.append((connection, "on=\(on) profile=\(profile.rawValue) reason=\(reason)")) }
+                                   meeting: .init(timeout: timeout, onChange: { change in
+            let line = "on=\(change.on) profile=\(change.profile.rawValue) reason=\(change.reason)"
+            hooks.list.withLock { $0.append((change.connection, line)) }
         }), onEvent: { event in events.list.withLock { $0.append(event) } })
         pair = try await FallbackSocketPair.boundedConnect(port: env.port, selecting: [RecipientTestRig.target])
         try await recipientSocketSend(audio(stream, 0), on: socket)
