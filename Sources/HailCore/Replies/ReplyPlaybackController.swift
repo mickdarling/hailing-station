@@ -192,7 +192,7 @@ extension ReplyPlaybackController {
     func armFirstAudio(for key: ReplyStreamKey) {
         guard let watch = firstAudio[key] else { return }
         watch.cancel?()
-        firstAudio[key]?.cancel = idleScheduler(idleNow().duration(to: idleDeadline(watch))) { [weak self] in
+        firstAudio[key]?.cancel = idleScheduler(idleNow().duration(to: firstAudioDeadline(watch))) { [weak self] in
             self?.firstAudioDeadlinePassed(for: key)
         }
     }

@@ -98,6 +98,7 @@ extension ReplyPlaybackController {
         // ReplyCommand's ReplyBackground.awaitAudioTurn queues detached audio after sending text (#825).
         // Watch endpoint silence: any audio from that host means its shared audio turn is still in use.
         let now = idleNow()
+        // For a first-audio watch, bufferedUntil stays at original text arrival, anchoring the hard cap.
         let watch = ReplyIdleWatch(key: key, bufferedUntil: now, lastFrameAt: now, aheadUntil: now)
         firstAudio[key] = watch
         firstAudioByEndpoint[key.endpointID, default: []].insert(key)
@@ -146,7 +147,7 @@ extension ReplyPlaybackController {
     }
 
     func firstAudioDeadlinePassed(for key: ReplyStreamKey) {
-        guard let watch = firstAudio[key], idleNow() >= idleDeadline(watch) else { return }
+        guard let watch = firstAudio[key], idleNow() >= firstAudioDeadline(watch) else { return }
         cancelFirstAudio(for: [key])
         guard streams[key] == nil, !completed.contains(key), !isMuted, pendingMuteAfter == nil else { return }
         // Disconnect/replace does not cancel the existing idle watch either (#825): both report missing audio.
@@ -154,6 +155,10 @@ extension ReplyPlaybackController {
         recordAudioLoss(for: key)
         completed.insert(key)
         onStreamAbandoned?()
+    }
+
+    func firstAudioDeadline(_ watch: ReplyIdleWatch) -> ContinuousClock.Instant {
+        min(idleDeadline(watch), watch.bufferedUntil.advanced(by: Self.firstAudioMaxWait))
     }
 }
 

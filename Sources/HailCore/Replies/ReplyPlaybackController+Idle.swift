@@ -22,6 +22,8 @@ extension ReplyPlaybackController {
     /// playback and sends a frame every second or so, so its audio never runs out for this long; a slower one is
     /// kept alive by every frame it sends.
     public static let streamIdleTimeout: Duration = .seconds(20)
+    // longer than any realistic queue; a reply queued behind more than 10 min of other audio is claimed lost (#825)
+    static let firstAudioMaxWait: Duration = .seconds(600)
     nonisolated static let abandonedStatus = "Ended without its final audio"
 
     /// The default scheduler: a main-actor sleep, cancelled when the watch moves on.
@@ -141,9 +143,7 @@ extension ReplyPlaybackController {
 
     var isIdleHeld: Bool { isPaused || isCaptureSuppressed || idleWatch.audioInterrupted }
 
-    func idleDeadline() -> ContinuousClock.Instant {
-        idleDeadline(idleWatch)
-    }
+    func idleDeadline() -> ContinuousClock.Instant { idleDeadline(idleWatch) }
 
     /// Paused, listening or interrupted, the player holds its audio (Codex P1s on #473): the unplayed duration
     /// (a replay's included) is kept and the watch stops, then it resumes with that still to play.
