@@ -1,0 +1,111 @@
+#if os(macOS)
+import Foundation
+import Testing
+@testable import HailDaemonKit
+
+/// #735 meeting mode (rightyo#227) review rounds 1 and 2: a clip privacy supersedes, clips apart from hooks, a renewal,
+/// and commands after teardown. Synthetic only.
+@Suite(.serialized, .timeLimit(.minutes(1)), .frozenGuardBudget) struct AmbientVoiceMeetingRaceTests {
+    /// Review round 1: an on clip still queued when privacy begins is superseded, never heard after "Privacy on".
+    /// The latch holds the connection's clip chain, so the clip is decided only once privacy has begun; privacy's
+    /// own clip, queued behind it on the same chain, is then the only one heard.
+    @Test func privacyRightAfterAnEntrySupersedesItsClip() async throws {
+        let rig = try await MeetingRig(clips: MeetingRig.privacyClips)
+        defer { rig.close() }
+        #expect(try await rig.confirmation() == MeetingRig.on.text)
+        let connection = try #require(rig.connection()), router = rig.env.router, listener = rig.env.listener
+        #expect(await eventually { router.activePipeline?.childStarted == true }, "privacy child started marker")
+        let latch = MeetingLatch()
+        router.enqueuePrivacyClip(connection) { _ in { await latch.wait() } }
+        #expect(router.setMeeting(on: true, profile: .rubberDuck, connection: connection, reason: "voice") == 1)
+        #expect(router.setDuck(true, connection: connection, reason: "voice") == 1)
+        router.enqueuePrivacyClip(connection) { _ in {
+            _ = await router.confirmVoiceMute(AmbientStopConfirmation.privacyOn, on: connection, listener: listener)
+        } }
+        latch.open()
+        #expect(try await rig.confirmation() == MeetingRig.privacyOn.text)
+        await rig.drainMeetingChanges()
+        #expect(rig.details("ambient_meeting_confirmed") == ["on=true profile=meeting confirm=confirmmeetingon/0:sent",
+                                                             "on=true profile=rubberDuck confirm=superseded"])
+        try await barrier(on: rig.socket, step: "no meeting clip after privacy")
+        // The MM-C hook still hears every change, in order.
+        #expect(rig.changes == ["on=true profile=meeting reason=voice", "on=true profile=rubberDuck reason=voice",
+                                "on=false profile=rubberDuck reason=privacy"])
+        await rig.finish()
+    }
+
+    /// Review round 2: a clip held on connection A's chain holds neither A's hook nor another connection's. B's
+    /// hook runs while A's clip still waits; A's clip then plays once released.
+    @Test func aSlowClipNeverHoldsAnotherConnectionsHook() async throws {
+        let rig = try await MeetingRig()
+        defer { rig.close() }
+        #expect(try await rig.confirmation() == MeetingRig.on.text)
+        let connection = try #require(rig.connection()), router = rig.env.router, other = UUID()
+        let latch = MeetingLatch()
+        router.enqueuePrivacyClip(connection) { _ in { await latch.wait() } }
+        #expect(router.setMeeting(on: true, profile: .rubberDuck, connection: connection, reason: "voice") == 1)
+        #expect(router.setMeeting(on: true, connection: other, reason: "voice") == 0)
+        #expect(await eventually { rig.changes.count == 3 }, "other connection hook marker")
+        #expect(!latch.isOpen && rig.details("ambient_meeting_confirmed", on: connection).count == 1)
+        #expect(rig.changeConnections == [connection, connection, other])
+        #expect(rig.changes == ["on=true profile=meeting reason=voice", "on=true profile=rubberDuck reason=voice",
+                                "on=true profile=meeting reason=voice"])
+        latch.open()
+        #expect(try await rig.confirmation() == MeetingRig.on.text)
+        #expect(router.setMeeting(on: false, connection: other, reason: "voice") == 0)
+        await rig.drainMeetingChanges()
+        #expect(rig.details("ambient_meeting_confirmed", on: connection).last
+                == "on=true profile=rubberDuck confirm=confirmmeetingon/0:sent")
+        await rig.finish()
+    }
+
+    /// Review round 1, as media mode: a same-profile entry rearms the timeout (the old expiry is stale) and replays
+    /// the on clip as status, keeping the original start, with no second hook: nothing really changed.
+    @Test func sameProfileReentryRearmsAndReplaysWithoutAHook() async throws {
+        let rig = try await MeetingRig()
+        defer { rig.close() }
+        #expect(try await rig.confirmation() == MeetingRig.on.text)
+        let connection = try #require(rig.connection()), router = rig.env.router
+        let first = try #require(router.state.withLock { $0.meeting[connection] })
+        let (old, started) = (first.token, first.started)
+        #expect(router.setMeeting(on: true, connection: connection, reason: "voice") == 1)
+        #expect(try await rig.confirmation() == MeetingRig.on.text)
+        let renewed = try #require(router.state.withLock { $0.meeting[connection] })
+        #expect(renewed.token != old && renewed.started == started && renewed.profile == .meeting)
+        #expect(router.setMeeting(on: false, connection: connection, reason: "timeout", expected: old) == 0)
+        #expect(router.meetingMode(connection: connection))
+        await rig.drainMeetingChanges()
+        #expect(rig.changes == ["on=true profile=meeting reason=voice"])
+        #expect(rig.details("ambient_meeting").last == "on=true profile=meeting reason=voice reported=1 renewed=true")
+        let heard = "on=true profile=meeting confirm=confirmmeetingon/0:sent"
+        #expect(rig.details("ambient_meeting_confirmed") == [heard, heard])
+        #expect(await eventually { (try? rig.fake.recorded("control.txt")) == MeetingRig.lines(true, true) },
+                "renewed meeting child marker")
+        await rig.finish()
+    }
+
+    /// Review rounds 1 and 2: a meeting or media command a retiring child says after its connection was torn down
+    /// is refused. No timer, no child write, no hook, no device notice and no clip; the closed mark goes with that
+    /// child.
+    @Test(arguments: [("meeting mode", "ambient_meeting", "on=true profile=meeting reason=voice reported=0"),
+                      ("media mode", "ambient_media", "on=true reason=voice reported=0")])
+    func aModeCommandAfterTeardownDoesNothing(_ phrase: String, _ event: String, _ refusal: String) async throws {
+        let rig = try await MeetingRig(phrases: ["meeting mode off", phrase])
+        defer { rig.close() }
+        #expect(await eventually { rig.connection() != nil }, "late command connection marker")
+        let connection = try #require(rig.connection()), router = rig.env.router
+        rig.pair.close()
+        #expect(await eventually { router.state.withLock { $0.closed.contains(connection) } }, "teardown marker")
+        try rig.releaseOff()
+        #expect(await eventually { rig.details(event) == [refusal + " refused=closed"] }, "late command refusal marker")
+        #expect(!router.meetingMode(connection: connection) && !router.mediaMode(connection: connection))
+        #expect(router.state.withLock { $0.meeting.isEmpty && $0.media.isEmpty })
+        await boundedSettle(router, step: "late command child")
+        #expect(rig.changes.isEmpty && rig.details("ambient_meeting_confirmed").isEmpty)
+        #expect(rig.details("ambient_media_device").isEmpty)
+        #expect(!((try? rig.fake.recorded("control.txt")) ?? "").contains("media"))
+        #expect(router.state.withLock { $0.closed.isEmpty })
+        await bounded("late command listener") { await rig.env.listener.stop(reason: "synthetic test complete") }
+    }
+}
+#endif

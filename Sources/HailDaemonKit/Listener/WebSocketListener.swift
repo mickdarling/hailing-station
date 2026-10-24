@@ -482,6 +482,11 @@ public final class AmbientRightyoRouter: AmbientAudioSink, AmbientListenerWiring
         public var replyControl = false
         /// How long the owner's spoken media mode (#551) lasts before it turns itself off.
         public var mediaTimeout: TimeInterval = AmbientRightyoRouter.defaultMediaTimeout
+        /// #735 meeting mode (rightyo#227): the host-only session state's auto-end, three hours by default.
+        public var meetingTimeout: TimeInterval = AmbientRightyoRouter.defaultMeetingTimeout
+        /// MM-C opens/closes its encrypted record here (#735 meeting mode (rightyo#227)); no record is built yet.
+        /// Called in change order, outside the state lock, once per real change. It must return at once.
+        public var onMeetingChange: (@Sendable (UUID, Bool, MeetingProfile, String) -> Void)?
         /// How long the owner's spoken duck mode (#735) lasts before it turns itself off: host.json
         /// `ambient.duckTimeout`, or `defaultDuckTimeout`.
         public var duckTimeout: TimeInterval = AmbientRightyoRouter.defaultDuckTimeout
@@ -539,7 +544,7 @@ public final class AmbientRightyoRouter: AmbientAudioSink, AmbientListenerWiring
     /// Segments of the newest start kept while it makes room: 6.4 s of 100 ms segments; the oldest is dropped.
     public static let maxQueuedSegments = 64
 
-    fileprivate struct State {
+    struct State {
         var listener: WeakListener?
         var active: Active?
         var runs: [UUID: Run] = [:]
@@ -566,6 +571,13 @@ public final class AmbientRightyoRouter: AmbientAudioSink, AmbientListenerWiring
         /// Connections whose owner turned media mode on (#551), each with its timeout; dropped (and the timeout
         /// cancelled) when it ends, times out or the connection stops. Every child registered meanwhile is told.
         var media: [UUID: AmbientMediaTimer] = [:]
+        /// #735 meeting mode (rightyo#227): the profile, start and guarded timeout; exclusive with media and privacy.
+        var meeting: [UUID: AmbientMeetingTimer] = [:]
+        /// Connections `stop(connection:)` tore down (#735 meeting mode review rounds 1 and 4), recorded there and
+        /// never inferred: a late media or meeting entry from a child of theirs, running or still being made, is
+        /// refused. A connection id is never reused, so the mark is never lifted for a live connection; it is only
+        /// pruned once no child and no start can still speak for it (`pruneClosed`).
+        var closed: Set<UUID> = []
         /// Connections whose owner turned duck mode on (#735), kept like `media`. A connection is never in both.
         var duck: [UUID: AmbientDuckTimer] = [:]
         /// Privacy entries and the last word per connection (#735 S-8 HS-C round 4, `AmbientPrivacyLedger`), and each
@@ -578,10 +590,12 @@ public final class AmbientRightyoRouter: AmbientAudioSink, AmbientListenerWiring
         /// replies in order and reports one end when its queue drains, so that reply is the one just heard.
         var replyAsked: UUID?
     }
-    fileprivate struct WeakListener { weak var value: WebSocketListener? }
+    struct WeakListener { weak var value: WebSocketListener? }
 
     public let configuration: Configuration
-    fileprivate let state = Mutex(State())
+    let state = Mutex(State())
+    /// #735 meeting mode (rightyo#227): MM-C's hooks in the order state changed; never a clip (review round 2).
+    let meetingChanges = SerialTaskChain()
     fileprivate let log: @Sendable (WebSocketListenerEvent) -> Void
     /// Wakes the worker; signals coalesce, the events themselves are in `State.queue`.
     fileprivate let wake: AsyncStream<Void>.Continuation
@@ -611,6 +625,8 @@ public final class AmbientRightyoRouter: AmbientAudioSink, AmbientListenerWiring
     public func ambientAudio(_ event: AmbientAudioEvent) {
         let queued = state.withLock { state -> Bool in
             switch event {
+            // A start never lifts `closed`: a torn-down connection id never comes back (#735), so one that did
+            // would still be dead.
             case .started(let stream, let connection, _): state.latest[connection] = stream
             // Taken over (#366): the old stream's late failure is not reported to its device as a stop.
             case .ended(let stream, .superseded): state.latest = state.latest.filter { $0.value != stream }
@@ -667,13 +683,19 @@ public final class AmbientRightyoRouter: AmbientAudioSink, AmbientListenerWiring
         let streams = state.withLock { state -> [UUID] in
             (state.latest[connection], state.inputRoutes[connection]) = (nil, nil)
             state.media.removeValue(forKey: connection)?.timer.cancel()
+            endMeeting(connection: connection, reason: "connection", in: &state)
             state.duck.removeValue(forKey: connection)?.timer?.cancel()
             if state.privacy[connection]?.entries.isEmpty != false { state.privacy[connection] = nil }
             // Clips already queued still play in order; a later one (none should come) starts a fresh chain.
             state.privacyClips[connection] = nil
             state.listener?.value?.replyHold.set(false, connection: connection)
             if let active = state.active, state.runs[active.run]?.connection == connection { state.active = nil }
-            return state.runs.filter { $0.value.connection == connection }.map(\.key)
+            let streams = state.runs.filter { $0.value.connection == connection }.map(\.key)
+            // A retiring child, or one a start is still making, may yet say a mode command; it is refused, never
+            // outliving the connection (#735 review round 4). Pruned at once when neither can exist.
+            state.closed.insert(connection)
+            Self.pruneClosed(in: &state)
+            return streams
         }
         streams.forEach { retire($0) }
     }
@@ -738,7 +760,7 @@ public final class AmbientRightyoRouter: AmbientAudioSink, AmbientListenerWiring
 
 extension AmbientRightyoRouter {
     /// Keyed by its own id, not its stream's: a reload (#405) gives one stream a second run.
-    fileprivate struct Run {
+    struct Run {
         let stream: UUID
         let connection: UUID
         let pipeline: RightyoAmbientPipeline
@@ -757,7 +779,7 @@ extension AmbientRightyoRouter {
     }
     /// The stream whose child is fed audio now: its run, when the stream itself started and the selection generation
     /// it opened on (#636), both kept across reloads.
-    fileprivate struct Active {
+    struct Active {
         let stream: UUID
         let run: UUID
         let pipeline: RightyoAmbientPipeline
@@ -814,6 +836,7 @@ extension AmbientRightyoRouter {
         while let event = state.withLock({ state -> AmbientAudioEvent? in
             guard !state.queue.isEmpty else {
                 state.working = false
+                Self.pruneClosed(in: &state)
                 return nil
             }
             state.working = true
@@ -988,6 +1011,7 @@ extension AmbientRightyoRouter {
         (settings.onHeard, settings.onOverheard) = transcriptRelays(on: connection, listener: listener)
         settings.onVoiceMute = voiceMuted(on: connection, listener: listener)
         settings.onVoiceMedia = voiceMedia(on: connection, listener: listener)
+        settings.onVoiceMeeting = voiceMeeting(on: connection, listener: listener)
         // The child's privacy state, held once it exists, so its refusal is said by the state rule (round 4).
         let mark = AmbientRunMark()
         (settings.onVoiceDuck, settings.onDuckUnsupported) = (voiceDuck(on: connection, listener: listener, mark: mark),
@@ -1021,14 +1045,17 @@ extension AmbientRightyoRouter {
     /// so the run's own removal cannot precede its registration. The run's own task emits `ambient_started` first, so
     /// it always precedes that run's `ambient_ended`, even when a child exits at once beside another live run (#273).
     /// A reload's run (#405) emits `ambient_reloaded` first for the same reason: a new child that fails at once must
-    /// leave its failure, not the reload, as the last event.
-    fileprivate func register(_ pipeline: RightyoAmbientPipeline, stream: UUID, connection: UUID, reload: Bool = false,
-                              in state: inout State) -> UUID {
+    /// leave its failure, not the reload, as the last event. A child whose connection was torn down while it was made
+    /// is registered like any other: `closed`, recorded by `stop(connection:)`, already refuses its mode entries (#735).
+    func register(_ pipeline: RightyoAmbientPipeline, stream: UUID, connection: UUID, reload: Bool = false,
+                  in state: inout State) -> UUID {
         let id = UUID()
         state.runs[id] = Run(stream: stream, connection: connection, pipeline: pipeline)
         // A new or reloaded child starts with media mode off (#551). Told under the same lock `setMedia` changes it
         // under, so it can never miss a change made while it was starting.
-        if state.media[connection] != nil { pipeline.reportMedia(true) }
+        if state.media[connection] != nil || state.meeting[connection] != nil {
+            reportModes(to: pipeline, connection: connection, in: state)
+        }
         // Duck mode (#735) likewise; the pipeline writes it once the child's `started` says it takes it. Always told,
         // so a child launched start-private (S-2b) whose privacy ended meanwhile is written off once it confirms.
         pipeline.reportDuck(state.duck[connection] != nil)
@@ -1218,6 +1245,7 @@ extension AmbientRightyoRouter {
         emit("ambient_ended", detail: (replacedNow ? "replaced " : "") + detail)
         let (stillActive, replaced, listener, waiters) = state.withLock { state in
             let replaced = state.runs.removeValue(forKey: id)?.replaced ?? false
+            Self.pruneClosed(in: &state)
             // By identity, not stream: after a reload (#405) the stream is the same but the active run is not.
             let active = state.active?.run == id
             if active { state.active = nil }
@@ -1485,24 +1513,45 @@ extension AmbientRightyoRouter {
     /// Turns media mode on or off for `connection` and tells its children; returns how many took it. On (re)arms the
     /// timeout and any change cancels the one before; `expected`, when given, makes this an expiry that applies only
     /// while that timeout is still the current one. The children are written under the lock (a write never blocks),
-    /// so a child `register` adds at the same moment either is written here or sees the new state. Media mode a child
-    /// took leaves duck mode (#735): the two are exclusive.
+    /// so a child `register` adds at the same moment either is written here or sees the new state. Privacy refuses
+    /// entry; entering media ends meeting mode (#735 meeting mode (rightyo#227)) without dropping the child's gate.
     @discardableResult
     func setMedia(_ on: Bool, connection: UUID, reason: String, expected: UUID? = nil) -> Int {
-        let changed = state.withLock { state -> Int?? in
+        let changed = state.withLock { state -> (reported: Int, refused: String?)? in
             if let expected, state.media[connection]?.token != expected { return nil }
-            // Privacy wins (#735, Mick round 2): while private, a media-mode entry from any source is refused, and
-            // nothing changes or is queued; media mode never ends privacy.
-            if on, state.duck[connection] != nil { return .some(nil) }
-            return changeMedia(on, connection: connection, reason: reason, in: &state)
+            if on, let refused = Self.entryRefusal(connection, in: state) { return (0, refused) }
+            return (changeMedia(on, connection: connection, reason: reason, in: &state), nil)
         }
         guard let changed else { return 0 }
-        guard let reported = changed else {
-            emit("ambient_media", connection: connection, detail: "on=true reason=\(reason) reported=0 refused=private")
+        if let refused = changed.refused {
+            emit("ambient_media", connection: connection,
+                 detail: "on=true reason=\(reason) reported=0 refused=\(refused)")
             return 0
         }
-        emit("ambient_media", connection: connection, detail: "on=\(on) reason=\(reason) reported=\(reported)")
-        return reported
+        emit("ambient_media", connection: connection, detail: "on=\(on) reason=\(reason) reported=\(changed.reported)")
+        return changed.reported
+    }
+
+    /// Drops each torn-down connection no child can still speak for (#735 meeting mode review round 4): none of its
+    /// runs is left, none of its starts is queued, and the worker is not making a child (it prunes again when idle).
+    /// An inline start runs on the gate's actor, which `stop(connection:)` follows, so it has registered by then. The
+    /// set stays bounded by the children still running and the starts still in flight.
+    static func pruneClosed(in state: inout State) {
+        guard !state.working else { return }
+        state.closed = state.closed.filter { connection in
+            state.runs.values.contains { $0.connection == connection } || state.queue.contains {
+                if case .started(_, connection, _) = $0 { true } else { false }
+            }
+        }
+    }
+
+    /// Why a media or meeting entry is refused, as a log token, or nil when it may go ahead. Torn down (`closed`,
+    /// #735 meeting mode review round 1): a late entry from a retiring child installs no timer, writes nothing and
+    /// plays nothing. Privacy wins (#735, Mick round 2): while private, an entry from any source is refused, and
+    /// nothing changes or is queued; neither mode ever ends privacy.
+    static func entryRefusal(_ connection: UUID, in state: State) -> String? {
+        if state.closed.contains(connection) { return "closed" }
+        return state.duck[connection] != nil ? "private" : nil
     }
 
     /// Turns duck mode on or off for `connection` (#735), as `setMedia` does, and returns how many children took it.
@@ -1542,6 +1591,7 @@ extension AmbientRightyoRouter {
             if reported != nil, on, state.media[connection] != nil {
                 change.media = changeMedia(false, connection: connection, reason: "voice", in: &state)
             }
+            if reported != nil, on { endMeeting(connection: connection, reason: "privacy", in: &state) }
             let switched = AmbientPrivacyEntry(reported: change.duck, entry: entry, wasOn: wasOn,
                                                on: state.duck[connection] != nil)
             if let work = clip(switched) { Self.clipChain(connection, in: &state).enqueue(work) }
@@ -1565,7 +1615,7 @@ extension AmbientRightyoRouter {
 
     /// Media mode's change under the caller's lock: the timeout, the children, then the device notice, queued under the
     /// same lock so a timeout's off and a spoken on reach the device in the order the mode changed. How many took it.
-    private func changeMedia(_ on: Bool, connection: UUID, reason: String, in state: inout State) -> Int {
+    func changeMedia(_ on: Bool, connection: UUID, reason: String, in state: inout State) -> Int {
         let token = UUID(), timeout = configuration.mediaTimeout
         state.media.removeValue(forKey: connection)?.timer.cancel()
         if on {
@@ -1576,7 +1626,8 @@ extension AmbientRightyoRouter {
             }
             state.media[connection] = AmbientMediaTimer(token: token, timer: timer)
         }
-        let reported = state.runs.values.filter { $0.connection == connection && $0.pipeline.reportMedia(on) }.count
+        if on { endMeeting(connection: connection, reason: "media", report: false, in: &state) }
+        let reported = reportModes(connection: connection, in: state)
         // The device sees on only once a child took it, so it never shows a mode not in force; off always (#612).
         if !on || reported > 0 {
             let expires = on ? Int64((Date().timeIntervalSince1970 + timeout) * 1_000) : nil
@@ -1674,7 +1725,7 @@ extension AmbientRightyoRouter {
     /// `connection`'s one chain for privacy clips (#735 S-8 HS-C round 3): entries (voice and device), their stops,
     /// and child refusals, in one total order. Taken under the caller's lock (round 4): the chain's own lock only
     /// creates a task, and is never held while taking the router's, so the order of the two is fixed.
-    fileprivate static func clipChain(_ connection: UUID, in state: inout State) -> SerialTaskChain {
+    static func clipChain(_ connection: UUID, in state: inout State) -> SerialTaskChain {
         if let chain = state.privacyClips[connection] { return chain }
         let chain = SerialTaskChain()
         state.privacyClips[connection] = chain
