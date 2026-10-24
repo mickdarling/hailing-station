@@ -93,8 +93,9 @@ import Testing
 
     @Test func mutedPendingStateHasABoundedWindowAndRetiresOverflow() {
         let rig = IdleRig()
+        rig.controller.firstAudioClaimLimit = 4
         rig.controller.toggleMute()
-        let replies = (0...ReplyPlaybackController.seenFrameLimit).map { _ in idleReply() }
+        let replies = (0...rig.controller.firstAudioClaimLimit).map { _ in idleReply() }
         for reply in replies { rig.controller.ingest(firstAudioText(reply)) }
         // The bounded pending window retires overflow rather than forgetting it and permitting a re-arm.
         #expect(rig.controller.completed.count == 1)

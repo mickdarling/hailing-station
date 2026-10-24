@@ -7,14 +7,18 @@ import Testing
 /// Injected time and synthetic PCM only; no physical playback proof.
 @MainActor
 @Suite struct FirstAudioOverflowTests {
+    @Test func productionClaimLimitDefaultsToSeenFrameLimit() {
+        #expect(IdleRig().controller.firstAudioClaimLimit == ReplyPlaybackController.seenFrameLimit)
+    }
+
     @Test func selectiveAcknowledgementDoesNotPinRetiredLoss() {
         let history = ExpiredAudioHistory(acknowledgeSecond: true), rig = history.rig
         #expect(rig.controller.completed.contains(history.oldestKey))
         #expect(rig.status(of: history.oldest) == "Skipped")
         #expect(!rig.controller.undeliveredLosses.contains(history.oldestKey))
         #expect(!rig.controller.presentationKeysToRetain.contains(history.oldestKey))
-        #expect(rig.controller.undeliveredLosses.count == ReplyPlaybackController.seenFrameLimit - 1)
-        rig.controller.ingest(firstAudioText(ReplyDescriptor(id: UUID(), hostID: "host", targetID: "target")))
+        #expect(rig.controller.undeliveredLosses.count == rig.controller.firstAudioClaimLimit - 1)
+        for _ in 0...ReplyPlaybackController.presentationLimit { rig.controller.ingest(lossRaceText()) }
         #expect(rig.status(of: history.oldest) == nil, "ordinary history trimming releases the retired loss")
     }
 
@@ -92,23 +96,24 @@ private struct ExpiredAudioHistory {
     var oldestKey: ReplyStreamKey { ReplyStreamKey(endpointID: "main", replyID: oldest.id) }
 
     init(acknowledgeSecond: Bool = false) {
-        replies = [oldest] + (0..<ReplyPlaybackController.seenFrameLimit).map { _ in idleReply() }
+        rig.controller.firstAudioClaimLimit = 4
+        replies = [oldest] + (0..<rig.controller.firstAudioClaimLimit).map { _ in idleReply() }
         rig.controller.ingest(firstAudioText(oldest))
         rig.advance(by: .seconds(20))
         if acknowledgeSecond {
-            // Review reproduction: expire A; expire and acknowledge B; expire another 1,023 replies.
+            // Review reproduction: expire A; expire and acknowledge B; expire another limit - 1 replies.
             let second = replies[1], secondKey = ReplyStreamKey(endpointID: "main", replyID: replies[1].id)
             rig.controller.ingest(firstAudioText(second))
             rig.advance(by: .seconds(20))
             rig.controller.acknowledgeAudioLoss("main|\(second.id.uuidString.lowercased())")
-            #expect(rig.controller.undeliveredLosses == [oldestKey])
+            #expect(Array(rig.controller.undeliveredLosses) == [oldestKey])
             #expect(!rig.controller.undeliveredLosses.contains(secondKey))
         }
-        // Expire the oldest first, then 1,024 later claims: deterministic oldest-first overflow.
+        // Expire the oldest first, then limit later claims: deterministic oldest-first overflow.
         for reply in replies.dropFirst(acknowledgeSecond ? 2 : 1) { rig.controller.ingest(firstAudioText(reply)) }
         rig.advance(by: .seconds(20))
         #expect(rig.abandoned == replies.count)
-        #expect(rig.controller.expiredFirstAudio.count == ReplyPlaybackController.seenFrameLimit)
+        #expect(rig.controller.expiredFirstAudio.count == rig.controller.firstAudioClaimLimit)
         #expect(!rig.controller.expiredFirstAudio.contains(oldestKey))
         #expect(rig.liveDeadlineCount == 0)
     }

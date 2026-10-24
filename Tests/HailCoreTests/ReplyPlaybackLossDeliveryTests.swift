@@ -79,15 +79,16 @@ import Testing
             Issue.record("an unconsumed loss must not produce an Announcer fallback")
         } : nil
         announcer?.watchReplyAudio { false }
+        rig.controller.firstAudioClaimLimit = 4
         for _ in 0..<2 {
-            let replies = (0..<(ReplyPlaybackController.seenFrameLimit + 2)).map { _ in idleReply() }
+            let replies = (0..<(rig.controller.firstAudioClaimLimit + 2)).map { _ in idleReply() }
             for reply in replies { rig.controller.ingest(firstAudioText(reply)) }
             rig.advance(by: .seconds(20))
             await settleFirstAudio()
-            #expect(rig.controller.presentationKeysToRetain.count == ReplyPlaybackController.seenFrameLimit)
-            rig.controller.ingest(lossRaceText())
-            #expect(rig.controller.lostAudioStatuses.count == ReplyPlaybackController.seenFrameLimit)
-            #expect(rig.controller.replies.count == ReplyPlaybackController.seenFrameLimit + 1)
+            #expect(rig.controller.presentationKeysToRetain.count == rig.controller.firstAudioClaimLimit)
+            for _ in 0...ReplyPlaybackController.presentationLimit { rig.controller.ingest(lossRaceText()) }
+            #expect(rig.controller.lostAudioStatuses.count == rig.controller.firstAudioClaimLimit)
+            #expect(rig.controller.replies.count == ReplyPlaybackController.presentationLimit)
             #expect(rig.status(of: replies[0]) == nil, "the oldest unconsumed loss leaves the bounded window")
             #expect(rig.status(of: replies[1]) == nil)
             #expect(rig.status(of: replies[2]) == ReplyPlaybackController.abandonedStatus)

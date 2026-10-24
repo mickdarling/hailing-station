@@ -1,46 +1,14 @@
 import Foundation
 import HailProtocol
-
-/// The head stream's idle watch (#469): when its scheduled audio runs out, and when its last frame came.
-struct ReplyIdleWatch {
-    var key: ReplyStreamKey?
-    var bufferedUntil = ContinuousClock.now
-    var lastFrameAt = ContinuousClock.now
-    /// Audio the player plays before the head's: a replay (Codex P1 on #473). The head's audio starts after it.
-    var aheadUntil = ContinuousClock.now
-    /// An audio-session interruption (a phone call) is under way: the player is stopped without being paused.
-    var audioInterrupted = false
-    /// While paused, listening or interrupted nothing plays out: the unplayed audio, kept until playback resumes.
-    var heldRemaining: Duration?
-    var cancel: (@MainActor () -> Void)?
-}
-
 extension ReplyPlaybackController {
     /// A stream whose terminal marker never comes (haild crashed, the Mac slept, its request expired mid-reply) would
     /// hold the head of the queue until Stop (#469). Once its scheduled audio has played out and this long passes
     /// with no new frame of its own, it is ended and the queue moves on. A live paced reply stays up to 20 s ahead of
-    /// playback and sends a frame every second or so, so its audio never runs out for this long; a slower one is
-    /// kept alive by every frame it sends.
+    /// playback and sends a frame every second; every frame keeps a slower stream alive.
     public static let streamIdleTimeout: Duration = .seconds(20)
     // longer than any realistic queue; a reply queued behind more than 10 min of other audio is claimed lost (#825)
     static let firstAudioMaxWait: Duration = .seconds(600)
     nonisolated static let abandonedStatus = "Ended without its final audio"
-
-    /// The default scheduler: a main-actor sleep, cancelled when the watch moves on.
-    static func sleepThenFire(
-        _ delay: Duration, _ fire: @escaping @MainActor () -> Void
-    ) -> @MainActor () -> Void {
-        let task = Task { @MainActor in
-            guard (try? await Task.sleep(for: delay)) != nil else { return }
-            fire()
-        }
-        return { task.cancel() }
-    }
-
-    static func seconds(of segment: AudioPayload) -> Double {
-        Double(segment.bytes.count) / Double(2 * max(1, segment.sampleRate) * max(1, segment.channels))
-    }
-
     /// The head's segment was handed to the player: its audio now runs out that much later, after anything ahead.
     /// While held nothing plays, so it joins the held audio, which all plays once the hold ends (Codex P1 on #473).
     func noteScheduled(_ segment: AudioPayload) {
@@ -49,25 +17,16 @@ extension ReplyPlaybackController {
         let start = max(idleNow(), idleWatch.bufferedUntil, idleWatch.aheadUntil)
         idleWatch.bufferedUntil = start.advanced(by: duration)
     }
-
-    /// A replay went into the player ahead of whatever reply comes next; that reply's audio plays after it. It
-    /// replaces the player's queue, so an earlier replay's backlog is gone (Codex P2 on #473).
     func noteReplay(_ payloads: [AudioPayload]) {
         let total = Duration.seconds(payloads.reduce(0) { $0 + Self.seconds(of: $1) })
         idleWatch.aheadUntil = idleNow().advanced(by: total)
         if let held = idleWatch.heldRemaining { idleWatch.heldRemaining = held + total }
         armIdleWatch()
     }
-
-    /// An audio-session interruption (a phone call) stops the player without pausing it (Codex P1 on #473).
     nonisolated static let interruptionNotification = Notification.Name("AVAudioSessionInterruptionNotification")
     nonisolated static let interruptionTypeKey = "AVAudioSessionInterruptionTypeKey"
-    /// `AVAudioSession.InterruptionOptions`; `shouldResume` is 1.
     nonisolated static let interruptionOptionKey = "AVAudioSessionInterruptionOptionKey"
-
-    /// Coming to the foreground ends any interruption hold, in case its end was never posted (#473 review).
     nonisolated static let foregroundNotification = Notification.Name("UIApplicationWillEnterForegroundNotification")
-
     /// Follows interruptions on `center`, by name so it works wherever the controller runs. A begin (type 1) holds the
     /// watch. An end with `shouldResume` releases it: reply-only playback and the keepalive activate the session
     /// themselves, so no managed-session result may come (Codex P1 on #478). An end without it keeps the hold. When
@@ -91,7 +50,6 @@ extension ReplyPlaybackController {
             MainActor.assumeIsolated { self?.audioInterruption(began: began) }
         }
     }
-
     /// Follows `session`'s events for as long as the caller's task runs: an interruption holds the idle watch until
     /// the session reports playback resumed. An end without a resume (or a failed reactivation) leaves the player
     /// stopped, so the hold stays until a later resume or the app comes to the foreground (Codex round 5, #469).
@@ -101,17 +59,13 @@ extension ReplyPlaybackController {
             noteAudioSession(event)
         }
     }
-
     func noteAudioSession(_ event: AudioSessionEvent) {
         switch event {
         case .interruptionBegan: audioInterruption(began: true)
         case .interruptionEnded(resumed: true): audioInterruption(began: false)
-        // Not resumed may only mean the managed session is not the active one: reply-only playback or the keepalive
-        // reactivates on its own, so this neither holds nor releases (Codex P1 on #478); the notification decides.
         case .interruptionEnded(resumed: false), .routeChanged: break
         }
     }
-
     func audioInterruption(began: Bool) {
         idleWatch.audioInterrupted = began
         syncIdleHold()
@@ -124,12 +78,10 @@ extension ReplyPlaybackController {
         drain()
         if queue.first == key { noteHeadFrame() }
     }
-
     func noteHeadFrame() {
         idleWatch.lastFrameAt = idleNow()
         armIdleWatch()
     }
-
     /// A new head (or none) starts its own watch; frames of other streams never extend the head's.
     func watchHeadIfChanged() {
         syncIdleHold()
@@ -140,11 +92,8 @@ extension ReplyPlaybackController {
         idleWatch.heldRemaining = isIdleHeld ? .zero : nil
         armIdleWatch()
     }
-
     var isIdleHeld: Bool { isPaused || isCaptureSuppressed || idleWatch.audioInterrupted }
-
     func idleDeadline() -> ContinuousClock.Instant { idleDeadline(idleWatch) }
-
     /// Paused, listening or interrupted, the player holds its audio (Codex P1s on #473): the unplayed duration
     /// (a replay's included) is kept and the watch stops, then it resumes with that still to play.
     func syncIdleHold() {
@@ -161,7 +110,6 @@ extension ReplyPlaybackController {
             armIdleWatch()
         }
     }
-
     func armIdleWatch() {
         idleWatch.cancel?()
         idleWatch.cancel = nil
@@ -172,14 +120,12 @@ extension ReplyPlaybackController {
         let delay = max(.zero, idleNow().duration(to: idleDeadline()))
         idleWatch.cancel = idleScheduler(delay) { [weak self] in self?.idleDeadlinePassed(for: key) }
     }
-
     func idleDeadlinePassed(for key: ReplyStreamKey) {
         guard queue.first == key, idleWatch.key == key, !completed.contains(key) else { return }
         guard idleNow() >= idleDeadline() else { return armIdleWatch() }
         guard !isIdleHeld else { return syncIdleHold() }
         abandonHead(key)
     }
-
     /// Ends the stuck head as if it had finished. The player is not cancelled: anything still buffered plays out,
     /// and the next reply follows it. Later frames of the abandoned stream are ignored.
     private func abandonHead(_ key: ReplyStreamKey) {
@@ -195,4 +141,60 @@ extension ReplyPlaybackController {
             status = queue.isEmpty ? (isMuted ? "Muted" : "Played") : "Waiting for audio"
         }
     }
+}
+
+/// #825: ordered membership with constant-time lookup, removal and oldest-first eviction.
+/// Links avoid array shifting and tombstone sweeps on the main actor.
+struct ReplyClaimWindow: Sequence {
+    struct Node {
+        var previous: ReplyStreamKey?
+        var next: ReplyStreamKey?
+    }
+    struct Iterator: IteratorProtocol {
+        var key: ReplyStreamKey?
+        let nodes: [ReplyStreamKey: Node]
+        mutating func next() -> ReplyStreamKey? {
+            defer { key = key.flatMap { nodes[$0]?.next } }
+            return key
+        }
+    }
+    private var nodes: [ReplyStreamKey: Node] = [:]
+    private var head: ReplyStreamKey?
+    private var tail: ReplyStreamKey?
+    #if DEBUG
+    private(set) var membershipLookups = 0 // deterministic complexity evidence, never a timing assertion
+    #endif
+    var count: Int { nodes.count }
+    var isEmpty: Bool { nodes.isEmpty }
+    func makeIterator() -> Iterator { Iterator(key: head, nodes: nodes) }
+    mutating func contains(_ key: ReplyStreamKey) -> Bool { lookup(key) != nil }
+    private mutating func lookup(_ key: ReplyStreamKey) -> Node? {
+        #if DEBUG
+        membershipLookups += 1
+        #endif
+        return nodes[key]
+    }
+    mutating func append(_ key: ReplyStreamKey) {
+        guard !contains(key) else { return }
+        nodes[key] = Node(previous: tail)
+        if let tail { nodes[tail]?.next = key } else { head = key }
+        tail = key
+    }
+    mutating func remove(_ key: ReplyStreamKey) {
+        guard let node = lookup(key) else { return }
+        if let previous = node.previous { nodes[previous]?.next = node.next } else { head = node.next }
+        if let next = node.next { nodes[next]?.previous = node.previous } else { tail = node.previous }
+        nodes[key] = nil
+    }
+    @discardableResult mutating func removeFirst() -> ReplyStreamKey? {
+        guard let key = head else { return nil }
+        remove(key)
+        return key
+    }
+    mutating func subtract(_ keys: Set<ReplyStreamKey>) { for key in keys { remove(key) } }
+    mutating func formUnion(_ keys: Set<ReplyStreamKey>) { for key in keys { append(key) } }
+}
+
+extension ReplyStreamKey {
+    var presentationID: String { "\(endpointID)|\(replyID.uuidString.lowercased())" }
 }

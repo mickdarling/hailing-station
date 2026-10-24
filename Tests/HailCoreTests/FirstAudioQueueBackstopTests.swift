@@ -6,7 +6,7 @@ import Testing
 /// #825: synthetic host audio queues, injected idle time and a fake player; no physical playback proof.
 @MainActor
 @Suite struct FirstAudioQueueBackstopTests {
-    @Test func continuousOtherRepliesLosePendingAudioAtTenMinutes() throws {
+    @Test func continuousOtherRepliesLosePendingAudioAtTenMinutes() async throws {
         let rig = IdleRig(), waiting = idleReply()
         playOtherReply(rig)
         rig.advance(by: .seconds(1))
@@ -18,6 +18,7 @@ import Testing
             #expect(rig.abandoned == 0)
             #expect(rig.liveDeadlineCount == 1, "each frame replaces the pending timer")
             if sequence < 200 { rig.advance(by: .seconds(3)) }
+            await Task.yield() // Simulated minutes must not monopolize the main actor (#825).
         }
         rig.advance(by: .milliseconds(900))
         #expect(rig.abandoned == 0)
@@ -29,6 +30,7 @@ import Testing
         for _ in 0..<20 { // Continue E's other replies through t=661: eleven minutes since B's text.
             rig.advance(by: .seconds(3))
             playOtherReply(rig)
+            await Task.yield()
         }
         rig.controller.ingest(firstAudioText(waiting))
         rig.controller.ingest(idleAudio(waiting, sequence: 0, final: true, byte: 2))
@@ -39,7 +41,7 @@ import Testing
         #expect(rig.status(of: waiting) == "Played")
     }
 
-    @Test func audioQueuedBehindNineMinutesStillPlays() throws {
+    @Test func audioQueuedBehindNineMinutesStillPlays() async throws {
         let rig = IdleRig(), playing = idleReply(), waiting = idleReply()
         rig.controller.ingest(idleAudio(playing, sequence: 0, final: false, byte: 1))
         rig.advance(by: .seconds(1))
@@ -48,6 +50,7 @@ import Testing
         for sequence in 1...180 { // One A frame every three seconds until t=540.
             rig.controller.ingest(idleAudio(playing, sequence: sequence, final: sequence == 180, byte: 1))
             if sequence < 180 { rig.advance(by: .seconds(3)) }
+            await Task.yield()
         }
         rig.player.completeReply()
         rig.advance(by: .seconds(1)) // B has waited nine minutes since its text at t=1.
