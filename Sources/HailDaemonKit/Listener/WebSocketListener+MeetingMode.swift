@@ -6,7 +6,8 @@ public import Foundation
 /// and a restore; `expiresAt` is the absolute auto-end fixed when armed, so a restore re-arms only the time left.
 /// `recording` is whether this meeting records here: true for an owner's new entry, kept through a profile switch or
 /// a renewal, and decided on the meeting chain for a restore. Once false it stays false for the rest of that meeting,
-/// even back on the device that recorded it (conservative, review round 2). `armed` is its arming order.
+/// even back on the device that recorded it (conservative, review round 2). `armed` is its arming order; `resume` the
+/// restore or move arming whose decision this awaits (review round 4), kept by renewals and switches, nil otherwise.
 struct AmbientMeetingTimer {
     let token: UUID
     let timer: Task<Void, Never>
@@ -16,6 +17,7 @@ struct AmbientMeetingTimer {
     let expiresAt: Date
     var recording: Bool
     let armed: Int
+    var resume: UUID?
 }
 
 /// One meeting change for MM-C's seam and the owner's clip (#735 meeting mode (rightyo#227)). `token` is an
@@ -118,7 +120,7 @@ extension AmbientRightyoRouter {
                 token: token, timer: meetingTimeoutTask(connection: connection, token: token, after: timeout),
                 profile: profile, started: current?.started ?? Date(), meetingID: meetingID,
                 expiresAt: configuration.now().addingTimeInterval(timeout), recording: recording,
-                armed: Self.arm(&state))
+                armed: Self.arm(&state), resume: current?.resume)
             // Install meeting first: leaving media writes true once, never a false/true pair.
             let reported = state.media[connection] != nil
                 ? changeMedia(false, connection: connection, reason: "voice", in: &state)

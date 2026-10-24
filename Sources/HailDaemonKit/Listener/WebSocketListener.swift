@@ -1466,6 +1466,20 @@ extension AmbientRightyoRouter {
     }
 }
 
+/// Where a restored mode came from (MM-E): a park, with its device's claims, or a live connection still holding it
+/// (haild has no keepalive, so a dropped phone's old connection can outlive its reconnect).
+enum RestoreSource: Sendable {
+    case park(AmbientPeerDevice?)
+    case live
+    var token: String { if case .park = self { "park" } else { "live" } }
+
+    /// The claims to match: the park's, or the live holder's own, read now (nil once it is gone: no match).
+    func device(of holder: UUID, listener: WebSocketListener?) async -> AmbientPeerDevice? {
+        if case .park(let device) = self { return device }
+        return await listener?.ambientPeerDevice(connection: holder)
+    }
+}
+
 /// One real meeting change for MM-C (#735 meeting mode restore (MM-E)), in change order. `reason` is `voice`,
 /// `timeout`, `media`, `privacy`, `connection`, `moved` (carried to a newer connection's start), `superseded` (a stale
 /// holder that lost to a later-armed mode at a start), `resumed` (a restore on the same Hello name and known class, of

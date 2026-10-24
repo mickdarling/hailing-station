@@ -53,5 +53,32 @@ import Testing
         }
         await rig.finish()
     }
+    /// R4-1: a decision whose arming moved away is stale even when the meeting comes back to the same connection
+    /// before it runs. Restore onto A, move to B, move back to A, all before the first decision: the two stale ones
+    /// are dropped (unrecorded), and the state and the last hook carry only the last decision.
+    @Test func aStaleDecisionNeverLandsOnALaterArming() async throws {
+        let rig = try await RestoreRig()
+        defer { rig.close() }
+        _ = try await AmbientModeRestoreTests.meetingDropped(rig)
+        let latch = MeetingLatch(), router = rig.router
+        router.meetingChanges.enqueue { await latch.wait() }
+        let (phone, home) = try await rig.start()
+        _ = try await rig.start(name: "other", kind: "pad")
+        try await recipientSocketSend(audio(UUID(), 0), on: phone)
+        #expect(await eventually { router.activeConnection() == home }, "back home marker")
+        #expect(router.meetingMode(connection: home))
+        latch.open()
+        #expect(await eventually { rig.changes.count == 7 }, "three restores hook marker")
+        #expect(rig.changes.map(\.reason) == ["voice", "connection", "resumed_unrecorded", "moved",
+                                              "resumed_unrecorded", "moved", "resumed_unrecorded"])
+        #expect(rig.changes.allSatisfy { !$0.recording || $0.reason == "voice" })
+        #expect(router.state.withLock { $0.meeting[home]?.recording } == false)
+        #expect(await eventually { rig.details("meeting_restored").count == 3 }, "three decisions marker")
+        let decisions = rig.details("meeting_restored").map { $0.hasSuffix("decision=stored") }
+        #expect(decisions == [false, false, true])
+        // The first, stale, decision matched (same claims, recorded source), yet it never reached hook or state.
+        #expect(rig.details("meeting_restored").first?.contains("recording=false device_match=true") == true)
+        await rig.finish()
+    }
 }
 #endif

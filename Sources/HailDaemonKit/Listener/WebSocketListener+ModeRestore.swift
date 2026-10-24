@@ -38,20 +38,6 @@ struct ParkedModes: Sendable {
     var mode: String { meeting != nil ? "meeting" : "media" }
 }
 
-/// Where a restored mode came from (MM-E): a park, with its device's claims, or a live connection still holding it
-/// (haild has no keepalive, so a dropped phone's old connection can outlive its reconnect).
-enum RestoreSource: Sendable {
-    case park(AmbientPeerDevice?)
-    case live
-    var token: String { if case .park = self { "park" } else { "live" } }
-
-    /// The claims to match: the park's, or the live holder's own, read now (nil once it is gone: no match).
-    func device(of holder: UUID, listener: WebSocketListener?) async -> AmbientPeerDevice? {
-        if case .park(let device) = self { return device }
-        return await listener?.ambientPeerDevice(connection: holder)
-    }
-}
-
 /// A meeting restore's recording decision, made on the meeting chain (`meetingChanged`), outside the lock.
 struct MeetingResume: Sendable {
     let source: RestoreSource
@@ -154,7 +140,7 @@ extension AmbientRightyoRouter {
         state.meeting[connection] = AmbientMeetingTimer(
             token: token, timer: meetingTimeoutTask(connection: connection, token: token, after: remaining),
             profile: meeting.profile, started: meeting.started, meetingID: meeting.meetingID,
-            expiresAt: meeting.expiresAt, recording: false, armed: meeting.armed)
+            expiresAt: meeting.expiresAt, recording: false, armed: meeting.armed, resume: token)
         let reported = reportModes(connection: connection, in: state)
         meetingChanged(AmbientMeetingChange(on: true, profile: meeting.profile, reason: "resumed_unrecorded",
                                             reported: reported, token: token, meetingID: meeting.meetingID,
@@ -166,21 +152,25 @@ extension AmbientRightyoRouter {
 
     /// A restore's recording decision (MM-E) on the meeting chain, outside the lock: the new connection's claims must
     /// match its source's, and the meeting must have recorded there; once unrecorded, a meeting never records again.
-    /// Stored on that meeting while the connection holds it, across a renewal or profile switch made before this ran
-    /// (review round 3), so the hook and the state agree; logged as ids and booleans, never names.
+    /// Stored only while the connection holds that arming's lineage: across a renewal or profile switch made before
+    /// this ran (review round 3), never on a later arming (round 4), so the hook and the state agree; a stale one says
+    /// unrecorded. Logged as ids and booleans, never names.
     func decide(_ resume: MeetingResume, for change: AmbientMeetingChange, connection: UUID,
                 listener: WebSocketListener?) async -> AmbientMeetingChange {
         let here = await listener?.ambientPeerDevice(connection: connection)
         let match = AmbientPeerDevice.matches(here, await resume.source.device(of: resume.from, listener: listener))
-        let recording = match && resume.recording
-        state.withLock { state in
-            guard state.meeting[connection]?.meetingID == change.meetingID else { return }
-            state.meeting[connection]?.recording = recording
+        // Only onto its own arming lineage (review round 4): a decision whose arming has moved away is stale, even if
+        // the meeting came back, and is dropped; that arming's own decision follows on this chain.
+        let current = state.withLock { state -> Bool in
+            guard state.meeting[connection]?.resume == resume.token else { return false }
+            state.meeting[connection]?.recording = match && resume.recording
+            return true
         }
+        let recording = current && match && resume.recording
         emit("meeting_restored", connection: connection,
              detail: "source=\(resume.source.token) from=\(resume.from) to=\(connection) meeting=\(change.meetingID) "
                  + "recording=\(recording) device_match=\(match) profile=\(change.profile.rawValue) "
-                 + "remaining=\(resume.remaining) reported=\(change.reported)")
+                 + "remaining=\(resume.remaining) reported=\(change.reported) decision=\(current ? "stored" : "stale")")
         var decided = change
         (decided.reason, decided.recording) = (recording ? "resumed" : "resumed_unrecorded", recording)
         return decided
