@@ -335,6 +335,9 @@ enum AmbientStopConfirmation {
     static let meetingEnded = RightyoAddressing.key("confirm-meeting-ended")
     static let rubberDuckOn = RightyoAddressing.key("confirm-rubber-duck-on")
     static let rubberDuckOff = RightyoAddressing.key("confirm-rubber-duck-off")
+    /// #735 meeting mode restore (MM-E): "Meeting mode is still on.", for a meeting restored after a dropped
+    /// connection, recorded or not, and for either profile. No fallback: until recorded it logs `no_clips`.
+    static let meetingResumed = RightyoAddressing.key("confirm-meeting-resumed")
     /// A spoken note (#552): "Saved." once its Shortcut succeeded, "That didn't save." when it did not.
     static let saved = RightyoAddressing.key("confirm-saved"), notSaved = RightyoAddressing.key("confirm-not-saved")
     /// An ambient request the owner addressed to a voice route that did not take it (#636): "Nothing was sent."
@@ -358,7 +361,7 @@ enum AmbientStopConfirmation {
     static let reserved: Set<String> = [stopped, idle, muted, unmuted, mediaOn, mediaOff, saved, notSaved, notSent,
                                         privacyOn, privacyOff, privacyStatus, stillRecording, privacyRefused,
                                         privacyHint, privacyUnavailable, meetingOn, meetingOff, meetingEnded,
-                                        rubberDuckOn, rubberDuckOff]
+                                        rubberDuckOn, rubberDuckOff, meetingResumed]
 
     /// Why a playback stop is not confirmed, as a log token, or nil when it is: only the enrolled owner's stop, and
     /// only on a connection still there to hear it.

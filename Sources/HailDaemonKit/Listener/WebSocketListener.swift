@@ -221,6 +221,9 @@ public protocol AmbientListenerWiring: AnyObject, Sendable {
     func attach(_ listener: WebSocketListener)
     /// Stops every child serving `connection`; never cancels a run, so an in-flight dispatch finishes typing.
     func stop(connection: UUID)
+    /// `stop(connection:)` with the ended peer's Hello claims (#735 meeting mode restore (MM-E)), which a parked
+    /// meeting keeps to decide whether its restore records. The default ignores them.
+    func stop(connection: UUID, device: AmbientPeerDevice?)
     /// Stops every child, then waits (bounded) until each is reaped and each run returns.
     func shutdown() async
     /// True while `stream` is the most recent stream `connection` started, active or ended, and the connection
@@ -243,6 +246,23 @@ public protocol AmbientListenerWiring: AnyObject, Sendable {
 
 extension AmbientListenerWiring {
     public func observe(_ diagnostics: DiagnosticLog) async {}
+    public func stop(connection: UUID, device: AmbientPeerDevice?) { stop(connection: connection) }
+}
+
+/// A connection's Hello claims (#735 meeting mode restore (MM-E)): its device name and class. Client claims, never
+/// authentication: compared only so a restored meeting never records another device by accident; never logged.
+public struct AmbientPeerDevice: Sendable, Equatable {
+    public let name: String
+    public let deviceClass: String?
+
+    public init(name: String, deviceClass: String?) { (self.name, self.deviceClass) = (name, deviceClass) }
+
+    /// The same claimed device: both known, the same name and the same class, which must be known too (an unknown or
+    /// absent class never matches).
+    static func matches(_ one: AmbientPeerDevice?, _ other: AmbientPeerDevice?) -> Bool {
+        guard let one, let other, one.deviceClass != nil else { return false }
+        return one == other
+    }
 }
 
 extension AmbientListenerWiring {
@@ -301,8 +321,11 @@ extension WebSocketListener {
     fileprivate func endAmbient(of peer: WebSocketPeer) async {
         guard let gate = authorizer.ambientAudio else { return }
         let connection = peer.session.connectionID
+        // Read first, so nothing is awaited between the gate's end and the teardown that may park a mode (MM-E).
+        let device = AmbientPeerDevice(name: await peer.session.peerName,
+                                       deviceClass: await peer.session.peerDeviceKind)
         await gate.end(connection: connection)
-        ambient?.stop(connection: connection)
+        ambient?.stop(connection: connection, device: device)
     }
 
     /// An ambient request names the `HostSession` connection the gate saw; it is dispatched on behalf of the
@@ -390,6 +413,12 @@ extension WebSocketListener {
 }
 
 extension WebSocketListener {
+    /// The Hello claims of the peer holding `connection` (MM-E), or nil once it is gone. Compared, never logged.
+    func ambientPeerDevice(connection: UUID) async -> AmbientPeerDevice? {
+        guard let peer = peers.values.first(where: { $0.session.connectionID == connection }) else { return nil }
+        return AmbientPeerDevice(name: await peer.session.peerName, deviceClass: await peer.session.peerDeviceKind)
+    }
+
     /// Whether the connection's device advertised `reply_mute` (#404).
     func acceptsReplyMute(connection: UUID) async -> Bool {
         guard !stopped, let peer = peers.values.first(where: { $0.session.connectionID == connection }) else {
@@ -486,7 +515,9 @@ public final class AmbientRightyoRouter: AmbientAudioSink, AmbientListenerWiring
         public var meetingTimeout: TimeInterval = AmbientRightyoRouter.defaultMeetingTimeout
         /// MM-C opens/closes its encrypted record here (#735 meeting mode (rightyo#227)); no record is built yet.
         /// Called in change order, outside the state lock, once per real change. It must return at once.
-        public var onMeetingChange: (@Sendable (UUID, Bool, MeetingProfile, String) -> Void)?
+        public var onMeetingChange: (@Sendable (MeetingChange) -> Void)?
+        /// The wall clock that meeting and media expiries are fixed and restored on (MM-E). Tests only change it.
+        var now: @Sendable () -> Date = { Date() }
         /// How long the owner's spoken duck mode (#735) lasts before it turns itself off: host.json
         /// `ambient.duckTimeout`, or `defaultDuckTimeout`.
         public var duckTimeout: TimeInterval = AmbientRightyoRouter.defaultDuckTimeout
@@ -580,6 +611,11 @@ public final class AmbientRightyoRouter: AmbientAudioSink, AmbientListenerWiring
         var closed: Set<UUID> = []
         /// Connections whose owner turned duck mode on (#735), kept like `media`. A connection is never in both.
         var duck: [UUID: AmbientDuckTimer] = [:]
+        /// #735 meeting mode restore (MM-E): the meeting or media mode a dropped connection left on, daemon-wide and
+        /// in RAM only, until the next ambient start restores it or privacy, the owner's off or its expiry ends it.
+        var parked: ParkedModes?
+        /// Arming order of meeting and media modes (MM-E): the latest owner command wins a restore or a move.
+        var armings = 0
         /// Privacy entries and the last word per connection (#735 S-8 HS-C round 4, `AmbientPrivacyLedger`), and each
         /// connection's one chain for privacy clips and child refusals, queued under this lock as each is decided, so
         /// their order is the order decided.
@@ -600,7 +636,7 @@ public final class AmbientRightyoRouter: AmbientAudioSink, AmbientListenerWiring
     /// Wakes the worker; signals coalesce, the events themselves are in `State.queue`.
     fileprivate let wake: AsyncStream<Void>.Continuation
     /// Media and duck mode state for devices (#612, #735), sent one at a time in the order the modes changed.
-    fileprivate let mediaNotices = SerialTaskChain()
+    let mediaNotices = SerialTaskChain()
     /// The origin of the privacy ledgers' clock (#735 S-8 HS-C round 4).
     let privacyEpoch = ContinuousClock.now
 
@@ -679,9 +715,13 @@ public final class AmbientRightyoRouter: AmbientAudioSink, AmbientListenerWiring
              detail: "phase=\(phase.rawValue) asked=\(asked) reported=\(pipeline.reportReply(phase, asked: asked))")
     }
 
-    public func stop(connection: UUID) {
+    public func stop(connection: UUID) { stop(connection: connection, device: nil) }
+
+    /// Teardown parks a meeting or media mode still on (MM-E), before removing it, for the next start to restore.
+    public func stop(connection: UUID, device: AmbientPeerDevice?) {
         let streams = state.withLock { state -> [UUID] in
             (state.latest[connection], state.inputRoutes[connection]) = (nil, nil)
+            park(connection: connection, device: device, in: &state)
             state.media.removeValue(forKey: connection)?.timer.cancel()
             endMeeting(connection: connection, reason: "connection", in: &state)
             state.duck.removeValue(forKey: connection)?.timer?.cancel()
@@ -986,6 +1026,8 @@ extension AmbientRightyoRouter {
             let id = register(pipeline, stream: stream, connection: connection, in: &state)
             state.active = Active(stream: stream, run: id, pipeline: pipeline, since: Date(),
                                   selection: selection)
+            // Under register's own lock (MM-E): a parked or stale-held mode reaches this child as its first mode write.
+            carryModes(to: connection, stream: stream, pipeline: pipeline, in: &state)
             return true
         }
         guard admitted else {
@@ -1424,10 +1466,42 @@ extension AmbientRightyoRouter {
     }
 }
 
-/// A connection's media mode timeout (#551): the token an expiry must still match, and the task to cancel.
+/// Where a restored mode came from (MM-E): a park, with its device's claims, or a live connection still holding it
+/// (haild has no keepalive, so a dropped phone's old connection can outlive its reconnect).
+enum RestoreSource: Sendable {
+    case park(AmbientPeerDevice?)
+    case live
+    var token: String { if case .park = self { "park" } else { "live" } }
+
+    /// The claims to match: the park's, or the live holder's own, read now (nil once it is gone: no match).
+    func device(of holder: UUID, listener: WebSocketListener?) async -> AmbientPeerDevice? {
+        if case .park(let device) = self { return device }
+        return await listener?.ambientPeerDevice(connection: holder)
+    }
+}
+
+/// One real meeting change for MM-C (#735 meeting mode restore (MM-E)), in change order. `reason` is `voice`,
+/// `timeout`, `media`, `privacy`, `connection`, `moved` (carried to a newer connection's start), `superseded` (a stale
+/// holder that lost to a later-armed mode at a start), `resumed` (a restore on the same Hello name and known class, of
+/// a meeting that recorded there) or `resumed_unrecorded` (any other: the gate is up, nothing is recorded). On an
+/// on-change `recording` is the meeting's stored state, and says whether MM-C records the segment, linked by
+/// `meetingID`. It is always false for an off.
+public struct MeetingChange: Sendable, Equatable {
+    public let connection: UUID
+    public let on: Bool
+    public let profile: MeetingProfile
+    public let reason: String
+    public let meetingID: UUID
+    public let recording: Bool
+}
+
+/// A connection's media mode timeout (#551): the token an expiry must still match, and the task to cancel; and its
+/// absolute end (MM-E), fixed when armed, which a restore keeps.
 struct AmbientMediaTimer {
     let token: UUID
     let timer: Task<Void, Never>
+    let expiresAt: Date
+    let armed: Int
 }
 
 /// Media mode (#551), kept apart from the router's body for the type-length limit.
@@ -1520,6 +1594,10 @@ extension AmbientRightyoRouter {
         let changed = state.withLock { state -> (reported: Int, refused: String?)? in
             if let expected, state.media[connection]?.token != expected { return nil }
             if on, let refused = Self.entryRefusal(connection, in: state) { return (0, refused) }
+            // The owner's latest word wins daemon-wide (MM-E): off clears a parked media mode, on a parked meeting.
+            if reason == "voice" {
+                discardParked(meeting: on, media: !on, reason: on ? "superseded" : "off", in: &state)
+            }
             return (changeMedia(on, connection: connection, reason: reason, in: &state), nil)
         }
         guard let changed else { return 0 }
@@ -1591,7 +1669,11 @@ extension AmbientRightyoRouter {
             if reported != nil, on, state.media[connection] != nil {
                 change.media = changeMedia(false, connection: connection, reason: "voice", in: &state)
             }
-            if reported != nil, on { endMeeting(connection: connection, reason: "privacy", in: &state) }
+            if reported != nil, on {
+                endMeeting(connection: connection, reason: "privacy", in: &state)
+                // Privacy taken on any connection ends every mode daemon-wide, held or parked (MM-E): privacy wins.
+                endEveryMode(reason: "privacy", except: connection, in: &state)
+            }
             let switched = AmbientPrivacyEntry(reported: change.duck, entry: entry, wasOn: wasOn,
                                                on: state.duck[connection] != nil)
             if let work = clip(switched) { Self.clipChain(connection, in: &state).enqueue(work) }
@@ -1617,20 +1699,18 @@ extension AmbientRightyoRouter {
     /// same lock so a timeout's off and a spoken on reach the device in the order the mode changed. How many took it.
     func changeMedia(_ on: Bool, connection: UUID, reason: String, in state: inout State) -> Int {
         let token = UUID(), timeout = configuration.mediaTimeout
+        let expiresAt = configuration.now().addingTimeInterval(timeout)
         state.media.removeValue(forKey: connection)?.timer.cancel()
         if on {
-            let timer = Task { [weak self] in
-                try? await Task.sleep(for: .seconds(timeout))
-                guard !Task.isCancelled else { return }
-                self?.setMedia(false, connection: connection, reason: "timeout", expected: token)
-            }
-            state.media[connection] = AmbientMediaTimer(token: token, timer: timer)
+            state.media[connection] = AmbientMediaTimer(
+                token: token, timer: mediaTimeoutTask(connection: connection, token: token, after: timeout),
+                expiresAt: expiresAt, armed: Self.arm(&state))
         }
         if on { endMeeting(connection: connection, reason: "media", report: false, in: &state) }
         let reported = reportModes(connection: connection, in: state)
         // The device sees on only once a child took it, so it never shows a mode not in force; off always (#612).
         if !on || reported > 0 {
-            let expires = on ? Int64((Date().timeIntervalSince1970 + timeout) * 1_000) : nil
+            let expires = on ? Int64(expiresAt.timeIntervalSince1970 * 1_000) : nil
             let listener = state.listener?.value
             mediaNotices.enqueue { [weak self, weak listener] in
                 let sent = await listener?.showMediaMode(on, reason: reason, expires: expires, connection: connection)
@@ -1639,6 +1719,103 @@ extension AmbientRightyoRouter {
             }
         }
         return reported
+    }
+
+    /// Whole seconds from `now` to `expiry`, never negative (MM-E).
+    static func seconds(_ expiry: Date, _ now: Date) -> Int { max(0, Int(expiry.timeIntervalSince(now))) }
+
+    /// The next arming order (MM-E), under the caller's lock.
+    static func arm(_ state: inout State) -> Int {
+        state.armings += 1
+        return state.armings
+    }
+
+    /// Re-arms a media mode (MM-E) with the time left to its original expiry. No clip (media's are not installed); the
+    /// device is shown it once a child took it, with that expiry. The claims are matched for the log only.
+    func restore(_ media: ParkedMedia, source: RestoreSource, connection: UUID, now: Date, in state: inout State) {
+        let token = UUID(), remaining = media.expiresAt.timeIntervalSince(now)
+        state.media[connection] = AmbientMediaTimer(
+            token: token, timer: mediaTimeoutTask(connection: connection, token: token, after: remaining),
+            expiresAt: media.expiresAt, armed: media.armed)
+        let reported = reportModes(connection: connection, in: state)
+        let (listener, seconds, from) = (state.listener?.value, Self.seconds(media.expiresAt, now), media.connection)
+        let expires = Int64(media.expiresAt.timeIntervalSince1970 * 1_000)
+        mediaNotices.enqueue { [weak self, weak listener] in
+            let here = await listener?.ambientPeerDevice(connection: connection)
+            let match = AmbientPeerDevice.matches(here, await source.device(of: from, listener: listener))
+            self?.emit("media_restored", connection: connection, detail: "source=\(source.token) from=\(from) "
+                + "to=\(connection) device_match=\(match) remaining=\(seconds) reported=\(reported)")
+            guard reported > 0 else { return }
+            let sent = await listener?.showMediaMode(true, reason: "resumed", expires: expires, connection: connection)
+            self?.emit("ambient_media_device", connection: connection,
+                       detail: "on=true device=\(sent ?? "no_connection")")
+        }
+    }
+
+    /// Ends every other stale holder's meeting or media mode and the park, under the caller's lock (review round 2): a
+    /// privacy entry taken anywhere, or a private start, ends them daemon-wide, with no clip. A connection with a child
+    /// still listening is live, not stale, and keeps its mode and its gate (review round 3): ending it there would only
+    /// make a listener that is not private louder.
+    func endEveryMode(reason: String, except connection: UUID, in state: inout State) {
+        Set(state.meeting.keys).union(state.media.keys).subtracting([connection])
+            .filter { Self.listening($0, in: state).isEmpty }
+            .forEach { endHeld($0, reason: reason, in: &state) }
+        discardParked(meeting: true, media: true, reason: reason, in: &state)
+    }
+
+    /// Ends a holder's mode quietly: `moved` (to `connection`, which takes it), `superseded` or `privacy`. No clip and
+    /// no write to its old children (they stay gated); its device is told media mode is off; its later teardown parks
+    /// nothing.
+    func endHeld(_ holder: UUID, reason: String, to connection: UUID? = nil, in state: inout State) {
+        let (event, target) = connection.map { ("ambient_mode_moved", " to=\($0)") } ?? ("ambient_mode_ended", "")
+        let because = connection == nil ? "reason=\(reason) " : ""
+        if let meeting = state.meeting[holder] {
+            logLater(event, connection: connection ?? holder,
+                     detail: "\(because)mode=meeting from=\(holder)\(target) meeting=\(meeting.meetingID)")
+            endMeeting(connection: holder, reason: reason, report: false, in: &state)
+        }
+        if let media = state.media.removeValue(forKey: holder) {
+            media.timer.cancel()
+            logLater(event, connection: connection ?? holder, detail: "\(because)mode=media from=\(holder)\(target)")
+            let listener = state.listener?.value
+            mediaNotices.enqueue { [weak self, weak listener] in
+                let sent = await listener?.showMediaMode(false, reason: reason, expires: nil, connection: holder)
+                self?.emit("ambient_media_device", connection: holder,
+                           detail: "on=false device=\(sent ?? "no_connection")")
+            }
+        }
+    }
+
+    /// The recording state an on-change reports to MM-C (review round 3): the meeting's stored value at hook time, so
+    /// a restore's decision made after a renewal or profile switch still reaches that switch's hook; its own value
+    /// once the meeting is gone. Until that decision lands the stored value is false: it errs toward not recording.
+    func recorded(_ change: AmbientMeetingChange, connection: UUID) -> Bool {
+        state.withLock { state in
+            state.meeting[connection].flatMap { $0.meetingID == change.meetingID ? $0.recording : nil }
+        } ?? change.recording
+    }
+
+    /// The meeting's guarded auto-end, `delay` from now: the full timeout, or what a restore has left (MM-E).
+    func meetingTimeoutTask(connection: UUID, token: UUID, after delay: TimeInterval) -> Task<Void, Never> {
+        Task { [weak self] in
+            try? await Task.sleep(for: .seconds(max(0, delay)))
+            guard !Task.isCancelled else { return }
+            self?.setMeeting(on: false, connection: connection, reason: "timeout", expected: token)
+        }
+    }
+
+    /// A log line decided under the state lock, written outside it in the order decided, beside the meeting hooks.
+    func logLater(_ event: String, connection: UUID? = nil, detail: String) {
+        meetingChanges.enqueue { [weak self] in self?.emit(event, connection: connection, detail: detail) }
+    }
+
+    /// Media mode's guarded auto-end, `delay` from now: the full timeout, or what a restore has left (MM-E).
+    func mediaTimeoutTask(connection: UUID, token: UUID, after delay: TimeInterval) -> Task<Void, Never> {
+        Task { [weak self] in
+            try? await Task.sleep(for: .seconds(max(0, delay)))
+            guard !Task.isCancelled else { return }
+            self?.setMedia(false, connection: connection, reason: "timeout", expected: token)
+        }
     }
 
     /// Duck mode's change under the caller's lock, as `changeMedia`; nil when it was to turn on and no child took it,

@@ -189,6 +189,6 @@ extension AmbientWiringStopConfirmationTests {
                                         "confirmprivacystatus", "confirmstillrecording", "confirmprivacyrefused",
                                         "confirmprivacyhint", "confirmprivacyunavailable", "confirmmeetingon",
                                         "confirmmeetingoff", "confirmmeetingended", "confirmrubberduckon",
-                                        "confirmrubberduckoff"]
+                                        "confirmrubberduckoff", "confirmmeetingresumed"]
 }
 #endif
