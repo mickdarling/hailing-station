@@ -42,22 +42,28 @@ import Testing
     /// Key 2: the exit releases the hold only after the entry's drop has run, so a reply to a request made before a
     /// fast entry and exit never slips through.
     ///
-    /// The old reply is sent only once the entry's drop has run (#875): sent before it, the hold refuses it and that
-    /// refusal drops the record itself, so the drop finds nothing and logs `dropped=0` though nothing slipped through.
-    /// A reply racing the drop is `aRequestBoundReplyRacingTheEntryIsRefusedByTheHold`.
+    /// A latch holds the router's notice queue, so the entry's drop and the exit's release both wait behind it: the
+    /// first old reply is sent after the exit but before the drop, and an exit that released the hold early would let
+    /// it through. The hold refuses it, and that refusal drops its record itself (#875), so a second request is left
+    /// unanswered until after the release: the drop always has a record to count, however the runner is loaded.
     @Test func aFastEntryAndExitNeverLetsAnOldReplyThrough() async throws {
         let rig = try await DuckRig(script: Reply.quiet)
         defer { rig.close() }
         #expect(await eventually { rig.connection() != nil })
         let connection = try #require(rig.connection()), router = rig.env.router
-        let request = try await Reply.typedRequest(on: rig)
+        let first = try await Reply.typedRequest(on: rig), second = try await Reply.typedRequest(on: rig)
+        let latch = MeetingLatch()
+        defer { latch.open() }
+        router.mediaNotices.enqueue { await latch.wait() }
         #expect(await eventually { router.setDuck(true, connection: connection, reason: "voice") == 1 })
         #expect(router.setDuck(false, connection: connection, reason: "voice") == 1)
-        #expect(await eventually { rig.details("ambient_privacy_replies").first?.hasPrefix("dropped=") == true })
-        #expect(await Reply.refusal(Reply.answer(request), on: rig) != nil)
+        #expect(await Reply.refusal(Reply.answer(first), on: rig) == .privacyHeld)
+        #expect(rig.details("ambient_privacy_replies").isEmpty)
+        latch.open()
         #expect(await Reply.flowsAgain(on: rig, connection: connection))
-        #expect(await Reply.refusal(Reply.answer(request, "again"), on: rig) != nil)
-        try await barrier(on: rig.socket, step: "the old reply never played")
+        #expect(await Reply.refusal(Reply.answer(second), on: rig) != nil)
+        #expect(await Reply.refusal(Reply.answer(first, "again"), on: rig) != nil)
+        try await barrier(on: rig.socket, step: "the old replies never played")
         // The drop ran before the release, on the same serial queue.
         let order = rig.details("ambient_privacy_replies")
         #expect(order.count == 2 && order.first?.hasPrefix("dropped=") == true && order.last == "released=true")
