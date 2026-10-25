@@ -34,14 +34,14 @@ enum FlushCommand {
         if !yes { confirm() }
         let result = try await refusing { try await host.flushPrompt(id, expecting: draft) }
         note(result.logLine)
-        let keys = "End and \(result.clearedCharacters) BSpace"
-        if result.isEmpty {
-            note("\(id): sent \(keys); the prompt is now empty")
-        } else if result.textAfterCursor {
-            note("\(id): sent \(keys); nothing is left before the cursor, but text still shows after it"
-                 + " (likely the agent's hint); check the pane")
-        } else {
-            note("\(id): sent \(keys); the prompt still shows text; check the pane and clear it by hand")
+        let sent = "\(id): sent End and \(result.clearedCharacters) BSpace; "
+        switch result.remainder {
+        case .empty: note(sent + "the prompt is now empty")
+        case .textAfterCursor:
+            note(sent + "nothing is left before the cursor, but text still shows after it (likely the agent's hint)")
+        case .textLeft, .blankBeforeCursor:
+            note(sent + "the prompt still shows text after its redraw wait; check the pane")
+        case .noPrompt, .unreadable: note(sent + "the prompt could not be read afterwards; check the pane")
         }
         note(taintHint)
         if !result.isEmpty { exit(6) }

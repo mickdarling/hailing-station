@@ -14,6 +14,12 @@ final class FlushPane: Sendable {
         var prompt = "❯ "
         var hint = ""
         var ignoresBackspace = false
+        /// Rows drawn above the live input: a transcript, which may echo an earlier prompt behind its own marker.
+        var above: [String] = []
+        /// How many looks after a `BSpace` command still show the screen from before it (a busy agent's late redraw).
+        var lag = 0
+        var frozen: String?
+        var frozenLooks = 0
         var below: [String] = ["────"]
         var listing = twoSessions
         var keys: [String] = []
@@ -32,10 +38,13 @@ final class FlushPane: Sendable {
         state.withLock { state in
             switch arguments.first {
             case "list-sessions": return CommandResult(exitCode: 0, stdout: state.listing)
-            case "capture-pane": return CommandResult(exitCode: 0, stdout: Self.render(state))
+            case "capture-pane": return CommandResult(exitCode: 0, stdout: Self.look(&state))
             case "display-message": return CommandResult(exitCode: 0, stdout: state.agent ? "1\n" : "0\n")
             case "if-shell":
                 guard state.agent else { return CommandResult(exitCode: 0, stdout: "hail-flush-not-agent\n") }
+                if state.lag > 0, arguments[5].contains("BSpace") {
+                    (state.frozen, state.frozenLooks) = (Self.render(state), state.lag)
+                }
                 for key in arguments[5].split(separator: " ").dropFirst(3).map(String.init) {
                     Self.press(key, &state)
                 }
@@ -47,6 +56,13 @@ final class FlushPane: Sendable {
                 return CommandResult(exitCode: 1, stdout: "", stderr: "unexpected")
             }
         }
+    }
+
+    /// The screen a look shows: the one from before the last BSpaces while the redraw lags, else the current one.
+    private static func look(_ state: inout State) -> String {
+        guard state.frozenLooks > 0, let frozen = state.frozen else { return render(state) }
+        state.frozenLooks -= 1
+        return frozen
     }
 
     private static func press(_ key: String, _ state: inout State) {
@@ -67,7 +83,8 @@ final class FlushPane: Sendable {
     private static func render(_ state: State) -> String {
         let shown = state.input.isEmpty ? state.hint : String(state.input)
         let row = String((state.prompt + shown).reversed().drop(while: \.isWhitespace).reversed())
-        return ([row] + state.below).joined(separator: "\n") + "\n\(state.prompt.count + state.cursor),0,80\n"
+        let cursor = "\(state.prompt.count + state.cursor),\(state.above.count),80"
+        return (state.above + [row] + state.below).joined(separator: "\n") + "\n\(cursor)\n"
     }
 }
 
@@ -77,6 +94,12 @@ struct FlushHarness {
     let runner: FakeCommandRunner
     let adapter: TmuxAdapter
     let evidence = EvidenceLog()
+    /// Every redraw wait the flush took, recorded instead of slept.
+    let naps = NapLog()
+    var redraw: TmuxFlushRedraw {
+        let naps = naps
+        return TmuxFlushRedraw(interval: .milliseconds(100), limit: .seconds(2)) { naps.append($0) }
+    }
     static let binding = "$1@1758230000/%1:501"
 
     init(_ pane: FlushPane) {
@@ -84,6 +107,11 @@ struct FlushHarness {
         runner = FakeCommandRunner { pane.respond($0) }
         let evidence = evidence
         adapter = TmuxAdapter(runner: runner, pollInterval: nil, evidenceObserver: { evidence.append($0) })
+    }
+
+    /// The flush of `draft` from the scripted target, its redraw waits recorded instead of slept.
+    func clear(_ draft: TmuxPromptDraft) async throws -> TmuxFlushResult {
+        try await adapter.flushPrompt("claude-hail", binding: Self.binding, expecting: draft, redraw: redraw)
     }
 
     /// Every call that could reach the pane: `send-keys`, `if-shell`, `paste-buffer`, `set-buffer`.
@@ -110,4 +138,11 @@ struct FlushHarness {
         ["tmux", "if-shell", "-F", "-t", "%1", TmuxAdapter.isAgentFormat,
          (["send-keys", "-t", "%1"] + keys).joined(separator: " "), "display-message -p hail-flush-not-agent"]
     }
+}
+
+/// The waits a flush asked for, so a test can count them without sleeping.
+final class NapLog: Sendable {
+    private let storage = Mutex<[Duration]>([])
+    var all: [Duration] { storage.withLock { $0 } }
+    func append(_ nap: Duration) { storage.withLock { $0.append(nap) } }
 }

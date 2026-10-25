@@ -1,3 +1,5 @@
+// The draft parser, the flush outcome types and the gated clear stay together: each is checked against the others.
+// swiftlint:disable file_length
 import Foundation
 
 /// The unsent text in an agent's prompt, as `haild targets flush` reads it (#894 ask 1): the cursor row's text after the
@@ -38,21 +40,53 @@ public enum TmuxFlushRefusal: String, Error, Sendable, Equatable {
     public var logLine: String { TmuxFlushResult.logLine(cleared: 0, result: "refused", reason: rawValue) }
 }
 
-/// What a flush did: how many `BSpace` keys it sent, and whether the prompt then read empty.
+/// What a flush did: how many `BSpace` keys it sent, and what its last look at the prompt showed.
 public struct TmuxFlushResult: Sendable, Equatable {
+    /// What the last look showed, as a log token: `none` (`empty`), `text_left` (text before the cursor),
+    /// `text_after_cursor` (only text right of it, likely the agent's hint), `blank_before_cursor` (blanks remain),
+    /// `no_prompt` (no marker on the cursor row) or `unreadable`.
+    public enum Remainder: String, Sendable {
+        case empty = "none", textLeft = "text_left", textAfterCursor = "text_after_cursor"
+        case blankBeforeCursor = "blank_before_cursor", noPrompt = "no_prompt", unreadable
+    }
+
     public let clearedCharacters: Int
-    public let isEmpty: Bool
-    /// Not empty, but nothing is left before the cursor: the text right of it is likely the agent's hint.
-    public let textAfterCursor: Bool
+    public let remainder: Remainder
+    public var isEmpty: Bool { remainder == .empty }
 
     /// `targets_flush cleared_chars=<n> result=empty|not_empty reason=<token>`: counts and tokens, never the words.
     public var logLine: String {
-        let reason = isEmpty ? "none" : textAfterCursor ? "text_after_cursor" : "text_left"
-        return Self.logLine(cleared: clearedCharacters, result: isEmpty ? "empty" : "not_empty", reason: reason)
+        Self.logLine(cleared: clearedCharacters, result: isEmpty ? "empty" : "not_empty", reason: remainder.rawValue)
     }
 
     public static func logLine(cleared: Int, result: String, reason: String) -> String {
         "targets_flush cleared_chars=\(cleared) result=\(result) reason=\(reason)"
+    }
+
+    static func remainder(of look: PaneObservation?) -> Remainder {
+        guard let look else { return .unreadable }
+        guard let draft = try? look.promptDraft() else { return .noPrompt }
+        if draft.isEmpty { return .empty }
+        if draft.cursorAtStart { return .textAfterCursor }
+        return draft.text.isEmpty ? .blankBeforeCursor : .textLeft
+    }
+}
+
+/// How long a flush waits for the agent to redraw its prompt after the `BSpace` keys (#894): an agent busy with a
+/// turn redraws its input tens to hundreds of milliseconds late, so one look straight away can still show the draft.
+/// The prompt is looked at again every `interval` until it reads empty or `limit` has been waited. `sleep` is
+/// injectable, so tests wait no real time.
+public struct TmuxFlushRedraw: Sendable {
+    public var interval: Duration
+    public var limit: Duration
+    let sleep: @Sendable (Duration) async -> Void
+
+    init(interval: Duration, limit: Duration, sleep: @escaping @Sendable (Duration) async -> Void) {
+        (self.interval, self.limit, self.sleep) = (interval, limit, sleep)
+    }
+
+    public static let standard = TmuxFlushRedraw(interval: .milliseconds(100), limit: .seconds(2)) {
+        try? await Task.sleep(for: $0)
     }
 }
 
@@ -148,29 +182,37 @@ extension TmuxAdapter {
     /// Clears `draft` from `target`'s prompt, if it is still the draft there (#894): `End`, a fresh look that must
     /// show the same draft, then exactly one `BSpace` per character before the cursor, each step under the tmux
     /// server's agent check (`isAgentFormat`, as for the Enter after a framed paste) and after the binding is checked
-    /// again. Never `Escape` or `C-c`. A last look reports whether the prompt is now empty. This adapter's taint (a
-    /// `haild` process's own memory) is untouched: a flush from the CLI cannot clear a running daemon's taint.
+    /// again. Never `Escape` or `C-c`. Looks then wait for the redraw (`redraw`) and report whether the prompt reads
+    /// empty. This adapter's taint (a `haild` process's own memory) is untouched: a flush from the CLI cannot clear a
+    /// running daemon's taint.
     public func flushPrompt(
-        _ target: String, binding: String?, expecting draft: TmuxPromptDraft
+        _ target: String, binding: String?, expecting draft: TmuxPromptDraft, redraw: TmuxFlushRedraw = .standard
     ) async throws -> TmuxFlushResult {
         let session = try await verified(target, binding: binding)
         let pane = session.paneID
-        guard try await readDraft(pane).text == draft.text else { throw TmuxFlushRefusal.changed }
+        let current = try await readDraft(pane)
+        guard current.text == draft.text else { throw TmuxFlushRefusal.changed }
         _ = try await verified(target, binding: session.binding)
         try await sendToAgent(pane, [.end])
         guard let ended = await observePane(pane) else { throw TmuxFlushRefusal.unreadable }
+        // The live input is the cursor row (a transcript row above may also start with a marker); it must not move.
         let moved = try ended.promptDraft()
-        guard moved.text == draft.text, moved.row == draft.row else { throw TmuxFlushRefusal.changed }
+        guard moved.text == draft.text, moved.row == current.row else { throw TmuxFlushRefusal.changed }
         let count = ended.backspaces(clearing: moved)
-        if count > 0 {
-            _ = try await verified(target, binding: session.binding)
-            try await sendToAgent(pane, Array(repeating: .backspace, count: count))
+        guard count > 0 else {
+            return TmuxFlushResult(clearedCharacters: 0, remainder: TmuxFlushResult.remainder(of: ended))
         }
-        let after = try? await observePane(pane)?.promptDraft()
-        return TmuxFlushResult(
-            clearedCharacters: count, isEmpty: after?.isEmpty ?? false,
-            textAfterCursor: after.map { $0.cursorAtStart && !$0.text.isEmpty } ?? false
-        )
+        _ = try await verified(target, binding: session.binding)
+        try await sendToAgent(pane, Array(repeating: .backspace, count: count))
+        // Looks only, until the redraw shows an empty prompt or the limit passes; nothing more is sent.
+        var remainder = TmuxFlushResult.remainder(of: await observePane(pane))
+        var waited = Duration.zero
+        while remainder != .empty, waited < redraw.limit {
+            await redraw.sleep(redraw.interval)
+            waited += redraw.interval
+            remainder = TmuxFlushResult.remainder(of: await observePane(pane))
+        }
+        return TmuxFlushResult(clearedCharacters: count, remainder: remainder)
     }
 
     private func readDraft(_ pane: String) async throws -> TmuxPromptDraft {

@@ -64,6 +64,16 @@ import Testing
         #expect(hint.backspaces(clearing: found) == 0)
     }
 
+    @Test func theLiveInputIsTheCursorRowNotAnEarlierMarkerRow() throws {
+        let screen = "❯ an earlier prompt\n\n  ⏺ working…\n────\n❯ live draft▌\n────\n  ? for shortcuts"
+        let found = try draft(screen)
+        #expect(found.text == "live draft" && found.row == 4)
+        let ended = try look(screen)
+        #expect(ended.backspaces(clearing: found) == 10)
+        // The row is found by the cursor alone, never by searching for the first or last marker.
+        #expect(try draft("❯ an earlier prompt▌\n────\n❯ live draft\n────").text == "an earlier prompt")
+    }
+
     @Test func aDraftOnMoreThanOneRowIsRefused() throws {
         // The cursor on a continuation row: no marker there.
         #expect(throws: TmuxFlushRefusal.noMarker) { try draft("❯ first line\n  second line▌\n────") }
@@ -92,11 +102,13 @@ import Testing
     }
 
     @Test func logLinesAreTokensAndCountsOnly() {
-        let lines = [
-            TmuxFlushResult(clearedCharacters: 5, isEmpty: true, textAfterCursor: false).logLine,
-            TmuxFlushResult(clearedCharacters: 0, isEmpty: false, textAfterCursor: true).logLine,
-            TmuxFlushResult(clearedCharacters: 2, isEmpty: false, textAfterCursor: false).logLine
-        ] + [TmuxFlushRefusal.unreadable, .notAgent, .noMarker, .multiLine, .placeholder, .changed].map(\.logLine)
+        let remainders: [TmuxFlushResult.Remainder] = [
+            .textLeft, .textAfterCursor, .blankBeforeCursor, .noPrompt, .unreadable
+        ]
+        let refusals: [TmuxFlushRefusal] = [.unreadable, .notAgent, .noMarker, .multiLine, .placeholder, .changed]
+        let lines = [TmuxFlushResult(clearedCharacters: 5, remainder: .empty).logLine]
+            + remainders.map { TmuxFlushResult(clearedCharacters: 2, remainder: $0).logLine }
+            + refusals.map(\.logLine)
         #expect(lines.first == "targets_flush cleared_chars=5 result=empty reason=none")
         for line in lines {
             #expect(line.wholeMatch(
