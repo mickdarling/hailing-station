@@ -18,8 +18,9 @@ actor RecipientContextAdapter: ProviderContextDelivering, ProviderReplyBindingLe
     private var held = false
     private var failure: (any Error)?
     private var entered = false
-    private var arrival: CheckedContinuation<Void, Never>?
+    private var arrivals: [UUID: CheckedContinuation<String?, Never>] = [:]
     private var release: CheckedContinuation<Void, Never>?
+    var handoffWaiterCount: Int { arrivals.count }
 
     func listTargets() async throws -> [AdapterTarget] { targets }
     func capture(_ target: String) async throws -> String { "" }
@@ -31,8 +32,9 @@ actor RecipientContextAdapter: ProviderContextDelivering, ProviderReplyBindingLe
         contexts.append(context)
         if held {
             entered = true
-            arrival?.resume()
-            arrival = nil
+            let waiters = Array(arrivals.values)
+            arrivals.removeAll()
+            for waiter in waiters { waiter.resume(returning: nil) }
             await withCheckedContinuation { release = $0 }
         }
         if let failure { throw failure }
@@ -52,9 +54,28 @@ actor RecipientContextAdapter: ProviderContextDelivering, ProviderReplyBindingLe
     /// Every later handoff fails after it is recorded; `error` lets a test name the refusal (#894).
     func failHandoff(with error: any Error = ProviderCoordinatorSyntheticError.arbitraryFailure) { failure = error }
     func holdHandoff() { held = true; entered = false }
-    func waitForHandoff() async {
+    /// #896: neither a missing dispatch nor task cancellation may strand the test's lane.
+    func waitForHandoff(within: Duration = .seconds(20)) async {
         if entered { return }
-        await withCheckedContinuation { arrival = $0 }
+        let id = UUID()
+        let timer = Task {
+            do { try await Task.sleep(for: within) } catch { return }
+            finishHandoffWait(id, failure: "timed out after \(within)")
+        }
+        defer { timer.cancel() }
+        let failure: String? = await withTaskCancellationHandler {
+            // Registration and this check share the actor turn; an earlier cancellation cannot be lost.
+            if Task.isCancelled { return "cancelled before handoff" }
+            return await withCheckedContinuation { arrivals[id] = $0 }
+        } onCancel: {
+            Task { await self.finishHandoffWait(id, failure: "cancelled before handoff") }
+        }
+        // Record on the waiting task so the issue belongs to its test, including cancellation's actor hop.
+        if let failure { Issue.record("#896: waitForHandoff \(failure)") }
+    }
+    private func finishHandoffWait(_ id: UUID, failure: String) {
+        // Arrival, timeout and cancellation all remove before resuming; other waiters keep their own slot.
+        arrivals.removeValue(forKey: id)?.resume(returning: failure)
     }
     func releaseHandoff() {
         held = false
@@ -139,62 +160,4 @@ func recipientAudio(_ descriptor: ReplyDescriptor, sequence: Int, final: Bool = 
         codec: .pcm16, sampleRate: 24_000, channels: 1, sequence: sequence,
         streamID: descriptor.audioStreamID, isFinal: final, bytes: Data([0, 0]), reply: descriptor
     )))
-}
-
-func recipientSocket(port: UInt16) throws -> (URLSession, URLSessionWebSocketTask) {
-    let session = URLSession(configuration: .ephemeral)
-    let url = try #require(URL(string: "ws://127.0.0.1:\(port)"))
-    let socket = session.webSocketTask(with: url, protocols: [WebSocketListener.subprotocolName])
-    socket.resume()
-    return (session, socket)
-}
-
-func recipientSocketSend(_ frame: Frame, on socket: URLSessionWebSocketTask) async throws {
-    try await socket.send(.data(FrameCoding.encode(frame)))
-}
-
-/// The next frame on `socket`. `URLSessionWebSocketTask.receive()` ignores task cancellation, so a frame that never
-/// came held the test, and its whole lane, until the 300 s stall stop (#704). After `within` the socket is cancelled,
-/// which ends the receive, and a recorded issue names `step`. Any other error (a server close a test expects) is
-/// thrown as before, with no issue.
-func recipientSocketReceive(
-    on socket: URLSessionWebSocketTask, step: String = "recipient receive", within: Duration = .seconds(15)
-) async throws -> Frame {
-    enum Wait { case waiting, done, expired } // the timer cancels only a receive still waiting at the deadline
-    let wait = Mutex(Wait.waiting)
-    let timer = Task {
-        try await Task.sleep(for: within)
-        let expired = wait.withLock { state in
-            if state == .waiting { state = .expired }
-            return state == .expired
-        }
-        if expired { socket.cancel(with: .goingAway, reason: nil) }
-    }
-    defer { timer.cancel() }
-    let message: URLSessionWebSocketTask.Message
-    do {
-        message = try await socket.receive()
-        wait.withLock { if $0 == .waiting { $0 = .done } }
-    } catch {
-        let expired = wait.withLock { state in
-            defer { if state == .waiting { state = .done } }
-            return state == .expired
-        }
-        if expired { Issue.record("no frame within \(within) at: \(step)") }
-        throw error
-    }
-    switch message {
-    case .data(let data): return try FrameCoding.decode(data)
-    case .string(let string): return try FrameCoding.decode(Data(string.utf8))
-    @unknown default: throw TestSupportError.expectedOneControl
-    }
-}
-
-/// The pong follows prior host publications on this peer's serial send queue. A stray reply is a failure,
-/// not a timeout-based inference that nothing arrived.
-func recipientSocketBarrier(on socket: URLSessionWebSocketTask, step: String = "recipient barrier") async throws {
-    let nonce = UUID().uuidString
-    try await recipientSocketSend(sessionFrame(payload: .control(.ping(nonce: nonce))), on: socket)
-    let received = try await recipientSocketReceive(on: socket, step: step).payload
-    try #require(received == .control(.pong(nonce: nonce)), "Unexpected payload at \(step): \(received)")
 }
