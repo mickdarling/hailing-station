@@ -36,12 +36,18 @@ import Testing
         let adapter = RecipientContextAdapter()
         await adapter.holdHandoff()
         let second = Task { await adapter.waitForHandoff() }
+        #expect(await eventually { await adapter.handoffWaiterCount == 1 })
         await withKnownIssue {
             let first = Task { await adapter.waitForHandoff(within: cancel ? .seconds(20) : .milliseconds(200)) }
-            #expect(await eventually { await adapter.handoffWaiterCount == 2 })
-            if cancel { first.cancel() }
+            if cancel {
+                #expect(await eventually { await adapter.handoffWaiterCount == 2 })
+                first.cancel()
+            }
+            // The timeout can remove the first waiter before polling ever observes both registrations.
             await bounded("first handoff waiter", within: .seconds(2)) { await first.value }
-        } matching: { Self.handoffIssue($0) }
+        } matching: {
+            Self.handoffIssue($0) && $0.comments.contains { $0.rawValue.contains(cancel ? "cancelled" : "timed out") }
+        }
         #expect(await adapter.handoffWaiterCount == 1)
         let delivery = try await deliver(to: adapter)
         await bounded("second handoff waiter", within: .seconds(2)) { await second.value }
