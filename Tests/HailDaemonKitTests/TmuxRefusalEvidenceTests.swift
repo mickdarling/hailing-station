@@ -131,6 +131,9 @@ import Testing
         await #expect(throws: AdapterError.self) {
             try await harness.adapter.deliver(Self.synthetic, to: "codex", binding: nil)
         }
+        // The owner clears the input by hand; the taint (until a restart) still refuses, with no look taken, so
+        // nothing is claimed about the cursor.
+        pane.reset(baseline: ScriptedPane.oldScreen)
 
         await #expect(throws: AdapterError.self) {
             try await harness.adapter.deliver("later input", to: "codex", binding: nil)
@@ -139,7 +142,8 @@ import Testing
         #expect(harness.evidence.lines("tmux_submit") == ["tmux_submit pane=p1 outcome=failed"])
         let refusal = try #require(harness.evidence.lines("tmux_input_pending").only)
         #expect(refusal.hasPrefix(
-            "tmux_input_pending reason=tainted pane=p1 pending_chars=15 placeholder=none own_insert=true own_age_s="
+            "tmux_input_pending reason=tainted pane=p1 pending_chars=none placeholder=none own_insert=unobserved"
+                + " own_age_s="
         ))
         #expect(refusal.hasSuffix(" own_submitted=true last_submit=failed"))
         #expect(await harness.keys == [Self.synthetic, "Enter", "Enter"])
@@ -165,7 +169,9 @@ import Testing
         }
 
         let refusal = try #require(harness.evidence.lines.only)
-        #expect(refusal.hasPrefix("tmux_input_pending reason=tainted pane=p1 pending_chars=15 placeholder=none"))
+        #expect(refusal.hasPrefix(
+            "tmux_input_pending reason=tainted pane=p1 pending_chars=none placeholder=none own_insert=unobserved"
+        ))
         #expect(refusal.hasSuffix(" own_submitted=false last_submit=none"))
         harness.evidence.expectTokensOnly(excluding: [Self.synthetic, "later input"])
     }

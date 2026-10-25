@@ -2,8 +2,8 @@ import Foundation
 
 /// One token-only fact about a tmux delivery, for haild's error log (#894): reason tokens, counts, flags and ages,
 /// never the words, a preview, or a hash of them (a one-word draft falls to a dictionary of unkeyed hashes). The
-/// pane is named by an opaque ordinal per adapter (`pane=p1` for the first pane it pastes into or refuses), never
-/// by its target id or tmux pane id: no error-log line names a target.
+/// pane is named by an opaque ordinal per adapter, given at the pane's first submit or refusal report (`pane=p1`
+/// for the first), never by its target id or tmux pane id: no error-log line names a target.
 public struct TmuxDeliveryEvidence: Sendable, Equatable {
     /// `tmux_submit` or `tmux_input_pending`.
     public let event: String
@@ -52,22 +52,23 @@ struct TmuxEvidenceLedger {
         report("tmux_submit", ["pane=\(id)", "outcome=\(outcome.rawValue)"])
     }
 
-    /// `seen`: the look that found text pending (nil for a tainted pane, refused without a look); `own`: the tail of
-    /// haild's last insert there. `own_insert` is true when that tail itself, not a placeholder, ends at the cursor,
-    /// or for a taint, which only haild's own paste sets; `pending_chars` is then that insert's length, and `none`
-    /// otherwise (haild knows the length of no other text). The `own_` fields describe the last insert regardless.
+    /// `seen`: the look that found text pending; `own`: the tail of haild's last insert there. `own_insert` is true
+    /// when that tail itself, not a placeholder, ends at the cursor; `pending_chars` is then that insert's length, and
+    /// `none` otherwise (haild knows the length of no other text). A tainted pane is refused without a look (`seen`
+    /// nil), so nothing at its cursor is claimed: `own_insert=unobserved`, `pending_chars=none`, `placeholder=none`;
+    /// the owner may have cleared it by hand. The `own_` fields describe the last insert regardless.
     mutating func inputPending(
         _ reason: TmuxPendingReason, in pane: String, seen: PaneObservation?, own tail: PayloadTail?
     ) {
         let insert = inserts[pane]
-        let own = seen.map { look in tail.map(look.endsInTail) ?? false } ?? (insert != nil)
+        let own = seen.map { look in tail.map(look.endsInTail) ?? false }
         let age = insert.map { String((ContinuousClock.now - $0.pastedAt).components.seconds) }
         let id = ordinal(pane)
         report("tmux_input_pending", [
             "reason=\(reason.rawValue)", "pane=\(id)",
-            "pending_chars=\((own ? insert?.characters : nil).map(String.init) ?? "none")",
+            "pending_chars=\((own == true ? insert?.characters : nil).map(String.init) ?? "none")",
             "placeholder=\(seen.map { String($0.input(nil) != .clear) } ?? "none")",
-            "own_insert=\(own)", "own_age_s=\(age ?? "none")",
+            "own_insert=\(own.map(String.init) ?? "unobserved")", "own_age_s=\(age ?? "none")",
             "own_submitted=\(insert.map { String($0.submitted) } ?? "none")",
             "last_submit=\(insert?.lastSubmit?.rawValue ?? "none")"
         ])
