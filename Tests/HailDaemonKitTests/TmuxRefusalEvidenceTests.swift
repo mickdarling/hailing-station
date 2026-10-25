@@ -151,19 +151,31 @@ import Testing
     }
 
     @Test func aPaneTaintedByAnAbandonedPasteShowsNoSubmit() async throws {
-        let harness = EvidenceHarness(
-            ScriptedPane(), timing: Self.timing(settleLimit: .seconds(5), settleFloor: .milliseconds(300))
-        )
-        let delivery = Task { try await harness.adapter.deliver(Self.synthetic, to: "codex", binding: nil) }
-        let deadline = ContinuousClock.now.advanced(by: .seconds(5))
-        while await harness.keys.isEmpty {
-            try #require(ContinuousClock.now < deadline)
-            try await Task.sleep(for: .milliseconds(2))
+        // The pane draws the pasted text only once the test has cancelled, so the settle is still waiting when the
+        // cancel lands: after the paste and before the commit, by structure rather than by a race against the clock.
+        let pasted = Mutex(false)
+        let drawn = Mutex(false)
+        let runner = FakeCommandRunner { arguments in
+            if arguments.contains("list-sessions") { return CommandResult(exitCode: 0, stdout: twoSessions) }
+            if arguments.contains("paste-buffer") { pasted.withLock { $0 = true } }
+            if arguments.contains("capture-pane") {
+                let shown = pasted.withLock { $0 } && drawn.withLock { $0 }
+                return CommandResult(exitCode: 0, stdout: shown ? "> synthetic input\n17,0\n" : "> \n2,0\n")
+            }
+            return CommandResult(exitCode: 0, stdout: "")
         }
+        // The settle limit is never reached: the text is drawn right after the cancel.
+        let harness = EvidenceHarness(runner, timing: Self.timing(settleLimit: .seconds(60)))
+        let delivery = Task { try await harness.adapter.deliver(Self.synthetic, to: "codex", binding: nil) }
+        // The repo's bounded wait (15 s), not a tight deadline: a loaded runner may take seconds to reach the paste.
+        try #require(await eventually { await !runner.delivered.isEmpty })
         delivery.cancel()
+        drawn.withLock { $0 = true }
         await #expect(throws: CancellationError.self) { try await delivery.value }
+        // Where the cancel landed: the text was pasted, and no Enter ever followed.
+        #expect(await runner.delivered == [Self.synthetic])
 
-        // Queued behind the abandoned delivery, which reaches its refused commit first.
+        // Pasted and never known submitted: the pane is tainted.
         await #expect(throws: AdapterError.self) {
             try await harness.adapter.deliver("later input", to: "codex", binding: nil)
         }
