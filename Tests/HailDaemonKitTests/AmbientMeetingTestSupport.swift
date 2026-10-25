@@ -56,18 +56,20 @@ final class MeetingRig: Sendable {
     var changes: [String] { hooks.list.withLock { $0.map(\.1) } }
     var socket: URLSessionWebSocketTask { pair.sockets[0] }
 
+    /// `meeting` is the child's `started` advertisement of the meeting control (#735 MM-D), raw JSON, none by default;
+    /// `ignoring` makes the child set every meeting line aside in `ignored.txt` instead of taking it.
     init(phrases: [String] = ["meeting mode"], timeout: TimeInterval = AmbientRightyoRouter.defaultMeetingTimeout,
-         clips: AmbientAckLibrary? = MeetingRig.clips) async throws {
+         clips: AmbientAckLibrary? = MeetingRig.clips, meeting: String? = nil, ignoring: Bool = false) async throws {
         let second = phrases.count > 1 ? """
         n=0
         while [ ! -e next-turn ] && [ $n -lt 300 ]; do /bin/sleep 0.05; n=$((n + 1)); done
         /usr/bin/sed "s/formed-demo/$7/g" off.jsonl
         """ : ""
-        fake = try FakeRightyo(FakeRightyo.ackingControl(append: true) + "\n"
+        fake = try FakeRightyo(FakeRightyo.meetingControl(ignoring: ignoring) + "\n"
             + "/usr/bin/sed -e '$d' -e \"s/formed-demo/$7/g\" events.jsonl\n" + second + "\n"
             + FakeRightyo.ackingTail)
         try fake.install(fixture: "enrolled-formed-request.jsonl")
-        try Self.prepare(fake, phrases: phrases)
+        try Self.prepare(fake, phrases: phrases, meeting: meeting)
         let events = events, hooks = hooks
         env = try await ambientRig(fake, timing: .init(eofGrace: 20, termGrace: 20), acknowledgements: clips,
                                    replyControl: true, startDeadline: 30, ackDeadline: 30,
@@ -79,12 +81,13 @@ final class MeetingRig: Sendable {
         try await recipientSocketSend(audio(stream, 0), on: socket)
     }
 
-    private static func prepare(_ fake: FakeRightyo, phrases: [String]) throws {
+    private static func prepare(_ fake: FakeRightyo, phrases: [String], meeting: String?) throws {
         let original = try fake.recorded("events.jsonl").split(separator: "\n").map(String.init)
         var lines = original.map { $0.replacingOccurrences(of: "Rightyo, archive the project.",
                                                           with: "Rightyo, \(phrases[0]).") }
         lines[0] = lines[0].replacingOccurrences(of: "\"phase\": \"started\"",
-            with: "\"addressing\": {\"names\": [\"Rightyo\"]}, \"duck\": {\"version\": 3}, \"phase\": \"started\"")
+            with: "\"addressing\": {\"names\": [\"Rightyo\"]}, \"duck\": {\"version\": 3}, "
+                + FakeRightyo.meetingAdvert(meeting) + "\"phase\": \"started\"")
         try (lines.joined(separator: "\n") + "\n").write(to: fake.directory.appendingPathComponent("events.jsonl"),
                                                          atomically: true, encoding: .utf8)
         guard phrases.count > 1 else { return }

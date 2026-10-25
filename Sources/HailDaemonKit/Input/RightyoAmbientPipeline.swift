@@ -182,6 +182,8 @@ public final class RightyoAmbientPipeline: Sendable {
     private let onVoiceMeeting: (@Sendable (Bool, MeetingProfile?) -> Void)?
     private let onVoiceDuck: (@Sendable (PrivacyCommand) -> Void)?
     private let duck: AmbientDuckControl
+    /// The dedicated meeting control (#735 MM-D), told only to a child whose `started` advertised it.
+    private let meeting = AmbientMeetingControl()
     /// The deadline for `started` while privacy is wished for (#735 S-2b), and whether this child was launched
     /// start-private (its `started` must then confirm `private`).
     private let startDeadline: TimeInterval
@@ -332,6 +334,30 @@ extension RightyoAmbientPipeline {
         return child.write(pcm)
     }
 
+    /// Sets meeting mode (#735 MM-D, rightyo#227) in this stream's RightyO over the same control descriptor, only for a
+    /// child whose `started` advertised `"meeting": {"version": 1}`; true when that child now holds `on`. Asked before
+    /// `started`, the wish is kept and written then, if advertised. False for any other child, before `started`, or
+    /// when the line was dropped: the host's media gate, written beside it, is then the child's quiet gate. Never
+    /// blocks.
+    @discardableResult func reportMeeting(_ on: Bool) -> Bool {
+        meeting.report(on, write: { [child] on in child.reportMeeting(on) })
+    }
+
+    /// The host's two modes in one write order (#735 MM-D): the media gate, `{"media": media || meeting}`, exactly as
+    /// before and for every child (the fail-safe), with the meeting control beside it for a child that advertised it:
+    /// on before the gate, off after it, so that child is never less gated in between (meeting plus media decides as
+    /// meeting alone). Only the gate's write is returned, as what this child took: a child that rejects, ignores or
+    /// never gets the meeting line still holds the gate, and nothing here undoes it.
+    @discardableResult func reportModes(media: Bool, meeting: Bool) -> Bool {
+        if meeting { reportMeeting(true) }
+        let reported = reportMedia(media || meeting)
+        if !meeting { reportMeeting(false) }
+        return reported
+    }
+
+    /// Whether this child advertised the meeting control and was told `on` (#735 MM-D; a log token and tests).
+    func meetingHeld(_ on: Bool) -> Bool { meeting.holds(on) }
+
     /// Whether audio now reaches the child (#735 S-2b; tests).
     var hearsAudio: Bool { duck.mayHearAudio }
     /// Whether haild has read the child's first `started` (#735; tests): a privacy wish before it is kept, not written.
@@ -389,8 +415,9 @@ extension RightyoAmbientPipeline {
     /// private. It is killed at once (SIGTERM then SIGKILL, no grace), `unavailable` is said, and its run throws
     /// `RightyoPrivacyRefusal`: never admitted, nothing records, and privacy itself stays on.
     private func observeStarted(_ event: RightyoInputEvent, line: Data) async throws {
-        guard event.type == "session", event.phase == "started",
-              duck.observe(started: line, write: { [child] on in child.reportDuck(on) },
+        guard event.type == "session", event.phase == "started" else { return }
+        meeting.observe(started: line, write: { [child] on in child.reportMeeting(on) })
+        guard duck.observe(started: line, write: { [child] on in child.reportDuck(on) },
                            written: armAckDeadline) == .refused else { return }
         guard startsPrivate || onDuckUnsupported?() ?? true else {
             duck.release()
@@ -994,6 +1021,50 @@ final class AmbientDuckControl: Sendable {
     static func advertises(_ line: Data) -> Bool {
         guard let object = try? JSONDecoder().decode([String: JSONValue].self, from: line) else { return false }
         return (RightyoInputEvent.privacyVersion(object["duck"]) ?? 0) >= 3
+    }
+}
+
+/// One child's meeting control (#735 MM-D, rightyo#227). RightyO takes `{"meeting": true|false}` only from a host
+/// that saw `"meeting": {"version": 1}` on its `started`; anything else there, or nothing, means it does not. Until
+/// `started`, the host's latest wish is kept and written then to a child that advertised it; one that did not is never
+/// written a meeting line. A line is written only when it changes what this child was told, and a dropped one leaves
+/// it untold, so a later report tries again. Under one lock, so a wish and the `started` that answers it cannot cross.
+/// The media gate stays the router's own write beside this: nothing here ever undoes it.
+final class AmbientMeetingControl: Sendable {
+    private struct State { var started = false, advertised = false, wanted = false, told = false }
+    private let state = Mutex(State())
+
+    /// Sets the host's wish; true when this child holds it now: written, or already told. False before `started`
+    /// (kept), for a child that did not advertise it, or when `write` failed.
+    func report(_ on: Bool, write: (Bool) -> Bool) -> Bool {
+        state.withLock { state in
+            state.wanted = on
+            guard state.started, state.advertised else { return false }
+            guard state.told != on else { return true }
+            guard write(on) else { return false }
+            state.told = on
+            return true
+        }
+    }
+
+    /// Records the child's first `started`, and writes a wish already on to a child that advertised the control.
+    func observe(started line: Data, write: (Bool) -> Bool) {
+        let advertised = Self.advertises(line)
+        state.withLock { state in
+            guard !state.started else { return }
+            (state.started, state.advertised) = (true, advertised)
+            if advertised, state.wanted, write(true) { state.told = true }
+        }
+    }
+
+    /// Whether this child advertised the control and was told `on`.
+    func holds(_ on: Bool) -> Bool { state.withLock { $0.advertised && $0.told == on } }
+
+    /// Whether a `started` line carries a top-level `meeting` object whose `version` is the integer 1.
+    static func advertises(_ line: Data) -> Bool {
+        guard let object = try? JSONDecoder().decode([String: JSONValue].self, from: line),
+              case .object(let meeting)? = object["meeting"] else { return false }
+        return meeting["version"] == .integer(1)
     }
 }
 
