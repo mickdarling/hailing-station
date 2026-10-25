@@ -328,6 +328,10 @@ final class PreparedWebSocketReply: Sendable {
         var waiterOwner: WaiterOwner?
         var watchdog: Task<Void, Never>?
     }
+    private struct Completion {
+        let waiter: CheckedContinuation<Outcome, Never>?
+        let watchdog: Task<Void, Never>?
+    }
     private let state = Mutex(State())
     private let permit: ReplyTransportPermit
     private let submit: @Sendable (@escaping @Sendable (NWError?) -> Void) -> Void
@@ -433,8 +437,8 @@ final class PreparedWebSocketReply: Sendable {
 
     private func complete(_ error: NWError?) {
         let outcome: Outcome = error.map { .failed(String(describing: $0)) } ?? .sent
-        let result = state.withLock { state -> (Bool, CheckedContinuation<Outcome, Never>?, Task<Void, Never>?) in
-            guard !state.transportCompleted else { return (false, nil, nil) }
+        let result = state.withLock { state -> Completion? in
+            guard !state.transportCompleted else { return nil }
             state.transportCompleted = true
             let watchdog = state.watchdog
             state.watchdog = nil
@@ -442,15 +446,15 @@ final class PreparedWebSocketReply: Sendable {
             state.waiter = nil
             state.waiterOwner = nil
             if state.outcome == nil { state.outcome = outcome }
-            return (true, waiter, watchdog)
+            return Completion(waiter: waiter, watchdog: watchdog)
         }
-        guard result.0 else { return }
-        result.2?.cancel()
+        guard let result else { return }
+        result.watchdog?.cancel()
         if case .failed(let description) = outcome {
             // A synthetic sender may complete inline under the transport gate. Retire off that stack.
             Task { [self] in closeTransport(reason: "host reply send failed: \(description)") }
         }
-        result.1?.resume(returning: outcome)
+        result.waiter?.resume(returning: outcome)
     }
 
     private func expireAbandonedSend() {

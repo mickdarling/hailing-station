@@ -153,8 +153,7 @@ import Testing
         let frame = recipientText(recipientDescriptor(try await rig.submit(on: session)))
         let listener = try syntheticListener(rig: rig)
         await listener.installSyntheticPeers([session])
-        // Status performs two time reads. Actual enqueue then observes expiration, without a sleep
-        // or a blocked cooperative executor, and must not downgrade this later refusal to pending.
+        // Expire after status's two reads; enqueue must refuse without granting retry permission.
         clock.expireAfter(reads: 2)
         await #expect(throws: LocalReplyRefusal.publicationFailed) { try await listener.publish(frame) }
         #expect(await session.replyPublicationStatus(frame) == .absent)

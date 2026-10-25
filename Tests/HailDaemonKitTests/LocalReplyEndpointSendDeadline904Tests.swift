@@ -89,7 +89,8 @@ import Testing
         let callback = Mutex<(@Sendable (NWError?) -> Void)?>(nil)
         let ticket = PreparedWebSocketReply(permit: try #require(transport.issuePermit()), submit: { completion in
             callback.withLock { $0 = completion }
-        }, cancel: { reason in Task { await peer.finish(reason: reason) } }, stallGrace: stalls ? .milliseconds(20) : .seconds(5))
+        }, cancel: { reason in Task { await peer.finish(reason: reason) } },
+        stallGrace: stalls ? .milliseconds(20) : .seconds(5))
         #expect(ticket.enqueue())
         let waiter = Task {
             withUnsafeCurrentTask { $0?.cancel() }

@@ -578,7 +578,8 @@ extension WebSocketListener {
     /// Demo-era single-terminal bridge (#188): with the opt-in flag, a reply carrying no request reference
     /// reaches the one live connection selecting its target. Any explicit reference that is not currently
     /// owned keeps today's refusal, as do zero selecting connections, and several unless one of them owns the active
-    /// ambient stream (#230); this is bounded, not a return to broadcast. The scan is a snapshot; uniqueness is not rescanned at enqueue.
+    /// ambient stream (#230); this is bounded, not a return to broadcast. The scan is a snapshot;
+    /// uniqueness is not rescanned at enqueue.
     private func publishUncorrelated(_ frame: Frame) async throws -> Int {
         guard singleTerminalReplyFallback else { throw LocalReplyRefusal.noRecipient }
         if let delivered = try await publishToLastInput(frame) { return delivered }
