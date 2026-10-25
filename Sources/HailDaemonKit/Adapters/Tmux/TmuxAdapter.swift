@@ -1,3 +1,5 @@
+// The delivery sequence and each of its refusals stay together in one file; the evidence ledger is its own (#894).
+// swiftlint:disable file_length
 import Foundation
 
 /// Every tmux session on one server is a target (#11). Text reaches the pane as one tmux paste (#304): it is
@@ -21,7 +23,6 @@ public actor TmuxAdapter: Adapter {
     let chunkSize: Int
     private let pollInterval: Duration?
     let submitTiming: TmuxSubmitTiming
-    private let submitObserver: (@Sendable (TmuxSubmitOutcome) -> Void)?
     /// Deliveries run one at a time, or reentrancy at each await would interleave two of them into one command.
     private var lastDelivery: Task<Void, Never>?
     /// Panes holding pasted text from a delivery that never reached a known submit (abandoned or failed after
@@ -29,6 +30,8 @@ public actor TmuxAdapter: Adapter {
     private var tainted: Set<String> = []
     /// The tail of the last text pasted into each pane, so a later delivery can see it still pending (#304).
     var lastTails: [String: PayloadTail] = [:]
+    /// haild's own last insert per pane, and who hears each submit outcome and pending-input refusal (#894).
+    var evidence: TmuxEvidenceLedger
 
     /// - Parameters:
     ///   - tmux: executable path. A LaunchAgent's PATH lacks Homebrew, so #10's config passes the full path.
@@ -36,10 +39,12 @@ public actor TmuxAdapter: Adapter {
     ///   - chunkSize: characters per `set-buffer` call while the paste buffer is filled.
     ///   - pollInterval: how often `events` re-lists sessions; `nil` disables polling (an empty stream).
     ///   - submitTiming, submitObserver: the bounded waits around the Enter, and who hears each outcome (#83, #304).
+    ///   - evidenceObserver: who hears each submit and each pending-input refusal, as tokens only (#894).
     public init(
         runner: any CommandRunner, tmux: String = "tmux", socket: String? = nil,
         chunkSize: Int = defaultChunkSize, pollInterval: Duration? = .seconds(3),
-        submitTiming: TmuxSubmitTiming = .standard, submitObserver: (@Sendable (TmuxSubmitOutcome) -> Void)? = nil
+        submitTiming: TmuxSubmitTiming = .standard, submitObserver: (@Sendable (TmuxSubmitOutcome) -> Void)? = nil,
+        evidenceObserver: (@Sendable (TmuxDeliveryEvidence) -> Void)? = nil
     ) {
         self.runner = runner
         self.tmuxPath = tmux
@@ -47,7 +52,7 @@ public actor TmuxAdapter: Adapter {
         self.chunkSize = max(1, chunkSize)
         self.pollInterval = pollInterval
         self.submitTiming = submitTiming
-        self.submitObserver = submitObserver
+        self.evidence = TmuxEvidenceLedger(submitObserver: submitObserver, observer: evidenceObserver)
     }
 
     /// A fresh polling stream per access, idle until iterated and ended when the consumer stops. Buffering is
@@ -92,6 +97,7 @@ public actor TmuxAdapter: Adapter {
         try abandoned.check()
         let session = try await verified(target, binding: binding)
         guard !tainted.contains(session.paneID) else {
+            evidence.inputPending(.tainted, in: session.paneID, seen: nil, own: lastTails[session.paneID])
             throw AdapterError.deliveryFailed(
                 "unsubmitted text left in pane \(target); clear it and restart haild before delivering again"
             )
@@ -104,6 +110,7 @@ public actor TmuxAdapter: Adapter {
             let fresh = try await paste(text, into: session, target: target, abandoned: abandoned) {
                 typed = true
                 lastTails[session.paneID] = tail
+                evidence.pasted(text, into: session.paneID)
             }
             let observe: TmuxSubmitProbe.Observe = { await self.observePane(session.paneID) }
             let acceptance = await TmuxSubmitProbe.acceptance(
@@ -140,6 +147,7 @@ public actor TmuxAdapter: Adapter {
             : await TmuxSubmitProbe.reaction(wait, tail: stale, before: seen, wasHolding: true, observe: observe)
         try abandoned.check()
         guard left == .submitted else {
+            evidence.inputPending(.staleInput, in: session.paneID, seen: seen, own: pending[1])
             throw AdapterError.deliveryFailed("unsubmitted text is already in the input of pane \(target)")
         }
         return await observePane(session.paneID)
@@ -150,10 +158,10 @@ public actor TmuxAdapter: Adapter {
         _ session: Session, target: String, tail: PayloadTail, acceptance: TmuxSubmitProbe.Acceptance
     ) async throws {
         do {
-            try await attemptSubmit(session, target: target, tail: tail, acceptance: acceptance)
-                .record(target: target, observer: submitObserver)
+            let outcome = try await attemptSubmit(session, target: target, tail: tail, acceptance: acceptance)
+            evidence.submitted(outcome, in: session.paneID, target: target)
         } catch {
-            TmuxSubmitOutcome.failed.record(target: target, observer: submitObserver)
+            evidence.submitted(.failed, in: session.paneID, target: target)
             throw error
         }
     }

@@ -161,6 +161,7 @@ extension TmuxAdapter {
             _ = try await verified(target, binding: session.binding)
             let fresh = await observePane(session.paneID)
             if let fresh, await pendingIndex(fresh, pending, in: session.paneID) != nil {
+                evidence.inputPending(.appeared, in: session.paneID, seen: fresh, own: pending[1])
                 throw AdapterError.deliveryFailed("unsubmitted text appeared in the input of pane \(target)")
             }
             try abandoned.check()
