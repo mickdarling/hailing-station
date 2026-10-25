@@ -53,8 +53,9 @@ refuses without submission; post-enqueue cancellation abandons the result withou
 closing the connection. A transport error or an abandoned send still pending after
 the 30-second stall grace retires transport authority and closes the connection.
 Late success cancels that watchdog but leaves the result abandoned: ambiguous,
-non-retryable refusal. Echo observation includes abandoned frames that may still
-play, once only even on late success; only confirmed delivery can pin later frames.
+non-retryable refusal. Abandoned frames enter echo bookkeeping only on successful
+send completion, once per frame, so protection covers delayed playback without
+counting audio twice; only confirmed delivery can pin later frames.
 No gate is held while waiting. Only one pending result waiter is supported; additional
 concurrent waiters fail closed rather than replace the original continuation.
 Waiter ownership is reserved before installing cancellation handling; even an

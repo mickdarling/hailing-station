@@ -5,18 +5,26 @@ import Synchronization
 import Testing
 @testable import HailDaemonKit
 
+final class ReplyEchoClock904: Sendable {
+    private let instant = Mutex(ContinuousClock.now)
+    var now: ContinuousClock.Instant { instant.withLock { $0 } }
+    func advance(_ seconds: Int) { instant.withLock { $0 = $0.advanced(by: .seconds(seconds)) } }
+}
+
 /// Keeps synthetic ambient listening active and exercises the real own-voice filter, without a child or device.
 final class ReplyEchoWiring904: AmbientListenerWiring {
     let owner: UUID
     let spoken: RecentSpokenReplies
     let observed = Mutex<[UUID]>([])
     let active = Mutex(true)
+    let clock = ReplyEchoClock904()
 
     init(owner: UUID) {
         self.owner = owner
-        let instant = ContinuousClock.now
-        spoken = RecentSpokenReplies(now: { instant })
+        let clock = self.clock
+        spoken = RecentSpokenReplies(now: { clock.now })
     }
+    func advance(_ seconds: Int) { clock.advance(seconds) }
     func attach(_ listener: WebSocketListener) {}
     func stop(connection: UUID) { if connection == owner { active.withLock { $0 = false } } }
     func shutdown() async { active.withLock { $0 = false } }
@@ -42,6 +50,7 @@ final class ReplyEchoSender904: Sendable {
             return stored
         })
         completion(error)
+        completion(nil) // Duplicate success must not observe twice or replace an earlier failure.
         completion(.posix(.ECONNRESET)) // Duplicate callbacks cannot replace late success.
     }
 }
@@ -54,6 +63,7 @@ struct ReplyEchoRig904 {
     let wiring: ReplyEchoWiring904
     let peer: WebSocketPeer
     let sender: ReplyEchoSender904
+    let ended: AsyncStream<Void>
     let reply: ReplyDescriptor
 
     static func make(route: String) async throws -> Self {
@@ -72,20 +82,32 @@ struct ReplyEchoRig904 {
             if route == "correlated" { reply = recipientDescriptor(context, audio: true) }
         }
         let id = UUID()
+        let ended = AsyncStream<Void>.makeStream()
         let peer = WebSocketPeer(
             id: id, connection: NWConnection(host: "127.0.0.1", port: 9, using: .tcp), session: session,
             queue: DispatchQueue(label: "synthetic.echo904"), helloTimeout: .seconds(5), log: { _ in },
-            onEnd: { _ in }, submitReply: sender.submit
+            onEnd: { _ in ended.continuation.yield(()); ended.continuation.finish() }, submitReply: sender.submit
         )
         await listener.installEchoPeer904(peer, id: id)
         return Self(rig: rig, session: session, listener: listener, wiring: wiring,
-                    peer: peer, sender: sender, reply: reply)
+                    peer: peer, sender: sender, ended: ended.stream, reply: reply)
     }
 
     var frames: [Frame] {
         [Frame(timestamp: 1, target: reply.targetID, source: reply.hostID,
                payload: .text(TextPayload(text: Self.words, reply: reply))),
-         recipientAudio(reply, sequence: 0)]
+         Frame(timestamp: 1, target: reply.targetID, source: reply.hostID, payload: .audio(AudioPayload(
+            codec: .pcm16, sampleRate: 24_000, channels: 1, sequence: 0, streamID: reply.audioStreamID,
+            isFinal: true, bytes: Data(count: 48_000), reply: reply
+         )))]
+    }
+
+    func confirm(_ frame: Frame) async throws {
+        let publication = Task { try await listener.publish(frame) }
+        var submissions = sender.submissions.stream.makeAsyncIterator()
+        _ = try #require(await submissions.next())
+        try sender.complete()
+        #expect(try await publication.value == 1)
     }
 
     func abandon(_ frame: Frame) async throws {

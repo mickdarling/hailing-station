@@ -36,9 +36,10 @@ import Testing
         let callback = Mutex<(@Sendable (NWError?) -> Void)?>(nil)
         let closed = AsyncStream<String>.makeStream()
         let reasons = Mutex<[String]>([])
+        let observed = Mutex(0)
         let ticket = PreparedWebSocketReply(permit: try #require(transport.issuePermit()), submit: { completion in
             callback.withLock { $0 = completion }
-        }, cancel: { reason in
+        }, onLateSuccess: { observed.withLock { $0 += 1 } }, cancel: { reason in
             reasons.withLock { $0.append(reason) }
             closed.continuation.yield(reason)
         }, stallGrace: .seconds(30)) // This tests completion, not watchdog expiry under scheduler contention.
@@ -56,6 +57,7 @@ import Testing
         }
         #expect(transport.isRetired == fails)
         #expect(reasons.withLock { $0.count } == (fails ? 1 : 0))
+        #expect(observed.withLock { $0 } == (fails ? 0 : 1))
         #expect(await ticket.result() == .abandoned)
         closed.continuation.finish()
     }
@@ -65,10 +67,11 @@ import Testing
         let callback = Mutex<(@Sendable (NWError?) -> Void)?>(nil)
         let closed = AsyncStream<String>.makeStream()
         let count = Mutex(0)
+        let observed = Mutex(0)
         let permit = try #require(transport.issuePermit())
         let ticket = PreparedWebSocketReply(permit: permit, submit: { completion in
             callback.withLock { $0 = completion }
-        }, cancel: { reason in
+        }, onLateSuccess: { observed.withLock { $0 += 1 } }, cancel: { reason in
             count.withLock { $0 += 1 }
             closed.continuation.yield(reason)
         }, stallGrace: .milliseconds(20))
@@ -77,6 +80,7 @@ import Testing
         var closures = closed.stream.makeAsyncIterator()
         #expect(await closures.next() == "host reply send stalled")
         #expect(transport.isRetired)
+        #expect(observed.withLock { $0 } == 0) // No completion before watchdog closure means no echo observation.
         let next = PreparedWebSocketReply(permit: permit, submit: { _ in Issue.record("enqueue after closure") })
         #expect(!next.enqueue())
         let complete = try #require(callback.withLock { stored in
@@ -87,6 +91,7 @@ import Testing
         complete(.posix(.EPIPE))
         #expect(await ticket.result() == .abandoned)
         #expect(count.withLock { $0 } == 1)
+        #expect(observed.withLock { $0 } == 0) // Even an impossible callback after closure stays inert.
         closed.continuation.finish()
     }
 

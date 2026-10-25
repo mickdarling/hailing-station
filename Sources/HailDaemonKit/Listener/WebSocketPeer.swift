@@ -204,16 +204,22 @@ actor WebSocketPeer {
 
 extension WebSocketPeer {
     /// Preparation is not an enqueue grant; its transport permit must remain current at final admission.
-    func prepareReplyPublication(_ frame: Frame) -> PreparedWebSocketReply? {
+    func prepareReplyPublication(
+        _ frame: Frame, onLateSuccess: (@Sendable () -> Void)? = nil
+    ) -> PreparedWebSocketReply? {
         guard !ended, !closing, !Task.isCancelled, let data = try? FrameCoding.encode(frame),
               let permit = replyTransport.issuePermit() else { return nil }
         // Synthetic completion control; all production and injected sends retain the same final transport gate.
         if let submitReply {
-            return PreparedWebSocketReply(permit: permit, submit: submitReply, cancel: { [weak self] reason in
-                Task { await self?.finish(reason: reason) }
-            })
+            return PreparedWebSocketReply(
+                permit: permit, submit: submitReply, onLateSuccess: onLateSuccess, cancel: { [weak self] reason in
+                    Task { await self?.finish(reason: reason) }
+                }
+            )
         }
-        return PreparedWebSocketReply(data: data, connection: connection, permit: permit) { [weak self] reason in
+        return PreparedWebSocketReply(
+            data: data, connection: connection, permit: permit, onLateSuccess: onLateSuccess
+        ) { [weak self] reason in
             Task { await self?.finish(reason: reason) }
         }
     }
@@ -341,17 +347,20 @@ final class PreparedWebSocketReply: Sendable {
     private struct Completion {
         let waiter: CheckedContinuation<Outcome, Never>?
         let watchdog: Task<Void, Never>?
+        let lateSuccess: Bool
     }
     private let state = Mutex(State())
     private let permit: ReplyTransportPermit
     private let submit: @Sendable (@escaping @Sendable (NWError?) -> Void) -> Void
     private let cancel: @Sendable (String) -> Void
+    /// Completion-queue callback, outside the state lock, only for an abandoned send's first success.
+    private let onLateSuccess: (@Sendable () -> Void)?
     private let waiterAdmitted: @Sendable () -> Void
     private let stallGrace: Duration
 
     convenience init(
         data: Data, connection: NWConnection, permit: ReplyTransportPermit,
-        cancel: @escaping @Sendable (String) -> Void
+        onLateSuccess: (@Sendable () -> Void)? = nil, cancel: @escaping @Sendable (String) -> Void
     ) {
         self.init(permit: permit, submit: { completion in
             let metadata = NWProtocolWebSocket.Metadata(opcode: .text)
@@ -360,13 +369,14 @@ final class PreparedWebSocketReply: Sendable {
                 content: data, contentContext: context, isComplete: true,
                 completion: .contentProcessed { completion($0) }
             )
-        }, cancel: cancel)
+        }, onLateSuccess: onLateSuccess, cancel: cancel)
     }
 
     /// Internal DI keeps lifecycle tests synthetic; only WebSocketPeer supplies production transport.
     init(
         permit: ReplyTransportPermit,
         submit: @escaping @Sendable (@escaping @Sendable (NWError?) -> Void) -> Void,
+        onLateSuccess: (@Sendable () -> Void)? = nil,
         cancel: @escaping @Sendable (String) -> Void = { _ in },
         waiterAdmitted: @escaping @Sendable () -> Void = {},
         stallGrace: Duration = PreparedWebSocketReply.abandonedSendGrace
@@ -374,6 +384,7 @@ final class PreparedWebSocketReply: Sendable {
         self.permit = permit
         self.submit = submit
         self.cancel = cancel
+        self.onLateSuccess = onLateSuccess
         self.waiterAdmitted = waiterAdmitted
         self.stallGrace = stallGrace
     }
@@ -444,8 +455,10 @@ final class PreparedWebSocketReply: Sendable {
         }
         if let result { result.1?.resume(returning: result.0) }
     }
+}
 
-    private func complete(_ error: NWError?) {
+private extension PreparedWebSocketReply {
+    func complete(_ error: NWError?) {
         let outcome: Outcome = error.map { .failed(String(describing: $0)) } ?? .sent
         let result = state.withLock { state -> Completion? in
             guard !state.transportCompleted else { return nil }
@@ -455,11 +468,14 @@ final class PreparedWebSocketReply: Sendable {
             let waiter = state.waiter
             state.waiter = nil
             state.waiterOwner = nil
+            let lateSuccess = state.outcome == .abandoned && error == nil
             if state.outcome == nil { state.outcome = outcome }
-            return Completion(waiter: waiter, watchdog: watchdog)
+            return Completion(waiter: waiter, watchdog: watchdog, lateSuccess: lateSuccess)
         }
         guard let result else { return }
         result.watchdog?.cancel()
+        // Call the Sendable observer only after releasing the ticket's state lock.
+        if result.lateSuccess { onLateSuccess?() }
         if case .failed(let description) = outcome {
             // A synthetic sender may complete inline under the transport gate. Retire off that stack.
             Task { [self] in closeTransport(reason: "host reply send failed: \(description)") }
@@ -467,7 +483,7 @@ final class PreparedWebSocketReply: Sendable {
         result.waiter?.resume(returning: outcome)
     }
 
-    private func expireAbandonedSend() {
+    func expireAbandonedSend() {
         let expired = state.withLock { state in
             guard !state.transportCompleted else { return false }
             state.transportCompleted = true
@@ -477,7 +493,7 @@ final class PreparedWebSocketReply: Sendable {
         if expired { closeTransport(reason: "host reply send stalled") }
     }
 
-    private func closeTransport(reason: String) {
+    func closeTransport(reason: String) {
         permit.retireTransport()
         cancel(reason)
     }
