@@ -62,7 +62,8 @@ import Testing
         closed.continuation.finish()
     }
 
-    @Test func abandonedSendGraceClosesOnceAndRefusesLaterEnqueue() async throws {
+    @Test(arguments: [false, true])
+    func abandonedSendGraceClosesOnceAndRecordsOnlyFirstSuccessfulCompletion(fails: Bool) async throws {
         let transport = ReplyTransportLifecycle()
         let callback = Mutex<(@Sendable (NWError?) -> Void)?>(nil)
         let closed = AsyncStream<String>.makeStream()
@@ -87,11 +88,13 @@ import Testing
             defer { stored = nil }
             return stored
         })
-        complete(nil)
+        // Physical cancellation can still be pending when Network first completes after watchdog expiry.
+        complete(fails ? .posix(.EPIPE) : nil)
+        complete(nil) // A duplicate success must neither observe twice nor override the first error.
         complete(.posix(.EPIPE))
         #expect(await ticket.result() == .abandoned)
         #expect(count.withLock { $0 } == 1)
-        #expect(observed.withLock { $0 } == 0) // Even an impossible callback after closure stays inert.
+        #expect(observed.withLock { $0 } == (fails ? 0 : 1))
         closed.continuation.finish()
     }
 

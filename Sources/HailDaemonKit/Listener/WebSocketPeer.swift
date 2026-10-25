@@ -339,6 +339,7 @@ final class PreparedWebSocketReply: Sendable {
     private struct State {
         var submitted = false
         var transportCompleted = false
+        var watchdogExpired = false
         var outcome: Outcome?
         var waiter: CheckedContinuation<Outcome, Never>?
         var waiterOwner: WaiterOwner?
@@ -348,6 +349,7 @@ final class PreparedWebSocketReply: Sendable {
         let waiter: CheckedContinuation<Outcome, Never>?
         let watchdog: Task<Void, Never>?
         let lateSuccess: Bool
+        let closeForError: Bool
     }
     private let state = Mutex(State())
     private let permit: ReplyTransportPermit
@@ -470,13 +472,16 @@ private extension PreparedWebSocketReply {
             state.waiterOwner = nil
             let lateSuccess = state.outcome == .abandoned && error == nil
             if state.outcome == nil { state.outcome = outcome }
-            return Completion(waiter: waiter, watchdog: watchdog, lateSuccess: lateSuccess)
+            return Completion(
+                waiter: waiter, watchdog: watchdog, lateSuccess: lateSuccess,
+                closeForError: error != nil && !state.watchdogExpired
+            )
         }
         guard let result else { return }
         result.watchdog?.cancel()
         // Call the Sendable observer only after releasing the ticket's state lock.
         if result.lateSuccess { onLateSuccess?() }
-        if case .failed(let description) = outcome {
+        if result.closeForError, case .failed(let description) = outcome {
             // A synthetic sender may complete inline under the transport gate. Retire off that stack.
             Task { [self] in closeTransport(reason: "host reply send failed: \(description)") }
         }
@@ -485,8 +490,9 @@ private extension PreparedWebSocketReply {
 
     func expireAbandonedSend() {
         let expired = state.withLock { state in
-            guard !state.transportCompleted else { return false }
-            state.transportCompleted = true
+            guard !state.transportCompleted, !state.watchdogExpired else { return false }
+            // Closing cannot recall enqueued bytes; a first Network success must still record their echo.
+            state.watchdogExpired = true
             state.watchdog = nil
             return true
         }
