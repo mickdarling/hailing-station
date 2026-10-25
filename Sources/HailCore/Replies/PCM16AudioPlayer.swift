@@ -183,14 +183,10 @@ public final class PCM16AudioPlayer: ReplyAudioPlaying {
         // A mixable session is the background keepalive's (#352): play within it. A play-and-record category would
         // interrupt other apps' audio, and iOS refuses that activation in the background.
         if !didConfigureAudioSession, !session.categoryOptions.contains(.mixWithOthers) {
-            // Replies may arrive without a preceding capture session. Configure a complete route
-            // here as well as in AVAudioSessionBackend so playAndRecord does not default to the
-            // receiver, while still allowing a user-selected A2DP output such as AirPods.
-            var options: AVAudioSession.CategoryOptions = [.allowBluetoothA2DP, .defaultToSpeaker]
-            if session.categoryOptions.contains(.allowBluetoothHFP) {
-                options.insert(.allowBluetoothHFP)
-            }
-            try session.setCategory(.playAndRecord, mode: .default, options: options)
+            // Share capture's external-output policy while retaining an audible built-in fallback (#852).
+            try AudioOutputSessionRouting.configure(
+                session, allowsBluetoothHFP: session.categoryOptions.contains(.allowBluetoothHFP)
+            )
             didConfigureAudioSession = true
         }
         try session.setActive(true)

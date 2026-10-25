@@ -1,13 +1,17 @@
 #if os(iOS)
 import AVFoundation
 import Foundation
+import os
 
 @MainActor
 public final class AVAudioSessionBackend: AudioSessionBackend {
+    private static let log = Logger(subsystem: "com.mickdarling.hailing-station", category: "output-route")
     private let session: AVAudioSession
     private let events: AsyncStream<AudioSessionBackendEvent>
     private let continuation: AsyncStream<AudioSessionBackendEvent>.Continuation
     private let observers = NotificationObserverBag()
+    private var outputRouteState = AudioOutputRoutePolicy.State()
+    private var isRepairingOutputRoute = false
 
     public convenience init() {
         self.init(session: .sharedInstance())
@@ -26,11 +30,7 @@ public final class AVAudioSessionBackend: AudioSessionBackend {
     }
 
     public func configure(allowsBluetoothHFP: Bool) async throws {
-        var options: AVAudioSession.CategoryOptions = [.allowBluetoothA2DP, .defaultToSpeaker]
-        if allowsBluetoothHFP {
-            options.insert(.allowBluetoothHFP)
-        }
-        try session.setCategory(.playAndRecord, mode: .default, options: options)
+        try AudioOutputSessionRouting.configure(session, allowsBluetoothHFP: allowsBluetoothHFP)
     }
 
     public func setActive(_ active: Bool) async throws {
@@ -70,7 +70,9 @@ public final class AVAudioSessionBackend: AudioSessionBackend {
             forName: AVAudioSession.routeChangeNotification,
             object: session,
             queue: .main
-        ) { [continuation] _ in
+        ) { [weak self, continuation] notification in
+            let snapshot = AudioOutputSessionRouting.snapshot(notification)
+            MainActor.assumeIsolated { self?.repairOutputRoute(snapshot) }
             continuation.yield(.routeChanged)
         })
         observers.add(center.addObserver(
@@ -80,6 +82,33 @@ public final class AVAudioSessionBackend: AudioSessionBackend {
         ) { [continuation] notification in
             continuation.yield(Self.interruptionEvent(notification))
         })
+    }
+
+    private func repairOutputRoute(_ snapshot: AudioOutputSessionRouting.Snapshot) {
+        guard !isRepairingOutputRoute else { return }
+        let route = AudioOutputSessionRouting.route(session, snapshot: snapshot)
+        isRepairingOutputRoute = true
+        defer { isRepairingOutputRoute = false }
+        let session = session
+        AudioOutputRouteDriver.process(route, state: &outputRouteState, observeDecision: { decision in
+            Self.logRouteDecision(decision.reason)
+        }, perform: { effect in
+            try AudioOutputSessionRouting.apply(effect, to: session)
+        })
+    }
+
+    private static func logRouteDecision(_ reason: AudioOutputRoutePolicy.DecisionReason) {
+        // Fixed messages only: no device names, UIDs, or route payloads in field logs (#852).
+        switch reason {
+        case .repairRequested: break
+        case .userChoiceAssumed: log.info("repair not attempted: user choice assumed")
+        case .noHardwareEpisode: log.info("repair not attempted: no hardware episode")
+        case .keepalive: log.info("repair not attempted: keepalive")
+        case .unsupportedCategory: log.info("repair not attempted: unsupported category")
+        case .noExternalEvidence: log.info("repair not attempted: no external evidence")
+        case .externalOutputActive: log.info("repair not attempted: external output active")
+        case .awaitingRoute: log.info("repair not attempted: awaiting route")
+        }
     }
 
     nonisolated private static func interruptionEvent(_ notification: Notification) -> AudioSessionBackendEvent {
