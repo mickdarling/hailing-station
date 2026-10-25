@@ -21,9 +21,12 @@ let tmuxPath = configuredTmux.flatMap { $0.isEmpty ? nil : $0 }
         .first { FileManager.default.isExecutableFile(atPath: $0) }
     ?? "tmux"
 let standardError = FileHandle.standardError
-func makeHost(sanitizing: SanitizePolicy = .init()) async throws -> HailHost {
+/// `tmuxEvidence` hears the tmux adapter's token-only submit and pending-input events (#894); only `run` logs them.
+func makeHost(
+    sanitizing: SanitizePolicy = .init(), tmuxEvidence: (@Sendable (TmuxDeliveryEvidence) -> Void)? = nil
+) async throws -> HailHost {
     let registry = Registry()
-    let terminal = TmuxAdapter(runner: ProcessCommandRunner(), tmux: tmuxPath)
+    let terminal = TmuxAdapter(runner: ProcessCommandRunner(), tmux: tmuxPath, evidenceObserver: tmuxEvidence)
     try await registry.register(terminal)
     let bridges = try TmuxReplyAdapter.configuredTargets(in: ProcessInfo.processInfo.environment)
     if !bridges.isEmpty {
@@ -353,8 +356,11 @@ do {
     case "diagnostics": try diagnostics(arguments.dropFirst())
     case "run":
         let hostName = try HostIdentity.resolve()
-        // After the policy load, which refuses a config directory that is not private.
-        let host = try await makeHost()
+        // After the policy load, which refuses a config directory that is not private. Tmux evidence reaches the
+        // error log as tokens only (#894): why a delivery was refused, and each submit's outcome.
+        let host = try await makeHost(tmuxEvidence: { evidence in
+            logNetworkEvent(WebSocketListenerEvent(event: evidence.event, detail: evidence.detail))
+        })
         let recorder = DaemonStatusRecorder(
             file: DaemonStatus.standardFile(), hostID: hostName, build: BuildIdentity.current(),
             ambientEnabled: arguments.contains("--ambient-rightyo")
