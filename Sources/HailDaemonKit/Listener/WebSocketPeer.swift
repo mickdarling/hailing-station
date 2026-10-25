@@ -203,7 +203,20 @@ extension WebSocketPeer {
     func prepareReplyPublication(_ frame: Frame) -> PreparedWebSocketReply? {
         guard !ended, !closing, !Task.isCancelled, let data = try? FrameCoding.encode(frame),
               let permit = replyTransport.issuePermit() else { return nil }
-        return PreparedWebSocketReply(data: data, connection: connection, permit: permit)
+        return PreparedWebSocketReply(data: data, connection: connection, permit: permit) { [weak self] reason in
+            Task { await self?.finish(reason: reason) }
+        }
+    }
+
+    /// Abandonment is a refused, ambiguous publication, while the enqueued bytes retain their wire order.
+    func replySendSucceeded(_ outcome: PreparedWebSocketReply.Outcome) -> Bool {
+        switch outcome {
+        case .sent: return true
+        case .failed(let error): finish(reason: "host reply send failed: \(error)")
+        case .abandoned: emit("host_reply_send_abandoned", detail: "caller cancelled after enqueue")
+        case .refused: break
+        }
+        return false
     }
 
     func send(_ frame: Frame) async -> Bool {
@@ -297,121 +310,161 @@ struct ReplyTransportPermit: Sendable {
 /// Immutable transport submission. HostSession supplies the policy/binding/local-state critical section;
 /// this final gate additionally orders peer closure against the actual Network enqueue, not completion.
 final class PreparedWebSocketReply: Sendable {
-    private final class WaiterOwner: Sendable {}
-    private enum Completion {
-        case pending
-        case cancelling
-        case finished(Bool)
+    enum Outcome: Equatable, Sendable {
+        case sent
+        case failed(String)
+        case abandoned
+        case refused
     }
+    /// Extra time after the caller gives up, not a replacement for the local submission deadline.
+    static let abandonedSendGrace: Duration = .seconds(30)
+
+    private final class WaiterOwner: Sendable {}
     private struct State {
         var submitted = false
-        var completion = Completion.pending
-        var waiter: CheckedContinuation<Bool, Never>?
+        var transportCompleted = false
+        var outcome: Outcome?
+        var waiter: CheckedContinuation<Outcome, Never>?
         var waiterOwner: WaiterOwner?
+        var watchdog: Task<Void, Never>?
     }
     private let state = Mutex(State())
     private let permit: ReplyTransportPermit
-    private let submit: @Sendable (@escaping @Sendable (Bool) -> Void) -> Void
-    private let cancel: @Sendable () -> Void
+    private let submit: @Sendable (@escaping @Sendable (NWError?) -> Void) -> Void
+    private let cancel: @Sendable (String) -> Void
     private let waiterAdmitted: @Sendable () -> Void
+    private let stallGrace: Duration
 
-    convenience init(data: Data, connection: NWConnection, permit: ReplyTransportPermit) {
+    convenience init(
+        data: Data, connection: NWConnection, permit: ReplyTransportPermit,
+        cancel: @escaping @Sendable (String) -> Void
+    ) {
         self.init(permit: permit, submit: { completion in
             let metadata = NWProtocolWebSocket.Metadata(opcode: .text)
             let context = NWConnection.ContentContext(identifier: "hail.frame", metadata: [metadata])
             connection.send(
                 content: data, contentContext: context, isComplete: true,
-                completion: .contentProcessed { completion($0 == nil) }
+                completion: .contentProcessed { completion($0) }
             )
-        }, cancel: { connection.cancel() })
+        }, cancel: cancel)
     }
 
     /// Internal DI keeps lifecycle tests synthetic; only WebSocketPeer supplies production transport.
     init(
         permit: ReplyTransportPermit,
-        submit: @escaping @Sendable (@escaping @Sendable (Bool) -> Void) -> Void,
-        cancel: @escaping @Sendable () -> Void = {},
-        waiterAdmitted: @escaping @Sendable () -> Void = {}
+        submit: @escaping @Sendable (@escaping @Sendable (NWError?) -> Void) -> Void,
+        cancel: @escaping @Sendable (String) -> Void = { _ in },
+        waiterAdmitted: @escaping @Sendable () -> Void = {},
+        stallGrace: Duration = PreparedWebSocketReply.abandonedSendGrace
     ) {
         self.permit = permit
         self.submit = submit
         self.cancel = cancel
         self.waiterAdmitted = waiterAdmitted
+        self.stallGrace = stallGrace
     }
 
-    /// Returns false without submission when stale, cancelled or already submitted. Success is enqueue
-    /// only; result() receives the later transport outcome. Never await completion while holding a gate.
+    /// Success is enqueue only; result() receives the later outcome. Never await completion under a gate.
     func enqueue() -> Bool {
         let enqueued = permit.performIfCurrent {
             guard !Task.isCancelled, state.withLock({ state in
-                guard !state.submitted, case .pending = state.completion else { return false }
+                guard !state.submitted, state.outcome == nil else { return false }
                 state.submitted = true
                 return true
             }) else { return false }
-            submit { [self] result in _ = finish(result) }
+            submit { [self] error in complete(error) }
             return true
         } ?? false
-        if !enqueued { _ = finish(false, onlyIfUnsubmitted: true) }
+        if !enqueued {
+            let waiter = state.withLock { state -> CheckedContinuation<Outcome, Never>? in
+                guard !state.submitted, state.outcome == nil else { return nil }
+                state.outcome = .refused
+                let waiter = state.waiter
+                state.waiter = nil
+                state.waiterOwner = nil
+                return waiter
+            }
+            waiter?.resume(returning: .refused)
+        }
         return enqueued
     }
 
-    /// One pending waiter, with completion buffered if it arrives first. Later completed reads are safe;
-    /// a second concurrent waiter fails closed rather than replacing or leaking the original continuation.
-    func result() async -> Bool {
+    /// One pending waiter; a second concurrent waiter refuses without disturbing the legitimate owner.
+    func result() async -> Outcome {
         let owner = WaiterOwner()
-        let admission = state.withLock { state -> Completion in
-            if case .finished = state.completion { return state.completion }
-            guard state.waiterOwner == nil else { return .finished(false) }
+        let immediate = state.withLock { state -> Outcome? in
+            if let outcome = state.outcome { return outcome }
+            guard state.waiterOwner == nil else { return .refused }
             state.waiterOwner = owner
-            return .pending
+            return nil
         }
-        if case .finished(let result) = admission { return result }
+        if let immediate { return immediate }
         waiterAdmitted()
         return await withTaskCancellationHandler {
             await withCheckedContinuation { continuation in
-                let immediate = state.withLock { state -> Completion in
-                    if case .finished = state.completion { return state.completion }
+                let immediate = state.withLock { state -> Outcome? in
+                    if let outcome = state.outcome { return outcome }
                     state.waiter = continuation
-                    return .pending
+                    return nil
                 }
-                if case .finished(let result) = immediate { continuation.resume(returning: result) }
+                if let immediate { continuation.resume(returning: immediate) }
             }
-        } onCancel: { [self] in
-            cancelResult(owner)
-        }
+        } onCancel: { [self] in cancelResult(owner) }
     }
 
-    /// Claim first, retire outside the ticket lock, then resume. Retirement cannot race a returned result.
     private func cancelResult(_ owner: WaiterOwner) {
-        let claimed = state.withLock { state in
-            guard case .pending = state.completion, owner === state.waiterOwner else { return false }
-            state.completion = .cancelling
+        let result = state.withLock { state -> (Outcome, CheckedContinuation<Outcome, Never>?)? in
+            guard state.outcome == nil, owner === state.waiterOwner else { return nil }
+            let outcome: Outcome = state.submitted ? .abandoned : .refused
+            state.outcome = outcome
+            if state.submitted {
+                state.watchdog = Task { [weak self, stallGrace] in
+                    do { try await Task.sleep(for: stallGrace) } catch { return }
+                    self?.expireAbandonedSend()
+                }
+            }
+            let waiter = state.waiter
+            state.waiter = nil
+            state.waiterOwner = nil
+            return (outcome, waiter)
+        }
+        if let result { result.1?.resume(returning: result.0) }
+    }
+
+    private func complete(_ error: NWError?) {
+        let outcome: Outcome = error.map { .failed(String(describing: $0)) } ?? .sent
+        let result = state.withLock { state -> (Bool, CheckedContinuation<Outcome, Never>?, Task<Void, Never>?) in
+            guard !state.transportCompleted else { return (false, nil, nil) }
+            state.transportCompleted = true
+            let watchdog = state.watchdog
+            state.watchdog = nil
+            let waiter = state.waiter
+            state.waiter = nil
+            state.waiterOwner = nil
+            if state.outcome == nil { state.outcome = outcome }
+            return (true, waiter, watchdog)
+        }
+        guard result.0 else { return }
+        result.2?.cancel()
+        if case .failed(let description) = outcome {
+            // A synthetic sender may complete inline under the transport gate. Retire off that stack.
+            Task { [self] in closeTransport(reason: "host reply send failed: \(description)") }
+        }
+        result.1?.resume(returning: outcome)
+    }
+
+    private func expireAbandonedSend() {
+        let expired = state.withLock { state in
+            guard !state.transportCompleted else { return false }
+            state.transportCompleted = true
+            state.watchdog = nil
             return true
         }
-        guard claimed else { return }
-        permit.retireTransport()
-        cancel()
-        let waiter = state.withLock { state in
-            state.completion = .finished(false)
-            let waiter = state.waiter
-            state.waiter = nil
-            state.waiterOwner = nil
-            return waiter
-        }
-        waiter?.resume(returning: false)
+        if expired { closeTransport(reason: "host reply send stalled") }
     }
 
-    @discardableResult
-    private func finish(_ result: Bool, onlyIfUnsubmitted: Bool = false) -> Bool {
-        let outcome = state.withLock { state -> (Bool, CheckedContinuation<Bool, Never>?) in
-            guard case .pending = state.completion, !onlyIfUnsubmitted || !state.submitted else { return (false, nil) }
-            state.completion = .finished(result)
-            let waiter = state.waiter
-            state.waiter = nil
-            state.waiterOwner = nil
-            return (true, waiter)
-        }
-        outcome.1?.resume(returning: result)
-        return outcome.0
+    private func closeTransport(reason: String) {
+        permit.retireTransport()
+        cancel(reason)
     }
 }

@@ -4,9 +4,9 @@ import Testing
 @testable import HailDaemonKit
 
 @Suite struct TerminalReplyTransportTests {
-    @Test func ownerCancellationRetiresPeerBeforeAnyConnectionStateCallback() async throws {
+    @Test func preEnqueueOwnerCancellationPreservesPeerUntilRealClosure() async throws {
         let (host, _) = try await sessionHost()
-        // Neither connection starts: the production cancellation closure runs without a state callback.
+        // Neither connection starts: caller cancellation must not retire a healthy peer.
         let peer = WebSocketPeer(
             id: UUID(), connection: NWConnection(host: "127.0.0.1", port: 9, using: .tcp),
             session: HostSession(host: host), queue: DispatchQueue(label: "synthetic-cancelled-peer"),
@@ -23,14 +23,16 @@ import Testing
             withUnsafeCurrentTask { $0?.cancel() }
             return await owner.result()
         }
-        #expect(!(await cancelled.value))
+        #expect(await cancelled.value == .refused)
         #expect(!(await peer.ended))
+        #expect(await peer.isLive)
+        #expect(await peer.prepareReplyPublication(helloFrame()) != nil)
+        await peer.finish(reason: "synthetic real closure")
         #expect(await peer.prepareReplyPublication(helloFrame()) == nil)
         #expect(!sibling.enqueue())
-        #expect(!(await sibling.result()))
+        #expect(await sibling.result() == .refused)
         #expect(!(await peer.send(helloFrame())))
         #expect(await other.prepareReplyPublication(helloFrame()) != nil)
-        await peer.finish(reason: "synthetic cleanup")
         await other.finish(reason: "synthetic cleanup")
     }
 

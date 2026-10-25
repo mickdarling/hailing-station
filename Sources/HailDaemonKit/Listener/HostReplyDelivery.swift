@@ -488,8 +488,7 @@ extension WebSocketPeer {
               await session.enqueueHostReply(frame, enqueue: {
                   hold?.holds(connection) != true && prepared.enqueue()
               }) else { return false }
-        guard await prepared.result() else {
-            finish(reason: "host reply send failed")
+        guard replySendSucceeded(await prepared.result()) else {
             return false
         }
         return true
@@ -514,8 +513,7 @@ extension WebSocketPeer {
               let delivered = await session.enqueueRoutedReply(
                 frame, lastInput: lastInput, enqueue: { hold?.holds(connection) != true && prepared.enqueue() }
               ) else { return nil }
-        guard await prepared.result() else {
-            finish(reason: "host reply send failed")
+        guard replySendSucceeded(await prepared.result()) else {
             return nil
         }
         return delivered
