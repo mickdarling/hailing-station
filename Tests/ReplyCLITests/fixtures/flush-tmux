@@ -1,0 +1,46 @@
+#!/usr/bin/python3
+# Synthetic tmux for the `haild targets flush` CLI tests (#894): one session, `demo`, whose pane is a one-line agent
+# prompt (`❯ ` and the text in $HAIL_FLUSH_STATE). It takes End and BSpace through `if-shell` as a line editor does and
+# appends every command to $HAIL_FLUSH_STATE.log. It never contacts a real tmux server.
+import json
+import os
+import sys
+
+STATE = os.environ["HAIL_FLUSH_STATE"]
+arguments = sys.argv[1:]
+with open(STATE, encoding="utf-8") as handle:
+    state = json.load(handle)
+with open(STATE + ".log", "a") as log:
+    log.write(json.dumps(arguments) + "\n")
+
+
+def save():
+    with open(STATE, "w", encoding="utf-8") as handle:
+        json.dump(state, handle)
+
+
+command = arguments[:1]
+if command == ["list-sessions"]:
+    sys.stdout.write("$1|1700000000|%1|4242|demo\n")
+elif command == ["capture-pane"]:
+    row = ("❯ " + state["input"]).rstrip()
+    sys.stdout.buffer.write((row + "\n" + "%d,0,80\n" % (2 + state["cursor"])).encode("utf-8"))
+elif command == ["display-message"]:
+    sys.stdout.write("1\n" if state["agent"] else "0\n")
+elif command == ["if-shell"]:
+    if not state["agent"]:
+        sys.stdout.write("hail-flush-not-agent\n")
+        sys.exit(0)
+    for key in arguments[5].split(" ")[3:]:
+        if key == "End":
+            state["cursor"] = len(state["input"])
+        elif key == "BSpace" and state["cursor"] > 0:
+            cursor = state["cursor"]
+            state["input"] = state["input"][:cursor - 1] + state["input"][cursor:]
+            state["cursor"] = cursor - 1
+        else:
+            state["interrupted"] = True
+    save()
+else:
+    sys.stderr.write("synthetic tmux: unsupported command\n")
+    sys.exit(1)

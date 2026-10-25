@@ -116,6 +116,27 @@ Exit codes: 0 when held or for status; 75 when rate limited; 1 for other refusal
 3. Check the end of `haild.err.log` for `session_connected` and `session_disconnected` events.
 4. `listener_failed` with `Address already in use` means another listener holds the daemon's port on some address, often Tailscale Serve. See [Remote access through Tailscale Serve](#remote-access-through-tailscale-serve).
 
+## Clear a stale prompt draft (#894)
+
+haild never types after unsent text: when a target's prompt already holds text, every delivery to it is refused (`haild.err.log` shows `tmux_input_pending reason=…`). `haild targets flush <target-id>` clears that text:
+
+```sh
+haild targets flush tmux:work          # shows the draft, then asks you to type flush
+haild targets flush tmux:work --yes > draft.txt   # scripts; the draft is kept in draft.txt
+```
+
+- **The draft is printed first, alone, on standard output**, so a real draft can be recovered. Everything else goes to standard error. Without `--yes` it asks you to type `flush`. When standard input is not a terminal, it refuses with exit code 8 and sends nothing.
+- **What it reads:** the cursor row of the target's pane, after the agent's prompt marker (`>` or `❯`, at column 0 or inside a `│ ` box, as Claude Code draws it). Codex's prompt is not physically tested yet.
+- **What it sends:** `End`, then exactly one `BSpace` for each character before the cursor. That count includes trailing blanks, which a capture does not show. It **never sends `Escape` or `C-c`**, which would interrupt a running agent turn. Each key command goes through the same tmux server-side agent check as the Enter after a pasted delivery (#608), and the binding is checked again before each one.
+- **It refuses and sends nothing** when the pane is not running Claude Code or Codex, when the cursor row has no prompt marker, when the draft spans more than one line (or wraps), and when it holds a collapsed paste (`[Pasted text #N]`). Clear those by hand. It also refuses if the draft changed after it was shown; by then only the `End` has been sent, which deletes nothing.
+- **Policy:** it is gated like Escape from the device. The target must be allowed, still bound and not `locked`, and lockdown refuses it. The `confirm` tier allows it.
+- **Afterwards** it looks again. A busy agent redraws its input late, so it keeps looking every 100 ms, for up to 2 s, until the prompt reads empty. It sends nothing more while it waits. It then reports `the prompt is now empty`, or that text is still shown, which exits 6. The reason token says what the last look showed: `text_left`, `text_after_cursor` (likely the agent's greyed hint), `blank_before_cursor`, `no_prompt` or `unreadable`.
+- **The live input is the cursor row.** A transcript row above it that echoes an earlier prompt behind its own `❯` is never read or cleared.
+- **Logs:** it writes one line to standard error, `targets_flush cleared_chars=<n> result=empty|not_empty|refused reason=<token>`. It never logs the draft, and nothing goes to `haild.err.log`, OSLog or the audit log.
+- **A flush cannot clear a taint.** A pane that holds a paste haild knows it never submitted is tainted in the running daemon's memory, and each `haild` command has its own. If deliveries are still refused afterwards with `reason=tainted`, run `scripts/host.sh restart`. The command says so after each flush.
+
+Exit codes: 0 cleared or already empty, 4 refused (nothing cleared), 6 text still shown, 8 confirmation needed or cancelled. Policy denials use the `send` codes (5 unbound, 7 denied), and an unknown target gives 2.
+
 ## Keep speech real-time when the Mac is busy (#737)
 
 Spoken replies are rendered on this Mac as they play, so heavy work here can make them choppy. That happened on 2026-10-21, with swap 93% full and a VM using 3+ cores. Load was about 10 when the choppy replies were heard, and about 40 later that day.

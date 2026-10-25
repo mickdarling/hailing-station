@@ -9,7 +9,8 @@ import HailDaemonKit
 // probe (#98); the push endpoint, LaunchAgent, and `pair` arrive with their slices. Exit codes: 2 unknown
 // target, 3 refused by the sanitizer, 4 adapter
 // unavailable or adapter error, 5 unbound, 6 partial, 7 denied by policy, 8 confirmation needed or cancelled,
-// 9 policy file unusable, 64 usage, 75 `ambient reload` busy or stopping (try again). A `rightyo --reply-to`
+// 9 policy file unusable, 64 usage, 75 `ambient reload` busy or stopping (try again). `targets flush` adds 4 refused
+// (nothing cleared) and 6 text still shown afterwards (FlushCommand.swift). A `rightyo --reply-to`
 // dispatch the daemon refuses keeps the direct path's code where the outcome is the same (8 confirmation needed, 7 rebound); every other dispatch or
 // socket refusal exits 1 with the daemon's reason, as `haild reply` does.
 
@@ -41,6 +42,8 @@ let usageText = """
            haild targets allow <target-id> [--tier open|confirm|locked] [--capture]
            haild targets deny <target-id>
            haild targets tier <target-id> <open|confirm|locked>
+           haild targets flush <target-id> [--yes]
+      (clears unsent text from an agent's prompt: End and backspaces, never Esc; the draft goes to stdout)
            haild send <target-id> <text>      (text is one argument; quote it)
            haild reply <target-id> [--host <host-id>] [--text <text>] [--pcm16 <path>|--say <text>]
       [--request <opaque-request-UUID>] [--sample-rate <hz>] [--socket <path>]
@@ -159,6 +162,8 @@ func manageTargets(_ host: HailHost, _ arguments: ArraySlice<String>) async thro
         let tier = parseTier(raw)
         guard try await host.setTier(tier, for: id) else { fail("\(id) is not allowed; allow it first", code: 7) }
         print("\(id) is now \(tier.rawValue)")
+    case "flush":
+        try await FlushCommand.run(host, arguments.dropFirst())
     default:
         usage()
     }
