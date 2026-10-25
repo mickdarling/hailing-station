@@ -41,6 +41,10 @@ import Testing
 
     /// Key 2: the exit releases the hold only after the entry's drop has run, so a reply to a request made before a
     /// fast entry and exit never slips through.
+    ///
+    /// The old reply is sent only once the entry's drop has run (#875): sent before it, the hold refuses it and that
+    /// refusal drops the record itself, so the drop finds nothing and logs `dropped=0` though nothing slipped through.
+    /// A reply racing the drop is `aRequestBoundReplyRacingTheEntryIsRefusedByTheHold`.
     @Test func aFastEntryAndExitNeverLetsAnOldReplyThrough() async throws {
         let rig = try await DuckRig(script: Reply.quiet)
         defer { rig.close() }
@@ -49,6 +53,7 @@ import Testing
         let request = try await Reply.typedRequest(on: rig)
         #expect(await eventually { router.setDuck(true, connection: connection, reason: "voice") == 1 })
         #expect(router.setDuck(false, connection: connection, reason: "voice") == 1)
+        #expect(await eventually { rig.details("ambient_privacy_replies").first?.hasPrefix("dropped=") == true })
         #expect(await Reply.refusal(Reply.answer(request), on: rig) != nil)
         #expect(await Reply.flowsAgain(on: rig, connection: connection))
         #expect(await Reply.refusal(Reply.answer(request, "again"), on: rig) != nil)
