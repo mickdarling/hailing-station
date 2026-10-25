@@ -581,6 +581,8 @@ final class RecentSpokenReplies: Sendable {
     private struct Reply {
         var words: [String]
         var audioSeconds: Double = 0
+        /// First-audio FIFO position; a continuing stream keeps the head even across gaps before its final frame.
+        var audioOrder: Int?
         /// Start of the current uninterrupted playback span, queued behind other replies when necessary.
         /// A frame arriving after this span ends starts a new span (the phone plays replies one after another).
         var firstAudio: ContinuousClock.Instant?
@@ -594,21 +596,24 @@ final class RecentSpokenReplies: Sendable {
 
     private struct RememberedWords {
         let words: [String]
+        let audioOrder: Int?
         let expires: ContinuousClock.Instant
     }
 
     private struct State {
         var replies: [UUID: Reply] = [:]
         var remembered: [UUID: RememberedWords] = [:]
+        var nextAudioOrder = 0
 
-        func restoredWords(for id: UUID, at instant: ContinuousClock.Instant) -> [String] {
-            guard let saved = remembered[id], saved.expires > instant else { return [] }
-            return saved.words
+        func restoredReply(for id: UUID, at instant: ContinuousClock.Instant) -> Reply {
+            let saved = remembered[id].flatMap { $0.expires > instant ? $0 : nil }
+            return Reply(words: saved?.words ?? [], audioOrder: saved?.audioOrder, lastSeen: instant)
         }
 
         mutating func retire(_ id: UUID, at instant: ContinuousClock.Instant) {
             guard let entry = replies.removeValue(forKey: id), !entry.words.isEmpty else { return }
-            remembered[id] = RememberedWords(words: entry.words, expires: instant.advanced(by: wordRetention))
+            remembered[id] = RememberedWords(words: entry.words, audioOrder: entry.audioOrder,
+                                             expires: instant.advanced(by: wordRetention))
         }
 
         mutating func prune(at instant: ContinuousClock.Instant) {
@@ -639,20 +644,26 @@ final class RecentSpokenReplies: Sendable {
             switch frame.payload {
             case .text(let text):
                 guard let reply = text.reply else { return }
-                state.replies[reply.id, default: Reply(words: [], lastSeen: instant)].words = Self.words(text.text)
-                state.replies[reply.id]?.lastSeen = instant
+                var entry = state.replies[reply.id] ?? state.restoredReply(for: reply.id, at: instant)
+                entry.words = Self.words(text.text)
+                entry.lastSeen = instant
+                state.replies[reply.id] = entry
                 state.remembered.removeValue(forKey: reply.id)
             case .audio(let audio):
                 guard let reply = audio.reply, audio.codec == .pcm16, audio.sampleRate > 0, audio.channels > 0 else {
                     return
                 }
-                var entry = state.replies[reply.id] ?? Reply(
-                    words: state.restoredWords(for: reply.id, at: instant), lastSeen: instant)
+                var entry = state.replies[reply.id] ?? state.restoredReply(for: reply.id, at: instant)
+                let order = entry.audioOrder ?? state.nextAudioOrder
+                if entry.audioOrder == nil { state.nextAudioOrder += 1 }
+                entry.audioOrder = order
                 if (entry.playEnd ?? instant) <= instant {
-                    let queuedBehind = state.replies.filter { $0.key != reply.id }.values.compactMap(\.playEnd).max()
+                    let queuedBehind = state.replies.values.filter { ($0.audioOrder ?? order) < order }
+                        .compactMap(\.playEnd).max()
                     entry.firstAudio = max(instant, queuedBehind ?? instant)
                     entry.audioSeconds = 0
                 }
+                // Known limitation: extending an earlier stream does not shift later replies' existing windows.
                 entry.audioSeconds += Double(audio.bytes.count) / Double(2 * audio.channels * audio.sampleRate)
                 entry.lastSeen = instant
                 state.replies[reply.id] = entry

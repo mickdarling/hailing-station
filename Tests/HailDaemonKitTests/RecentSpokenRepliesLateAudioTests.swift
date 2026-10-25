@@ -18,10 +18,10 @@ import Testing
               payload: .text(TextPayload(text: Self.words, reply: reply)))
     }
 
-    func audio(_ reply: ReplyDescriptor, seconds: Int = 1) -> Frame {
+    func audio(_ reply: ReplyDescriptor, seconds: Int = 1, sequence: Int = 0, isFinal: Bool = false) -> Frame {
         Frame(timestamp: 0, target: reply.targetID, source: reply.hostID, payload: .audio(AudioPayload(
-            codec: .pcm16, sampleRate: 24_000, channels: 1, sequence: 0, streamID: reply.audioStreamID,
-            isFinal: false, bytes: Data(count: seconds * 48_000), reply: reply)))
+            codec: .pcm16, sampleRate: 24_000, channels: 1, sequence: sequence, streamID: reply.audioStreamID,
+            isFinal: isFinal, bytes: Data(count: seconds * 48_000), reply: reply)))
     }
 
     @Test func prunedWordsReturnWithLateAudio() {
@@ -33,8 +33,11 @@ import Testing
         clock.advance(by: .seconds(16))
         spoken.observe(text(reply())) // Another peer's acknowledgement prunes the original.
         #expect(!spoken.isEcho(Self.words)) // Remembered words alone do not protect anything.
+        spoken.observe(audio(reply(), seconds: 20, isFinal: true)) // Later stream cannot delay the restored head.
         spoken.observe(audio(original))
         #expect(spoken.isEcho(Self.words))
+        clock.advance(by: .seconds(1) + RecentSpokenReplies.hold)
+        #expect(!spoken.isEcho(Self.words))
     }
 
     @Test func delayedSegmentGetsItsFullPlaybackAndHold() {
@@ -97,19 +100,55 @@ import Testing
         #expect(spoken.isEcho(Self.words) == (index > 0)) // All eight newest IDs survive, only the oldest is lost.
     }
 
-    @Test func delayedSegmentQueuesBehindOtherPlayback() {
+    @Test func delayedSegmentKeepsItsPlaceAheadOfLaterStreams() {
         let clock = Clock()
         let spoken = RecentSpokenReplies(now: { clock.now })
         let original = reply()
         spoken.observe(text(original))
         spoken.observe(audio(original))
         clock.advance(by: .seconds(2))
-        spoken.observe(audio(reply(), seconds: 10)) // Other reply plays from 2 s through 12 s.
-        spoken.observe(audio(original)) // Delayed segment plays from 12 s through 13 s.
-        clock.advance(by: .seconds(11) + RecentSpokenReplies.hold - .milliseconds(1))
+        spoken.observe(audio(reply(), seconds: 10, isFinal: true)) // Waits for the original's final frame.
+        spoken.observe(audio(original, sequence: 1, isFinal: true)) // Original still owns the head: plays [2,3].
+        clock.advance(by: .seconds(1) + RecentSpokenReplies.hold - .milliseconds(1))
         #expect(spoken.isEcho(Self.words))
         clock.advance(by: .milliseconds(1))
         #expect(!spoken.isEcho(Self.words))
+    }
+
+    @Test func terminalFIFOKeepsOwnerRepetitionOutOfALaterStreamsWindow() {
+        let clock = Clock()
+        let spoken = RecentSpokenReplies(now: { clock.now })
+        let first = reply(), second = reply()
+        spoken.observe(text(first))
+        spoken.observe(audio(first)) // Non-final A plays [0,1] and holds the terminal FIFO head.
+        clock.advance(by: .milliseconds(500))
+        spoken.observe(audio(second, seconds: 20, isFinal: true)) // B waits for A, even when A runs dry.
+        clock.advance(by: .milliseconds(1_500))
+        spoken.observe(audio(first, sequence: 1, isFinal: true)) // A plays [2,3], then B plays [3,23].
+        clock.advance(by: .milliseconds(999))
+        #expect(spoken.isEcho(Self.words)) // During A's real playback.
+        clock.advance(by: RecentSpokenReplies.hold)
+        #expect(spoken.isEcho(Self.words)) // Through A's real playback plus hold, just before t=7.
+        clock.advance(by: .milliseconds(1))
+        #expect(!spoken.isEcho(Self.words))
+        clock.advance(by: .seconds(1))
+        #expect(!spoken.isEcho(Self.words)) // A genuine owner repetition at t=8 must pass.
+    }
+
+    @Test func delayedSegmentStillQueuesBehindEarlierStreams() {
+        let clock = Clock()
+        let spoken = RecentSpokenReplies(now: { clock.now })
+        let first = reply(), second = reply()
+        spoken.observe(audio(first))
+        spoken.observe(text(second))
+        spoken.observe(audio(second))
+        clock.advance(by: .seconds(2))
+        spoken.observe(audio(first, seconds: 20, sequence: 1, isFinal: true)) // Earlier A ends at t=22.
+        clock.advance(by: .seconds(1))
+        spoken.observe(audio(second, sequence: 1, isFinal: true)) // B's expired estimate re-anchors behind A.
+        clock.advance(by: .seconds(24) - .milliseconds(1))
+        #expect(spoken.isEcho(Self.words)) // Protect B through the re-anchored estimate plus hold.
+        // P2 remains: B's previously queued audio also waits for A, but its existing window was not shifted.
     }
 
     @Test func uninterruptedSegmentsStillAccumulate() {
