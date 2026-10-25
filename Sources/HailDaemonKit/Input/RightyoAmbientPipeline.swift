@@ -594,26 +594,30 @@ final class RecentSpokenReplies: Sendable {
         }
     }
 
-    private struct RememberedWords {
-        let words: [String]
-        let audioOrder: Int?
+    private struct RememberedReply {
+        let reply: Reply
         let expires: ContinuousClock.Instant
     }
 
     private struct State {
         var replies: [UUID: Reply] = [:]
-        var remembered: [UUID: RememberedWords] = [:]
+        var remembered: [UUID: RememberedReply] = [:]
         var nextAudioOrder = 0
 
         func restoredReply(for id: UUID, at instant: ContinuousClock.Instant) -> Reply {
-            let saved = remembered[id].flatMap { $0.expires > instant ? $0 : nil }
-            return Reply(words: saved?.words ?? [], audioOrder: saved?.audioOrder, lastSeen: instant)
+            var entry = remembered[id].flatMap { $0.expires > instant ? $0.reply : nil }
+                ?? Reply(words: [], lastSeen: instant)
+            // Keep buffered playback; an ended span needs new audio before restored text can match.
+            if (entry.playEnd ?? instant) <= instant {
+                entry.firstAudio = nil
+                entry.audioSeconds = 0
+            }
+            return entry
         }
 
         mutating func retire(_ id: UUID, at instant: ContinuousClock.Instant) {
             guard let entry = replies.removeValue(forKey: id), !entry.words.isEmpty else { return }
-            remembered[id] = RememberedWords(words: entry.words, audioOrder: entry.audioOrder,
-                                             expires: instant.advanced(by: wordRetention))
+            remembered[id] = RememberedReply(reply: entry, expires: instant.advanced(by: wordRetention))
         }
 
         mutating func prune(at instant: ContinuousClock.Instant) {

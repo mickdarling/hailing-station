@@ -33,6 +33,8 @@ import Testing
         clock.advance(by: .seconds(16))
         spoken.observe(text(reply())) // Another peer's acknowledgement prunes the original.
         #expect(!spoken.isEcho(Self.words)) // Remembered words alone do not protect anything.
+        spoken.observe(text(original))
+        #expect(!spoken.isEcho(Self.words)) // Restored text cannot revive a playback span that has ended.
         spoken.observe(audio(reply(), seconds: 20, isFinal: true)) // Later stream cannot delay the restored head.
         spoken.observe(audio(original))
         #expect(spoken.isEcho(Self.words))
@@ -74,14 +76,18 @@ import Testing
         let spoken = RecentSpokenReplies(now: { clock.now })
         let original = reply()
         spoken.observe(text(original))
-        spoken.observe(audio(original))
+        spoken.observe(audio(original, seconds: 10))
         for _ in 0..<RecentSpokenReplies.maxReplies {
             clock.advance(by: .milliseconds(1))
             spoken.observe(text(reply()))
         }
         #expect(!spoken.isEcho(Self.words)) // The live entry was evicted, while its audio would still play.
-        spoken.observe(audio(original))
-        #expect(spoken.isEcho(Self.words))
+        spoken.observe(audio(original, sequence: 1, isFinal: true)) // Appends to buffered audio: plays [10,11].
+        // Check every millisecond through buffered playback, the final [10,11] frame, hold, and past expiry.
+        for elapsedMs in 9...15_001 {
+            clock.advance(by: .milliseconds(1))
+            #expect(spoken.isEcho(Self.words) == (elapsedMs < 15_000))
+        }
     }
 
     @Test(arguments: 0...RecentSpokenReplies.maxReplies) func rememberedWordsAreCapped(index: Int) {
