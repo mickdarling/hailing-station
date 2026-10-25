@@ -41,7 +41,7 @@ import Testing
         }, cancel: { reason in
             reasons.withLock { $0.append(reason) }
             closed.continuation.yield(reason)
-        }, stallGrace: .milliseconds(30))
+        }, stallGrace: .seconds(30)) // This tests completion, not watchdog expiry under scheduler contention.
         #expect(ticket.enqueue())
         #expect(await cancelledResult(ticket) == .abandoned)
         let complete = try #require(callback.withLock { stored in
@@ -54,7 +54,6 @@ import Testing
             var closures = closed.stream.makeAsyncIterator()
             #expect(await closures.next() == "host reply send failed: \(NWError.posix(.EPIPE))")
         }
-        try await Task.sleep(for: .milliseconds(80))
         #expect(transport.isRetired == fails)
         #expect(reasons.withLock { $0.count } == (fails ? 1 : 0))
         #expect(await ticket.result() == .abandoned)

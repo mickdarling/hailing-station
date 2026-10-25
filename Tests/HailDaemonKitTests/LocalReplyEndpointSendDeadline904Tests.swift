@@ -50,10 +50,10 @@ import Testing
         #expect(await outcomes.next() == .abandoned)
         let response = await withCheckedContinuation { continuation in
             client.receive(minimumIncompleteLength: 1, maximumLength: 1_024) { data, _, done, error in
-                continuation.resume(returning: (data ?? Data(), done, error))
+                continuation.resume(returning: ReplySocketResponse904(data: data ?? Data(), done: done, error: error))
             }
         }
-        #expect(response.0.isEmpty && response.1 && response.2 == nil) // Lost acknowledgement, never success/retry.
+        #expect(response.data.isEmpty && response.done && response.error == nil) // Lost acknowledgement, no retry.
         #expect(await endpoint.activeConnectionCount == 0)
         #expect(await peer.isLive)
         #expect(!(await peer.ended))
@@ -90,7 +90,7 @@ import Testing
         let ticket = PreparedWebSocketReply(permit: try #require(transport.issuePermit()), submit: { completion in
             callback.withLock { $0 = completion }
         }, cancel: { reason in Task { await peer.finish(reason: reason) } },
-        stallGrace: stalls ? .milliseconds(20) : .seconds(5))
+        stallGrace: stalls ? .milliseconds(20) : .seconds(30))
         #expect(ticket.enqueue())
         let waiter = Task {
             withUnsafeCurrentTask { $0?.cancel() }
@@ -131,4 +131,10 @@ private final class SlowReplyPublisher904: HostReplyPublishing {
         guard sent else { throw LocalReplyRefusal.publicationFailed }
         return 1
     }
+}
+
+private struct ReplySocketResponse904: Sendable {
+    let data: Data
+    let done: Bool
+    let error: NWError?
 }

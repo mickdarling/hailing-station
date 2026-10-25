@@ -34,8 +34,9 @@ extension WebSocketListener {
         }
         guard let frames = await peer.session.acknowledgementFrames(clip, target: target) else { return "not_ready" }
         for frame in frames {
-            guard await peer.deliverRequestlessReply(frame) else { return "refused" }
-            ambient?.observeReply(frame)
+            let delivery = await peer.deliverRequestlessReply(frame)
+            if delivery.mayReachDevice { ambient?.observeReply(frame) }
+            guard case .delivered = delivery else { return "refused" }
         }
         return "sent"
     }

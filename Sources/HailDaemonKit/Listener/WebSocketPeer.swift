@@ -24,6 +24,7 @@ func parseBindAddress(_ address: String) -> (host: NWEndpoint.Host, canonical: S
 /// One socket and one `HostSession`; receive calls are serialized per peer while different peers progress
 /// independently. The parent listener owns bounded admission and shutdown.
 actor WebSocketPeer {
+    typealias ReplySender = @Sendable (@escaping @Sendable (NWError?) -> Void) -> Void
     private let id: UUID
     private let connection: NWConnection
     let session: HostSession
@@ -34,6 +35,7 @@ actor WebSocketPeer {
     private var helloTimer: Task<Void, Never>?
     private let replyTransport = ReplyTransportLifecycle()
     private let submitClose: @Sendable (@escaping @Sendable () -> Void) -> Void
+    private let submitReply: ReplySender?
     private var closing = false
     var ended = false
 
@@ -41,7 +43,8 @@ actor WebSocketPeer {
         id: UUID, connection: NWConnection, session: HostSession, queue: DispatchQueue,
         helloTimeout: Duration, log: @escaping @Sendable (WebSocketListenerEvent) -> Void,
         onEnd: @escaping @Sendable (UUID) -> Void,
-        submitClose: (@Sendable (@escaping @Sendable () -> Void) -> Void)? = nil
+        submitClose: (@Sendable (@escaping @Sendable () -> Void) -> Void)? = nil,
+        submitReply: ReplySender? = nil
     ) {
         self.id = id
         self.connection = connection
@@ -50,6 +53,7 @@ actor WebSocketPeer {
         self.helloTimeout = helloTimeout
         self.log = log
         self.onEnd = onEnd
+        self.submitReply = submitReply
         self.submitClose = submitClose ?? { completion in
             let metadata = NWProtocolWebSocket.Metadata(opcode: .close)
             metadata.closeCode = .protocolCode(.protocolError)
@@ -203,6 +207,12 @@ extension WebSocketPeer {
     func prepareReplyPublication(_ frame: Frame) -> PreparedWebSocketReply? {
         guard !ended, !closing, !Task.isCancelled, let data = try? FrameCoding.encode(frame),
               let permit = replyTransport.issuePermit() else { return nil }
+        // Synthetic completion control; all production and injected sends retain the same final transport gate.
+        if let submitReply {
+            return PreparedWebSocketReply(permit: permit, submit: submitReply, cancel: { [weak self] reason in
+                Task { await self?.finish(reason: reason) }
+            })
+        }
         return PreparedWebSocketReply(data: data, connection: connection, permit: permit) { [weak self] reason in
             Task { await self?.finish(reason: reason) }
         }
