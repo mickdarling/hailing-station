@@ -123,7 +123,7 @@ extension AmbientRightyoRouter {
                 armed: Self.arm(&state), resume: current?.resume)
             // Install meeting first: leaving media writes true once, never a false/true pair.
             let reported = state.media[connection] != nil
-                ? changeMedia(false, connection: connection, reason: "voice", in: &state)
+                ? changeMedia(false, connection: connection, reason: "voice", in: &state).reported
                 : reportModes(connection: connection, in: state)
             let change = AmbientMeetingChange(on: true, profile: profile, reason: reason, reported: reported,
                                               token: token, renewed: current?.profile == profile,
