@@ -134,7 +134,9 @@ import Testing
         #expect(await eventually { env.router.liveRuns == 1 })
         try await pair.boundedBarrier(step: "superseded failure withheld")
         #expect(await env.gate.activeStream == current)
-        await env.listener.stop(reason: "synthetic test complete")
+        await bounded("#896: late-failure listener stop") {
+            await env.listener.stop(reason: "synthetic test complete")
+        }
     }
 
     @Test func aNormallyEndedStreamsLateDispatchFailureIsStillReported() async throws {
@@ -152,20 +154,23 @@ import Testing
         #expect(await env.gate.activeStream == nil)
         #expect(await eventually { env.router.liveRuns == 0 })
         try await pair.boundedBarrier(step: "nothing more after the failure")
-        await env.listener.stop(reason: "synthetic test complete")
+        await bounded("#896: late-failure listener stop") {
+            await env.listener.stop(reason: "synthetic test complete")
+        }
     }
 
     @Test func aNormallyEndedStreamsLateFailureIsNotReportedOnceAReplacementStarted() async throws {
-        // The first child dispatches after its input closes; every later child just idles.
+        // The first child dispatches after its input closes; later children consume input until EOF.
         let fake = try FakeRightyo("""
-            if [ -e first ]; then exec /bin/sleep 60; fi
+            if [ -e first ]; then /bin/cat > /dev/null; exit; fi
             : > first
             /usr/bin/wc -c > /dev/null
             /usr/bin/sed "s/tool-demo/$7/g" events.jsonl
             """)
         defer { fake.cleanUp() }
         try fake.install(fixture: "tool-events.jsonl")
-        let env = try await ambientRig(fake, timing: .init(eofGrace: 0.2, termGrace: 2))
+        // Like the other EOF-dispatch fixtures, allow a cold child to reach sed under background QoS (#896).
+        let env = try await ambientRig(fake, timing: .init(eofGrace: 20, termGrace: 2))
         await env.rig.adapter.holdHandoff()
         await env.rig.adapter.failHandoff()
         let pair = try await FallbackSocketPair.boundedConnect(port: env.port, selecting: [RecipientTestRig.target])
@@ -181,7 +186,9 @@ import Testing
         #expect(await eventually { env.router.liveRuns == 1 })
         try await pair.boundedBarrier(step: "ended stream's failure withheld")
         #expect(await env.gate.activeStream == current)
-        await env.listener.stop(reason: "synthetic test complete")
+        await bounded("#896: late-failure listener stop") {
+            await env.listener.stop(reason: "synthetic test complete")
+        }
     }
 }
 #endif

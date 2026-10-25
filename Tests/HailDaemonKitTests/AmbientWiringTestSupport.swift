@@ -50,7 +50,7 @@ func ambientRig(
         singleTerminalReplyFallback: true, ambient: router, log: { connected.record($0) }
     )
     return AmbientWiringRig(rig: rig, listener: listener, router: router, gate: gate, connected: connected,
-                            port: try await listener.start())
+                            port: try await boundedAmbientListenerStart(listener))
 }
 
 /// The next frame on `socket`, or a recorded issue naming `step` once `within` passes (#378). Every receive is now
@@ -127,10 +127,12 @@ func bounded(_ step: String, within: Duration = .seconds(30), _ work: @escaping 
         done.set()
     }
     let deadline = ContinuousClock.now + within
-    while !done.isSet, ContinuousClock.now < deadline { try? await Task.sleep(for: .milliseconds(20)) }
+    while !done.isSet, !Task.isCancelled, ContinuousClock.now < deadline {
+        try? await Task.sleep(for: .milliseconds(20))
+    }
     guard !done.isSet else { return }
     task.cancel()
-    Issue.record("\(step) did not finish within \(within)")
+    Issue.record("\(step) did not finish within \(within) or was cancelled")
 }
 
 /// `router.settle()`, bounded as `bounded` is.
@@ -159,7 +161,8 @@ func audio(_ stream: UUID, _ sequence: Int, final: Bool = false) -> Frame {
 }
 
 func eventually(_ condition: @Sendable () async -> Bool) async -> Bool {
-    for _ in 0..<300 {
+    let deadline = ContinuousClock.now + .seconds(15)
+    while !Task.isCancelled, ContinuousClock.now < deadline {
         if await condition() { return true }
         try? await Task.sleep(for: .milliseconds(50))
     }
