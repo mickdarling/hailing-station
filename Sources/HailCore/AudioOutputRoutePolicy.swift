@@ -32,6 +32,7 @@ struct AudioOutputRoutePolicy: Sendable {
         var options = Options()
         var outputs: [Port]
         var inputs: [Port]
+        var availableInputs: [Port] = []
         var previousOutputs: [Port] = []
         var previousInputs: [Port] = []
         var reason: Reason
@@ -74,7 +75,7 @@ struct AudioOutputRoutePolicy: Sendable {
         let externalOutput = route.outputs.contains(where: \.isExternalOutput)
         // Keepalive may add observed output evidence for capture recovery, without consuming its episode (#852).
         result.state.externalOutputSeen = externalOutput || result.state.externalOutputSeen
-            || route.previousOutputs.contains(where: \.isExternalOutput)
+            || route.previousOutputs.contains(where: \.isExternalOutput) || hasNewBluetoothInput(route)
         // The background keepalive owns playback/mixWithOthers; never reconfigure it (#282, #352, #852).
         guard route.category == .playAndRecord else {
             if !externalOutput, route.reason == .oldDeviceUnavailable, !lostUSBInput(route) {
@@ -156,7 +157,8 @@ extension AudioOutputRoutePolicy {
         let inputReturned = state.inputLossPending && previous.previousInputs != route.inputs && !route.inputs.isEmpty
             && route.reason != .oldDeviceUnavailable
         let newDevice = route.reason == .newDeviceAvailable
-            && (route.inputs != previous.previousInputs || route.outputs != previous.previousOutputs
+            && (hasNewBluetoothInput(route) || route.inputs != previous.previousInputs
+                || route.outputs != previous.previousOutputs
                 || (state.inputLossPending && !route.inputs.isEmpty))
         let episode = (newDevice && state.lastAvailability != identity) || inputReturned
         if episode {
@@ -178,5 +180,11 @@ extension AudioOutputRoutePolicy {
         guard !route.inputs.isEmpty, !route.outputs.isEmpty,
               route.outputs.allSatisfy(\.isBuiltInOutput) else { return .awaitingRoute }
         return .repairRequested
+    }
+
+    private static func hasNewBluetoothInput(_ route: Route) -> Bool {
+        // Availability can reveal a headset before it becomes an output; a USB input cannot (#882).
+        route.reason == .newDeviceAvailable
+            && route.availableInputs.contains { $0 == .bluetoothHFP || $0 == .bluetoothLE }
     }
 }
