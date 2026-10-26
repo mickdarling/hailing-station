@@ -64,7 +64,7 @@ struct BluetoothHFPRouteTests {
                            previousInputs: [.builtInMic], reason: .override))
         #expect(session.state.userChoseBuiltIn)
 
-        session.categoryChangeMarker.arm()
+        session.reconfigureMarker.arm()
         session.send(.init(outputs: [.bluetoothHFP], inputs: [.bluetoothHFP],
                            availableInputs: [.builtInMic, .bluetoothHFP], previousOutputs: [.speaker],
                            previousInputs: [.builtInMic], reason: .categoryChange))
@@ -82,7 +82,7 @@ struct BluetoothHFPRouteTests {
         #expect(session.state.userChoseBuiltIn)
 
         for available in [[Policy.Port.builtInMic, .bluetoothHFP], [.builtInMic], [.builtInMic, .bluetoothHFP]] {
-            session.categoryChangeMarker.arm()
+            session.reconfigureMarker.arm()
             session.send(Self.toggle(available: available))
             session.drainEchoes()
         }
@@ -93,9 +93,9 @@ struct BluetoothHFPRouteTests {
     @Test func togglingNeitherRepairsNorSpendsTheNextEpisodesRepair() {
         let session = ScriptedOutputSession()
         session.options.defaultToSpeaker = true
-        session.categoryChangeMarker.arm()
+        session.reconfigureMarker.arm()
         session.send(Self.toggle(available: [.builtInMic]))
-        session.categoryChangeMarker.arm()
+        session.reconfigureMarker.arm()
         session.send(Self.toggle(available: [.builtInMic, .bluetoothHFP]))
         session.drainEchoes()
         #expect(session.effects.isEmpty)
@@ -111,7 +111,7 @@ struct BluetoothHFPRouteTests {
         #expect(session.effects == repair)
 
         for available in [[Policy.Port.builtInMic], [.builtInMic, .bluetoothHFP]] {
-            session.categoryChangeMarker.arm()
+            session.reconfigureMarker.arm()
             session.send(Self.toggle(available: available, outputs: [.bluetoothA2DP]))
             session.drainEchoes()
         }

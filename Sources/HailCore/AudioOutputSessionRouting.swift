@@ -90,9 +90,9 @@ enum AudioOutputSessionRouting {
 }
 #endif
 
-/// Session-scoped attribution for the next category notification from our reconfigure (#914).
+/// Session-scoped attribution for the whole category/configuration burst from our reconfigure (#914).
 /// A missing notification cannot leave a stale marker: it expires after one second, and hardware events cancel it.
-struct AudioOutputCategoryChangeMarker {
+struct AudioOutputReconfigureMarker {
     private var deadline: ContinuousClock.Instant?
 
     mutating func arm(now: ContinuousClock.Instant = .now) {
@@ -103,7 +103,7 @@ struct AudioOutputCategoryChangeMarker {
         deadline = nil
     }
 
-    mutating func consume(
+    mutating func attributes(
         _ reason: AudioOutputRoutePolicy.Reason, now: ContinuousClock.Instant = .now
     ) -> Bool {
         guard let deadline else { return false }
@@ -111,9 +111,9 @@ struct AudioOutputCategoryChangeMarker {
             cancel()
             return false
         }
-        guard reason == .categoryChange else { return false }
-        cancel()
-        return true
+        // A genuine category-only change from another source inside this window is attributed to us too.
+        // The fixed one-second deadline bounds that ambiguity; notifications never extend it.
+        return reason == .categoryChange || reason == .routeConfigurationChange
     }
 }
 

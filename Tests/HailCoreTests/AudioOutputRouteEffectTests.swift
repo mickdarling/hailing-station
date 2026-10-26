@@ -129,7 +129,7 @@ final class ScriptedOutputSession {
     var failure: Effect?
     var overrideOutputs: [Policy.Port]?
     var decisionReasons: [Policy.DecisionReason] = []
-    var categoryChangeMarker = AudioOutputCategoryChangeMarker()
+    var reconfigureMarker = AudioOutputReconfigureMarker()
     private var echoes: [Policy.Route] = []
 
     var categories: Int { effects.filter { if case .setCategory = $0 { true } else { false } }.count }
@@ -138,7 +138,7 @@ final class ScriptedOutputSession {
     func send(_ route: Policy.Route, now: ContinuousClock.Instant = .now) {
         var current = route
         current.options = options
-        current.appInitiatedCategoryChange = categoryChangeMarker.consume(current.reason, now: now)
+        current.appInitiatedReconfigure = reconfigureMarker.attributes(current.reason, now: now)
         let snapshot = current
         applyResult = AudioOutputRouteDriver.process(snapshot, state: &state, observeDecision: { decision in
             self.decisionReasons.append(decision.reason)

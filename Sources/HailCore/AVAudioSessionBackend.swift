@@ -11,7 +11,7 @@ public final class AVAudioSessionBackend: AudioSessionBackend {
     private let continuation: AsyncStream<AudioSessionBackendEvent>.Continuation
     private let observers = NotificationObserverBag()
     private var outputRouteState = AudioOutputRoutePolicy.State()
-    private var categoryChangeMarker = AudioOutputCategoryChangeMarker()
+    private var reconfigureMarker = AudioOutputReconfigureMarker()
     private var isRepairingOutputRoute = false
 
     public convenience init() {
@@ -32,11 +32,11 @@ public final class AVAudioSessionBackend: AudioSessionBackend {
 
     public func configure(allowsBluetoothHFP: Bool) async throws {
         // Arm before setCategory: its notification can be delivered synchronously or shortly after it returns.
-        categoryChangeMarker.arm()
+        reconfigureMarker.arm()
         do {
             try AudioOutputSessionRouting.configure(session, allowsBluetoothHFP: allowsBluetoothHFP)
         } catch {
-            categoryChangeMarker.cancel()
+            reconfigureMarker.cancel()
             throw error
         }
     }
@@ -95,7 +95,7 @@ public final class AVAudioSessionBackend: AudioSessionBackend {
     private func repairOutputRoute(_ snapshot: AudioOutputSessionRouting.Snapshot) {
         guard !isRepairingOutputRoute else { return }
         var route = AudioOutputSessionRouting.route(session, snapshot: snapshot)
-        route.appInitiatedCategoryChange = categoryChangeMarker.consume(route.reason)
+        route.appInitiatedReconfigure = reconfigureMarker.attributes(route.reason)
         isRepairingOutputRoute = true
         defer { isRepairingOutputRoute = false }
         let session = session
