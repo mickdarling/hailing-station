@@ -4,7 +4,7 @@ import Testing
 @testable import HailDaemonKit
 
 /// Loopback-socket proof of the #188 single-terminal fallback. Synthetic only; not device hearing.
-@Suite(.serialized) struct SingleTerminalReplyFallbackTests {
+@Suite(.serialized, .frozenGuardBudget) struct SingleTerminalReplyFallbackTests {
     @Test func fallbackDeliversUncorrelatedRepliesToTheOnlyConnectionSelectingTheTarget() async throws {
         let rig = try await RecipientTestRig.make()
         let listener = try fallbackListener(rig: rig, enabled: true)

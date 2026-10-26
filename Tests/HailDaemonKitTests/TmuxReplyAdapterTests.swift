@@ -3,7 +3,7 @@ import HailProtocol
 import Testing
 @testable import HailDaemonKit
 
-@Suite struct TmuxReplyAdapterTests {
+@Suite(.frozenGuardBudget) struct TmuxReplyAdapterTests {
     @Test func absentConfigurationIsOffAndEmptyProfileDoesNotList() async throws {
         #expect(try TmuxReplyAdapter.configuredTargets(in: [:]).isEmpty)
         #expect(try TmuxReplyAdapter.configuredTargets(in: [TmuxReplyAdapter.configurationVariable: "[]"]).isEmpty)

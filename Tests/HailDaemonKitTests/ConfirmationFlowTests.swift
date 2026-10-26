@@ -3,7 +3,7 @@ import Testing
 
 /// The host side of #41: deny by default, the read-back on `confirm`, the confirmation bound to one
 /// utterance, per-line recording and re-evaluation, and allow/deny/tier persisted before they apply.
-@Suite struct ConfirmationFlowTests {
+@Suite(.frozenGuardBudget) struct ConfirmationFlowTests {
     let id = "tmux:a"
     let binding = "$1@1/%1:9"
 

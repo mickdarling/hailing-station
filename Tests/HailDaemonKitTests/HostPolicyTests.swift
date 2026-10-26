@@ -3,7 +3,7 @@ import Testing
 
 /// The host's policy state (#41 items 1, 4): per-line recording and re-evaluation, allow/deny/tier saved
 /// before they apply, and what an unusable or unwritable store refuses.
-@Suite struct HostPolicyTests {
+@Suite(.frozenGuardBudget) struct HostPolicyTests {
     let id = "tmux:a"
     let binding = "$1@1/%1:9"
 

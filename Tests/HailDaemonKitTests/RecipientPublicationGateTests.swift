@@ -4,7 +4,7 @@ import Synchronization
 import Testing
 @testable import HailDaemonKit
 
-@Suite(.serialized, .timeLimit(.minutes(2))) struct RecipientPublicationGateTests {
+@Suite(.serialized, .timeLimit(.minutes(2)), .frozenGuardBudget) struct RecipientPublicationGateTests {
     @Test func barrierTimeoutIsRecoverableAndSticky() async {
         let gate = RecipientPublicationGate(timeout: .milliseconds(0))
         await #expect(throws: RecipientPublicationTestError.admissionTimedOut) {

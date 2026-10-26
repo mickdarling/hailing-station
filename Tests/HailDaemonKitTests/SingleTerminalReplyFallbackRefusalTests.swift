@@ -4,7 +4,7 @@ import Testing
 @testable import HailDaemonKit
 
 /// Never-started transports: every refusal here happens before any enqueue attempt could exist.
-@Suite struct SingleTerminalReplyFallbackRefusalTests {
+@Suite(.frozenGuardBudget) struct SingleTerminalReplyFallbackRefusalTests {
     @Test func fallbackRefusesWhenNoConnectionSelectsTheTarget() async throws {
         let rig = try await RecipientTestRig.make()
         let frame = recipientText(uncorrelatedDescriptor())

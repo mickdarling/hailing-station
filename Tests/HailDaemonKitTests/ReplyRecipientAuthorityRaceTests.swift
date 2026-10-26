@@ -4,7 +4,7 @@ import Synchronization
 import Testing
 @testable import HailDaemonKit
 
-@Suite(.serialized, .timeLimit(.minutes(2))) struct ReplyRecipientAuthorityRaceTests {
+@Suite(.serialized, .timeLimit(.minutes(2)), .frozenGuardBudget) struct ReplyRecipientAuthorityRaceTests {
     private struct Setup {
         let rig: RecipientTestRig
         let session: HostSession

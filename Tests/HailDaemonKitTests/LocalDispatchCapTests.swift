@@ -5,7 +5,7 @@ import Testing
 
 /// #200: a local dispatch is sanitised under the local RightyO prompt cap, phone text frames keep the default
 /// cap, and every other gate (guard, tier, lockdown) gives the direct path's outcome. Synthetic text only.
-@Suite struct LocalDispatchCapTests {
+@Suite(.frozenGuardBudget) struct LocalDispatchCapTests {
     private static let target = "tmux:reply"
     /// A RightyO request carrying about 1 MiB of context: far past 2,000 characters, inside 1,200,000.
     private static let mebibytePrompt = String(repeating: "a", count: 1 << 20)

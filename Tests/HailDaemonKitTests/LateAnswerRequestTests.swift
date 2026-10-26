@@ -5,7 +5,7 @@ import Testing
 
 /// #430: an agent that works for more than two minutes still answers the device that asked, for up to 30 minutes,
 /// and only that device, on the same selection, under a current permit. Synthetic adapter and clock only.
-@Suite struct LateAnswerRequestTests {
+@Suite(.frozenGuardBudget) struct LateAnswerRequestTests {
     private static let minute: Int64 = 60_000
 
     @Test func anUnansweredRequestStillReachesTheAskingDeviceAfterTwoMinutes() async throws {
@@ -138,7 +138,7 @@ import Testing
 }
 
 /// #430 follow-up: at capacity, a refused duplicate reference never first evicts another request's late record.
-@Suite struct LateAnswerEvictionOrderTests {
+@Suite(.frozenGuardBudget) struct LateAnswerEvictionOrderTests {
     @Test func aDuplicateAtCapacityEvictsNothing() async throws {
         let rig = try await LegacyReferenceRig.make()
         let session = await rig.session()

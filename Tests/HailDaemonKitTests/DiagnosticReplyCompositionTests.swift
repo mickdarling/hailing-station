@@ -4,7 +4,7 @@ import HailProtocol
 import Testing
 @testable import HailDaemonKit
 
-@Suite(.serialized) struct DiagnosticReplyCompositionTests {
+@Suite(.serialized, .frozenGuardBudget) struct DiagnosticReplyCompositionTests {
     @Test func constructionAndStopBeforeStartNeverRegisterOrAdmit() async throws {
         let fixture = try PublisherFixture(cli: true)
         let registry = Registry()

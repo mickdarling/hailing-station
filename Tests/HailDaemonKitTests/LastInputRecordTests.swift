@@ -5,7 +5,7 @@ import Testing
 @testable import HailDaemonKit
 
 /// #370 on never-started transports and the rig's injected clock: lifetime, and what may and may not record input.
-@Suite struct LastInputRecordTests {
+@Suite(.frozenGuardBudget) struct LastInputRecordTests {
     private static let tap = sessionFrame(
         target: LegacyReferenceRig.target, payload: .text(TextPayload(text: "synthetic tap"))
     )
