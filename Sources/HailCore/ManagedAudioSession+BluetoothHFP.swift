@@ -71,13 +71,12 @@ enum AudioSessionIdleOwnership {
 
 #if os(iOS)
 extension AVAudioSessionBackend: AudioSessionIdleConfiguring {
-    /// The shared session, as the reply player configures it; the production backend wraps the same instance.
+    /// Re-apply only the injected session's station-owned category, using the same attribution as active capture.
     func configureIfStationOwned(allowsBluetoothHFP: Bool) async throws {
-        let session = AVAudioSession.sharedInstance()
         guard AudioSessionIdleOwnership.isStationOwned(
             category: session.category.rawValue, options: session.categoryOptions.rawValue
         ) else { return }
-        try AudioOutputSessionRouting.configure(session, allowsBluetoothHFP: allowsBluetoothHFP)
+        try await configure(allowsBluetoothHFP: allowsBluetoothHFP)
     }
 }
 #endif

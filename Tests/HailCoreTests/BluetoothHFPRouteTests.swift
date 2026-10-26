@@ -56,22 +56,22 @@ struct BluetoothHFPRouteTests {
                 == session.owned)
     }
 
-    /// Today's behaviour, pinned (#905 review P3-2): if iOS answers the toggle by moving output to the headset, the
-    /// app still makes no effect, but the external output clears the owner's Speaker latch.
-    @Test func toggleThatMovesOutputToTheHeadsetMakesNoEffectButClearsTheSpeakerLatch() {
+    /// The app's category change can move output, but cannot undo an explicit Speaker choice (#914).
+    @Test func toggleThatMovesOutputToTheHeadsetMakesNoEffectAndKeepsTheSpeakerLatch() {
         let session = ScriptedOutputSession()
         session.options.defaultToSpeaker = true
         session.send(.init(outputs: [.speaker], inputs: [.builtInMic], previousOutputs: [.bluetoothA2DP],
                            previousInputs: [.builtInMic], reason: .override))
         #expect(session.state.userChoseBuiltIn)
 
+        session.categoryChangeMarker.arm()
         session.send(.init(outputs: [.bluetoothHFP], inputs: [.bluetoothHFP],
                            availableInputs: [.builtInMic, .bluetoothHFP], previousOutputs: [.speaker],
                            previousInputs: [.builtInMic], reason: .categoryChange))
         session.drainEchoes()
         #expect(session.effects.isEmpty)
         #expect(session.options.defaultToSpeaker)
-        #expect(!session.state.userChoseBuiltIn)
+        #expect(session.state.userChoseBuiltIn)
     }
 
     @Test func togglingWhileOutputStaysOnTheSpeakerKeepsTheOwnersChoice() {
@@ -82,6 +82,7 @@ struct BluetoothHFPRouteTests {
         #expect(session.state.userChoseBuiltIn)
 
         for available in [[Policy.Port.builtInMic, .bluetoothHFP], [.builtInMic], [.builtInMic, .bluetoothHFP]] {
+            session.categoryChangeMarker.arm()
             session.send(Self.toggle(available: available))
             session.drainEchoes()
         }
@@ -92,7 +93,9 @@ struct BluetoothHFPRouteTests {
     @Test func togglingNeitherRepairsNorSpendsTheNextEpisodesRepair() {
         let session = ScriptedOutputSession()
         session.options.defaultToSpeaker = true
+        session.categoryChangeMarker.arm()
         session.send(Self.toggle(available: [.builtInMic]))
+        session.categoryChangeMarker.arm()
         session.send(Self.toggle(available: [.builtInMic, .bluetoothHFP]))
         session.drainEchoes()
         #expect(session.effects.isEmpty)
@@ -108,6 +111,7 @@ struct BluetoothHFPRouteTests {
         #expect(session.effects == repair)
 
         for available in [[Policy.Port.builtInMic], [.builtInMic, .bluetoothHFP]] {
+            session.categoryChangeMarker.arm()
             session.send(Self.toggle(available: available, outputs: [.bluetoothA2DP]))
             session.drainEchoes()
         }

@@ -90,6 +90,33 @@ enum AudioOutputSessionRouting {
 }
 #endif
 
+/// Session-scoped attribution for the next category notification from our reconfigure (#914).
+/// A missing notification cannot leave a stale marker: it expires after one second, and hardware events cancel it.
+struct AudioOutputCategoryChangeMarker {
+    private var deadline: ContinuousClock.Instant?
+
+    mutating func arm(now: ContinuousClock.Instant = .now) {
+        deadline = now.advanced(by: .seconds(1))
+    }
+
+    mutating func cancel() {
+        deadline = nil
+    }
+
+    mutating func consume(
+        _ reason: AudioOutputRoutePolicy.Reason, now: ContinuousClock.Instant = .now
+    ) -> Bool {
+        guard let deadline else { return false }
+        if now >= deadline || reason == .newDeviceAvailable || reason == .oldDeviceUnavailable {
+            cancel()
+            return false
+        }
+        guard reason == .categoryChange else { return false }
+        cancel()
+        return true
+    }
+}
+
 /// Shared decision → effects → result loop used by the iOS backend and macOS scripted tests (#852).
 enum AudioOutputRouteDriver {
     enum Effect: Equatable, Sendable {
