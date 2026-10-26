@@ -18,14 +18,14 @@ final class RecipientPublicationExecutor: TaskExecutor {
 
 enum RecipientPublicationTestError: Error { case admissionTimedOut }
 
-/// Timeout releases the test as a recoverable failure, never a process-wide precondition trap.
+/// Timeout is sticky: neither a late arrival nor release can make an inconclusive race conclusive.
 final class RecipientPublicationGate: Sendable {
     private let entered = DispatchSemaphore(value: 0)
     private let released = DispatchSemaphore(value: 0)
     private let timeout: DispatchTimeInterval
     private let state = Mutex((released: false, timedOut: false, dedicatedQueue: false))
 
-    init(timeout: DispatchTimeInterval = .seconds(15)) { self.timeout = timeout }
+    init(timeout: DispatchTimeInterval = .seconds(45)) { self.timeout = timeout }
 
     var timedOut: Bool { state.withLock { $0.timedOut } }
     var usedDedicatedQueue: Bool { state.withLock { $0.dedicatedQueue } }
@@ -33,17 +33,21 @@ final class RecipientPublicationGate: Sendable {
     func block(onDedicatedQueue: Bool) -> Bool {
         state.withLock { $0.dedicatedQueue = onDedicatedQueue }
         entered.signal()
+        guard !timedOut else { return false }
         let success = released.wait(timeout: .now() + timeout) == .success
-        state.withLock { $0.timedOut = !success }
-        return success
+        return state.withLock {
+            $0.timedOut = $0.timedOut || !success
+            return !$0.timedOut
+        }
     }
 
     func waitEntered() async throws {
         try await withCheckedThrowingContinuation { (continuation: CheckedContinuation<Void, any Error>) in
-            DispatchQueue.global().async { [entered, timeout] in
+            DispatchQueue.global(qos: .userInitiated).async { [self] in
                 if entered.wait(timeout: .now() + timeout) == .success {
                     continuation.resume()
                 } else {
+                    state.withLock { $0.timedOut = true }
                     continuation.resume(throwing: RecipientPublicationTestError.admissionTimedOut)
                 }
             }
