@@ -131,13 +131,23 @@ public enum Schema {
             "final": .object(["type": .string("boolean")]),
             "bytes": bytesField(max: PayloadLimits.maxAudioBytes),
             "reply": .object(["$ref": .string("#/$defs/reply")]),
-            "resume": .object(["const": .bool(true)]) // #373: only `true`, only on a first segment (below)
+            "resume": .object(["const": .bool(true)]), // #373: only on a first segment (below)
+            "segment_end": .object(["type": .string("boolean"), "const": .bool(true)])
         ]),
         "allOf": .array([
             .object([
                 "if": .object(["required": .array([.string("reply")])]),
                 "then": .object(["required": .array([.string("streamId"), .string("final")])])
             ]),
+            .object(["if": .object(["required": .array([.string("segment_end")])]), "then": .object([
+                "required": .array(["reply", "streamId", "final"].map(JSONValue.string)),
+                "properties": .object([
+                    "final": .object(["const": .bool(false)]),
+                    "reply": .object(["required": .array([.string("audioStream")])]),
+                    // Conflicts with the global true-only rule, forbidding any resume key here.
+                    "resume": .object(["const": .bool(false)])
+                ])
+            ])]),
             .object(["if": .object(["required": .array([.string("resume")])]), "then": .object([
                 "required": .array([.string("streamId")]),
                 "properties": .object(["sequence": .object(["const": .integer(0)])])
@@ -193,6 +203,22 @@ public enum Schema {
         ])
     ])
 
+    private static let replyYieldPayloadRule: JSONValue = .object([
+        "if": .object(["properties": .object(["command": .object(["const": .string("reply_yield")])])]),
+        "then": .object([
+            "required": .array(["reply", "segment"].map(JSONValue.string)),
+            "additionalProperties": .bool(false),
+            "properties": .object([
+                "command": .object([:]),
+                "reply": .object([
+                    "type": .string("string"), "format": .string("uuid"), "maxLength": .integer(36),
+                    "pattern": .string("^[0-9A-Fa-f]{8}-[0-9A-Fa-f]{4}-[0-9A-Fa-f]{4}-[0-9A-Fa-f]{4}-[0-9A-Fa-f]{12}$")
+                ]),
+                "segment": integer(1...ReplySegments.maxSegmentEnds)
+            ])
+        ])
+    ])
+
     private static let control: JSONValue = .object([
         "type": .string("object"), "required": .array([.string("command")]),
         "properties": .object([
@@ -202,7 +228,7 @@ public enum Schema {
                     "error", "diagnostic", "stop_playback", "ambient_moved_here", "ambient_heard",
                     "ambient_overheard", "overheard_scope", "set_reply_mute", "owner_voice", "ambient_input",
                     "session_update", "health", "health_report", "media_mode",
-                    "duck_mode", "set_privacy"
+                    "duck_mode", "set_privacy", "reply_yield"
                 ]
                     .map(JSONValue.string)
             )]),
@@ -261,6 +287,7 @@ public enum Schema {
             commandRule("set_privacy", requires: ["on"]),
             diagnosticPayloadRule,
             stopPlaybackPayloadRule,
+            replyYieldPayloadRule,
             ambientMovedHerePayloadRule,
             ambientHeardPayloadRule,
             heardTurnPayloadRule,
