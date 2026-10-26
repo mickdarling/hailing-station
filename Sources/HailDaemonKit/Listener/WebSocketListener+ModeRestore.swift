@@ -85,12 +85,15 @@ extension AmbientRightyoRouter {
     /// stream, under the lock `start` registers its first run under, right after `register`: the new child's first mode
     /// write is the gate, so it never runs ungated while a mode is on daemon-wide. Only into a connection in no mode,
     /// and only for its current, open stream: one torn down or superseded mid-start takes nothing, but its child still
-    /// gets the gate while any mode is held or parked (review round 2), with no hook and no clip. A private start ends
-    /// every other holder's mode and the park, as a privacy entry does.
+    /// gets the gate while any mode is held or parked (review round 2), with no hook and no clip; while a meeting is,
+    /// a child that advertised it is told meeting on too, before the gate (MM-D). A private start ends every other
+    /// holder's mode and the park, as a privacy entry does.
     func carryModes(to connection: UUID, stream: UUID, pipeline: RightyoAmbientPipeline, in state: inout State) {
         guard state.meeting[connection] == nil, state.media[connection] == nil else { return }
         guard state.latest[connection] == stream, !state.closed.contains(connection) else {
-            if state.parked != nil || !state.meeting.isEmpty || !state.media.isEmpty { pipeline.reportMedia(true) }
+            if state.parked != nil || !state.meeting.isEmpty || !state.media.isEmpty {
+                pipeline.reportModes(media: true, meeting: state.parked?.meeting != nil || !state.meeting.isEmpty)
+            }
             return
         }
         if state.duck[connection] != nil { return endEveryMode(reason: "privacy", except: connection, in: &state) }
