@@ -106,7 +106,9 @@ import Testing
         let frames = ["Voice Work, run the tests", "Deck", "Hailing Scratcher, hello"].map { VoiceRouteRig.tap($0) }
         for frame in frames + [pasted] {
             let result = await session.receive(frame)
-            guard case .error(let code, _) = try onlyControl(result) else { throw TestSupportError.expectedOneControl }
+            guard case .error(let code, _, _) = try onlyControl(result) else {
+                throw TestSupportError.expectedOneControl
+            }
             #expect(code == .voiceRouteRefused && result.disposition == .keepOpen)
         }
         #expect(await rig.adapter.deliveries.isEmpty)
@@ -119,7 +121,9 @@ import Testing
         _ = await rig.host.engageLockdown(reason: "synthetic")
         for text in ["Deck, add a slide", "Voice Work, run the tests"] {
             let result = await session.receive(VoiceRouteRig.tap(text))
-            guard case .error(let code, _) = try onlyControl(result) else { throw TestSupportError.expectedOneControl }
+            guard case .error(let code, _, _) = try onlyControl(result) else {
+                throw TestSupportError.expectedOneControl
+            }
             #expect(code == .lockdown)
         }
         #expect(await rig.adapter.deliveries.isEmpty)
