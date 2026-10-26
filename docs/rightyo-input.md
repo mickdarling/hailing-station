@@ -555,7 +555,9 @@ forks is not killed with it. This matches the repo's other stdio children.
 
 `RightyoAmbientPipeline` feeds the child's lines through `RightyoInputEvent.decode` and `RightyoInputConsumer`. It
 hands admitted requests to a `RightyoAmbientDispatching` (`LocalDispatchRequest`). Any error ends the stream, and
-nothing restarts it. The daemon's dispatcher mints each request's reply reference
+nothing restarts it. Two refusals are not errors: a voice route that cannot take a request (#636, see
+[voice-routing.md](voice-routing.md)) and the stream's own target refusing one because its input already holds unsent
+text ([below](#ambient-pending-input-894)). Each sends nothing, the speaker is told, and the stream goes on. The daemon's dispatcher mints each request's reply reference
 ([#230](#the-reply-block)), so the reply reaches the streaming device even when another device selects the target.
 
 The consumer still ends a session after 4,096 events, so a long ambient stream stops there. Raising or windowing that
@@ -862,3 +864,41 @@ Setup is the owner's: write the destinations file (mode `0600`), point `host.jso
 Separately, an ambient request the owner addressed to a voice route that sent nothing plays a clip from the
 reserved `confirm-not-sent/` folder ("Nothing was sent."), after the device's refusal line (#636, see
 `docs/voice-routing.md`).
+
+#### Ambient pending input (#894)
+
+When the stream's own target refuses an ambient request because its input already holds unsent text
+(`LocalDispatchRefusal.inputPending`, whatever the adapter's reason: `stale_input`, `appeared` or `tainted`), nothing
+is typed and the run goes on (#894 ask 3). Before, the run ended (`ambient_ended dispatch inputPending`), the RightyO
+child was stopped with any turns it had queued, and the device was sent a silent `ambient stopped:` error.
+
+- **The stream lives on.** The consumer leaves the refusal in `lastDeliveryRefusal` and returns, like a route
+  refusal; the child keeps running, and its next request is tried as usual. If the input was cleared meanwhile (by
+  hand, or with [`haild targets flush`](host-operations.md#clear-a-stale-prompt-draft-894)), it is typed. A tainted
+  pane still needs a restart, so each request to it is refused and told in turn.
+- **The device is told, as for a route refusal.** A device that advertised `request_refusals` gets one line with
+  tap-to-talk's fixed message, "the target's input already holds unsent text". It is sent as `voice_route_refused`,
+  the existing request-refusal code: the app shows every request refusal as one chat line and one announcement,
+  whatever its code. No protocol field or code is added. An older device gets no line, since it would end its
+  connection on any error.
+- **One spoken clip.** `confirm-not-sent/` ("Nothing was sent.") plays through the acknowledgement path, to that
+  device only, while it still selects the target. It is the existing clip; no new words were added. An un-routed
+  request is still acknowledged before it is typed, so the speaker hears the acknowledgement and then "Nothing was
+  sent." (the 3-second wait for the input to clear comes between them).
+- **The log.** `ambient_delivery_refused reason=inputPending shown=sent|unsupported|not_ready|failed|no_connection
+  confirm=<key>/<index>:<outcome>` (or `confirm=no_clips`): tokens only, never the words, the pending text or the
+  target. The adapter's own `tmux_input_pending reason=…` line, logged just before, names the reason.
+- **Nothing looks sent.** The request's reply ownership is dropped before it is committed, so no reply recipient is
+  armed and no last-input device is recorded. The audit chain keeps the `pushed` record it writes before every
+  ambient dispatch attempt, as for any refused dispatch; there is no `delivered` record.
+- **Privacy and meeting mode.** While private every request is held back before dispatch, so none is refused and
+  nothing is told. A device-switch entry made during the up-to-3-second wait does not stop the clip: as with a route
+  refusal, "Nothing was sent." can follow "Privacy on." Meeting mode adds no host gate on clips, so the refusal is
+  told as in any other mode, as the acknowledgement is.
+- **Routed requests** (#636) are unchanged: a route refusing one for pending input is a route refusal
+  (`not_delivered`).
+- **Every other refusal** of the stream's own target (policy, lockdown, rebind, rate, confirmation, cancellation,
+  audit) still ends the run as before.
+
+Verification is synthetic only: `RightyoInputConsumerTests` (`RightyoInputPendingTests.swift`),
+`RightyoAmbientPendingInputTests` and `AmbientWiringInputPendingTests`. It has not been heard on a device.

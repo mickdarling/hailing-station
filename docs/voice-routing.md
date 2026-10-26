@@ -212,7 +212,8 @@ and at the binding the policy allows).
   routed dispatch (audit, size, cancellation, listener stop) ends the stream, as it would for the ambient target. The
   listener logs `ambient_voice_route_refused` with `reason=not_delivered|nothing_to_say|unclear` and the outcomes
   below only, never the name or the words. The owner is told (slice 5c, below). A refusal for the ambient target
-  itself still ends the stream, as before.
+  itself still ends the stream, as before, unless the target's input already holds unsent text (#894): that request
+  is told the same way and the stream goes on (see [rightyo-input.md](rightyo-input.md#ambient-pending-input-894)).
   The ambient target's own name alone ("Hailing Scratch.") is typed there, as before routing and as tap-to-talk
   delivers it.
 - **Announced only once sent.** A routed request is shown to the device (#318) and acknowledged only after its

@@ -1058,6 +1058,8 @@ extension AmbientRightyoRouter {
         settings.onVoiceMute = voiceMuted(on: connection, listener: listener)
         settings.onVoiceMedia = voiceMedia(on: connection, listener: listener)
         settings.onVoiceMeeting = voiceMeeting(on: connection, listener: listener)
+        // Unsent text already in the target's input (#894) refuses that request only; the stream goes on.
+        settings.onDeliveryRefused = deliveryRefused(on: connection, listener: listener)
         // The child's privacy state, held once it exists, so its refusal is said by the state rule (round 4).
         let mark = AmbientRunMark()
         (settings.onVoiceDuck, settings.onDuckUnsupported) = (voiceDuck(on: connection, listener: listener, mark: mark),
@@ -1586,6 +1588,29 @@ extension AmbientRightyoRouter {
                                                      listener: listener)
                 emit("ambient_voice_route_refused", connection: connection,
                      detail: "\(refusal.token) shown=\(shown) confirm=\(confirm)")
+            }
+        }
+    }
+
+    /// An ambient request the stream's own target refused because its input already holds unsent text (#894): nothing
+    /// was typed and the stream goes on. The device that said it is told as for a voice route's refusal, in the order
+    /// said: one refusal line with tap-to-talk's fixed message (`showRouteRefusal`, only to a device that takes request
+    /// refusals) and one `confirm-not-sent/` clip. Logs the refusal's name and both outcomes as tokens; never the words,
+    /// the text left in the input, or the target.
+    fileprivate func deliveryRefused(
+        on connection: UUID, listener: WebSocketListener
+    ) -> @Sendable (LocalDispatchRefusal) -> Void {
+        let chain = SerialTaskChain()
+        return { [weak self, weak listener] refusal in
+            chain.enqueue { [weak self, weak listener] in
+                guard let self else { return }
+                let line = refusal == .inputPending ? HostDeliveryOutcome.inputPendingReason : refusal.message
+                let shown = await listener?.showRouteRefusal(line, target: configuration.target,
+                                                             connection: connection) ?? "no_connection"
+                let confirm = await confirmVoiceMute(AmbientStopConfirmation.notSent, on: connection,
+                                                     listener: listener)
+                emit("ambient_delivery_refused", connection: connection,
+                     detail: "reason=\(refusal.rawValue) shown=\(shown) confirm=\(confirm)")
             }
         }
     }
