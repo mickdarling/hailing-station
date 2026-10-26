@@ -1,7 +1,8 @@
 #if os(macOS)
 import Foundation
 
-/// Privacy a dropped connection held (#941): where it was, its Hello claims (nil when unknown) and when it was parked.
+/// Privacy a dropped connection held (#941): where it was, its Hello claims (nil when unknown), when it was parked, and
+/// whether the owner had heard it announced there (`heardOn`), so a restored connection's status answers the same.
 /// Unlike a parked mode it has no expiry, since privacy has none (Mick, round 2), and it is never consumed by a start:
 /// while it is held, every fresh ambient stream on any connection starts private (the claims and its age are logged,
 /// never compared), until the owner's own privacy-off clears it. In RAM only, so a haild restart restores nothing.
@@ -9,6 +10,7 @@ struct ParkedPrivacy: Sendable {
     let connection: UUID
     let device: AmbientPeerDevice?
     let parkedAt: Date
+    var heard = false
 }
 
 /// #941: privacy survives a transport drop. A private connection's teardown parks its privacy, and every fresh ambient
@@ -20,7 +22,8 @@ extension AmbientRightyoRouter {
     /// removes it, replacing any privacy parked before: the latest drop's claims are the ones logged.
     func parkPrivacy(connection: UUID, device: AmbientPeerDevice?, in state: inout State) {
         logLater("ambient_privacy_parked", connection: connection, detail: "replaced=\(state.parkedPrivacy != nil)")
-        state.parkedPrivacy = ParkedPrivacy(connection: connection, device: device, parkedAt: configuration.now())
+        state.parkedPrivacy = ParkedPrivacy(connection: connection, device: device, parkedAt: configuration.now(),
+                                            heard: state.privacy[connection]?.heardOn == true)
     }
 
     /// Carries parked privacy (#941) onto `connection`'s fresh stream, normal or `resume` alike, under the lock `start`
@@ -28,12 +31,14 @@ extension AmbientRightyoRouter {
     /// is parked, every start is private, whatever its claims or the park's age (both only logged), onto a connection
     /// not torn down and not already private. As a privacy entry does, under this one lock: the connection's own mode
     /// ends (never in both), the agent's replies are held (S-2c) and its pending ones dropped, and its device is told
-    /// `duck_mode` on, with no reason. No clip. The park stays for the next start until the owner's off clears it.
+    /// `duck_mode` on, with no reason. No clip, but a status answers as it did where privacy was heard announced. The
+    /// park stays for the next start until the owner's off clears it.
     func restorePrivacy(to connection: UUID, in state: inout State) {
         guard let parked = state.parkedPrivacy, state.duck[connection] == nil,
               !state.closed.contains(connection) else { return }
         endHeld(connection, reason: "privacy", in: &state)
         state.duck[connection] = AmbientDuckTimer(token: UUID(), timer: nil)
+        if parked.heard { state.privacy[connection, default: .init()].carryHeard() }
         let listener = state.listener?.value
         holdReplies(connection, listener: listener)
         let age = Self.seconds(configuration.now(), parked.parkedAt)

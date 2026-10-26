@@ -8,29 +8,39 @@ import Testing
 /// admission. Real loopback listener and fake RightyO; all device claims and PCM are synthetic.
 @Suite(.serialized, .timeLimit(.minutes(1)), .frozenGuardBudget)
 struct AmbientReconnectHostAdmissionTests {
+    /// Privacy held before a drop reaches the fresh stream on the new connection, a normal or a resume start (#941).
+    /// The peer's step-0 test expected 0 PCM bytes at RightyO. By #735 S-1 and S-8 a child that confirmed it is private
+    /// hears audio, in RAM only, to catch the exit phrase, so this pins what privacy promises instead: (a) no byte
+    /// before the child's private `started` reaches RightyO, (b) no words or reply leave it (here and in
+    /// `AmbientPrivacyParkWordsTests`), and (c) at most the one segment sent after that `started` does.
     @Test(arguments: [false, true])
     func privacyHeldAcrossNewConnectionNeverReachesRightyo(resume: Bool) async throws {
-        let rig = try await RestoreRig(phrase: "stop recording")
+        let rig = try await RestoreRig(phrase: "stop recording", holdSpawn: 2)
         defer { rig.close() }
         let (first, dropped) = try await rig.start()
         try #require(await eventually { rig.router.duckMode(connection: dropped) }, "first connection holds privacy")
         #expect(await eventually { !rig.details("ambient_duck_confirmed").isEmpty }, "privacy entry settled")
         await rig.drop(first, dropped)
-        let (socket, connection) = try await rig.start(resume: resume)
+        let (socket, connection) = try await rig.start(resume: resume, fill: 0x11)
         #expect(connection != dropped, "reconnect must have a new session identity")
         #expect(rig.router.duckMode(connection: connection), "privacy must transfer or admission must refuse")
-        #expect(await eventually { rig.router.activePipeline?.hearsAudio == true }, "fresh child started")
-        // Send after the child is ready, so absence cannot be a startup-buffering artifact. The initial packet and
-        // this one contain only synthetic zeros. EOF and settle make the byte count deterministic.
+        // The fresh child's `started` is held: everything sent until it is released comes before its private proof.
         let stream = try #require(rig.router.activeStream)
-        try await recipientSocketSend(audio(stream, 1), on: socket)
-        try await barrier(on: socket, step: "fresh privacy stream audio processed")
+        #expect(rig.router.activePipeline?.hearsAudio == false)
+        for sequence in 1...3 {
+            try await recipientSocketSend(RestoreRig.segment(stream, sequence, fill: 0x11), on: socket)
+        }
+        try await barrier(on: socket, step: "audio before the private started processed")
+        try rig.release()
+        #expect(await eventually { rig.router.activePipeline?.hearsAudio == true }, "private started confirmed")
+        try await recipientSocketSend(RestoreRig.segment(stream, 4, fill: 0x22), on: socket)
+        try await barrier(on: socket, step: "audio after the private started processed")
         await rig.finish()
-        let heard = (try? Data(contentsOf: rig.fake.directory.appendingPathComponent("audio.2.raw"))) ?? Data()
-        // A confirmed-private child hears the stream in RAM only (#735 S-1, S-8: to hear the way back in); what must
-        // never reach RightyO is audio before that proof. The first segment came before the child's private `started`
-        // and is dropped, so at most the one sent after it is heard. On main the child is public and hears both.
-        #expect(heard.count <= AmbientPrivacyParkTests.segmentBytes, "no PCM reaches RightyO before its private proof")
+        let heard = rig.heard(2)
+        #expect(!heard.contains(0x11), "(a) no PCM from before the private started reaches RightyO")
+        #expect(heard.count <= AmbientPrivacyParkTests.segmentBytes, "(c) at most the one segment after it")
+        #expect(await rig.env.rig.adapter.contexts.isEmpty, "(b) no request leaves the private child")
+        #expect(rig.details("ambient_ended").allSatisfy { $0.contains("delivered=0") }, "(b) nothing delivered")
         #expect((try? rig.fake.recorded("argv.2.txt"))?.contains("--start-private") == true)
     }
 

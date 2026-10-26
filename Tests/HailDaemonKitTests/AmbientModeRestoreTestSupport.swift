@@ -27,8 +27,12 @@ final class RestoreRig: Sendable {
         AmbientAckLibrary(clips: [AmbientStopConfirmation.meetingOn: [MeetingRig.on],
                                  AmbientStopConfirmation.meetingOff: [MeetingRig.off],
                                  AmbientStopConfirmation.meetingEnded: [MeetingRig.ended],
-                                 AmbientStopConfirmation.meetingResumed: [resumed]])
+                                 AmbientStopConfirmation.meetingResumed: [resumed],
+                                 AmbientStopConfirmation.privacyStatus: [status]])
     }
+    /// The privacy status answer (#941: a restored-private connection's status is told as any private one's).
+    static let status = AmbientAckClip(pcm: Data(repeating: 7, count: 480), sampleRate: 24_000,
+                                       text: "Privacy on. I'm only listening for my name.")
     static let gate = "{\"media\":true}\n"
     let fake: FakeRightyo
     let env: AmbientWiringRig
@@ -41,11 +45,12 @@ final class RestoreRig: Sendable {
     var parked: ParkedModes? { router.state.withLock { $0.parked } }
 
     /// `meeting` is every child's `started` advertisement of the meeting control (#735 MM-D), raw JSON, none by
-    /// default; `holdStarted` keeps each child's first line back until the test writes `go`.
+    /// default; `holdStarted` keeps each child's first line back until the test writes `go` (`release()`), and
+    /// `holdSpawn` only that child's (#941).
     init(phrase: String? = "meeting mode", speaker: Int = 1,
          timeout: TimeInterval = AmbientRightyoRouter.defaultMeetingTimeout,
          mediaTimeout: TimeInterval = AmbientRightyoRouter.defaultMediaTimeout,
-         meeting: String? = nil, holdStarted: Bool = false) async throws {
+         meeting: String? = nil, holdStarted: Bool = false, holdSpawn: Int? = nil) async throws {
         // A child launched start-private confirms it in its `started` (#941), as a RightyO with S-2b does.
         let confirm = #" -e 's/"duck": {"version": 3}/"duck": {"version": 3'"$PRIV"'}/'"#
         let first = phrase == nil
@@ -58,6 +63,7 @@ final class RestoreRig: Sendable {
         echo "$*" > "argv.$SPAWN.txt"
         \(FakeRightyo.ackingControl(append: true).replacingOccurrences(of: "control.txt", with: "control.$SPAWN.txt"))
         \(holdStarted ? FakeRightyo.untilGo : "")
+        \(holdSpawn.map { "if [ \"$SPAWN\" = \($0) ]; then\n\(FakeRightyo.untilGo)\nfi" } ?? "")
         if [ "$SPAWN" = \(speaker) ]; then
         \(first)
         else
@@ -111,14 +117,11 @@ final class RestoreRig: Sendable {
     }
 
     /// Connects a device and starts its stream, waiting until its child is the active one.
+    /// `fill` is the first segment's byte (#941: to tell it from later ones in what the child heard).
     func start(name: String = "test", kind: String? = "phone", resume: Bool = false,
-               capabilities: [String] = ["probe"]) async throws -> (URLSessionWebSocketTask, UUID) {
+               capabilities: [String] = ["probe"], fill: UInt8 = 0) async throws -> (URLSessionWebSocketTask, UUID) {
         let (socket, connection) = try await connect(name: name, kind: kind, capabilities: capabilities)
-        var frame = audio(UUID(), 0)
-        if case .audio(var payload) = frame.payload {
-            payload.isResume = resume
-            frame.payload = .audio(payload)
-        }
+        let frame = Self.segment(UUID(), 0, fill: fill, resume: resume)
         try await recipientSocketSend(frame, on: socket)
         let router = router
         #expect(await eventually { router.activeConnection() == connection }, "restore start marker")
