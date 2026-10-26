@@ -99,6 +99,8 @@ public final class RightyoAmbientPipeline: Sendable {
         /// awaited, so the device has the user's own words ahead of both. Echo-dropped, withdrawn and duplicate
         /// requests never reach it. The text goes only to the speaking device; it is never logged.
         public var onHeard: (@Sendable (String) async -> Void)?
+        /// Host-only correlation hooks; separate from producer request ids and transcript content (#923).
+        var heardRequests: AmbientHeardRequests?
         /// Called once per finalized turn RightyO decided not to send (#398), with its text, whether both its
         /// transcript and its decision carried the owner role, and (#434) a known guest's name for someone else's turn.
         /// Echo-matched turns never reach it. Text and name go only to the speaking device, within its chosen scope;
@@ -210,7 +212,7 @@ public final class RightyoAmbientPipeline: Sendable {
         let session = "hail-\(UUID().uuidString.lowercased())"
         let relay = AmbientAckRelay(onAcknowledge: configuration.onAcknowledge,
                                     onSkip: configuration.onAcknowledgementSkipped)
-        let heard = AmbientHeardRelay(onHeard: configuration.onHeard)
+        let heard = AmbientHeardRelay(onHeard: configuration.onHeard, requests: configuration.heardRequests)
         let step = RightyoAmbientDispatchStep(connection: configuration.connection, dispatcher: dispatcher,
                                               acknowledge: { relay.fire() }, heard: { await heard.deliver() })
         let duck = AmbientDuckControl(startPrivate: configuration.startPrivate)
@@ -306,6 +308,7 @@ public final class RightyoAmbientPipeline: Sendable {
             try await consumer.finish()
             try duck.checkStarted()
         } catch {
+            await heard.finish()
             await child.stop()
             throw duck.refusal ?? error
         }
@@ -333,7 +336,9 @@ extension RightyoAmbientPipeline {
     private func observeRefusals(_ event: RightyoInputEvent) async {
         guard event.type == "request" else { return }
         if let refusal = await consumer.lastRouteRefusal { onVoiceRouteRefused?(refusal) }
-        if let refusal = await consumer.lastDeliveryRefusal { onDeliveryRefused?(refusal) }
+        let refusal = await consumer.lastDeliveryRefusal
+        if let refusal { onDeliveryRefused?(refusal) }
+        await heard.finish(refusal: refusal)
     }
 
     /// Hands one raw mono 16 kHz s16le chunk to the child without blocking; false once input has closed or for
@@ -811,23 +816,52 @@ final class AmbientAckRelay: Sendable {
     private enum Outcome { case acknowledge(AmbientAckRequest), skipped(AmbientAckSkip) }
 }
 
-/// The admitted request's heard turn (#318), held from the line's read to its delivery step, like the acknowledgement:
-/// set by a `request` line, cleared by any other, taken once. Echo-dropped, withdrawn and duplicate requests never
-/// reach the delivery step, so they are never shown. The text is never logged.
-final class AmbientHeardRelay: Sendable {
-    private let held = Mutex<String?>(nil)
-    private let onHeard: (@Sendable (String) async -> Void)?
+/// Host-only heard and completion callbacks, paired by a fresh local request key (#923).
+struct AmbientHeardRequests: Sendable {
+    let show: @Sendable (UUID, String) async -> Void
+    let finish: @Sendable (UUID, LocalDispatchRefusal?) async -> Void
+}
 
-    init(onHeard: (@Sendable (String) async -> Void)?) { self.onHeard = onHeard }
+/// The admitted request's heard text (#318), taken once at delivery. A separate content-free request key (#923)
+/// survives until dispatch completes or its refusal is scheduled. Echo-dropped, withdrawn and duplicate requests
+/// never reach delivery. Neither text nor keys are logged.
+final class AmbientHeardRelay: Sendable {
+    private struct State {
+        var text: String?
+        var request: UUID?
+    }
+    private let held = Mutex(State())
+    private let onHeard: (@Sendable (String) async -> Void)?
+    private let requests: AmbientHeardRequests?
+
+    init(onHeard: (@Sendable (String) async -> Void)?, requests: AmbientHeardRequests? = nil) {
+        (self.onHeard, self.requests) = (onHeard, requests)
+    }
 
     func observe(_ event: RightyoInputEvent) {
-        guard onHeard != nil else { return }
-        held.withLock { $0 = event.type == "request" ? event.turn?.text : nil }
+        guard onHeard != nil || requests != nil else { return }
+        held.withLock { $0.text = event.type == "request" ? event.turn?.text : nil }
     }
 
     func deliver() async {
-        guard let onHeard, let text = held.withLock({ held in defer { held = nil }; return held }) else { return }
-        await onHeard(text)
+        let (request, text) = held.withLock { state in
+            let request = UUID()
+            state.request = request
+            defer { state.text = nil }
+            return (request, state.text)
+        }
+        if let text {
+            await onHeard?(text)
+            await requests?.show(request, text)
+        }
+    }
+
+    func finish(refusal: LocalDispatchRefusal? = nil) async {
+        let request = held.withLock { state in
+            defer { state.request = nil; state.text = nil }
+            return state.request
+        }
+        if let request { await requests?.finish(request, refusal) }
     }
 }
 
