@@ -143,13 +143,21 @@ payload's cap. Besides the optional `turn` below, the decoder and the schema ref
 no authority, and a host refuses it from a device. A device advertises `ambient_heard` (`AmbientHeard.capability`) in
 its `hello` when it can show the text, and a host never sends the command to a device that did not. The host never logs the text.
 
-### Optional heard-turn correlation (#923, PR A)
+### Optional heard-turn correlation (#923)
 
 The protocol accepts an optional `turn` UUID string on `ambient_heard` and on an `error` with code
 `voice_route_refused`. Omit it for the legacy shape; null, invalid UUIDs and `turn` on any other control command or
 error code are refused. Frames carrying `turn` refuse unknown payload fields; legacy error extension tolerance is
 unchanged. `heard_turns` (`HeardTurns.capability`) is the device capability that permits the host to send this field,
 in addition to the frame's existing capability requirements.
+
+The host mints a fresh random UUID at the speaking connection's heard-frame enqueue boundary, independently of
+content. It records a host-local request key → turn only after a successful queue, in a 64-entry in-memory FIFO for
+that connection. A matching `voice_route_refused` consumes the record; completion, connection teardown, and oldest
+entry eviction discard it. A request with no successfully queued heard turn on that connection has no turn on its
+refusal. Both frames require `heard_turns` plus their existing capability (`ambient_heard` or `request_refusals`);
+legacy frames omit the field entirely. No other command or error carries it. Neither heard words nor turn IDs are
+logged. The identifier grants no authority.
 
 The device model (PR C1) stores a received heard UUID on its chat entry within the existing 200-entry in-memory
 history. A `voice_route_refused` with the same UUID on the same endpoint's current connection marks that entry's
@@ -161,13 +169,11 @@ A heard entry without a refusal stays sent. Neither heard text nor correlation i
 The device advertises `heard_turns` alongside `ambient_heard` and `request_refusals` (PR C2). A refused heard entry
 shows "You · not sent" with secondary text and heading on a greyed `.quinary` bubble. VoiceOver labels it "You said,
 not sent" before the message text, like "You said, heard but not sent" for overheard entries. The overheard setting
-still hides only overheard entries, so a refused heard request remains visible. Host generation and sending (PR B)
-remain deferred on this base. An older host simply omits the optional turn and needs no change.
-The host must mint a fresh random UUID per heard turn, never derive it from content or reuse it across connections,
-and never log it beside heard text. The identifier grants no authority.
-Synthetic verification is recorded in [the PR C1/C2 app test record](testing/heard-turn-app.md) and
-[the PR A protocol test record](testing/heard-turn-protocol.md). The app still needs host Xcode and accessibility
-checks; this is not physical-device proof.
+still hides only overheard entries, so a refused heard request remains visible. An older host simply omits the
+optional turn and needs no change. Synthetic verification is recorded in [the PR B host test
+record](testing/heard-turn-host.md), [the PR C1/C2 app test record](testing/heard-turn-app.md) and [the PR A protocol
+test record](testing/heard-turn-protocol.md). The app still needs physical accessibility checks; this is not
+physical-device proof.
 
 ### Overheard remarks (#398)
 
