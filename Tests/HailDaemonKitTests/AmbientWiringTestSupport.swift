@@ -28,8 +28,9 @@ func ambientRig(
     confirmTimeout: TimeInterval? = nil,
     meeting: MeetingTestSettings = .init(),
     acknowledgementHold: AcknowledgementHold? = nil, notSentQueued: NotSentQueued? = nil,
-    notSentPlaying: NotSentPlaying? = nil, childMade: (@Sendable (UUID) -> Void)? = nil,
-    onEvent: (@Sendable (WebSocketListenerEvent) -> Void)? = nil
+    notSentPlaying: NotSentPlaying? = nil,
+    onEvent: (@Sendable (WebSocketListenerEvent) -> Void)? = nil,
+    childMade: (@Sendable (UUID) -> Void)? = nil
 ) async throws -> AmbientWiringRig {
     let rig = try await RecipientTestRig.make()
     let connected = ConnectedPeerIDs()

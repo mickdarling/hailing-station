@@ -80,8 +80,8 @@ final class RestoreRig: Sendable {
                                    replyControl: true, mediaTimeout: mediaTimeout, startDeadline: 30, ackDeadline: 30,
                                    meeting: .init(timeout: timeout, onChange: { change in
             hooks.list.withLock { $0.append(change) }
-        }, now: { clock.now() }), childMade: childMade,
-                                   onEvent: { event in events.list.withLock { $0.append(event) } })
+        }, now: { clock.now() }), onEvent: { event in events.list.withLock { $0.append(event) } },
+                                   childMade: childMade)
     }
 
     private static func prepare(_ fake: FakeRightyo, phrase: String, meeting: String?) throws {
