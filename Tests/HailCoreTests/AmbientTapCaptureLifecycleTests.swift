@@ -6,7 +6,8 @@ import Testing
 /// The app's actual stream consumer (symlinked into this test target), with synthetic engine/session IO.
 @MainActor
 @Suite struct AmbientTapCaptureMaskLifecycleTests {
-    @Test func normalTerminationReleasesMaskAndReplySuppression() async throws {
+    @Test(arguments: [false, true])
+    func normalTerminationReleasesMaskAndReplySuppression(inBackground: Bool) async throws {
         let source = FakeAudioCapture()
         let rig = TapCaptureLifecycleRig(capture: source)
         await rig.view.begin()
@@ -14,9 +15,10 @@ import Testing
         #expect(rig.playback.isCaptureSuppressed)
         #expect(rig.echoGuard.isMasking)
         let consumer = try #require(rig.view.bufferTask)
+        if inBackground { rig.view.scenePhase = .background }
         source.stop()
         await consumer.value
-        rig.expectReleased()
+        rig.expectReleased(labFinished: false)
         #expect(rig.view.sent.isEmpty)
     }
 
@@ -34,7 +36,9 @@ import Testing
                     userInfo: [AudioCaptureEndingSignal.Names.interruptionTypeKey: UInt(1)])
         await consumer.value
         #expect(!engine.running)
-        rig.expectReleased()
+        // Round-1 reproduction: the real watcher heals a system end even while the UI flag stays set.
+        try await waitUntil(timeout: .seconds(3)) { await !rig.playback.isCaptureSuppressed }
+        rig.expectReleased(labFinished: false)
         #expect(rig.view.sent.isEmpty)
     }
 
@@ -44,7 +48,7 @@ import Testing
         let consumer = try #require(rig.view.bufferTask)
         consumer.cancel()
         await consumer.value
-        rig.expectReleased()
+        rig.expectReleased(labFinished: false)
     }
 
     @Test func failedConsumerReleasesMaskAndReplySuppression() async throws {
@@ -56,28 +60,23 @@ import Testing
         let consumer = try #require(rig.view.bufferTask)
         try source.yield(sineBuffer())
         await consumer.value
-        rig.expectReleased()
+        #expect(await !transcriber.stopping)
+        rig.expectReleased(labFinished: false)
     }
 
     @Test func reconciliationUsesEndedStreamWhileRecordingFlagStillAwaitsCleanup() async throws {
         let source = FakeAudioCapture()
         let transcriber = TapLifecycleTranscriber()
-        await transcriber.configure(holdStop: true)
         let rig = TapCaptureLifecycleRig(capture: source, transcriber: transcriber)
         await rig.view.begin()
         let consumer = try #require(rig.view.bufferTask)
         source.stop()
-        try await waitUntil { await transcriber.stopping }
-        #expect(rig.view.isRecording) // Cleanup is suspended; this UI flag must not keep the stream live.
+        await consumer.value
+        #expect(rig.view.isRecording) // Cleanup is deferred to Finish; this UI flag must not keep the stream live.
+        #expect(await !transcriber.stopping)
         #expect(CapturePlaybackSuppression.liveness[rig.view.captureOwnerID]?() == false)
         #expect(CapturePlaybackSuppression.reconcile(using: rig.playback) == 1)
-        #expect(!rig.playback.isCaptureSuppressed)
-        rig.clock.advance(by: .milliseconds(400))
-        #expect(!rig.echoGuard.isMasking)
-        await transcriber.releaseStop()
-        await consumer.value
-        #expect(!rig.view.isRecording)
-        #expect(!rig.view.ownsCaptureSuppression)
+        rig.expectReleased(labFinished: false)
     }
 
     @Test func explicitFinishDoesNotWaitOnItself() async throws {
@@ -94,10 +93,11 @@ import Testing
         rig.expectReleased()
     }
 
-    @Test func lateCancelledConsumerCannotReleaseReplacementCapture() async throws {
+    @Test(arguments: [false, true])
+    func lateCancelledConsumerCannotReleaseReplacementCapture(failsAfterReplacement: Bool) async throws {
         let source = FakeAudioCapture()
         let transcriber = TapLifecycleTranscriber()
-        await transcriber.configure(holdConsume: true)
+        await transcriber.configure(failBuffers: failsAfterReplacement, holdConsume: true)
         let rig = TapCaptureLifecycleRig(capture: source, transcriber: transcriber)
         await rig.view.begin()
         let oldConsumer = try #require(rig.view.bufferTask)
@@ -109,13 +109,15 @@ import Testing
         await transcriber.releaseConsume()
         await oldConsumer.value
         #expect(rig.view.isRecording)
+        #expect(rig.view.status == "Listening")
+        #expect(CapturePlaybackSuppression.reconcile(using: rig.playback) == 0)
         #expect(rig.playback.isCaptureSuppressed)
         #expect(CapturePlaybackSuppression.liveness[rig.view.captureOwnerID]?() == true)
         rig.clock.advance(by: .seconds(1))
         #expect(rig.echoGuard.isMasking)
         replacement.cancel()
         await replacement.value
-        rig.expectReleased()
+        rig.expectReleased(labFinished: false)
     }
 
     @Test func forcedTeardownKeepsItsHoldUntilSessionCleanupCompletes() async throws {
@@ -167,10 +169,11 @@ private final class TapCaptureLifecycleRig {
         view = TranscriptionLabView(capture: capture, playback: playback, transcriber: transcriber)
     }
 
-    func expectReleased(sourceLocation: SourceLocation = #_sourceLocation) {
-        #expect(!view.isRecording, sourceLocation: sourceLocation)
-        #expect(view.bufferTask == nil, sourceLocation: sourceLocation)
-        #expect(!view.ownsCaptureSuppression, sourceLocation: sourceLocation)
+    func expectReleased(labFinished: Bool = true, sourceLocation: SourceLocation = #_sourceLocation) {
+        #expect(view.isRecording == !labFinished, sourceLocation: sourceLocation)
+        #expect((view.bufferTask == nil) == labFinished, sourceLocation: sourceLocation)
+        #expect(view.ownsCaptureSuppression == !labFinished, sourceLocation: sourceLocation)
+        CapturePlaybackSuppression.reconcile(using: playback)
         #expect(!playback.isCaptureSuppressed, sourceLocation: sourceLocation)
         #expect(!CapturePlaybackSuppression.hasLedger(for: playback), sourceLocation: sourceLocation)
         #expect(CapturePlaybackSuppression.liveness[view.captureOwnerID] == nil, sourceLocation: sourceLocation)

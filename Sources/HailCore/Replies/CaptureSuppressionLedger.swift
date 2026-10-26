@@ -103,6 +103,8 @@ public enum CapturePlaybackSuppression {
     /// Recording liveness follows the consumer, not isRecording: a system end finishes this stream normally.
     /// Startup and explicit teardown still hold replies until their existing cleanup ordering has completed.
     /// `transitioning` covers those operations; a returned or throwing consumer cannot leave recording live.
+    /// Each invocation owns its state: an old consumer ending changes only its own generation, never a
+    /// replacement's liveness registration. Register before reading, even if the stream has already ended.
     public static func consume(
         _ buffers: AsyncStream<AudioCaptureBuffer>, owner: UUID,
         transitioning: @escaping @MainActor () -> Bool,

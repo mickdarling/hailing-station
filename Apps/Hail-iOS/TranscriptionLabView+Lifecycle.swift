@@ -9,13 +9,15 @@ extension TranscriptionLabView {
         takeCaptureExclusivity()
         isStarting = true
         hasReceivedAudio = false
-        (finalText, volatileText) = ("", "")
+        finalText = ""
+        volatileText = ""
         defer {
             isStarting = false
             startTask = nil
             restorePlaybackIfRequestedAndReady()
         }
         guard await prepareCaptureAuthorization() else { return }
+
         do {
             try await quietReplyAudio()
             try Task.checkCancellation()
@@ -39,7 +41,10 @@ extension TranscriptionLabView {
     @MainActor
     private func consumeCapture(_ buffers: AsyncStream<AudioCaptureBuffer>, utteranceID: UUID) async {
         guard activeUtteranceID == utteranceID else { return }
-        var failure: String?
+        // finish/interrupt already own cleanup and can be awaiting this task. Never await ourselves or send a
+        // partial request merely because the microphone ended. Unowned normal, failed and cancelled ends only
+        // retire consumer liveness; they do not finalize the lab or discard the text that Finish will send.
+        // A late cancelled consumer must not tear down a replacement capture on this same view.
         do {
             try await CapturePlaybackSuppression.consume(buffers, owner: captureOwnerID, transitioning: { [self] in
                 isStarting || isFinalizing || isInterrupting || startTask != nil || finishTask != nil
@@ -47,19 +52,10 @@ extension TranscriptionLabView {
                 markAudioReceived()
                 try await transcriber.consume($0)
             })
-        } catch { failure = "Capture failed: \(error.localizedDescription)" }
-        // finish/interrupt already own cleanup and can be awaiting this task. Never await ourselves or send a
-        // partial request merely because the microphone ended. Unowned normal, failed and cancelled ends clean up.
-        // A late cancelled consumer must not tear down a replacement capture on this same view.
-        guard activeUtteranceID == utteranceID, bufferTask != nil,
-              !isFinalizing, !isInterrupting, !isForcedTeardown else { return }
-        capture.stop()
-        bufferTask = nil
-        _ = await transcriber.stop()
-        guard activeUtteranceID == utteranceID else { return } // Escape may replace capture while stop awaits.
-        (activeUtteranceID, isRecording) = (nil, false)
-        releaseCaptureExclusivityAfterWork()
-        status = failure ?? "Capture ended — tap to talk again"
+        } catch {
+            guard activeUtteranceID == utteranceID else { return } // Escape may replace capture while consume awaits.
+            status = "Capture failed: \(error.localizedDescription)"
+        }
     }
     @MainActor
     func finish(force: Bool = false) async {
@@ -148,7 +144,8 @@ extension TranscriptionLabView {
         isRecording = false
         activeUtteranceID = nil
         if discardedUtterance {
-            (finalText, volatileText) = ("", "")
+            finalText = ""
+            volatileText = ""
         }
         do {
             try await action()
@@ -178,9 +175,12 @@ extension TranscriptionLabView {
         let task = bufferTask
         bufferTask = nil
         await task?.value
-        defer { (activeUtteranceID, isRecording) = (nil, false) }
-        return await transcriber.stop()
+        let finalized = await transcriber.stop()
+        activeUtteranceID = nil
+        isRecording = false
+        return finalized
     }
+
     @MainActor
     func noteDestinationChange(
         previous: ConversationDestinationID?, current: ConversationDestinationID?
