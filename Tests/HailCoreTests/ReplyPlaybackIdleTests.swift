@@ -50,7 +50,7 @@ import Testing
     @Test func aLongBufferIsNotCutWhileItPlays() {
         let rig = IdleRig()
         let long = idleReply()
-        // 20 s of audio arrives at once (the pacing lead), then the frames pause for 30 s: still inside its time.
+        // 20 s of audio arrives at once (a synthetic oversized backlog), then the frames pause for 30 s: still inside its time.
         for sequence in 0..<16 { rig.controller.ingest(idleAudio(long, sequence: sequence, final: false, byte: 10)) }
         rig.advance(by: .seconds(30))
         #expect(rig.status(of: long) != ReplyPlaybackController.abandonedStatus)

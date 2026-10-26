@@ -71,6 +71,15 @@ import Testing
         #expect(try pacer.admit(audio: 0, at: later, latest: start) == later)
     }
 
+    @Test func aRequestBoundLatestAlsoCapsTheAudioLeadWait() throws {
+        var pacer = ReplyStreamPacer()
+        let start = ContinuousClock.now
+        _ = try pacer.admit(audio: 60, at: start)
+        // #467: even the audio lead rule yields to the CLI's 40 s data budget, inside the host's 60 s idle gap.
+        let latest = start.advanced(by: .seconds(40))
+        #expect(try pacer.admit(audio: Self.frame, at: start, latest: latest) == latest)
+    }
+
     @Test func unpacedFramesGoAtOnce() throws {
         var pacer = ReplyStreamPacer(paced: false)
         let now = ContinuousClock.now
@@ -80,7 +89,7 @@ import Testing
     @Test func aCancelledReplyStopsWaiting() async throws {
         let pacing = ReplyStreamPacing()
         try await pacing.admit(audio: 600) // the first frame never waits
-        let next = Task { try await pacing.admit(audio: Self.frame) } // 580 s ahead of real time: waits
+        let next = Task { try await pacing.admit(audio: Self.frame) } // Far ahead of real time: waits
         next.cancel()
         await #expect(throws: CancellationError.self) { try await next.value }
     }
