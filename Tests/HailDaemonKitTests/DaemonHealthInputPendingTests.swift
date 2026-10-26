@@ -2,9 +2,10 @@ import Foundation
 import Testing
 @testable import HailDaemonKit
 
-/// #894: `haild doctor` names an ambient request the target refused because its input already holds unsent text, and
-/// points at the flush, and at a restart for a taint. It reads only the status snapshot's last ambient event, which
-/// holds neither the target nor the adapter's reason, so the fix names neither. Synthetic snapshots only.
+/// #894: `haild doctor` names an ambient request the target refused because its input already holds unsent text, as an
+/// advisory warning that points at the flush, and at a restart for a taint; haild stays healthy and doctor exits 0. It
+/// reads only the status snapshot's last ambient event, which holds neither the target nor the adapter's reason, so the
+/// fix names neither. Synthetic snapshots only.
 @Suite struct DaemonHealthInputPendingTests {
     private let cli = HealthReport.CLI(version: "0.1.0", build: "aaaaaaaaaaaaaaaa", hostID: "themachine.local")
 
@@ -21,18 +22,39 @@ import Testing
 
     @Test func aRequestRefusedForPendingInputPointsAtTheFlushAndATaintsRestart() throws {
         let refused = report("ambient_delivery_refused", "reason=inputPending shown=sent confirm=no_clips")
-        #expect(!refused.healthy)
-        #expect(refused.checks.filter { $0.outcome == .fail }.map(\.name) == ["target_input"])
+        // A warning, never a failure: the report stays healthy, so `haild doctor` exits 0 (it exits 1 only when not).
+        #expect(refused.healthy)
+        #expect(refused.checks.filter { $0.outcome != .ok }.map(\.name) == ["target_input"])
         // The run goes on, so listening itself passes; the new check comes right after it.
         #expect(refused.checks.map(\.name) == [
             "daemon_running", "build_match", "host_id_match", "listener_ready", "ambient_listening", "target_input",
             "device_connected"
         ])
         let check = try #require(refused.checks.first { $0.name == "target_input" })
-        #expect(check.detail == "last ambient request refused: inputPending")
+        #expect(check.outcome == .warn && check.detail == "last ambient request refused: inputPending")
         let fix = try #require(check.fix)
         #expect(fix.contains("haild targets flush <target-id>"))
         #expect(fix.contains("tmux_input_pending reason=tainted, run scripts/host.sh restart"))
+        // `status --json` keeps its shape: the check's outcome is `warn` and `healthy` stays true.
+        let json = try JSONSerialization.jsonObject(with: JSONEncoder.hailStatus.encode(refused)) as? [String: Any]
+        #expect(json?["healthy"] as? Bool == true)
+        let checks = try #require(json?["checks"] as? [[String: Any]])
+        #expect(checks.first { $0["name"] as? String == "target_input" }?["outcome"] as? String == "warn")
+        #expect(try JSONDecoder.hailStatus.decode(HealthReport.self, from: JSONEncoder.hailStatus.encode(refused))
+            == refused)
+    }
+
+    @Test func aWarningAlongsideAFailureLeavesTheReportUnhealthy() {
+        var status = DaemonStatus(
+            schema: DaemonStatus.currentSchema, version: "0.1.0", build: "bbbbbbbbbbbbbbbb", pid: 4242,
+            startedAt: Date(timeIntervalSince1970: 0), updatedAt: Date(timeIntervalSince1970: 0),
+            hostID: "themachine.local", listener: .init(state: "ready"), connectedSessions: 1
+        )
+        status.ambient = .init(enabled: true, lastEvent: "ambient_delivery_refused", lastDetail: "reason=inputPending")
+        let report = HealthReport.evaluate(cli: cli, daemon: status, isRunning: { _ in true })
+        #expect(!report.healthy)
+        #expect(report.checks.filter { $0.outcome == .fail }.map(\.name) == ["build_match"])
+        #expect(report.checks.filter { $0.outcome == .warn }.map(\.name) == ["target_input"])
     }
 
     @Test func anyOtherLastAmbientEventAddsNoInputCheck() {

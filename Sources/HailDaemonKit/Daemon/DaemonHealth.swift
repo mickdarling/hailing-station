@@ -1,9 +1,9 @@
 import Darwin
 import Foundation
 
-/// One `haild doctor` check: a stable name, the outcome, what was seen, and a plain-language fix (#247).
+/// One `haild doctor` check: a stable name, the outcome (`warn` is advisory, #894), what was seen, and a fix (#247).
 public struct HealthCheck: Codable, Sendable, Equatable {
-    public enum Outcome: String, Codable, Sendable { case ok, fail }
+    public enum Outcome: String, Codable, Sendable { case ok, warn, fail }
 
     public var name: String
     public var outcome: Outcome
@@ -36,7 +36,7 @@ public struct HealthReport: Codable, Sendable, Equatable {
     /// Absent when the audit history cannot be read.
     public var refusals: RefusalSummary?
     public var checks: [HealthCheck]
-    public var healthy: Bool { checks.allSatisfy { $0.outcome == .ok } }
+    public var healthy: Bool { checks.allSatisfy { $0.outcome != .fail } }
 
     private enum CodingKeys: String, CodingKey { case cli, daemon, refusals, checks, healthy }
 
@@ -187,12 +187,12 @@ public struct HealthReport: Codable, Sendable, Equatable {
 }
 
 extension HealthReport {
-    /// `target_input` while the last ambient event is a request the stream's own target refused because its input holds
-    /// unsent text (#894); the run goes on, so `ambient_listening` passes. The snapshot names no target and no reason.
+    /// A `target_input` warning while the last ambient event is a request the target refused for unsent input (#894):
+    /// haild is healthy and only the next ambient event clears it, so it never fails. The snapshot names no target.
     private static func pendingInputCheck(_ ambient: DaemonStatus.Ambient) -> HealthCheck? {
         guard ambient.lastEvent == "ambient_delivery_refused",
               ambient.lastDetail?.split(separator: " ").first == "reason=inputPending" else { return nil }
-        return .fail("target_input", "last ambient request refused: inputPending",
+        return .init(name: "target_input", outcome: .warn, detail: "last ambient request refused: inputPending",
                      fix: "the target's prompt holds unsent text; clear it with haild targets flush <target-id>, and "
                          + "if haild.err.log shows tmux_input_pending reason=tainted, run scripts/host.sh restart (a "
                          + "flush cannot clear a taint)")

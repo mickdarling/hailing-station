@@ -25,15 +25,24 @@ func statusJSON() throws {
     FileHandle.standardOutput.write(data + Data("\n".utf8))
 }
 
-/// Exits 1 when any check fails, with a plain-language fix under each failure.
+/// Exits 1 when any check fails, with a plain-language fix under each failure or warning; warnings alone exit 0.
 func doctor() -> Never {
     let report = healthReport()
     print(DaemonInfo.banner)
-    let width = report.checks.map(\.name.count).max() ?? 0
-    for check in report.checks {
-        let mark = check.outcome == .ok ? "ok  " : "FAIL"
-        print("\(mark)  \(check.name.padding(toLength: width, withPad: " ", startingAt: 0))  \(check.detail)")
-        if let fix = check.fix { print("      fix: \(fix)") }
-    }
+    doctorLines(report).forEach { print($0) }
     exit(report.healthy ? 0 : 1)
+}
+
+/// One line per check, marked `ok`, `WARN` (advisory, #894) or `FAIL`, with its fix, if any, indented below it.
+func doctorLines(_ report: HealthReport) -> [String] {
+    let width = report.checks.map(\.name.count).max() ?? 0
+    return report.checks.flatMap { check in
+        let mark = switch check.outcome {
+        case .ok: "ok  "
+        case .warn: "WARN"
+        case .fail: "FAIL"
+        }
+        let line = "\(mark)  \(check.name.padding(toLength: width, withPad: " ", startingAt: 0))  \(check.detail)"
+        return [line] + (check.fix.map { ["      fix: \($0)"] } ?? [])
+    }
 }
