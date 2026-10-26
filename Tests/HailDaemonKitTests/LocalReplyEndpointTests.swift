@@ -9,7 +9,7 @@ import Testing
 
 // The serialized suite owns one endpoint at a time and deliberately shares its socket test harness.
 // swiftlint:disable:next type_body_length
-@Suite(.serialized) struct LocalReplyEndpointTests {
+@Suite(.serialized, .frozenGuardBudget) struct LocalReplyEndpointTests {
     @Test func refusesSocketBelowOtherWritableAncestor() async throws {
         let scratch = FileManager.default.temporaryDirectory.appendingPathComponent(
             "hs-unsafe-\(UUID().uuidString.prefix(8))", isDirectory: true

@@ -2,7 +2,7 @@ import Foundation
 import Testing
 @testable import HailDaemonKit
 
-@Suite struct ProviderObservedAuthorityTests {
+@Suite(.frozenGuardBudget) struct ProviderObservedAuthorityTests {
     @Test(arguments: [false, true]) func terminalLossWaitsForAuthorizedInFlightRecord(failed: Bool) async throws {
         let rig = try await ObservedRig.make()
         await rig.adapter.configure(holdDispatch: true)

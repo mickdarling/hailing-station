@@ -1,7 +1,7 @@
 import Testing
 @testable import HailDaemonKit
 
-@Suite struct HostExpectedBindingTests {
+@Suite(.frozenGuardBudget) struct HostExpectedBindingTests {
     @Test func exactExpectedBindingPreservesAuthorizedDelivery() async throws {
         let adapter = FakeAdapter(kind: "tmux", targets: [AdapterTarget(name: "a", binding: "b1")])
         let host = try await HostSendTests().host(adapter)

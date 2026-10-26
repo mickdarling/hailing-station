@@ -2,7 +2,7 @@ import Testing
 @testable import HailDaemonKit
 
 /// The host adopts exactly what a policy transaction says readers now see (#87 items 3 and 4).
-@Suite struct PolicyCommitTests {
+@Suite(.frozenGuardBudget) struct PolicyCommitTests {
     let id = "tmux:a"
     let binding = "$1@1/%1:9"
 

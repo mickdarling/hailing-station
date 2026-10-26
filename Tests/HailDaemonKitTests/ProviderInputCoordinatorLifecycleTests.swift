@@ -2,7 +2,7 @@ import Foundation
 import Testing
 @testable import HailDaemonKit
 
-@Suite struct ProviderInputCoordinatorLifecycleTests {
+@Suite(.frozenGuardBudget) struct ProviderInputCoordinatorLifecycleTests {
     @Test func deadlineStartsAfterDispatchAndExpiresAtExactMonotonicBoundary() async throws {
         let adapter = ProviderCoordinatorGatedAdapter()
         let rig = try await ProviderCoordinatorRig.make(adapter: adapter, configuration: .init(timeout: .seconds(5)))

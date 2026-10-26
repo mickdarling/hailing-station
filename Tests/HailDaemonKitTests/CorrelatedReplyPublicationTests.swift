@@ -6,7 +6,7 @@ import Testing
 @testable import HailDaemonKit
 
 /// Synthetic adapters and never-started transport only; no live target, renderer, microphone or device.
-@Suite struct CorrelatedReplyPublicationTests {
+@Suite(.frozenGuardBudget) struct CorrelatedReplyPublicationTests {
     @Test(arguments: [false, true])
     func retiredTransportCannotAdvertisePendingOrReadyRecipient(committed: Bool) async throws {
         let rig = try await RecipientTestRig.make()

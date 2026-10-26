@@ -8,7 +8,7 @@ import Testing
 /// and the phone's text path, while policy, lockdown, rebind and every other refusal of the target keep the generic
 /// `deliveryRefused`. Only the name changes: what is refused, and when, is as before. Scripted tmux runners and fake
 /// adapters only; no tmux process is spawned.
-@Suite struct LocalDispatchInputPendingTests {
+@Suite(.frozenGuardBudget) struct LocalDispatchInputPendingTests {
     private static let target = "tmux:codex"
     private static let binding = "$2@1758230001/%2:502"
     private static let listed = AdapterTarget(name: "codex", binding: binding)
