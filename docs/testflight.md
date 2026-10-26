@@ -10,7 +10,7 @@ The initial path is deliberately **Internal Only**. An uploaded build cannot lat
 2. Create the matching app record in App Store Connect if it does not already exist.
 3. Accept any pending developer or App Store Connect agreements.
 4. Add the intended Apple account as an internal tester and install Apple's TestFlight app on each test device.
-5. In Xcode, sign in to an Apple account with permission to upload builds.
+5. Configure a local App Store Connect API key as described below, or sign in to an Apple account in Xcode for the account-based fallback.
 
 Do not add account names, team identifiers, API-key identifiers, issuer identifiers, private keys, provisioning profiles, or device identifiers to the repository or public issue comments.
 
@@ -38,6 +38,8 @@ HAIL_DEVELOPMENT_TEAM=<local-team-id> scripts/testflight.sh archive
 
 Use `--build` or `--archive-path` only when a release needs an explicit value. `--version` is accepted only when it matches `project.yml`; change and review the tracked version instead of overriding it at release time. Build numbers must increase for each upload of the same marketing version.
 
+The script preserves an explicitly set `DEVELOPER_DIR`. Otherwise it uses the active Xcode developer directory; when the active directory is CommandLineTools or unavailable, it selects `/Applications/Xcode.app/Contents/Developer` if installed. If neither is available, it fails before verification or archiving with an instruction to install Xcode or set `DEVELOPER_DIR`. This selection applies only to the script process and does not change the system selection.
+
 To check the release commit without archiving:
 
 ```sh
@@ -60,7 +62,25 @@ Or archive and upload in one guarded operation:
 scripts/testflight.sh release --confirm-upload
 ```
 
-Xcode uses the Apple account configured on this Mac. A later CI slice can use an App Store Connect API key once the repository secret store and release approval policy are configured. The private key and all associated identifiers are deployment credentials; they must never be committed, printed in logs, or included in diagnostics.
+For API-key upload, set `HAIL_ASC_KEY_DIR` privately in the local shell or pass `--api-key-dir "$HAIL_ASC_KEY_DIR"`. The option takes precedence over the environment variable. The directory must live outside the repository, be owned by the current user, and have owner-only permissions (for example, mode `700`). It must contain exactly one `AuthKey_*.p8`, plus non-empty single-line `key_id` and `issuer_id` files. All three files must be readable, non-empty regular files owned by the current user with owner-only permissions (for example, mode `600`); symlinked directories and credential files are rejected. Provision credentials locally; never copy their values or paths into repository files, logs, diagnostics, or public comments.
+
+```sh
+scripts/testflight.sh release --confirm-upload --api-key-dir "$HAIL_ASC_KEY_DIR"
+```
+
+With an API key, the script first exports a local IPA using `xcodebuild -exportArchive` with API authentication and provisioning updates allowed. Export options use `app-store-connect`, destination `export`, automatic signing, version/build management disabled, Internal Only enabled, and symbol upload enabled. It then invokes `xcrun altool --upload-app` with API authentication and `API_PRIVATE_KEYS_DIR` pointing at the private directory. The existing exit trap removes the temporary export directory on success or failure.
+
+Upload succeeds only when altool exits successfully **and** reports `UPLOAD SUCCEEDED`. A `CREATE BUILD` request that times out is a failure even with exit status zero or a success marker elsewhere in the output. There is no automatic retry: check the delivery state before deliberately retrying. Shell tracing is disabled before reading credentials. Export diagnostics are suppressed, and altool output is filtered to fixed status messages; identifiers and raw diagnostics are never printed.
+
+Without a key directory, Xcode uses its configured Apple account with destination `upload`, preserving the existing fallback. The private key and all associated identifiers are deployment credentials; they must never be committed, printed in logs, or included in diagnostics.
+
+Use `--dry-run` to validate arguments, select the toolchain, validate any key directory, and print a redacted plan without running verification, signing, archiving, exporting, or uploading:
+
+```sh
+scripts/testflight.sh release --confirm-upload --dry-run --api-key-dir "$HAIL_ASC_KEY_DIR"
+```
+
+Dry-run upload/release still requires `--confirm-upload`; it does not require an existing archive or a clean version-advancing release commit. Those guards apply when executing the plan. Paths and authentication values in the plan are placeholders. Offline coverage lives in `scripts/tests/test_testflight_api_key.py`, also run by `scripts/tests/test-testflight.sh`. These shim tests validate script behavior; they are not a physical-device, signed archive, or live App Store Connect delivery proof.
 
 ## Install and validate remotely
 

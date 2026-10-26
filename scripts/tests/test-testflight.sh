@@ -50,3 +50,6 @@ fi
 
 scripts/testflight.sh check-version >/dev/null
 echo "test-testflight: OK"
+
+# Offline upload/toolchain coverage runs in the existing scripts verification lane.
+python3 "$repo_root/scripts/tests/test_testflight_api_key.py"
