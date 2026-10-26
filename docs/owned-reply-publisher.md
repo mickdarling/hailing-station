@@ -16,8 +16,9 @@ are the owned Codex adapter (#153) and a Slack dot bridge (#403).
   child exists. The argv names the reply's own target, still with no shell.
 - Text must contain something other than whitespace and is limited to `OwnedReply.maxSpokenBytes` (1,200
   bytes). `haild reply` streams its speech paced by `ReplyStreamPacer` (#430, #467): at
-  most 100 frames a minute (under the endpoint's shared 120), at most 20 s ahead of playback, and up to 30 minutes
-  of audio per job, so a long answer plays in full instead of stopping at the old one-minute budget (about 146 s).
+  most 100 frames a minute (under the endpoint's shared 120), a 3 s lead before each whole audio frame (#904),
+  temporarily 20 s while another reply waits for the socket's audio turn,
+  and up to 30 minutes of audio per job, so a long answer plays in full instead of stopping at the old one-minute budget (about 146 s).
   The command returns once the text and first audio are accepted; the rest streams from a detached `haild` that
   owns the renderer and stops at the host's first refusal. Detached replies send their audio one at a time per
   reply socket, as the phone plays them, and resend a frame the endpoint refused for its shared per-minute limit

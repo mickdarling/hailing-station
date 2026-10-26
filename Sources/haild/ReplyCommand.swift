@@ -457,7 +457,7 @@ private func admit(audioBytes: Int, sampleRate: Int, pacing: ReplyStreamPacing) 
     guard !ReplyBackground.isSuperseded else { throw supersededRefusal }
     do {
         try await pacing.admit(audio: ReplyStreamPacer.seconds(pcm16Bytes: audioBytes, sampleRate: sampleRate),
-                               latest: RequestKeepAlive.latest(final: false))
+                               latest: RequestKeepAlive.latest(final: false), lead: try ReplyBackground.audioLead())
     } catch ReplyStreamPacerError.audioBoundExceeded {
         throw audioBoundRefusal
     }
@@ -845,10 +845,16 @@ private final class ReplyTransaction: Sendable {
     }
 }
 
+private struct ReplyAudioTurn {
+    let id: UUID
+    let stop: URL
+    let waiters: Int32
+}
+
 // Sharing the phone and the endpoint with other detached replies.
 extension ReplyBackground {
     /// This job's audio-turn lock and the stop file that supersedes it (#467), once it holds the turn.
-    private static let turn = Mutex<(id: UUID, stop: URL)?>(nil)
+    private static let turn = Mutex<ReplyAudioTurn?>(nil)
 
     /// One detached reply's audio at a time per reply socket (#430). The phone plays replies one after another, so a
     /// second reply sent alongside the first would sit almost whole in the phone's queue, and two paced jobs would
@@ -861,42 +867,77 @@ extension ReplyBackground {
     static func awaitAudioTurn(socket: URL, target: String) async throws {
         guard isDetachedJob else { return }
         let directory = socket.deletingLastPathComponent()
-        let lock = open(directory.appendingPathComponent("reply-audio.lock").path,
-                        O_RDWR | O_CREAT | O_CLOEXEC | O_NOFOLLOW, 0o600)
-        guard lock >= 0 else { throw ReplyCommandError.invalid("cannot open the reply audio lock") }
-        var queued = false, superseding: URL?
+        let lock = try openAudioLock("reply-audio.lock", directory: directory)
+        let waiters: Int32
+        do { waiters = try openAudioLock("reply-audio.waiters", directory: directory) } catch {
+            close(lock)
+            throw error
+        }
+        var queued = false, ownsTurn = false, superseding: URL?
+        defer { if !ownsTurn { close(lock); close(waiters) } }
+        defer { _ = flock(waiters, LOCK_UN) } // queued signal ends on acquisition, failure or cancellation
         defer { restartBound() } // a queued job gets the whole bound for its own stream (Codex P1)
         defer { if let superseding { try? FileManager.default.removeItem(at: superseding) } } // on every exit
         while flock(lock, LOCK_EX | LOCK_NB) != 0 {
             guard errno == EWOULDBLOCK || errno == EINTR else {
-                close(lock)
                 throw ReplyCommandError.invalid("cannot take the reply audio lock")
             }
-            if RequestKeepAlive.isRequestBound, superseding == nil,
-               let holder = turnHolder(lock), holder.target == target {
-                let stop = directory.appendingPathComponent("reply-audio.stop-\(holder.id.uuidString)")
-                let owned: [FileAttributeKey: Any] = [.posixPermissions: 0o600]
-                if FileManager.default.createFile(atPath: stop.path, contents: nil, attributes: owned) {
-                    superseding = stop
-                }
-            }
+            if superseding == nil { superseding = requestSupersession(lock, target: target, directory: directory) }
             if !queued {
+                try signalAudioWaiter(waiters)
                 queued = true
                 suspendBound()
                 note("reply audio queued behind another reply")
                 ready()
             }
             if let latest = RequestKeepAlive.latest(final: false), ContinuousClock.now >= latest {
-                close(lock)
                 throw ReplyCommandError.invalid("another reply is still playing; this reply's audio was skipped")
             }
             try await Task.sleep(for: .milliseconds(250))
         }
+        ownsTurn = true
         let id = UUID()
         let record = Data("\(id.uuidString) \(target)\n".utf8)
         _ = ftruncate(lock, 0)
         _ = record.withUnsafeBytes { pwrite(lock, $0.baseAddress, $0.count, 0) }
-        turn.withLock { $0 = (id, directory.appendingPathComponent("reply-audio.stop-\(id.uuidString)")) }
+        let stop = directory.appendingPathComponent("reply-audio.stop-\(id.uuidString)")
+        turn.withLock { $0 = ReplyAudioTurn(id: id, stop: stop, waiters: waiters) }
+    }
+
+    private static func openAudioLock(_ name: String, directory: URL) throws -> Int32 {
+        let descriptor = open(directory.appendingPathComponent(name).path,
+                              O_RDWR | O_CREAT | O_CLOEXEC | O_NOFOLLOW, 0o600)
+        guard descriptor >= 0 else { throw ReplyCommandError.invalid("cannot open the reply audio lock") }
+        return descriptor
+    }
+
+    private static func signalAudioWaiter(_ waiters: Int32) throws {
+        guard flock(waiters, LOCK_SH) == 0 else {
+            throw ReplyCommandError.invalid("cannot signal the reply audio waiter")
+        }
+    }
+
+    private static func requestSupersession(_ lock: Int32, target: String, directory: URL) -> URL? {
+        guard RequestKeepAlive.isRequestBound, let holder = turnHolder(lock), holder.target == target else {
+            return nil
+        }
+        let stop = directory.appendingPathComponent("reply-audio.stop-\(holder.id.uuidString)")
+        let owned: [FileAttributeKey: Any] = [.posixPermissions: 0o600]
+        return FileManager.default.createFile(atPath: stop.path, contents: nil, attributes: owned) ? stop : nil
+    }
+
+    /// Probe before each frame: shared waiter locks are released by the kernel even after SIGKILL.
+    /// The holder keeps this separate descriptor open, without a shared lock, for its entire turn.
+    static func audioLead() throws -> Double {
+        guard let waiters = turn.withLock({ $0?.waiters }) else { return ReplyStreamPacer.leadSeconds }
+        if flock(waiters, LOCK_EX | LOCK_NB) == 0 {
+            _ = flock(waiters, LOCK_UN)
+            return ReplyStreamPacer.leadSeconds
+        }
+        guard errno == EWOULDBLOCK else {
+            throw ReplyCommandError.invalid("cannot inspect the reply audio waiters")
+        }
+        return ReplyStreamPacer.queuedLeadSeconds
     }
 
     /// Whether a newer request-bound reply to the same target has asked this job to end (#467).

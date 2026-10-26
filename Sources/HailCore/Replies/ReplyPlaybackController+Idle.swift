@@ -6,7 +6,7 @@ extension ReplyPlaybackController {
     }
     /// A stream whose terminal marker never comes (haild crashed, the Mac slept, its request expired mid-reply) would
     /// hold the head of the queue until Stop (#469). Once its scheduled audio has played out and this long passes
-    /// with no new frame of its own, it is ended and the queue moves on. A live paced reply stays up to 20 s ahead of
+    /// with no new frame of its own, it is ended and the queue moves on. A live paced reply stays a few seconds ahead of
     /// playback and sends a frame every second; every frame keeps a slower stream alive.
     public static let streamIdleTimeout: Duration = .seconds(20)
     // longer than any realistic queue; a reply queued behind more than 10 min of other audio is claimed lost (#825)

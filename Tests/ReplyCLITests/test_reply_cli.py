@@ -147,7 +147,7 @@ class ReplyCLITests(unittest.TestCase):
             self.assertTrue(audio[-1]["payload"]["final"])
 
     def test_paced_reply_returns_at_once_and_streams_the_rest_in_the_background(self):
-        # 30 s of speech, paced: the first 20 s go at once, the rest at playback speed (#430).
+        # 30 s of speech, paced: a 3 s lead plus a whole frame, then playback speed (#430, #904).
         environment = self.speech_environment(30)
         with self.reply_server(lambda index: {"delivered": 1}) as (path, frames):
             started = time.monotonic()
@@ -158,7 +158,7 @@ class ReplyCLITests(unittest.TestCase):
             self.wait_for(lambda: len(frames) == 27, SLOW)
         # Detached and paced: the command returned well before the stream's last frame.
         self.assertLess(returned, frames[-1][0] - 3)
-        self.assertGreater(frames[-1][0] - started, 5)
+        self.assertGreater(frames[-1][0] - started, 25)
         audio = [frame for _, frame in frames[1:]]
         self.assertEqual([frame["payload"]["sequence"] for frame in audio], list(range(26)))
         self.assertTrue(audio[-1]["payload"]["final"])
@@ -176,7 +176,7 @@ class ReplyCLITests(unittest.TestCase):
             self.assertIn("streams in the background", result.stdout)
             self.wait_for(lambda: len(frames) == 27, SLOW)
             self.assertLess(returned, frames[-1][0] - 3)
-            self.assertGreater(frames[-1][0] - started, 5)
+            self.assertGreater(frames[-1][0] - started, 25)
         self.assertTrue(frames[-1][1]["payload"]["final"])
 
     def test_stop_mid_stream_ends_the_background_job_and_its_renderer(self):

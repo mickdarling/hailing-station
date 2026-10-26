@@ -35,7 +35,7 @@ actor FakeAudioSessionBackend: AudioSessionBackend {
     }
 
     func configure(allowsBluetoothHFP: Bool) async throws {
-        await lifecycleSuspension.suspendConfigurationIfNeeded()
+        try await lifecycleSuspension.configure(allowsBluetoothHFP: allowsBluetoothHFP)
     }
 
     func setActive(_ active: Bool) async throws {
