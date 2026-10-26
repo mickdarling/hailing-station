@@ -12,6 +12,7 @@ import unittest
 ROOT = Path(__file__).resolve().parents[2]
 FAKE_KEY_ID = "FAKE_KEY_ID_902"
 FAKE_ISSUER = "FAKE_ISSUER_ID_902"
+FAKE_KEY_NAME = f"AuthKey_{FAKE_KEY_ID}.p8"
 
 # All commands are shims, including plist tools, so this suite needs no Xcode.
 SHIM = r'''
@@ -108,7 +109,7 @@ class TestFlightAPIKeyTests(unittest.TestCase):
         self.script.chmod(0o700)
         self.keys = self.root / ("private " + FAKE_KEY_ID)
         self.keys.mkdir(mode=0o700)
-        for name, content in [("AuthKey_FAKE.p8", "FAKE PRIVATE KEY - NOT SIGNING MATERIAL"),
+        for name, content in [(FAKE_KEY_NAME, "FAKE PRIVATE KEY - NOT SIGNING MATERIAL"),
                               ("key_id", FAKE_KEY_ID), ("issuer_id", FAKE_ISSUER)]:
             path = self.keys / name
             path.write_text(content + "\n")
@@ -123,10 +124,10 @@ class TestFlightAPIKeyTests(unittest.TestCase):
         self.env.update(PATH=str(self.bin) + os.pathsep + os.environ["PATH"],
                         FAKE_ROOT=str(self.root), TMPDIR=str(self.temp))
 
-    def run_script(self, *args, ok=True, trace=False, env=None):
+    def run_script(self, *args, ok=True, trace=False, env=None, cwd=None):
         command = ["bash"] + (["-x"] if trace else []) + [str(self.script), *map(str, args)]
-        result = subprocess.run(command, env=dict(self.env, **(env or {})), cwd=self.repo,
-                                capture_output=True, text=True, timeout=15)
+        result = subprocess.run(command, env=dict(self.env, **(env or {})), cwd=cwd or self.repo,
+                                capture_output=True, text=True, timeout=120)
         output = result.stdout + result.stderr
         # Assert redaction before reporting any diagnostic on failure.
         for secret in [FAKE_KEY_ID, FAKE_ISSUER, str(self.keys), "FAKE PRIVATE KEY"]:
@@ -214,6 +215,16 @@ class TestFlightAPIKeyTests(unittest.TestCase):
         self.run_script("upload", "--archive-path", self.archive, "--confirm-upload",
                         "--api-key-dir", "../" + self.keys.name)
 
+    def test_relative_option_key_directory_uses_caller_directory(self):
+        self.run_script("upload", "--archive-path", self.archive, "--confirm-upload",
+                        "--api-key-dir", self.keys.name, cwd=self.root)
+        self.assertEqual(len(self.calls("xcrun")), 1)
+
+    def test_relative_environment_key_directory_uses_caller_directory(self):
+        self.run_script("upload", "--archive-path", self.archive, "--confirm-upload",
+                        env={"HAIL_ASC_KEY_DIR": self.keys.name}, cwd=self.root)
+        self.assertEqual(len(self.calls("xcrun")), 1)
+
     def test_missing_directory(self):
         shutil.rmtree(self.keys)
         self.assertIn("missing or unreadable", self.upload(ok=False))
@@ -223,7 +234,7 @@ class TestFlightAPIKeyTests(unittest.TestCase):
         self.assertIn("owner-only", self.upload(ok=False))
 
     def test_key_count(self):
-        key = self.keys / "AuthKey_FAKE.p8"
+        key = self.keys / FAKE_KEY_NAME
         key.unlink()
         self.assertIn("exactly one", self.upload(ok=False))
         key.write_text("FAKE")
@@ -231,7 +242,7 @@ class TestFlightAPIKeyTests(unittest.TestCase):
         self.assertIn("exactly one", self.upload(ok=False))
 
     def test_required_files_missing_empty_or_shared(self):
-        for name in ["key_id", "issuer_id", "AuthKey_FAKE.p8"]:
+        for name in ["key_id", "issuer_id", FAKE_KEY_NAME]:
             path = self.keys / name
             content = path.read_text()
             for state in ["missing", "empty", "shared"]:
@@ -257,7 +268,7 @@ class TestFlightAPIKeyTests(unittest.TestCase):
             path.write_text(content)
 
     def test_symlinks_are_rejected(self):
-        for name in ["key_id", "issuer_id", "AuthKey_FAKE.p8"]:
+        for name in ["key_id", "issuer_id", FAKE_KEY_NAME]:
             path = self.keys / name
             moved = self.keys / "original"
             path.rename(moved)
@@ -268,6 +279,27 @@ class TestFlightAPIKeyTests(unittest.TestCase):
         link = self.root / "symlink"
         link.symlink_to(self.keys, target_is_directory=True)
         self.run_script("upload", "--confirm-upload", "--api-key-dir", link, ok=False)
+
+    def test_hard_links_are_rejected(self):
+        for name in ["key_id", "issuer_id", FAKE_KEY_NAME]:
+            with self.subTest(name=name):
+                link = self.repo / "linked-credential"
+                os.link(self.keys / name, link)
+                self.assertIn("singly linked", self.upload(ok=False, trace=True))
+                link.unlink()
+        self.assertEqual(self.calls("xcodebuild"), [])
+        self.assertEqual(self.calls("xcrun"), [])
+
+    def test_mismatched_key_filename_is_rejected_without_identifiers(self):
+        other_id = "FAKE_OTHER_KEY_ID_902"
+        (self.keys / FAKE_KEY_NAME).rename(self.keys / f"AuthKey_{other_id}.p8")
+        output = self.upload(ok=False, trace=True)
+        self.assertEqual(output, "+ set +x\n"
+                         "error: API private key filename must match the key identifier\n")
+        self.assertNotIn(FAKE_KEY_ID, output)
+        self.assertNotIn(other_id, output)
+        self.assertEqual(self.calls("xcodebuild"), [])
+        self.assertEqual(self.calls("xcrun"), [])
 
     def test_repository_key_directory_rejected(self):
         self.assertIn("outside the repository", self.run_script(

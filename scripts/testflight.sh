@@ -4,6 +4,7 @@
 set +x
 set -euo pipefail
 
+caller_working_dir="$PWD"
 cd "$(dirname "$0")/.."
 
 private_temp_dir=""
@@ -105,8 +106,9 @@ try:
     for path in [keys[0], directory / "key_id", directory / "issuer_id"]:
         info = path.lstat()
         if (not stat.S_ISREG(info.st_mode) or info.st_uid != os.getuid()
-                or info.st_mode & 0o077 or not info.st_size or not os.access(path, os.R_OK)):
-            reject("API key files must be non-empty, readable, owner-only regular files owned by the current user")
+                or info.st_nlink != 1 or info.st_mode & 0o077
+                or not info.st_size or not os.access(path, os.R_OK)):
+            reject("API key files must be non-empty, readable, singly linked, owner-only regular files owned by the current user")
 except (OSError, RuntimeError):
     reject("API key directory or required files are missing or unreadable")
 PY
@@ -117,6 +119,8 @@ PY
   [[ -n "${api_key_id//[[:space:]]/}" && -n "${api_issuer_id//[[:space:]]/}" &&
      "$api_key_id" != *$'\n'* && "$api_issuer_id" != *$'\n'* ]] || \
     fail "API key identifiers must be non-empty single lines"
+  [[ "${api_key_path##*/}" == "AuthKey_${api_key_id}.p8" ]] || \
+    fail "API private key filename must match the key identifier"
 }
 
 dry_run_plan() {
@@ -397,8 +401,8 @@ if [[ "$command_name" != check-version ]]; then
   fi
   select_xcode
   if [[ -n "$api_key_dir" ]]; then
-    # Resolve relative directories before tools use them from a different directory.
-    [[ "$api_key_dir" == /* ]] || api_key_dir="$PWD/$api_key_dir"
+    # Use the caller's working directory captured before our cd to the repo.
+    [[ "$api_key_dir" == /* ]] || api_key_dir="$caller_working_dir/$api_key_dir"
     validate_api_key_dir
   fi
   if [[ "$dry_run" == true ]]; then
