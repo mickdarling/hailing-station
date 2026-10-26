@@ -2,25 +2,23 @@ import Testing
 @testable import HailDaemonKit
 
 /// #894: every submit outcome reaches the error log as a token, with the pane named by an opaque ordinal.
-@Suite struct TmuxSubmitEvidenceTests {
+@Suite(.timeLimit(.minutes(1))) struct TmuxSubmitEvidenceTests {
     private static let synthetic = "synthetic input"
     private static func timing(settleLimit: Duration = .seconds(5)) -> TmuxSubmitTiming {
         EvidenceHarness.timing(settleLimit: settleLimit)
     }
 
-    /// The scripts of `TmuxSubmitConfirmationTests` that end in each outcome, and their timing: the two that reach
-    /// the retry get `ScriptedPane.retryConfirmLimit` (#910).
+    /// The confirmation scripts, with virtual deadlines including both retry paths (#910, #917).
     private static func script(for outcome: TmuxSubmitOutcome) -> (ScriptedPane, TmuxSubmitTiming) {
         let (absorbed, typed) = (ScriptedPane.absorbedScreen, ScriptedPane.typedScreen)
-        let retrying = EvidenceHarness.timing(confirmLimit: ScriptedPane.retryConfirmLimit)
         switch outcome {
         case .confirmed: return (ScriptedPane(), timing())
-        case .retried: return (ScriptedPane(afterEnter: [absorbed, ScriptedPane.submittedScreen]), retrying)
+        case .retried: return (ScriptedPane(afterEnter: [absorbed, ScriptedPane.submittedScreen]), timing())
         case .unverifiable: return (ScriptedPane(afterEnter: [typed]), timing())
         case .unsettled:
             let pane = ScriptedPane(baseline: ScriptedPane.submittedScreen, stale: .max)
             return (pane, timing(settleLimit: .milliseconds(40)))
-        case .failed: return (ScriptedPane(afterEnter: [absorbed, ScriptedPane.absorbedTwiceScreen]), retrying)
+        case .failed: return (ScriptedPane(afterEnter: [absorbed, ScriptedPane.absorbedTwiceScreen]), timing())
         }
     }
 

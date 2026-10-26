@@ -168,8 +168,8 @@ import Testing
             }
             return CommandResult(exitCode: 0, stdout: "")
         }
-        // The settle limit is never reached: the text is drawn right after the cancel.
-        let harness = EvidenceHarness(runner, timing: Self.timing(settleLimit: .seconds(60)))
+        // This externally cancelled wait uses real time; advancing virtual polls would outrun `eventually`.
+        let harness = EvidenceHarness(runner, timing: Self.timing(settleLimit: .seconds(60)), realTime: true)
         let delivery = Task { try await harness.adapter.deliver(Self.synthetic, to: "codex", binding: nil) }
         // The repo's bounded wait (15 s), not a tight deadline: a loaded runner may take seconds to reach the paste.
         try #require(await eventually { await !runner.delivered.isEmpty })
