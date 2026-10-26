@@ -28,13 +28,32 @@ extension WebSocketListener {
     /// permit all apply, and nothing goes to any other connection. It is host-originated to one named connection,
     /// so it does not need the single-terminal fallback flag. Returns a fixed outcome token: `sent`,
     /// `no_connection`, `not_ready` (no negotiated session, or the phone no longer selects `target`) or `refused`.
-    func acknowledgeAmbient(connection: UUID, target: String, clip: AmbientAckClip) async -> String {
+    /// With `heldWhilePrivate` (#913) the clip also respects the connection's privacy reply hold: its words and audio
+    /// are decided together, under one check of the hold made atomically with their enqueue, so either all of it is
+    /// sent or none is, and then the token is `suppressed_privacy`.
+    func acknowledgeAmbient(connection: UUID, target: String, clip: AmbientAckClip,
+                            heldWhilePrivate: Bool = false) async -> String {
         guard !stopped, let peer = peers.values.first(where: { $0.session.connectionID == connection }) else {
             return "no_connection"
         }
         guard let frames = await peer.session.acknowledgementFrames(clip, target: target) else { return "not_ready" }
+        if heldWhilePrivate {
+            return clipOutcome(await peer.deliverRequestlessClip(frames, hold: replyHold,
+                                                                 onLateSuccess: frames.map(lateEchoObservation)),
+                               frames: frames)
+        }
         for frame in frames {
             let delivery = await peer.deliverRequestlessReply(frame, onLateSuccess: lateEchoObservation(frame))
+            guard case .delivered = delivery else { return "refused" }
+            ambient?.observeReply(frame)
+        }
+        return "sent"
+    }
+
+    /// A held clip's outcome token, observing each frame delivered, in order, up to the first that was not.
+    private func clipOutcome(_ deliveries: [ReplyFrameDelivery<Void>], frames: [Frame]) -> String {
+        for (delivery, frame) in zip(deliveries, frames) {
+            if case .held = delivery { return "suppressed_privacy" }
             guard case .delivered = delivery else { return "refused" }
             ambient?.observeReply(frame)
         }
