@@ -28,7 +28,7 @@ import Testing
         #expect(await eventually { !run.log.details("ambient_delivery_refused").isEmpty })
         #expect(run.log.details("ambient_delivery_refused") == [Self.logged])
         #expect(await run.env.gate.activeStream != nil, "the stream goes on")
-        #expect(run.lastInput == nil, "a refused request records no last-input device")
+        #expect(await run.lastInput == nil, "a refused request records no last-input device")
         // The input was cleared meanwhile: the same child's next request is typed, and acknowledged.
         await run.adapter.passHandoff()
         try run.release("go2")
@@ -38,7 +38,7 @@ import Testing
         let contexts = await run.adapter.contexts
         #expect(await eventually { await run.armed(contexts[1].id) })
         #expect(await !run.armed(contexts[0].id))
-        #expect(await eventually { run.lastInput != nil })
+        #expect(await eventually { await run.lastInput != nil })
         #expect(await run.lastInput?.connection == run.connection)
         // Nothing more reached the device: no `ambient stopped` error, no second line or clip.
         try await barrier(on: run.socket, step: "no ambient error after the refusal")

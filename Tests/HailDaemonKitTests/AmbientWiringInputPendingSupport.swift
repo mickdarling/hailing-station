@@ -42,7 +42,9 @@ struct PendingInputRun {
         }
     }
     /// The stream target's last input device (#370), if any was recorded.
-    var lastInput: LastInputLedger.Entry? { env.listener.lastInput.latest(for: RecipientTestRig.target) }
+    var lastInput: LastInputLedger.Entry? {
+        get async { await env.listener.lastInput.latest(for: RecipientTestRig.target) }
+    }
 
     /// `holdFirst` keeps the first request back until the test releases `go1`.
     static func make(holdFirst: Bool = false) async throws -> Self {
