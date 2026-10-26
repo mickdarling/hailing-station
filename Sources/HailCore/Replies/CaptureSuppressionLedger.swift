@@ -87,6 +87,9 @@ public final class CaptureSuppressionLedger {
 /// audio are never kept alive by this table (#763 review).
 @MainActor
 public enum CapturePlaybackSuppression {
+    @MainActor
+    private final class ConsumerState { var active = true }
+
     /// Each owner's check that its capture is still starting, recording, finalizing or interrupting.
     public static var liveness: [UUID: @MainActor () -> Bool] = [:]
     private static var ledgers: [ObjectIdentifier: CaptureSuppressionLedger] = [:]
@@ -96,6 +99,20 @@ public enum CapturePlaybackSuppression {
     static func hasLedger(for playback: ReplyPlaybackController) -> Bool { existing(playback) != nil }
 
     public static func begin(_ owner: UUID, using playback: ReplyPlaybackController) { ledger(playback).begin(owner) }
+
+    /// Recording liveness follows the consumer, not isRecording: a system end finishes this stream normally.
+    /// Startup and explicit teardown still hold replies until their existing cleanup ordering has completed.
+    /// `transitioning` covers those operations; a returned or throwing consumer cannot leave recording live.
+    public static func consume(
+        _ buffers: AsyncStream<AudioCaptureBuffer>, owner: UUID,
+        transitioning: @escaping @MainActor () -> Bool,
+        receive: @MainActor (AudioCaptureBuffer) async throws -> Void
+    ) async rethrows {
+        let state = ConsumerState()
+        liveness[owner] = { state.active || transitioning() }
+        defer { state.active = false }
+        for await buffer in buffers { try await receive(buffer) }
+    }
 
     /// Each call that can heal returns how many holds the heal dropped (#760), and tells that player's own reporter.
     @discardableResult

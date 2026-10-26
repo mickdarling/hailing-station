@@ -1,4 +1,5 @@
 import AVFAudio
+import HailCore
 import Speech
 extension TranscriptionLabView {
     @MainActor
@@ -8,35 +9,25 @@ extension TranscriptionLabView {
         takeCaptureExclusivity()
         isStarting = true
         hasReceivedAudio = false
-        finalText = ""
-        volatileText = ""
+        (finalText, volatileText) = ("", "")
         defer {
             isStarting = false
             startTask = nil
             restorePlaybackIfRequestedAndReady()
         }
         guard await prepareCaptureAuthorization() else { return }
-
         do {
             try await quietReplyAudio()
             try Task.checkCancellation()
             status = "Preparing on-device speech model…"
             try await audioSession.activate()
-            activeUtteranceID = try await transcriber.start()
+            let utteranceID = try await transcriber.start()
+            activeUtteranceID = utteranceID
             try Task.checkCancellation()
             let buffers = try capture.start()
             isRecording = true
             status = "Listening"
-            bufferTask = Task {
-                do {
-                    for await buffer in buffers {
-                        markAudioReceived()
-                        try await transcriber.consume(buffer)
-                    }
-                } catch {
-                    await fail("Capture failed: \(error.localizedDescription)")
-                }
-            }
+            bufferTask = Task { await consumeCapture(buffers, utteranceID: utteranceID) }
         } catch is CancellationError {
             await handleStartCancellation()
         } catch {
@@ -45,7 +36,25 @@ extension TranscriptionLabView {
             status = "Could not start: \(error.localizedDescription)"
         }
     }
-
+    @MainActor
+    private func consumeCapture(_ buffers: AsyncStream<AudioCaptureBuffer>, utteranceID: UUID) async {
+        guard activeUtteranceID == utteranceID else { return }
+        var failure: String?
+        do {
+            try await CapturePlaybackSuppression.consume(buffers, owner: captureOwnerID, transitioning: { [self] in
+                isStarting || isFinalizing || isInterrupting || startTask != nil || finishTask != nil
+            }, receive: {
+                markAudioReceived()
+                try await transcriber.consume($0)
+            })
+        } catch { failure = "Capture failed: \(error.localizedDescription)" }
+        // finish/interrupt already own cleanup and can be awaiting this task. Never await ourselves or send a
+        // partial request merely because the microphone ended. Unowned normal, failed and cancelled ends clean up.
+        // A late cancelled consumer must not tear down a replacement capture on this same view.
+        guard activeUtteranceID == utteranceID, bufferTask != nil,
+              !isFinalizing, !isInterrupting, !isForcedTeardown else { return }
+        await fail(failure ?? "Capture ended — tap to talk again")
+    }
     @MainActor
     func finish(force: Bool = false) async {
         // Never takes suppression (#760): with a finish pending and no hold, the capture is already stopped.
@@ -133,8 +142,7 @@ extension TranscriptionLabView {
         isRecording = false
         activeUtteranceID = nil
         if discardedUtterance {
-            finalText = ""
-            volatileText = ""
+            (finalText, volatileText) = ("", "")
         }
         do {
             try await action()
@@ -170,12 +178,9 @@ extension TranscriptionLabView {
         let task = bufferTask
         bufferTask = nil
         if waitForBuffer { await task?.value }
-        let finalized = await transcriber.stop()
-        activeUtteranceID = nil
-        isRecording = false
-        return finalized
+        defer { (activeUtteranceID, isRecording) = (nil, false) }
+        return await transcriber.stop()
     }
-
     @MainActor
     func noteDestinationChange(
         previous: ConversationDestinationID?, current: ConversationDestinationID?
