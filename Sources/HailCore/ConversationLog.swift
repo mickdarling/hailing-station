@@ -17,6 +17,10 @@ public struct ConversationEntry: Identifiable, Equatable, Sendable {
     public let date: Date
     /// Heard but not sent to the target (#398): shown greyed, and hidden with the overheard setting.
     public var overheard = false
+    /// A correlated ambient request refused by the host (#923); independent of overheard visibility.
+    public var notSent = false
+    /// Content-free correlation, memory only, bounded by the chat history and cleared with its connection.
+    var heardTurn: UUID?
     /// The known guest who said an overheard turn (#434), from the host's `name`; nil shows "Someone". Never the
     /// owner's, never logged.
     public var name: String?
@@ -110,13 +114,37 @@ public final class ConversationLog {
         return entry.id
     }
 
+    /// Associates only a heard entry with its host's optional UUID (#923). No separate index can outlive history.
+    func recordHeardTurn(_ turn: UUID?, for entryID: String?) {
+        guard let entryID, let index = entries.firstIndex(where: { $0.id == entryID }) else { return }
+        entries[index].heardTurn = turn
+    }
+
+    /// Only an exact UUID on this endpoint's current connection can mark a heard turn. The notice stays separate.
+    func noteHeardRefused(_ turn: UUID?, endpointID: HostEndpoint.Identifier) {
+        guard let turn, let index = entries.firstIndex(where: {
+            $0.endpointID == endpointID && $0.heardTurn == turn
+        }) else { return }
+        entries[index].notSent = true
+        entries[index].heardTurn = nil
+    }
+
+    /// Disconnect, reconnect, replacement and removal drop correlation without changing the visible history.
+    func forgetHeardTurns(_ endpointID: HostEndpoint.Identifier) {
+        for index in entries.indices where entries[index].endpointID == endpointID {
+            entries[index].heardTurn = nil
+        }
+    }
+
     /// Takes back a request noted before its send, when that send reported a failure (#636): the chat shows no
     /// request the device could not confirm it sent.
     func retractSent(_ id: String?) {
         guard let id else { return }
         entries.removeAll { $0.id == id }
     }
+}
 
+extension ConversationLog {
     /// The replies that answer one thread, among `replies` (#636): its own target's, plus, with `addressed`, a reply
     /// another session sent to a request addressed from it (`shownIn`). The talk control's arrival tracking reads
     /// these, so a reply shown in the thread also ends that thread's pending send.

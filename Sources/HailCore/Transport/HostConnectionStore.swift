@@ -107,8 +107,12 @@ public final class HostConnectionStore {
         self.sleep = sleep
         self.jitter = jitter
     }
+}
+
+extension HostConnectionStore {
     public func upsert(_ endpoint: HostEndpoint) async {
         if snapshots[endpoint.id]?.endpoint == endpoint { return }
+        conversation.forgetHeardTurns(endpoint.id)
         let existing = connections.removeValue(forKey: endpoint.id)
         forgetSelection(endpoint.id)
         let retainedBarrier = retiredBarriers.removeValue(forKey: endpoint.id)
@@ -163,6 +167,7 @@ public final class HostConnectionStore {
     }
 
     public func remove(_ id: HostEndpoint.Identifier) async {
+        conversation.forgetHeardTurns(id)
         tokens[id] = nil
         forgetSelection(id)
         let connection = connections.removeValue(forKey: id)
@@ -182,6 +187,9 @@ public final class HostConnectionStore {
     private func receive(_ snapshot: HostConnectionSnapshot, token: UUID) {
         guard tokens[snapshot.id] == token else { return }
         let previous = snapshots[snapshot.id]?.state
+        if snapshot.state != .ready || snapshots[snapshot.id]?.connectionGeneration != snapshot.connectionGeneration {
+            conversation.forgetHeardTurns(snapshot.id)
+        }
         snapshots[snapshot.id] = snapshot
         recordDiagnostics(from: previous, to: snapshot.state)
         if snapshot.state == .ready, previous != .ready { hostBecameReady(snapshot.id) }
@@ -241,10 +249,12 @@ extension HostConnectionStore {
         switch event.frame.payload {
         case .control(.ambientMovedHere(let from)):
             onAmbientMovedHere?(event.endpointID, from)
-        case .control(.ambientHeard(let targetID, let text, _)):
-            conversation.noteSent(text, endpointID: event.endpointID, targetID: targetID,
-                                  targets: snapshots[event.endpointID]?.targets ?? [],
-                                  scope: addressScope(event.endpointID))
+        case .control(.ambientHeard(let targetID, let text, let turn)):
+            let entryID = conversation.noteSent(
+                text, endpointID: event.endpointID, targetID: targetID,
+                targets: snapshots[event.endpointID]?.targets ?? [], scope: addressScope(event.endpointID)
+            )
+            conversation.recordHeardTurn(turn, for: entryID)
         case .control(.ambientOverheard(let targetID, let text, let speaker, let name)):
             conversation.noteOverheard(
                 text, owner: speaker == "owner", name: name, endpointID: event.endpointID, targetID: targetID
@@ -252,17 +262,8 @@ extension HostConnectionStore {
         case .control(.healthReport(let report)):
             let generation = snapshots[event.endpointID]?.connectionGeneration
             health[event.endpointID] = HostHealthReading(report: report, connectionGeneration: generation)
-        case .control(.error(let code, let message, _)) where code.isRequestRefusal:
-            // The one chat line and the one announcement for every request refusal, whatever its code.
-            conversation.noteRefusal(message, endpointID: event.endpointID,
-                                     targetID: selectedTargets[event.endpointID] ?? "")
-            onRequestRefusal?(message)
-            // A refused paste (#608) also marks its pending turn and is offered back on the card; no second line.
-            if code == .pasteRefused,
-               let refused = conversation.notePasteRefused(message, endpointID: event.endpointID) {
-                lastPasteRefusal = PasteRefusal(endpointID: event.endpointID, entryID: refused.id, pasted: refused.text,
-                                                message: message)
-            }
+        case .control(.error(let code, let message, let turn)) where code.isRequestRefusal:
+            receiveRequestRefusal(code, message: message, turn: turn, from: event.endpointID)
         case .control(.ownerVoice(let state)):
             if state == "unrecognized" {
                 ownerVoiceUnrecognized.insert(event.endpointID)
@@ -273,6 +274,23 @@ extension HostConnectionStore {
             return receiveModeNotice(event)
         }
         return true
+    }
+
+    /// Marks only a correlated heard turn, then retains the shared notice, announcement and paste handling.
+    private func receiveRequestRefusal(
+        _ code: ErrorCode, message: String, turn: UUID?, from endpointID: HostEndpoint.Identifier
+    ) {
+        if code == .voiceRouteRefused { conversation.noteHeardRefused(turn, endpointID: endpointID) }
+        // The one chat line and the one announcement for every request refusal, whatever its code.
+        conversation.noteRefusal(message, endpointID: endpointID,
+                                 targetID: selectedTargets[endpointID] ?? "")
+        onRequestRefusal?(message)
+        // A refused paste (#608) also marks its pending turn and is offered back on the card; no second line.
+        if code == .pasteRefused,
+           let refused = conversation.notePasteRefused(message, endpointID: endpointID) {
+            lastPasteRefusal = PasteRefusal(endpointID: endpointID, entryID: refused.id, pasted: refused.text,
+                                            message: message)
+        }
     }
 
     /// True when `event` was a host's media mode (#612) or duck mode (#735) state for this device's stream, now kept.

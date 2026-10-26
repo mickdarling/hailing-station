@@ -159,8 +159,16 @@ refusal. Both frames require `heard_turns` plus their existing capability (`ambi
 legacy frames omit the field entirely. No other command or error carries it. Neither heard words nor turn IDs are
 logged. The identifier grants no authority.
 
-Device advertising and correlation behavior (PR C) remain deferred: the device does not advertise `heard_turns` yet.
-Host-local synthetic verification is recorded in [the PR B test record](testing/heard-turn-host.md), alongside
+The device model (PR C1) stores a received heard UUID on its chat entry within the existing 200-entry in-memory
+history. A `voice_route_refused` with the same UUID on the same endpoint's current connection marks that entry's
+`notSent` state; the separate refusal notice and announcement remain unchanged. Matching uses only UUIDs, never
+content. Missing or unknown turns leave entries unchanged. Correlation is consumed by a matching refusal, evicted
+with its entry, and cleared on disconnect, reconnect, endpoint replacement or removal without rewriting history.
+A heard entry without a refusal stays sent. Neither heard text nor correlation is logged.
+
+Device advertising and visible not-sent styling (PR C2) remain deferred: the device does not advertise `heard_turns`
+yet. An older host simply omits the optional turn and needs no change. Synthetic verification is recorded in
+[the PR B host test record](testing/heard-turn-host.md), [the PR C1 model test record](testing/heard-turn-app.md) and
 [the PR A protocol test record](testing/heard-turn-protocol.md). This is not physical-device proof.
 
 ### Overheard remarks (#398)
