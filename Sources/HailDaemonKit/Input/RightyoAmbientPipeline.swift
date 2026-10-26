@@ -599,6 +599,8 @@ final class RecentSpokenReplies: Sendable {
     /// that slips through still faces RightyO's own decision, while a wrongly dropped request is just lost.
     static let echoThreshold = 0.85
     static let maxReplies = 8
+    /// Retired words outlive the 10 s local send deadline plus 30 s stall grace, with a 20 s margin (#904).
+    static let wordRetention: Duration = .seconds(60)
     /// Shorter requests are never treated as echo: "stop", "wait" or a short quoted question must reach the
     /// assistant even when the reply itself contains the words.
     static let minimumWords = 5
@@ -606,8 +608,10 @@ final class RecentSpokenReplies: Sendable {
     private struct Reply {
         var words: [String]
         var audioSeconds: Double = 0
-        /// When this reply's audio is estimated to start playing: its first frame, or later if it queued behind a
-        /// reply still playing (the phone plays replies one after another).
+        /// First-audio FIFO position; a continuing stream keeps the head even across gaps before its final frame.
+        var audioOrder: Int?
+        /// Start of the current uninterrupted playback span, queued behind other replies when necessary.
+        /// A frame arriving after this span ends starts a new span (the phone plays replies one after another).
         var firstAudio: ContinuousClock.Instant?
         var lastSeen: ContinuousClock.Instant
         var playEnd: ContinuousClock.Instant? { firstAudio.map { $0.advanced(by: .seconds(audioSeconds)) } }
@@ -617,7 +621,47 @@ final class RecentSpokenReplies: Sendable {
         }
     }
 
-    private let replies = Mutex<[UUID: Reply]>([:])
+    private struct RememberedReply {
+        let reply: Reply
+        let expires: ContinuousClock.Instant
+    }
+
+    private struct State {
+        var replies: [UUID: Reply] = [:]
+        var remembered: [UUID: RememberedReply] = [:]
+        var nextAudioOrder = 0
+
+        func restoredReply(for id: UUID, at instant: ContinuousClock.Instant) -> Reply {
+            var entry = remembered[id].flatMap { $0.expires > instant ? $0.reply : nil }
+                ?? Reply(words: [], lastSeen: instant)
+            // Keep buffered playback; an ended span needs new audio before restored text can match.
+            if (entry.playEnd ?? instant) <= instant {
+                entry.firstAudio = nil
+                entry.audioSeconds = 0
+            }
+            return entry
+        }
+
+        mutating func retire(_ id: UUID, at instant: ContinuousClock.Instant) {
+            guard let entry = replies.removeValue(forKey: id), !entry.words.isEmpty else { return }
+            remembered[id] = RememberedReply(reply: entry, expires: instant.advanced(by: wordRetention))
+        }
+
+        mutating func prune(at instant: ContinuousClock.Instant) {
+            remembered = remembered.filter { $0.value.expires > instant }
+            for id in replies.filter({ $0.value.expires <= instant }).keys { retire(id, at: instant) }
+            while replies.count > maxReplies,
+                  let oldest = replies.min(by: { $0.value.lastSeen < $1.value.lastSeen }) {
+                retire(oldest.key, at: instant)
+            }
+            while remembered.count > maxReplies,
+                  let oldest = remembered.min(by: { $0.value.expires < $1.value.expires }) {
+                remembered.removeValue(forKey: oldest.key)
+            }
+        }
+    }
+
+    private let state = Mutex(State())
     private let now: @Sendable () -> ContinuousClock.Instant
 
     init(now: @escaping @Sendable () -> ContinuousClock.Instant = { ContinuousClock.now }) {
@@ -627,31 +671,37 @@ final class RecentSpokenReplies: Sendable {
     /// Records a reply frame the host delivered: its text, or how much audio it has sent so far.
     func observe(_ frame: Frame) {
         let instant = now()
-        replies.withLock { replies in
+        state.withLock { state in
             switch frame.payload {
             case .text(let text):
                 guard let reply = text.reply else { return }
-                replies[reply.id, default: Reply(words: [], lastSeen: instant)].words = Self.words(text.text)
-                replies[reply.id]?.lastSeen = instant
+                var entry = state.replies[reply.id] ?? state.restoredReply(for: reply.id, at: instant)
+                entry.words = Self.words(text.text)
+                entry.lastSeen = instant
+                state.replies[reply.id] = entry
+                state.remembered.removeValue(forKey: reply.id)
             case .audio(let audio):
                 guard let reply = audio.reply, audio.codec == .pcm16, audio.sampleRate > 0, audio.channels > 0 else {
                     return
                 }
-                var entry = replies[reply.id] ?? Reply(words: [], lastSeen: instant)
-                if entry.firstAudio == nil {
-                    let queuedBehind = replies.values.compactMap(\.playEnd).max()
+                var entry = state.replies[reply.id] ?? state.restoredReply(for: reply.id, at: instant)
+                let order = entry.audioOrder ?? state.nextAudioOrder
+                if entry.audioOrder == nil { state.nextAudioOrder += 1 }
+                entry.audioOrder = order
+                if (entry.playEnd ?? instant) <= instant {
+                    let queuedBehind = state.replies.values.filter { ($0.audioOrder ?? order) < order }
+                        .compactMap(\.playEnd).max()
                     entry.firstAudio = max(instant, queuedBehind ?? instant)
+                    entry.audioSeconds = 0
                 }
+                // Known limitation: extending an earlier stream does not shift later replies' existing windows.
                 entry.audioSeconds += Double(audio.bytes.count) / Double(2 * audio.channels * audio.sampleRate)
                 entry.lastSeen = instant
-                replies[reply.id] = entry
+                state.replies[reply.id] = entry
+                state.remembered.removeValue(forKey: reply.id)
             default: return
             }
-            replies = replies.filter { $0.value.expires > instant }
-            while replies.count > Self.maxReplies,
-                  let oldest = replies.min(by: { $0.value.lastSeen < $1.value.lastSeen }) {
-                replies.removeValue(forKey: oldest.key)
-            }
+            state.prune(at: instant)
         }
     }
 
@@ -660,9 +710,9 @@ final class RecentSpokenReplies: Sendable {
         let instant = now()
         let heardWords = Self.words(heard)
         guard heardWords.count >= Self.minimumWords else { return false }
-        return replies.withLock { replies in
+        return state.withLock { state in
             // A text-only reply is never spoken, so its words cannot echo.
-            replies.values.contains {
+            state.replies.values.contains {
                 $0.firstAudio != nil && $0.expires > instant && Self.overlap(heardWords, $0.words) >= Self.echoThreshold
             }
         }
