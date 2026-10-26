@@ -21,14 +21,7 @@ struct AmbientPrivacyOffScopeTests {
     static func restoredFrom(silent: Bool, sourceKind: String? = "phone", kind: String? = "phone",
                              privacy: PrivacyOffSettings = .init()) async throws -> (Scene, SilentPeer?) {
         let rig = try await RestoreRig(phrase: "stop recording", privacy: privacy)
-        var peer: SilentPeer?, source: UUID
-        if silent {
-            let (silentPeer, connection) = try await rig.connectSilent(kind: sourceKind)
-            try await silentPeer.send(audio(UUID(), 0))
-            (peer, source) = (silentPeer, connection)
-        } else {
-            (_, source) = try await rig.start(name: RestoreRig.appName, kind: sourceKind)
-        }
+        let (peer, source) = try await Self.source(on: rig, silent: silent, kind: sourceKind)
         let router = rig.router
         #expect(await eventually { router.activeConnection() == source }, "source start marker")
         try #require(await eventually { router.duckMode(connection: source) }, "source holds privacy")
@@ -37,6 +30,14 @@ struct AmbientPrivacyOffScopeTests {
         #expect(router.duckMode(connection: restored))
         #expect(await eventually { router.activePipeline?.hearsAudio == true }, "restored child confirmed private")
         return (Scene(rig: rig, source: source, restored: restored), peer)
+    }
+
+    /// The source device: a silent peer, or one with the app's own transport, which answers pings.
+    static func source(on rig: RestoreRig, silent: Bool, kind: String?) async throws -> (SilentPeer?, UUID) {
+        guard silent else { return (nil, try await rig.start(name: RestoreRig.appName, kind: kind).1) }
+        let (peer, connection) = try await rig.connectSilent(kind: kind)
+        try await peer.send(audio(UUID(), 0))
+        return (peer, connection)
     }
 
     /// The owner's off on the restored connection, then its scope's log line.

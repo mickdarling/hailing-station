@@ -2,6 +2,7 @@
 import Foundation
 import HailProtocol
 import Network
+import Synchronization
 import Testing
 @testable import HailDaemonKit
 
