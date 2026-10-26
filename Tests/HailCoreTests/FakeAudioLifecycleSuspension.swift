@@ -1,8 +1,21 @@
+enum FakeConfigurationError: Error { case refused }
+
 actor FakeAudioLifecycleSuspension {
+    /// Every `configure(allowsBluetoothHFP:)` flag the session sent, in order (#905).
+    private(set) var configurations: [Bool] = []
+    private var refusesConfiguration = false
     private var holdConfiguration = false
     private var heldConfiguration: CheckedContinuation<Void, Never>?
     private var holdActivation = false
     private var heldActivation: CheckedContinuation<Void, Never>?
+
+    func configure(allowsBluetoothHFP: Bool) async throws {
+        configurations.append(allowsBluetoothHFP)
+        await suspendConfigurationIfNeeded()
+        if refusesConfiguration { throw FakeConfigurationError.refused }
+    }
+
+    func refuseConfigurations(_ refuses: Bool) { refusesConfiguration = refuses }
 
     func suspendConfigurationIfNeeded() async {
         guard holdConfiguration else { return }
@@ -46,6 +59,12 @@ actor FakeAudioLifecycleSuspension {
 }
 
 extension FakeAudioSessionBackend {
+    var configurations: [Bool] { get async { await lifecycleSuspension.configurations } }
+
+    func refuseConfigurations(_ refuses: Bool) async {
+        await lifecycleSuspension.refuseConfigurations(refuses)
+    }
+
     func holdNextConfigureCall() async {
         await lifecycleSuspension.holdNextConfiguration()
     }

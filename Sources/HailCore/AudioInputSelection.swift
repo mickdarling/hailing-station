@@ -110,12 +110,14 @@ public protocol AudioInputSelectionProviding: AudioSessionDiagnosticsProviding {
     func retryInputSelection() async throws
 }
 
+/// Automatic microphone order. A Bluetooth headset (HFP) is skipped unless the owner allows it (#905), so the
+/// default order with it off is USB, wired, then built-in; with it on, the headset comes before the built-in mic.
 public struct AudioInputPreferences: Sendable, Equatable {
     public var order: [AudioInputKind]
     public var allowsBluetoothHFP: Bool
 
     public init(
-        order: [AudioInputKind] = [.usb, .wired, .builtIn],
+        order: [AudioInputKind] = [.usb, .wired, .bluetoothHFP, .builtIn],
         allowsBluetoothHFP: Bool = false
     ) {
         self.order = order

@@ -3,6 +3,8 @@ import HailCore
 import SwiftUI
 struct AudioDiagnosticsView: View {
     @Bindable var model: AudioRouteModel
+    @AppStorage(AudioInputPreferences.bluetoothHFPDefaultsKey) private var allowsBluetoothHFP = false
+    @State private var bluetoothHFPFailure: String?
 
     var body: some View {
         List {
@@ -71,7 +73,12 @@ struct AudioDiagnosticsView: View {
                 }
             }
             Section("Preference") {
-                Text("USB, wired headset, then built-in microphone. Bluetooth HFP is disabled.")
+                #if os(iOS)
+                bluetoothHFPToggle
+                #endif
+                Text(allowsBluetoothHFP
+                     ? "USB, wired headset, Bluetooth headset, then built-in microphone. Bluetooth HFP is on."
+                     : "USB, wired headset, then built-in microphone. Bluetooth HFP is off.")
                     .font(.caption)
             }
         }
@@ -82,6 +89,32 @@ struct AudioDiagnosticsView: View {
     }
 }
 private extension AudioDiagnosticsView {
+    /// Off by default (#905). The session applies it at once when it is active, otherwise at its next start.
+    private var bluetoothHFPToggle: some View {
+        Toggle(isOn: $allowsBluetoothHFP) {
+            VStack(alignment: .leading, spacing: 2) {
+                Text("Use AirPods / Bluetooth headset microphone")
+                Text(bluetoothHFPFailure ?? "While on, AirPods switch to call-quality audio (mono, lower fidelity).")
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+            }
+        }
+        .accessibilityIdentifier("audio.bluetooth-hfp-toggle")
+        .onChange(of: allowsBluetoothHFP) { _, _ in
+            Task {
+                // The saved value, not the captured one, so quick toggles finish on the last choice.
+                let allows = AudioInputPreferences.saved().allowsBluetoothHFP
+                do {
+                    try await (model.controller as? any AudioBluetoothHFPConfiguring)?.setAllowsBluetoothHFP(allows)
+                    bluetoothHFPFailure = nil
+                } catch {
+                    bluetoothHFPFailure = "Applies when audio next starts: \(error.localizedDescription)"
+                }
+                await model.refresh()
+            }
+        }
+    }
+
     private func routeControlLabel(title: String, value: String, systemImage: String) -> some View {
         Label {
             VStack(alignment: .leading, spacing: 2) {
