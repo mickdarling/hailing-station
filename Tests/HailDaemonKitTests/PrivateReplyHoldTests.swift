@@ -63,8 +63,9 @@ import Testing
         #expect(!hold.unlessHeld(connection) { true })
     }
 
-    /// Jarvis: a privacy decision never waits behind a slow socket. A host clip's frame goes through the hold to a
-    /// synthetic transport that takes it at once and withholds its completion. Once the frame is submitted, entries for
+    /// Jarvis: a privacy decision never waits behind a slow socket. A reply frame goes through the hold (on the routed
+    /// path the agent's replies take) to a synthetic transport that takes it at once and withholds its completion; the
+    /// held clip path's multi-frame case is `PrivateReplyHoldClipTests`. Once the frame is submitted, entries for
     /// this connection and another complete while that send is still stalled: only the enqueue, never its completion,
     /// runs under the hold's lock. The bounded wait never decides a pass; it only limits how long a regression (a
     /// completion awaited under the lock) takes to fail, after which the send is completed so nothing hangs.
@@ -74,7 +75,7 @@ import Testing
         let (connection, other) = (await env.session.connectionID, UUID())
         var submissions = env.sender.submissions.stream.makeAsyncIterator()
         let frame = env.frames[0]
-        let delivery = Task { await env.peer.deliverRequestlessReply(frame, hold: hold) }
+        let delivery = Task { await env.peer.deliverRoutedReply(frame, hold: hold) }
         _ = try #require(await submissions.next())
         let decided = await Self.decides(hold, [other, connection])
         #expect(decided, "a privacy decision waited behind a stalled send")

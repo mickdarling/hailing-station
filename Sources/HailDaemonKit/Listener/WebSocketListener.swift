@@ -1650,9 +1650,9 @@ extension AmbientRightyoRouter {
     /// privacy clip chain, so it can never follow a "Privacy on." decided before it. Privacy (`duck`, its internal name)
     /// is read when it is queued and again just before it plays: `suppressed_privacy` if on at either. A privacy
     /// decision landing after that last check is caught by the connection's privacy reply hold (#913), which the entry
-    /// sets with the decision and each frame's enqueue checks under the hold's own lock: no frame is sent once privacy
-    /// is decided, also `suppressed_privacy`. A connection already marked torn down gets no clip and no chain:
-    /// `no_connection`.
+    /// sets with the decision and the clip's enqueue checks once, under the hold's own lock, for all its frames: none
+    /// is sent once privacy is decided, also `suppressed_privacy`. A connection already marked torn down gets no clip
+    /// and no chain: `no_connection`.
     /// One whose teardown lands just before the chain is taken (its mark already pruned) gets a chain; once the clip has
     /// run, a connection with no peer left has that entry dropped, as `stop(connection:)` does, so none is left behind.
     /// A connection id never comes back, so no live connection loses its chain or a clip.
