@@ -3,10 +3,9 @@ import HailProtocol
 import Testing
 @testable import HailCore
 
-/// Regression guard for #735 (key 1's review of #808): safety after a haild restart rests on the app. A restarted
-/// haild is a new connection, and a new connection is a new binding (`connectionGeneration`). The app must then turn
-/// listening off with cause `binding_changed` and never start it again by itself, so nothing records until the owner
-/// turns listening on again, and then the host starts public. Pins existing behaviour only. Synthetic only.
+/// A changed binding without a device-side transport recovery intent still stops listening (#735, #904).
+/// Transport recovery is covered separately by AmbientReconnectTests; these direct updates cannot arm it.
+/// Synthetic only.
 @MainActor
 @Suite struct AmbientBindingChangeRegressionTests {
     private func diagnostics() throws -> (DeviceDiagnostics, () -> Void) {
@@ -31,8 +30,7 @@ import Testing
         #expect(reconnected != first)
     }
 
-    /// A reconnect turns listening off with cause `binding_changed`, in the foreground or the background, and the
-    /// new binding never starts it again.
+    /// A new connection binding alone cannot restore listening without a transport recovery intent.
     @Test(arguments: [AmbientScene.active, .background])
     func aReconnectTurnsListeningOffAndItStaysOff(_ scene: AmbientScene) async throws {
         let (log, cleanUp) = try diagnostics()

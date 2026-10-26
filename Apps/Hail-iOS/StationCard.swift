@@ -154,19 +154,33 @@ extension RootView {
     /// Ambient listening (#203) appears only for a confirmed destination whose host advertises `stream_audio`.
     @ViewBuilder
     var ambientListeningSurface: some View {
-        if let destination,
-           let binding = connections.ambientBinding(host: destination.hostID, targetID: destination.target.id) {
+        if let presentation = ambientPresentation {
+            let (binding, hostName) = presentation
             AmbientListeningCard(
-                binding: binding, hostName: destination.endpoint.name,
+                binding: binding, hostName: hostName,
                 connections: connections, audioSession: audioRoutes, playback: playback,
                 echoGuard: echoGuard, diagnostics: diagnostics
             )
+            .onChange(of: connections.ambientController?.reconnect.notice) { _, notice in
+                if let notice { announcementBanners.append(notice.text) }
+            }
         }
+    }
+
+    private var ambientPresentation: (AmbientAudioBinding, String)? {
+        if let destination,
+           let binding = connections.ambientBinding(host: destination.hostID, targetID: destination.target.id) {
+            return (binding, destination.endpoint.name)
+        }
+        guard let recovery = connections.ambientController?.reconnect,
+              recovery.isPending || recovery.notice != nil,
+              let binding = recovery.binding, let name = recovery.hostName else { return nil }
+        return (binding, name)
     }
 }
 
-/// The toggle starts off whenever the card appears, stops when the scene leaves `.active`, when the binding
-/// changes and when the card goes away, and never restarts by itself. Replies play while it is on (#227) through
+/// The toggle starts off on launch. A guarded transport reconnect restores it (#904); owner destination changes
+/// and leaving the card stop it. Replies play while it is on (#227) through
 /// the capture's echo canceller, so the mic stays open and Mick can talk over them (#269). "Mask mic while
 /// speaking" restores the #227 behaviour (silence to the host while a reply is audible) for A/B comparison.
 /// With headphones as the output when listening starts, capture runs without voice processing so they keep their
@@ -191,7 +205,7 @@ struct AmbientListeningCard: View {
         self.playback = playback
         self.echoGuard = echoGuard
         self.connections = connections
-        let controller = AmbientListeningController(
+        let controller = connections.ambientController ?? AmbientListeningController(
             requestPermission: requestMicrophonePermission,
             makeStreamer: { send in
                 try await audioSession.activate()
@@ -200,25 +214,31 @@ struct AmbientListeningCard: View {
                 return AmbientAudioStreamer(capture: capture, send: send)
             },
             releaseSession: { await audioSession.deactivate() },
-            send: { [connections] payload, binding in try await connections.sendAudio(payload, to: binding) }
+            send: { [weak connections] payload, binding in
+                guard let connections else { throw HostConnectionFailure.notReady }
+                try await connections.sendAudio(payload, to: binding)
+            }
         )
         controller.diagnostics = diagnostics
         // From the controller, not a view update, so the flag stays right in the background (#282).
-        controller.onListeningChange = { [connections] listening in connections.ambientStreaming = listening }
+        controller.onListeningChange = { [weak connections] listening in connections?.ambientStreaming = listening }
         controller.onUnexpectedStop = { AmbientStopNotifier.post($0) }
+        controller.reconnect.onNotice = AmbientStopNotifier.reconnected
         _controller = State(initialValue: controller)
     }
 
     var body: some View {
         VStack(alignment: .leading, spacing: 10) {
-            Toggle(isOn: Binding(get: { controller.isOn }, set: { on in
+            Toggle(isOn: Binding(get: { controller.isOn || controller.reconnect.wantsListening }, set: { on in
                 if on { AmbientStopNotifier.requestAuthorization() }
                 Task { on ? await controller.turnOn(for: binding) : await controller.turnOff() }
             })) {
                 Label("Ambient listening", systemImage: "ear")
                     .font(.headline)
             }
+            .disabled(!bindingAvailable && !controller.isOn && !controller.reconnect.wantsListening)
             .accessibilityIdentifier("station.ambient-toggle")
+            reconnectNotice
             Toggle("Mask mic while speaking", isOn: $masksDuringReplies)
                 .font(.subheadline)
                 .accessibilityHint("Sends silence while a reply plays, instead of relying on echo cancellation")
@@ -293,19 +313,21 @@ struct AmbientListeningCard: View {
         .padding(16)
         .frame(maxWidth: .infinity, alignment: .leading)
         .background(.regularMaterial, in: RoundedRectangle(cornerRadius: 20, style: .continuous))
-        .onChange(of: binding) { _, current in
-            Task { await controller.update(binding: current, scene: scene) }
+        .onChange(of: currentBinding) { _, _ in
+            Task { await controller.update(binding: currentBinding, scene: scene) }
         }
         .onChange(of: scenePhase) { _, _ in
-            Task { await controller.update(binding: binding, scene: scene) }
+            Task { await controller.update(binding: currentBinding, scene: scene) }
         }
         .onAppear {
+            Task { await controller.update(binding: currentBinding, scene: scene) }
+            connections.ambientController = controller
             connections.onAmbientMovedHere = { [controller] host, from in controller.movedHere(from: from, host: host) }
         }
         .onDisappear {
             connections.ambientStreaming = false
             connections.onAmbientMovedHere = nil
-            Task { await controller.destinationLost() }
+            Task { await controller.turnOff() }
         }
         .onAppear { echoGuard.masksDuringReplies = masksDuringReplies }
         .onChange(of: masksDuringReplies) { _, masks in echoGuard.masksDuringReplies = masks }
@@ -317,6 +339,31 @@ struct AmbientListeningCard: View {
         case .active: .active
         case .background: .background
         default: .inactive
+        }
+    }
+}
+
+extension AmbientListeningCard {
+    /// A recovery notice keeps the card visible even when its destination is gone. Observe the live binding,
+    /// so an explicit disconnect or target removal still stops capture without relying on card disappearance.
+    private var currentBinding: AmbientAudioBinding? {
+        connections.ambientBinding(host: binding.hostID, targetID: binding.targetID)
+    }
+
+    private var bindingAvailable: Bool { currentBinding == binding }
+
+    @ViewBuilder
+    private var reconnectNotice: some View {
+        if let notice = controller.reconnect.notice {
+            VStack(alignment: .leading, spacing: 6) {
+                Text(notice.text)
+                if notice.outcome != .applied, !controller.isOn {
+                    Button("Resume listening") { Task { await controller.turnOn(for: binding) } }
+                        .disabled(!bindingAvailable)
+                        .buttonStyle(.borderedProminent)
+                }
+            }
+            .accessibilityIdentifier("station.ambient-reconnect-notice")
         }
     }
 }
@@ -477,6 +524,14 @@ struct AmbientMovedAwayView: View {
 /// the default sound. In the foreground the card already shows the reason, so nothing is posted.
 @MainActor
 enum AmbientStopNotifier {
+    static func reconnected(_ notice: AmbientListeningReconnect.Notice) {
+        #if os(iOS)
+        UINotificationFeedbackGenerator().notificationOccurred(.warning)
+        #endif
+        StationPlatform.announce(notice.text)
+        post(notice.text)
+    }
+
     static func requestAuthorization() {
         Task { _ = try? await UNUserNotificationCenter.current().requestAuthorization(options: [.alert, .sound]) }
     }
@@ -484,7 +539,7 @@ enum AmbientStopNotifier {
     static func post(_ reason: String) {
         guard !StationPlatform.isActive else { return }
         let content = UNMutableNotificationContent()
-        content.title = "Hailing Station stopped listening"
+        content.title = "Hailing Station listening"
         content.body = reason
         content.sound = .default
         let request = UNNotificationRequest(identifier: "ambient-stop", content: content, trigger: nil)

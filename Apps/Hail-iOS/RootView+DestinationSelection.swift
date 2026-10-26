@@ -109,7 +109,7 @@ extension RootView {
         let phaseRevision = scenePhaseRevision
         let connectionGeneration = host.connectionGeneration
         do {
-            try await connections.selectTarget(host: host.id, targetID: target.id)
+            try await connections.selectTarget(host: host.id, targetID: target.id, restoring: true)
         } catch {
             authorizationFailed(
                 revision: revision,
