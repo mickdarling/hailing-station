@@ -1,6 +1,9 @@
 #if os(macOS)
 import Foundation
 
+// The privacy park, its sources, the owner's scoped off and its provisional verdict are one boundary (#941).
+// swiftlint:disable file_length
+
 /// Privacy a dropped connection held (#941): where it was, its arming (`token`), its Hello claims (nil when unknown),
 /// when it was parked, and whether the owner had heard it announced there (`heardOn`), so a restored connection's status
 /// answers the same. Unlike a parked mode it has no expiry, since privacy has none (Mick, round 2), and it is never
@@ -131,7 +134,9 @@ extension AmbientRightyoRouter {
         guard AmbientPeerDevice.matches(here, there ?? parkedClaims(of: source.connection, token: source.token)) else {
             return "class"
         }
-        return await listener.probe(connection: source.connection, within: timeout) ? "live" : "stale"
+        return await listener.probe(connection: source.connection, within: timeout) { [weak self] in
+            self?.latePong(source)
+        } ? "live" : "stale"
     }
 
     /// The claims parked with `connection`'s arming `token`, if its teardown parked it.
@@ -150,9 +155,15 @@ extension AmbientRightyoRouter {
         let outcome = state.withLock { state -> String? in
             guard let source, let verdict else { return nil }
             guard verdict == "stale" else { return verdict }
+            // Still streaming (a child of it listening) is a sign of life, whatever the ping said.
+            if state.runs.values.contains(where: { $0.connection == source.connection && $0.retiredAt == nil }) {
+                return "live"
+            }
             if state.duck[source.connection]?.token == source.token {
                 _ = changeDuck(false, connection: source.connection, reason: reason, in: &state)
                 state.privacy[source.connection]?.withdrawAll()
+                // Provisional (Jarvis): any later sign of life puts privacy back.
+                state.staleCleared[source.connection] = source.token
                 return "stale"
             }
             guard let park = state.parkedPrivacy, park.connection == source.connection,
@@ -165,6 +176,50 @@ extension AmbientRightyoRouter {
             + notSources.map { "\($0)=not_source" }
         emit("ambient_privacy_off_scoped", connection: connection,
              detail: (["cleared=\(cleared)", "kept=\(reasons.count - cleared)"] + reasons).joined(separator: " "))
+    }
+
+    /// A sign of life from a connection cleared as stale (#941, Jarvis: the verdict is provisional): a start (normal,
+    /// `resume` or a take-over) or a segment of its stream, seen under the lock the gate's events are taken under,
+    /// before the event is handled or queued, so its start is made private and no segment reaches a public child.
+    func reapplyOnLife(_ event: AmbientAudioEvent, in state: inout State) {
+        guard !state.staleCleared.isEmpty else { return }
+        switch event {
+        case .started(_, let connection, _): reapplyFalseStale(connection, in: &state)
+        case .segment(let stream, _, _):
+            if let connection = state.latest.first(where: { $0.value == stream })?.key {
+                reapplyFalseStale(connection, in: &state)
+            }
+        case .ended: break
+        }
+    }
+
+    /// A late pong to the probe that judged `source` stale (#941): it was alive, so its privacy comes back, only while
+    /// the mark is still for the arming judged.
+    func latePong(_ source: PrivacySource) {
+        state.withLock { state in
+            guard state.staleCleared[source.connection] == source.token else { return }
+            reapplyFalseStale(source.connection, in: &state)
+        }
+    }
+
+    /// Puts privacy back on a connection wrongly cleared as stale, under the caller's lock, as a restore does: its own
+    /// mode ends, it is private (its children are told, so a live one hears nothing until it proves it again, S-8),
+    /// the agent's replies are held and its pending ones dropped, and its device is told `duck_mode` on with reason
+    /// `device`. No clip. Logged `privacy_reapplied reason=false_stale`.
+    func reapplyFalseStale(_ connection: UUID, in state: inout State) {
+        guard state.staleCleared.removeValue(forKey: connection) != nil, state.duck[connection] == nil,
+              !state.closed.contains(connection) else { return }
+        endHeld(connection, reason: "privacy", in: &state)
+        state.duck[connection] = AmbientDuckTimer(token: UUID(), timer: nil)
+        state.runs.values.filter { $0.connection == connection }.forEach { _ = $0.pipeline.reportDuck(true) }
+        let listener = state.listener?.value
+        holdReplies(connection, listener: listener)
+        mediaNotices.enqueue { [weak self, weak listener] in
+            self?.emit("privacy_reapplied", connection: connection, detail: "reason=false_stale to=\(connection)")
+            let sent = await listener?.showDuckMode(true, reason: "device", expires: nil, connection: connection)
+            self?.emit("ambient_duck_device", connection: connection,
+                       detail: "on=true device=\(sent ?? "no_connection")")
+        }
     }
 }
 #endif

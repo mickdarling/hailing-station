@@ -61,6 +61,34 @@ final class SilentPeer: @unchecked Sendable {
 
     func cancel() { connection.cancel() }
 
+    /// From now on reads every message, and answers each ping `delay` late, as a slow peer would (#941); other frames
+    /// are dropped. Ends with the connection.
+    func answerPingsLate(after delay: Duration) {
+        let connection = connection
+        Task {
+            while true {
+                let ping = Mutex<Data?>(nil)
+                let failed = Mutex(false)
+                await withCheckedContinuation { (continuation: CheckedContinuation<Void, Never>) in
+                    connection.receiveMessage { data, context, _, error in
+                        let metadata = context?.protocolMetadata(definition: NWProtocolWebSocket.definition)
+                            as? NWProtocolWebSocket.Metadata
+                        if metadata?.opcode == .ping { ping.withLock { $0 = data ?? Data() } }
+                        failed.withLock { $0 = error != nil || context == nil }
+                        continuation.resume()
+                    }
+                }
+                if failed.withLock({ $0 }) { return }
+                guard let payload = ping.withLock({ $0 }) else { continue }
+                try? await Task.sleep(for: delay)
+                let pong = NWConnection.ContentContext(identifier: "late-pong", metadata: [
+                    NWProtocolWebSocket.Metadata(opcode: .pong)
+                ])
+                connection.send(content: payload, contentContext: pong, isComplete: true, completion: .idempotent)
+            }
+        }
+    }
+
     /// Runs `operation` until it calls back, or cancels the connection after 15 s, so no wait outlives the suite.
     private func bounded(_ operation: (@escaping @Sendable ((any Error)?) -> Void) -> Void) async throws {
         let connection = connection
@@ -92,11 +120,12 @@ extension RestoreRig {
 
     /// A device with the app's own claims (#941: Hello name "hail terminal", class `kind`) that never answers a ping,
     /// selecting the rig's target, and its connection id.
-    func connectSilent(kind: String? = "phone") async throws -> (SilentPeer, UUID) {
+    func connectSilent(kind: String? = "phone",
+                       capabilities: [String] = ["probe"]) async throws -> (SilentPeer, UUID) {
         let before = await Self.connections(of: env.listener)
         let peer = try SilentPeer(port: env.port)
         try await peer.send(sessionFrame(payload: .control(.hello(HelloInfo(
-            versions: [1], capabilities: ["probe"], deviceName: Self.appName, deviceKind: kind
+            versions: [1], capabilities: capabilities, deviceName: Self.appName, deviceKind: kind
         )))))
         _ = try await peer.receive()
         try await peer.send(sessionFrame(payload: .control(.select(targetID: RecipientTestRig.target))))

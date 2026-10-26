@@ -643,6 +643,9 @@ public final class AmbientRightyoRouter: AmbientAudioSink, AmbientListenerWiring
         /// The live connection each restored connection took its privacy from (#941), with that arming: the only one
         /// an owner's off there may end. Dropped with the connection.
         var privacySources: [UUID: PrivacySource] = [:]
+        /// Connections an owner's off cleared as stale sources (#941), with the arming cleared: provisional, so any
+        /// later sign of life puts privacy back (`reapplyFalseStale`). Dropped at teardown or an owner's own action.
+        var staleCleared: [UUID: UUID] = [:]
         /// Arming order of meeting and media modes (MM-E): the latest owner command wins a restore or a move.
         var armings = 0
         /// Privacy entries and the last word per connection (#735 S-8 HS-C round 4, `AmbientPrivacyLedger`), and each
@@ -702,6 +705,9 @@ public final class AmbientRightyoRouter: AmbientAudioSink, AmbientListenerWiring
             default: break
             }
             if case .started(let stream, _, _) = event { state.newestStart = stream }
+            // A connection cleared as stale that sends audio or starts was alive (#941): private again, before its
+            // audio is handled or queued, so its start is made private.
+            reapplyOnLife(event, in: &state)
             // Shutting down: nothing more is queued (starts are refused inline as stopping).
             if state.shuttingDown { return false }
             // While a reload builds its child (#405), events queue too: the worker waits for the reload, so a start
@@ -762,6 +768,7 @@ public final class AmbientRightyoRouter: AmbientAudioSink, AmbientListenerWiring
             if state.privacy[connection]?.entries.isEmpty != false { state.privacy[connection] = nil }
             // Clips already queued still play in order; a later one (none should come) starts a fresh chain.
             (state.privacyClips[connection], state.privacySources[connection]) = (nil, nil)
+            state.staleCleared[connection] = nil
             state.listener?.value?.replyHold.set(false, connection: connection)
             if let active = state.active, state.runs[active.run]?.connection == connection { state.active = nil }
             let streams = state.runs.filter { $0.value.connection == connection }.map(\.key)
@@ -1788,6 +1795,8 @@ extension AmbientRightyoRouter {
     -> AmbientPrivacyEntry? {
         let decided = state.withLock { state -> (DuckChange, AmbientPrivacyEntry)? in
             guard armed(state.duck[connection]?.token) else { return nil }
+            // The owner's own action here supersedes a provisional stale verdict (#941).
+            state.staleCleared[connection] = nil
             let wasOn = state.duck[connection] != nil
             let duck = changeDuck(on, connection: connection, reason: reason, in: &state)
             let reported = duck?.reported
@@ -2363,9 +2372,10 @@ extension WebSocketListener {
     /// Whether `connection`'s peer answers a WebSocket ping within `timeout` (#941): false for no pong in time, a send
     /// error, or a connection already gone. Only the transport hand-off and the pong handler run; nothing waits under a
     /// lock. A peer's own stack answers (haild's `autoReplyPing`, the app's `URLSessionWebSocketTask`).
-    func probe(connection: UUID, within timeout: Duration) async -> Bool {
+    func probe(connection: UUID, within timeout: Duration,
+               onLatePong: @escaping @Sendable () -> Void = {}) async -> Bool {
         guard !stopped, let transport = transports[connection] else { return false }
-        let answer = ProbeAnswer()
+        let answer = ProbeAnswer(onLatePong: onLatePong)
         return await withCheckedContinuation { continuation in
             answer.set(continuation)
             let metadata = NWProtocolWebSocket.Metadata(opcode: .ping)
@@ -2381,10 +2391,20 @@ extension WebSocketListener {
     }
 }
 
-/// A probe's one answer: the first of its pong, its send error or its timeout.
+/// A probe's one answer: the first of its pong, its send error or its timeout. A pong after the answer was given (a
+/// slow peer judged stale) calls `onLatePong` (#941).
 final class ProbeAnswer: Sendable {
-    private let waiter = Mutex<CheckedContinuation<Bool, Never>?>(nil)
-    func set(_ continuation: CheckedContinuation<Bool, Never>) { waiter.withLock { $0 = continuation } }
-    func resume(_ live: Bool) { waiter.withLock { $0.take() }?.resume(returning: live) }
+    private let waiter = Mutex<(CheckedContinuation<Bool, Never>?, answered: Bool)>((nil, false))
+    private let onLatePong: @Sendable () -> Void
+    init(onLatePong: @escaping @Sendable () -> Void) { self.onLatePong = onLatePong }
+    func set(_ continuation: CheckedContinuation<Bool, Never>) { waiter.withLock { $0.0 = continuation } }
+    func resume(_ live: Bool) {
+        let (continuation, late) = waiter.withLock { state in
+            defer { state.answered = true }
+            return (state.0.take(), state.answered)
+        }
+        continuation?.resume(returning: live)
+        if late, live { onLatePong() }
+    }
 }
 #endif
