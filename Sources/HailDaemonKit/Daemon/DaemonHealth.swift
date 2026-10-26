@@ -99,7 +99,7 @@ public struct HealthReport: Codable, Sendable, Equatable {
             ))
         }
         checks.append(listenerCheck(daemon.listener))
-        if let ambient = daemon.ambient { checks.append(ambientCheck(ambient)) }
+        checks += daemon.ambient.map { [ambientCheck($0), pendingInputCheck($0)].compactMap(\.self) } ?? []
         checks.append(daemon.connectedSessions > 0
             ? .ok("device_connected", "\(daemon.connectedSessions) connected")
             : .fail("device_connected", "no device connected",
@@ -183,5 +183,18 @@ public struct HealthReport: Codable, Sendable, Equatable {
 
     public static func processIsRunning(_ pid: Int32) -> Bool {
         pid > 0 && (kill(pid, 0) == 0 || errno == EPERM)
+    }
+}
+
+extension HealthReport {
+    /// `target_input` while the last ambient event is a request the stream's own target refused because its input holds
+    /// unsent text (#894); the run goes on, so `ambient_listening` passes. The snapshot names no target and no reason.
+    private static func pendingInputCheck(_ ambient: DaemonStatus.Ambient) -> HealthCheck? {
+        guard ambient.lastEvent == "ambient_delivery_refused",
+              ambient.lastDetail?.split(separator: " ").first == "reason=inputPending" else { return nil }
+        return .fail("target_input", "last ambient request refused: inputPending",
+                     fix: "the target's prompt holds unsent text; clear it with haild targets flush <target-id>, and "
+                         + "if haild.err.log shows tmux_input_pending reason=tainted, run scripts/host.sh restart (a "
+                         + "flush cannot clear a taint)")
     }
 }

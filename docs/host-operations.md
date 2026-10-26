@@ -74,6 +74,7 @@ scripts/host.sh status    # staged release, running daemon, PATH haild, and prob
 - `host_id_match`: both resolve the same host ID, so replies are not refused as `sourceHostMismatch`.
 - `listener_ready`: the listener is up, and on which address. A port held elsewhere points to the Tailscale Serve section above.
 - `ambient_listening`: the last ambient run did not fail; it shows `not enabled` when ambient listening is not configured. A RightyO child that died (`child transportLost`, for example), a refused start or a shutdown timeout fails, with the cause in the fix. A run that ended cleanly, or a request held for confirmation by the target's tier, is healthy and idle. The check reflects the most recent ambient event, so a failure stays visible until the next run.
+- `target_input`: listed only while the most recent ambient event is a request that the stream's own target refused because its prompt already held unsent text (`ambient_delivery_refused reason=inputPending`, #894). Listening goes on, so `ambient_listening` passes. The fix points at `haild targets flush <target-id>` (see [Clear a stale prompt draft](#clear-a-stale-prompt-draft-894)), and at `scripts/host.sh restart` when `haild.err.log` shows `tmux_input_pending reason=tainted`, since a flush cannot clear a taint. The snapshot holds neither the target nor the adapter's reason, so doctor names neither. The next ambient event replaces it. It stays on the Mac: a device's health summary leaves it off.
 - `device_connected`: at least one phone or tablet is connected.
 - `recent_refusals`: no reply was refused in the last 15 minutes. Each refused `haild reply` is audited as `delivery_refused` with its code (`noRecipient`, `notUniqueRecipient`, `sourceHostMismatch`, …), never its text. A retryable `requestPending` answer is not a refusal and is not recorded. Doctor counts the records (refused reply frames) by reason over 15 minutes and an hour, and gives the fix for the most frequent one. `status --json` includes the counts.
 
@@ -118,7 +119,7 @@ Exit codes: 0 when held or for status; 75 when rate limited; 1 for other refusal
 
 ## Clear a stale prompt draft (#894)
 
-haild never types after unsent text: when a target's prompt already holds text, every delivery to it is refused (`haild.err.log` shows `tmux_input_pending reason=…`). `haild targets flush <target-id>` clears that text:
+haild never types after unsent text: when a target's prompt already holds text, every delivery to it is refused (`haild.err.log` shows `tmux_input_pending reason=…`, and after an ambient request `haild doctor` fails `target_input`). `haild targets flush <target-id>` clears that text:
 
 ```sh
 haild targets flush tmux:work          # shows the draft, then asks you to type flush

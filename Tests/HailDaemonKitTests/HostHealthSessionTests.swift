@@ -29,18 +29,21 @@ import Testing
     }
 
     /// The doctor's check names and the protocol's list are kept in two places; this fails if they drift apart.
+    /// `target_input` (#894) is the one doctor check kept on the Mac: a new name on the wire waits for a protocol
+    /// change, so the summary leaves it off.
     @Test func everyDoctorCheckNameIsOneTheProtocolCarries() {
         let cli = HealthReport.CLI(version: "0.1.0", build: "aaaaaaaaaaaaaaaa", hostID: "h")
         let daemon = DaemonStatus(
             schema: DaemonStatus.currentSchema, version: "0.1.0", build: "aaaaaaaaaaaaaaaa", pid: 1,
             startedAt: Date(timeIntervalSince1970: 0), updatedAt: Date(timeIntervalSince1970: 0), hostID: "h",
             listener: .init(state: "ready", endpoint: "127.0.0.1:1"), connectedSessions: 1,
-            ambient: .init(enabled: true)
+            ambient: .init(enabled: true, lastEvent: "ambient_delivery_refused", lastDetail: "reason=inputPending")
         )
         let every = HealthReport.evaluate(cli: cli, daemon: daemon,
                                           refusals: RefusalSummary.summarize([], now: Date()),
                                           auditUnreadable: true, isRunning: { _ in true })
-        #expect(Set(every.checks.map(\.name)) == Set(HostHealth.checkNames))
+        #expect(Set(every.checks.map(\.name)) == Set(HostHealth.checkNames + ["target_input"]))
+        #expect(HostHealthSummary.summary(of: every).checks.map(\.name) == HostHealth.checkNames)
     }
 
     @Test func withoutASummaryNothingIsAdvertisedOrAnswered() async throws {

@@ -49,6 +49,13 @@ import Testing
         // A cursor left inside the draft clears only what is before it, never more than is there.
         let inside = PaneObservation(rows: ["❯ 日本語"], cursorX: 5, cursorY: 0, width: 80)
         #expect(inside.backspaces(clearing: wideDraft) == 1)
+        // Right after a ✓ inside the draft, under either width reading, one character is before the cursor: drawn one
+        // column wide (cursor at 3) the walk takes none, as ✓ might be two; drawn two wide (cursor at 4) it takes the ✓.
+        // Never the `o` too: the count never exceeds what is there (#899 review, F3).
+        for (cursor, expected) in [(3, 0), (4, 1)] {
+            let check = PaneObservation(rows: ["❯ ✓ok"], cursorX: cursor, cursorY: 0, width: 80)
+            #expect(check.backspaces(clearing: try check.promptDraft()) == expected, "cursor at \(cursor)")
+        }
     }
 
     @Test func anEmptyPromptHasNothingToClear() throws {

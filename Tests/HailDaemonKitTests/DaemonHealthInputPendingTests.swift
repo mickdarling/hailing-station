@@ -1,0 +1,51 @@
+import Foundation
+import Testing
+@testable import HailDaemonKit
+
+/// #894: `haild doctor` names an ambient request the target refused because its input already holds unsent text, and
+/// points at the flush, and at a restart for a taint. It reads only the status snapshot's last ambient event, which
+/// holds neither the target nor the adapter's reason, so the fix names neither. Synthetic snapshots only.
+@Suite struct DaemonHealthInputPendingTests {
+    private let cli = HealthReport.CLI(version: "0.1.0", build: "aaaaaaaaaaaaaaaa", hostID: "themachine.local")
+
+    private func report(_ event: String?, _ detail: String? = nil) -> HealthReport {
+        var status = DaemonStatus(
+            schema: DaemonStatus.currentSchema, version: "0.1.0", build: "aaaaaaaaaaaaaaaa", pid: 4242,
+            startedAt: Date(timeIntervalSince1970: 0), updatedAt: Date(timeIntervalSince1970: 0),
+            hostID: "themachine.local", listener: .init(state: "ready", endpoint: "127.0.0.1:18765"),
+            connectedSessions: 1
+        )
+        status.ambient = .init(enabled: true, running: 1, lastEvent: event, lastDetail: detail)
+        return HealthReport.evaluate(cli: cli, daemon: status, isRunning: { _ in true })
+    }
+
+    @Test func aRequestRefusedForPendingInputPointsAtTheFlushAndATaintsRestart() throws {
+        let refused = report("ambient_delivery_refused", "reason=inputPending shown=sent confirm=no_clips")
+        #expect(!refused.healthy)
+        #expect(refused.checks.filter { $0.outcome == .fail }.map(\.name) == ["target_input"])
+        // The run goes on, so listening itself passes; the new check comes right after it.
+        #expect(refused.checks.map(\.name) == [
+            "daemon_running", "build_match", "host_id_match", "listener_ready", "ambient_listening", "target_input",
+            "device_connected"
+        ])
+        let check = try #require(refused.checks.first { $0.name == "target_input" })
+        #expect(check.detail == "last ambient request refused: inputPending")
+        let fix = try #require(check.fix)
+        #expect(fix.contains("haild targets flush <target-id>"))
+        #expect(fix.contains("tmux_input_pending reason=tainted, run scripts/host.sh restart"))
+    }
+
+    @Test func anyOtherLastAmbientEventAddsNoInputCheck() {
+        let others: [(String?, String?)] = [
+            (nil, nil),
+            ("ambient_acknowledged", "key=ack/0"),
+            ("ambient_delivery_refused", "reason=deliveryRefused shown=sent confirm=no_clips"),
+            ("ambient_delivery_refused", nil),
+            ("ambient_voice_route_refused", "notDelivered shown=sent confirm=no_clips"),
+            ("ambient_ended", "dispatch deliveryRefused")
+        ]
+        for (event, detail) in others {
+            #expect(!report(event, detail).checks.contains { $0.name == "target_input" }, "\(event ?? "nil")")
+        }
+    }
+}
