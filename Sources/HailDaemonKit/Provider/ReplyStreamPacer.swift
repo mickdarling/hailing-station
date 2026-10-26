@@ -22,6 +22,8 @@ package struct ReplyStreamPacer: Sendable {
     /// Keeping this above the target lets normal streamed frames refill a hold, while bounding the socket backlog
     /// far below the former 20 s. Whole 1.25 s frames can bring the sent lead to 4.25 s; this is no jitter guarantee.
     package static let leadSeconds = 3.0
+    /// With a queued audio turn, preserve the former drain time inside the next request's data budget.
+    package static let queuedLeadSeconds = 20.0
     package static let maxAudioSeconds = 30.0 * 60
 
     private let paced: Bool
@@ -36,8 +38,10 @@ package struct ReplyStreamPacer: Sendable {
     /// it may be sent. Throws, admitting nothing, once the job's audio would pass `maxAudioSeconds`.
     /// `latest`, when given, caps the wait (#467): a request-bound reply must not go quiet past its request's idle
     /// gap, so its frame goes at `latest` even if that is ahead of the pace; the endpoint's own limit still applies.
+    /// `lead` applies to this frame only, so contention can grow and then shrink the lead without resetting time.
     package mutating func admit(
-        audio: Double, at now: ContinuousClock.Instant, latest: ContinuousClock.Instant? = nil
+        audio: Double, at now: ContinuousClock.Instant, latest: ContinuousClock.Instant? = nil,
+        lead: Double = Self.leadSeconds
     ) throws -> ContinuousClock.Instant {
         // A microsecond of slack: summing per-segment durations must not refuse a file exactly at the bound.
         guard audio >= 0, audioSeconds + audio <= Self.maxAudioSeconds + 1e-6 else {
@@ -48,7 +52,7 @@ package struct ReplyStreamPacer: Sendable {
             if audio > 0 {
                 let first = start ?? now
                 start = first
-                sendAt = max(sendAt, first.advanced(by: .seconds(max(0, audioSeconds - Self.leadSeconds))))
+                sendAt = max(sendAt, first.advanced(by: .seconds(max(0, audioSeconds - lead))))
             }
             if recent.count >= Self.framesPerMinute {
                 sendAt = max(sendAt, recent[recent.count - Self.framesPerMinute].advanced(by: .seconds(60)))
@@ -73,8 +77,10 @@ package actor ReplyStreamPacing {
 
     package init(paced: Bool = true) { pacer = ReplyStreamPacer(paced: paced) }
 
-    package func admit(audio: Double, latest: ContinuousClock.Instant? = nil) async throws {
-        let sendAt = try pacer.admit(audio: audio, at: .now, latest: latest)
+    package func admit(
+        audio: Double, latest: ContinuousClock.Instant? = nil, lead: Double = ReplyStreamPacer.leadSeconds
+    ) async throws {
+        let sendAt = try pacer.admit(audio: audio, at: .now, latest: latest, lead: lead)
         if sendAt > .now { try await Task.sleep(until: sendAt, clock: .continuous) }
     }
 }
