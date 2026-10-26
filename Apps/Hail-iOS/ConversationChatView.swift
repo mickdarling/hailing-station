@@ -100,7 +100,7 @@ struct ConversationChatView: View {
         HStack {
             if isYou { Spacer(minLength: 48) }
             VStack(alignment: .leading, spacing: 8) {
-                if entry.overheard {
+                if entry.overheard || entry.notSent {
                     Text(entry.speaker == .you ? "You · not sent" : "\(entry.name ?? "Someone") · not sent")
                         .font(.caption2.weight(.semibold))
                         .foregroundStyle(.secondary)
@@ -122,7 +122,7 @@ struct ConversationChatView: View {
             .padding(.horizontal, 14)
             .padding(.vertical, 10)
             .background(
-                entry.overheard ? AnyShapeStyle(.quinary)
+                (entry.overheard || entry.notSent) ? AnyShapeStyle(.quinary)
                     : isYou ? AnyShapeStyle(Color.accentColor) : AnyShapeStyle(.quaternary),
                 in: RoundedRectangle(cornerRadius: 18, style: .continuous)
             )
@@ -137,29 +137,6 @@ struct ConversationChatView: View {
             .accessibilityElement(children: .contain)
             .accessibilityLabel(Self.timedLabel(entry, thread: threadTargetID))
             if !isYou { Spacer(minLength: 48) }
-        }
-    }
-
-    @ViewBuilder
-    private var controlButtons: some View {
-        Button {
-            playback.togglePause()
-        } label: {
-            Label(playback.isPaused ? "Resume" : "Pause", systemImage: playback.isPaused ? "play.fill" : "pause.fill")
-        }
-        Button {
-            playback.replayLatest()
-        } label: {
-            Label("Replay", systemImage: "arrow.counterclockwise")
-        }
-        .disabled(playback.isCaptureSuppressed)
-        Button {
-            playback.toggleMute()
-        } label: {
-            Label(
-                playback.isMuted ? "Unmute" : "Mute",
-                systemImage: playback.isMuted ? "speaker.wave.2.fill" : "speaker.slash.fill"
-            )
         }
     }
 

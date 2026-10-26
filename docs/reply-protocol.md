@@ -166,10 +166,14 @@ content. Missing or unknown turns leave entries unchanged. Correlation is consum
 with its entry, and cleared on disconnect, reconnect, endpoint replacement or removal without rewriting history.
 A heard entry without a refusal stays sent. Neither heard text nor correlation is logged.
 
-Device advertising and visible not-sent styling (PR C2) remain deferred: the device does not advertise `heard_turns`
-yet. An older host simply omits the optional turn and needs no change. Synthetic verification is recorded in
-[the PR B host test record](testing/heard-turn-host.md), [the PR C1 model test record](testing/heard-turn-app.md) and
-[the PR A protocol test record](testing/heard-turn-protocol.md). This is not physical-device proof.
+The device advertises `heard_turns` alongside `ambient_heard` and `request_refusals` (PR C2). A refused heard entry
+shows "You · not sent" with secondary text and heading on a greyed `.quinary` bubble. VoiceOver labels it "You said,
+not sent" before the message text, like "You said, heard but not sent" for overheard entries. The overheard setting
+still hides only overheard entries, so a refused heard request remains visible. An older host simply omits the
+optional turn and needs no change. Synthetic verification is recorded in [the PR B host test
+record](testing/heard-turn-host.md), [the PR C1/C2 app test record](testing/heard-turn-app.md) and [the PR A protocol
+test record](testing/heard-turn-protocol.md). The app still needs physical accessibility checks; this is not
+physical-device proof.
 
 ### Overheard remarks (#398)
 
