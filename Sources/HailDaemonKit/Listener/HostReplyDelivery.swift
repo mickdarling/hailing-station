@@ -9,6 +9,13 @@ enum ReplyPublicationStatus: Equatable, Sendable {
     case absent, pending, ready
 }
 
+/// Echo bookkeeping follows possible playback; routing receipts require confirmed delivery.
+enum ReplyFrameDelivery<Receipt: Sendable>: Sendable {
+    case delivered(Receipt)
+    case abandoned
+    case refused
+}
+
 /// Connections in privacy mode (#735 S-2c, internally duck): the agent's replies to them are refused from the moment
 /// the host takes privacy until it confirms the exit. Set synchronously, under the router's lock, by the entry itself,
 /// and read inside each reply's final enqueue, so no frame the agent sends after entry is enqueued. Released on the
@@ -480,19 +487,18 @@ extension WebSocketPeer {
         return status
     }
 
-    /// Returns true only for this negotiated connection's successfully dispatched, still-current request. While
+    /// Attempts only this negotiated connection's successfully dispatched, still-current request. While
     /// `hold` holds this connection (#735 S-2c) the enqueue refuses, which also drops the request's record.
-    func deliverHostReply(_ frame: Frame, hold: PrivateReplyHold? = nil) async -> Bool {
+    func deliverHostReply(
+        _ frame: Frame, hold: PrivateReplyHold? = nil, onLateSuccess: (@Sendable () -> Void)? = nil
+    ) async -> ReplyFrameDelivery<Void> {
         let connection = session.connectionID
-        guard !ended, await session.unleasedBindingIsCurrent(frame), let prepared = prepareReplyPublication(frame),
+        guard !ended, await session.unleasedBindingIsCurrent(frame),
+              let prepared = prepareReplyPublication(frame, onLateSuccess: onLateSuccess),
               await session.enqueueHostReply(frame, enqueue: {
                   hold?.holds(connection) != true && prepared.enqueue()
-              }) else { return false }
-        guard await prepared.result() else {
-            finish(reason: "host reply send failed")
-            return false
-        }
-        return true
+              }) else { return .refused }
+        return replyDelivery(await prepared.result(), receipt: ())
     }
 
     func admitsRequestlessReply(_ frame: Frame, lastInput: LastInputRoute? = nil) async -> Bool {
@@ -502,23 +508,32 @@ extension WebSocketPeer {
     }
 
     /// Host-originated to this one connection (rightyo#105 acknowledgements): no route, no pin.
-    func deliverRequestlessReply(_ frame: Frame) async -> Bool { await deliverRoutedReply(frame) != nil }
+    func deliverRequestlessReply(
+        _ frame: Frame, onLateSuccess: (@Sendable () -> Void)? = nil
+    ) async -> ReplyFrameDelivery<LastInputLedger.Entry> {
+        await deliverRoutedReply(frame, onLateSuccess: onLateSuccess)
+    }
 
     /// Returns the selection the reply was delivered under, so its later frames can be pinned to it (#370). The
     /// agent's replies pass `hold` (#735 S-2c), checked in the enqueue; the host's own clips pass none.
     func deliverRoutedReply(
-        _ frame: Frame, lastInput: LastInputRoute? = nil, hold: PrivateReplyHold? = nil
-    ) async -> LastInputLedger.Entry? {
+        _ frame: Frame, lastInput: LastInputRoute? = nil, hold: PrivateReplyHold? = nil,
+        onLateSuccess: (@Sendable () -> Void)? = nil
+    ) async -> ReplyFrameDelivery<LastInputLedger.Entry> {
         let connection = session.connectionID
-        guard !ended, let prepared = prepareReplyPublication(frame),
+        guard !ended, let prepared = prepareReplyPublication(frame, onLateSuccess: onLateSuccess),
               let delivered = await session.enqueueRoutedReply(
                 frame, lastInput: lastInput, enqueue: { hold?.holds(connection) != true && prepared.enqueue() }
-              ) else { return nil }
-        guard await prepared.result() else {
-            finish(reason: "host reply send failed")
-            return nil
-        }
-        return delivered
+              ) else { return .refused }
+        return replyDelivery(await prepared.result(), receipt: delivered)
+    }
+
+    private func replyDelivery<Receipt: Sendable>(
+        _ outcome: PreparedWebSocketReply.Outcome, receipt: Receipt
+    ) -> ReplyFrameDelivery<Receipt> {
+        if replySendSucceeded(outcome) { return .delivered(receipt) }
+        if case .abandoned = outcome { return .abandoned }
+        return .refused
     }
 }
 
@@ -551,19 +566,16 @@ extension WebSocketListener {
         try Task.checkCancellation()
         guard !stopped else { throw WebSocketListenerError.stoppedBeforeReady }
         guard let (peer, status) = candidate else {
-            let delivered = try await publishUncorrelated(validated)
-            ambient?.observeReply(validated)
-            return delivered
+            return try await publishUncorrelated(validated)
         }
         // This refusal has made zero enqueue attempts. Only this code permits bounded same-frame retry.
         guard status == .ready else { throw LocalReplyRefusal.requestPending }
         let late = await peer.session.answersLate(validated)
         // The snapshot may already be stale. Final synchronous gates decide; later send completion
         // failure is ambiguous and must never be treated as a safe pre-publication retry.
-        guard await peer.deliverHostReply(validated, hold: replyHold) else {
-            throw await refusal(validated, on: peer)
-        }
-        ambient?.observeReply(validated) // Own-voice rejection for ambient requests (#269).
+        _ = try await requireDelivery(await peer.deliverHostReply(
+            validated, hold: replyHold, onLateSuccess: lateEchoObservation(validated)
+        ), frame: validated, on: peer)
         if let peerID = peers.first(where: { $0.value === peer })?.key {
             noteRoute(validated, to: peerID, path: late ? "request_late" : "request")
         }
@@ -580,7 +592,8 @@ extension WebSocketListener {
     /// Demo-era single-terminal bridge (#188): with the opt-in flag, a reply carrying no request reference
     /// reaches the one live connection selecting its target. Any explicit reference that is not currently
     /// owned keeps today's refusal, as do zero selecting connections, and several unless one of them owns the active
-    /// ambient stream (#230); this is bounded, not a return to broadcast. The scan is a snapshot; uniqueness is not rescanned at enqueue.
+    /// ambient stream (#230); this is bounded, not a return to broadcast. The scan is a snapshot;
+    /// uniqueness is not rescanned at enqueue.
     private func publishUncorrelated(_ frame: Frame) async throws -> Int {
         guard singleTerminalReplyFallback else { throw LocalReplyRefusal.noRecipient }
         if let delivered = try await publishToLastInput(frame) { return delivered }
@@ -604,9 +617,10 @@ extension WebSocketListener {
         // as the only candidate; check again before handing the reply to it.
         if await isStopped(frame) { throw LocalReplyRefusal.replyStopped }
         guard let (peerID, candidate) = candidates.first else { throw LocalReplyRefusal.noRecipient }
-        guard let delivered = await candidate.deliverRoutedReply(frame, hold: replyHold) else {
-            throw await refusal(frame, on: candidate)
-        }
+        let delivered = try await requireDelivery(await candidate.deliverRoutedReply(
+            frame, hold: replyHold, onLateSuccess: lateEchoObservation(frame)
+        ), frame: frame, on: candidate)
+        // An abandoned frame gets no pin: pins outlive last-input expiry and would extend routing authority.
         pin(frame, to: delivered)
         noteRoute(frame, to: peerID, path: path)
         return 1
@@ -627,9 +641,11 @@ extension WebSocketListener {
         try Task.checkCancellation()
         guard !stopped else { throw WebSocketListenerError.stoppedBeforeReady }
         if await isStopped(frame) { throw LocalReplyRefusal.replyStopped }
-        guard let delivered = await peer.deliverRoutedReply(frame, lastInput: route, hold: replyHold) else {
-            throw await refusal(frame, on: peer)
-        }
+        let delivered = try await requireDelivery(
+            await peer.deliverRoutedReply(
+                frame, lastInput: route, hold: replyHold, onLateSuccess: lateEchoObservation(frame)
+            ), frame: frame, on: peer
+        )
         pin(frame, to: delivered)
         noteRoute(frame, to: peerID, path: "last_input")
         return 1
@@ -647,8 +663,21 @@ extension WebSocketListener {
         lastInput.pin(reply, target: target, to: entry)
     }
 
-    /// Why a delivery that enqueued nothing was refused: `privacyHeld` while its connection is private (#735 S-2c),
-    /// which also stops the reply, so none of it plays after the exit either; `publicationFailed` otherwise.
+    private func requireDelivery<Receipt: Sendable>(
+        _ delivery: ReplyFrameDelivery<Receipt>, frame: Frame, on peer: WebSocketPeer
+    ) async throws -> Receipt {
+        guard case .delivered(let receipt) = delivery else { throw await refusal(frame, on: peer) }
+        ambient?.observeReply(frame)
+        return receipt
+    }
+
+    /// Sendable wiring only records in memory under locks; late callbacks cannot restart an ended stream.
+    func lateEchoObservation(_ frame: Frame) -> @Sendable () -> Void {
+        { [weak ambient] in ambient?.observeReply(frame) }
+    }
+
+    /// Why an unconfirmed delivery, including an abandoned enqueue, was refused: `privacyHeld` while its
+    /// connection is private (#735 S-2c), which also stops later frames; `publicationFailed` otherwise.
     private func refusal(_ frame: Frame, on peer: WebSocketPeer) async -> LocalReplyRefusal {
         guard replyHold.holds(peer.session.connectionID) else { return .publicationFailed }
         if let id = HostSession.replyID(frame) {

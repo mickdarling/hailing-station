@@ -48,15 +48,21 @@ invalidates authority before cancelling the connection.
 the current transport gate. A false return makes no transport submission. A true
 return means enqueued, not delivered or heard. `result()` receives the later
 transport outcome, buffering a completion that arrives before the waiter.
-Completion and cancellation settle the result once; cancellation before an
-outcome invalidates transport authority and cancels the connection. No gate is
-held while waiting. Only one pending result waiter is supported; additional
+Completion and cancellation settle the result once. Pre-enqueue cancellation
+refuses without submission; post-enqueue cancellation abandons the result without
+closing the connection. A transport error or an abandoned send still pending after
+the 30-second stall grace retires transport authority and closes the connection.
+Late success cancels that watchdog but leaves the result abandoned: ambiguous,
+non-retryable refusal. Abandoned frames enter echo bookkeeping only on successful
+send completion, once per frame, so protection covers delayed playback without
+counting audio twice; only confirmed delivery can pin later frames.
+No gate is held while waiting. Only one pending result waiter is supported; additional
 concurrent waiters fail closed rather than replace the original continuation.
 Waiter ownership is reserved before installing cancellation handling; even an
 already-cancelled rejected second invocation cannot cancel the first waiter or
 its shared transport ticket.
-Transport lifecycle is permanently retired before an owning cancellation result
-returns, without waiting for a Network state callback to reach the peer actor.
+Transport lifecycle retirement does not wait for a Network state callback to
+reach the peer actor.
 New ticket issuance and every actual enqueue check that shared synchronized
 lifecycle; rotating a revision cannot reopen a cancelled peer. Ordinary send
 cancellation and observed terminal Network states retire the same lifecycle.

@@ -156,6 +156,7 @@ extension LocalReplyEndpoint {
 
     func expireSubmission(_ id: UUID) {
         guard submissionTasks[id] != nil else { return }
+        replyLogger.error("Local submission deadline expired while submission still running; delivery is ambiguous")
         retire(id)
     }
 

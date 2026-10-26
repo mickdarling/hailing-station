@@ -10,13 +10,13 @@ import Testing
         let submissions = Mutex(0)
         let ticket = PreparedWebSocketReply(permit: try #require(transport.issuePermit()), submit: { completion in
             submissions.withLock { $0 += 1 }
-            completion(true)
-            completion(false)
+            completion(nil)
+            completion(.posix(.EPIPE))
         })
         #expect(ticket.enqueue())
         #expect(!ticket.enqueue())
-        #expect(await ticket.result())
-        #expect(await ticket.result())
+        #expect(await ticket.result() == .sent)
+        #expect(await ticket.result() == .sent)
         #expect(submissions.withLock { $0 } == 1)
     }
 
@@ -25,56 +25,56 @@ import Testing
         let submissions = Mutex(0)
         let ticket = PreparedWebSocketReply(permit: try #require(transport.issuePermit()), submit: { completion in
             submissions.withLock { $0 += 1 }
-            completion(true)
+            completion(nil)
         })
         transport.retire()
         #expect(transport.issuePermit() == nil)
         #expect(!ticket.enqueue())
-        #expect(!(await ticket.result()))
+        #expect(await ticket.result() == .refused)
         #expect(submissions.withLock { $0 } == 0)
     }
 
-    @Test func cancellationBeforeWaitingCompletesFalseOnceAndPreventsLaterSubmission() async throws {
+    @Test func cancellationBeforeEnqueueRefusesWithoutClosingTransport() async throws {
         let transport = ReplyTransportLifecycle()
         let cancellations = Mutex(0)
         let submissions = Mutex(0)
         let ticket = PreparedWebSocketReply(permit: try #require(transport.issuePermit()), submit: { completion in
             submissions.withLock { $0 += 1 }
-            completion(true)
-        }, cancel: { cancellations.withLock { $0 += 1 } })
+            completion(nil)
+        }, cancel: { _ in cancellations.withLock { $0 += 1 } })
         let task = Task {
             withUnsafeCurrentTask { $0?.cancel() }
             return await ticket.result()
         }
-        #expect(!(await task.value))
+        #expect(await task.value == .refused)
         #expect(!ticket.enqueue())
-        #expect(!(await ticket.result()))
-        #expect(cancellations.withLock { $0 } == 1)
+        #expect(await ticket.result() == .refused)
+        #expect(cancellations.withLock { $0 } == 0)
         #expect(submissions.withLock { $0 } == 0)
-        #expect(transport.issuePermit() == nil)
+        #expect(transport.issuePermit() != nil)
     }
 
     @Test func cancellationAfterEnqueueWinsOverLaterCompletion() async throws {
         let transport = ReplyTransportLifecycle()
-        let callback = Mutex<(@Sendable (Bool) -> Void)?>(nil)
+        let callback = Mutex<(@Sendable (NWError?) -> Void)?>(nil)
         let cancellations = Mutex(0)
         let ticket = PreparedWebSocketReply(permit: try #require(transport.issuePermit()), submit: { completion in
             callback.withLock { $0 = completion }
-        }, cancel: { cancellations.withLock { $0 += 1 } })
+        }, cancel: { _ in cancellations.withLock { $0 += 1 } })
         #expect(ticket.enqueue())
         let task = Task {
             withUnsafeCurrentTask { $0?.cancel() }
             return await ticket.result()
         }
-        #expect(!(await task.value))
+        #expect(await task.value == .abandoned)
         let complete = try #require(callback.withLock { stored in
             defer { stored = nil }
             return stored
         })
-        complete(true)
-        #expect(!(await ticket.result()))
-        #expect(cancellations.withLock { $0 } == 1)
-        #expect(transport.issuePermit() == nil)
+        complete(nil)
+        #expect(await ticket.result() == .abandoned)
+        #expect(cancellations.withLock { $0 } == 0)
+        #expect(transport.issuePermit() != nil)
     }
 
     @Test func closingPeerInvalidatesPreviouslyPreparedTicketAndFurtherPreparation() async throws {
@@ -88,19 +88,19 @@ import Testing
         let prepared = try #require(await peer.prepareReplyPublication(helloFrame()))
         await peer.finish(reason: "synthetic closure")
         #expect(!prepared.enqueue())
-        #expect(!(await prepared.result()))
+        #expect(await prepared.result() == .refused)
         #expect(await peer.prepareReplyPublication(helloFrame()) == nil)
     }
 
     @Test(.timeLimit(.minutes(1)))
     func cancelledRejectedWaiterCannotCancelLegitimatePendingWaiter() async throws {
         let transport = ReplyTransportLifecycle()
-        let callback = Mutex<(@Sendable (Bool) -> Void)?>(nil)
+        let callback = Mutex<(@Sendable (NWError?) -> Void)?>(nil)
         let cancellations = Mutex(0)
         let admission = AsyncStream<Void>.makeStream()
         let ticket = PreparedWebSocketReply(permit: try #require(transport.issuePermit()), submit: { completion in
             callback.withLock { $0 = completion }
-        }, cancel: { cancellations.withLock { $0 += 1 } }, waiterAdmitted: {
+        }, cancel: { _ in cancellations.withLock { $0 += 1 } }, waiterAdmitted: {
             admission.continuation.yield(())
         })
         #expect(ticket.enqueue())
@@ -111,15 +111,15 @@ import Testing
             withUnsafeCurrentTask { $0?.cancel() }
             return await ticket.result()
         }
-        #expect(!(await rejected.value))
+        #expect(await rejected.value == .refused)
         #expect(cancellations.withLock { $0 } == 0)
         let complete = try #require(callback.withLock { stored in
             defer { stored = nil }
             return stored
         })
-        complete(true)
-        #expect(await first.value)
-        #expect(await ticket.result())
+        complete(nil)
+        #expect(await first.value == .sent)
+        #expect(await ticket.result() == .sent)
         #expect(cancellations.withLock { $0 } == 0)
         admission.continuation.finish()
     }
@@ -144,7 +144,7 @@ import Testing
         _ = try #require(await submissions.next())
         #expect(!(await peer.ended))
         #expect(!prepared.enqueue())
-        #expect(!(await prepared.result()))
+        #expect(await prepared.result() == .refused)
         #expect(await peer.prepareReplyPublication(helloFrame()) == nil)
         #expect(!(await peer.send(helloFrame())))
         let finishClose = try #require(completion.withLock { stored in
