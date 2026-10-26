@@ -53,6 +53,8 @@ actor RecipientContextAdapter: ProviderContextDelivering, ProviderReplyBindingLe
     }
     /// Every later handoff fails after it is recorded; `error` lets a test name the refusal (#894).
     func failHandoff(with error: any Error = ProviderCoordinatorSyntheticError.arbitraryFailure) { failure = error }
+    /// Later handoffs succeed again (#894: the target's input was cleared).
+    func passHandoff() { failure = nil }
     func holdHandoff() { held = true; entered = false }
     /// #896: neither a missing dispatch nor task cancellation may strand the test's lane.
     func waitForHandoff(within: Duration = .seconds(20)) async {

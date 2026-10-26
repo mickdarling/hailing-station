@@ -68,7 +68,9 @@ struct RightyoAmbientDispatchStep: RightyoDispatching {
 /// One ambient listening stream (#203): a `rightyo listen --mode stdin` child fed phone audio, whose JSONL
 /// passes through `RightyoInputEvent.decode` and a `RightyoInputConsumer` bound to this pipeline's own
 /// `hail-<uuid>` session, target and pinned binding. Admitted requests go to the injected dispatcher on behalf
-/// of `connection`. Any decode, consumer, dispatch or child failure ends the stream; nothing restarts it.
+/// of `connection`. Any decode, consumer, dispatch or child failure ends the stream; nothing restarts it. A request
+/// that sends nothing because a voice route refused it (#636) or the target's input already holds unsent text (#894) is
+/// not a failure: it is handed to the host and the stream goes on.
 /// Audio and transcript content are never logged; the summary carries counts only.
 public final class RightyoAmbientPipeline: Sendable {
     public struct Configuration: Sendable {
@@ -136,6 +138,9 @@ public final class RightyoAmbientPipeline: Sendable {
         /// return at once.
         public var routing: RightyoVoiceRouting?
         public var onVoiceRouteRefused: (@Sendable (RightyoVoiceRouting.Refusal) -> Void)?
+        /// Called once per un-routed request the target refused because its input already holds unsent text (#894),
+        /// with that refusal (`inputPending`): nothing was typed, and the stream goes on. It must return at once.
+        public var onDeliveryRefused: (@Sendable (LocalDispatchRefusal) -> Void)?
         /// Called when RightyO says the owner's voice is `unrecognized` on this input, or `recognized` again
         /// (rightyo#164), only on a session whose `started` advertised `owner_voice`, each state at most once and
         /// `recognized` only after `unrecognized`. It must return at once.
@@ -194,6 +199,7 @@ public final class RightyoAmbientPipeline: Sendable {
     private let onDuckUnsupported: (@Sendable () -> Bool)?
     private let onVoiceDestination: (@Sendable (String, VoiceDestinations.Destination, String) -> Void)?
     private let onVoiceRouteRefused: (@Sendable (RightyoVoiceRouting.Refusal) -> Void)?
+    private let onDeliveryRefused: (@Sendable (LocalDispatchRefusal) -> Void)?
     private let acknowledgement: AmbientAckRelay
     private let heard: AmbientHeardRelay
     private let overheard: AmbientOverheardRelay
@@ -230,7 +236,7 @@ public final class RightyoAmbientPipeline: Sendable {
         (startDeadline, startsPrivate) = (configuration.startDeadline, configuration.startPrivate)
         ackDeadline = configuration.ackDeadline
         onVoiceDestination = configuration.onVoiceDestination
-        onVoiceRouteRefused = configuration.onVoiceRouteRefused
+        (onVoiceRouteRefused, onDeliveryRefused) = (configuration.onVoiceRouteRefused, configuration.onDeliveryRefused)
         acknowledgement = relay
         self.heard = heard
         overheard = AmbientOverheardRelay(onOverheard: configuration.onOverheard, isEcho: configuration.isEcho)
@@ -295,9 +301,7 @@ public final class RightyoAmbientPipeline: Sendable {
                 if event.type == "request", let note = await consumer.lastVoiceDestination {
                     onVoiceDestination?(note.destination, note.target, note.text)
                 }
-                if event.type == "request", let refusal = await consumer.lastRouteRefusal {
-                    onVoiceRouteRefused?(refusal)
-                }
+                await observeRefusals(event)
             }
             try await consumer.finish()
             try duck.checkStarted()
@@ -322,6 +326,14 @@ extension RightyoAmbientPipeline {
         case .off: onVoiceMeeting?(false, nil)
         case nil: break
         }
+    }
+
+    /// Hands a request that sent nothing and ends nothing to the host: refused by a voice route (#636), or by the
+    /// target's input already holding unsent text (#894). A request is at most one of them.
+    private func observeRefusals(_ event: RightyoInputEvent) async {
+        guard event.type == "request" else { return }
+        if let refusal = await consumer.lastRouteRefusal { onVoiceRouteRefused?(refusal) }
+        if let refusal = await consumer.lastDeliveryRefusal { onDeliveryRefused?(refusal) }
     }
 
     /// Hands one raw mono 16 kHz s16le chunk to the child without blocking; false once input has closed or for
