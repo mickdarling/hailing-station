@@ -51,6 +51,7 @@ final class RestoreRig: Sendable {
         fake = try FakeRightyo("""
         SPAWN=1
         while ! /bin/mkdir "spawn.$SPAWN" 2>/dev/null; do SPAWN=$((SPAWN + 1)); done
+        echo "$*" > "argv.$SPAWN.txt"
         \(FakeRightyo.ackingControl(append: true).replacingOccurrences(of: "control.txt", with: "control.$SPAWN.txt"))
         \(holdStarted ? FakeRightyo.untilGo : "")
         if [ "$SPAWN" = \(speaker) ]; then
@@ -58,7 +59,8 @@ final class RestoreRig: Sendable {
         else
         /usr/bin/sed -n -e 1p events.jsonl | /usr/bin/sed -e "s/formed-demo/$7/g"
         fi
-        \(FakeRightyo.ackingTail)
+        \(FakeRightyo.ackingTail.replacingOccurrences(of: "/bin/cat > /dev/null",
+                                                    with: "/bin/cat > audio.$SPAWN.raw"))
         """)
         try fake.install(fixture: "enrolled-formed-request.jsonl")
         try Self.prepare(fake, phrase: phrase ?? "archive the project", meeting: meeting)
@@ -73,6 +75,11 @@ final class RestoreRig: Sendable {
     private static func prepare(_ fake: FakeRightyo, phrase: String, meeting: String?) throws {
         var lines = try fake.recorded("events.jsonl").split(separator: "\n").map {
             $0.replacingOccurrences(of: "Rightyo, archive the project.", with: "Rightyo, \(phrase).")
+        }
+        if phrase == "stop recording" {
+            // Privacy entry requires a live owner voiceprint; the meeting fixture alone carries only its role.
+            lines = lines.map { $0.replacingOccurrences(of: #""type": "transcript""#,
+                with: #""role_source": "voiceprint", "type": "transcript""#) }
         }
         lines[0] = lines[0].replacingOccurrences(of: "\"phase\": \"started\"",
             with: "\"addressing\": {\"names\": [\"Rightyo\"]}, \"duck\": {\"version\": 3}, "
@@ -99,9 +106,15 @@ final class RestoreRig: Sendable {
     }
 
     /// Connects a device and starts its stream, waiting until its child is the active one.
-    func start(name: String = "test", kind: String? = "phone") async throws -> (URLSessionWebSocketTask, UUID) {
+    func start(name: String = "test", kind: String? = "phone",
+               resume: Bool = false) async throws -> (URLSessionWebSocketTask, UUID) {
         let (socket, connection) = try await connect(name: name, kind: kind)
-        try await recipientSocketSend(audio(UUID(), 0), on: socket)
+        var frame = audio(UUID(), 0)
+        if case .audio(var payload) = frame.payload {
+            payload.isResume = resume
+            frame.payload = .audio(payload)
+        }
+        try await recipientSocketSend(frame, on: socket)
         let router = router
         #expect(await eventually { router.activeConnection() == connection }, "restore start marker")
         return (socket, connection)
