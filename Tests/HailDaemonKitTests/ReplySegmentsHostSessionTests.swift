@@ -33,7 +33,8 @@ import Testing
         let pong = await session.receive(sessionFrame(payload: .control(.ping(nonce: "after"))))
         #expect(try onlyControl(pong) == .pong(nonce: "after"))
         // The refusal has fixed text; neither reply identity nor content enters any logging path.
-        #expect(!String(decoding: try FrameCoding.encode(result.frames[0]), as: UTF8.self).contains(reply.uuidString))
+        let encoded = try #require(String(bytes: FrameCoding.encode(result.frames[0]), encoding: .utf8))
+        #expect(!encoded.contains(reply.uuidString))
     }
 }
 

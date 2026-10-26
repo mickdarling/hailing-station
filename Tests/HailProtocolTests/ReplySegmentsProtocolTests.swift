@@ -32,7 +32,7 @@ import Testing
     func invalidSegmentEndValuesAreRefused(raw: String) throws {
         var object = try audioObject()
         object.removeValue(forKey: "segmentEnd")
-        let base = String(decoding: try JSONSerialization.data(withJSONObject: object), as: UTF8.self)
+        let base = try #require(String(bytes: JSONSerialization.data(withJSONObject: object), encoding: .utf8))
         #expect(throws: DecodingError.self) {
             try decodeAudio(String(base.dropLast()) + ",\"segmentEnd\":" + raw + "}")
         }
