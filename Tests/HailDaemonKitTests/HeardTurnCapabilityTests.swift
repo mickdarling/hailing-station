@@ -45,12 +45,12 @@ import Testing
         let records = HeardTurnRecords()
         #expect(await !peer.postAmbientHeard(HeardTurnRig.text, target: RecipientTestRig.target,
                                              request: UUID(), records: records))
-        #expect(records.count == 0)
+        #expect(records.isEmpty)
         records.record(UUID(), turn: UUID())
         #expect(records.count == 1)
         records.close()
         records.record(UUID(), turn: UUID())
-        #expect(records.count == 0)
+        #expect(records.isEmpty)
         await listener.stop(reason: "synthetic test complete")
     }
 }

@@ -77,3 +77,66 @@ Results:
   `Sources/HailDaemonKit/Listener/`. The fourth production file is `Input/RightyoAmbientPipeline.swift`.
   `security:critical` and independent exact-head review remain required for a future PR. No online issue-state,
   PR-shape, review, or GitHub check was attempted under the offline constraint.
+
+## Revision 2: delivery-refusal notices and lint limits
+
+The current delivery path cannot set `lastDeliveryRefusal` before the heard callback. In
+`RightyoInputConsumer.deliver`, only an un-routed `inputPending` refusal sets that property; a routed refusal sets
+`lastRouteRefusal` instead. `RightyoAmbientDispatchStep.dispatch` awaits `announce()` (which awaits `heard`) before
+calling the dispatcher for an un-routed request. Neither missing `ambient_heard` support nor absent heard text skips
+`AmbientHeardRelay.deliver()`: capability checks happen inside `HostSession.heardFrame`, and text only gates showing.
+The producer validator also requires a request turn and nonempty text, so a no-text request is not admitted today.
+The pipeline awaits consume and `observeRefusals` in the same event loop before reading the next event; its refusal
+closure captures the current request key before queuing a delayed notice. These are source-path findings, not
+physical-device evidence.
+
+Regardless of those current preconditions, `AmbientHeardRequests.finish` and the router now accept an optional
+request key. `AmbientHeardRelay.finish(refusal:)` forwards every refusal even without delivery or text; only a
+successfully recorded heard turn can add a turn to its notice. Completion always clears text and key, and observing
+a new request resets the key. No-text delivery leaves the key nil. The existing acknowledgement ordering, privacy,
+selection, and capability gates on the line and clip remain in force.
+
+`AmbientWiringDeliveryRefusalTests` verifies the actual router's refusal line and "Nothing was sent." clip, with no
+turn, for a device lacking `ambient_heard` (even with `heard_turns`) and at the no-text relay boundary both with and
+without delivery. The no-text boundary is synthetic because producer validation rejects such a request today.
+It also verifies that completion and a new request observation independently prevent key reuse.
+`AmbientWiringHeardTurnTests.aSuccessfulRequestThenARefusalUseOnlyTheSecondTurn` covers the real two-request pipeline:
+the first succeeds and clears its record; the second is refused with only its own turn. Existing tests retain the
+reverse sequence and delayed-first-refusal coverage.
+
+The lint repairs use `HeardTurnRecords.isEmpty` and `String(bytes:encoding:)`, move the pipeline's event loop into an
+extension, and move listener lifecycle methods into an extension while retaining all stored properties in the actor.
+The class and actor bodies now contain 115 and 79 nonblank, noncomment lines respectively (previously 152 and 153).
+Every Swift file changed by PR B was checked against `.swiftlint.yml`: code lines at most 120 columns, type bodies
+at most 150 lines where enabled, function-body and file-length limits, `empty_count`, and
+`optional_data_string_conversion`. The two pre-existing production file-length exemptions and the router
+configuration/state type-body exemption are retained; no lint disable was added. SwiftLint is absent
+on this VM, so this is a manual configuration audit, not a claim of running host `swiftlint lint --strict`.
+
+Revision 2 verification uses the same flags listed above, a 600-second process-group kill trap per phase, four build
+jobs, no parallel tests, no extra load workers, no network, and no installs. The exact test selections are:
+
+```bash
+taskpolicy -b swift build -Xswiftc -warnings-as-errors "${flags[@]}"
+taskpolicy -b swift build --build-tests -Xswiftc -warnings-as-errors "${flags[@]}"
+for iteration in {1..10}; do
+  taskpolicy -b swift test --skip-build --no-parallel \
+    --filter 'HeardTurn|AmbientWiringDeliveryRefusal' "${flags[@]}"
+done
+taskpolicy -b swift test --skip-build --no-parallel \
+  --filter 'AmbientHeard|VoiceRoute|RouteRefusal|InputPending|Acknowledg|AmbientWiring|Privacy|HeardTurn|DeliveryRefus' \
+  "${flags[@]}"
+git diff --check
+```
+
+
+Revision 2 results:
+
+- Production build and test build passed with warnings treated as errors (5.32 and 28.28 seconds).
+- Focused heard-turn and delivery-refusal selection passed 10/10 runs: 23 test functions in six suites,
+  42 case executions per run, 420 total case executions. This includes the pre-existing protocol and heard tests.
+- Broad serial sweep passed once: 448 test functions in 102 suites, 729 case executions (247.348 seconds).
+- Manual lint audit and `git diff --check` passed. PR B still changes exactly four production files under the
+  PR-shape checker's exclusions and rename handling; this revision touches three of those four.
+- All results are host-local synthetic proof. No simulator, physical device, installed build, remote metadata,
+  review, or GitHub checks were used or claimed. No online PR or issue mutation was made.

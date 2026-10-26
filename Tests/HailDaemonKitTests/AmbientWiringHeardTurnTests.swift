@@ -67,6 +67,30 @@ import Testing
         })
     }
 
+    @Test func aSuccessfulRequestThenARefusalUseOnlyTheSecondTurn() async throws {
+        let run = try await PendingInputRun.make(options: .init(capabilities: HeardTurnRig.capabilities))
+        defer { run.close() }
+        try await run.speak()
+        let turn1 = try await heard(on: run.socket)
+        #expect(try await run.seen(2) == AmbientWiringInputPendingTests.acknowledged)
+        let connection = try #require(await run.connection)
+        #expect(await eventually { await run.adapter.contexts.count == 1 })
+        #expect(await eventually { await run.env.listener.heardTurnCount(connection) == 0 })
+        await run.adapter.failHandoff(with: AdapterError.inputPending(reason: .staleInput))
+        try run.release("go2")
+        let turn2 = try await heard(on: run.socket)
+        #expect(turn1 != turn2)
+        #expect(try await run.seen(2) == AmbientWiringInputPendingTests.acknowledged)
+        let refusal = try await receiveFrame(on: run.socket, step: "second request refused")
+        #expect(refusal.payload == .control(.error(code: .voiceRouteRefused,
+                                                  message: AmbientWiringInputPendingTests.line, turn: turn2)))
+        #expect(try await run.seen(2) == [.text("Nothing was sent."), .audio])
+        #expect(await eventually { run.log.details("ambient_delivery_refused").count == 1 })
+        #expect(await run.env.listener.heardTurnCount(connection) == 0)
+        try await barrier(on: run.socket, step: "exactly one refusal after two requests")
+        await run.finish()
+    }
+
     @Test func dispatchFailureStillCompletesTheHeardRequest() async throws {
         let fake = try FakeRightyo(AmbientWiringAcknowledgementTests.fixtureWithNames)
         defer { fake.cleanUp() }
@@ -81,7 +105,7 @@ import Testing
             shown.withLock { $0.append(request) }
         }, finish: { request, refusal in
             #expect(refusal == nil)
-            finished.withLock { $0.append(request) }
+            if let request { finished.withLock { $0.append(request) } }
         })
         let pipeline = try RightyoAmbientPipeline(configuration: settings, dispatcher: HeardTurnFailingDispatcher())
         pipeline.finishInput()
@@ -95,7 +119,8 @@ import Testing
         let finished = Mutex(0)
         let relay = AmbientHeardRelay(onHeard: nil, requests: AmbientHeardRequests(show: { _, _ in
             shown.withLock { $0 += 1 }
-        }, finish: { _, refusal in
+        }, finish: { request, refusal in
+            #expect(request == nil)
             #expect(refusal == .inputPending)
             finished.withLock { $0 += 1 }
         }))

@@ -135,6 +135,7 @@ final class HeardTurnRecords: Sendable {
     }
     private let state = Mutex(State())
     var count: Int { state.withLock { $0.entries.count } }
+    var isEmpty: Bool { state.withLock { $0.entries.isEmpty } }
 
     func record(_ request: UUID, turn: UUID) {
         state.withLock { state in

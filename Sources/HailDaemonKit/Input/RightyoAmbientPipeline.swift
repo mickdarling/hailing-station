@@ -270,7 +270,9 @@ public final class RightyoAmbientPipeline: Sendable {
     public var echoDropped: Int { get async { await consumer.echoDropped } }
     /// Requests dropped because the speaker's dismissal had withdrawn them (rightyo#98). A count only.
     public var withdrawnDropped: Int { get async { await consumer.withdrawnDropped } }
+}
 
+extension RightyoAmbientPipeline {
     /// Consumes the child's events until it ends. Returns after a clean terminal session event and EOF; throws
     /// the first decode, consumer, dispatch or transport error. Either way the child is stopped and reaped.
     public func run() async throws -> Summary {
@@ -819,7 +821,7 @@ final class AmbientAckRelay: Sendable {
 /// Host-only heard and completion callbacks, paired by a fresh local request key (#923).
 struct AmbientHeardRequests: Sendable {
     let show: @Sendable (UUID, String) async -> Void
-    let finish: @Sendable (UUID, LocalDispatchRefusal?) async -> Void
+    let finish: @Sendable (UUID?, LocalDispatchRefusal?) async -> Void
 }
 
 /// The admitted request's heard text (#318), taken once at delivery. A separate content-free request key (#923)
@@ -840,17 +842,20 @@ final class AmbientHeardRelay: Sendable {
 
     func observe(_ event: RightyoInputEvent) {
         guard onHeard != nil || requests != nil else { return }
-        held.withLock { $0.text = event.type == "request" ? event.turn?.text : nil }
+        held.withLock { state in
+            state.text = event.type == "request" ? event.turn?.text : nil
+            if event.type == "request" { state.request = nil }
+        }
     }
 
     func deliver() async {
         let (request, text) = held.withLock { state in
-            let request = UUID()
+            let request = state.text == nil ? nil : UUID()
             state.request = request
             defer { state.text = nil }
             return (request, state.text)
         }
-        if let text {
+        if let request, let text {
             await onHeard?(text)
             await requests?.show(request, text)
         }
@@ -861,7 +866,8 @@ final class AmbientHeardRelay: Sendable {
             defer { state.request = nil; state.text = nil }
             return state.request
         }
-        if let request { await requests?.finish(request, refusal) }
+        // Refusals are notices even when delivery never supplied a heard request key.
+        if request != nil || refusal != nil { await requests?.finish(request, refusal) }
     }
 }
 

@@ -128,7 +128,9 @@ public actor WebSocketListener {
         if stopped { return }
         await withCheckedContinuation { stopWaiters.append($0) }
     }
+}
 
+extension WebSocketListener {
     public func stop(reason: String = "requested") async {
         guard !stopped else { return }
         stopped = true
@@ -1159,7 +1161,7 @@ extension AmbientRightyoRouter {
     }
 
     /// Carries a host-local request key through heard delivery and completion (#923). Neither words nor keys log.
-    private func heardRequests(
+    func heardRequests(
         on connection: UUID, listener: WebSocketListener, notices: AmbientRefusalNotices
     ) -> AmbientHeardRequests {
         let target = configuration.target
@@ -1167,7 +1169,7 @@ extension AmbientRightyoRouter {
         return AmbientHeardRequests(show: { [weak listener] request, text in
             await listener?.showAmbientHeard(connection: connection, target: target, text: text, request: request)
         }, finish: { [weak listener] request, refusal in
-            if let refusal { refused(request, refusal) } else {
+            if let refusal { refused(request, refusal) } else if let request {
                 await listener?.finishHeardRequest(request, connection: connection)
             }
         })
@@ -1610,7 +1612,7 @@ extension AmbientRightyoRouter {
     /// never the words, the text left in the input, or the target.
     fileprivate func deliveryRefused(
         on connection: UUID, listener: WebSocketListener, notices: AmbientRefusalNotices
-    ) -> @Sendable (UUID, LocalDispatchRefusal) -> Void {
+    ) -> @Sendable (UUID?, LocalDispatchRefusal) -> Void {
         { [weak self, weak listener] request, refusal in
             let acknowledged = notices.acknowledgement
             notices.chain.enqueue { [weak self, weak listener] in

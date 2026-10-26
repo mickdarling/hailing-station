@@ -65,7 +65,8 @@ struct HeardTurnRig {
         var legacy = frame
         legacy.payload = .control(control)
         #expect(try FrameCoding.encode(frame) == FrameCoding.encode(legacy))
-        #expect(try !String(decoding: FrameCoding.encode(frame), as: UTF8.self).contains("\"turn\""))
+        let encoded = try #require(String(bytes: FrameCoding.encode(frame), encoding: .utf8))
+        #expect(!encoded.contains("\"turn\""))
     }
 }
 
