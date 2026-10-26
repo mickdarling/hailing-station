@@ -15,6 +15,11 @@ enum HostDeliveryOutcome: Sendable, Equatable {
     /// The target may have received the text, but no reply ownership survived the handoff.
     case unowned(String)
     case refused(ErrorCode, String)
+    /// The target's input already holds unsent text (#894): nothing was handed off. Its own name and plain reason,
+    /// never the text; on the wire it is still `not_allowed`, so the protocol is unchanged.
+    case inputPending
+
+    static let inputPendingReason = "the target's input already holds unsent text"
 }
 
 /// One input's reply owner. A contextual adapter receives `context` with the text. A host-minted ambient reference on
@@ -102,6 +107,10 @@ extension HostSession {
             return failure(.notAllowed, message, close: false, version: version)
         case .refused(let code, let message):
             return failure(refusal(code), message, close: false, version: version)
+        case .inputPending:
+            return failure(
+                refusal(.notAllowed), HostDeliveryOutcome.inputPendingReason, close: false, version: version
+            )
         }
     }
 
@@ -137,6 +146,9 @@ extension HostSession {
         } catch AdapterError.deliveryFailed(let message) where message == PastedContent.agentOnlyRefusal {
             // The tmux pane was not running an agent (#608): said plainly, as a paste refusal the device keeps.
             return .refused(.notAllowed, PastedContent.agentOnlyRefusal)
+        } catch AdapterError.inputPending {
+            // Unsent text already in the target's input (#894): kept apart from policy, lockdown and rebind refusals.
+            return .inputPending
         } catch {
             return .refused(deliveryCode(error), "target action was refused")
         }

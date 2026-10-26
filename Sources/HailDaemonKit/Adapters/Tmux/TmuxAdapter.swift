@@ -97,10 +97,9 @@ public actor TmuxAdapter: Adapter {
         try abandoned.check()
         let session = try await verified(target, binding: binding)
         guard !tainted.contains(session.paneID) else {
+            // Named, not generic (#894); clearing the pane by hand still needs a haild restart to lift the taint.
             evidence.inputPending(.tainted, in: session.paneID, seen: nil, own: lastTails[session.paneID])
-            throw AdapterError.deliveryFailed(
-                "unsubmitted text left in pane \(target); clear it and restart haild before delivering again"
-            )
+            throw AdapterError.inputPending(reason: .tainted)
         }
         let tail = PayloadTail(text)
         let pending = [tail, lastTails[session.paneID]]
@@ -121,6 +120,9 @@ public actor TmuxAdapter: Adapter {
             // The commit point: nothing is submitted (pasted text stays, no rollback), or the Enter is sent regardless.
             guard abandoned.commit() else { throw CancellationError() }
             try await submit(session, target: target, tail: tail, acceptance: acceptance)
+        } catch AdapterError.deliveryFailed(let message) where !typed && message == Self.appearedRefusal(target) {
+            // Text appeared before the paste, so nothing was typed and the pane stays untainted; named (#894).
+            throw AdapterError.inputPending(reason: .appeared)
         } catch {
             // Abandonment before the paste leaves the pane clean; pasted and not known submitted taints it.
             if typed { tainted.insert(session.paneID) }
@@ -148,7 +150,7 @@ public actor TmuxAdapter: Adapter {
         try abandoned.check()
         guard left == .submitted else {
             evidence.inputPending(.staleInput, in: session.paneID, seen: seen, own: pending[1])
-            throw AdapterError.deliveryFailed("unsubmitted text is already in the input of pane \(target)")
+            throw AdapterError.inputPending(reason: .staleInput)
         }
         return await observePane(session.paneID)
     }
@@ -204,5 +206,14 @@ public actor TmuxAdapter: Adapter {
         let result = try await runner.run(tmuxPath, Self.baseArguments(socket: socket) + arguments)
         guard result.exitCode == 0 else { throw failure(result.errorText) }
         return result
+    }
+}
+
+extension TmuxAdapter {
+    /// The paste step's own refusal for text that appeared while its buffer filled, word for word as
+    /// `TmuxAdapter+Paste.swift` throws it; `performDelivery` names it `inputPending(.appeared)` (#894). Tests pin
+    /// the pair, so a reworded refusal there fails them rather than falling back to a generic delivery failure.
+    static func appearedRefusal(_ target: String) -> String {
+        "unsubmitted text appeared in the input of pane \(target)"
     }
 }

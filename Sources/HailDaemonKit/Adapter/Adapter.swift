@@ -32,6 +32,21 @@ public enum AdapterError: Error, Equatable, Sendable {
     case rebound(String)
     case deliveryFailed(String)
     case captureFailed(String)
+    /// The target's input already holds text that was never submitted, so nothing was delivered (#894). Only the
+    /// reason is named: neither the pending text nor the refused text is carried, previewed or hashed.
+    case inputPending(reason: PendingInputReason)
+}
+
+/// Why a delivery was refused with unsent text already in the target's input (#894), as a log-safe token.
+public enum PendingInputReason: String, Sendable, Equatable, CustomStringConvertible {
+    /// Text at the cursor did not leave within the adapter's wait for it to clear.
+    case staleInput = "stale_input"
+    /// Text appeared at the cursor while the delivery was being prepared, before anything was pasted.
+    case appeared
+    /// An earlier delivery there never reached a known submit; refused until the adapter is restarted.
+    case tainted
+
+    public var description: String { rawValue }
 }
 
 /// Registered input shape, not a client-selected label or permission grant (#152).
