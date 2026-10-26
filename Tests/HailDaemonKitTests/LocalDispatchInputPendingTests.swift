@@ -60,10 +60,11 @@ import Testing
         }
         #expect(!(await appeared.runner.calls).contains { $0.contains("paste-buffer") }, "refused before the paste")
 
-        let taintedPane = ScriptedPane(afterEnter: [ScriptedPane.absorbedScreen, ScriptedPane.absorbedTwiceScreen])
-        let tainted = EvidenceHarness(taintedPane, timing: .fast)
-        // A submit that was never observed is a delivery failure, not pending input; it taints the pane.
-        await #expect(throws: AdapterError.self) {
+        let taintedPane = ScriptedPane()
+        // tmux refuses the Enter: a submit decided failed by the script alone, never by a lapsed confirm deadline.
+        let tainted = EvidenceHarness(taintedPane.refusingEnter(), timing: .fast)
+        // A submit that never succeeded is a delivery failure, not pending input; it taints the pane.
+        await #expect(throws: AdapterError.deliveryFailed("synthetic refusal")) {
             try await tainted.adapter.deliver("synthetic input", to: "codex", binding: nil)
         }
         taintedPane.reset(baseline: ScriptedPane.oldScreen)
@@ -101,10 +102,11 @@ import Testing
     }
 
     @Test func aTaintedPaneIsRefusedAsInputPendingAndItsFailedSubmitIsNot() async throws {
-        let pane = ScriptedPane(afterEnter: [ScriptedPane.absorbedScreen, ScriptedPane.absorbedTwiceScreen])
-        let runner = FakeCommandRunner { pane.respond($0) }
+        let pane = ScriptedPane()
+        // tmux refuses the Enter after the paste, so the submit fails by the script, never by a lapsed deadline.
+        let runner = pane.refusingEnter()
         let (session, _) = try await Self.session(Self.tmux(runner))
-        // The Enter is never seen to submit: an ordinary delivery failure, still the generic refusal.
+        // The text is pasted and never known submitted: an ordinary delivery failure, still the generic refusal.
         await #expect(throws: LocalDispatchRefusal.deliveryRefused) {
             try await session.dispatch(Self.request("synthetic input"))
         }
@@ -113,7 +115,7 @@ import Testing
         await #expect(throws: LocalDispatchRefusal.inputPending) {
             try await session.dispatch(Self.request("later input"))
         }
-        #expect(await runner.delivered == ["synthetic input", "Enter", "Enter"])
+        #expect(await runner.delivered == ["synthetic input", "Enter"])
     }
 
     @Test func everyOtherRefusalOfTheTargetStaysDeliveryRefused() async throws {

@@ -6,11 +6,15 @@ import Testing
 @Suite struct TmuxSubmitConfirmationTests {
     private static let binding = "$2@1758230001/%2:502"
     private static let fast = timing(settleLimit: .seconds(5))
+    /// For the scripts that reach the retry (#910).
+    private static let retrying = timing(settleLimit: .seconds(5), confirmLimit: ScriptedPane.retryConfirmLimit)
 
-    private static func timing(settleLimit: Duration, settleFloor: Duration = .milliseconds(1)) -> TmuxSubmitTiming {
+    private static func timing(
+        settleLimit: Duration, settleFloor: Duration = .milliseconds(1), confirmLimit: Duration = .milliseconds(500)
+    ) -> TmuxSubmitTiming {
         TmuxSubmitTiming(
             settleFloor: settleFloor, pollInterval: .milliseconds(2), quiet: .milliseconds(6),
-            settleLimit: settleLimit, confirmLimit: .milliseconds(500), clearLimit: .milliseconds(120)
+            settleLimit: settleLimit, confirmLimit: confirmLimit, clearLimit: .milliseconds(120)
         )
     }
 
@@ -84,7 +88,7 @@ import Testing
         // #304: a TUI that read the Enter together with text inserts a newline; the tail is still in the input,
         // with only whitespace before the cursor, and the pane changed, so the target is alive: one retry.
         let pane = ScriptedPane(afterEnter: [ScriptedPane.absorbedScreen, ScriptedPane.submittedScreen])
-        let harness = adapter(pane)
+        let harness = adapter(pane, timing: Self.retrying)
 
         try await harness.adapter.deliver("synthetic input", to: "codex", binding: Self.binding)
 
@@ -128,7 +132,7 @@ import Testing
 
     @Test func anEnterNeverObservedFailsAfterOneRetryAndTaintsThePane() async throws {
         let pane = ScriptedPane(afterEnter: [ScriptedPane.absorbedScreen, ScriptedPane.absorbedTwiceScreen])
-        let harness = adapter(pane)
+        let harness = adapter(pane, timing: Self.retrying)
 
         await #expect(throws: AdapterError.self) {
             try await harness.adapter.deliver("synthetic input", to: "codex", binding: nil)
@@ -144,7 +148,7 @@ import Testing
         let pane = ScriptedPane(
             afterEnter: [ScriptedPane.absorbedScreen, ScriptedPane.submittedScreen], rebindAfterEnter: true
         )
-        let harness = adapter(pane)
+        let harness = adapter(pane, timing: Self.retrying)
 
         await #expect(throws: AdapterError.rebound("codex")) {
             try await harness.adapter.deliver("synthetic input", to: "codex", binding: Self.binding)
