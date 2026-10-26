@@ -52,19 +52,19 @@ struct ReplySegmenterTests {
     }
 
     @Test func unspacedSentencesAndJoin() throws {
-        let cases: [(String, Int, [String])] = [
-            ("第一句。第二句！第三句？", 2, ["第一句。第二句！", "第三句？"]),
-            ("「第一句。」（第二句！）『第三句？』", 2, ["「第一句。」（第二句！）", "『第三句？』"]),
-            ("第一句．Second!第三句？", 2, ["第一句．Second!", "第三句？"]),
-            ("First!Second?Third.", 1, ["First!", "Second?", "Third."]),
-            ("First!第二句。Third?第四句！", 2, ["First!第二句。", "Third?第四句！"]),
-            ("A!B?", 2, ["A!B?"])
+        let cases: [UnspacedCase] = [
+            UnspacedCase("第一句。第二句！第三句？", 2, ["第一句。第二句！", "第三句？"]),
+            UnspacedCase("「第一句。」（第二句！）『第三句？』", 2, ["「第一句。」（第二句！）", "『第三句？』"]),
+            UnspacedCase("第一句．Second!第三句？", 2, ["第一句．Second!", "第三句？"]),
+            UnspacedCase("First!Second?Third.", 1, ["First!", "Second?", "Third."]),
+            UnspacedCase("First!第二句。Third?第四句！", 2, ["First!第二句。", "Third?第四句！"]),
+            UnspacedCase("A!B?", 2, ["A!B?"])
         ]
-        for (text, limit, expected) in cases {
-            let segmenter = ReplySegmenter(configuration: try ReplySegmentation(maxSentences: limit, maxWords: 1))
-            let pieces = segmenter.segments(text)
-            #expect(pieces == expected)
-            #expect(pieces.joined() == text)
+        for item in cases {
+            let configuration = try ReplySegmentation(maxSentences: item.limit, maxWords: 1)
+            let pieces = ReplySegmenter(configuration: configuration).segments(item.text)
+            #expect(pieces == item.expected)
+            #expect(pieces.joined() == item.text)
         }
         let segmenter = ReplySegmenter(configuration: try ReplySegmentation(maxSentences: 1))
         #expect(segmenter.segments("3.5 v1.2 https://example.invalid/a.b e.g. intact. Next.")
@@ -158,5 +158,16 @@ struct ReplySegmenterTests {
                 }
             }
         }
+    }
+}
+
+/// One unspaced-sentence case: the text, its sentence limit and the expected segments.
+private struct UnspacedCase {
+    let text: String
+    let limit: Int
+    let expected: [String]
+
+    init(_ text: String, _ limit: Int, _ expected: [String]) {
+        (self.text, self.limit, self.expected) = (text, limit, expected)
     }
 }
