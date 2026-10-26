@@ -2,7 +2,7 @@ import Foundation
 import Testing
 @testable import HailDaemonKit
 
-@Suite struct PolicyEvaluationTests {
+@Suite(.frozenGuardBudget) struct PolicyEvaluationTests {
     let now = ContinuousClock().now
     let id = "tmux:claude-hail"
     let binding = "$1@1/%1:9"

@@ -7,7 +7,7 @@ import Testing
 /// Voice routing on a contextual adapter (#636, second-key review on #688): a routed tap mints a request record for
 /// the route, so the widened `recordOwner`, commit and `replyCandidate` checks run; and a selection change or the
 /// route vanishing mid-handoff leaves no reply authority and sends nothing elsewhere. Synthetic only.
-@Suite(.serialized, .timeLimit(.minutes(1))) struct VoiceRouteRecordTests {
+@Suite(.serialized, .timeLimit(.minutes(1)), .frozenGuardBudget) struct VoiceRouteRecordTests {
     static let other = "recipient:other"
 
     static func routes() throws -> VoiceRoutes {

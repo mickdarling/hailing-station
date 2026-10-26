@@ -3,7 +3,7 @@ import HailProtocol
 import Testing
 @testable import HailDaemonKit
 
-@Suite(.serialized) struct HostReplyRecipientRoutingTests {
+@Suite(.serialized, .frozenGuardBudget) struct HostReplyRecipientRoutingTests {
     @Test(arguments: [false, true])
     func sameTargetInterleavedRequestsStayOnTheirOriginalSocket(reverseOrder: Bool) async throws {
         let rig = try await RecipientTestRig.make()

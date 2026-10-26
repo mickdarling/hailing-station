@@ -5,7 +5,7 @@ import Testing
 
 /// #200 end to end on the daemon's production adapters (`haild run` registers `TmuxAdapter` and, when
 /// configured, `TmuxReplyAdapter`), driven by a scripted command runner: no tmux process is spawned.
-@Suite struct LocalDispatchProductionAdapterTests {
+@Suite(.frozenGuardBudget) struct LocalDispatchProductionAdapterTests {
     private static let binding = "$2@1758230001/%2:502"
 
     private func session(_ registry: Registry, allowing target: String, binding: String) async throws -> HostSession {

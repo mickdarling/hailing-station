@@ -2,7 +2,7 @@ import Foundation
 import Testing
 @testable import HailDaemonKit
 
-@Suite struct ProviderContextCoordinatorTests {
+@Suite(.frozenGuardBudget) struct ProviderContextCoordinatorTests {
     @Test func adapterIndependentlyEmitsTheExactAuthorizedContextBeforeDispatchReturns() async throws {
         let adapter = SyntheticContextAdapter()
         let rig = try await ProviderContextTestRig.make(adapter: adapter)
@@ -69,8 +69,8 @@ import Testing
             #expect(!guarded)
             sent = context
         case .needsConfirmation(let readBack):
-            // Fail-closed regex budgets may legitimately ask under scheduler load. This test owns only
-            // invented text: verify no effects and confirm this exact read-back once, never retry blindly.
+            #expect(guarded)
+            // The frozen guard budget makes this branch depend only on the authored guarded text.
             try #require(readBack.reason.hasPrefix("guarded: "))
             try #require(!readBack.guardHits.isEmpty)
             try #require(Set(readBack.guardHits).isSubset(of: Set(DangerousPatternGuard.defaults.map(\.name))))

@@ -13,7 +13,7 @@ func authorizedInput(_ session: HostSession, _ frame: Frame, device: String) asy
 /// `deliver` accepts only an `AuthorizedInput`, which only the session's single authorizer decision on the
 /// exact frame can produce and which delivery consumes: no in-module caller reaches `HailHost.send` past a
 /// refusing authorizer, no frame is authorized twice or under a different identity, and no proof is replayed.
-@Suite struct HostSessionDeliveryAuthorizationTests {
+@Suite(.frozenGuardBudget) struct HostSessionDeliveryAuthorizationTests {
     private static let target = "tmux:reply"
 
     /// Permits negotiation and selection but denies every text frame: Codex's example on #197.

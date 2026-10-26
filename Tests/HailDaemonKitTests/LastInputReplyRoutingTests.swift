@@ -48,7 +48,7 @@ private func expectReply(
 
 /// #370 over loopback sockets: two devices select the same plain tmux target. A reply without a request reference
 /// goes to the device that last sent that target input, by tap-to-talk or ambient. Synthetic only; not device hearing.
-@Suite(.serialized) struct LastInputReplyRoutingTests {
+@Suite(.serialized, .frozenGuardBudget) struct LastInputReplyRoutingTests {
     @Test func tapToTalkThenAmbientThenAlternatingEachReplyGoesOnlyToTheLastInputDevice() async throws {
         try await withDevices(2) { rig, listener, events, devices in
             try await devices.tap(on: 1, rig: rig)

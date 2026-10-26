@@ -2,7 +2,7 @@
 import Foundation
 import Testing
 @testable import HailDaemonKit
-@Suite struct CodexAppServerAdapterTests {
+@Suite(.frozenGuardBudget) struct CodexAppServerAdapterTests {
     @Test func actualRegisteredGuardedPathReconcilesHeldPreResponseEvents() async throws {
         let gate = try CodexFixtureGate(); defer { try? gate.remove() }
         let adapter = try await CodexAppServerAdapter.withOwnedAdapter(

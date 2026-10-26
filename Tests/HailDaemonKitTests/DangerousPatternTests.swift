@@ -62,7 +62,7 @@ import Testing
         ("echo hello world", []), ("run the tests", []), ("open the pull request", [])
     ]
 
-    @Test(arguments: hits.map(\.0))
+    @Test(.frozenGuardBudget, arguments: hits.map(\.0))
     func defaultPatterns(line: String) throws {
         let expected = try #require(Self.hits.first { $0.0 == line }?.1)
         #expect(try Self.semanticGuards().matches(in: [line]) == expected)
@@ -83,7 +83,7 @@ import Testing
         ])
     }
 
-    @Test func aBadRuleFailsClosed() {
+    @Test(.frozenGuardBudget) func aBadRuleFailsClosed() {
         let patterns = [GuardPattern(name: "broken", regex: "("), GuardPattern(name: "hi", regex: "hi")]
         #expect(throws: InvalidGuardPattern(name: "broken")) { try CompiledGuards(patterns) }
         #expect(DangerousPatternGuard.matches(in: ["say hi"], patterns: patterns) == ["broken (invalid rule)", "hi"])
@@ -103,7 +103,10 @@ import Testing
         let range = NSRange(line.startIndex..., in: line)
         // An independent direct-regex oracle proves the fixture is not a disk-write language match.
         #expect(regex.firstMatch(in: line, range: range) == nil)
-        #expect(try Self.semanticGuards([rule]).matches(in: [line]) == [])
+        let semantic = try Self.semanticGuards([rule])
+        GuardBudgetClock.$current.withValue(.frozen) {
+            #expect(semantic.matches(in: [line]) == [])
+        }
         let expired = try CompiledGuards([rule], matchBudget: .zero)
         #expect(expired.matches(in: [line]) == ["disk write"])
     }
@@ -145,7 +148,7 @@ import Testing
         }
     }
 
-    @Test func matchesSpanLinesAndReportEachNameOnce() throws {
+    @Test(.frozenGuardBudget) func matchesSpanLinesAndReportEachNameOnce() throws {
         let lines = ["sudo ls", "sudo rm -rf x"]
         let guards = try Self.semanticGuards()
         let names = guards.matches(in: lines)

@@ -8,7 +8,7 @@ import Testing
 /// it to the gate with the stream's first segment, and every request the stream's consumer dispatches is delivered
 /// only while the session is still on it. Selecting away, even and back, leaves an old stream nothing to deliver.
 /// Synthetic only: a fake tmux-kind adapter, never-started transports.
-@Suite(.serialized, .timeLimit(.minutes(1))) struct AmbientStreamSelectionTests {
+@Suite(.serialized, .timeLimit(.minutes(1)), .frozenGuardBudget) struct AmbientStreamSelectionTests {
     static func request(_ connection: UUID) -> LocalDispatchRequest {
         LocalDispatchRequest(connection: connection, target: VoiceRouteRig.scratch, binding: "s",
                              text: "synthetic input" + RightyoInputEvent.replyBlock(target: VoiceRouteRig.scratch))
