@@ -57,14 +57,24 @@ import Testing
         #expect(await session.repliesInFlight == [reply])
     }
 
-    @Test func yieldBeforeHelloIsUnauthorizedWithoutChangingState() async throws {
-        let (host, _) = try await sessionHost()
+    @Test func yieldBeforeHelloClosesWithoutChangingReplyStateOrLoggingYield() async throws {
+        let (host, adapter) = try await sessionHost()
         let session = HostSession(host: host)
-        let result = await session.receive(sessionFrame(payload: .control(.replyYield(reply: UUID(), segment: 1))))
-        #expect(try onlyControl(result) == .error(code: .unauthorized, message: "terminal action is not authorized"))
-        #expect(result.disposition == .keepOpen)
-        #expect(await session.state == .awaitingHello)
-        #expect(await session.receive(helloFrame()).disposition == .keepOpen)
+        let events = ReplySegmentsEvents()
+        await session.attachLastInput(LastInputLedger(), replyEvent: events.record)
+        let reply = UUID()
+        await session.seedReplySegmentsTestState(reply: reply)
+        let result = await session.receive(sessionFrame(payload: .control(.replyYield(reply: reply, segment: 1))))
+        #expect(try onlyControl(result) == .error(code: .malformed, message: "first frame must be hello"))
+        #expect(result.disposition == .close)
+        #expect(await session.state == .closed)
+        #expect(await session.selectedTarget == "tmux:synthetic")
+        #expect(await session.repliesInFlight == [reply])
+        #expect(await session.stoppedReplies.isEmpty)
+        #expect(await session.segmentedReplies.isEmpty)
+        #expect(await adapter.deliveries.isEmpty)
+        #expect(events.control.isEmpty)
+        #expect(await session.receive(helloFrame()).frames.isEmpty)
     }
 
     @Test func segmentTrackingIsBoundedAndClearedOnEndStopDismissAndTeardown() async throws {

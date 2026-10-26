@@ -112,22 +112,25 @@ same reply descriptor and stream id, with increasing frame sequences and distinc
   routing and host clips (including clips gated by privacy) share this boundary. Device-local replay uses the
   bytes already delivered; there is no separate host replay send path.
 - Both built-in host authorizers permit `reply_yield`, but the session additionally requires a ready connection
-  whose own peer advertised `reply_segments`. A missing capability or a pre-hello yield gets `unauthorized`,
-  `terminal action is not authorized`, with the connection kept open. A custom authorizer can still deny it.
-  An authorized yield stops only that reply id if it is in flight on this connection. Later frames are refused
-  as `replyStopped`, so the CLI retires its renderer. No `stop_playback` is sent: the device already stopped.
+  whose own peer advertised `reply_segments`. A missing capability gets `unauthorized`,
+  `terminal action is not authorized`, with the connection kept open. Before hello, a yield follows the existing
+  non-hello rule: `malformed`, `first frame must be hello`, and the connection closes without a `reply_yield` log.
+  A custom authorizer can still deny it. An authorized yield stops only that reply id if it is in flight on this
+  connection. Later frames are refused as `replyStopped`, so the CLI retires its renderer. No `stop_playback`
+  is sent: the device already stopped.
   Unknown, finished, already-stopped and other-connection replies do nothing and produce no response frame.
   `segment` is an informational count, never evidence of authority.
-- After a complete admitted owner handoff (phone final text or ambient/voice dispatch), P3 stops every in-flight
-  reply on that connection that has had a segment end enqueued. This backstop runs only for peers advertising
-  `reply_segments`; older devices retain their existing behavior. Refused, held, unconfirmed and ownerless
-  handoffs do not trigger it. It sends no `stop_playback` and leaves unsegmented and other-connection replies alone.
+- After input from this connection is handed off (a delivered phone final text or ambient dispatch, the #370
+  last-input condition), P3 stops every in-flight reply on that connection that has had a segment end enqueued.
+  This backstop runs only on connections whose peers advertised `reply_segments`; older devices retain their
+  existing behavior. Refused, held, unconfirmed and `.unowned` handoffs do not trigger it. It sends no
+  `stop_playback` and leaves unsegmented and other-connection replies alone.
   Tracking is a subset of the existing 64-entry in-flight list, removed at final audio, stop or teardown. Stopped
   ids enter the listener's 64-entry stop ledger synchronously, so disconnect cannot hand later frames elsewhere.
 - Content-free logs use `reply_yield` with `outcome=accepted|ignored|not_authorized` and `segment=<count>`, and
-  `reply_backstop` with `outcome=stopped count=<count>`. Neither reply ids nor request/reply text is logged by
-  these events. Stop, dismiss and privacy still stop whole reply ids. Echo handling, acknowledgements and the
-  not-sent clip retain their existing behavior.
+  `reply_backstop` with `outcome=stopped count=<count>` only when at least one reply is stopped.
+  Neither reply ids nor request/reply text is logged by these events. Stop, dismiss and privacy still stop whole
+  reply ids. Echo handling, acknowledgements and the not-sent clip retain their existing behavior.
 
 Proposed device behavior (P4, not shipped or physically validated): after a segment finishes playing, the device
 opens a pause window. Sustained owner speech in that window stops the remaining reply locally and sends

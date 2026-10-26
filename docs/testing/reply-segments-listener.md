@@ -24,9 +24,10 @@ is no separate host replay send boundary. Echo observations still use the origin
 other-connection ids are silent no-ops.
 
 `noteLastInput` is the backstop hook: `handedOff` invokes it without suspension only after `.delivered` from phone
-final text or an ambient/voice dispatch. A pending/held adapter, refusal, confirmation requirement, or ownerless
-handoff never reaches it. On segment-capable connections it stops every segmented in-flight reply on that
-connection, without sending `stop_playback`. Unsegmented replies and other connections are unaffected. Legacy
+final text or an ambient dispatch from this connection (the #370 last-input condition). A pending/held adapter,
+refusal, confirmation requirement, or handoff reported as `.unowned` never reaches it. On segment-capable
+connections it stops every segmented in-flight reply on that connection, without sending `stop_playback`.
+Unsegmented replies and other connections are unaffected. Legacy
 connections do not run the backstop. This does not change the upstream owner/voice admission rules.
 
 The session's `segmentedReplies` is a subset of the 64-entry `repliesInFlight` list. Oldest in-flight eviction
@@ -37,7 +38,7 @@ only the new segment markers; existing in-flight ids stay available to a dismiss
 Logs use only the existing structured event fields and content-free details:
 
 - `reply_yield`: `outcome=accepted|ignored|not_authorized segment=<integer>`.
-- `reply_backstop`: `outcome=stopped count=<integer>`.
+- `reply_backstop`: `outcome=stopped count=<integer>`, only when at least one reply is stopped.
 
 These events contain no reply id, stream id, request text or reply text. The existing session identifier is used
 for connection attribution. Stop, dismiss and privacy still stop whole reply ids; acknowledgement/not-sent clips
@@ -48,11 +49,12 @@ and echo handling are unchanged.
 | Hello capability, two peers receiving the same reply, raw legacy byte equality, ordinary and privacy clip paths | `ReplySegmentsListenerTests.sameReplyIsGatedAtEverySendBoundary` |
 | Correlated forwarding, connection isolation, another in-flight reply untouched, no stop frame, idempotence, log counts, `replyStopped` publication refusal and absent publication candidate, stop surviving disconnect | `ReplySegmentsListenerTests.yieldIsScopedIdempotentAndStopsPublicationWithoutAStopFrame` |
 | Finished and unknown yield, no response or state change | `ReplySegmentsListenerTests.unknownAndFinishedYieldsDoNothing` |
-| Legacy unauthorized keep-open refusal followed by ping/pong and continued reply | `ReplySegmentsListenerTests.legacyPeerIsRefusedAndRemainsHealthy` |
+| Legacy unauthorized keep-open refusal followed by `recipientSocketBarrier` and a continued publish | `ReplySegmentsListenerTests.legacyPeerIsRefusedAndRemainsHealthy` |
 | Phone and ambient delivery stop multiple segmented replies; leave unsegmented/other-connection replies alone | `ReplySegmentsBackstopTests.deliveredOwnerInputStopsOnlyItsSegmentedReplies` |
-| No backstop on legacy peer | `ReplySegmentsBackstopTests.legacyOwnerInputNeverCutsAReply` |
+| Delivered phone/ambient input with no segmented reply logs nothing | `ReplySegmentsBackstopTests.deliveredInputWithoutSegmentedRepliesDoesNotLog` |
+| No backstop on legacy peer (ordinary state and a synthetic segment marker to isolate the capability guard) | `ReplySegmentsBackstopTests.legacyOwnerInputNeverCutsAReply` |
 | Refused and held requests do not stop replies; complete released handoff does | `ReplySegmentsBackstopTests.refusedOrHeldInputDoesNotCutUntilACompleteHandoff` |
-| Authorizer/capability matrix, pre-hello readiness, custom denial | `ReplySegmentsHostSessionTests` |
+| Authorizer/capability matrix, pre-hello close without reply-state changes or yield log, custom denial | `ReplySegmentsHostSessionTests` |
 | 64-entry bound, oldest eviction, final, yield, privacy stop, dismiss, teardown | `ReplySegmentsHostSessionTests.segmentTrackingIsBoundedAndClearedOnEndStopDismissAndTeardown`, `ReplySegmentsListenerTests.peerTeardownClearsSegmentTracking` |
 
 ## Schema/decoder alignment
@@ -81,7 +83,8 @@ Each phase is wrapped by a 580-second process-group watchdog. The load phase sta
 with an `EXIT INT TERM` cleanup trap; the watchdog also kills the complete process group on timeout/interruption.
 No workers are left running. No network, install, push, remote update, device build or delivery is performed.
 
-The commands below were run under that watchdog/trap harness.
+The initial implementation commands below were run under that watchdog/trap harness; their counts describe
+that earlier test set. Fix-round commands and current counts follow separately.
 
 ```sh
 taskpolicy -b swift build -j 4 -Xswiftc -warnings-as-errors "${FLAGS[@]}"
@@ -112,22 +115,56 @@ production file-length suppressions are preserved; no new suppression is added. 
 installed, so this is a hand check, not a SwiftLint run. `git diff --check` passes. The local PR-shape classifier
 counts exactly four production files and matches all four against `SECURITY_PATHS`; no GitHub API check is run.
 
+### Fix round 1 verification (#954)
+
+Both builds passed again, followed by three serial `ReplySegments` runs and the requested broader serial filter.
+Every command below used `taskpolicy -b`, at most four workers (`-j 4`), the `FLAGS` above, and
+`--disable-automatic-resolution --skip-update`. Each phase had a 580-second process-group watchdog with
+SIGINT/SIGTERM/exit cleanup and a shell `EXIT INT TERM` kill trap. No load workers were started for this round.
+
+```sh
+taskpolicy -b swift build -j 4 -Xswiftc -warnings-as-errors "${FLAGS[@]}" \
+  --disable-automatic-resolution --skip-update
+taskpolicy -b swift build --build-tests -j 4 "${FLAGS[@]}" \
+  --disable-automatic-resolution --skip-update
+# Three separate bounded phases:
+taskpolicy -b swift test --skip-build --no-parallel -j 4 "${FLAGS[@]}" \
+  --disable-automatic-resolution --skip-update --filter ReplySegments
+taskpolicy -b swift test --skip-build --no-parallel -j 4 "${FLAGS[@]}" \
+  --disable-automatic-resolution --skip-update \
+  --filter 'HailDaemonKitTests\.(ReplySegments|HostSession|Negotiation|AmbientAudioSession|PlaybackStop|Privacy)'
+```
+
+The focused filter now includes device tests: 26 test functions in five suites, 61 case executions per run.
+All three runs passed (0.812, 0.805 and 0.856 seconds): 78 function executions / 183 case executions total.
+The broader filter passed 29 test functions in six suites / 35 case executions (0.316 seconds), with no known
+issues. This records the exact requested prefix filter; it does not select suites with other prefixes.
+The pre-hello test checks the existing malformed-frame close, unchanged reply/selection state, no delivery,
+and no `reply_yield` log. Delivered phone and ambient requests without segmented replies produce no backstop log.
+SwiftPM emits its existing `--skip-update` deprecation warning. These are synthetic host/package checks;
+no simulator or physical-device proof is claimed. `git diff --check` passed.
+
 ## Mutation probes
 
 Each probe runs in an isolated scratch copy, restores the baseline source before applying the next mutation,
 and rebuilds/tests with the flags and resource bounds above (without `--skip-build`). The scratch baseline first
-passes all 23 tests in four suites (0.420 seconds, after a 73.60-second build). Mutant failures must be assertion failures after a successful build, not compiler failures
-or timeouts. No mutation is applied to the delivery workspace.
+passes all 26 test functions in five suites / 61 case executions (0.855 seconds, after a 77.61-second build).
+These probes were rerun for fix round 1. All four built successfully and were killed by test assertions,
+not compiler failures or timeouts. No mutation is applied to the delivery workspace.
 
 | Mutation | Killing test | Result |
 | --- | --- | --- |
 | Return the original frame from `replyFrameForPeer`, dropping the strip | `sameReplyIsGatedAtEverySendBoundary` (legacy raw bytes and decoded frame), plus correlated legacy forwarding | Killed: five assertions, exit 1 |
 | Unconditionally call `stopHeldReply` for the claimed yield id, allowing B to stop A through the shared ledger | `yieldIsScopedIdempotentAndStopsPublicationWithoutAStopFrame` (cross-connection ledger assertion), plus finished/unknown no-op checks | Killed: three assertions, exit 1 |
 | Return `stop_playback` on an accepted yield | `yieldIsScopedIdempotentAndStopsPublicationWithoutAStopFrame` (ping/pong barrier sees the unexpected frame) | Killed: one assertion, exit 1 |
-| Remove the peer-capability guard from the backstop | `legacyOwnerInputNeverCutsAReply` (unexpected backstop event on a legacy connection; legacy peers have no segment markers) | Killed: one assertion, exit 1 |
+| Remove the peer-capability guard from the backstop | `legacyOwnerInputNeverCutsAReply(seededSegment: true)` (synthetic marker isolates the capability guard; in-flight state, marker, stop ledger, event and continued publication) | Killed: four assertions plus `replyStopped`, exit 1 |
 
 The strip, cross-connection and stop-frame mutants use
 `--filter 'HailDaemonKitTests\.ReplySegmentsListenerTests'`; the legacy-backstop mutant uses
 `--filter 'HailDaemonKitTests\.ReplySegmentsBackstopTests'`.
+
+The legacy probe uses a synthetic marker because ordinary legacy publication strips segment ends and creates no
+marker. With zero-count logging suppressed, removing the guard is otherwise silent in that ordinary state.
+The first three probes each run five test functions / six cases; the legacy probe runs four functions / seven cases.
 
 A passing parser or test record is not an independent security review. No independent review is claimed here.

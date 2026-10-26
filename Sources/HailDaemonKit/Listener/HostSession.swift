@@ -252,9 +252,6 @@ public actor HostSession {
         case .closed:
             return HostSessionResult(frames: [], disposition: .close)
         case .awaitingHello:
-            if case .control(.replyYield(_, let segment)) = frame.payload {
-                return refuseReplyYield(segment: segment)
-            }
             return await negotiate(frame)
         case .ready(let version):
             guard frame.version == version else {

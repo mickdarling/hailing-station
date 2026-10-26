@@ -860,6 +860,7 @@ extension HostSession {
     private func stopSegmentedRepliesForRequest() {
         guard peerCapabilities.contains(ReplySegments.capability) else { return }
         let stopped = repliesInFlight.filter { segmentedReplies.contains($0) }
+        guard !stopped.isEmpty else { return }
         for reply in stopped { stopHeldReply(reply) }
         logReplyEvent("reply_backstop", detail: "outcome=stopped count=\(stopped.count)")
     }
