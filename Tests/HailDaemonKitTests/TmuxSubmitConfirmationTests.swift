@@ -137,7 +137,8 @@ import Testing
         await #expect(throws: AdapterError.self) {
             try await harness.adapter.deliver("synthetic input", to: "codex", binding: nil)
         }
-        await #expect(throws: AdapterError.self) {
+        // Refused by the taint, by name: text still at the cursor alone would be refused as stale input instead.
+        await #expect(throws: AdapterError.inputPending(reason: .tainted)) {
             try await harness.adapter.deliver("later input", to: "codex", binding: nil)
         }
         #expect(await harness.keys == ["synthetic input", "Enter", "Enter"])
