@@ -14,7 +14,7 @@ extension HostConnection {
                 capabilities: ["connectivity_lab", PlaybackStop.capability, AmbientTakeOver.capability,
                                AmbientHeard.capability, AmbientOverheard.capability, ReplyMute.capability,
                                AmbientOverheard.namesCapability, OwnerVoice.capability, MediaMode.capability,
-                               RequestRefusals.capability, DuckMode.capability],
+                               RequestRefusals.capability, HeardTurns.capability, DuckMode.capability],
                 // The device's class only (#366), so a host can say "moved to iPad"; never its name.
                 deviceName: deviceName, deviceKind: AmbientHandoff.localDeviceKind
             )),
@@ -90,7 +90,9 @@ extension HostConnection {
         }
         await replyObserver(HostReplyEvent(endpointID: snapshot.id, frame: frame))
     }
+}
 
+extension HostConnection {
     /// Sends one ambient segment (#203) in the existing `.audio` frame, addressed to the selected destination as
     /// the host gate requires. A stream is bound to the socket generation it started on; after a reconnect or
     /// a gate refusal for it, every further segment of that stream throws so the streamer releases the mic.
