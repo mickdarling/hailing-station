@@ -1,6 +1,6 @@
 public actor ManagedAudioSession: AudioInputSelectionProviding {
     let backend: any AudioSessionBackend
-    let preferences: AudioInputPreferences
+    var preferences: AudioInputPreferences
     let preferenceStore: any AudioInputPreferenceStoring
     let eventBroadcast = AudioSessionEventBroadcast()
     private var backendTask: Task<Void, Never>?
@@ -25,7 +25,7 @@ public actor ManagedAudioSession: AudioInputSelectionProviding {
 
     public init(
         backend: any AudioSessionBackend,
-        preferences: AudioInputPreferences = AudioInputPreferences(),
+        preferences: AudioInputPreferences = .saved(),
         preferenceStore: any AudioInputPreferenceStoring = UserDefaultsAudioInputPreferenceStore()
     ) {
         self.backend = backend
@@ -163,8 +163,8 @@ extension ManagedAudioSession {
     }
 }
 
-private extension ManagedAudioSession {
-    private func handleRouteChange() async {
+extension ManagedAudioSession {
+    func handleRouteChange() async {
         if wantsActive {
             routeReconciliationNeeded = true
             _ = try? await reconcileRouteWhenIdle()
