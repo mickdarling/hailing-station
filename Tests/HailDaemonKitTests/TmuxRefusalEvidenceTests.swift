@@ -126,27 +126,31 @@ import Testing
     }
 
     @Test func aPaneTaintedByAFailedSubmitIsNamedTainted() async throws {
-        let pane = ScriptedPane(afterEnter: [ScriptedPane.absorbedScreen, ScriptedPane.absorbedTwiceScreen])
-        let harness = EvidenceHarness(pane, timing: Self.timing())
-        await #expect(throws: AdapterError.self) {
+        // tmux refuses the Enter after the paste: a failed submit decided by the script, not by a confirm deadline
+        // that a stalled run could let lapse into `unverifiable`.
+        let pane = ScriptedPane()
+        let harness = EvidenceHarness(pane.refusingEnter(), timing: Self.timing())
+        await #expect(throws: AdapterError.deliveryFailed("synthetic refusal")) {
             try await harness.adapter.deliver(Self.synthetic, to: "codex", binding: nil)
         }
         // The owner clears the input by hand; the taint (until a restart) still refuses, with no look taken, so
         // nothing is claimed about the cursor.
         pane.reset(baseline: ScriptedPane.oldScreen)
 
-        await #expect(throws: AdapterError.self) {
+        await #expect(throws: AdapterError.inputPending(reason: .tainted)) {
             try await harness.adapter.deliver("later input", to: "codex", binding: nil)
         }
 
         #expect(harness.evidence.lines("tmux_submit") == ["tmux_submit pane=p1 outcome=failed"])
+        #expect(harness.outcomes.all == [.failed])
         let refusal = try #require(harness.evidence.lines("tmux_input_pending").only)
         #expect(refusal.hasPrefix(
             "tmux_input_pending reason=tainted pane=p1 pending_chars=none placeholder=none own_insert=unobserved"
                 + " own_age_s="
         ))
         #expect(refusal.hasSuffix(" own_submitted=true last_submit=failed"))
-        #expect(await harness.keys == [Self.synthetic, "Enter", "Enter"])
+        // The refused Enter is the only key; nothing is typed into the tainted pane.
+        #expect(await harness.keys == [Self.synthetic, "Enter"])
         harness.evidence.expectTokensOnly(excluding: [Self.synthetic, "later input"])
     }
 
