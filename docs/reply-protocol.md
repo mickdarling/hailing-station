@@ -99,8 +99,9 @@ same reply descriptor and stream id, with increasing frame sequences and distinc
 
 `ReplySegmentation` supplies both limits: defaults are **v1, pending Mick**, at most two sentences and thirty
 whitespace-delimited words per segment. As with reply pacing, haild reads environment tuning:
-`HAILD_REPLY_SEGMENT_MAX_SENTENCES` (1–20) and `HAILD_REPLY_SEGMENT_MAX_WORDS` (1–300). Invalid values fail before
-text publication or rendering. These are piece sizes, not a cap on total spoken length; existing transport and
+`HAILD_REPLY_SEGMENT_MAX_SENTENCES` (1–20) and `HAILD_REPLY_SEGMENT_MAX_WORDS` (1–300). An invalid value falls
+back to that value’s default, with a content-free warning naming the variable.
+These are piece sizes, not a cap on total spoken length; existing transport and
 runaway-renderer safeguards remain. The pure segmenter preserves spelling and internal whitespace, protects
 common abbreviations, initials, dotted initialisms, decimals, versions, URL/path internal periods, and closing
 quotes/brackets. Newlines separate sentences/list items. `?` and `!` terminate sentences; ellipses (`...`/`…`)

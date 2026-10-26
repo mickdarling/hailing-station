@@ -71,6 +71,34 @@ struct ReplySegmenterTests {
                 == ["3.5 v1.2 https://example.invalid/a.b e.g. intact.", "Next."])
     }
 
+    @Test func internalASCIIEndsProtectStructuredTokensAndLowercaseContinuations() throws {
+        let cases: [(String, [String])] = [
+            ("Use https://example.invalid/search?q=swift today. Next.",
+             ["Use https://example.invalid/search?q=swift today.", "Next."]),
+            ("Use https://example.invalid/search?q=Swift&x=Next today. Next.",
+             ["Use https://example.invalid/search?q=Swift&x=Next today.", "Next."]),
+            ("Use www.example.invalid/a?b today. Next.", ["Use www.example.invalid/a?b today.", "Next."]),
+            ("Use user@example.invalid today. Next.", ["Use user@example.invalid today.", "Next."]),
+            ("Use user@example.invalid?Next today. Next.", ["Use user@example.invalid?Next today.", "Next."]),
+            ("Use /tmp/a!b today. Next.", ["Use /tmp/a!b today.", "Next."]),
+            ("Use www.example.invalid?Next a!B/path a?B#part q?Next=Yes q!Next&x today. Next.",
+             ["Use www.example.invalid?Next a!B/path a?B#part q?Next=Yes q!Next&x today.", "Next."]),
+            ("Really?yes", ["Really?yes"]),
+            ("First!Second?Third.", ["First!", "Second?", "Third."]),
+            ("Really?évidemment!第二句。", ["Really?", "évidemment!", "第二句。"]),
+            ("第一句。Use https://example.invalid/search?q=Swift&x=Next today. 第二句！Next.",
+             ["第一句。", "Use https://example.invalid/search?q=Swift&x=Next today.", "第二句！", "Next."]),
+            ("https://example.invalid/a?Next。第二句！", ["https://example.invalid/a?Next。", "第二句！"])
+        ]
+        let segmenter = ReplySegmenter(configuration: try ReplySegmentation(maxSentences: 1))
+        for (text, expected) in cases {
+            let pieces = segmenter.segments(text)
+            #expect(pieces == expected)
+            // Joining can omit boundary whitespace, but must retain every other character in order.
+            #expect(pieces.joined().filter { !$0.isWhitespace } == text.filter { !$0.isWhitespace })
+        }
+    }
+
     @Test func manyTrailingClosersKeepSentenceStructure() throws {
         let closers = String(repeating: ")", count: 16_000)
         let first = "First." + closers

@@ -12,7 +12,7 @@ This is not live captured-output round-trip or physical playback proof. P4/P5 re
 
 ## Implementation and traceability
 
-`ReplySegmenterTests` (10 functions) covers default and overridden configuration, invalid/boundary values,
+`ReplySegmenterTests` (11 functions) covers default and overridden configuration, invalid/boundary values,
 common abbreviations/initialisms, decimals, versions, URL/path internal punctuation, ellipses, closing quotes
 and brackets, question/exclamation marks, newlines/list markers, last-clause preference and word fallback,
 no empty segments, exact one-segment input identity and the join property. Its deterministic generated
@@ -22,8 +22,10 @@ property test checks 324 combinations per run, including sentence/word bounds an
 `HAILD_REPLY_SEGMENT_MAX_SENTENCES` (1–20, default 2) and `HAILD_REPLY_SEGMENT_MAX_WORDS` (1–300, default 30).
 Defaults are v1, pending Mick. Malformed, out-of-range or overflowing overrides retain that limit’s default
 and write one content-free stderr warning naming the variable, never its value. The reply proceeds.
-Words are whitespace-delimited; newlines separate sentences/items. CJK `。！？．` and ASCII `!?` terminate
-without whitespace, retaining following closing quotes/brackets. ASCII periods retain their lexical protection.
+Words are whitespace-delimited; newlines separate sentences/items. CJK `。！？．` always terminate without
+whitespace. Internal ASCII `!?` require a following uppercase or non-ASCII letter and a token without
+URL/path/email/query syntax (`://`, initial `www.`, or `@=&/#`); lowercase continuations stay whole. Following
+closing quotes/brackets remain attached. ASCII periods retain their lexical protection.
 Unspaced joins preserve every character, and trailing-closer trimming uses a linear index walk. Abbreviations use a documented lexical
 rule rather than language inference. `...`/`…` end before an uppercase next token. Only whitespace at joins
 can change; one-piece input is returned unchanged. No segmentation code logs text.
@@ -317,3 +319,76 @@ its dispatch is the same as above. Results and the final comment/SwiftLint audit
   errors (26.54 seconds). The dedicated legacy-wire method passed all three modes against that binary too:
   remainder, exact-size and files-only; the same UUID/timestamp-only normalization applies.
 - `git diff --check` passed. The final commit contains only these fixes, their tests and this host evidence record.
+
+
+## Fix round 2, review round 3 (#953)
+
+Starts at `b21af2c06e57f86d1b000f07ddfabb6257d5d793` on `codex/932-p2-fix`. Only the segmenter's internal
+ASCII sentence-boundary rule, its regression tests, the invalid-configuration protocol wording and this
+record change. The protocol now accurately documents a per-variable default fallback and a content-free
+warning naming the invalid variable. No audio-selection implementation or test is changed.
+
+`ReplySegmenterTests.internalASCIIEndsProtectStructuredTokensAndLowercaseContinuations` checks twelve
+cases at sentence limit one: the reviewer's URL, uppercase query values with `?q=…&x=…`, `www.` URLs,
+plain and punctuated email, paths, standalone query/fragment delimiters, lowercase continuations, uppercase
+unspaced sentences, non-ASCII sentence starts and mixed CJK/URL tokens. Every case checks the expected
+pieces and joins with every non-whitespace character preserved. The existing exact unspaced join cases,
+16,000-closer cases and 324 generated sentence/word-bound combinations also run unchanged.
+
+All Swift commands use the existing `/tmp/hs932-tools/swift` wrapper above: `taskpolicy -b`, `-j 4`
+(`--jobs 4`), one compiler worker per target, no automatic resolution and the supplied Testing framework,
+plugin and rpath flags. Every phase uses `/tmp/hs932-tools/phase.py` with its 590-second deadline and
+SIGINT/SIGTERM descendant-kill trap. Phases run serially. Logs and the temporary detached worktree are under
+`/tmp/hs932-r3-results/`; the worktree is removed after verification. No network or other clone is used.
+Main means the supplied exact commit `b86b2fbf8abc1f9c7cffa6599e619599d5c644d0`, since the offline
+`origin/main` tracking ref is older.
+
+Exact commands (each loop iteration is its own bounded phase):
+
+```bash
+python3 /tmp/hs932-tools/phase.py /tmp/hs932-tools/swift build -Xswiftc -warnings-as-errors
+python3 /tmp/hs932-tools/phase.py /tmp/hs932-tools/swift build --build-tests -Xswiftc -warnings-as-errors
+for iteration in 1 2 3; do
+  python3 /tmp/hs932-tools/phase.py /tmp/hs932-tools/swift test --skip-build --no-parallel \
+    --filter ReplySegmenterTests
+done
+python3 /tmp/hs932-tools/phase.py /tmp/hs932-tools/swift test --skip-build --no-parallel \
+  --filter AudioInputSelectionConcurrencyTests.supersededSaveCannotOverwriteTheLatestPreference
+git worktree add --detach /tmp/hs932-r3-results/main b86b2fbf
+python3 /tmp/hs932-tools/phase.py /tmp/hs932-tools/swift build \
+  --package-path /tmp/hs932-r3-results/main --build-tests -Xswiftc -warnings-as-errors
+python3 /tmp/hs932-tools/phase.py /tmp/hs932-tools/swift test \
+  --package-path /tmp/hs932-r3-results/main --skip-build --no-parallel \
+  --filter AudioInputSelectionConcurrencyTests.supersededSaveCannotOverwriteTheLatestPreference
+cp /tmp/hs932-r3-results/main/.build/debug/haild /tmp/hs932-r3-results/haild-main
+export REPLY_SEGMENTS_BASELINE_HAILD=/tmp/hs932-r3-results/haild-main
+for iteration in 1 2; do
+  python3 /tmp/hs932-tools/phase.py python3 -B -m unittest discover \
+    -s Tests/ReplyCLITests -p test_reply_segments.py
+done
+python3 /tmp/hs932-tools/phase.py python3 -B -m unittest discover -s Tests/ReplyCLITests
+PYTHONPATH=Tests/ReplyCLITests python3 /tmp/hs932-tools/phase.py python3 -B -m unittest \
+  test_reply_segments.ReplySegmentCLITests.test_single_segment_matches_legacy_frames_byte_for_byte
+git worktree remove --force /tmp/hs932-r3-results/main
+git diff --check
+```
+
+Results:
+
+- Both warnings-as-errors builds passed: 1.28 seconds (build), 5.03 seconds (build-tests).
+- Segmenter: 3/3 runs passed, 11 functions/run (33 executions), in 0.168, 0.169 and 0.164 seconds.
+  Each run includes twelve new regression/join cases and 324 generated combinations (36 and 972 total).
+- CLI segments: 2/2 runs passed, 13 methods/run (26 executions), in 13.067 and 12.161 seconds, with the
+  supplied-main executable enabled for all three legacy-wire modes.
+- The isolated `AudioInputSelectionConcurrencyTests.supersededSaveCannotOverwriteTheLatestPreference`
+  test passed once on the working head (0.003 seconds) and once on exact main `b86b2fbf` (0.003 seconds).
+  The reviewer's failure did not reproduce on either checkout in these isolated runs. This is not evidence
+  that the scheduling-sensitive test cannot fail; no core code or test was changed. Main's complete test
+  build also passed with warnings as errors (162.07 seconds).
+- Full serial ReplyCLITests: all 109 methods passed in 213.166 seconds, with the main executable enabled.
+- Dedicated one-segment wire comparison: one method passed in 1.025 seconds against exact main `b86b2fbf`;
+  remainder, exact-size and files-only modes all matched. Only independent UUIDs and timestamps are
+  normalized; PCM, keys/encoding, order and sequence match byte for byte.
+- `git diff --check` passed. The scratch main worktree was removed. Only the requested segmenter fix, tests,
+  protocol correction and evidence record are committed. No network, deployment, simulator, physical-device
+  playback, upload or installed-build change is claimed.

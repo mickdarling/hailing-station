@@ -43,7 +43,8 @@ struct ReplySegmentation: Equatable, Sendable {
 }
 
 /// Deterministic, content-free segmentation, with no I/O. Keeps original spelling and internal whitespace.
-/// CJK terminators and !/? end even without spaces, retaining closing quotes/brackets; newlines end items.
+/// CJK terminators always end sentences; internal !/? require a sentence start outside URL/identifier tokens.
+/// Closing quotes/brackets stay with their sentence; newlines end items.
 /// Periods inside a token (URLs, paths, decimals, versions) never end a sentence. Common titles, e.g./i.e.,
 /// initials and dotted initialisms are protected; ellipses end a sentence only before an uppercase word.
 /// An oversized sentence prefers its last comma, semicolon, colon or em dash within the word limit.
@@ -96,19 +97,26 @@ struct ReplySegmenter {
         return ranges
     }
 
-    /// Split only unconditional terminators inside a whitespace token; periods retain the lexical rules below.
+    /// Full-width ends always split; ASCII ends require a new sentence outside structured tokens.
     private func sentenceTokens(_ word: Substring) -> [Substring] {
         var tokens: [Substring] = []
         var start = word.startIndex, end = start
-        var terminated = false
+        var terminated = false, fullWidthEnd = false
+        let structured = word.contains("://") || unquoted(word).lowercased().hasPrefix("www.")
+            || word.contains { "@=&/#".contains($0) }
         for index in word.indices {
             let character = word[index]
             if terminated, !Self.terminators.contains(character), !Self.closers.contains(character) {
-                tokens.append(word[start..<index])
-                start = index
+                let sentenceStart = character.isLetter && (character.isUppercase || !character.isASCII)
+                if fullWidthEnd || (!structured && sentenceStart) {
+                    tokens.append(word[start..<index])
+                    start = index
+                }
                 terminated = false
+                fullWidthEnd = false
             }
             if Self.terminators.contains(character) { terminated = true }
+            if "。！？．".contains(character) { fullWidthEnd = true }
             end = word.index(after: index)
         }
         if start < end { tokens.append(word[start..<end]) }
