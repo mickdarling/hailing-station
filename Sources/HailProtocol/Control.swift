@@ -126,6 +126,8 @@ public enum ControlPayload: Sendable, Equatable {
     /// Host to device (#309): stop reply playback now and drop queued reply audio, sent only to a device that
     /// advertises `PlaybackStop.capability`. It carries nothing else and grants no authority.
     case stopPlayback
+    /// Device to host (#932): yield this reply after playing `segment` ends. Requires `ReplySegments.capability`.
+    case replyYield(reply: UUID, segment: Int)
     /// Host to device (#366): this connection's new ambient stream took listening over from another device of
     /// kind `from` (an `AmbientTakeOver.deviceKinds` token, or nil when that device did not say). Sent only to a
     /// device that advertises `AmbientTakeOver.capability`. It carries nothing else and grants no authority.
@@ -186,6 +188,7 @@ extension ControlPayload: Codable {
     private enum CodingKeys: String, CodingKey {
         case command, hello, targets, targetID = "target", nonce, code, message, events, from, text, speaker, scope
         case muted, name, state, route, update, session, priority, card, on, reason, expires, report, turn
+        case reply, segment
     }
 
     private enum Command: String, Codable {
@@ -193,7 +196,7 @@ extension ControlPayload: Codable {
         case diagnostic, stopPlayback = "stop_playback", ambientMovedHere = "ambient_moved_here"
         case ambientHeard = "ambient_heard", ambientOverheard = "ambient_overheard", overheardScope = "overheard_scope"
         case setReplyMute = "set_reply_mute", ownerVoice = "owner_voice", ambientInput = "ambient_input"
-        case sessionUpdate = "session_update"
+        case replyYield = "reply_yield", sessionUpdate = "session_update"
         case health, healthReport = "health_report"
         case mediaMode = "media_mode", duckMode = "duck_mode", setPrivacy = "set_privacy"
     }
@@ -220,16 +223,12 @@ extension ControlPayload: Codable {
                                                         debugDescription: "message too long"))
             }
             self = .error(code: try container.decode(ErrorCode.self, forKey: .code), message: message, turn: turn)
-        case .diagnostic:
-            // Strict, unlike the other commands (#234): only `command` and `events`, so nothing rides along.
-            try Self.requireOnly(["command", "events"], "diagnostic", decoder)
-            let events = try container.decode([DiagnosticEvent].self, forKey: .events)
-            try requireRange(events.count, in: 1...DiagnosticLimits.maxEventsPerBatch, "events", decoder)
-            self = .diagnostic(events: events)
+        case .diagnostic: self = try Self.diagnostic(from: decoder)
         case .stopPlayback:
             // Strict, like `diagnostic`: only `command`, so nothing rides along on a stop.
             try Self.requireOnly(["command"], "stop_playback", decoder)
             self = .stopPlayback
+        case .replyYield: self = try Self.replyYield(from: decoder)
         case .ambientMovedHere: self = try Self.ambientMovedHere(from: decoder)
         case .ambientHeard: self = try Self.ambientHeard(from: decoder, turn: turn)
         case .ambientOverheard: self = try Self.ambientOverheard(from: decoder)
@@ -242,6 +241,24 @@ extension ControlPayload: Codable {
         case .mediaMode: self = try Self.mediaMode(from: decoder)
         case .duckMode, .setPrivacy: self = try Self.duckMode(from: decoder)
         }
+    }
+
+    /// Strict (#234): only `command` and `events`, so nothing rides along.
+    private static func diagnostic(from decoder: any Decoder) throws -> ControlPayload {
+        try requireOnly(["command", "events"], "diagnostic", decoder)
+        let container = try decoder.container(keyedBy: CodingKeys.self)
+        let events = try container.decode([DiagnosticEvent].self, forKey: .events)
+        try requireRange(events.count, in: 1...DiagnosticLimits.maxEventsPerBatch, "events", decoder)
+        return .diagnostic(events: events)
+    }
+
+    private static func replyYield(from decoder: any Decoder) throws -> ControlPayload {
+        try requireOnly(["command", "reply", "segment"], "reply_yield", decoder)
+        let container = try decoder.container(keyedBy: CodingKeys.self)
+        let reply = try container.decode(UUID.self, forKey: .reply)
+        let segment = try container.decode(Int.self, forKey: .segment)
+        try requireRange(segment, in: 1...ReplySegments.maxSegmentEnds, "segment", decoder)
+        return .replyYield(reply: reply, segment: segment)
     }
 
     /// Strict (#614): `health` carries only `command`; `health_report` only `command` and a closed `report`.
@@ -480,6 +497,14 @@ extension ControlPayload: Codable {
             try container.encode(Command.diagnostic, forKey: .command)
             try container.encode(events, forKey: .events)
         case .stopPlayback: try container.encode(Command.stopPlayback, forKey: .command)
+        case .replyYield(let reply, let segment):
+            guard (1...ReplySegments.maxSegmentEnds).contains(segment) else {
+                throw EncodingError.invalidValue(segment, .init(codingPath: encoder.codingPath,
+                                                                debugDescription: "segment out of range"))
+            }
+            try container.encode(Command.replyYield, forKey: .command)
+            try container.encode(reply, forKey: .reply)
+            try container.encode(segment, forKey: .segment)
         case .ambientMovedHere(let from):
             try container.encode(Command.ambientMovedHere, forKey: .command)
             try container.encodeIfPresent(AmbientTakeOver.deviceKind(from), forKey: .from)
@@ -670,6 +695,13 @@ public enum AmbientHeard {
 /// connections, or log it beside heard text. Sending and device advertising are deferred to later slices.
 public enum HeardTurns {
     public static let capability = "heard_turns"
+}
+
+/// Reply segments (#932). A host sends `segmentEnd` only to a device that advertised this capability;
+/// a device sends `reply_yield` only to a host that advertised it. Neither side advertises it in P1.
+public enum ReplySegments {
+    public static let capability = "reply_segments"
+    public static let maxSegmentEnds = 10_000
 }
 
 /// Overheard remarks in the thread (#398): turns the ambient stream heard but did not send. Both sides advertise

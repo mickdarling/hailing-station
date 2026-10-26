@@ -83,6 +83,39 @@ older device refuses an unknown command as malformed. The host sends it when a R
 in its scope, and refuses the rest of every reply that was mid-stream on that connection whether or not the device
 advertised the command ([rightyo-input.md](rightyo-input.md)).
 
+## Reply segments (#932)
+
+P1 defines protocol vocabulary only. Neither side advertises `reply_segments` (`ReplySegments.capability`) yet;
+no host producer sets `segmentEnd`, and the device ignores `AudioPayload.isSegmentEnd` during playback.
+P2–P5 (production, host cancellation, device pauses/yield and integration proof) remain deferred.
+
+One reply id spans many spoken segments; its text frame still carries the full spoken text. The proposed P2
+producer splits at sentence boundaries and puts `"segmentEnd": true` on the last audio frame of each segment
+except the final one. The reply's final audio frame already ends its last segment. All audio frames retain the
+same reply descriptor and stream id, with increasing frame sequences and distinct envelope frame ids.
+
+- `segmentEnd` is only `true` or absent, never false, null or another type. It requires reply audio with a
+  `streamId` matching `reply.audioStream`, `final: false`, and no `resume`. The property defaults to false and the
+  encoder omits it when false, preserving legacy frame bytes. Audio decoding tolerates unknown keys: an older
+  device ignores this key and plays audio as before. Even so, a host sends it only to a device that advertised
+  `reply_segments`; an older device receives the segments back to back without the key.
+- `{"command":"reply_yield","reply":"<UUID>","segment":1}` is DEVICE→HOST. `reply` is the `ReplyDescriptor.id`
+  being yielded; `segment` counts segment ends whose playback finished before the owner took the turn. It is
+  an integer from 1 through 10,000 (`ReplySegments.maxSegmentEnds`). Only these three keys are permitted;
+  missing fields, null, invalid UUIDs, fractional/non-integer counts, out-of-range counts and extras fail decoding.
+  A device sends it only to a host that advertised `reply_segments`. An older host refuses the unknown command
+  as malformed; a device refuses it from a host through its existing unexpected-control-frame failure.
+- In P1, both built-in host authorizers deny `reply_yield` through the existing unsupported/unadvertised action
+  path: `unauthorized`, `terminal action is not authorized`, with the connection kept open. Selection, active
+  replies and stopped replies stay unchanged; this path never logs the reply id or content. The fallback routing
+  refusal also remains unchanged for custom authorizers that admit unsupported commands.
+
+Proposed device behavior (P4, not shipped or physically validated): after a segment finishes playing, the device
+opens a pause window. Sustained owner speech in that window stops the remaining reply locally and sends
+`reply_yield`; the proposed P3 host then drops later frames for that reply id and supersedes its rendering.
+The v1 defaults—1.5 s pause, 300 ms sustained onset, no "go on"—are device configuration pending Mick's confirmation.
+Synthetic P1 verification is recorded in [reply-segments-protocol.md](testing/reply-segments-protocol.md).
+
 ## Muting reply audio (#404)
 
 `{"command": "set_reply_mute", "muted": true}` is a host-to-device control command that mutes the device's reply
