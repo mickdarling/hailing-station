@@ -40,6 +40,11 @@ final class AmbientEventDetails: Sendable {
     var allDetails: [String] { events.withLock { $0.compactMap(\.detail) } }
 }
 
+struct PendingInputOptions {
+    var holdFirst = false
+    var capabilities = ["probe", RequestRefusals.capability]
+}
+
 /// One device, taking request refusals, streaming to a child that sends two requests (see
 /// `RightyoAmbientPendingInputTests.twoRequests`), with a `default` acknowledgement ("On it.") and the
 /// `confirm-not-sent/` clip in the library.
@@ -82,17 +87,17 @@ struct PendingInputRun {
             -e "s/formed-demo/$7/g"
         """#
 
-    /// `holdFirst` keeps the first request back until the test releases `go1`. `hold` is the router's test-only
+    /// `options.holdFirst` keeps the first request back until the test releases `go1`. `hold` is the router's test-only
     /// acknowledgement hold, and `playing` its hook just before a "Nothing was sent." clip is sent (#913); `extra`
     /// adds clip folders to the library.
     static func make(
-        holdFirst: Bool = false, script: String = RightyoAmbientPendingInputTests.twoRequests,
+        options: PendingInputOptions = .init(), script: String = RightyoAmbientPendingInputTests.twoRequests,
         fixture: String = "tool-events.jsonl", routes: VoiceRoutes? = nil, hold: AcknowledgementHold? = nil,
         playing: NotSentPlaying? = nil, extra: [String: [AmbientAckClip]] = [:]
     ) async throws -> Self {
         let fake = try FakeRightyo(script)
         try fake.install(fixture: fixture)
-        if !holdFirst { try RightyoAmbientPendingInputTests.release(fake, "go1") }
+        if !options.holdFirst { try RightyoAmbientPendingInputTests.release(fake, "go1") }
         let (log, queued) = (AmbientEventDetails(), NotSentQueued())
         let library = AmbientAckLibrary(clips: ["default": [ack],
                                                 "confirmnotsent": [AmbientVoiceRouteRefusalTests.notSent]]
@@ -101,7 +106,7 @@ struct PendingInputRun {
                                        routes: routes, acknowledgementHold: hold, notSentQueued: queued,
                                        notSentPlaying: playing, onEvent: { log.record($0) })
         let pair = try await FallbackSocketPair.boundedConnect(
-            port: env.port, selecting: [RecipientTestRig.target], capabilities: ["probe", RequestRefusals.capability]
+            port: env.port, selecting: [RecipientTestRig.target], capabilities: options.capabilities
         )
         return Self(fake: fake, env: env, pair: pair, log: log, queued: queued)
     }

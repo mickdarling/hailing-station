@@ -1,5 +1,6 @@
 import Foundation
 import HailProtocol
+import Synchronization
 
 extension HostSession {
     /// The acknowledgement for the ambient stream's own `target` (rightyo#105), only while this ready session still
@@ -113,9 +114,63 @@ extension WebSocketListener {
     /// request is delivered as before. The text is never logged. Returns whether the frame was queued: it waits for
     /// the connection to take it, not for it to go out, so a stalled phone cannot hold up the typing.
     @discardableResult
-    func showAmbientHeard(connection: UUID, target: String, text: String) async -> Bool {
-        guard !stopped, let peer = peers.values.first(where: { $0.session.connectionID == connection }),
-              let frame = await peer.session.heardFrame(text, target: target) else { return false }
-        return await peer.post(frame)
+    func showAmbientHeard(connection: UUID, target: String, text: String, request: UUID = UUID()) async -> Bool {
+        guard !stopped, let peer = peers.values.first(where: { $0.session.connectionID == connection }) else {
+            return false
+        }
+        let records = heardTurns[connection] ?? HeardTurnRecords()
+        heardTurns[connection] = records
+        return await peer.postAmbientHeard(text, target: target, request: request, records: records)
     }
+
+    func finishHeardRequest(_ request: UUID, connection: UUID) {
+        _ = heardTurns[connection]?.take(request)
+    }
+}
+
+extension WebSocketPeer {
+    /// Mint at the enqueue boundary, without suspension between minting, successful post and recording. A failed
+    /// queue records nothing. The session's existing ambient-heard gate still applies, independently of heard_turns.
+    func postAmbientHeard(_ text: String, target: String, request: UUID, records: HeardTurnRecords) async -> Bool {
+        guard var frame = await session.heardFrame(text, target: target) else { return false }
+        let capable = await session.peerCapabilities.contains(HeardTurns.capability)
+        guard isLive else { return false }
+        let turn = capable ? UUID() : nil
+        frame.payload = .control(.ambientHeard(targetID: target, text: text, turn: turn))
+        guard post(frame) else { return false }
+        if let turn { records.record(request, turn: turn) }
+        return true
+    }
+}
+
+/// One connection's in-memory FIFO, with no content or producer identifiers. Closing prevents a late enqueue from
+/// reviving records after teardown; a refusal takes its key once, and completion discards it. The listener retains
+/// one ledger per live connection, bounded by its connection limit; this ledger holds at most 64 entries.
+final class HeardTurnRecords: Sendable {
+    static let capacity = 64
+    private struct State {
+        var entries: [(request: UUID, turn: UUID)] = []
+        var closed = false
+    }
+    private let state = Mutex(State())
+    var count: Int { state.withLock { $0.entries.count } }
+    var isEmpty: Bool { state.withLock { $0.entries.isEmpty } }
+
+    func record(_ request: UUID, turn: UUID) {
+        state.withLock { state in
+            guard !state.closed else { return }
+            state.entries.removeAll { $0.request == request }
+            if state.entries.count == Self.capacity { state.entries.removeFirst() }
+            state.entries.append((request, turn))
+        }
+    }
+
+    func take(_ request: UUID) -> UUID? {
+        state.withLock { state in
+            guard let index = state.entries.firstIndex(where: { $0.request == request }) else { return nil }
+            return state.entries.remove(at: index).turn
+        }
+    }
+
+    func close() { state.withLock { $0.closed = true; $0.entries.removeAll() } }
 }
