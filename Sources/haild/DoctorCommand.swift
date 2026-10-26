@@ -19,7 +19,7 @@ func healthReport() -> HealthReport {
     )
 }
 
-/// Always exits 0 once a report is printed, so scripts read the `healthy` field rather than the exit code.
+/// Always exits 0 once printed: scripts read `healthy` for failures and each check's `outcome` for warnings.
 func statusJSON() throws {
     let data = try JSONEncoder.hailStatus.encode(healthReport())
     FileHandle.standardOutput.write(data + Data("\n".utf8))
