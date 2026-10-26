@@ -2,7 +2,7 @@ import HailProtocol
 import Testing
 @testable import HailDaemonKit
 
-@Suite struct PersonalTerminalSessionTests {
+@Suite(.frozenGuardBudget) struct PersonalTerminalSessionTests {
     @Test func selectedFinalTextIsDeliveredAndPartialTextIsRefused() async throws {
         let target = AdapterTarget(name: "a", binding: "binding-a")
         var policy = Policy()

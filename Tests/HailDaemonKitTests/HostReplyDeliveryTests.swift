@@ -3,7 +3,7 @@ import HailProtocol
 import Testing
 @testable import HailDaemonKit
 
-@Suite(.serialized) struct HostReplyDeliveryTests {
+@Suite(.serialized, .frozenGuardBudget) struct HostReplyDeliveryTests {
     @Test func selectingTargetDoesNotGrantLegacyBroadcastReplyAuthority() async throws {
         var policy = Policy()
         try policy.allow("tmux:reply", binding: "binding", tier: .open)

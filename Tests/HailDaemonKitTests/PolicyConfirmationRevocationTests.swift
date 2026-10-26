@@ -2,7 +2,7 @@ import Testing
 @testable import HailDaemonKit
 
 /// A waiting read-back cannot survive a revoke or other target-policy mutation (#87 items 6 and 7).
-@Suite struct PolicyConfirmationRevocationTests {
+@Suite(.frozenGuardBudget) struct PolicyConfirmationRevocationTests {
     let id = "tmux:a"
     let binding = "$1@1/%1:9"
 

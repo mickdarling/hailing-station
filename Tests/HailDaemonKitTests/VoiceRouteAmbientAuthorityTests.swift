@@ -6,7 +6,7 @@ import Testing
 
 /// The host side of ambient voice routing (#636, slice 4a): the listener's own ambient dispatch may address a route
 /// the selection covers, and nothing else may. Synthetic only: a fake tmux-kind adapter, never-started transports.
-@Suite(.serialized, .timeLimit(.minutes(1))) struct VoiceRouteAmbientAuthorityTests {
+@Suite(.serialized, .timeLimit(.minutes(1)), .frozenGuardBudget) struct VoiceRouteAmbientAuthorityTests {
     static func request(_ connection: UUID, to target: String, binding: String) -> LocalDispatchRequest {
         LocalDispatchRequest(connection: connection, target: target, binding: binding,
                              text: "synthetic input" + RightyoInputEvent.replyBlock(target: target))
