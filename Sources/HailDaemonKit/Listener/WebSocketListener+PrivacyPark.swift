@@ -207,8 +207,8 @@ extension AmbientRightyoRouter {
     /// the agent's replies are held and its pending ones dropped, and its device is told `duck_mode` on with reason
     /// `device`. No clip. Logged `privacy_reapplied reason=false_stale`.
     func reapplyFalseStale(_ connection: UUID, in state: inout State) {
-        guard state.staleCleared.removeValue(forKey: connection) != nil, state.duck[connection] == nil,
-              !state.closed.contains(connection) else { return }
+        // A torn-down connection has no mark: `stop(connection:)` drops it in the lock that marks it closed.
+        guard state.staleCleared.removeValue(forKey: connection) != nil, state.duck[connection] == nil else { return }
         endHeld(connection, reason: "privacy", in: &state)
         state.duck[connection] = AmbientDuckTimer(token: UUID(), timer: nil)
         state.runs.values.filter { $0.connection == connection }.forEach { _ = $0.pipeline.reportDuck(true) }

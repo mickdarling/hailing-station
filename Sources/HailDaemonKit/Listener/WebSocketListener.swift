@@ -134,7 +134,7 @@ public actor WebSocketListener {
         stopped = true
         networkListener.cancel()
         let active = Array(peers.values)
-        peers.removeAll()
+        (peers, transports) = ([:], [:])
         for peer in active { await peer.stop(reason: reason) }
         await stopAmbient(active)
         if readyResult == nil { finishReady(.failure(.stoppedBeforeReady)) }
@@ -2370,11 +2370,13 @@ extension HostSession {
 
 extension WebSocketListener {
     /// Whether `connection`'s peer answers a WebSocket ping within `timeout` (#941): false for no pong in time, a send
-    /// error, or a connection already gone. Only the transport hand-off and the pong handler run; nothing waits under a
-    /// lock. A peer's own stack answers (haild's `autoReplyPing`, the app's `URLSessionWebSocketTask`).
+    /// error, a connection already gone, or a peer already closing (no ping follows its close frame). Only the
+    /// transport hand-off and the pong handler run; nothing waits under a lock. A peer's own stack answers (haild's
+    /// `autoReplyPing`, the app's `URLSessionWebSocketTask`).
     func probe(connection: UUID, within timeout: Duration,
                onLatePong: @escaping @Sendable () -> Void = {}) async -> Bool {
-        guard !stopped, let transport = transports[connection] else { return false }
+        guard let peer = peers.values.first(where: { $0.session.connectionID == connection }),
+              await peer.isLive, !stopped, let transport = transports[connection] else { return false }
         let answer = ProbeAnswer(onLatePong: onLatePong)
         return await withCheckedContinuation { continuation in
             answer.set(continuation)
@@ -2383,27 +2385,42 @@ extension WebSocketListener {
             let context = NWConnection.ContentContext(identifier: "hail.probe", metadata: [metadata])
             transport.send(content: Data(), contentContext: context, isComplete: true,
                            completion: .contentProcessed { if $0 != nil { answer.resume(false) } })
-            Task {
+            answer.time(Task {
                 try? await Task.sleep(for: timeout)
+                guard !Task.isCancelled else { return }
                 answer.resume(false)
-            }
+            })
         }
     }
 }
 
-/// A probe's one answer: the first of its pong, its send error or its timeout. A pong after the answer was given (a
-/// slow peer judged stale) calls `onLatePong` (#941).
+/// A probe's one answer: the first of its pong, its send error or its timeout, which cancels its timer. A pong after
+/// the answer was given (a slow peer judged stale) still calls `onLatePong` (#941): the timer only ever decides first.
 final class ProbeAnswer: Sendable {
-    private let waiter = Mutex<(CheckedContinuation<Bool, Never>?, answered: Bool)>((nil, false))
+    private struct State {
+        var waiter: CheckedContinuation<Bool, Never>?
+        var timer: Task<Void, Never>?
+        var answered = false
+    }
+    private let state = Mutex(State())
     private let onLatePong: @Sendable () -> Void
     init(onLatePong: @escaping @Sendable () -> Void) { self.onLatePong = onLatePong }
-    func set(_ continuation: CheckedContinuation<Bool, Never>) { waiter.withLock { $0.0 = continuation } }
-    func resume(_ live: Bool) {
-        let (continuation, late) = waiter.withLock { state in
-            defer { state.answered = true }
-            return (state.0.take(), state.answered)
+    func set(_ continuation: CheckedContinuation<Bool, Never>) { state.withLock { $0.waiter = continuation } }
+    /// Keeps the timeout's task, cancelled at once if the answer came first.
+    func time(_ task: Task<Void, Never>) {
+        let answered = state.withLock { state in
+            if !state.answered { state.timer = task }
+            return state.answered
         }
-        continuation?.resume(returning: live)
+        if answered { task.cancel() }
+    }
+    func resume(_ live: Bool) {
+        let (waiter, timer, late) = state.withLock { state in
+            defer { (state.answered, state.waiter, state.timer) = (true, nil, nil) }
+            return (state.waiter, state.timer, state.answered)
+        }
+        timer?.cancel()
+        waiter?.resume(returning: live)
         if late, live { onLatePong() }
     }
 }

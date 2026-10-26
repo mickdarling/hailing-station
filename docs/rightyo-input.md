@@ -800,7 +800,7 @@ A network drop never turns privacy into public (Mick, 2026-10-22). When a privat
 - **Only the owner's own off clears it.** The voice exit or the app's switch off, on any private connection (a restored one included), clears the park daemon-wide, whatever device it came from (`ambient_park_discarded reason=off mode=privacy`): the park has no expiry, so only an off can clear it, and a parked device is not listening. A restored connection also records the live connection its privacy was taken from (its source) and that connection's arming. An owner's off on it ends privacy on that source only when all of these hold (Jarvis, #945 round 2):
   - it is the same class of device, matched as MM-E matches. Every app sends the Hello name `hail terminal`, so in practice this is the class (`phone`, `pad` or `mac`); a per-install device id is #950;
   - it still holds the arming the restore recorded;
-  - it does not answer a WebSocket ping within three seconds. The app sends no frame while it is idle, so silence cannot tell a dead socket from an idle device. A ping can, because the app's `URLSessionWebSocketTask` answers pings itself.
+  - it does not answer a WebSocket ping within three seconds. A peer already closing is not pinged (nothing follows its close frame) and counts as not answering. The app sends no frame while it is idle, so silence cannot tell a dead socket from an idle device. A ping can, because the app's `URLSessionWebSocketTask` answers pings itself.
 
   The off on the source runs as an owner's off there: its children, its device and its reply hold are told. A source still streaming (a child of it listening) is alive whatever its ping, and keeps its privacy (`live`).
 
