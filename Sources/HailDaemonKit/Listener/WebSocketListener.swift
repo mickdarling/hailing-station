@@ -47,6 +47,8 @@ public actor WebSocketListener {
     private let helloTimeout: Duration
     let log: @Sendable (WebSocketListenerEvent) -> Void
     var peers: [UUID: WebSocketPeer] = [:]
+    /// Content-free, bounded request correlation; each ledger belongs to exactly one connection (#923).
+    var heardTurns: [UUID: HeardTurnRecords] = [:]
     private var readyWaiters: [CheckedContinuation<UInt16, any Error>] = []
     private var stopWaiters: [CheckedContinuation<Void, Never>] = []
     var readyResult: Result<UInt16, WebSocketListenerError>?
@@ -126,13 +128,17 @@ public actor WebSocketListener {
         if stopped { return }
         await withCheckedContinuation { stopWaiters.append($0) }
     }
+}
 
+extension WebSocketListener {
     public func stop(reason: String = "requested") async {
         guard !stopped else { return }
         stopped = true
         networkListener.cancel()
         let active = Array(peers.values)
         peers.removeAll()
+        heardTurns.values.forEach { $0.close() }
+        heardTurns.removeAll()
         for peer in active { await peer.stop(reason: reason) }
         await stopAmbient(active)
         if readyResult == nil { finishReady(.failure(.stoppedBeforeReady)) }
@@ -306,6 +312,7 @@ public struct AmbientRouterStatus: Sendable, Equatable {
 extension WebSocketListener {
     fileprivate func peerEnded(_ id: UUID) async {
         guard let peer = peers.removeValue(forKey: id) else { return }
+        heardTurns.removeValue(forKey: peer.session.connectionID)?.close()
         lastInput.forget(connection: peer.session.connectionID)
         await endAmbient(of: peer)
     }
@@ -524,6 +531,10 @@ public final class AmbientRightyoRouter: AmbientAudioSink, AmbientListenerWiring
         /// Called with the connection once a "Nothing was sent." clip is queued on its privacy clip chain. Nil in the
         /// daemon: tests only set it, to change privacy at a known point between queuing and playing (#894 review).
         var notSentQueued: (@Sendable (UUID) -> Void)?
+        /// Awaited with the connection once a "Nothing was sent." clip has passed its play-time privacy check, just
+        /// before its frames are sent. Nil in the daemon, so nothing waits: tests only set it, to decide privacy inside
+        /// that window (#913).
+        var notSentPlaying: (@Sendable (UUID) async -> Void)?
         /// How long the owner's spoken duck mode (#735) lasts before it turns itself off: host.json
         /// `ambient.duckTimeout`, or `defaultDuckTimeout`.
         public var duckTimeout: TimeInterval = AmbientRightyoRouter.defaultDuckTimeout
@@ -1062,12 +1073,11 @@ extension AmbientRightyoRouter {
             onAcknowledge: acknowledged(on: connection, listener: listener, notices: notices)
         )
         (settings.replyControl, settings.onAcknowledgementSkipped) = (configuration.replyControl, skipped())
-        (settings.onHeard, settings.onOverheard) = transcriptRelays(on: connection, listener: listener)
+        settings.heardRequests = heardRequests(on: connection, listener: listener, notices: notices)
+        settings.onOverheard = overheard(on: connection, listener: listener)
         settings.onVoiceMute = voiceMuted(on: connection, listener: listener)
         settings.onVoiceMedia = voiceMedia(on: connection, listener: listener)
         settings.onVoiceMeeting = voiceMeeting(on: connection, listener: listener)
-        // Unsent text already in the target's input (#894) refuses that request only; the stream goes on.
-        settings.onDeliveryRefused = deliveryRefused(on: connection, listener: listener, notices: notices)
         // The child's privacy state, held once it exists, so its refusal is said by the state rule (round 4).
         let mark = AmbientRunMark()
         (settings.onVoiceDuck, settings.onDuckUnsupported) = (voiceDuck(on: connection, listener: listener, mark: mark),
@@ -1130,6 +1140,8 @@ extension AmbientRightyoRouter {
     /// persona's voice or the `default` folder's, then logs tokens and counts only: the persona key comes from the
     /// clip folders, never from transcript text. `rightyo_ms` and `host_ms` are separate clocks, never summed. Its task
     /// is left with `notices`, so a not-sent notice for the same request waits for it (#894 review); it is not delayed.
+    /// It respects the connection's privacy reply hold (#913): an acknowledgement whose frames would be sent once
+    /// privacy is decided is not, and logs `outcome=suppressed_privacy`.
     private func acknowledged(
         on connection: UUID, listener: WebSocketListener, notices: AmbientRefusalNotices
     ) -> (@Sendable (AmbientAckRequest) -> Void)? {
@@ -1144,8 +1156,8 @@ extension AmbientRightyoRouter {
                     return
                 }
                 await hold?()
-                let outcome = await listener?.acknowledgeAmbient(connection: connection, target: target, clip: clip)
-                    ?? "no_connection"
+                let outcome = await listener?.acknowledgeAmbient(connection: connection, target: target, clip: clip,
+                                                                 heldWhilePrivate: true) ?? "no_connection"
                 let host = request.readAt.duration(to: .now).components
                 let hostMs = host.seconds * 1_000 + host.attoseconds / 1_000_000_000_000_000
                 self?.emit("ambient_acknowledged", detail: "persona=\(persona) clip=\(index) "
@@ -1154,20 +1166,19 @@ extension AmbientRightyoRouter {
         }
     }
 
-    /// Shows the phone that heard an admitted request its own words (#318), awaited before the acknowledgement and the
-    /// typing. Nothing is logged: the text is transcript content.
-    private func heard(on connection: UUID, listener: WebSocketListener) -> @Sendable (String) async -> Void {
+    /// Carries a host-local request key through heard delivery and completion (#923). Neither words nor keys log.
+    func heardRequests(
+        on connection: UUID, listener: WebSocketListener, notices: AmbientRefusalNotices
+    ) -> AmbientHeardRequests {
         let target = configuration.target
-        return { [weak listener] text in
-            await listener?.showAmbientHeard(connection: connection, target: target, text: text)
-        }
-    }
-
-    /// The phone's own words, sent (#318) and not sent (#398), for the stream on `connection`.
-    private func transcriptRelays(
-        on connection: UUID, listener: WebSocketListener
-    ) -> (@Sendable (String) async -> Void, @Sendable (String, Bool, String?) async -> Void) {
-        (heard(on: connection, listener: listener), overheard(on: connection, listener: listener))
+        let refused = deliveryRefused(on: connection, listener: listener, notices: notices)
+        return AmbientHeardRequests(show: { [weak listener] request, text in
+            await listener?.showAmbientHeard(connection: connection, target: target, text: text, request: request)
+        }, finish: { [weak listener] request, refusal in
+            if let refusal { refused(request, refusal) } else if let request {
+                await listener?.finishHeardRequest(request, connection: connection)
+            }
+        })
     }
 
     /// Shows the phone that heard a turn RightyO did not send (#398), within the scope that phone asked for, with a
@@ -1240,14 +1251,17 @@ extension AmbientRightyoRouter {
     }
 
     /// One confirmation clip from `persona`'s reserved folder, sent like the stop confirmation; its outcome token.
+    /// `heldWhilePrivate` (#913) has it respect the privacy reply hold; one the hold refused is `suppressed_privacy`.
     func confirmVoiceMute(
-        _ persona: String, on connection: UUID, listener: WebSocketListener?
+        _ persona: String, on connection: UUID, listener: WebSocketListener?, heldWhilePrivate: Bool = false
     ) async -> String {
         guard let library = configuration.acknowledgements,
               let pick = AmbientStopConfirmation.clip(persona, in: library) else { return "no_clips" }
         let outcome = await listener?.acknowledgeAmbient(connection: connection, target: configuration.target,
-                                                         clip: pick.clip) ?? "no_connection"
+                                                         clip: pick.clip, heldWhilePrivate: heldWhilePrivate)
+            ?? "no_connection"
         hostPhrases.observe(pick.clip, outcome: outcome)
+        guard outcome != "suppressed_privacy" else { return outcome }
         return "\(pick.persona)/\(pick.index):\(outcome)"
     }
 
@@ -1607,8 +1621,8 @@ extension AmbientRightyoRouter {
     /// never the words, the text left in the input, or the target.
     fileprivate func deliveryRefused(
         on connection: UUID, listener: WebSocketListener, notices: AmbientRefusalNotices
-    ) -> @Sendable (LocalDispatchRefusal) -> Void {
-        { [weak self, weak listener] refusal in
+    ) -> @Sendable (UUID?, LocalDispatchRefusal) -> Void {
+        { [weak self, weak listener] request, refusal in
             let acknowledged = notices.acknowledgement
             notices.chain.enqueue { [weak self, weak listener] in
                 guard let self else { return }
@@ -1616,7 +1630,7 @@ extension AmbientRightyoRouter {
                 // out as `voice_route_refused`, the existing request-refusal code; a dedicated code waits for a
                 // protocol change.
                 let (shown, confirm) = await tellNotSent(HostDeliveryOutcome.inputPendingReason, after: acknowledged,
-                                                         on: connection, listener: listener)
+                                                         on: connection, listener: listener, request: request)
                 emit("ambient_delivery_refused", connection: connection,
                      detail: "reason=\(refusal.rawValue) shown=\(shown) confirm=\(confirm)")
             }
@@ -1628,10 +1642,12 @@ extension AmbientRightyoRouter {
     /// before it is typed, so the speaker hears the acknowledgement first), the refusal line, then "Nothing was sent.".
     /// Returns the line's and the clip's outcome tokens. A connection already gone (`no_connection`) gets no clip either.
     private func tellNotSent(
-        _ line: String, after acknowledgement: Task<Void, Never>?, on connection: UUID, listener: WebSocketListener?
+        _ line: String, after acknowledgement: Task<Void, Never>?, on connection: UUID, listener: WebSocketListener?,
+        request: UUID? = nil
     ) async -> (shown: String, confirm: String) {
         await acknowledgement?.value
-        let shown = await listener?.showRouteRefusal(line, target: configuration.target, connection: connection)
+        let shown = await listener?.showRouteRefusal(line, target: configuration.target, connection: connection,
+                                                      request: request)
             ?? "no_connection"
         guard shown != "no_connection" else { return (shown, shown) }
         return (shown, await confirmNotSent(on: connection, listener: listener))
@@ -1640,8 +1656,10 @@ extension AmbientRightyoRouter {
     /// "Nothing was sent." unless the connection is private (#894, Jarvis: privacy wins). Queued on the connection's
     /// privacy clip chain, so it can never follow a "Privacy on." decided before it. Privacy (`duck`, its internal name)
     /// is read when it is queued and again just before it plays: `suppressed_privacy` if on at either. A privacy
-    /// decision landing between that last check and the clip's frames is not caught yet (#913: the clip should respect
-    /// the connection's reply hold). A connection already marked torn down gets no clip and no chain: `no_connection`.
+    /// decision landing after that last check is caught by the connection's privacy reply hold (#913), which the entry
+    /// sets with the decision and the clip's enqueue checks once, under the hold's own lock, for all its frames: none
+    /// is sent once privacy is decided, also `suppressed_privacy`. A connection already marked torn down gets no clip
+    /// and no chain: `no_connection`.
     /// One whose teardown lands just before the chain is taken (its mark already pruned) gets a chain; once the clip has
     /// run, a connection with no peer left has that entry dropped, as `stop(connection:)` does, so none is left behind.
     /// A connection id never comes back, so no live connection loses its chain or a clip.
@@ -1655,8 +1673,9 @@ extension AmbientRightyoRouter {
                 guard !queuedPrivate, !duckMode(connection: connection) else {
                     return outcome.withLock { $0 = "suppressed_privacy" }
                 }
+                await configuration.notSentPlaying?(connection)
                 let confirm = await confirmVoiceMute(AmbientStopConfirmation.notSent, on: connection,
-                                                     listener: listener)
+                                                     listener: listener, heldWhilePrivate: true)
                 outcome.withLock { $0 = confirm }
             }
         }

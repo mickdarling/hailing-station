@@ -782,7 +782,8 @@ When privacy is taken, a reply playing on the connection is stopped first, throu
 - `haild reply` gets `reply refused [privacyHeld]: device is in privacy mode; reply dropped, nothing published` (a token and a fixed sentence, never words; the delivery audit records the token);
 - a refused reply is stopped, like a dismissed one: its later frames, pacer-queued audio included, stay refused after the exit (`replyStopped`), so no reply resumes half-way;
 - on entry every reply record the connection's session holds is dropped, committed or pending (`ambient_privacy_replies dropped=<n>`): an answer to a request made before privacy finds no recipient, during privacy or after;
-- the host's own clips (privacy on, off and status) are not agent replies and still play;
+- the host's own clips (privacy on, off and status) are not agent replies and still play. Two host clips respect the hold (#913): "Nothing was sent." and the acknowledgement. Each is decided whole (words and audio together): none of it is sent once privacy is decided, and each logs `suppressed_privacy` instead (`confirm=` and `outcome=`). While private no request is acknowledged anyway, so this only stops an acknowledgement that was already on its way when privacy was taken;
+- the hold is checked under its own lock, the one the entry sets it under, together with queuing each frame (#913): an entry lands wholly before or wholly after a frame is queued, never between the check and the queuing. A reply the hold refused is reported `privacyHeld` and stopped from that refusal itself, even if the exit releases the hold a moment later;
 - the hold is set with the entry itself, under the router's lock; the exit releases it on the router's serial notice queue, only after the entry's drop has run (logged `ambient_privacy_replies released=true`), so a reply from before a fast entry and exit never slips through;
 - privacy is in memory and per connection: the hold ends with the connection, and a new connection starts with none;
 - after the exit, new replies flow again.
@@ -899,12 +900,21 @@ child was stopped with any turns it had queued, and the device was sent a silent
   nothing is told. Privacy taken while the adapter waits (a voice entry or the device switch) still shows the line,
   but the clip is suppressed and the log says `confirm=suppressed_privacy`. The clip is queued on the connection's
   privacy clip chain, so it can never follow a "Privacy on." decided before it. Privacy is checked when the clip is
-  queued and again just before it plays. A route refusal's clip is gated the same way. Two cases are not caught:
-  - privacy turned on and off again entirely within the wait, which leaves the clip playing after "Recording
-    again.";
-  - privacy decided in the short window between the check just before it plays and its frames being queued. The
-    clip then plays, and "Privacy on." follows it on the chain. Making the clip respect the connection's privacy
-    reply hold is a follow-up, #913.
+  queued and again just before it plays. A route refusal's clip is gated the same way.
+  - **The reply hold (#913).** The clip also respects the connection's privacy reply hold (S-2c, below). A privacy
+    entry sets the hold with its decision, under the router's lock. The clip's frames (its words and its audio) are
+    queued to the device together, under one check of the hold made under the hold's own lock. So a decision that
+    lands after the check just before the clip plays still stops it: no frame is queued once privacy is decided, and
+    the log says `confirm=suppressed_privacy`. "Privacy on." is not held and plays next.
+  - A clip is decided whole: either all of it was queued before the decision, or none of it is. A privacy decision
+    never leaves the device with the words but not their audio, so it never waits for audio that is not coming (its
+    "reply audio didn't arrive" cue could otherwise sound while private). A connection torn down between a clip's
+    two hand-offs can still leave the words alone, but that device is going away. Only the hand-off to the connection runs under the lock, never
+    a wait for the send to complete, so a privacy decision never waits behind a slow socket.
+  - An exit releases the hold on the router's notice queue, a moment after privacy is off, so a clip in that moment
+    is still held (fail-closed).
+  - One case is not caught: privacy turned on and off again entirely within the wait, which leaves the clip playing
+    after "Recording again.".
 - **Meeting mode** adds no host gate on clips, so the refusal is told as in any other mode, as the acknowledgement
   is.
 - **Routed requests** (#636) are unchanged: a route refusing one for pending input is a route refusal

@@ -241,8 +241,9 @@ route's name alone, or a near miss), the device that said it is told, in the ord
   sent."), one clip plays through the acknowledgement path, to that device only. Like the other confirmations it is
   then held as a host phrase, so hearing it back is echo. Privacy is checked (#894) when the clip is queued and
   again just before it plays: if the connection is private at either check, the clip is not played, the line still
-  is, and the log says `confirm=suppressed_privacy`. A decision in the short window after the second check is not
-  caught yet (#913; see [rightyo-input.md](rightyo-input.md#ambient-pending-input-894)). Route refusals share one notice chain per child
+  is, and the log says `confirm=suppressed_privacy`. A decision after the second check is caught by the
+  connection's privacy reply hold (#913): no frame of the clip is queued once privacy is decided, also
+  `confirm=suppressed_privacy` (see [rightyo-input.md](rightyo-input.md#ambient-pending-input-894)). Route refusals share one notice chain per child
   with pending-input refusals, so they are told in the order said.
 - **Only that device, only while it listens there.** The line and the clip go to the connection whose stream it is,
   and only while it still selects the stream's target; a reconnected, moved or other device gets nothing.

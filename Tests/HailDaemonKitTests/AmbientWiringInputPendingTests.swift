@@ -56,7 +56,7 @@ import Testing
     /// refusal is told as in any other mode. Privacy holds every request before dispatch, so it is never refused
     /// (`RightyoInputConsumerTests.whilePrivateARequestIsHeldBackSoPendingInputRefusesNothing`).
     @Test func inMeetingModeTheRefusalIsStillTold() async throws {
-        let run = try await PendingInputRun.make(holdFirst: true)
+        let run = try await PendingInputRun.make(options: .init(holdFirst: true))
         defer { run.close() }
         await run.adapter.failHandoff(with: AdapterError.inputPending(reason: .staleInput))
         try await run.speak()
