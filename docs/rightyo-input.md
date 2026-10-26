@@ -888,17 +888,22 @@ child was stopped with any turns it had queued, and the device was sent a silent
   acknowledgement, then "Nothing was sent." (the 3-second wait for the input to clear comes between them). A child's
   route refusals and pending-input refusals share one notice chain, so they are told in the order said.
 - **The log.** `ambient_delivery_refused reason=inputPending shown=sent|unsupported|not_ready|failed|no_connection
-  confirm=<key>/<index>:<outcome>` (or `confirm=no_clips`, or `confirm=suppressed_privacy`): tokens only, never the words, the pending text or the
-  target. The adapter's own `tmux_input_pending reason=…` line, logged just before, names the reason.
+  confirm=<key>/<index>:<outcome>` (or `confirm=no_clips`, `confirm=suppressed_privacy`, or `confirm=no_connection`
+  when the device was already gone, so no line or clip was sent): tokens only, never the words, the pending text or
+  the target. The adapter's own `tmux_input_pending reason=…` line, logged just before, names the reason.
 - **Nothing looks sent.** The request's reply ownership is dropped before it is committed, so no reply recipient is
   armed and no last-input device is recorded. The audit chain keeps the `pushed` record it writes before every
   ambient dispatch attempt, as for any refused dispatch; there is no `delivered` record.
-- **Privacy always wins.** While private every request is held back before dispatch, so none is refused and
+- **Privacy is checked twice.** While private every request is held back before dispatch, so none is refused and
   nothing is told. Privacy taken while the adapter waits (a voice entry or the device switch) still shows the line,
-  but the clip is not played and the log says `confirm=suppressed_privacy`. The clip is queued on the connection's
-  privacy clip chain, so it can never follow a "Privacy on." decided before it, and privacy is checked both when it
-  is queued and when it would play. A route refusal's clip is gated the same way. One case is not caught: privacy
-  turned on and off again within the wait, which leaves the clip playing after "Recording again.".
+  but the clip is suppressed and the log says `confirm=suppressed_privacy`. The clip is queued on the connection's
+  privacy clip chain, so it can never follow a "Privacy on." decided before it. Privacy is checked when the clip is
+  queued and again just before it plays. A route refusal's clip is gated the same way. Two cases are not caught:
+  - privacy turned on and off again entirely within the wait, which leaves the clip playing after "Recording
+    again.";
+  - privacy decided in the short window between the check just before it plays and its frames being queued. The
+    clip then plays, and "Privacy on." follows it on the chain. Making the clip respect the connection's privacy
+    reply hold is a follow-up, #913.
 - **Meeting mode** adds no host gate on clips, so the refusal is told as in any other mode, as the acknowledgement
   is.
 - **Routed requests** (#636) are unchanged: a route refusing one for pending input is a route refusal

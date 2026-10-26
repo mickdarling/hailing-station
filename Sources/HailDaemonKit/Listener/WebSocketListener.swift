@@ -1623,22 +1623,26 @@ extension AmbientRightyoRouter {
     /// Tells the device that said a request that sent nothing (#636 slice 5c, #894), on its child's one notice chain:
     /// after `acknowledgement`, the latest acknowledgement when the refusal came (an un-routed request is acknowledged
     /// before it is typed, so the speaker hears the acknowledgement first), the refusal line, then "Nothing was sent.".
-    /// Returns the line's and the clip's outcome tokens.
+    /// Returns the line's and the clip's outcome tokens. A connection already gone (`no_connection`) gets no clip either.
     private func tellNotSent(
         _ line: String, after acknowledgement: Task<Void, Never>?, on connection: UUID, listener: WebSocketListener?
     ) async -> (shown: String, confirm: String) {
         await acknowledgement?.value
         let shown = await listener?.showRouteRefusal(line, target: configuration.target, connection: connection)
             ?? "no_connection"
+        guard shown != "no_connection" else { return (shown, shown) }
         return (shown, await confirmNotSent(on: connection, listener: listener))
     }
 
-    /// "Nothing was sent." unless the connection is private: privacy always wins (#894, Jarvis). Queued on the
-    /// connection's privacy clip chain, so it can never follow a "Privacy on." decided before it, and privacy (`duck`,
-    /// its internal name) is read both when it is queued and when it plays: `suppressed_privacy` if on at either.
+    /// "Nothing was sent." unless the connection is private (#894, Jarvis: privacy wins). Queued on the connection's
+    /// privacy clip chain, so it can never follow a "Privacy on." decided before it. Privacy (`duck`, its internal name)
+    /// is read when it is queued and again just before it plays: `suppressed_privacy` if on at either. A privacy
+    /// decision landing between that last check and the clip's frames is not caught yet (#913: the clip should respect
+    /// the connection's reply hold). A torn-down connection gets no clip and no new chain: `no_connection`.
     private func confirmNotSent(on connection: UUID, listener: WebSocketListener?) async -> String {
-        let outcome = Mutex("none")
-        let piece = state.withLock { state in
+        let outcome = Mutex("no_connection")
+        let piece = state.withLock { state -> Task<Void, Never>? in
+            guard !state.closed.contains(connection) else { return nil }
             let queuedPrivate = state.duck[connection] != nil
             return Self.clipChain(connection, in: &state).queued { [weak self, weak listener] in
                 guard let self else { return }
@@ -1650,7 +1654,7 @@ extension AmbientRightyoRouter {
                 outcome.withLock { $0 = confirm }
             }
         }
-        await piece.value
+        await piece?.value
         return outcome.withLock { $0 }
     }
 
@@ -2198,8 +2202,6 @@ final class AmbientRunMark: Sendable {
     var duck: AmbientDuckControl? { held.withLock { $0 } }
 }
 
-/// Runs the work given to it one piece at a time, in the order given (#404): each piece starts only once the one
-/// before has returned. `enqueue` returns at once.
 /// One child's notices of requests that sent nothing (#894 review): route refusals (#636) and pending input share one
 /// chain, so they are told in the order said, and each waits for the latest acknowledgement's task as it stood when
 /// the refusal came, so "Nothing was sent." never comes before its own request's acknowledgement.
@@ -2211,6 +2213,8 @@ final class AmbientRefusalNotices: Sendable {
     var acknowledgement: Task<Void, Never>? { latest.withLock { $0 } }
 }
 
+/// Runs the work given to it one piece at a time, in the order given (#404): each piece starts only once the one
+/// before has returned. `enqueue` returns at once.
 final class SerialTaskChain: Sendable {
     private let last = Mutex<Task<Void, Never>?>(nil)
 
