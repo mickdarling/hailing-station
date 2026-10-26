@@ -29,10 +29,31 @@ struct BluetoothHFPRouteTests {
         #expect(AudioInputPreferences.saved(in: defaults).allowsBluetoothHFP == false)
     }
 
-    @Test(arguments: Policy.Category.allCases, [false, true])
-    func idleReconfigureTouchesOnlyTheStationsOwnCategory(_ category: Policy.Category, _ mixes: Bool) {
-        let owned = AudioSessionIdleOwnership.isStationOwned(category, mixesWithOthers: mixes)
-        #expect(owned == (category == .playAndRecord && !mixes))
+    struct IdleSession: Sendable, CustomTestStringConvertible {
+        let category: String
+        let options: UInt
+        let owned: Bool
+        var testDescription: String { "\(category) options 0x\(String(options, radix: 16))" }
+    }
+
+    /// AVAudioSession's documented raw values; the constants themselves are unavailable on macOS.
+    static let idleSessions: [IdleSession] = [
+        .init(category: "AVAudioSessionCategoryPlayAndRecord", options: 0, owned: true),
+        // allowBluetoothHFP, defaultToSpeaker and allowBluetoothA2DP: the station's own options.
+        .init(category: "AVAudioSessionCategoryPlayAndRecord", options: 0x4 | 0x8 | 0x20, owned: true),
+        .init(category: "AVAudioSessionCategoryPlayAndRecord", options: 0x1, owned: false), // mixWithOthers
+        .init(category: "AVAudioSessionCategoryPlayAndRecord", options: 0x11, owned: false), // spoken-audio mixing
+        .init(category: "AVAudioSessionCategoryPlayback", options: 0x1, owned: false), // the background keepalive
+        .init(category: "AVAudioSessionCategoryPlayback", options: 0, owned: false),
+        .init(category: "AVAudioSessionCategoryAmbient", options: 0, owned: false),
+        .init(category: "AVAudioSessionCategorySoloAmbient", options: 0, owned: false), // the launch default
+        .init(category: "AVAudioSessionCategoryRecord", options: 0, owned: false)
+    ]
+
+    @Test(arguments: Self.idleSessions)
+    func idleReconfigureTouchesOnlyTheStationsOwnCategory(_ session: IdleSession) {
+        #expect(AudioSessionIdleOwnership.isStationOwned(category: session.category, options: session.options)
+                == session.owned)
     }
 
     /// Today's behaviour, pinned (#905 review P3-2): if iOS answers the toggle by moving output to the headset, the

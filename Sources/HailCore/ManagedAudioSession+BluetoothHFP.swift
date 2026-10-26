@@ -52,10 +52,20 @@ protocol AudioSessionIdleConfiguring: Sendable {
 }
 
 enum AudioSessionIdleOwnership {
-    /// Only the station's own play-and-record category is re-applied while idle. The keepalive's mixable playback,
-    /// or a category nothing in the station has set yet, belongs to its owner and is never replaced (#282, #352).
-    static func isStationOwned(_ category: AudioOutputRoutePolicy.Category, mixesWithOthers: Bool) -> Bool {
-        category == .playAndRecord && !mixesWithOthers
+    /// iOS reads AVFoundation's own constants; elsewhere (the macOS tests) they are its documented raw values.
+    #if os(iOS)
+    static let playAndRecordCategory = AVAudioSession.Category.playAndRecord.rawValue
+    static let mixWithOthersOption = AVAudioSession.CategoryOptions.mixWithOthers.rawValue
+    #else
+    static let playAndRecordCategory = "AVAudioSessionCategoryPlayAndRecord"
+    static let mixWithOthersOption: UInt = 0x1
+    #endif
+
+    /// Only the station's own play-and-record category is re-applied while idle, from the session's raw category
+    /// and option values. The keepalive's mixable playback, or a category nothing in the station has set yet (the
+    /// launch default), belongs to its owner and is never replaced (#282, #352).
+    static func isStationOwned(category: String, options: UInt) -> Bool {
+        category == playAndRecordCategory && options & mixWithOthersOption == 0
     }
 }
 
@@ -64,9 +74,8 @@ extension AVAudioSessionBackend: AudioSessionIdleConfiguring {
     /// The shared session, as the reply player configures it; the production backend wraps the same instance.
     func configureIfStationOwned(allowsBluetoothHFP: Bool) async throws {
         let session = AVAudioSession.sharedInstance()
-        let category: AudioOutputRoutePolicy.Category = session.category == .playAndRecord ? .playAndRecord : .other
         guard AudioSessionIdleOwnership.isStationOwned(
-            category, mixesWithOthers: session.categoryOptions.contains(.mixWithOthers)
+            category: session.category.rawValue, options: session.categoryOptions.rawValue
         ) else { return }
         try AudioOutputSessionRouting.configure(session, allowsBluetoothHFP: allowsBluetoothHFP)
     }
