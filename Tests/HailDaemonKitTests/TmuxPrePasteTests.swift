@@ -4,7 +4,7 @@ import Testing
 @testable import HailDaemonKit
 
 /// #306 review (Codex P1/P2, #307 item 6b): what may stop a delivery between the pre-check and the paste.
-@Suite struct TmuxPrePasteTests {
+@Suite(.timeLimit(.minutes(1))) struct TmuxPrePasteTests {
     private static let binding = "$2@1758230001/%2:502"
 
     @Test func abandonmentDuringThePrePasteLookupStopsThePasteAndLeavesThePaneClean() async throws {
@@ -49,12 +49,12 @@ import Testing
     @Test func textHiddenByAWidthMiscountIsStillPendingAndRefusedAtTheBoundWithNothingPasted() async throws {
         let pane = ScriptedPane(baseline: Self.hiddenRow, stale: .max)
         let harness = SubmitHarness(pane, timing: Self.short)
-        let start = ContinuousClock.now
+        let start = harness.clock.now
 
         await #expect(throws: AdapterError.self) {
             try await harness.adapter.deliver("synthetic input", to: "codex", binding: nil)
         }
-        #expect(ContinuousClock.now - start >= .milliseconds(120), "waited out the clear limit first")
+        #expect(harness.clock.now - start >= .milliseconds(120), "waited out the clear limit first")
         #expect(await harness.runner.calls.allSatisfy { !$0.contains("set-buffer") && !$0.contains("send-keys") })
     }
 

@@ -7,7 +7,8 @@ import Testing
 /// announcement hook once, for every code in `RequestRefusals.codes`; any other error stays a connection failure.
 @MainActor
 @Suite struct RequestRefusalNoticeTests {
-    @Test func eachRequestRefusalIsOneNoticeAndOneAnnouncement() async throws {
+    @Test(arguments: [false, true])
+    func eachRequestRefusalIsOneNoticeAndOneAnnouncement(carriesTurn: Bool) async throws {
         let ready = try await HostConnectionStoreAmbientBindingTests().readyStore(
             capabilities: ["ping", "select_target", "receive_replies"]
         )
@@ -17,7 +18,9 @@ import Testing
         store.onRequestRefusal = { announced.append($0) }
         let messages = RequestRefusals.codes.map { "synthetic refusal: \($0.rawValue)" }
         for (code, message) in zip(RequestRefusals.codes, messages) {
-            try await socket.push(.error(code: code, message: message))
+            try await socket.push(.error(
+                code: code, message: message, turn: carriesTurn && code == .voiceRouteRefused ? UUID() : nil
+            ))
         }
         try await waitUntil { await MainActor.run { announced.count == RequestRefusals.codes.count } }
         let thread = store.conversation.entries(endpointID: endpoint.id, targetID: "tmux:a")

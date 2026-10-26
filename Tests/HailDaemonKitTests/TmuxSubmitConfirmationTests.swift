@@ -3,11 +3,9 @@ import Testing
 
 /// #83, #304: the Enter waits until the pane shows the pasted text at the cursor, and only text leaving the cursor
 /// confirms it. Scripted pane only; no tmux process is spawned.
-@Suite struct TmuxSubmitConfirmationTests {
+@Suite(.timeLimit(.minutes(1))) struct TmuxSubmitConfirmationTests {
     private static let binding = "$2@1758230001/%2:502"
     private static let fast = timing(settleLimit: .seconds(5))
-    /// For the scripts that reach the retry (#910).
-    private static let retrying = timing(settleLimit: .seconds(5), confirmLimit: ScriptedPane.retryConfirmLimit)
 
     private static func timing(
         settleLimit: Duration, settleFloor: Duration = .milliseconds(1), confirmLimit: Duration = .milliseconds(500)
@@ -88,7 +86,7 @@ import Testing
         // #304: a TUI that read the Enter together with text inserts a newline; the tail is still in the input,
         // with only whitespace before the cursor, and the pane changed, so the target is alive: one retry.
         let pane = ScriptedPane(afterEnter: [ScriptedPane.absorbedScreen, ScriptedPane.submittedScreen])
-        let harness = adapter(pane, timing: Self.retrying)
+        let harness = adapter(pane, timing: Self.fast)
 
         try await harness.adapter.deliver("synthetic input", to: "codex", binding: Self.binding)
 
@@ -124,7 +122,7 @@ import Testing
 
         try await harness.adapter.deliver("synthetic input", to: "codex", binding: nil)
         // Well past the confirm window: nothing else is sent once the text has left the cursor.
-        try await Task.sleep(for: .milliseconds(150))
+        await harness.clock.clock.sleep(.seconds(1))
 
         #expect(pane.enters == 1)
         #expect(await harness.keys == ["synthetic input", "Enter"])
@@ -132,7 +130,7 @@ import Testing
 
     @Test func anEnterNeverObservedFailsAfterOneRetryAndTaintsThePane() async throws {
         let pane = ScriptedPane(afterEnter: [ScriptedPane.absorbedScreen, ScriptedPane.absorbedTwiceScreen])
-        let harness = adapter(pane, timing: Self.retrying)
+        let harness = adapter(pane, timing: Self.fast)
 
         await #expect(throws: AdapterError.self) {
             try await harness.adapter.deliver("synthetic input", to: "codex", binding: nil)
@@ -149,7 +147,7 @@ import Testing
         let pane = ScriptedPane(
             afterEnter: [ScriptedPane.absorbedScreen, ScriptedPane.submittedScreen], rebindAfterEnter: true
         )
-        let harness = adapter(pane, timing: Self.retrying)
+        let harness = adapter(pane, timing: Self.fast)
 
         await #expect(throws: AdapterError.rebound("codex")) {
             try await harness.adapter.deliver("synthetic input", to: "codex", binding: Self.binding)
@@ -166,7 +164,10 @@ import Testing
 
     @Test func abandonmentDuringSettleSendsNoEnterAndTaintsThePane() async throws {
         let pane = ScriptedPane()
-        let harness = adapter(pane, timing: Self.timing(settleLimit: .seconds(5), settleFloor: .milliseconds(300)))
+        // This cancellation boundary intentionally uses a real sleep so the caller can abandon mid-settle.
+        let harness = SubmitHarness(
+            pane, timing: Self.timing(settleLimit: .seconds(5), settleFloor: .milliseconds(300)), realTime: true
+        )
         let delivery = Task { try await harness.adapter.deliver("synthetic input", to: "codex", binding: Self.binding) }
         let deadline = ContinuousClock.now.advanced(by: .seconds(5))
         while await harness.keys.isEmpty {

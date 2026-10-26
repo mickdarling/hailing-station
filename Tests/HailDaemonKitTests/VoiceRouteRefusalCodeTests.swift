@@ -37,7 +37,7 @@ import Testing
             text: "Deck:", pasted: PastedText(text: "synthetic pasted notes")
         )))
         for frame in [VoiceRouteRig.tap("Deck, add a slide"), VoiceRouteRig.tap("Voice Work, run the tests"), pasted] {
-            guard case .error(let code, _) = try onlyControl(await session.receive(frame)) else {
+            guard case .error(let code, _, _) = try onlyControl(await session.receive(frame)) else {
                 throw TestSupportError.expectedOneControl
             }
             #expect(code == .lockdown)

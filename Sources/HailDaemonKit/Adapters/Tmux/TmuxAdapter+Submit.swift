@@ -42,29 +42,29 @@ public enum TmuxSubmitOutcome: String, Sendable, Equatable {
 enum TmuxSubmitProbe {
     typealias Observe = @Sendable () async -> PaneObservation?
     enum Acceptance: Equatable { case accepted(PaneObservation), blank, unreadable, timedOut }
-
     /// After the floor, waits until the pane differs from `baseline` and shows the text (or a placeholder) at the
     /// cursor, unchanged for `quiet`: the target has taken the whole paste in. A blank pane has nothing to show.
     static func acceptance(
-        _ timing: TmuxSubmitTiming, baseline: PaneObservation?, tail: PayloadTail, observe: Observe
+        _ timing: TmuxSubmitTiming, baseline: PaneObservation?, tail: PayloadTail,
+        clock: TmuxSubmitClock = .continuous, observe: Observe
     ) async -> Acceptance {
-        try? await Task.sleep(for: timing.settleFloor)
-        let deadline = ContinuousClock.now.advanced(by: timing.settleLimit)
+        await clock.sleep(timing.settleFloor)
+        let deadline = clock.now().advanced(by: timing.settleLimit)
         var steady: (PaneObservation, ContinuousClock.Instant)?
         while true {
             guard let current = await observe() else { return .unreadable }
             if current.isBlank { return .blank }
             if current != baseline, current.input(tail).isDrawn {
                 if let (seen, since) = steady, seen == current {
-                    if ContinuousClock.now - since >= timing.quiet { return .accepted(current) }
+                    if clock.now() - since >= timing.quiet { return .accepted(current) }
                 } else {
-                    steady = (current, .now)
+                    steady = (current, clock.now())
                 }
             } else {
                 steady = nil
             }
-            guard ContinuousClock.now < deadline else { return .timedOut }
-            try? await Task.sleep(for: timing.pollInterval)
+            guard clock.now() < deadline else { return .timedOut }
+            await clock.sleep(timing.pollInterval)
         }
     }
 
@@ -76,12 +76,13 @@ enum TmuxSubmitProbe {
     /// moved to column 0 right after the text counts only when the cursor was past column 0 before the Enter (a
     /// terminal ended the line); otherwise it is `ambiguous`.
     static func reaction(
-        _ timing: TmuxSubmitTiming, tail: PayloadTail?, before: PaneObservation?, wasHolding: Bool, observe: Observe
+        _ timing: TmuxSubmitTiming, tail: PayloadTail?, before: PaneObservation?, wasHolding: Bool,
+        clock: TmuxSubmitClock = .continuous, observe: Observe
     ) async -> Reaction {
-        let deadline = ContinuousClock.now.advanced(by: timing.confirmLimit)
+        let deadline = clock.now().advanced(by: timing.confirmLimit)
         var previous = before, alive = false, released = 0
         repeat {
-            try? await Task.sleep(for: timing.pollInterval)
+            await clock.sleep(timing.pollInterval)
             guard let current = await observe() else { return .unreadable }
             alive = alive || (previous.map { $0 != current } ?? false)
             previous = current
@@ -91,7 +92,7 @@ enum TmuxSubmitProbe {
             case .holding: released = 0
             }
             if released >= 2 { return .submitted }
-        } while ContinuousClock.now < deadline
+        } while clock.now() < deadline
         return .pending(alive: alive)
     }
 
@@ -100,25 +101,27 @@ enum TmuxSubmitProbe {
     /// Before the retry: the text must still be held at the cursor, unchanged for `quiet` (`holding`). `released`:
     /// the target took the first Enter late (the text left the cursor on two looks in a row). `restless`: the pane
     /// never held still within the confirm limit, or could not be read.
-    static func steadiness(_ timing: TmuxSubmitTiming, tail: PayloadTail, observe: Observe) async -> Steadiness {
-        let deadline = ContinuousClock.now.advanced(by: timing.confirmLimit)
+    static func steadiness(
+        _ timing: TmuxSubmitTiming, tail: PayloadTail, clock: TmuxSubmitClock = .continuous, observe: Observe
+    ) async -> Steadiness {
+        let deadline = clock.now().advanced(by: timing.confirmLimit)
         var steady: (PaneObservation, ContinuousClock.Instant)?
         var released = 0
-        while ContinuousClock.now < deadline {
+        while clock.now() < deadline {
             guard let current = await observe() else { return .restless }
             switch current.input(tail) {
             case .holding:
                 released = 0
                 if let (seen, since) = steady, seen == current {
-                    if ContinuousClock.now - since >= timing.quiet { return .holding(current) }
+                    if clock.now() - since >= timing.quiet { return .holding(current) }
                 } else {
-                    steady = (current, .now)
+                    steady = (current, clock.now())
                 }
             case .clear, .lineEnded:
                 released += 1
                 if released >= 2 { return .released }
             }
-            try? await Task.sleep(for: timing.pollInterval)
+            await clock.sleep(timing.pollInterval)
         }
         return .restless
     }
@@ -144,7 +147,7 @@ extension TmuxAdapter {
         // Neither seen at the cursor before nor provably gone after: the Enter went out, nothing more is known.
         let undecided: TmuxSubmitOutcome = acceptance == .timedOut ? .unsettled : .unverifiable
         let first = await TmuxSubmitProbe.reaction(
-            submitTiming, tail: tail, before: before, wasHolding: wasHolding, observe: observe
+            submitTiming, tail: tail, before: before, wasHolding: wasHolding, clock: submitClock, observe: observe
         )
         switch first {
         case .submitted: return wasHolding ? .confirmed : undecided
@@ -162,7 +165,7 @@ extension TmuxAdapter {
         if outcomes: (late: TmuxSubmitOutcome, restless: TmuxSubmitOutcome), observe: TmuxSubmitProbe.Observe
     ) async throws -> TmuxSubmitOutcome {
         let steady: PaneObservation
-        switch await TmuxSubmitProbe.steadiness(submitTiming, tail: tail, observe: observe) {
+        switch await TmuxSubmitProbe.steadiness(submitTiming, tail: tail, clock: submitClock, observe: observe) {
         case .released: return outcomes.late
         case .restless: return outcomes.restless
         case .holding(let seen): steady = seen
@@ -170,7 +173,7 @@ extension TmuxAdapter {
         _ = try await verified(target, binding: session.binding)
         try await pressEnter(session.paneID)
         let reaction = await TmuxSubmitProbe.reaction(
-            submitTiming, tail: tail, before: steady, wasHolding: true, observe: observe
+            submitTiming, tail: tail, before: steady, wasHolding: true, clock: submitClock, observe: observe
         )
         switch reaction {
         case .submitted: return .retried

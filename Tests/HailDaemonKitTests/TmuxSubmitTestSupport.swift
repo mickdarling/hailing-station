@@ -18,12 +18,6 @@ final class ScriptedPane: Sendable {
     /// A second newline in the input: the pane changed, the text is still there.
     static let absorbedTwiceScreen = "> synthetic input\n  \n  ▌"
     static let rebound = "$1|1758230000|%1|501|claude-hail\n$2|1758230001|%8|808|codex\n"
-    /// The confirm limit for a script that reaches the retry (#910). The retry's steadiness check needs two looks
-    /// inside it, and a retried submit two clear looks after the second Enter: a stalled test process that missed a
-    /// 500 ms limit there ended `unverifiable` (no retry) or `failed` instead of the scripted outcome. The adapter reads
-    /// the wall clock, so this bound, not the script, still decides a stall longer than it. The first wait after the
-    /// Enter lasts the whole limit.
-    static let retryConfirmLimit = Duration.seconds(5)
     private struct State {
         var captures = 0
         var enters = 0
@@ -113,14 +107,16 @@ struct SubmitHarness {
     let adapter: TmuxAdapter
     let runner: FakeCommandRunner
     let log: OutcomeLog
+    let clock = ManualSubmitClock()
 
-    init(_ pane: ScriptedPane, timing: TmuxSubmitTiming) {
+    init(_ pane: ScriptedPane, timing: TmuxSubmitTiming, realTime: Bool = false) {
         let runner = FakeCommandRunner { pane.respond($0) }
         let log = OutcomeLog()
         self.runner = runner
         self.log = log
         adapter = TmuxAdapter(
-            runner: runner, pollInterval: nil, submitTiming: timing, submitObserver: { log.append($0) }
+            runner: runner, pollInterval: nil, submitTiming: timing,
+            submitClock: realTime ? .continuous : clock.clock, submitObserver: { log.append($0) }
         )
     }
 

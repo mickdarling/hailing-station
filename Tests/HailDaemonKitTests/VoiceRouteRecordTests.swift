@@ -63,7 +63,7 @@ import Testing
         }
         await rig.adapter.releaseHandoff()
         let result = await sending.value
-        guard case .error(let code, _) = try onlyControl(result) else { throw TestSupportError.expectedOneControl }
+        guard case .error(let code, _, _) = try onlyControl(result) else { throw TestSupportError.expectedOneControl }
         #expect(code == .notAllowed)
         let context = try #require(await rig.adapter.contexts.last)
         #expect(!(await session.acceptsHostReply(Self.reply(context))))

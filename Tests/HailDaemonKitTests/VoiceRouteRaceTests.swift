@@ -78,7 +78,7 @@ private struct GatedRouteAuthorizer: HostSessionAuthorizing {
         }
         await gate.release()
         let result = await sending.value
-        guard case .error(let code, _) = try onlyControl(result) else { throw TestSupportError.expectedOneControl }
+        guard case .error(let code, _, _) = try onlyControl(result) else { throw TestSupportError.expectedOneControl }
         #expect(code == .notAllowed)
         #expect(await rig.adapter.deliveries.isEmpty, "nothing delivered anywhere")
     }

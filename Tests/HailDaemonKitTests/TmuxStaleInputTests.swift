@@ -3,7 +3,7 @@ import Testing
 @testable import HailDaemonKit
 
 /// #304: text already pending at the cursor is never appended to.
-@Suite struct TmuxStaleInputTests {
+@Suite(.timeLimit(.minutes(1))) struct TmuxStaleInputTests {
     private static let fast = TmuxSubmitTiming(
         settleFloor: .milliseconds(1), pollInterval: .milliseconds(2), quiet: .milliseconds(6),
         settleLimit: .seconds(5), confirmLimit: .milliseconds(60), clearLimit: .milliseconds(120)
@@ -61,12 +61,12 @@ import Testing
     @Test func pendingTextStillThereAtTheBoundIsRefusedWithoutAPaste() async throws {
         let pane = ScriptedPane(baseline: ScriptedPane.typedScreen, stale: .max)
         let harness = SubmitHarness(pane, timing: Self.fast)
-        let start = ContinuousClock.now
+        let start = harness.clock.now
 
         await #expect(throws: AdapterError.self) {
             try await harness.adapter.deliver("synthetic input", to: "codex", binding: nil)
         }
-        #expect(ContinuousClock.now - start >= .milliseconds(120), "waited out the clear limit first")
+        #expect(harness.clock.now - start >= .milliseconds(120), "waited out the clear limit first")
         #expect(await harness.runner.calls.allSatisfy { !$0.contains("set-buffer") && !$0.contains("send-keys") })
     }
 
@@ -85,12 +85,11 @@ import Testing
             }
             return CommandResult(exitCode: 0, stdout: "")
         }
-        // The wait ends only when the scripted text clears (by look count); the generous clear limit keeps a
-        // loaded runner from reaching it first. The short settle limit only bounds the follow-up delivery below.
+        // Virtual time leaves the script in charge of clearing; settle bounds the follow-up delivery.
         let adapter = TmuxAdapter(runner: runner, pollInterval: nil, submitTiming: TmuxSubmitTiming(
             settleFloor: .milliseconds(1), pollInterval: .milliseconds(2), quiet: .milliseconds(6),
             settleLimit: .milliseconds(50), confirmLimit: .milliseconds(60), clearLimit: .seconds(10)
-        ))
+        ), submitClock: ManualSubmitClock().clock)
 
         await #expect(throws: AdapterError.rebound("codex")) {
             try await adapter.deliver("synthetic input", to: "codex", binding: "$2@1758230001/%2:502")
@@ -107,11 +106,12 @@ import Testing
     @Test func aDeliveryCancelledWhileWaitingForPendingTextLeavesPromptlyAsAbandoned() async throws {
         // #306 review: cancellation during the clear wait ends it at once, with no paste and no taint.
         let pane = ScriptedPane(baseline: ScriptedPane.typedScreen, stale: .max)
+        // Real time here tests prompt caller cancellation during an in-flight wait.
         let harness = SubmitHarness(pane, timing: TmuxSubmitTiming(
             settleFloor: .milliseconds(1), pollInterval: .milliseconds(2), quiet: .milliseconds(6),
             // The script never draws the follow-up's text, so its settle wait is kept short.
             settleLimit: .milliseconds(200), confirmLimit: .milliseconds(60), clearLimit: .seconds(10)
-        ))
+        ), realTime: true)
         let delivery = Task { try await harness.adapter.deliver("synthetic input", to: "codex", binding: nil) }
         let deadline = ContinuousClock.now.advanced(by: .seconds(5))
         while await harness.runner.calls.filter({ $0.contains("capture-pane") }).count < 3 {
@@ -141,7 +141,7 @@ import Testing
 }
 
 /// #304: what counts as the text at the cursor, beyond the literal tail.
-@Suite struct TmuxCursorInputTests {
+@Suite(.timeLimit(.minutes(1))) struct TmuxCursorInputTests {
     private func adapter(_ pane: ScriptedPane) -> SubmitHarness {
         SubmitHarness(pane, timing: TmuxSubmitTiming(
             settleFloor: .milliseconds(1), pollInterval: .milliseconds(2), quiet: .milliseconds(6),
