@@ -15,21 +15,32 @@ import Testing
         if !committed { await session.setSyntheticPending(context.id) }
         let frame = recipientText(recipientDescriptor(context))
         let connection = NWConnection(host: "127.0.0.1", port: 9, using: .tcp)
+        let closing = AsyncStream<Void>.makeStream()
+        let callback = Mutex<(@Sendable () -> Void)?>(nil)
         let peer = WebSocketPeer(id: UUID(), connection: connection, session: session,
                                  queue: DispatchQueue(label: "synthetic.retired-publication"),
-                                 helloTimeout: .seconds(1), log: { _ in }, onEnd: { _ in })
+                                 helloTimeout: .seconds(1), log: { _ in }, onEnd: { _ in }, submitClose: { completion in
+                                     callback.withLock { $0 = completion }
+                                     closing.continuation.yield(())
+                                 })
         let ticket = try #require(await peer.prepareReplyPublication(frame))
-        let cancelled = Task {
-            withUnsafeCurrentTask { $0?.cancel() }
-            return await ticket.result()
-        }
-        #expect(!(await cancelled.value))
+        let close = Task { await peer.close(reason: "synthetic retirement") }
+        var arrivals = closing.stream.makeAsyncIterator()
+        _ = try #require(await arrivals.next())
         // Never started: no Network state callback can update the peer actor's ended flag.
         #expect(!(await peer.ended))
         #expect(await session.replyPublicationStatus(frame) == (committed ? .ready : .pending))
         #expect(await peer.replyPublicationStatus(frame) == .absent)
         #expect(await session.syntheticFrameCount(context.id) == 0)
         #expect(!ticket.enqueue())
+        #expect(await ticket.result() == .refused)
+        let complete = try #require(callback.withLock { stored in
+            defer { stored = nil }
+            return stored
+        })
+        complete()
+        await close.value
+        closing.continuation.finish()
     }
 
     @Test(arguments: [false, true])
@@ -142,8 +153,7 @@ import Testing
         let frame = recipientText(recipientDescriptor(try await rig.submit(on: session)))
         let listener = try syntheticListener(rig: rig)
         await listener.installSyntheticPeers([session])
-        // Status performs two time reads. Actual enqueue then observes expiration, without a sleep
-        // or a blocked cooperative executor, and must not downgrade this later refusal to pending.
+        // Expire after status's two reads; enqueue must refuse without granting retry permission.
         clock.expireAfter(reads: 2)
         await #expect(throws: LocalReplyRefusal.publicationFailed) { try await listener.publish(frame) }
         #expect(await session.replyPublicationStatus(frame) == .absent)
