@@ -45,7 +45,7 @@ public struct ConnectionProbeAuthorizer: HostSessionAuthorizing {
     public func authorize(_ frame: Frame) async -> HostSessionAuthorization {
         guard case .control(let control) = frame.payload else { return .deny }
         switch control {
-        case .hello, .ping, .listTargets: return .allow
+        case .hello, .ping, .listTargets, .replyYield: return .allow
         default: return .deny
         }
     }
@@ -98,7 +98,7 @@ public struct PersonalTerminalAuthorizer: HostSessionAuthorizing {
         case .audio: ambientAudio == nil ? .deny : .allow
         case .control(let control):
             switch control {
-            case .hello, .ping, .listTargets, .select, .escape: .allow
+            case .hello, .ping, .listTargets, .select, .escape, .replyYield: .allow
             case .diagnostic: diagnostics == nil ? .deny : .allow
             case .overheardScope, .ambientInput, .setPrivacy: ambientAudio == nil ? .deny : .allow
             case .health: health == nil ? .deny : .allow
@@ -183,7 +183,7 @@ public actor HostSession {
         case closed
     }
 
-    public static let capabilities = ["connection_probe", "list_targets", "ping"]
+    public static let capabilities = ["connection_probe", "list_targets", "ping", ReplySegments.capability]
 
     let host: HailHost
     let authorizer: any HostSessionAuthorizing
@@ -203,6 +203,10 @@ public actor HostSession {
     /// mid-stream whose remaining frames are refused (#309). Both bounded, ids only.
     var repliesInFlight: [UUID] = []
     var stoppedReplies: [UUID] = []
+    /// Subset of in-flight replies with a segment boundary actually enqueued to this capable peer.
+    var segmentedReplies: Set<UUID> = []
+    var recordStoppedReply: @Sendable (UUID) -> Void = { _ in }
+    var replyEvent: @Sendable (WebSocketListenerEvent) -> Void = { _ in }
     var selectedTarget: String?
     /// Which overheard turns this connection asked for (#398), one of `AmbientOverheard.scopes`. Every connection
     /// starts at `off`, so nothing overheard is sent until the device asks on this connection.
@@ -248,6 +252,9 @@ public actor HostSession {
         case .closed:
             return HostSessionResult(frames: [], disposition: .close)
         case .awaitingHello:
+            if case .control(.replyYield(_, let segment)) = frame.payload {
+                return refuseReplyYield(segment: segment)
+            }
             return await negotiate(frame)
         case .ready(let version):
             guard frame.version == version else {
@@ -337,7 +344,7 @@ public actor HostSession {
         peerDeviceKind = AmbientTakeOver.deviceKind(hello.deviceKind)
         let info = HelloInfo(
             versions: VersionNegotiation.supported,
-            capabilities: authorizer.capabilities,
+            capabilities: authorizer.capabilities + [ReplySegments.capability],
             deviceName: hostName
         )
         return HostSessionResult(frames: [response(.hello(info), version: version)])
@@ -351,6 +358,7 @@ public actor HostSession {
     ) -> HostSessionResult {
         if close {
             state = .closed
+            segmentedReplies.removeAll()
             replyRequests.removeAll()
             evictedForHandoff.removeAll() // Nothing can be restored into a closed session (#723).
         }
@@ -364,6 +372,9 @@ public actor HostSession {
 /// The ready-state body of `receive`, kept out of the actor body (#636 adds the voice-route step before it).
 extension HostSession {
     fileprivate func receiveReady(_ frame: Frame, version: Int) async -> HostSessionResult {
+        if case .control(.replyYield(let reply, let segment)) = frame.payload {
+            return await receiveReplyYield(frame, reply: reply, segment: segment)
+        }
         // The phone is attributed by its negotiated Hello name, never by the frame's own `source`.
         guard let admitted = await admit(frame, version: version, device: peerName) else {
             return failure(.unauthorized, "terminal action is not authorized", close: false, version: version)

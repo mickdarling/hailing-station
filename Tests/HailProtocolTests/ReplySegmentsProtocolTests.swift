@@ -2,7 +2,7 @@ import Foundation
 import HailProtocol
 import Testing
 
-/// #932 P1: wire vocabulary only; no sender advertises or acts on it yet.
+/// #932 wire vocabulary and strict descriptor/stream validation.
 @Suite struct ReplySegmentsProtocolTests {
     private let identifier = "00000000-0000-4000-8000-000000000932"
 
@@ -42,6 +42,21 @@ import Testing
     func segmentEndRequiresNonFinalReplyStreamWithoutResume(field: String) throws {
         var object = try audioObject()
         if field == "final" || field == "resume" { object[field] = true } else { object.removeValue(forKey: field) }
+        #expect(throws: DecodingError.self) {
+            try JSONDecoder().decode(AudioPayload.self, from: JSONSerialization.data(withJSONObject: object))
+        }
+    }
+
+    @Test(arguments: ["missing", "null", "mismatch"])
+    func segmentEndRequiresDescriptorAudioStream(mode: String) throws {
+        var object = try audioObject()
+        var reply = try #require(object["reply"] as? [String: Any])
+        switch mode {
+        case "missing": reply.removeValue(forKey: "audioStream")
+        case "null": reply["audioStream"] = NSNull()
+        default: reply["audioStream"] = UUID().uuidString
+        }
+        object["reply"] = reply
         #expect(throws: DecodingError.self) {
             try JSONDecoder().decode(AudioPayload.self, from: JSONSerialization.data(withJSONObject: object))
         }

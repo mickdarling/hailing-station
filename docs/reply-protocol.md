@@ -85,9 +85,10 @@ advertised the command ([rightyo-input.md](rightyo-input.md)).
 
 ## Reply segments (#932)
 
-P1 defines protocol vocabulary only. Neither side advertises `reply_segments` (`ReplySegments.capability`) yet;
-no host producer sets `segmentEnd`, and the device ignores `AudioPayload.isSegmentEnd` during playback.
-P2–P5 (production, host cancellation, device pauses/yield and integration proof) remain deferred.
+P1 defines the wire vocabulary. P3 adds host listener support: the host advertises `reply_segments`
+(`ReplySegments.capability`) beside its other capabilities. The producer (P2), device pauses/yield (P4) and
+integration proof (P5) are separate work; the device still ignores `AudioPayload.isSegmentEnd` during playback.
+The host behavior below has synthetic test coverage, not physical-device or live captured-output proof.
 
 One reply id spans many spoken segments; its text frame still carries the full spoken text. The proposed P2
 producer splits at sentence boundaries and puts `"segmentEnd": true` on the last audio frame of each segment
@@ -105,16 +106,35 @@ same reply descriptor and stream id, with increasing frame sequences and distinc
   missing fields, null, invalid UUIDs, fractional/non-integer counts, out-of-range counts and extras fail decoding.
   A device sends it only to a host that advertised `reply_segments`. An older host refuses the unknown command
   as malformed; a device refuses it from a host through its existing unexpected-control-frame failure.
-- In P1, both built-in host authorizers deny `reply_yield` through the existing unsupported/unadvertised action
-  path: `unauthorized`, `terminal action is not authorized`, with the connection kept open. Selection, active
-  replies and stopped replies stay unchanged; this path never logs the reply id or content. The fallback routing
-  refusal also remains unchanged for custom authorizers that admit unsupported commands.
+- P3 gates reply audio at `WebSocketPeer.prepareReplyPublication`, immediately before encoding. A device that
+  advertised `reply_segments` receives the original flag; every other device receives `isSegmentEnd = false`,
+  whose encoding omits the field and is byte-identical to legacy audio. Correlated replies, fallback/last-input
+  routing and host clips (including clips gated by privacy) share this boundary. Device-local replay uses the
+  bytes already delivered; there is no separate host replay send path.
+- Both built-in host authorizers permit `reply_yield`, but the session additionally requires a ready connection
+  whose own peer advertised `reply_segments`. A missing capability or a pre-hello yield gets `unauthorized`,
+  `terminal action is not authorized`, with the connection kept open. A custom authorizer can still deny it.
+  An authorized yield stops only that reply id if it is in flight on this connection. Later frames are refused
+  as `replyStopped`, so the CLI retires its renderer. No `stop_playback` is sent: the device already stopped.
+  Unknown, finished, already-stopped and other-connection replies do nothing and produce no response frame.
+  `segment` is an informational count, never evidence of authority.
+- After a complete admitted owner handoff (phone final text or ambient/voice dispatch), P3 stops every in-flight
+  reply on that connection that has had a segment end enqueued. This backstop runs only for peers advertising
+  `reply_segments`; older devices retain their existing behavior. Refused, held, unconfirmed and ownerless
+  handoffs do not trigger it. It sends no `stop_playback` and leaves unsegmented and other-connection replies alone.
+  Tracking is a subset of the existing 64-entry in-flight list, removed at final audio, stop or teardown. Stopped
+  ids enter the listener's 64-entry stop ledger synchronously, so disconnect cannot hand later frames elsewhere.
+- Content-free logs use `reply_yield` with `outcome=accepted|ignored|not_authorized` and `segment=<count>`, and
+  `reply_backstop` with `outcome=stopped count=<count>`. Neither reply ids nor request/reply text is logged by
+  these events. Stop, dismiss and privacy still stop whole reply ids. Echo handling, acknowledgements and the
+  not-sent clip retain their existing behavior.
 
 Proposed device behavior (P4, not shipped or physically validated): after a segment finishes playing, the device
 opens a pause window. Sustained owner speech in that window stops the remaining reply locally and sends
-`reply_yield`; the proposed P3 host then drops later frames for that reply id and supersedes its rendering.
+`reply_yield`; the P3 host then drops later frames for that reply id, allowing its renderer to retire.
 The v1 defaults—1.5 s pause, 300 ms sustained onset, no "go on"—are device configuration pending Mick's confirmation.
-Synthetic P1 verification is recorded in [reply-segments-protocol.md](testing/reply-segments-protocol.md).
+Synthetic P1 verification is recorded in [reply-segments-protocol.md](testing/reply-segments-protocol.md), and
+P3 listener verification in [reply-segments-listener.md](testing/reply-segments-listener.md).
 
 ## Muting reply audio (#404)
 
