@@ -2,6 +2,14 @@
 // swiftlint:disable file_length
 import Foundation
 
+/// Internal time source for submit waits (#917). Production keeps the continuous clock and its sleep semantics.
+struct TmuxSubmitClock: Sendable {
+    let now: @Sendable () -> ContinuousClock.Instant
+    let sleep: @Sendable (Duration) async -> Void
+
+    static let continuous = TmuxSubmitClock(now: { .now }, sleep: { try? await Task.sleep(for: $0) })
+}
+
 /// Every tmux session on one server is a target (#11). Text reaches the pane as one tmux paste (#304): it is
 /// assembled in a uniquely named buffer by argv (never interpreted as key names) and pasted with `paste-buffer
 /// -p`, bracketed when the target asked for it, so a target reads it as one piece however late its event loop
@@ -23,6 +31,7 @@ public actor TmuxAdapter: Adapter {
     let chunkSize: Int
     private let pollInterval: Duration?
     let submitTiming: TmuxSubmitTiming
+    let submitClock: TmuxSubmitClock
     /// Deliveries run one at a time, or reentrancy at each await would interleave two of them into one command.
     private var lastDelivery: Task<Void, Never>?
     /// Panes holding pasted text from a delivery that never reached a known submit (abandoned or failed after
@@ -46,6 +55,21 @@ public actor TmuxAdapter: Adapter {
         submitTiming: TmuxSubmitTiming = .standard, submitObserver: (@Sendable (TmuxSubmitOutcome) -> Void)? = nil,
         evidenceObserver: (@Sendable (TmuxDeliveryEvidence) -> Void)? = nil
     ) {
+        self.init(
+            runner: runner, tmux: tmux, socket: socket, chunkSize: chunkSize, pollInterval: pollInterval,
+            submitTiming: submitTiming, submitClock: .continuous,
+            submitObserver: submitObserver, evidenceObserver: evidenceObserver
+        )
+    }
+
+    init(
+        runner: any CommandRunner, tmux: String = "tmux", socket: String? = nil,
+        chunkSize: Int = defaultChunkSize, pollInterval: Duration? = .seconds(3),
+        submitTiming: TmuxSubmitTiming, submitClock: TmuxSubmitClock,
+        submitObserver: (@Sendable (TmuxSubmitOutcome) -> Void)? = nil,
+        evidenceObserver: (@Sendable (TmuxDeliveryEvidence) -> Void)? = nil
+    ) {
+        self.submitClock = submitClock
         self.runner = runner
         self.tmuxPath = tmux
         self.socket = socket
@@ -113,7 +137,7 @@ public actor TmuxAdapter: Adapter {
             }
             let observe: TmuxSubmitProbe.Observe = { await self.observePane(session.paneID) }
             let acceptance = await TmuxSubmitProbe.acceptance(
-                submitTiming, baseline: fresh ?? baseline, tail: tail, observe: observe
+                submitTiming, baseline: fresh ?? baseline, tail: tail, clock: submitClock, observe: observe
             )
             // The Enter is what runs the text; the identity is checked once more right before it.
             _ = try await verified(target, binding: session.binding)
@@ -146,7 +170,9 @@ public actor TmuxAdapter: Adapter {
             (try? abandoned.check()) == nil ? nil : await self.observePane(session.paneID)
         }
         let left: TmuxSubmitProbe.Reaction = seen.input(stale) != .holding ? .ambiguous
-            : await TmuxSubmitProbe.reaction(wait, tail: stale, before: seen, wasHolding: true, observe: observe)
+            : await TmuxSubmitProbe.reaction(
+                wait, tail: stale, before: seen, wasHolding: true, clock: submitClock, observe: observe
+            )
         try abandoned.check()
         guard left == .submitted else {
             evidence.inputPending(.staleInput, in: session.paneID, seen: seen, own: pending[1])
@@ -189,7 +215,9 @@ public actor TmuxAdapter: Adapter {
         let result = try await tmux(arguments, failure: AdapterError.captureFailed)
         return result.stdout.trimmingCharacters(in: .whitespacesAndNewlines)
     }
+}
 
+extension TmuxAdapter {
     private func sessions() async throws -> [Session] {
         try await Self.listSessions(runner: runner, tmux: tmuxPath, baseArguments: Self.baseArguments(socket: socket))
     }
@@ -207,9 +235,7 @@ public actor TmuxAdapter: Adapter {
         guard result.exitCode == 0 else { throw failure(result.errorText) }
         return result
     }
-}
 
-extension TmuxAdapter {
     /// The paste step's own refusal for text that appeared while its buffer filled, word for word as
     /// `TmuxAdapter+Paste.swift` throws it; `performDelivery` names it `inputPending(.appeared)` (#894). Tests pin
     /// the pair, so a reworded refusal there fails them rather than falling back to a generic delivery failure.
