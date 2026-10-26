@@ -14,14 +14,16 @@ enum ReplyFrameDelivery<Receipt: Sendable>: Sendable {
     case delivered(Receipt)
     case abandoned
     case refused
+    /// Refused by the privacy reply hold (#913): nothing was enqueued.
+    case held
 }
 
 /// Connections in privacy mode (#735 S-2c, internally duck): the agent's replies to them are refused from the moment
 /// the host takes privacy until it confirms the exit. Set synchronously, under the router's lock, by the entry itself,
-/// and read inside each reply's final enqueue, so no frame the agent sends after entry is enqueued. Released on the
-/// router's serial notice queue after the entry's drop of pending replies has run (or at once when the connection
-/// ends). The host's own clips (privacy on, off and status) go through `deliverRequestlessReply`, which never
-/// consults it.
+/// and checked inside each reply's final enqueue, under its own lock (`unlessHeld`), so no frame is enqueued once the
+/// entry has set it. Released on the router's serial notice queue after the entry's drop of pending replies has run
+/// (or at once when the connection ends). Of the host's own clips, only "Nothing was sent." and the acknowledgement
+/// pass it (#913); the privacy clips (on, off, status) and the other confirmations never consult it.
 final class PrivateReplyHold: Sendable {
     private let held = Mutex<Set<UUID>>([])
 
@@ -30,6 +32,13 @@ final class PrivateReplyHold: Sendable {
     }
 
     func holds(_ connection: UUID) -> Bool { held.withLock { $0.contains(connection) } }
+
+    /// Runs `enqueue` unless `connection` is held, under the lock `set` takes (#913), so an entry lands wholly before
+    /// or wholly after it; false, without running it, when held. `enqueue` only submits to the transport and never
+    /// takes the router's lock, which `set` is called under.
+    func unlessHeld(_ connection: UUID, _ enqueue: () -> Bool) -> Bool {
+        held.withLock { $0.contains(connection) ? false : enqueue() }
+    }
 }
 
 /// A host-minted request belongs to this HostSession only. Neither device names nor wire UUIDs create it.
@@ -493,11 +502,12 @@ extension WebSocketPeer {
         _ frame: Frame, hold: PrivateReplyHold? = nil, onLateSuccess: (@Sendable () -> Void)? = nil
     ) async -> ReplyFrameDelivery<Void> {
         let connection = session.connectionID
+        let held = Mutex(false)
         guard !ended, await session.unleasedBindingIsCurrent(frame),
               let prepared = prepareReplyPublication(frame, onLateSuccess: onLateSuccess),
               await session.enqueueHostReply(frame, enqueue: {
-                  hold?.holds(connection) != true && prepared.enqueue()
-              }) else { return .refused }
+                  Self.enqueue(prepared, unless: hold, connection, held: held)
+              }) else { return held.withLock { $0 } ? .held : .refused }
         return replyDelivery(await prepared.result(), receipt: ())
     }
 
@@ -507,25 +517,44 @@ extension WebSocketPeer {
         return prepareReplyPublication(frame) != nil
     }
 
-    /// Host-originated to this one connection (rightyo#105 acknowledgements): no route, no pin.
+    /// Host-originated to this one connection (rightyo#105 acknowledgements): no route, no pin. `hold` is passed only
+    /// for a host clip that respects privacy (#913).
     func deliverRequestlessReply(
-        _ frame: Frame, onLateSuccess: (@Sendable () -> Void)? = nil
+        _ frame: Frame, hold: PrivateReplyHold? = nil, onLateSuccess: (@Sendable () -> Void)? = nil
     ) async -> ReplyFrameDelivery<LastInputLedger.Entry> {
-        await deliverRoutedReply(frame, onLateSuccess: onLateSuccess)
+        await deliverRoutedReply(frame, hold: hold, onLateSuccess: onLateSuccess)
     }
 
     /// Returns the selection the reply was delivered under, so its later frames can be pinned to it (#370). The
-    /// agent's replies pass `hold` (#735 S-2c), checked in the enqueue; the host's own clips pass none.
+    /// agent's replies pass `hold` (#735 S-2c), checked in the enqueue; of the host's own clips, only those that
+    /// respect privacy pass it (#913).
     func deliverRoutedReply(
         _ frame: Frame, lastInput: LastInputRoute? = nil, hold: PrivateReplyHold? = nil,
         onLateSuccess: (@Sendable () -> Void)? = nil
     ) async -> ReplyFrameDelivery<LastInputLedger.Entry> {
         let connection = session.connectionID
+        let held = Mutex(false)
         guard !ended, let prepared = prepareReplyPublication(frame, onLateSuccess: onLateSuccess),
               let delivered = await session.enqueueRoutedReply(
-                frame, lastInput: lastInput, enqueue: { hold?.holds(connection) != true && prepared.enqueue() }
-              ) else { return .refused }
+                frame, lastInput: lastInput, enqueue: { Self.enqueue(prepared, unless: hold, connection, held: held) }
+              ) else { return held.withLock { $0 } ? .held : .refused }
         return replyDelivery(await prepared.result(), receipt: delivered)
+    }
+
+    /// The final enqueue: under `hold`'s lock when one is given (#913), so no frame is enqueued once privacy has set
+    /// it; a refusal by the hold is recorded in `held`.
+    private static func enqueue(
+        _ prepared: PreparedWebSocketReply, unless hold: PrivateReplyHold?, _ connection: UUID,
+        held: borrowing Mutex<Bool>
+    ) -> Bool {
+        guard let hold else { return prepared.enqueue() }
+        var attempted = false
+        let enqueued = hold.unlessHeld(connection) {
+            attempted = true
+            return prepared.enqueue()
+        }
+        if !attempted { held.withLock { $0 = true } }
+        return enqueued
     }
 
     private func replyDelivery<Receipt: Sendable>(

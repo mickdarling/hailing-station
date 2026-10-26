@@ -28,13 +28,19 @@ extension WebSocketListener {
     /// permit all apply, and nothing goes to any other connection. It is host-originated to one named connection,
     /// so it does not need the single-terminal fallback flag. Returns a fixed outcome token: `sent`,
     /// `no_connection`, `not_ready` (no negotiated session, or the phone no longer selects `target`) or `refused`.
-    func acknowledgeAmbient(connection: UUID, target: String, clip: AmbientAckClip) async -> String {
+    /// With `heldWhilePrivate` (#913) each frame's enqueue also respects the connection's privacy reply hold, decided
+    /// atomically with the enqueue: once privacy has set it, no further frame is sent, and the token is
+    /// `suppressed_privacy`.
+    func acknowledgeAmbient(connection: UUID, target: String, clip: AmbientAckClip,
+                            heldWhilePrivate: Bool = false) async -> String {
         guard !stopped, let peer = peers.values.first(where: { $0.session.connectionID == connection }) else {
             return "no_connection"
         }
         guard let frames = await peer.session.acknowledgementFrames(clip, target: target) else { return "not_ready" }
         for frame in frames {
-            let delivery = await peer.deliverRequestlessReply(frame, onLateSuccess: lateEchoObservation(frame))
+            let delivery = await peer.deliverRequestlessReply(frame, hold: heldWhilePrivate ? replyHold : nil,
+                                                              onLateSuccess: lateEchoObservation(frame))
+            if case .held = delivery { return "suppressed_privacy" }
             guard case .delivered = delivery else { return "refused" }
             ambient?.observeReply(frame)
         }
