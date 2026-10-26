@@ -234,10 +234,18 @@ struct LastInputRoute: Sendable {
 }
 
 extension HostSession {
-    func attachLastInput(_ ledger: LastInputLedger) { lastInputLedger = ledger }
+    func attachLastInput(
+        _ ledger: LastInputLedger, recordStoppedReply: @escaping @Sendable (UUID) -> Void = { _ in },
+        replyEvent: @escaping @Sendable (WebSocketListenerEvent) -> Void = { _ in }
+    ) {
+        lastInputLedger = ledger
+        self.recordStoppedReply = recordStoppedReply
+        self.replyEvent = replyEvent
+    }
 
     /// Called only from `deliver` after a delivered handoff, in the actor turn that confirmed `generation`.
     func noteLastInput(to target: String, generation: UUID) {
+        stopSegmentedRepliesForRequest()
         let entry = LastInputLedger.Entry(connection: connectionID, generation: generation, at: requestClock())
         lastInputLedger?.record(entry, for: target)
     }
@@ -448,18 +456,27 @@ extension HostSession {
     private func noteReplyDelivered(_ frame: Frame) {
         guard case .audio(let audio) = frame.payload, let reply = audio.reply else { return }
         repliesInFlight.removeAll { $0 == reply.id }
-        guard !audio.isFinal else { return }
+        if audio.isFinal {
+            segmentedReplies.remove(reply.id)
+            return
+        }
+        if audio.isSegmentEnd, peerCapabilities.contains(ReplySegments.capability) {
+            segmentedReplies.insert(reply.id)
+        }
         // An abandoned stream never sends its final frame, so the oldest entry gives way: a live reply is always
         // tracked, and a stale one can at worst be stopped again.
         repliesInFlight.append(reply.id)
         repliesInFlight.removeFirst(max(0, repliesInFlight.count - Self.playbackStopLimit))
+        segmentedReplies.formIntersection(repliesInFlight)
     }
 
     static let playbackStopLimit = 64
 
     /// A reply refused while private (#735 S-2c) is stopped like a dismissed one: its later frames are refused too.
     func stopHeldReply(_ id: UUID) {
+        segmentedReplies.remove(id)
         guard !stoppedReplies.contains(id) else { return }
+        recordStoppedReply(id)
         stoppedReplies.append(id)
         stoppedReplies.removeFirst(max(0, stoppedReplies.count - Self.playbackStopLimit))
         repliesInFlight.removeAll { $0 == id }
@@ -502,6 +519,7 @@ extension HostSession {
         stoppedReplies.append(contentsOf: repliesInFlight)
         stoppedReplies.removeFirst(max(0, stoppedReplies.count - Self.playbackStopLimit))
         repliesInFlight.removeAll()
+        segmentedReplies.removeAll()
         guard peerCapabilities.contains(PlaybackStop.capability) else { return (nil, stopped) }
         return (response(.stopPlayback, version: version), stopped)
     }
@@ -511,9 +529,9 @@ extension WebSocketPeer {
     func replyPublicationStatus(_ frame: Frame) async -> ReplyPublicationStatus {
         // Terminal retirement precedes actor callbacks. Preparation is side-effect-free, and final
         // enqueue independently rechecks transport authority rather than trusting this status snapshot.
-        guard prepareReplyPublication(frame) != nil else { return .absent }
+        guard await prepareReplyPublication(frame) != nil else { return .absent }
         let status = await session.replyPublicationStatus(frame)
-        guard prepareReplyPublication(frame) != nil else { return .absent }
+        guard await prepareReplyPublication(frame) != nil else { return .absent }
         return status
     }
 
@@ -525,7 +543,7 @@ extension WebSocketPeer {
         let connection = session.connectionID
         let held = Mutex(false)
         guard !ended, await session.unleasedBindingIsCurrent(frame),
-              let prepared = prepareReplyPublication(frame, onLateSuccess: onLateSuccess),
+              let prepared = await prepareReplyPublication(frame, onLateSuccess: onLateSuccess),
               await session.enqueueHostReply(frame, enqueue: {
                   Self.enqueue([prepared], unless: hold, connection, held: held)
               }) else { return held.withLock { $0 } ? .held : .refused }
@@ -535,7 +553,7 @@ extension WebSocketPeer {
     func admitsRequestlessReply(_ frame: Frame, lastInput: LastInputRoute? = nil) async -> Bool {
         guard await session.admitsRequestlessReply(frame, lastInput: lastInput) else { return false }
         // A retiring transport cannot be the single recipient.
-        return prepareReplyPublication(frame) != nil
+        return await prepareReplyPublication(frame) != nil
     }
 
     /// Host-originated to this one connection (rightyo#105 acknowledgements): no route, no pin.
@@ -554,7 +572,11 @@ extension WebSocketPeer {
     ) async -> [ReplyFrameDelivery<Void>] {
         let connection = session.connectionID
         let held = Mutex(false)
-        let prepared = zip(frames, onLateSuccess).compactMap { prepareReplyPublication($0, onLateSuccess: $1) }
+        var tickets: [PreparedWebSocketReply] = []
+        for (frame, callback) in zip(frames, onLateSuccess) {
+            if let ticket = await prepareReplyPublication(frame, onLateSuccess: callback) { tickets.append(ticket) }
+        }
+        let prepared = tickets
         guard !ended, !frames.isEmpty, prepared.count == frames.count,
               await session.enqueueRequestlessClip(frames, enqueue: {
                   Self.enqueue(prepared, unless: hold, connection, held: held)
@@ -573,7 +595,7 @@ extension WebSocketPeer {
     ) async -> ReplyFrameDelivery<LastInputLedger.Entry> {
         let connection = session.connectionID
         let held = Mutex(false)
-        guard !ended, let prepared = prepareReplyPublication(frame, onLateSuccess: onLateSuccess),
+        guard !ended, let prepared = await prepareReplyPublication(frame, onLateSuccess: onLateSuccess),
               let delivered = await session.enqueueRoutedReply(
                 frame, lastInput: lastInput, enqueue: { Self.enqueue([prepared], unless: hold, connection, held: held) }
               ) else { return held.withLock { $0 } ? .held : .refused }
@@ -755,8 +777,7 @@ extension WebSocketListener {
         guard held || replyHold.holds(peer.session.connectionID) else { return .publicationFailed }
         if let id = HostSession.replyID(frame) {
             await peer.session.stopHeldReply(id)
-            stoppedReplyIDs.append(id)
-            stoppedReplyIDs.removeFirst(max(0, stoppedReplyIDs.count - HostSession.playbackStopLimit))
+            stoppedReplyIDs.record(id)
         }
         return .privacyHeld
     }
@@ -797,5 +818,68 @@ extension WebSocketListener {
         default: throw WebSocketListenerError.invalidReply
         }
         return validated
+    }
+}
+
+// Segment authority is connection-local; counts and fixed outcomes are the only diagnostics.
+extension HostSession {
+    func replyFrameForPeer(_ frame: Frame) -> Frame {
+        guard case .audio(var audio) = frame.payload, audio.reply != nil,
+              !peerCapabilities.contains(ReplySegments.capability) else { return frame }
+        audio.isSegmentEnd = false
+        var legacy = frame
+        legacy.payload = .audio(audio)
+        return legacy
+    }
+
+    func receiveReplyYield(_ frame: Frame, reply: UUID, segment: Int) async -> HostSessionResult {
+        guard case .ready = state, peerCapabilities.contains(ReplySegments.capability),
+              await authorizer.authorize(frame) == .allow else {
+            return refuseReplyYield(segment: segment)
+        }
+        // An injected authorizer may suspend while the connection closes.
+        guard case .ready = state else {
+            return refuseReplyYield(segment: segment)
+        }
+        let accepted = repliesInFlight.contains(reply)
+        if accepted { stopHeldReply(reply) }
+        logReplyEvent("reply_yield", detail: "outcome=\(accepted ? "accepted" : "ignored") segment=\(segment)")
+        return HostSessionResult(frames: [])
+    }
+
+    func refuseReplyYield(segment: Int) -> HostSessionResult {
+        logReplyEvent("reply_yield", detail: "outcome=not_authorized segment=\(segment)")
+        return failure(.unauthorized, "terminal action is not authorized", close: false)
+    }
+
+    func logReplyEvent(_ event: String, detail: String) {
+        replyEvent(WebSocketListenerEvent(event: event, sessionID: connectionID, detail: detail))
+    }
+
+    /// Only called after a successful owner handoff, in the same actor turn as its commit.
+    private func stopSegmentedRepliesForRequest() {
+        guard peerCapabilities.contains(ReplySegments.capability) else { return }
+        let stopped = repliesInFlight.filter { segmentedReplies.contains($0) }
+        guard !stopped.isEmpty else { return }
+        for reply in stopped { stopHeldReply(reply) }
+        logReplyEvent("reply_backstop", detail: "outcome=stopped count=\(stopped.count)")
+    }
+
+    /// Keep the existing in-flight ids available to a dismiss already awaiting this session.
+    func endSegmentTracking() {
+        segmentedReplies.removeAll()
+    }
+}
+
+/// Shared stop memory outlives a peer, with no actor-hop gap between session stop and listener refusal.
+final class ReplyStopLedger: Sendable {
+    private let ids = Mutex<[UUID]>([])
+    func contains(_ id: UUID) -> Bool { ids.withLock { $0.contains(id) } }
+    func record(_ id: UUID) {
+        ids.withLock { ids in
+            guard !ids.contains(id) else { return }
+            ids.append(id)
+            ids.removeFirst(max(0, ids.count - HostSession.playbackStopLimit))
+        }
     }
 }
