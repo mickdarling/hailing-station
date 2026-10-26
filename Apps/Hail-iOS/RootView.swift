@@ -108,6 +108,7 @@ struct RootView: View {
         }
         .task {
             connections.diagnostics = diagnostics
+            echoGuard.diagnostics = diagnostics
             diagnostics.observeSystem()
             diagnostics.watch(playback)
         }

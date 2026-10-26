@@ -23,12 +23,15 @@ public final class AmbientReplyEchoGuard: Sendable {
         var following = false
         var routedThroughCapture = false
         var masksDuringReplies = false
+        var tapActive = false
+        var tapQuietAt: ContinuousClock.Instant?
     }
 
     private let state = Mutex(State())
     private let route = ReplyRoute()
     private let tail: Duration
     private let now: Now
+    @MainActor public weak var diagnostics: DeviceDiagnostics?
 
     public init(tail: Duration = defaultTail, now: @escaping Now = { ContinuousClock.now }) {
         self.tail = tail
@@ -49,10 +52,30 @@ public final class AmbientReplyEchoGuard: Sendable {
         }
     }
 
-    /// True while reply audio is audible or its tail has not yet elapsed.
+    /// Tap capture always masks ambient, including when replies use echo cancellation (#935).
+    /// An off edge starts the same tail as reply masking; repeated reports never extend it.
+    @MainActor
+    func setTapCaptureActive(_ active: Bool) {
+        let instant = now()
+        let changed = state.withLock { state in
+            guard state.tapActive != active else { return false }
+            state.tapActive = active
+            state.tapQuietAt = active ? nil : instant.advanced(by: tail)
+            return true
+        }
+        guard changed else { return }
+        var fields: [DiagnosticField: DiagnosticValue] = [
+            .state: .token(active ? "tap_to_talk_start" : "tap_to_talk_end"), .on: .boolean(active)
+        ]
+        if !active { fields[.ms] = .integer(Int64(tail / .milliseconds(1))) }
+        diagnostics?.record(.echoGuard, fields)
+    }
+
+    /// True while either masking reason or its tail holds.
     public var isMasking: Bool {
         let instant = now()
         return state.withLock { state in
+            if state.tapActive || state.tapQuietAt.map({ instant < $0 }) == true { return true }
             guard state.masksDuringReplies || !state.routedThroughCapture else { return false }
             return state.audible || state.quietAt.map { instant < $0 } == true
         }
@@ -190,6 +213,8 @@ final class EchoGuardedReplyPlayer: ReplyAudioPlaying {
 
     /// The guarded player's gap counts (#737), when it keeps them: the app's reply player is always wrapped.
     var gapReporter: (any PlayoutGapReporting)? { player as? any PlayoutGapReporting }
+
+    func setTapCaptureActive(_ active: Bool) { echoGuard.setTapCaptureActive(active) }
 
     func schedule(_ payload: AudioPayload, onPlayed: (@MainActor @Sendable () -> Void)?) throws {
         try audible { try player.schedule(payload, onPlayed: onPlayed) }

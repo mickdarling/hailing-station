@@ -88,6 +88,8 @@ The station's right column (below Station tools on iPhone) has a **Diagnostics l
 
 The app wires the log to the connection store, the system observers, reply playback, every ambient card, and tap-to-talk capture (`capture_state`: `tap_to_talk_start`, `tap_to_talk_end`).
 
+Tap-to-talk also masks the ambient stream for the capture and a 400 ms tail (#935), including when replies use echo cancellation. Its mask edges use `echo_guard` with `state=tap_to_talk_start on=true` and `state=tap_to_talk_end on=false ms=400`. The off edge starts the tail, just as for reply masking; either reason can keep the stream masked. Background teardown and stale-owner recovery release the tap mask too. These fields and tokens already belong to the diagnostics vocabulary: no wire enum or capability changes are required.
+
 ## Typical use
 
 1. On the Mac: `haild run --bind <address> --port <port> --personal-terminal --device-diagnostics ...`

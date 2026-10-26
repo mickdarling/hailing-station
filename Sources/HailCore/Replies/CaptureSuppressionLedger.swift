@@ -29,6 +29,7 @@ public final class CaptureSuppressionLedger {
     public func begin(_ owner: UUID) {
         let wasEmpty = entries.isEmpty
         entries[owner] = Entry()
+        syncTapMask() // Raise before suppression pauses the reply and lowers its echo mask.
         if wasEmpty { playback.beginCaptureSuppression() }
     }
 
@@ -45,6 +46,7 @@ public final class CaptureSuppressionLedger {
     /// `owner`'s capture was torn down while the scene was not active; `releaseCompleted` ends its hold.
     public func markCleanupComplete(_ owner: UUID) {
         entries[owner]?.cleanupComplete = true
+        syncTapMask() // Background teardown ends tap masking even while reply suppression waits for activation.
     }
 
     /// The scene is active again: ends the holds of owners whose teardown completed and whose capture is not live.
@@ -68,7 +70,14 @@ public final class CaptureSuppressionLedger {
     private func dropOwners(where shouldDrop: (Entry, UUID) -> Bool) -> [UUID] {
         let dropped = entries.filter { shouldDrop($0.value, $0.key) }.map(\.key)
         for owner in dropped { entries[owner] = nil }
+        syncTapMask()
         return dropped
+    }
+
+    private func syncTapMask() {
+        (playback.player as? EchoGuardedReplyPlayer)?.setTapCaptureActive(
+            entries.values.contains { !$0.cleanupComplete }
+        )
     }
 }
 
@@ -144,6 +153,18 @@ public enum CapturePlaybackSuppression {
         if let ledger = ledgers[key] { return ledger }
         let ledger = CaptureSuppressionLedger(playback: playback) { liveness[$0]?() ?? false }
         ledgers[key] = ledger
+        watchLiveness(playback, ledger)
         return ledger
+    }
+
+    /// Bound a missed end callback to one liveness check, without expiring a genuinely live long capture (#935).
+    private static func watchLiveness(_ playback: ReplyPlaybackController, _ ledger: CaptureSuppressionLedger) {
+        Task { @MainActor [weak playback, weak ledger] in
+            while true {
+                do { try await Task.sleep(for: .seconds(1)) } catch { return }
+                guard let playback, let ledger, existing(playback) === ledger else { return }
+                reconcile(using: playback)
+            }
+        }
     }
 }
