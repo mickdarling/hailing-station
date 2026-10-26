@@ -8,22 +8,26 @@ import Testing
         EvidenceHarness.timing(settleLimit: settleLimit)
     }
 
-    /// The scripts of `TmuxSubmitConfirmationTests` that end in each outcome.
-    private static func script(for outcome: TmuxSubmitOutcome) -> (ScriptedPane, settleLimit: Duration) {
+    /// The scripts of `TmuxSubmitConfirmationTests` that end in each outcome, and their timing: the two that reach
+    /// the retry get `ScriptedPane.retryConfirmLimit` (#910).
+    private static func script(for outcome: TmuxSubmitOutcome) -> (ScriptedPane, TmuxSubmitTiming) {
         let (absorbed, typed) = (ScriptedPane.absorbedScreen, ScriptedPane.typedScreen)
+        let retrying = EvidenceHarness.timing(confirmLimit: ScriptedPane.retryConfirmLimit)
         switch outcome {
-        case .confirmed: return (ScriptedPane(), .seconds(5))
-        case .retried: return (ScriptedPane(afterEnter: [absorbed, ScriptedPane.submittedScreen]), .seconds(5))
-        case .unverifiable: return (ScriptedPane(afterEnter: [typed]), .seconds(5))
-        case .unsettled: return (ScriptedPane(baseline: ScriptedPane.submittedScreen, stale: .max), .milliseconds(40))
-        case .failed: return (ScriptedPane(afterEnter: [absorbed, ScriptedPane.absorbedTwiceScreen]), .seconds(5))
+        case .confirmed: return (ScriptedPane(), timing())
+        case .retried: return (ScriptedPane(afterEnter: [absorbed, ScriptedPane.submittedScreen]), retrying)
+        case .unverifiable: return (ScriptedPane(afterEnter: [typed]), timing())
+        case .unsettled:
+            let pane = ScriptedPane(baseline: ScriptedPane.submittedScreen, stale: .max)
+            return (pane, timing(settleLimit: .milliseconds(40)))
+        case .failed: return (ScriptedPane(afterEnter: [absorbed, ScriptedPane.absorbedTwiceScreen]), retrying)
         }
     }
 
     @Test(arguments: ["confirmed", "retried", "unverifiable", "unsettled", "failed"])
     func everySubmitOutcomeIsLogged(outcome: String) async throws {
-        let (pane, settleLimit) = Self.script(for: try #require(TmuxSubmitOutcome(rawValue: outcome)))
-        let harness = EvidenceHarness(pane, timing: Self.timing(settleLimit: settleLimit))
+        let (pane, timing) = Self.script(for: try #require(TmuxSubmitOutcome(rawValue: outcome)))
+        let harness = EvidenceHarness(pane, timing: timing)
 
         _ = try? await harness.adapter.deliver(Self.synthetic, to: "codex", binding: nil)
 

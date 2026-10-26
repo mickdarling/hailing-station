@@ -66,12 +66,26 @@ struct EvidenceHarness {
     var keys: [String] { get async { await runner.delivered } }
 
     /// Fast waits; a clear limit short enough that pending text is refused quickly.
-    static func timing(settleLimit: Duration = .seconds(5), settleFloor: Duration = .milliseconds(1))
-        -> TmuxSubmitTiming {
+    static func timing(
+        settleLimit: Duration = .seconds(5), settleFloor: Duration = .milliseconds(1),
+        confirmLimit: Duration = .milliseconds(500)
+    ) -> TmuxSubmitTiming {
         TmuxSubmitTiming(
             settleFloor: settleFloor, pollInterval: .milliseconds(2), quiet: .milliseconds(6),
-            settleLimit: settleLimit, confirmLimit: .milliseconds(500), clearLimit: .milliseconds(120)
+            settleLimit: settleLimit, confirmLimit: confirmLimit, clearLimit: .milliseconds(120)
         )
+    }
+}
+
+extension ScriptedPane {
+    /// A runner over this pane whose tmux refuses every Enter (`send-keys` exits 1): the text is pasted and never
+    /// known submitted, so the submit fails and taints the pane. The script alone decides that: no settle or confirm
+    /// deadline is involved, so a stalled test process cannot turn the failure into `unverifiable` (#894).
+    func refusingEnter() -> FakeCommandRunner {
+        FakeCommandRunner { arguments in
+            guard arguments.last == "Enter" else { return self.respond(arguments) }
+            return CommandResult(exitCode: 1, stdout: "", stderr: "synthetic refusal")
+        }
     }
 }
 
