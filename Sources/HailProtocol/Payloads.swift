@@ -273,7 +273,7 @@ public struct AudioPayload: Codable, Sendable, Equatable {
         guard try container.decode(Bool.self, forKey: .isSegmentEnd),
               reply != nil, stream != nil, !final, !resume else {
             throw DecodingError.dataCorrupted(.init(codingPath: decoder.codingPath + [CodingKeys.isSegmentEnd],
-                                                    debugDescription: "segment_end needs non-final reply audio"))
+                                                    debugDescription: "segmentEnd needs non-final reply audio"))
         }
         return true
     }
@@ -294,7 +294,7 @@ public struct AudioPayload: Codable, Sendable, Equatable {
 
     private enum CodingKeys: String, CodingKey {
         case codec, sampleRate, channels, sequence, streamID = "streamId", isFinal = "final", bytes, reply
-        case isResume = "resume", isSegmentEnd = "segment_end"
+        case isResume = "resume", isSegmentEnd = "segmentEnd"
     }
 }
 

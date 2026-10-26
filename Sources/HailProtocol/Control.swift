@@ -697,7 +697,7 @@ public enum HeardTurns {
     public static let capability = "heard_turns"
 }
 
-/// Reply segments (#932). A host sends `segment_end` only to a device that advertised this capability;
+/// Reply segments (#932). A host sends `segmentEnd` only to a device that advertised this capability;
 /// a device sends `reply_yield` only to a host that advertised it. Neither side advertises it in P1.
 public enum ReplySegments {
     public static let capability = "reply_segments"

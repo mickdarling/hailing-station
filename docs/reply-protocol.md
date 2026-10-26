@@ -86,15 +86,15 @@ advertised the command ([rightyo-input.md](rightyo-input.md)).
 ## Reply segments (#932)
 
 P1 defines protocol vocabulary only. Neither side advertises `reply_segments` (`ReplySegments.capability`) yet;
-no host producer sets `segment_end`, and the device ignores `AudioPayload.isSegmentEnd` during playback.
+no host producer sets `segmentEnd`, and the device ignores `AudioPayload.isSegmentEnd` during playback.
 P2–P5 (production, host cancellation, device pauses/yield and integration proof) remain deferred.
 
 One reply id spans many spoken segments; its text frame still carries the full spoken text. The proposed P2
-producer splits at sentence boundaries and puts `"segment_end": true` on the last audio frame of each segment
+producer splits at sentence boundaries and puts `"segmentEnd": true` on the last audio frame of each segment
 except the final one. The reply's final audio frame already ends its last segment. All audio frames retain the
 same reply descriptor and stream id, with increasing frame sequences and distinct envelope frame ids.
 
-- `segment_end` is only `true` or absent, never false, null or another type. It requires reply audio with a
+- `segmentEnd` is only `true` or absent, never false, null or another type. It requires reply audio with a
   `streamId` matching `reply.audioStream`, `final: false`, and no `resume`. The property defaults to false and the
   encoder omits it when false, preserving legacy frame bytes. Audio decoding tolerates unknown keys: an older
   device ignores this key and plays audio as before. Even so, a host sends it only to a device that advertised

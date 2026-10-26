@@ -25,29 +25,29 @@ class ReplySegmentsSchemaTests(unittest.TestCase):
 
     def audio(self):
         return dict(codec="pcm16", sampleRate=16000, channels=1, sequence=0, bytes="",
-                    streamId=REPLY, final=False, segment_end=True,
+                    streamId=REPLY, final=False, segmentEnd=True,
                     reply=dict(id=REPLY, host="host", target="target", audioStream=REPLY,
                                priority="normal", interruption="enqueue"))
 
     def control(self):
         return dict(command="reply_yield", reply=REPLY, segment=1)
 
-    def test_segment_end_and_legacy_audio_are_valid(self):
+    def test_segmentEnd_and_legacy_audio_are_valid(self):
         audio = self.audio()
         self.assertEqual(self.check(audio, "audio"), [])
-        del audio["segment_end"]
+        del audio["segmentEnd"]
         self.assertEqual(self.check(audio, "audio"), [])
         del audio["reply"]
         del audio["streamId"]
         audio["final"] = True
         self.assertEqual(self.check(audio, "audio"), [])
 
-    def test_segment_end_refuses_invalid_values(self):
+    def test_segmentEnd_refuses_invalid_values(self):
         for value in [False, None, 0, 1, "true", [], {}]:
             with self.subTest(value=value):
-                self.assertTrue(self.check(dict(self.audio(), segment_end=value), "audio"))
+                self.assertTrue(self.check(dict(self.audio(), segmentEnd=value), "audio"))
 
-    def test_segment_end_requires_nonfinal_reply_stream_and_no_resume(self):
+    def test_segmentEnd_requires_nonfinal_reply_stream_and_no_resume(self):
         for field in ["reply", "streamId", "final"]:
             audio = self.audio()
             del audio[field]

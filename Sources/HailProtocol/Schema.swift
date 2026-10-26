@@ -132,14 +132,14 @@ public enum Schema {
             "bytes": bytesField(max: PayloadLimits.maxAudioBytes),
             "reply": .object(["$ref": .string("#/$defs/reply")]),
             "resume": .object(["const": .bool(true)]), // #373: only on a first segment (below)
-            "segment_end": .object(["type": .string("boolean"), "const": .bool(true)])
+            "segmentEnd": .object(["type": .string("boolean"), "const": .bool(true)])
         ]),
         "allOf": .array([
             .object([
                 "if": .object(["required": .array([.string("reply")])]),
                 "then": .object(["required": .array([.string("streamId"), .string("final")])])
             ]),
-            .object(["if": .object(["required": .array([.string("segment_end")])]), "then": .object([
+            .object(["if": .object(["required": .array([.string("segmentEnd")])]), "then": .object([
                 "required": .array(["reply", "streamId", "final"].map(JSONValue.string)),
                 "properties": .object([
                     "final": .object(["const": .bool(false)]),

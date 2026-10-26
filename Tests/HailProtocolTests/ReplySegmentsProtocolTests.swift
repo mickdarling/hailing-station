@@ -11,7 +11,7 @@ import Testing
         let encoded = try JSONEncoder().encode(audio)
         #expect(try JSONDecoder().decode(AudioPayload.self, from: encoded) == audio)
         let object = try #require(JSONSerialization.jsonObject(with: encoded) as? [String: Any])
-        #expect(object["segment_end"] as? Bool == true)
+        #expect(object["segmentEnd"] as? Bool == true)
         #expect(ReplySegments.capability == "reply_segments")
         #expect(ReplySegments.maxSegmentEnds == 10_000)
     }
@@ -31,10 +31,10 @@ import Testing
     @Test(arguments: ["false", "null", "0", "1", "\"true\"", "[]", "{}"])
     func invalidSegmentEndValuesAreRefused(raw: String) throws {
         var object = try audioObject()
-        object.removeValue(forKey: "segment_end")
+        object.removeValue(forKey: "segmentEnd")
         let base = String(decoding: try JSONSerialization.data(withJSONObject: object), as: UTF8.self)
         #expect(throws: DecodingError.self) {
-            try decodeAudio(String(base.dropLast()) + ",\"segment_end\":" + raw + "}")
+            try decodeAudio(String(base.dropLast()) + ",\"segmentEnd\":" + raw + "}")
         }
     }
 
