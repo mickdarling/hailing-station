@@ -48,12 +48,10 @@ import Testing
         let rig = TapMaskRig()
         rig.echoGuard.setReplyAudible(true)
         rig.ledger.begin(rig.owner)
-        if tapEndsFirst { rig.ledger.end(rig.owner, resuming: true) }
-        else { rig.echoGuard.setReplyAudible(false) }
+        if tapEndsFirst { rig.ledger.end(rig.owner, resuming: true) } else { rig.echoGuard.setReplyAudible(false) }
         rig.clock.advance(by: .seconds(1))
         #expect(rig.echoGuard.isMasking)
-        if tapEndsFirst { rig.echoGuard.setReplyAudible(false) }
-        else { rig.ledger.end(rig.owner, resuming: true) }
+        if tapEndsFirst { rig.echoGuard.setReplyAudible(false) } else { rig.ledger.end(rig.owner, resuming: true) }
         rig.clock.advance(by: .milliseconds(399))
         #expect(rig.echoGuard.isMasking)
         rig.clock.advance(by: .milliseconds(1))
