@@ -1,7 +1,7 @@
 import Testing
 @testable import HailDaemonKit
 
-@Suite struct HostReplyPublicationAuthorityTests {
+@Suite(.frozenGuardBudget) struct HostReplyPublicationAuthorityTests {
     private let target = "tmux:synthetic"
     private let sessionID = "synthetic-binding"
 

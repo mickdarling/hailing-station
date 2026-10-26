@@ -6,7 +6,7 @@ import Testing
 
 /// Tap-to-talk voice routing (#636, slice 3): one named request goes to that route and its reply comes back, while
 /// the device keeps its selection. Synthetic only: a fake tmux-kind adapter and never-started transports.
-@Suite(.serialized, .timeLimit(.minutes(1))) struct VoiceRouteDeliveryTests {
+@Suite(.serialized, .timeLimit(.minutes(1)), .frozenGuardBudget) struct VoiceRouteDeliveryTests {
     @Test func aNamedRequestGoesToThatRouteAsHeardAndItsReplyComesBack() async throws {
         let rig = try await VoiceRouteRig.make()
         // The bystander selects Deck itself, so only the asker's last-input claim keeps Deck's reply from it.

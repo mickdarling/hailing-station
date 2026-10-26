@@ -1,7 +1,7 @@
 import Testing
 @testable import HailDaemonKit
 
-@Suite struct ConfirmationGenerationTests {
+@Suite(.frozenGuardBudget) struct ConfirmationGenerationTests {
     @Test func aConsumedConfirmationDoesNotSurviveAPolicyChangeBetweenLines() async throws {
         let id = "tmux:a"
         let binding = "$1@1/%1:9"

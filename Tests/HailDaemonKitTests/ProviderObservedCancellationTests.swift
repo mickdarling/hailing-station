@@ -2,7 +2,7 @@ import Foundation
 import Testing
 @testable import HailDaemonKit
 
-@Suite struct ProviderObservedCancellationTests {
+@Suite(.frozenGuardBudget) struct ProviderObservedCancellationTests {
     @Test func parentCancellationCancelsLeaseBeforeNoncooperativeListingAndInputJoin() async throws {
         let rig = try await ObservedRig.make()
         await rig.adapter.configure(holdDispatch: true)

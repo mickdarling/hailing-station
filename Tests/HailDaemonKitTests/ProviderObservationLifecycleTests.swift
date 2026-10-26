@@ -3,11 +3,13 @@ import Testing
 @testable import HailDaemonKit
 
 @Suite struct ProviderObservationLifecycleTests {
-    @Test(arguments: [0, 1]) func earlyFailedAndPartialWritesStayUnknown(completed: Int) async throws {
+    @Test(.frozenGuardBudget, arguments: [0, 1])
+    func earlyFailedAndPartialWritesStayUnknown(completed: Int) async throws {
         try await observedEarlyFailure(completed: completed)
     }
 
-    @Test(arguments: [false, true]) func earlyQueueCountAndBytesOverflowExplicitly(bytes: Bool) async throws {
+    @Test(.frozenGuardBudget, arguments: [false, true])
+    func earlyQueueCountAndBytesOverflowExplicitly(bytes: Bool) async throws {
         try await observedEarlyOverflow(bytes: bytes)
     }
 
@@ -27,11 +29,13 @@ import Testing
         #expect(rig.adapter.cancellations.count == 1)
     }
 
-    @Test(arguments: [false, true]) func eofPreservesTheCompleteReadPrefix(held: Bool) async throws {
+    @Test(.frozenGuardBudget, arguments: [false, true])
+    func eofPreservesTheCompleteReadPrefix(held: Bool) async throws {
         try await observedEndedPrefix(held: held, failed: false)
     }
 
-    @Test(arguments: [false, true]) func failedStreamPreservesTheCompleteReadPrefix(held: Bool) async throws {
+    @Test(.frozenGuardBudget, arguments: [false, true])
+    func failedStreamPreservesTheCompleteReadPrefix(held: Bool) async throws {
         try await observedEndedPrefix(held: held, failed: true)
     }
 
@@ -50,15 +54,16 @@ import Testing
         #expect(rig.adapter.cancellations.count == 1)
     }
 
-    @Test func internalAmbientAndLateEventsNeverInventTurnCompletion() async throws {
+    @Test(.frozenGuardBudget) func internalAmbientAndLateEventsNeverInventTurnCompletion() async throws {
         try await observedTimeoutAndVisibility()
     }
 
-    @Test func duplicatesDoNotAdvanceSequenceAndGapsEndObservation() async throws {
+    @Test(.frozenGuardBudget) func duplicatesDoNotAdvanceSequenceAndGapsEndObservation() async throws {
         try await observedDuplicateAndGap()
     }
 
-    @Test(arguments: [false, true]) func correlationCapacityFailsWithoutEvictingEvidence(turns: Bool) async throws {
+    @Test(.frozenGuardBudget, arguments: [false, true])
+    func correlationCapacityFailsWithoutEvictingEvidence(turns: Bool) async throws {
         try await observedCapacity(turns: turns)
     }
 
@@ -104,11 +109,12 @@ import Testing
         }
     }
 
-    @Test func earlyScopeReturnStillJoinsItsAdmittedInput() async throws {
+    @Test(.frozenGuardBudget) func earlyScopeReturnStillJoinsItsAdmittedInput() async throws {
         try await observedReturnedScope()
     }
 
-    @Test(arguments: [false, true]) func invalidEarlyTailDoesNotStrandTerminalConsumer(capacity: Bool) async throws {
+    @Test(.frozenGuardBudget, arguments: [false, true])
+    func invalidEarlyTailDoesNotStrandTerminalConsumer(capacity: Bool) async throws {
         try await observedTerminalTail(capacity: capacity)
     }
 

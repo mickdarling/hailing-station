@@ -5,7 +5,7 @@ import Testing
 
 /// Legacy generic input retains no request record, so the captured selection itself must bind the handoff
 /// for a caller that is not the peer's serialized receive loop (#188 local dispatch).
-@Suite struct HostSessionLegacySelectionTests {
+@Suite(.frozenGuardBudget) struct HostSessionLegacySelectionTests {
     private static let target = "tmux:reply"
     private static let other = "other:x"
 

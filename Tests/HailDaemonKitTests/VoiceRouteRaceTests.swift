@@ -46,7 +46,7 @@ private struct GatedRouteAuthorizer: HostSessionAuthorizing {
     }
 }
 
-@Suite(.serialized, .timeLimit(.minutes(1))) struct VoiceRouteRaceTests {
+@Suite(.serialized, .timeLimit(.minutes(1)), .frozenGuardBudget) struct VoiceRouteRaceTests {
     fileprivate func gated(_ rig: VoiceRouteRig, call: Int) async throws -> (HostSession, RouteGate) {
         let gate = RouteGate()
         await gate.arm(call: call)
@@ -129,7 +129,7 @@ private struct GatedRouteAuthorizer: HostSessionAuthorizing {
         await rig.listener.stop(reason: "synthetic test complete")
     }
 }
-@Suite(.serialized, .timeLimit(.minutes(1))) struct VoiceRouteRecordRaceTests {
+@Suite(.serialized, .timeLimit(.minutes(1)), .frozenGuardBudget) struct VoiceRouteRecordRaceTests {
     /// The FIRST reply frame naming the routed record but claiming the selected route must be refused
     /// (VoiceRouteRecordTests' wrongTarget check runs after a text frame was already accepted).
     @Test func aFirstFrameClaimingTheSelectedRouteForARoutedRecordIsRefused() async throws {

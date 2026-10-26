@@ -5,7 +5,7 @@ import Testing
 
 /// #467: a request stays current while its reply keeps flowing, so a long spoken answer plays in full. Synthetic
 /// adapter and injected clock only.
-@Suite struct RequestStreamLifetimeTests {
+@Suite(.frozenGuardBudget) struct RequestStreamLifetimeTests {
     private static let frame: Int64 = 1_250 // ms of audio per paced frame
 
     /// Text, then `count` audio frames paced one per `frame`; returns how many were accepted before the first refusal.

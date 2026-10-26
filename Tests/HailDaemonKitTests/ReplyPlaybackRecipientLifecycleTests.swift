@@ -3,7 +3,7 @@ import HailProtocol
 import Testing
 @testable import HailDaemonKit
 
-@Suite struct ReplyPlaybackRecipientLifecycleTests {
+@Suite(.frozenGuardBudget) struct ReplyPlaybackRecipientLifecycleTests {
     @Test(arguments: [-60_000, 604_800_000])
     func wallClockChangesCannotAlterMonotonicReplyLifetime(adjustment: Int64) async throws {
         let rig = try await RecipientTestRig.make()

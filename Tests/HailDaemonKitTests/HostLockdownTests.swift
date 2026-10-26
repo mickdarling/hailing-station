@@ -1,7 +1,7 @@
 import Testing
 @testable import HailDaemonKit
 
-@Suite struct HostLockdownTests {
+@Suite(.frozenGuardBudget) struct HostLockdownTests {
     let id = "tmux:a"
     let target = AdapterTarget(name: "a", binding: "b1")
 
