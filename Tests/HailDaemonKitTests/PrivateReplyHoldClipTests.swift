@@ -21,11 +21,11 @@ import Testing
     @Test func aDecisionDuringAClipLandsAfterAllOfIt() async throws {
         let landed = DispatchSemaphore(value: 0)
         let box = HoldBox()
-        let sender = ClipSender913 { index, log in
+        let sender = ClipSender913 { index, sender in
             guard index == 1, let (hold, connection) = box.value else { return }
             DispatchQueue.global().async {
                 hold.set(true, connection: connection)
-                log.withLock { $0.append("decided") }
+                sender.note("decided")
                 landed.signal()
             }
             if landed.wait(timeout: .now() + .seconds(1)) == .success { landed.signal() }
@@ -34,9 +34,9 @@ import Testing
         box.set(await rig.listener.replyHold, await rig.session.connectionID)
         #expect(await rig.acknowledge() == "sent")
         #expect(await Self.waits(landed), "the decision never landed")
-        #expect(sender.log.withLock { $0 } == ["frame1", "frame2", "decided"])
+        #expect(sender.events == ["frame1", "frame2", "decided"])
         #expect(await rig.acknowledge() == "suppressed_privacy")
-        #expect(sender.log.withLock { $0 } == ["frame1", "frame2", "decided"])
+        #expect(sender.events == ["frame1", "frame2", "decided"])
     }
 
     /// Both of a clip's sends stalled (handed over, never completed): decisions for this connection and another
@@ -54,7 +54,7 @@ import Testing
         #expect(sender.stalled > 0, "the sends were still stalled when privacy was decided")
         sender.release()
         #expect(await acknowledgement.value == "sent")
-        #expect(sender.log.withLock { $0 } == ["frame1", "frame2"])
+        #expect(sender.events == ["frame1", "frame2"])
     }
 
     /// P3-2: the hold's own `.held` decides, not a later read of the hold. With the hold already released, a held
@@ -98,29 +98,31 @@ final class HoldBox: Sendable {
     func set(_ hold: PrivateReplyHold, _ connection: UUID) { stored.withLock { $0 = (hold, connection) } }
 }
 
-/// A synthetic transport (#913): logs each hand-off as `frameN`, runs `onSubmit` inside it, and completes it at once,
+/// A synthetic transport (#913): notes each hand-off as `frameN`, runs `onSubmit` inside it, and completes it at once,
 /// or, when it `stalls`, only once released.
 final class ClipSender913: Sendable {
-    let log = Mutex<[String]>([])
     let submissions = AsyncStream<Void>.makeStream()
+    private let log = Mutex<[String]>([])
     private let count = Mutex(0)
     private let pending = Mutex<(released: Bool, completions: [@Sendable (NWError?) -> Void])>((false, []))
-    private let onSubmit: @Sendable (Int, Mutex<[String]>) -> Void
+    private let onSubmit: @Sendable (Int, ClipSender913) -> Void
 
-    init(stalls: Bool = false, onSubmit: @escaping @Sendable (Int, Mutex<[String]>) -> Void = { _, _ in }) {
+    init(stalls: Bool = false, onSubmit: @escaping @Sendable (Int, ClipSender913) -> Void = { _, _ in }) {
         self.onSubmit = onSubmit
         pending.withLock { $0.released = !stalls }
     }
 
+    var events: [String] { log.withLock { $0 } }
     var stalled: Int { pending.withLock { $0.completions.count } }
+    func note(_ event: String) { log.withLock { $0.append(event) } }
 
     func submit(_ completion: @escaping @Sendable (NWError?) -> Void) {
         let index = count.withLock { count in
             count += 1
             return count
         }
-        log.withLock { $0.append("frame\(index)") }
-        onSubmit(index, log)
+        note("frame\(index)")
+        onSubmit(index, self)
         submissions.continuation.yield(())
         let now = pending.withLock { state -> Bool in
             if !state.released { state.completions.append(completion) }
