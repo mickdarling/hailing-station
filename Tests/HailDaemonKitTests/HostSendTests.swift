@@ -1,7 +1,7 @@
 import Testing
 @testable import HailDaemonKit
 
-@Suite struct HostSendTests {
+@Suite(.frozenGuardBudget) struct HostSendTests {
     /// A host whose policy allows every target the adapter lists, at `tier`, pinned to its listed binding.
     func host(
         _ adapter: FakeAdapter, tier: Tier = .open, sanitizing: SanitizePolicy = SanitizePolicy()

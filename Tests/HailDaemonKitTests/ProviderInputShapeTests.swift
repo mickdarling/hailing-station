@@ -2,7 +2,7 @@ import Foundation
 import Testing
 @testable import HailDaemonKit
 
-@Suite struct ProviderInputShapeTests {
+@Suite(.frozenGuardBudget) struct ProviderInputShapeTests {
     @Test func multilineRefusalSpendsNeitherProviderRequestAdmissionNorSentCapacity() async throws {
         let adapter = InputShapeAdapter()
         let rig = try await InputShapeRig.make(adapter: adapter, rate: 1, maxTurns: 1)

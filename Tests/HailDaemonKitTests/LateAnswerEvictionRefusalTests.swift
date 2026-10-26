@@ -5,7 +5,7 @@ import Testing
 
 /// #723: a request that evicted a late record at capacity and is then refused before it commits gives that record
 /// back; a committed one keeps the eviction. Synthetic adapter and clock only.
-@Suite struct LateAnswerEvictionRefusalTests {
+@Suite(.frozenGuardBudget) struct LateAnswerEvictionRefusalTests {
     private static let minute: Int64 = 60_000
 
     /// A full session whose records are all late, the oldest first.

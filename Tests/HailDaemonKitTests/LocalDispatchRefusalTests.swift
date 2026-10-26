@@ -4,7 +4,7 @@ import Testing
 @testable import HailDaemonKit
 
 /// Never-started transports and direct sessions: every refusal here happens before any handoff.
-@Suite struct LocalDispatchRefusalTests {
+@Suite(.frozenGuardBudget) struct LocalDispatchRefusalTests {
     @Test func unknownAndEndedConnectionsRefuseWithoutFallback() async throws {
         let rig = try await RecipientTestRig.make()
         let listener = try fallbackListener(rig: rig, enabled: true)

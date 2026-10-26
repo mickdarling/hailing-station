@@ -8,7 +8,7 @@ import Testing
 /// an ambient reference reaches only the device whose dispatch minted it; the request-less shape reaches the last
 /// input device (#370).
 /// Synthetic only; not device hearing.
-@Suite(.serialized) struct AmbientWiringReplyReferenceRoutingTests {
+@Suite(.serialized, .frozenGuardBudget) struct AmbientWiringReplyReferenceRoutingTests {
     @Test func aReferencedReplyReachesOnlyTheOriginatingDeviceInBothOrders() async throws {
         let rig = try await LegacyReferenceRig.make()
         let (listener, connected) = try rig.listener()

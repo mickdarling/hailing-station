@@ -5,7 +5,7 @@ import Testing
 @testable import HailDaemonKit
 
 /// Provider `turn/interrupt` over actual pipes with the invented child, which dies on any non-exact thread/turn ID.
-@Suite struct CodexAppServerInterruptTests {
+@Suite(.frozenGuardBudget) struct CodexAppServerInterruptTests {
     /// Sends one turn that stays active (no terminal) and runs `body`. When `terminal` is expected, returns the next
     /// observed kind; otherwise reads nothing more, since no further event will arrive.
     private static func withActiveTurn(

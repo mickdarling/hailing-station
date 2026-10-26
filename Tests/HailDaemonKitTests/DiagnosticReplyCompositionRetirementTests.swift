@@ -4,7 +4,7 @@ import HailProtocol
 import Testing
 @testable import HailDaemonKit
 
-@Suite(.serialized) struct DiagnosticCompositionRetirementTests {
+@Suite(.serialized, .frozenGuardBudget) struct DiagnosticCompositionRetirementTests {
     @Test(arguments: [false, true])
     func rendererFailureOrStopRemainsFailureWithoutFabricatedAudio(stop: Bool) async throws {
         let fixture = try PublisherFixture(cli: true)

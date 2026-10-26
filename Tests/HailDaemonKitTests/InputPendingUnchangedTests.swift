@@ -6,7 +6,7 @@ import Testing
 /// #894 review round 1: naming the input-pending refusal changed nothing else. A paste from a device that takes
 /// request refusals still hears `paste_refused`, the phone's connection stays open, and a cancelled local dispatch
 /// caller still sees its own cancellation rather than the named refusal. Fake adapters only.
-@Suite struct InputPendingUnchangedTests {
+@Suite(.frozenGuardBudget) struct InputPendingUnchangedTests {
     private static let target = "tmux:codex"
     private static let binding = "$2@1758230001/%2:502"
     private static let reason = "the target's input already holds unsent text"

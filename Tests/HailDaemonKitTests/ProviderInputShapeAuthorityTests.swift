@@ -3,7 +3,7 @@ import Testing
 @testable import HailDaemonKit
 
 // At most one synchronous profile getter blocks a cooperative executor worker at a time.
-@Suite(.serialized) struct ProviderInputShapeAuthorityTests {
+@Suite(.serialized, .frozenGuardBudget) struct ProviderInputShapeAuthorityTests {
     @Test(arguments: [false, true])
     func cancelledRejectedShapeHopPreservesConfirmationAdmissionAndSentCapacity(legacy: Bool) async throws {
         let profile = InputShapeProfile(.lineOriented)

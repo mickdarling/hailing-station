@@ -4,7 +4,7 @@ import Testing
 @testable import HailDaemonKit
 
 /// Loopback proof of #188 local dispatch: the named connection, and only it, owns the reply.
-@Suite(.serialized) struct LocalDispatchTests {
+@Suite(.serialized, .frozenGuardBudget) struct LocalDispatchTests {
     @Test func dispatchedReplyReachesOnlyTheNamedConnection() async throws {
         let rig = try await RecipientTestRig.make()
         let (listener, connected) = try dispatchListener(rig: rig)

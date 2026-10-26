@@ -2,7 +2,7 @@ import Foundation
 import Testing
 @testable import HailDaemonKit
 
-@Suite struct ProviderContextDispatchTests {
+@Suite(.frozenGuardBudget) struct ProviderContextDispatchTests {
     @Test func contextUsesTheExactGuardedLiteralDelivery() async throws {
         let adapter = SyntheticContextAdapter()
         let rig = try await ProviderContextTestRig.make(adapter: adapter)

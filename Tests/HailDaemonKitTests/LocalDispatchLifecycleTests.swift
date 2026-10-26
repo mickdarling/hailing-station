@@ -6,7 +6,7 @@ import Testing
 
 /// A dispatch suspended in registry or adapter work stays bound to the peer's lifecycle and the
 /// connection's captured selection (Codex P1s on #195). Synthetic peers and adapters only.
-@Suite struct LocalDispatchLifecycleTests {
+@Suite(.frozenGuardBudget) struct LocalDispatchLifecycleTests {
     @Test func peerEndingDuringTheHandoffRevokesTheMintedRequest() async throws {
         let rig = try await RecipientTestRig.make()
         let session = await rig.session()

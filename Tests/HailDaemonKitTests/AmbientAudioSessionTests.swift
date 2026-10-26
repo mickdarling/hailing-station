@@ -3,7 +3,7 @@ import HailProtocol
 import Testing
 @testable import HailDaemonKit
 
-@Suite struct AmbientWiringAudioSessionTests {
+@Suite(.frozenGuardBudget) struct AmbientWiringAudioSessionTests {
     let sink = RecordingAmbientSink()
     let clock = AmbientTestClock()
 

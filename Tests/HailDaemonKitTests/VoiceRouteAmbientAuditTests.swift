@@ -6,7 +6,7 @@ import Testing
 
 /// The audit record of a routed ambient dispatch (#636, second-key reviews on #691): `ambient-dispatch-routed`,
 /// still only the target and byte count; the stream's own requests keep `ambient-dispatch`. Synthetic only.
-@Suite(.serialized, .timeLimit(.minutes(1))) struct VoiceRouteAmbientAuditTests {
+@Suite(.serialized, .timeLimit(.minutes(1)), .frozenGuardBudget) struct VoiceRouteAmbientAuditTests {
     @Test func aRoutedDispatchIsRecordedAsRoutedAndNeverWithItsWords() async throws {
         let directory = FileManager.default.temporaryDirectory.appendingPathComponent("hail-636-\(UUID().uuidString)")
         defer { try? FileManager.default.removeItem(at: directory) }

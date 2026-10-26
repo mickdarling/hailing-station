@@ -4,7 +4,7 @@ import Testing
 @testable import HailDaemonKit
 
 /// Host-side admission gates before playback publication; not physical hearing or UI replay proof.
-@Suite struct ReplyPlaybackRecipientTests {
+@Suite(.frozenGuardBudget) struct ReplyPlaybackRecipientTests {
     @Test func requestBelongsOnlyToItsIngressSessionNotDisplayNameOrWireID() async throws {
         let rig = try await RecipientTestRig.make()
         let origin = await rig.session()

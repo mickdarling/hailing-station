@@ -6,7 +6,7 @@ import Testing
 
 /// #430: a committed provider-owned request answers for as long as its turn runs, not just two minutes. Its end starts
 /// the ordinary `lifetime` for the final frames. Synthetic adapter and clock only; no live provider.
-@Suite struct ProviderTurnRequestLifetimeTests {
+@Suite(.frozenGuardBudget) struct ProviderTurnRequestLifetimeTests {
     private static let minute: Int64 = 60_000
 
     @Test func aRunningProviderTurnStillAnswersAfterTwoMinutes() async throws {

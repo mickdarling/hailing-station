@@ -2,7 +2,7 @@ import Foundation
 import Testing
 @testable import HailDaemonKit
 
-@Suite struct ProviderInputCoordinatorTests {
+@Suite(.frozenGuardBudget) struct ProviderInputCoordinatorTests {
     @Test func successfulDispatchRegistersFreshSentContext() async throws {
         let adapter = FakeAdapter(kind: "tmux", targets: [ProviderCoordinatorRig.target])
         let rig = try await ProviderCoordinatorRig.make(adapter: adapter)
