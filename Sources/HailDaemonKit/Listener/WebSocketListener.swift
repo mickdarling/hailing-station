@@ -624,6 +624,9 @@ public final class AmbientRightyoRouter: AmbientAudioSink, AmbientListenerWiring
         /// #735 meeting mode restore (MM-E): the meeting or media mode a dropped connection left on, daemon-wide and
         /// in RAM only, until the next ambient start restores it or privacy, the owner's off or its expiry ends it.
         var parked: ParkedModes?
+        /// Privacy a dropped connection held (#941), daemon-wide and in RAM only: every fresh stream starts private
+        /// while it is held, until the owner's own privacy-off clears it.
+        var parkedPrivacy: ParkedPrivacy?
         /// Arming order of meeting and media modes (MM-E): the latest owner command wins a restore or a move.
         var armings = 0
         /// Privacy entries and the last word per connection (#735 S-8 HS-C round 4, `AmbientPrivacyLedger`), and each
@@ -731,7 +734,8 @@ public final class AmbientRightyoRouter: AmbientAudioSink, AmbientListenerWiring
 
     public func stop(connection: UUID) { stop(connection: connection, device: nil) }
 
-    /// Teardown parks a meeting or media mode still on (MM-E), before removing it, for the next start to restore.
+    /// Teardown parks a meeting or media mode still on (MM-E), or privacy (#941), before removing it, for the next start
+    /// to restore.
     public func stop(connection: UUID, device: AmbientPeerDevice?) {
         let streams = state.withLock { state -> [UUID] in
             (state.latest[connection], state.inputRoutes[connection]) = (nil, nil)
@@ -1026,6 +1030,8 @@ extension AmbientRightyoRouter {
         let (listener, refusal) = state.withLock { state -> (WebSocketListener?, String?) in
             if state.shuttingDown { return (nil, "stopping") }
             if Self.full(state) { return (nil, "busy") }
+            // Before the child is made (#941), so it is launched start-private while privacy is parked.
+            restorePrivacy(to: connection, in: &state)
             return (state.listener?.value, state.listener?.value == nil ? "stopping" : nil)
         }
         guard let listener, refusal == nil else {
@@ -1035,19 +1041,20 @@ extension AmbientRightyoRouter {
         do { pipeline = try makePipeline(connection: connection, selection: selection, listener: listener) } catch {
             return refuse(stream, connection: connection, reason: Self.describe(error))
         }
-        let admitted = state.withLock { state -> Bool in
-            guard !state.shuttingDown else { return false }
+        let refused = state.withLock { state -> String? in
+            if state.shuttingDown { return "stopping" }
+            // Fail closed (#941): a child that may have been made public while privacy is parked never hears audio.
+            if !Self.admitsPrivacy(connection, in: state) { return "private" }
             let id = register(pipeline, stream: stream, connection: connection, in: &state)
             state.active = Active(stream: stream, run: id, pipeline: pipeline, since: Date(),
                                   selection: selection)
             // Under register's own lock (MM-E): a parked or stale-held mode reaches this child as its first mode write.
             carryModes(to: connection, stream: stream, pipeline: pipeline, in: &state)
-            return true
+            return nil
         }
-        guard admitted else {
-            Task { await pipeline.stop() }
-            return
-        }
+        guard let refused else { return }
+        Task { await pipeline.stop() }
+        if refused == "private" { refuse(stream, connection: connection, reason: refused) }
     }
 
     /// One child for `connection`'s stream, launched now; a refusal launches nothing. Shared by a start and a
@@ -1771,6 +1778,8 @@ extension AmbientRightyoRouter {
                 ? openPrivacyEntry(connection, wasOn: wasOn, in: &state) : nil
             // An off withdraws every entry still open (round 3): each closes in silence, and never inherits a timeout.
             if !on, reported != nil { state.privacy[connection, default: .init()].withdrawAll() }
+            // The owner's own off clears parked privacy daemon-wide (#941), as the owner's off does a parked mode.
+            if !on, wasOn, reported != nil, reason == "voice" || reason == "device" { clearParkedPrivacy(in: &state) }
             var change = DuckChange(duck: reported ?? 0, media: nil, still: reported == nil && wasOn, wasOn: wasOn,
                                     entry: entry)
             if reported != nil, on, state.media[connection] != nil {
@@ -1951,12 +1960,7 @@ extension AmbientRightyoRouter {
         if on { state.duck[connection] = AmbientDuckTimer(token: UUID(), timer: nil) }
         let listener = state.listener?.value
         if on {
-            // From now on the agent's replies to this connection are refused (S-2c), then its pending ones dropped.
-            listener?.replyHold.set(true, connection: connection)
-            mediaNotices.enqueue { [weak self, weak listener] in
-                let dropped = await listener?.dropPrivateReplies(connection: connection) ?? 0
-                self?.emit("ambient_privacy_replies", connection: connection, detail: "dropped=\(dropped)")
-            }
+            holdReplies(connection, listener: listener)
         } else {
             // Released on the same serial queue as the entry's drop, so the drop has finished first and a reply from
             // before the entry cannot slip through a fast entry then exit; skipped if privacy came back meanwhile.
@@ -1972,6 +1976,16 @@ extension AmbientRightyoRouter {
                        detail: "on=\(on) device=\(sent ?? "no_connection")")
         }
         return (reported, notice)
+    }
+
+    /// From now on the agent's replies to `connection` are refused (S-2c), then its pending ones dropped, under the
+    /// caller's lock: a privacy entry's, or a restore's (#941).
+    func holdReplies(_ connection: UUID, listener: WebSocketListener?) {
+        listener?.replyHold.set(true, connection: connection)
+        mediaNotices.enqueue { [weak self, weak listener] in
+            let dropped = await listener?.dropPrivateReplies(connection: connection) ?? 0
+            self?.emit("ambient_privacy_replies", connection: connection, detail: "dropped=\(dropped)")
+        }
     }
 }
 

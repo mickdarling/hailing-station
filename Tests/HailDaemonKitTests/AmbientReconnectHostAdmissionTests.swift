@@ -27,7 +27,10 @@ struct AmbientReconnectHostAdmissionTests {
         try await barrier(on: socket, step: "fresh privacy stream audio processed")
         await rig.finish()
         let heard = (try? Data(contentsOf: rig.fake.directory.appendingPathComponent("audio.2.raw"))) ?? Data()
-        #expect(heard.count == 0, "fresh connection must not send private PCM to RightyO")
+        // A confirmed-private child hears the stream in RAM only (#735 S-1, S-8: to hear the way back in); what must
+        // never reach RightyO is audio before that proof. The first segment came before the child's private `started`
+        // and is dropped, so at most the one sent after it is heard. On main the child is public and hears both.
+        #expect(heard.count <= AmbientPrivacyParkTests.segmentBytes, "no PCM reaches RightyO before its private proof")
         #expect((try? rig.fake.recorded("argv.2.txt"))?.contains("--start-private") == true)
     }
 
