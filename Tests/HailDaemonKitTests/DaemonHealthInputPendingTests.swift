@@ -9,14 +9,14 @@ import Testing
 @Suite struct DaemonHealthInputPendingTests {
     private let cli = HealthReport.CLI(version: "0.1.0", build: "aaaaaaaaaaaaaaaa", hostID: "themachine.local")
 
-    private func report(_ event: String?, _ detail: String? = nil) -> HealthReport {
+    private func report(_ event: String?, _ detail: String? = nil, at: Date? = nil) -> HealthReport {
         var status = DaemonStatus(
             schema: DaemonStatus.currentSchema, version: "0.1.0", build: "aaaaaaaaaaaaaaaa", pid: 4242,
             startedAt: Date(timeIntervalSince1970: 0), updatedAt: Date(timeIntervalSince1970: 0),
             hostID: "themachine.local", listener: .init(state: "ready", endpoint: "127.0.0.1:18765"),
             connectedSessions: 1
         )
-        status.ambient = .init(enabled: true, running: 1, lastEvent: event, lastDetail: detail)
+        status.ambient = .init(enabled: true, running: 1, lastEvent: event, lastEventAt: at, lastDetail: detail)
         return HealthReport.evaluate(cli: cli, daemon: status, isRunning: { _ in true })
     }
 
@@ -31,10 +31,11 @@ import Testing
             "device_connected"
         ])
         let check = try #require(refused.checks.first { $0.name == "target_input" })
-        #expect(check.outcome == .warn && check.detail == "last ambient request refused: inputPending")
+        #expect(check.outcome == .warn && check.detail == "ambient request refused: inputPending")
         let fix = try #require(check.fix)
         #expect(fix.contains("haild targets flush <target-id>"))
-        #expect(fix.contains("tmux_input_pending reason=tainted, run scripts/host.sh restart"))
+        #expect(fix.contains("if ~/Library/Logs/HailingStation/haild.err.log shows tmux_input_pending reason=tainted, "
+            + "run scripts/host.sh restart"))
         // `status --json` keeps its shape: the check's outcome is `warn` and `healthy` stays true.
         let json = try JSONSerialization.jsonObject(with: JSONEncoder.hailStatus.encode(refused)) as? [String: Any]
         #expect(json?["healthy"] as? Bool == true)
@@ -42,6 +43,17 @@ import Testing
         #expect(checks.first { $0["name"] as? String == "target_input" }?["outcome"] as? String == "warn")
         #expect(try JSONDecoder.hailStatus.decode(HealthReport.self, from: JSONEncoder.hailStatus.encode(refused))
             == refused)
+    }
+
+    @Test func theWarningSaysHowLongAgoTheRefusalWas() throws {
+        // A short-lived advisory either way: its age shows whether it predates a flush. Whole minutes, no content.
+        let refused = report("ambient_delivery_refused", "reason=inputPending", at: Date().addingTimeInterval(-630))
+        let check = try #require(refused.checks.first { $0.name == "target_input" })
+        #expect(check.detail == "ambient request, 10 min ago, refused: inputPending")
+        let future = report("ambient_delivery_refused", "reason=inputPending", at: Date().addingTimeInterval(600))
+        // A clock that moved back never shows a negative age.
+        #expect(future.checks.first { $0.name == "target_input" }?.detail
+            == "ambient request, 0 min ago, refused: inputPending")
     }
 
     @Test func aWarningAlongsideAFailureLeavesTheReportUnhealthy() {

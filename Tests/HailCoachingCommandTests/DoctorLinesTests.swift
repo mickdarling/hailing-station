@@ -11,14 +11,16 @@ import Testing
             cli: .init(version: "0.1.0", build: nil, hostID: nil), daemon: nil,
             checks: [
                 HealthCheck(name: "daemon_running", outcome: .ok, detail: "pid 42"),
-                HealthCheck(name: "target_input", outcome: .warn, detail: "last ambient request refused: inputPending",
-                            fix: "synthetic flush fix")
+                HealthCheck(
+                    name: "target_input", outcome: .warn, detail: "ambient request, 3 min ago, refused: inputPending",
+                    fix: "synthetic flush fix"
+                )
             ]
         )
         #expect(report.healthy, "doctor exits 0")
         #expect(doctorLines(report) == [
             "ok    daemon_running  pid 42",
-            "WARN  target_input    last ambient request refused: inputPending",
+            "WARN  target_input    ambient request, 3 min ago, refused: inputPending",
             "      fix: synthetic flush fix"
         ])
     }

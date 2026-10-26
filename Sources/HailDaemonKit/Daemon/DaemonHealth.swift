@@ -187,14 +187,14 @@ public struct HealthReport: Codable, Sendable, Equatable {
 }
 
 extension HealthReport {
-    /// A `target_input` warning while the last ambient event is a request the target refused for unsent input (#894):
-    /// haild is healthy and only the next ambient event clears it, so it never fails. The snapshot names no target.
+    /// A `target_input` warning (#894) with its age: haild is healthy, and only the next ambient event replaces it.
     private static func pendingInputCheck(_ ambient: DaemonStatus.Ambient) -> HealthCheck? {
         guard ambient.lastEvent == "ambient_delivery_refused",
               ambient.lastDetail?.split(separator: " ").first == "reason=inputPending" else { return nil }
-        return .init(name: "target_input", outcome: .warn, detail: "last ambient request refused: inputPending",
+        let age = ambient.lastEventAt.map { ", \(max(0, Int(Date().timeIntervalSince($0) / 60))) min ago," } ?? ""
+        return .init(name: "target_input", outcome: .warn, detail: "ambient request\(age) refused: inputPending",
                      fix: "the target's prompt holds unsent text; clear it with haild targets flush <target-id>, and "
-                         + "if haild.err.log shows tmux_input_pending reason=tainted, run scripts/host.sh restart (a "
-                         + "flush cannot clear a taint)")
+                         + "if ~/Library/Logs/HailingStation/haild.err.log shows tmux_input_pending reason=tainted, "
+                         + "run scripts/host.sh restart (a flush cannot clear a taint)")
     }
 }
