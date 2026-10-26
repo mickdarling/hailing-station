@@ -29,6 +29,7 @@ public final class CaptureSuppressionLedger {
     public func begin(_ owner: UUID) {
         let wasEmpty = entries.isEmpty
         entries[owner] = Entry()
+        syncTapMask() // Raise before suppression pauses the reply and lowers its echo mask.
         if wasEmpty { playback.beginCaptureSuppression() }
     }
 
@@ -45,6 +46,7 @@ public final class CaptureSuppressionLedger {
     /// `owner`'s capture was torn down while the scene was not active; `releaseCompleted` ends its hold.
     public func markCleanupComplete(_ owner: UUID) {
         entries[owner]?.cleanupComplete = true
+        syncTapMask() // Background teardown ends tap masking even while reply suppression waits for activation.
     }
 
     /// The scene is active again: ends the holds of owners whose teardown completed and whose capture is not live.
@@ -68,7 +70,14 @@ public final class CaptureSuppressionLedger {
     private func dropOwners(where shouldDrop: (Entry, UUID) -> Bool) -> [UUID] {
         let dropped = entries.filter { shouldDrop($0.value, $0.key) }.map(\.key)
         for owner in dropped { entries[owner] = nil }
+        syncTapMask()
         return dropped
+    }
+
+    private func syncTapMask() {
+        (playback.player as? EchoGuardedReplyPlayer)?.setTapCaptureActive(
+            entries.values.contains { !$0.cleanupComplete }
+        )
     }
 }
 
@@ -78,6 +87,9 @@ public final class CaptureSuppressionLedger {
 /// audio are never kept alive by this table (#763 review).
 @MainActor
 public enum CapturePlaybackSuppression {
+    @MainActor
+    private final class ConsumerState { var active = true }
+
     /// Each owner's check that its capture is still starting, recording, finalizing or interrupting.
     public static var liveness: [UUID: @MainActor () -> Bool] = [:]
     private static var ledgers: [ObjectIdentifier: CaptureSuppressionLedger] = [:]
@@ -87,6 +99,22 @@ public enum CapturePlaybackSuppression {
     static func hasLedger(for playback: ReplyPlaybackController) -> Bool { existing(playback) != nil }
 
     public static func begin(_ owner: UUID, using playback: ReplyPlaybackController) { ledger(playback).begin(owner) }
+
+    /// Recording liveness follows the consumer, not isRecording: a system end finishes this stream normally.
+    /// Startup and explicit teardown still hold replies until their existing cleanup ordering has completed.
+    /// `transitioning` covers those operations; a returned or throwing consumer cannot leave recording live.
+    /// Each invocation owns its state: an old consumer ending changes only its own generation, never a
+    /// replacement's liveness registration. Register before reading, even if the stream has already ended.
+    public static func consume(
+        _ buffers: AsyncStream<AudioCaptureBuffer>, owner: UUID,
+        transitioning: @escaping @MainActor () -> Bool,
+        receive: @MainActor (AudioCaptureBuffer) async throws -> Void
+    ) async rethrows {
+        let state = ConsumerState()
+        liveness[owner] = { state.active || transitioning() }
+        defer { state.active = false }
+        for await buffer in buffers { try await receive(buffer) }
+    }
 
     /// Each call that can heal returns how many holds the heal dropped (#760), and tells that player's own reporter.
     @discardableResult
@@ -144,6 +172,18 @@ public enum CapturePlaybackSuppression {
         if let ledger = ledgers[key] { return ledger }
         let ledger = CaptureSuppressionLedger(playback: playback) { liveness[$0]?() ?? false }
         ledgers[key] = ledger
+        watchLiveness(playback, ledger)
         return ledger
+    }
+
+    /// Bound a missed end callback to one liveness check, without expiring a genuinely live long capture (#935).
+    private static func watchLiveness(_ playback: ReplyPlaybackController, _ ledger: CaptureSuppressionLedger) {
+        Task { @MainActor [weak playback, weak ledger] in
+            while true {
+                do { try await Task.sleep(for: .seconds(1)) } catch { return }
+                guard let playback, let ledger, existing(playback) === ledger else { return }
+                reconcile(using: playback)
+            }
+        }
     }
 }
