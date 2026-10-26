@@ -12,7 +12,7 @@ import Testing
         var now = start
         var audio = 0.0
         var firstSend: ContinuousClock.Instant?
-        var unread: [(readAt: ContinuousClock.Instant, pcm: Int, json: Int)] = []
+        var unread: [BacklogSample] = []
         var maxFrames = 0, maxPCM = 0, maxJSON = 0
         var maxLead = 0.0
         let descriptor = ReplyDescriptor(id: UUID(), hostID: "mac-test", targetID: "recipient:reply",
@@ -29,7 +29,10 @@ import Testing
             let readAt = first.advanced(by: .seconds(audio))
             #expect(now <= readAt) // No underrun in this steady 2.5x renderer / 1x client model.
             unread.removeAll { $0.readAt <= now }
-            if readAt > now { unread.append((readAt, size, try encodedBytes(descriptor, sequence: sequence))) }
+            if readAt > now {
+                unread.append(BacklogSample(readAt: readAt, pcm: size,
+                    json: try encodedBytes(descriptor, sequence: sequence)))
+            }
             audio += duration
             let elapsed = first.duration(to: now).components
             let seconds = Double(elapsed.seconds) + Double(elapsed.attoseconds) / 1e18
@@ -54,4 +57,10 @@ import Testing
                 bytes: Data(count: StreamedReplyFrames.bytes(sequence: sequence)), reply: descriptor)))
         return try FrameCoding.encode(frame).count
     }
+}
+
+private struct BacklogSample {
+    let readAt: ContinuousClock.Instant
+    let pcm: Int
+    let json: Int
 }
