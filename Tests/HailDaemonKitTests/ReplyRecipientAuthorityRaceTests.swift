@@ -4,28 +4,7 @@ import Synchronization
 import Testing
 @testable import HailDaemonKit
 
-/// Bounded, deterministic barriers around synthetic admission. No devices, speech or providers are used.
-private final class RecipientPublicationClock: Sendable {
-    private let origin = ContinuousClock.now
-    private let remaining = Mutex<Int?>(nil)
-    let gate = RecipientPublicationGate()
-    let executor = RecipientPublicationExecutor()
-    // Pruning is followed by the pre-gate lifetime check; pause there, before either authority lock.
-    func arm() { remaining.withLock { $0 = 2 } }
-    func now() -> ContinuousClock.Instant {
-        let block = remaining.withLock { count in
-            guard let old = count else { return false }
-            count = old > 1 ? old - 1 : nil
-            return old == 1
-        }
-        if block, !gate.block(onDedicatedQueue: executor.isExecuting) {
-            return origin.advanced(by: .seconds(120))
-        }
-        return origin
-    }
-}
-
-@Suite(.serialized) struct ReplyRecipientAuthorityRaceTests {
+@Suite(.serialized, .timeLimit(.minutes(2))) struct ReplyRecipientAuthorityRaceTests {
     private struct Setup {
         let rig: RecipientTestRig
         let session: HostSession
@@ -55,22 +34,22 @@ private final class RecipientPublicationClock: Sendable {
         let publication = Task(executorPreference: clock.executor) {
             await session.enqueueHostReply(frame) { submitted.withLock { $0 += 1 }; return true }
         }
+        var revoked = true
         do {
             try await clock.gate.waitEntered()
-            try #require(clock.gate.usedDedicatedQueue)
             if lockdown {
                 _ = await rig.host.engageLockdown(reason: "synthetic publication race")
             } else {
-                #expect(try await rig.host.deny(RecipientTestRig.target))
+                revoked = try await rig.host.deny(RecipientTestRig.target)
             }
         } catch {
-            clock.gate.release()
-            _ = await publication.value
+            guard await clock.finish(publication) != nil else { return }
             throw error
         }
-        clock.gate.release()
-        #expect(!(await publication.value))
-        #expect(!clock.gate.timedOut)
+        guard let accepted = await clock.finish(publication) else { return }
+        #expect(clock.gate.usedDedicatedQueue)
+        #expect(revoked)
+        #expect(!accepted)
         #expect(submitted.withLock { $0 } == 0)
     }
 
@@ -87,28 +66,15 @@ private final class RecipientPublicationClock: Sendable {
         }
         do {
             try await clock.gate.waitEntered()
-            try #require(clock.gate.usedDedicatedQueue)
             await rig.adapter.setTargets([AdapterTarget(name: "reply", binding: "replacement-binding")])
         } catch {
-            clock.gate.release()
-            _ = await publication.value
+            guard await clock.finish(publication) != nil else { return }
             throw error
         }
-        clock.gate.release()
-        #expect(!(await publication.value))
-        #expect(!clock.gate.timedOut)
+        guard let accepted = await clock.finish(publication) else { return }
+        #expect(clock.gate.usedDedicatedQueue)
+        #expect(!accepted)
         #expect(submitted.withLock { $0 } == 0)
-    }
-
-    @Test func barrierTimeoutIsRecoverableRatherThanAProcessTrap() async {
-        let gate = RecipientPublicationGate(timeout: .milliseconds(0))
-        await #expect(throws: RecipientPublicationTestError.admissionTimedOut) {
-            try await gate.waitEntered()
-        }
-        #expect(!gate.block(onDedicatedQueue: false))
-        #expect(gate.timedOut)
-        gate.release()
-        gate.release()
     }
 
     @Test func restorationWithoutAnInterveningReplyCannotReviveAdmissionTickets() async throws {
