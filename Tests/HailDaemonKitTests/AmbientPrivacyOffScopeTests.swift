@@ -19,8 +19,9 @@ struct AmbientPrivacyOffScopeTests {
     /// Source A (a silent peer, or one that answers pings) is private by the owner's voice and still open; B, of class
     /// `kind`, is restored private from it. Returns before any off.
     static func restoredFrom(silent: Bool, sourceKind: String? = "phone", kind: String? = "phone",
-                             privacy: PrivacyOffSettings = .init()) async throws -> (Scene, SilentPeer?) {
-        let rig = try await RestoreRig(phrase: "stop recording", privacy: privacy)
+                             privacy: PrivacyOffSettings? = nil) async throws -> (Scene, SilentPeer?) {
+        // A silent source's probe waits out the timeout, so it is shortened; a live one's pong ends it at once.
+        let rig = try await RestoreRig(phrase: "stop recording", privacy: privacy ?? (silent ? .silent : .init()))
         let (peer, source) = try await Self.source(on: rig, silent: silent, kind: sourceKind)
         let router = rig.router
         #expect(await eventually { router.activeConnection() == source }, "source start marker")
@@ -32,9 +33,15 @@ struct AmbientPrivacyOffScopeTests {
         return (Scene(rig: rig, source: source, restored: restored), peer)
     }
 
-    /// The source device: a silent peer, or one with the app's own transport, which answers pings.
+    /// The source device: a silent peer, or one with the app's own transport, which answers pings. Like the app
+    /// (`HostConnection+Lifecycle`'s receive loop), the live one always has a receive pending, so its
+    /// `URLSessionWebSocketTask` reads, and answers, a ping as it arrives.
     static func source(on rig: RestoreRig, silent: Bool, kind: String?) async throws -> (SilentPeer?, UUID) {
-        guard silent else { return (nil, try await rig.start(name: RestoreRig.appName, kind: kind).1) }
+        guard silent else {
+            let (socket, connection) = try await rig.start(name: RestoreRig.appName, kind: kind)
+            Task { while (try? await socket.receive()) != nil {} }
+            return (nil, connection)
+        }
         let (peer, connection) = try await rig.connectSilent(kind: kind)
         try await peer.send(audio(UUID(), 0))
         return (peer, connection)
@@ -98,7 +105,7 @@ struct AmbientPrivacyOffScopeTests {
     /// (iii) A connection restored from the park records no source, so its off ends no other connection's privacy:
     /// here one restored from it later, silent and of the same class.
     @Test func aRestoreFromTheParkRecordsNoSource() async throws {
-        let rig = try await RestoreRig(phrase: "stop recording")
+        let rig = try await RestoreRig(phrase: "stop recording", privacy: .silent)
         defer { rig.close() }
         let router = rig.router
         let (first, dropped) = try await rig.connectSilent()
@@ -131,7 +138,7 @@ struct AmbientPrivacyOffScopeTests {
     /// A stale source re-armed after the off but before its scope decides keeps the new arming (review round 2 P3-1).
     @Test func aSourceReArmedBeforeTheDecisionKeepsItsPrivacy() async throws {
         let box = RouterBox(), source = SourceBox()
-        let settings = PrivacyOffSettings(offScoping: { _ in
+        let settings = PrivacyOffSettings(probeTimeout: .milliseconds(500), offScoping: { _ in
             guard let connection = source.value.withLock({ $0 }) else { return }
             box.value.withLock { $0 }?.state.withLock {
                 $0.duck[connection] = AmbientDuckTimer(token: UUID(), timer: nil)

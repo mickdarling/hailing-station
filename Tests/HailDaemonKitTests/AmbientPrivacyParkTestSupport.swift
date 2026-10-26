@@ -6,9 +6,11 @@ import Synchronization
 import Testing
 @testable import HailDaemonKit
 
-/// The owner's off settings a test sets (#941): the probe's wait, shortened, and a hook before the off decides.
+/// The owner's off settings a test sets (#941): the probe's wait (haild's three seconds unless a test that expects no
+/// pong shortens it; a pong ends the wait at once) and a hook before the off decides.
 struct PrivacyOffSettings: Sendable {
-    var probeTimeout: Duration = .milliseconds(500)
+    static let silent = Self(probeTimeout: .milliseconds(500))
+    var probeTimeout: Duration = .seconds(3)
     var offScoping: (@Sendable (UUID) async -> Void)?
 }
 
