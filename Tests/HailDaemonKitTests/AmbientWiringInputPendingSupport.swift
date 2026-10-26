@@ -67,7 +67,7 @@ struct PendingInputRun {
     /// acknowledgement hold.
     static func make(
         holdFirst: Bool = false, script: String = RightyoAmbientPendingInputTests.twoRequests,
-        fixture: String = "tool-events.jsonl", routes: VoiceRoutes? = nil, hold: (@Sendable () async -> Void)? = nil
+        fixture: String = "tool-events.jsonl", routes: VoiceRoutes? = nil, hold: AcknowledgementHold? = nil
     ) async throws -> Self {
         let fake = try FakeRightyo(script)
         try fake.install(fixture: fixture)

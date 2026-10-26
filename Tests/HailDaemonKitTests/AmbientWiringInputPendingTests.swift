@@ -96,7 +96,7 @@ import Testing
     @Test func theRefusalWaitsForItsAcknowledgement() async throws {
         let latch = MeetingLatch()
         defer { latch.open() }
-        let run = try await PendingInputRun.make(hold: { await latch.wait() })
+        let run = try await PendingInputRun.make(hold: AcknowledgementHold { await latch.wait() })
         defer { run.close() }
         await run.adapter.failHandoff(with: AdapterError.inputPending(reason: .staleInput))
         try await run.speak()
