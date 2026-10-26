@@ -18,25 +18,32 @@ struct ReplySegmentation: Equatable, Sendable {
         self.maxWords = maxWords
     }
 
-    /// Uses the same environment tuning mechanism as HAILD_REPLY_PACING; invalid overrides fail before publication.
+    /// Uses the same environment tuning mechanism as HAILD_REPLY_PACING.
+    /// Invalid overrides warn without content and keep that limit’s default.
     static func load(environment: [String: String]) throws -> Self {
         try Self(
-            maxSentences: value("HAILD_REPLY_SEGMENT_MAX_SENTENCES", in: environment, fallback: defaultMaxSentences),
-            maxWords: value("HAILD_REPLY_SEGMENT_MAX_WORDS", in: environment, fallback: defaultMaxWords)
+            maxSentences: value("HAILD_REPLY_SEGMENT_MAX_SENTENCES", in: environment,
+                                fallback: defaultMaxSentences, bounds: sentenceBounds),
+            maxWords: value("HAILD_REPLY_SEGMENT_MAX_WORDS", in: environment,
+                            fallback: defaultMaxWords, bounds: wordBounds)
         )
     }
 
-    private static func value(_ key: String, in environment: [String: String], fallback: Int) throws -> Int {
+    private static func value(
+        _ key: String, in environment: [String: String], fallback: Int, bounds: ClosedRange<Int>
+    ) -> Int {
         guard let raw = environment[key] else { return fallback }
-        guard !raw.isEmpty, raw.allSatisfy({ $0.isASCII && $0.isNumber }), let value = Int(raw) else {
-            throw ReplyCommandError.invalid("invalid reply segmentation setting: \(key)")
+        guard !raw.isEmpty, raw.allSatisfy({ $0.isASCII && $0.isNumber }),
+              let value = Int(raw), bounds.contains(value) else {
+            FileHandle.standardError.write(Data("haild: invalid \(key); using default\n".utf8))
+            return fallback
         }
         return value
     }
 }
 
 /// Deterministic, content-free segmentation, with no I/O. Keeps original spelling and internal whitespace.
-/// Sentence ends are ., ? and ! (including closing quotes/brackets), or a newline between words/list items.
+/// CJK terminators and !/? end even without spaces, retaining closing quotes/brackets; newlines end items.
 /// Periods inside a token (URLs, paths, decimals, versions) never end a sentence. Common titles, e.g./i.e.,
 /// initials and dotted initialisms are protected; ellipses end a sentence only before an uppercase word.
 /// An oversized sentence prefers its last comma, semicolon, colon or em dash within the word limit.
@@ -44,74 +51,104 @@ struct ReplySegmenter {
     let configuration: ReplySegmentation
 
     func segments(_ text: String) -> [String] {
-        let words = text.split(whereSeparator: \.isWhitespace)
-        guard !words.isEmpty else { return [] }
-        let sentences = sentenceRanges(words, in: text)
-        var pieces: [Range<Int>] = []
-        var current = 0..<0, sentenceCount = 0
+        let sentences = sentenceRanges(in: text)
+        var pieces: [Substring] = []
+        var current = text[text.startIndex..<text.startIndex]
+        var sentenceCount = 0, wordCount = 0
         for sentence in sentences {
-            for piece in bounded(sentence, words: words) {
+            for piece in bounded(sentence) {
+                let count = piece.split(whereSeparator: \.isWhitespace).count
+                let combined = wordCount + count - (current.isEmpty || current.endIndex != piece.startIndex ? 0 : 1)
                 if !current.isEmpty, sentenceCount == configuration.maxSentences
-                    || current.count + piece.count > configuration.maxWords {
+                    || combined > configuration.maxWords {
                     pieces.append(current)
-                    current = piece.lowerBound..<piece.lowerBound
+                    current = text[piece.startIndex..<piece.startIndex]
                     sentenceCount = 0
+                    wordCount = 0
                 }
-                current = current.lowerBound..<piece.upperBound
+                wordCount += count - (current.isEmpty || current.endIndex != piece.startIndex ? 0 : 1)
+                current = text[(current.isEmpty ? piece.startIndex : current.startIndex)..<piece.endIndex]
                 sentenceCount += 1
             }
         }
         if !current.isEmpty { pieces.append(current) }
+        guard !pieces.isEmpty else { return [] }
         guard pieces.count > 1 else { return [text] }
-        return pieces.enumerated().map { index, piece in
-            let start = index == 0 ? text.startIndex : words[piece.lowerBound].startIndex
-            let end = index == pieces.count - 1 ? text.endIndex : words[piece.upperBound - 1].endIndex
-            return String(text[start..<end])
-        }
+        pieces[0] = text[text.startIndex..<pieces[0].endIndex]
+        let last = pieces.count - 1
+        pieces[last] = text[pieces[last].startIndex..<text.endIndex]
+        return pieces.map(String.init)
     }
 
-    private func sentenceRanges(_ words: [Substring], in text: String) -> [Range<Int>] {
-        var ranges: [Range<Int>] = []
+    private func sentenceRanges(in text: String) -> [Substring] {
+        let words = text.split(whereSeparator: \.isWhitespace).flatMap(sentenceTokens)
+        var ranges: [Substring] = []
         var start = 0
         for index in words.indices {
             let next = index + 1
             let newline = next < words.count
                 && text[words[index].endIndex..<words[next].startIndex].contains(where: \.isNewline)
             if next == words.count || newline || endsSentence(words[index], next: words[next]) {
-                ranges.append(start..<next)
+                ranges.append(text[words[start].startIndex..<words[index].endIndex])
                 start = next
             }
         }
         return ranges
     }
 
-    private func bounded(_ sentence: Range<Int>, words: [Substring]) -> [Range<Int>] {
-        var start = sentence.lowerBound
-        var pieces: [Range<Int>] = []
-        while sentence.upperBound - start > configuration.maxWords {
+    /// Split only unconditional terminators inside a whitespace token; periods retain the lexical rules below.
+    private func sentenceTokens(_ word: Substring) -> [Substring] {
+        var tokens: [Substring] = []
+        var start = word.startIndex, end = start
+        var terminated = false
+        for index in word.indices {
+            let character = word[index]
+            if terminated, !Self.terminators.contains(character), !Self.closers.contains(character) {
+                tokens.append(word[start..<index])
+                start = index
+                terminated = false
+            }
+            if Self.terminators.contains(character) { terminated = true }
+            end = word.index(after: index)
+        }
+        if start < end { tokens.append(word[start..<end]) }
+        return tokens
+    }
+
+    private func bounded(_ sentence: Substring) -> [Substring] {
+        let words = sentence.split(whereSeparator: \.isWhitespace)
+        var start = 0
+        var pieces: [Substring] = []
+        while words.count - start > configuration.maxWords {
             let limit = start + configuration.maxWords
             let clause = (start..<limit).last { index in
                 let token = unquoted(words[index])
                 return token.last.map { ",;:—".contains($0) } ?? false
             }
             let end = clause.map { $0 + 1 } ?? limit
-            pieces.append(start..<end)
+            pieces.append(sentence[words[start].startIndex..<words[end - 1].endIndex])
             start = end
         }
-        pieces.append(start..<sentence.upperBound)
+        pieces.append(sentence[words[start].startIndex..<sentence.endIndex])
         return pieces
     }
 
     private func unquoted(_ word: Substring) -> Substring {
         var token = word.drop(while: { "\"'“‘([{".contains($0) })
-        while let last = token.last, "\"'”’)]}".contains(last) { token = token.dropLast() }
+        var end = token.endIndex
+        while end > token.startIndex {
+            let previous = token.index(before: end)
+            guard Self.closers.contains(token[previous]) else { break }
+            end = previous
+        }
+        token = token[..<end]
         return token
     }
 
     private func endsSentence(_ word: Substring, next: Substring) -> Bool {
         let token = unquoted(word)
         guard let last = token.last else { return false }
-        if last == "?" || last == "!" { return true }
+        if Self.terminators.contains(last) { return true }
         if last == "…" { return unquoted(next).first?.isUppercase == true }
         guard last == "." else { return false }
         if token.hasSuffix("...") { return unquoted(next).first?.isUppercase == true }
@@ -123,6 +160,8 @@ struct ReplySegmenter {
         return !token.dropLast().allSatisfy(\.isNumber)
     }
 
+    private static let terminators = "!?。！？．"
+    private static let closers = "\"'”’)]}」』）］｝】〉》〞"
     private static let abbreviations: Set<String> = [
         "e.g.", "i.e.", "dr.", "mr.", "mrs.", "ms.", "prof.", "sr.", "jr.", "vs.", "etc.", "st."
     ]

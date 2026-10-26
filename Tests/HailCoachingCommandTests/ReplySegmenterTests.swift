@@ -24,13 +24,11 @@ struct ReplySegmenterTests {
         for invalid in [0, -1, 301, Int.max] {
             #expect(throws: (any Error).self) { try ReplySegmentation(maxWords: invalid) }
         }
-        for raw in ["", "-1", "1.5", " 2", "x", "999999999999999999999", "٠٢"] {
-            #expect(throws: (any Error).self) {
-                try ReplySegmentation.load(environment: ["HAILD_REPLY_SEGMENT_MAX_WORDS": raw])
-            }
-            #expect(throws: (any Error).self) {
-                try ReplySegmentation.load(environment: ["HAILD_REPLY_SEGMENT_MAX_SENTENCES": raw])
-            }
+        for raw in ["", "0", "-1", "301", "1.5", " 2", "x", "999999999999999999999", "٠٢"] {
+            let words = try ReplySegmentation.load(environment: ["HAILD_REPLY_SEGMENT_MAX_WORDS": raw])
+            let sentences = try ReplySegmentation.load(environment: ["HAILD_REPLY_SEGMENT_MAX_SENTENCES": raw])
+            #expect(try words == ReplySegmentation.load(environment: [:]))
+            #expect(try sentences == ReplySegmentation.load(environment: [:]))
         }
         #expect(try ReplySegmentation(maxSentences: 20, maxWords: 300).maxWords == 300)
         #expect(try ReplySegmentation(maxSentences: 1, maxWords: 1).maxWords == 1)
@@ -51,6 +49,34 @@ struct ReplySegmenterTests {
         #expect(segmenter.segments("Wait... Next thought. Done…") == ["Wait...", "Next thought.", "Done…"])
         #expect(segmenter.segments("Wait… Next thought.") == ["Wait…", "Next thought."])
         #expect(segmenter.segments("Wait... “Next.”") == ["Wait...", "“Next.”"])
+    }
+
+    @Test func unspacedSentencesAndJoin() throws {
+        let cases: [(String, Int, [String])] = [
+            ("第一句。第二句！第三句？", 2, ["第一句。第二句！", "第三句？"]),
+            ("「第一句。」（第二句！）『第三句？』", 2, ["「第一句。」（第二句！）", "『第三句？』"]),
+            ("第一句．Second!第三句？", 2, ["第一句．Second!", "第三句？"]),
+            ("First!Second?Third.", 1, ["First!", "Second?", "Third."]),
+            ("First!第二句。Third?第四句！", 2, ["First!第二句。", "Third?第四句！"]),
+            ("A!B?", 2, ["A!B?"])
+        ]
+        for (text, limit, expected) in cases {
+            let segmenter = ReplySegmenter(configuration: try ReplySegmentation(maxSentences: limit, maxWords: 1))
+            let pieces = segmenter.segments(text)
+            #expect(pieces == expected)
+            #expect(pieces.joined() == text)
+        }
+        let segmenter = ReplySegmenter(configuration: try ReplySegmentation(maxSentences: 1))
+        #expect(segmenter.segments("3.5 v1.2 https://example.invalid/a.b e.g. intact. Next.")
+                == ["3.5 v1.2 https://example.invalid/a.b e.g. intact.", "Next."])
+    }
+
+    @Test func manyTrailingClosersKeepSentenceStructure() throws {
+        let closers = String(repeating: ")", count: 16_000)
+        let first = "First." + closers
+        let segmenter = ReplySegmenter(configuration: try ReplySegmentation(maxSentences: 1))
+        #expect(segmenter.segments(first + " Next.") == [first, "Next."])
+        #expect(segmenter.segments("First!" + closers + "Next?") == ["First!" + closers, "Next?"])
     }
 
     @Test func newlinesAndLists() throws {

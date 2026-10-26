@@ -106,6 +106,18 @@ class ReplySegmentCLITests(unittest.TestCase):
         self.assertEqual(list(self.root.iterdir()), [])
         self.assert_outcome("played_unmeasured")
 
+    def test_files_only_marks_last_stable_file_on_second_pass(self):
+        environment = self.environment()
+        environment.pop("REPLY_RENDERER_TEST_STDOUT_BYTES")
+        environment["REPLY_RENDERER_TEST_FILES_ONLY_MULTIPLE"] = "1"
+        result, frames = self.run_speech("First. Second. Third.", environment)
+        self.assertEqual(result.returncode, 0, result.stderr)
+        audio = self.assert_complete(frames, [2, 5])
+        self.assertEqual([base64.b64decode(f["payload"]["bytes"]) for f in audio],
+                         [bytes([0, 0, 1, 0]), bytes([1]) * 4, bytes([2]) * 6] * 3 + [bytes(2)])
+        self.assertEqual(len(self.invocations()), 3)
+        self.assertEqual(list(self.root.iterdir()), [])
+
     def test_renderer_failure_in_segment_two_ends_reply_and_prevents_segment_three(self):
         environment = self.environment("60000")
         environment["REPLY_RENDERER_TEST_FAIL_SEGMENT"] = "2"
@@ -245,12 +257,32 @@ class ReplySegmentCLITests(unittest.TestCase):
         print(f"#932 synthetic sequential overhead: median={statistics.median(gaps)*1000:.1f}ms "
               f"max={max(gaps)*1000:.1f}ms n={len(gaps)}", flush=True)
 
-    def test_invalid_configuration_refused_before_text_or_renderer(self):
-        for key in ["HAILD_REPLY_SEGMENT_MAX_SENTENCES", "HAILD_REPLY_SEGMENT_MAX_WORDS"]:
-            for value in ["0", "301", "bad"]:
-                environment = self.environment()
-                environment[key] = value
-                result, frames = self.run_speech("One sentence.", environment)
-                self.assertEqual(result.returncode, 1)
-                self.assertEqual(frames, [])
-                self.assertEqual(self.invocations(), [])
+    def test_invalid_configuration_warns_once_per_variable_and_keeps_defaults(self):
+        keys = ["HAILD_REPLY_SEGMENT_MAX_SENTENCES", "HAILD_REPLY_SEGMENT_MAX_WORDS"]
+        for key in keys:
+            for value in ["", "0", "301", "bad", "999999999999999999999"]:
+                with self.subTest(key=key, value=value):
+                    environment = self.environment("4")
+                    environment[key] = value
+                    before = len(self.invocations())
+                    result, frames = self.run_speech("First. Second. Third.", environment)
+                    self.assertEqual(result.returncode, 0, result.stderr)
+                    count = 2 if key == keys[0] else 3  # valid sentence override survives bad word override
+                    self.assertEqual(len(self.invocations()) - before, count)
+                    self.assert_complete(frames, list(range(count - 1)))
+                    self.assertEqual(result.stderr, f"haild: invalid {key}; using default\n")
+        environment = self.environment("4")
+        environment.update({key: "private-invalid-value" for key in keys})
+        result, frames = self.run_speech("First. Second. Third.", environment)
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assert_complete(frames, [0])
+        self.assertEqual(result.stderr.splitlines(), [f"haild: invalid {key}; using default" for key in keys])
+
+    def test_unspaced_sentences_render_in_order(self):
+        for text in ["第一句。第二句！第三句？", "First!Second?Third.", "第一句．Second!第三句？"]:
+            with self.subTest(text=text):
+                before = len(self.invocations())
+                result, frames = self.run_speech(text, self.environment("4"))
+                self.assertEqual(result.returncode, 0, result.stderr)
+                self.assertEqual(len(self.invocations()) - before, 3)
+                self.assert_complete(frames, [0, 1])

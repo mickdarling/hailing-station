@@ -1,7 +1,9 @@
 # Reply segments host rendering verification (#932 P2)
 
-Scope: host segmentation and per-segment owned vbsay rendering only, based on P1 head
-`e1be1fbb683516040c6159719a9f27862ebecb7a`, on the Dev Work VM. All audio is synthetic zero/pattern PCM;
+Scope: host segmentation and per-segment owned vbsay rendering only, on the Dev Work VM.
+Fix round 1 starts at merged P2 base `142ddbc4c134f24724558839bf8b7bb4031c17b7` (#953), which includes
+P1 squash `b86b2fbf`. Initial implementation evidence below used P1 head
+`e1be1fbb683516040c6159719a9f27862ebecb7a`; the final section records the new fix-round checks. All audio is synthetic zero/pattern PCM;
 no provider, network, other clone, install, upload, installed-build replacement or physical device was used.
 **P3 must merge before any haild deploy of P2.** The producer now emits `segmentEnd` locally; per-peer
 `reply_segments` capability stripping, `reply_yield` handling and the backstop belong to the listener in P3.
@@ -10,7 +12,7 @@ This is not live captured-output round-trip or physical playback proof. P4/P5 re
 
 ## Implementation and traceability
 
-`ReplySegmenterTests` (8 functions) covers default and overridden configuration, invalid/boundary values,
+`ReplySegmenterTests` (10 functions) covers default and overridden configuration, invalid/boundary values,
 common abbreviations/initialisms, decimals, versions, URL/path internal punctuation, ellipses, closing quotes
 and brackets, question/exclamation marks, newlines/list markers, last-clause preference and word fallback,
 no empty segments, exact one-segment input identity and the join property. Its deterministic generated
@@ -18,12 +20,15 @@ property test checks 324 combinations per run, including sentence/word bounds an
 
 `ReplySegmentation` injects both limits through the existing reply environment-tuning mechanism:
 `HAILD_REPLY_SEGMENT_MAX_SENTENCES` (1–20, default 2) and `HAILD_REPLY_SEGMENT_MAX_WORDS` (1–300, default 30).
-Defaults are v1, pending Mick. Malformed/out-of-range overrides fail before any text/audio publication.
-Words are whitespace-delimited; newlines separate sentences/items. Abbreviations use a documented lexical
+Defaults are v1, pending Mick. Malformed, out-of-range or overflowing overrides retain that limit’s default
+and write one content-free stderr warning naming the variable, never its value. The reply proceeds.
+Words are whitespace-delimited; newlines separate sentences/items. CJK `。！？．` and ASCII `!?` terminate
+without whitespace, retaining following closing quotes/brackets. ASCII periods retain their lexical protection.
+Unspaced joins preserve every character, and trailing-closer trimming uses a linear index walk. Abbreviations use a documented lexical
 rule rather than language inference. `...`/`…` end before an uppercase next token. Only whitespace at joins
 can change; one-piece input is returned unchanged. No segmentation code logs text.
 
-`ReplySegmentCLITests` (11 methods) uses the real executable, existing private local socket harness and
+`ReplySegmentCLITests` (13 methods) uses the real executable, existing private local socket harness and
 extended synthetic vbsay fixture. It proves:
 
 - Full text retained; one descriptor/stream, unique envelope IDs, continuous sequence and ordered segment PCM.
@@ -103,7 +108,7 @@ case "$command" in
 esac
 ```
 
-Exact final verification commands (PATH points at that wrapper):
+Initial implementation verification commands (PATH points at that wrapper):
 
 ```bash
 export PATH=/tmp/hs932-tools:$PATH
@@ -165,7 +170,7 @@ parallel lanes run serially to respect the VM worker cap. Its capture/event/stal
 Splitting lanes into separate phases enforces the ten-minute cap per phase. ReplyCLITests runs in full,
 serially, as in `verify.sh scripts`; network-dependent trace dependency installation is excluded.
 
-## Results
+## Results (initial implementation)
 
 - Both final builds passed with warnings treated as errors (2.58 s build; 3.97 s build-tests).
 - New tests: five final runs each passed, 8 Swift functions/run (40 executions) and 11 CLI methods/run
@@ -212,3 +217,103 @@ serially, as in `verify.sh scripts`; network-dependent trace dependency installa
 - Full Xcode/XcodeGen and SwiftLint are unavailable; simulator/macOS Xcode lanes and strict automated lint
   could not run. Pinned PyYAML 6.0.3 is absent, so spec-trace dependency installation/tests were skipped
   under the no-installs/no-network constraint. The P2 expectations are mapped to actual executing tests above.
+
+
+## Fix round 1 (#953)
+
+Against P1 squash `b86b2fbf` (and against the supplied P2 base), exactly two production files change: `Sources/haild/ReplySegmenter.swift` and
+`Sources/haild/ReplyCommand.swift`. No other clone, network, deployment, GitHub mutation, simulator or
+physical device is used. All PCM is synthetic. The same 590-second descendant-kill wrapper and
+`taskpolicy -b` Swift wrapper above enforce four build jobs / one compiler worker per target; all test lanes
+run serially in separate phases. Baseline compilation uses an archive of the local `origin/main`
+`893acc01337ac21b9bba03542cb19ceeab4d8d84`. This offline tracking ref predates P1; its
+`ReplyCommand.swift` is identical to the P1 squash’s renderer. The squash’s protocol files are inherited,
+not P2 production changes.
+
+The new checks cover unspaced CJK (three sentences, limit two), mixed CJK/Latin, full-width periods,
+quotes/brackets, unspaced ASCII !/?, exact join preservation and whitespace word counting. Both malformed
+configuration settings now warn and retain their own default, while valid companion overrides survive.
+Two structural cases exercise 16,000 trailing closers without a wall-clock assertion.
+
+`ReplyFileStabilityTests.growingFileNeedsAnEarlierEqualSizeAndSentFilesAreSkipped` checks a real directory:
+pass one publishes nothing; a file grows before pass two and is excluded, while stable nonempty files
+retain modification-date order. Empty/non-raw files and already-sent files are excluded. A later equal-size
+observation admits the previously growing file. `ReplySegmentCLITests` checks multiple raw files, an empty
+last file, exactly-once publication and the marker on the last stable file sent on pass two. The fallback
+again enumerates the directory in `for _ in 0..<2`, retains observed sizes and a sent set, and requires a
+positive current size equal to an earlier pass, as on main.
+
+Exact fix-round commands (PATH points at the wrapper):
+
+```bash
+export PATH=/tmp/hs932-tools:$PATH
+python3 /tmp/hs932-tools/phase.py swift build -Xswiftc -warnings-as-errors
+python3 /tmp/hs932-tools/phase.py swift build --build-tests -Xswiftc -warnings-as-errors
+for round in 1 2 3; do
+  python3 /tmp/hs932-tools/phase.py swift test --skip-build --no-parallel \
+    --filter 'ReplySegmenterTests|ReplyFileStabilityTests'
+  python3 /tmp/hs932-tools/phase.py python3 -m unittest discover -s Tests/ReplyCLITests -p test_reply_segments.py
+done
+mkdir -p /tmp/hs932-r2-main
+git archive origin/main | tar -x -C /tmp/hs932-r2-main
+python3 /tmp/hs932-tools/phase.py swift build --package-path /tmp/hs932-r2-main \
+  --product haild -Xswiftc -warnings-as-errors
+cp /tmp/hs932-r2-main/.build/debug/haild /tmp/hs932-r2-results/haild-main
+REPLY_SEGMENTS_BASELINE_HAILD=/tmp/hs932-r2-results/haild-main \
+  python3 /tmp/hs932-tools/phase.py python3 -m unittest discover -s Tests/ReplyCLITests
+for lane in core other timing audit offline-scripts shellchecks; do
+  python3 /tmp/hs932-tools/phase.py bash /tmp/hs932-tools/verify-lane.sh "$lane"
+done
+# Also compare the supplied P1 squash, since the offline origin/main ref predates it.
+git archive b86b2fbf | tar -x -C /tmp/hs932-r2-main
+python3 /tmp/hs932-tools/phase.py swift build --package-path /tmp/hs932-r2-main \
+  --product haild -Xswiftc -warnings-as-errors
+cp /tmp/hs932-r2-main/.build/debug/haild /tmp/hs932-r2-results/haild-main-p1
+PYTHONPATH=Tests/ReplyCLITests REPLY_SEGMENTS_BASELINE_HAILD=/tmp/hs932-r2-results/haild-main-p1 \
+  python3 /tmp/hs932-tools/phase.py python3 -m unittest \
+  test_reply_segments.ReplySegmentCLITests.test_single_segment_matches_legacy_frames_byte_for_byte
+git diff --check
+git diff origin/main HEAD -- Sources/haild/ReplyCommand.swift | grep '^-.*//'
+```
+
+The lane wrapper is regenerated from this checkout’s `scripts/verify.sh` definitions before execution;
+its dispatch is the same as above. Results and the final comment/SwiftLint audit follow. Logs are outside the repository at
+`/tmp/hs932-r2-results/`.
+
+- Both final warnings-as-errors builds passed: 2.06 seconds (build), 2.93 seconds (build-tests).
+- Final focused Swift: 3/3 runs passed, 10 segmenter functions plus one file-stability function per run
+  (33 executions). The generated property loop checks 324 combinations/run, 972 over those three runs.
+  Final Swift runs took 0.126, 0.124 and 0.155 seconds, including the two 16,000-closer cases each time.
+- Final focused CLI: 3/3 runs passed, 13 methods/run (39 executions), in 11.613, 11.424 and 11.564 seconds.
+- Initial test-build diagnostics caught two missing `try` annotations in new assertions. The new directory
+  test initially compared `/var` and `/private/var` URL spellings; it now compares fixture filenames and uses
+  the enumerated URLs in the sent set. No production behavior or test expectation was relaxed.
+- Manual `.swiftlint.yml` check: added/changed non-comment code fits 120 columns; new Swift files fit
+  200 lines, type bodies fit 150 code lines, helpers fit 40 code lines / five parameters and the configured
+  complexity/nesting limits. No force unwrap/cast or lint suppression was added. The existing
+  `ReplyCommand.swift` file-length exemption remains; SwiftLint is unavailable.
+- Removed-comment audit against local `origin/main`: no explanatory text is lost. The exact grep above
+  reports only `Relay stdout PCM as it arrives (#268): no files, no polling.` and
+  `A vbsay without VBSAY_STDOUT writes only files; two passes establish their stability.` as removed lines.
+  Both are restored verbatim with four fewer leading spaces because P2 moved the outer recovery block
+  to the renderer boundary. These are indentation-only relocations, not deleted explanations. The cleanup
+  ownership/deadline comment is verbatim at the failure-path suspension. All other main comments are retained.
+
+- Full serial ReplyCLITests: 109 methods passed in 213.527 seconds, including all three actual wire comparisons
+  against local `origin/main` (remainder, exact-size and files-only). Only independently generated UUIDs and
+  timestamps are normalized; PCM, JSON keys/encoding, ordering and sequence remain byte-identical.
+- Complete serial core lane: 915 tests in 195 suites passed in 122.667 seconds.
+- Complete serial other-target lane: 1,505 tests in 276 suites passed in 406.611 seconds, with six issues already
+  marked known by the suite. No expected failure was added or assertion relaxed.
+- Complete serial timing/process lane: 524 tests in 82 suites passed in 220.691 seconds. All three package
+  lanes passed: 2,944 test functions total, with the other-target lane’s six existing known issues.
+- Audit/policy CLI lane passed.
+- Offline script lane passed: shell syntax/ShellCheck; TestFlight version fixtures plus 35 API-key/toolchain
+  fixtures (23.249 seconds); host lifecycle fixtures; 5 local-intent tests; and 25 verification-output/stall-driver
+  tests (97.097 seconds). The separate shell-check lane also passed. No installs or network dependency steps ran.
+- Online issue/PR checks, independent review, SwiftLint, simulator and physical-device checks remain outside this
+  offline host run. No deployment, upload or installed-build change is claimed.
+- The supplied P1 squash was also archived into the same private baseline tree and built with warnings as
+  errors (26.54 seconds). The dedicated legacy-wire method passed all three modes against that binary too:
+  remainder, exact-size and files-only; the same UUID/timestamp-only normalization applies.
+- `git diff --check` passed. The final commit contains only these fixes, their tests and this host evidence record.

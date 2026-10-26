@@ -341,13 +341,14 @@ private struct ReplyPCMProgress {
     }
 }
 
-// Generation, incremental publication, finalization, and child cleanup form one failure boundary per renderer.
+// Generation, incremental publication, finalization, and child cleanup form one failure boundary.
 private func streamVBSay(
     _ text: String, outputRoot: URL, context: PCMReplyContext, segmentation: ReplySegmentation?
 ) async throws -> (frames: Int, deliveries: Int) {
     var context = context
     let timing = ReplyTimingRecorder()
     context.timing = timing
+    // "played" once the renderer's audio is all sent, even if its cleanup then fails the command.
     var outcome = "failed"
     defer { timing.log(outcome: outcome) }
     let segments = ReplySegmenter(configuration: try segmentation ?? ReplySegmentation()).segments(text)
@@ -396,13 +397,14 @@ private func renderReplySegment(
             renderer.cancel()
         }
         renderer.retire(cancel: false)
-        // As before, played once all audio and the terminal marker are sent, even if last cleanup fails.
         if segment.final { outcome = "played" }
         try await renderer.waitForCleanup()
     } catch {
         try? await progress.finish(context: context, recovering: true)
         renderer.retire(cancel: true)
         await renderer.waitForCancellationSignals()
+        // The CLI must remain alive to retain reaping/cleanup ownership. This async suspension is not
+        // a fixed kernel deadline; whole-job deadline supervision belongs to the separate #177 owner.
         do { try await renderer.waitForCleanup() } catch OwnedReplyRendererError.cleanupDeferred {
             throw speechReplyFailure(error, cleanupDeferred: true)
         }
@@ -432,6 +434,7 @@ private func submitSpeechAudio(_ frame: Frame, socketURL: URL) async throws -> I
     }
 }
 
+// Streaming and terminal-marker recovery share their existing single publication failure boundary.
 /// Non-final segments retain one frame until EOF, so an exact-sized last frame can carry segmentEnd.
 /// Final (including one-segment) replies retain the legacy frame boundaries and eager first publication.
 private func publishRenderer(
@@ -439,6 +442,7 @@ private func publishRenderer(
     progress: inout ReplyPCMProgress, segmentEnd: Bool
 ) async throws {
     let start = progress.sequence
+    // Relay stdout PCM as it arrives (#268): no files, no polling.
     var pending = Data()
     for try await bytes in renderer.audio {
         pending.append(bytes)
@@ -461,8 +465,12 @@ private func publishRenderer(
         progress.sequence += 1
     }
     if progress.sequence == start {
-        try await sendStableVBSayFiles(in: renderer.outputDirectory, context: context,
-                                      progress: &progress, segmentEnd: segmentEnd)
+        // A vbsay without VBSAY_STDOUT writes only files; two passes establish their stability.
+        var stability = VBSayFileStability()
+        for _ in 0..<2 {
+            try await sendStableVBSayFiles(in: renderer.outputDirectory, context: context,
+                                          progress: &progress, stability: &stability, segmentEnd: segmentEnd)
+        }
     }
     guard progress.sequence > start else { throw ReplyCommandError.invalid("vbsay produced no PCM audio") }
 }
@@ -534,26 +542,41 @@ private func sendFinalPCM(sequence: Int, context: PCMReplyContext, paced: Bool =
     ), socketURL: context.socket)
 }
 
+/// Each call enumerates afresh: URL resource caches must not turn one observation into two passes.
+struct VBSayFileStability {
+    var observed: [URL: Int] = [:]
+    var sent: Set<URL> = []
+
+    mutating func stableFiles(in directory: URL) throws -> [URL] {
+        let files = try FileManager.default.contentsOfDirectory(
+            at: directory, includingPropertiesForKeys: [.contentModificationDateKey, .fileSizeKey]
+        ).filter { $0.pathExtension == "raw" }.sorted { lhs, rhs in
+            let left = try? lhs.resourceValues(forKeys: [.contentModificationDateKey]).contentModificationDate
+            let right = try? rhs.resourceValues(forKeys: [.contentModificationDateKey]).contentModificationDate
+            return (left ?? .distantPast) < (right ?? .distantPast)
+        }
+        var stable: [URL] = []
+        for file in files where !sent.contains(file) {
+            let size = try file.resourceValues(forKeys: [.fileSizeKey]).fileSize ?? 0
+            guard size > 0, observed[file] == size else {
+                observed[file] = size
+                continue
+            }
+            stable.append(file)
+        }
+        return stable
+    }
+}
+
 private func sendStableVBSayFiles(
-    in directory: URL, context: PCMReplyContext, progress: inout ReplyPCMProgress, segmentEnd: Bool
+    in directory: URL, context: PCMReplyContext, progress: inout ReplyPCMProgress,
+    stability: inout VBSayFileStability, segmentEnd: Bool
 ) async throws {
-    let files = try FileManager.default.contentsOfDirectory(
-        at: directory, includingPropertiesForKeys: [.contentModificationDateKey, .fileSizeKey]
-    ).filter { $0.pathExtension == "raw" }.sorted { lhs, rhs in
-        let left = try? lhs.resourceValues(forKeys: [.contentModificationDateKey]).contentModificationDate
-        let right = try? rhs.resourceValues(forKeys: [.contentModificationDateKey]).contentModificationDate
-        return (left ?? .distantPast) < (right ?? .distantPast)
-    }
-    let observed = try Dictionary(uniqueKeysWithValues: files.map {
-        ($0, try $0.resourceValues(forKeys: [.fileSizeKey]).fileSize ?? 0)
-    })
-    let stable = try files.filter { file in
-        let size = try file.resourceValues(forKeys: [.fileSizeKey]).fileSize ?? 0
-        return size > 0 && observed[file] == size
-    }
+    let stable = try stability.stableFiles(in: directory)
     for file in stable {
         try await sendPCMFile(file, context: context, progress: &progress, marksFinal: false,
                               segmentEnd: segmentEnd && file == stable.last)
+        stability.sent.insert(file)
     }
 }
 
