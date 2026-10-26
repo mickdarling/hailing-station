@@ -134,7 +134,8 @@ rightyo listen … --session-id "$rightyo_session_id" |
   does not clear within the wait (`stale_input`), or that appears while the paste buffer fills (`appeared`), is
   refused as `inputPending`, like a tainted pane (`haild send` prints `inputPending(reason: stale_input)` or
   `inputPending(reason: appeared)` and exits 4). It is not a taint: clear the input line by hand and the next
-  delivery goes ahead. A `haild targets flush` command is planned under #894 and not yet available. `haild run`
+  delivery goes ahead; [`haild targets flush`](host-operations.md#clear-a-stale-prompt-draft-894) clears it too, though
+  never a taint. `haild run`
   logs each such refusal as `tmux_input_pending reason=…` (tokens and counts only, no words).
 
 Each admitted request sends one `{"kind":"dispatch","connection","target","binding","text"}` line and reads

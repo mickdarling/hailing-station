@@ -176,8 +176,9 @@ anyway. A pane left holding typed-but-unsubmitted text is tainted: every later d
 refuses before typing (`inputPending`, reason `tainted`) until the pane is cleared by hand **and** `haild` restarted
 (`TmuxTaintedPaneTests`). The refusal itself no longer says so: the taint lives only in that `haild` process, so
 clearing the input line alone is not enough. Text that is merely pending at the cursor (`stale_input` or `appeared`)
-is not a taint: clear the input line by hand and the next delivery goes ahead without a restart. A
-`haild targets flush` command for that is planned under #894 and not yet available. A phone's text frame refused this
+is not a taint: clear the input line by hand, or with
+[`haild targets flush`](host-operations.md#clear-a-stale-prompt-draft-894), and the next delivery goes ahead without a
+restart. A flush clears the text but never a taint. A phone's text frame refused this
 way is answered `not_allowed` (or `paste_refused` for a paste to a device that takes request refusals) with the fixed
 message `the target's input already holds unsent text`, and its connection stays open; an ambient run ends logged
 `ambient_ended dispatch inputPending`. None of these carries the pending or refused text. `haild run` also logs each
