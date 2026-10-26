@@ -14,19 +14,19 @@ struct ParkedPrivacy: Sendable {
     var token: UUID?
 }
 
-/// Another connection holding privacy when the owner turned it off elsewhere (#941): its arming then, and its claims.
-struct PrivacyHolder: Sendable {
+/// The live connection a restored connection took its privacy from (#941), and that connection's arming then.
+struct PrivacySource: Sendable {
     let connection: UUID
     let token: UUID
-    let device: AmbientPeerDevice?
 }
 
 /// #941: privacy survives a transport drop. Every fresh ambient stream starts private while any privacy is held
 /// elsewhere: parked by a private connection's teardown, or still held by another live connection (haild has no
 /// keepalive, so a dropped phone's old connection can outlive its reconnect, MM-E's `live` source). The owner's own
-/// privacy-off (voice exit or app switch) clears the park and ends privacy on the same device's other connections. It
-/// only ever makes a stream quieter, so, as with the MM-E parks, unauthenticated Hello claims are never needed to apply
-/// it; they only scope an off, failing closed. Logs ids, tokens, counts and booleans only, never words or device names.
+/// privacy-off (voice exit or app switch) clears the park, and ends privacy on the restore's live source only if it is
+/// the same class of device and does not answer a ping (Jarvis, #945 round 2). It only ever makes a stream quieter, so
+/// unauthenticated Hello claims are never needed to apply it; they only narrow an off, failing closed. Logs ids,
+/// tokens, counts and booleans only, never words or device names.
 extension AmbientRightyoRouter {
     /// Parks `connection`'s privacy under the caller's lock (`park`, from `stop(connection:device:)`), before teardown
     /// removes it, replacing any privacy parked before: the latest drop's claims are the ones logged.
@@ -48,6 +48,10 @@ extension AmbientRightyoRouter {
     func restorePrivacy(to connection: UUID, in state: inout State) {
         guard state.duck[connection] == nil, !state.closed.contains(connection),
               let (source, from) = Self.privacySource(except: connection, in: state) else { return }
+        // The lineage an owner's off here may end (Jarvis): the live source and its arming now.
+        if case .live = source, let token = state.duck[from]?.token {
+            state.privacySources[connection] = PrivacySource(connection: from, token: token)
+        }
         endHeld(connection, reason: "privacy", in: &state)
         state.duck[connection] = AmbientDuckTimer(token: UUID(), timer: nil)
         if Self.privacyHeard(except: connection, in: state) {
@@ -91,26 +95,43 @@ extension AmbientRightyoRouter {
         state.duck[connection] != nil || (state.parkedPrivacy == nil && state.duck.isEmpty)
     }
 
-    /// The owner's own privacy-off on `connection` (#941, Jarvis), under the caller's lock: the park is cleared, and
-    /// privacy ends on every other connection of the same device (stale holders of the same phone), decided once their
-    /// claims are read, on the notice queue. Another device, or one whose claims are unknown, keeps its privacy.
+    /// The owner's own privacy-off on `connection` (#941, Jarvis), under the caller's lock. The park is cleared, whatever
+    /// device it came from: it has no expiry, and a parked device is not listening. Then, off every lock, the live
+    /// connection this one's privacy was restored from (its recorded source) is judged, and its privacy ends only if
+    /// all hold: the same class of device (`AmbientPeerDevice.matches`; the app's Hello name is fixed, so in practice
+    /// the class), the same arming as at the restore, and no pong to a ping within `privacyProbeTimeout`. The app
+    /// sends no idle heartbeat, so silence cannot tell a dead socket from an idle device; a ping can. Any other
+    /// private connection keeps its privacy (`not_source`), as does a source that answers (`live`), another or
+    /// unknown class (`class`), one re-armed or ended since (`armed`), or one that cannot be probed (`unprobed`).
     func ownerOff(_ connection: UUID, reason: String, in state: inout State) {
         if state.parkedPrivacy != nil { logLater("ambient_park_discarded", detail: "reason=off mode=privacy") }
         state.parkedPrivacy = nil
-        let others = state.duck.filter { $0.key != connection }.map { ($0.key, $0.value.token) }
-        guard !others.isEmpty else { return }
-        let listener = state.listener?.value
-        mediaNotices.enqueue { [weak self, weak listener] in
-            let here = await listener?.ambientPeerDevice(connection: connection)
-            var claims: [PrivacyHolder] = []
-            for (other, token) in others {
-                // Torn down meanwhile: the claims its teardown parked, if it parked this arming.
-                let live = await listener?.ambientPeerDevice(connection: other)
-                claims.append(PrivacyHolder(connection: other, token: token,
-                                            device: live ?? self?.parkedClaims(of: other, token: token)))
+        let source = state.privacySources.removeValue(forKey: connection)
+        let others = state.duck.keys.filter { $0 != connection && $0 != source?.connection }
+        guard source != nil || !others.isEmpty else { return }
+        let (listener, timeout, hook) = (state.listener?.value, configuration.privacyProbeTimeout,
+                                         configuration.offScoping)
+        Task { [weak self, weak listener] in
+            await hook?(connection)
+            var verdict: String?
+            if let source {
+                verdict = await self?.judge(source, off: connection, listener: listener, timeout: timeout) ?? "unprobed"
             }
-            self?.endSameDevicePrivacy(off: connection, here: here, others: claims, reason: reason)
+            self?.endStaleSource(source, verdict: verdict, off: connection, notSources: others, reason: reason)
         }
+    }
+
+    /// Why `source` loses its privacy (`stale`) or keeps it (`class`, `live`, `unprobed`), read off every lock: its
+    /// claims, or those its teardown parked if it is gone, against the off's; then a ping.
+    private func judge(_ source: PrivacySource, off connection: UUID, listener: WebSocketListener?,
+                       timeout: Duration) async -> String {
+        guard let listener else { return "unprobed" }
+        let here = await listener.ambientPeerDevice(connection: connection)
+        let there = await listener.ambientPeerDevice(connection: source.connection)
+        guard AmbientPeerDevice.matches(here, there ?? parkedClaims(of: source.connection, token: source.token)) else {
+            return "class"
+        }
+        return await listener.probe(connection: source.connection, within: timeout) ? "live" : "stale"
     }
 
     /// The claims parked with `connection`'s arming `token`, if its teardown parked it.
@@ -120,30 +141,30 @@ extension AmbientRightyoRouter {
         }
     }
 
-    /// Ends privacy on each of `others` whose claims match `here`, only while it still holds the arming the off saw:
-    /// as an owner's off on it (children, device and reply hold told), or its park cleared if its teardown parked it
-    /// meanwhile. Logs how many it cleared and kept, and the connections cleared.
-    private func endSameDevicePrivacy(off connection: UUID, here: AmbientPeerDevice?,
-                                      others: [PrivacyHolder], reason: String) {
-        let cleared = state.withLock { state in
-            others.filter { AmbientPeerDevice.matches(here, $0.device) }.compactMap { holder -> UUID? in
-                let other = holder.connection
-                if state.duck[other]?.token == holder.token {
-                    _ = changeDuck(false, connection: other, reason: reason, in: &state)
-                    state.privacy[other]?.withdrawAll()
-                    return other
-                }
-                guard let park = state.parkedPrivacy, park.connection == other, park.token == holder.token else {
-                    return nil
-                }
-                state.parkedPrivacy = nil
-                return other
+    /// Ends a stale source's privacy under the lock, only while it still holds the arming the restore recorded: as an
+    /// owner's off on it (children, device and reply hold told), or its park cleared if its teardown parked it since;
+    /// otherwise it was re-armed or ended meanwhile (`armed`) and is left alone. Logs counts and each connection's
+    /// reason.
+    private func endStaleSource(_ source: PrivacySource?, verdict: String?, off connection: UUID,
+                                notSources: [UUID], reason: String) {
+        let outcome = state.withLock { state -> String? in
+            guard let source, let verdict else { return nil }
+            guard verdict == "stale" else { return verdict }
+            if state.duck[source.connection]?.token == source.token {
+                _ = changeDuck(false, connection: source.connection, reason: reason, in: &state)
+                state.privacy[source.connection]?.withdrawAll()
+                return "stale"
             }
+            guard let park = state.parkedPrivacy, park.connection == source.connection,
+                  park.token == source.token else { return "armed" }
+            state.parkedPrivacy = nil
+            return "stale"
         }
-        let ids = cleared.map(\.uuidString).joined(separator: ",")
-        let kept = others.count - cleared.count
+        let cleared = outcome == "stale" ? 1 : 0
+        let reasons = (source.flatMap { source in outcome.map { ["\(source.connection)=\($0)"] } } ?? [])
+            + notSources.map { "\($0)=not_source" }
         emit("ambient_privacy_off_scoped", connection: connection,
-             detail: "cleared=\(cleared.count) kept=\(kept)" + (ids.isEmpty ? "" : " to=\(ids)"))
+             detail: (["cleared=\(cleared)", "kept=\(reasons.count - cleared)"] + reasons).joined(separator: " "))
     }
 }
 #endif

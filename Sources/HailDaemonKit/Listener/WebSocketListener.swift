@@ -46,7 +46,9 @@ public actor WebSocketListener {
     private let maxConnections: Int
     private let helloTimeout: Duration
     let log: @Sendable (WebSocketListenerEvent) -> Void
-    var peers: [UUID: WebSocketPeer] = [:]
+    /// The peers, and each one's transport by its session's connection id, so the ambient router can probe a
+    /// stale-looking one (#941 `probe(connection:within:)`); dropped with the peer.
+    var peers: [UUID: WebSocketPeer] = [:], transports: [UUID: NWConnection] = [:]
     private var readyWaiters: [CheckedContinuation<UInt16, any Error>] = []
     private var stopWaiters: [CheckedContinuation<Void, Never>] = []
     var readyResult: Result<UInt16, WebSocketListenerError>?
@@ -199,7 +201,7 @@ public actor WebSocketListener {
         ) { [weak self] endedID in
             Task { await self?.peerEnded(endedID) }
         }
-        peers[id] = peer
+        (peers[id], transports[session.connectionID]) = (peer, connection)
         await peer.start()
     }
 
@@ -306,6 +308,7 @@ public struct AmbientRouterStatus: Sendable, Equatable {
 extension WebSocketListener {
     fileprivate func peerEnded(_ id: UUID) async {
         guard let peer = peers.removeValue(forKey: id) else { return }
+        transports[peer.session.connectionID] = nil
         lastInput.forget(connection: peer.session.connectionID)
         await endAmbient(of: peer)
     }
@@ -531,6 +534,13 @@ public final class AmbientRightyoRouter: AmbientAudioSink, AmbientListenerWiring
         /// Called with the connection once a start has made its child, just before the lock that admits it (#941). Nil
         /// in the daemon: tests only set it, to change privacy between the two (`admitsPrivacy`).
         var childMade: (@Sendable (UUID) -> Void)?
+        /// How long an owner's off waits for a restore source's pong before judging it stale (#941). Three seconds:
+        /// a live peer's WebSocket stack answers a ping at once (`URLSessionWebSocketTask` does so itself), so this
+        /// only absorbs a slow network; the probe runs off every lock and delays nothing else. Tests shorten it.
+        var privacyProbeTimeout: Duration = .seconds(3)
+        /// Awaited with the off's connection before an owner's off decides its restore sources (#941). Nil in the
+        /// daemon: tests only set it, to change a source's privacy before that decision.
+        var offScoping: (@Sendable (UUID) async -> Void)?
         /// How long the owner's spoken duck mode (#735) lasts before it turns itself off: host.json
         /// `ambient.duckTimeout`, or `defaultDuckTimeout`.
         public var duckTimeout: TimeInterval = AmbientRightyoRouter.defaultDuckTimeout
@@ -630,6 +640,9 @@ public final class AmbientRightyoRouter: AmbientAudioSink, AmbientListenerWiring
         /// Privacy a dropped connection held (#941), daemon-wide and in RAM only: every fresh stream starts private
         /// while it is held, until the owner's own privacy-off clears it.
         var parkedPrivacy: ParkedPrivacy?
+        /// The live connection each restored connection took its privacy from (#941), with that arming: the only one
+        /// an owner's off there may end. Dropped with the connection.
+        var privacySources: [UUID: PrivacySource] = [:]
         /// Arming order of meeting and media modes (MM-E): the latest owner command wins a restore or a move.
         var armings = 0
         /// Privacy entries and the last word per connection (#735 S-8 HS-C round 4, `AmbientPrivacyLedger`), and each
@@ -748,7 +761,7 @@ public final class AmbientRightyoRouter: AmbientAudioSink, AmbientListenerWiring
             state.duck.removeValue(forKey: connection)?.timer?.cancel()
             if state.privacy[connection]?.entries.isEmpty != false { state.privacy[connection] = nil }
             // Clips already queued still play in order; a later one (none should come) starts a fresh chain.
-            state.privacyClips[connection] = nil
+            (state.privacyClips[connection], state.privacySources[connection]) = (nil, nil)
             state.listener?.value?.replyHold.set(false, connection: connection)
             if let active = state.active, state.runs[active.run]?.connection == connection { state.active = nil }
             let streams = state.runs.filter { $0.value.connection == connection }.map(\.key)
@@ -2346,4 +2359,32 @@ extension HostSession {
     }
 }
 
+extension WebSocketListener {
+    /// Whether `connection`'s peer answers a WebSocket ping within `timeout` (#941): false for no pong in time, a send
+    /// error, or a connection already gone. Only the transport hand-off and the pong handler run; nothing waits under a
+    /// lock. A peer's own stack answers (haild's `autoReplyPing`, the app's `URLSessionWebSocketTask`).
+    func probe(connection: UUID, within timeout: Duration) async -> Bool {
+        guard !stopped, let transport = transports[connection] else { return false }
+        let answer = ProbeAnswer()
+        return await withCheckedContinuation { continuation in
+            answer.set(continuation)
+            let metadata = NWProtocolWebSocket.Metadata(opcode: .ping)
+            metadata.setPongHandler(queue) { answer.resume($0 == nil) }
+            let context = NWConnection.ContentContext(identifier: "hail.probe", metadata: [metadata])
+            transport.send(content: Data(), contentContext: context, isComplete: true,
+                           completion: .contentProcessed { if $0 != nil { answer.resume(false) } })
+            Task {
+                try? await Task.sleep(for: timeout)
+                answer.resume(false)
+            }
+        }
+    }
+}
+
+/// A probe's one answer: the first of its pong, its send error or its timeout.
+final class ProbeAnswer: Sendable {
+    private let waiter = Mutex<CheckedContinuation<Bool, Never>?>(nil)
+    func set(_ continuation: CheckedContinuation<Bool, Never>) { waiter.withLock { $0 = continuation } }
+    func resume(_ live: Bool) { waiter.withLock { $0.take() }?.resume(returning: live) }
+}
 #endif
