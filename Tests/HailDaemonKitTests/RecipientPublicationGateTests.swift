@@ -37,7 +37,7 @@ import Testing
         #expect(clock.gate.usedDedicatedQueue)
         let issues = Mutex(0)
         await withKnownIssue("Deliberately injected #846 timeout") {
-            #expect(await clock.finish(publication) == nil)
+            #expect(await clock.finish(publication) == .inconclusive)
         } matching: { issue in
             guard case .unconditional = issue.kind,
                   issue.comments.contains(where: { $0.rawValue.contains("#846: harness gate timed out") }) else {

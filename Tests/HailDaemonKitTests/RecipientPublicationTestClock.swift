@@ -2,6 +2,11 @@ import Foundation
 import Synchronization
 import Testing
 
+enum RecipientRaceResult: Equatable {
+    case conclusive(accepted: Bool)
+    case inconclusive
+}
+
 /// Bounded, deterministic barriers around synthetic admission. No devices, speech or providers are used.
 final class RecipientPublicationClock: Sendable {
     private let origin = ContinuousClock.now
@@ -28,15 +33,15 @@ final class RecipientPublicationClock: Sendable {
     }
 
     /// Drain first; only then classify the race, before any authority assertions can run.
-    func finish(_ publication: Task<Bool, Never>) async -> Bool? {
+    func finish(_ publication: Task<Bool, Never>) async -> RecipientRaceResult {
         gate.release()
         let accepted = await publication.value
         guard !gate.timedOut else {
             Issue.record(
                 "#846: harness gate timed out before the authority change landed; the authority result is inconclusive"
             )
-            return nil
+            return .inconclusive
         }
-        return accepted
+        return .conclusive(accepted: accepted)
     }
 }

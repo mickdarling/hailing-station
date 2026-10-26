@@ -43,10 +43,10 @@ import Testing
                 revoked = try await rig.host.deny(RecipientTestRig.target)
             }
         } catch {
-            guard await clock.finish(publication) != nil else { return }
+            guard case .conclusive = await clock.finish(publication) else { return }
             throw error
         }
-        guard let accepted = await clock.finish(publication) else { return }
+        guard case let .conclusive(accepted) = await clock.finish(publication) else { return }
         #expect(clock.gate.usedDedicatedQueue)
         #expect(revoked)
         #expect(!accepted)
@@ -68,10 +68,10 @@ import Testing
             try await clock.gate.waitEntered()
             await rig.adapter.setTargets([AdapterTarget(name: "reply", binding: "replacement-binding")])
         } catch {
-            guard await clock.finish(publication) != nil else { return }
+            guard case .conclusive = await clock.finish(publication) else { return }
             throw error
         }
-        guard let accepted = await clock.finish(publication) else { return }
+        guard case let .conclusive(accepted) = await clock.finish(publication) else { return }
         #expect(clock.gate.usedDedicatedQueue)
         #expect(!accepted)
         #expect(submitted.withLock { $0 } == 0)
