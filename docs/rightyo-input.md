@@ -879,22 +879,28 @@ child was stopped with any turns it had queued, and the device was sent a silent
 - **The device is told, as for a route refusal.** A device that advertised `request_refusals` gets one line with
   tap-to-talk's fixed message, "the target's input already holds unsent text". It is sent as `voice_route_refused`,
   the existing request-refusal code: the app shows every request refusal as one chat line and one announcement,
-  whatever its code. No protocol field or code is added. An older device gets no line, since it would end its
-  connection on any error.
+  whatever its code. No protocol field or code is added; a dedicated refusal code waits for a protocol change. An
+  older device gets no line, since it would end its connection on any error.
 - **One spoken clip.** `confirm-not-sent/` ("Nothing was sent.") plays through the acknowledgement path, to that
-  device only, while it still selects the target. It is the existing clip; no new words were added. An un-routed
-  request is still acknowledged before it is typed, so the speaker hears the acknowledgement and then "Nothing was
-  sent." (the 3-second wait for the input to clear comes between them).
+  device only, while it still selects the target. It is the existing clip; no new words were added.
+- **In the order said.** An un-routed request is still acknowledged before it is typed, and its acknowledgement's
+  timing is unchanged. The refusal's line and clip wait for that acknowledgement to be sent, so the speaker hears the
+  acknowledgement, then "Nothing was sent." (the 3-second wait for the input to clear comes between them). A child's
+  route refusals and pending-input refusals share one notice chain, so they are told in the order said.
 - **The log.** `ambient_delivery_refused reason=inputPending shown=sent|unsupported|not_ready|failed|no_connection
-  confirm=<key>/<index>:<outcome>` (or `confirm=no_clips`): tokens only, never the words, the pending text or the
+  confirm=<key>/<index>:<outcome>` (or `confirm=no_clips`, or `confirm=suppressed_privacy`): tokens only, never the words, the pending text or the
   target. The adapter's own `tmux_input_pending reason=…` line, logged just before, names the reason.
 - **Nothing looks sent.** The request's reply ownership is dropped before it is committed, so no reply recipient is
   armed and no last-input device is recorded. The audit chain keeps the `pushed` record it writes before every
   ambient dispatch attempt, as for any refused dispatch; there is no `delivered` record.
-- **Privacy and meeting mode.** While private every request is held back before dispatch, so none is refused and
-  nothing is told. A device-switch entry made during the up-to-3-second wait does not stop the clip: as with a route
-  refusal, "Nothing was sent." can follow "Privacy on." Meeting mode adds no host gate on clips, so the refusal is
-  told as in any other mode, as the acknowledgement is.
+- **Privacy always wins.** While private every request is held back before dispatch, so none is refused and
+  nothing is told. Privacy taken while the adapter waits (a voice entry or the device switch) still shows the line,
+  but the clip is not played and the log says `confirm=suppressed_privacy`. The clip is queued on the connection's
+  privacy clip chain, so it can never follow a "Privacy on." decided before it, and privacy is checked both when it
+  is queued and when it would play. A route refusal's clip is gated the same way. One case is not caught: privacy
+  turned on and off again within the wait, which leaves the clip playing after "Recording again.".
+- **Meeting mode** adds no host gate on clips, so the refusal is told as in any other mode, as the acknowledgement
+  is.
 - **Routed requests** (#636) are unchanged: a route refusing one for pending input is a route refusal
   (`not_delivered`).
 - **Every other refusal** of the stream's own target (policy, lockdown, rebind, rate, confirmation, cancellation,

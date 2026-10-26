@@ -12,28 +12,34 @@ import Testing
 /// device hearing. Named `AmbientWiring…` so it runs in the serial timing lane.
 @Suite(.serialized, .timeLimit(.minutes(1)), .frozenGuardBudget) struct AmbientWiringInputPendingTests {
     static let line = "the target's input already holds unsent text"
-    static let told: [Seen] = [.control(.error(code: .voiceRouteRefused, message: line)), .text("Nothing was sent."),
-                               .audio]
+    static let acknowledged: [PendingInputSeen] = [.text("On it."), .audio]
+    /// The request's acknowledgement first, then the line, then "Nothing was sent." (review P3-1).
+    static let told = acknowledged + [.control(.error(code: .voiceRouteRefused, message: line)),
+                                      .text("Nothing was sent."), .audio]
     static let logged = "reason=inputPending shown=sent confirm=confirmnotsent/0:sent"
 
     @Test(arguments: [PendingInputReason.staleInput, .appeared, .tainted])
     func pendingInputIsToldAndTheStreamDeliversTheNextRequest(_ reason: PendingInputReason) async throws {
         let run = try await PendingInputRun.make()
         defer { run.close() }
-        await run.env.rig.adapter.failHandoff(with: AdapterError.inputPending(reason: reason))
+        await run.adapter.failHandoff(with: AdapterError.inputPending(reason: reason))
         try await run.speak()
-        #expect(try await Self.seen(on: run.socket) == Self.told)
+        #expect(try await run.seen(Self.told.count) == Self.told)
         #expect(await eventually { !run.log.details("ambient_delivery_refused").isEmpty })
         #expect(run.log.details("ambient_delivery_refused") == [Self.logged])
         #expect(await run.env.gate.activeStream != nil, "the stream goes on")
-        // The input was cleared meanwhile: the same child's next request is typed.
-        await run.env.rig.adapter.passHandoff()
+        #expect(run.lastInput == nil, "a refused request records no last-input device")
+        // The input was cleared meanwhile: the same child's next request is typed, and acknowledged.
+        await run.adapter.passHandoff()
         try run.release("go2")
-        #expect(await eventually { await run.env.rig.adapter.contexts.count == 2 })
+        #expect(await eventually { await run.adapter.contexts.count == 2 })
+        #expect(try await run.seen(2) == Self.acknowledged)
         // The synthetic adapter records a handoff before failing it; only the typed one armed a reply recipient.
-        let contexts = await run.env.rig.adapter.contexts
+        let contexts = await run.adapter.contexts
         #expect(await eventually { await run.armed(contexts[1].id) })
         #expect(await !run.armed(contexts[0].id))
+        #expect(await eventually { run.lastInput != nil })
+        #expect(await run.lastInput?.connection == run.connection)
         // Nothing more reached the device: no `ambient stopped` error, no second line or clip.
         try await barrier(on: run.socket, step: "no ambient error after the refusal")
         #expect(run.log.details("ambient_ended").isEmpty)
@@ -52,16 +58,36 @@ import Testing
     @Test func inMeetingModeTheRefusalIsStillTold() async throws {
         let run = try await PendingInputRun.make(holdFirst: true)
         defer { run.close() }
-        await run.env.rig.adapter.failHandoff(with: AdapterError.inputPending(reason: .staleInput))
+        await run.adapter.failHandoff(with: AdapterError.inputPending(reason: .staleInput))
         try await run.speak()
         #expect(await eventually { await run.env.gate.activeStream != nil })
-        let connection = try #require(run.env.connected.all.first)
+        let connection = try #require(await run.connection)
         run.env.router.setMeeting(on: true, connection: connection, reason: "voice")
         #expect(run.env.router.meetingMode(connection: connection))
         try run.release("go1")
-        #expect(try await Self.seen(on: run.socket) == Self.told)
+        #expect(try await run.seen(Self.told.count) == Self.told)
         #expect(await eventually { run.log.details("ambient_delivery_refused") == [Self.logged] })
         #expect(run.log.details("ambient_ended").isEmpty)
+        await run.finish()
+    }
+
+    /// Privacy always wins (Jarvis on #909): privacy taken while the adapter waited shows the line but never says
+    /// "Nothing was sent.". The test sets the router's privacy state directly, as an entry a child took would.
+    @Test func privacyTakenDuringTheWaitShowsTheLineButPlaysNoClip() async throws {
+        let run = try await PendingInputRun.make()
+        defer { run.close() }
+        await run.adapter.failHandoff(with: AdapterError.inputPending(reason: .staleInput))
+        await run.adapter.holdHandoff()
+        try await run.speak()
+        await run.adapter.waitForHandoff()
+        let connection = try #require(await run.connection)
+        run.env.router.state.withLock { $0.duck[connection] = AmbientDuckTimer(token: UUID(), timer: nil) }
+        await run.adapter.releaseHandoff()
+        #expect(try await run.seen(3) == Array(Self.told.prefix(3)))
+        #expect(await eventually {
+            run.log.details("ambient_delivery_refused") == ["reason=inputPending shown=sent confirm=suppressed_privacy"]
+        })
+        try await barrier(on: run.socket, step: "no clip while private")
         await run.finish()
     }
 
@@ -82,82 +108,6 @@ import Testing
         #expect(log.details("ambient_ended") == ["dispatch deliveryRefused"])
         #expect(told == "ambient stopped: dispatch deliveryRefused")
         #expect(log.details("ambient_delivery_refused").isEmpty)
-    }
-}
-
-extension AmbientWiringInputPendingTests {
-    enum Seen: Equatable {
-        case control(ControlPayload)
-        case text(String)
-        case audio
-    }
-
-    /// The next three frames on `socket`: the refusal line, then the clip's words and its audio.
-    static func seen(on socket: URLSessionWebSocketTask) async throws -> [Seen] {
-        var seen: [Seen] = []
-        while seen.count < 3 {
-            let frame = try await receiveFrame(on: socket, step: "refusal \(seen.count)")
-            switch frame.payload {
-            case .control(let control): seen.append(.control(control))
-            case .text(let text): seen.append(.text(text.text))
-            case .audio: seen.append(.audio)
-            default: seen.append(.text("unexpected \(frame.payload)"))
-            }
-        }
-        return seen
-    }
-}
-
-/// Every event the router logged.
-final class AmbientEventDetails: Sendable {
-    private let events = Mutex<[WebSocketListenerEvent]>([])
-    func record(_ event: WebSocketListenerEvent) { events.withLock { $0.append(event) } }
-    func details(_ name: String) -> [String] {
-        events.withLock { $0.filter { $0.event == name }.map { $0.detail ?? "" } }
-    }
-    var allDetails: [String] { events.withLock { $0.compactMap(\.detail) } }
-}
-
-/// One device, taking request refusals, streaming to a child that sends two requests (see
-/// `RightyoAmbientPendingInputTests.twoRequests`), with only the `confirm-not-sent/` clip in the library.
-struct PendingInputRun {
-    let fake: FakeRightyo
-    let env: AmbientWiringRig
-    let pair: FallbackSocketPair
-    let log: AmbientEventDetails
-    var socket: URLSessionWebSocketTask { pair.sockets[0] }
-
-    /// `holdFirst` keeps the first request back until the test releases `go1`.
-    static func make(holdFirst: Bool = false) async throws -> Self {
-        let fake = try FakeRightyo(RightyoAmbientPendingInputTests.twoRequests)
-        try fake.install(fixture: "tool-events.jsonl")
-        if !holdFirst { try RightyoAmbientPendingInputTests.release(fake, "go1") }
-        let log = AmbientEventDetails()
-        let env = try await ambientRig(
-            fake, timing: .init(eofGrace: 0.5, termGrace: 2),
-            acknowledgements: AmbientAckLibrary(clips: ["confirmnotsent": [AmbientVoiceRouteRefusalTests.notSent]]),
-            onEvent: { log.record($0) }
-        )
-        let pair = try await FallbackSocketPair.boundedConnect(
-            port: env.port, selecting: [RecipientTestRig.target], capabilities: ["probe", RequestRefusals.capability]
-        )
-        return Self(fake: fake, env: env, pair: pair, log: log)
-    }
-
-    func speak() async throws { try await recipientSocketSend(audio(UUID(), 0), on: socket) }
-    func release(_ name: String) throws { try RightyoAmbientPendingInputTests.release(fake, name) }
-
-    /// Whether a live session holds `id` as a reply request: a recipient armed for it.
-    func armed(_ id: UUID) async -> Bool {
-        for peer in await env.listener.peers.values where await peer.session.replyRequests[id] != nil { return true }
-        return false
-    }
-
-    func finish() async { await env.listener.stop(reason: "synthetic test complete") }
-
-    func close() {
-        pair.close()
-        fake.cleanUp()
     }
 }
 #endif

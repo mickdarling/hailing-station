@@ -182,7 +182,8 @@ restart. A flush clears the text but never a taint. A phone's text frame refused
 way is answered `not_allowed` (or `paste_refused` for a paste to a device that takes request refusals) with the fixed
 message `the target's input already holds unsent text`, and its connection stays open. An ambient request refused this
 way no longer ends its run (#894 ask 3): the stream goes on, the device that said it gets the same line (as
-`voice_route_refused`, only when it takes request refusals) and hears `confirm-not-sent/` ("Nothing was sent."), and
+`voice_route_refused`, only when it takes request refusals) and hears `confirm-not-sent/` ("Nothing was sent.") unless
+privacy came on meanwhile, and
 the listener logs `ambient_delivery_refused reason=inputPending shown=… confirm=…` (see
 [rightyo-input.md](rightyo-input.md#ambient-pending-input-894)). None of these carries the pending or refused text. `haild run` also logs each
 refusal to its error log as `tmux_input_pending reason=<stale_input|appeared|tainted>` and each submit as

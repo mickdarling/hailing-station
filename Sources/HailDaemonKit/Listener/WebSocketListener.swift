@@ -1045,13 +1045,15 @@ extension AmbientRightyoRouter {
     fileprivate func makePipeline(
         connection: UUID, selection: UUID?, listener: WebSocketListener
     ) throws -> RightyoAmbientPipeline {
+        // One chain for this child's not-sent notices, behind its latest acknowledgement (#894 review).
+        let notices = AmbientRefusalNotices()
         var settings = RightyoAmbientPipeline.Configuration(
             executable: configuration.executable, config: configuration.config, target: configuration.target,
             binding: configuration.binding, connection: connection,
             allowSynthetic: configuration.allowSynthetic, timing: configuration.timing,
             isEcho: { [spokenReplies, hostPhrases] heard in hostPhrases.isEcho(heard) || spokenReplies.isEcho(heard) },
             onDismiss: dismissed(on: connection, listener: listener),
-            onAcknowledge: acknowledged(on: connection, listener: listener)
+            onAcknowledge: acknowledged(on: connection, listener: listener, notices: notices)
         )
         (settings.replyControl, settings.onAcknowledgementSkipped) = (configuration.replyControl, skipped())
         (settings.onHeard, settings.onOverheard) = transcriptRelays(on: connection, listener: listener)
@@ -1059,7 +1061,7 @@ extension AmbientRightyoRouter {
         settings.onVoiceMedia = voiceMedia(on: connection, listener: listener)
         settings.onVoiceMeeting = voiceMeeting(on: connection, listener: listener)
         // Unsent text already in the target's input (#894) refuses that request only; the stream goes on.
-        settings.onDeliveryRefused = deliveryRefused(on: connection, listener: listener)
+        settings.onDeliveryRefused = deliveryRefused(on: connection, listener: listener, notices: notices)
         // The child's privacy state, held once it exists, so its refusal is said by the state rule (round 4).
         let mark = AmbientRunMark()
         (settings.onVoiceDuck, settings.onDuckUnsupported) = (voiceDuck(on: connection, listener: listener, mark: mark),
@@ -1078,7 +1080,7 @@ extension AmbientRightyoRouter {
             settings.routing = RightyoVoiceRouting(routes: routes) { [weak listener] target in
                 await listener?.voiceRouteBinding(target)
             }
-            settings.onVoiceRouteRefused = voiceRouteRefused(on: connection, listener: listener)
+            settings.onVoiceRouteRefused = voiceRouteRefused(on: connection, listener: listener, notices: notices)
         }
         let pipeline = try RightyoAmbientPipeline(configuration: settings,
                                                   dispatcher: AmbientListenerDispatcher(
@@ -1120,14 +1122,15 @@ extension AmbientRightyoRouter {
 
     /// Plays an acknowledgement clip on the phone that heard an admitted request (rightyo#105), in the addressed
     /// persona's voice or the `default` folder's, then logs tokens and counts only: the persona key comes from the
-    /// clip folders, never from transcript text. `rightyo_ms` and `host_ms` are separate clocks, never summed.
+    /// clip folders, never from transcript text. `rightyo_ms` and `host_ms` are separate clocks, never summed. Its task
+    /// is left with `notices`, so a not-sent notice for the same request waits for it (#894 review); it is not delayed.
     private func acknowledged(
-        on connection: UUID, listener: WebSocketListener
+        on connection: UUID, listener: WebSocketListener, notices: AmbientRefusalNotices
     ) -> (@Sendable (AmbientAckRequest) -> Void)? {
         guard let library = configuration.acknowledgements else { return nil }
         let target = configuration.target
         return { [weak self, weak listener] request in
-            Task { [weak self] in
+            notices.acknowledging(Task { [weak self] in
                 let named = request.persona.flatMap { library.clips[$0] == nil ? nil : $0 }
                 guard let persona = named ?? (library.clips["default"] == nil ? nil : "default"),
                       let (index, clip) = library.next(for: persona) else {
@@ -1140,7 +1143,7 @@ extension AmbientRightyoRouter {
                 let hostMs = host.seconds * 1_000 + host.attoseconds / 1_000_000_000_000_000
                 self?.emit("ambient_acknowledged", detail: "persona=\(persona) clip=\(index) "
                            + "rightyo_ms=\(request.rightyoMs) host_ms=\(hostMs) outcome=\(outcome)")
-            }
+            })
         }
     }
 
@@ -1573,19 +1576,17 @@ extension AmbientRightyoRouter {
 
     /// An ambient request the owner addressed to a voice route that did not take it (#636, slice 5c): the device that
     /// said it is told, with one refusal line (`voice_route_refused`, sent only to a device that takes request
-    /// refusals) and one `confirm-not-sent/` clip, in the order said. Logs the reason and both outcomes as tokens;
-    /// never the route's name or the words.
+    /// refusals) and one `confirm-not-sent/` clip, in the order said (`tellNotSent`). Logs the reason and both outcomes
+    /// as tokens; never the route's name or the words.
     fileprivate func voiceRouteRefused(
-        on connection: UUID, listener: WebSocketListener
+        on connection: UUID, listener: WebSocketListener, notices: AmbientRefusalNotices
     ) -> @Sendable (RightyoVoiceRouting.Refusal) -> Void {
-        let chain = SerialTaskChain()
-        return { [weak self, weak listener] refusal in
-            chain.enqueue { [weak self, weak listener] in
+        { [weak self, weak listener] refusal in
+            let acknowledged = notices.acknowledgement
+            notices.chain.enqueue { [weak self, weak listener] in
                 guard let self else { return }
-                let shown = await listener?.showRouteRefusal(refusal.message, target: configuration.target,
-                                                             connection: connection) ?? "no_connection"
-                let confirm = await confirmVoiceMute(AmbientStopConfirmation.notSent, on: connection,
-                                                     listener: listener)
+                let (shown, confirm) = await tellNotSent(refusal.message, after: acknowledged, on: connection,
+                                                         listener: listener)
                 emit("ambient_voice_route_refused", connection: connection,
                      detail: "\(refusal.token) shown=\(shown) confirm=\(confirm)")
             }
@@ -1595,24 +1596,58 @@ extension AmbientRightyoRouter {
     /// An ambient request the stream's own target refused because its input already holds unsent text (#894): nothing
     /// was typed and the stream goes on. The device that said it is told as for a voice route's refusal, in the order
     /// said: one refusal line with tap-to-talk's fixed message (`showRouteRefusal`, only to a device that takes request
-    /// refusals) and one `confirm-not-sent/` clip. Logs the refusal's name and both outcomes as tokens; never the words,
-    /// the text left in the input, or the target.
+    /// refusals) and one `confirm-not-sent/` clip (`tellNotSent`). Logs the refusal's name and both outcomes as tokens;
+    /// never the words, the text left in the input, or the target.
     fileprivate func deliveryRefused(
-        on connection: UUID, listener: WebSocketListener
+        on connection: UUID, listener: WebSocketListener, notices: AmbientRefusalNotices
     ) -> @Sendable (LocalDispatchRefusal) -> Void {
-        let chain = SerialTaskChain()
-        return { [weak self, weak listener] refusal in
-            chain.enqueue { [weak self, weak listener] in
+        { [weak self, weak listener] refusal in
+            let acknowledged = notices.acknowledgement
+            notices.chain.enqueue { [weak self, weak listener] in
                 guard let self else { return }
-                let line = refusal == .inputPending ? HostDeliveryOutcome.inputPendingReason : refusal.message
-                let shown = await listener?.showRouteRefusal(line, target: configuration.target,
-                                                             connection: connection) ?? "no_connection"
-                let confirm = await confirmVoiceMute(AmbientStopConfirmation.notSent, on: connection,
-                                                     listener: listener)
+                // Always tap-to-talk's fixed line: the consumer holds back no refusal but `inputPending`. It goes
+                // out as `voice_route_refused`, the existing request-refusal code; a dedicated code waits for a
+                // protocol change.
+                let (shown, confirm) = await tellNotSent(HostDeliveryOutcome.inputPendingReason, after: acknowledged,
+                                                         on: connection, listener: listener)
                 emit("ambient_delivery_refused", connection: connection,
                      detail: "reason=\(refusal.rawValue) shown=\(shown) confirm=\(confirm)")
             }
         }
+    }
+
+    /// Tells the device that said a request that sent nothing (#636 slice 5c, #894), on its child's one notice chain:
+    /// after `acknowledgement`, the latest acknowledgement when the refusal came (an un-routed request is acknowledged
+    /// before it is typed, so the speaker hears the acknowledgement first), the refusal line, then "Nothing was sent.".
+    /// Returns the line's and the clip's outcome tokens.
+    private func tellNotSent(
+        _ line: String, after acknowledgement: Task<Void, Never>?, on connection: UUID, listener: WebSocketListener?
+    ) async -> (shown: String, confirm: String) {
+        await acknowledgement?.value
+        let shown = await listener?.showRouteRefusal(line, target: configuration.target, connection: connection)
+            ?? "no_connection"
+        return (shown, await confirmNotSent(on: connection, listener: listener))
+    }
+
+    /// "Nothing was sent." unless the connection is private: privacy always wins (#894, Jarvis). Queued on the
+    /// connection's privacy clip chain, so it can never follow a "Privacy on." decided before it, and privacy (`duck`,
+    /// its internal name) is read both when it is queued and when it plays: `suppressed_privacy` if on at either.
+    private func confirmNotSent(on connection: UUID, listener: WebSocketListener?) async -> String {
+        let outcome = Mutex("none")
+        let piece = state.withLock { state in
+            let queuedPrivate = state.duck[connection] != nil
+            return Self.clipChain(connection, in: &state).queued { [weak self, weak listener] in
+                guard let self else { return }
+                guard !queuedPrivate, !duckMode(connection: connection) else {
+                    return outcome.withLock { $0 = "suppressed_privacy" }
+                }
+                let confirm = await confirmVoiceMute(AmbientStopConfirmation.notSent, on: connection,
+                                                     listener: listener)
+                outcome.withLock { $0 = confirm }
+            }
+        }
+        await piece.value
+        return outcome.withLock { $0 }
     }
 
     /// Turns media mode on or off for `connection` and tells its children; returns how many took it. On (re)arms the
@@ -2161,6 +2196,17 @@ final class AmbientRunMark: Sendable {
 
 /// Runs the work given to it one piece at a time, in the order given (#404): each piece starts only once the one
 /// before has returned. `enqueue` returns at once.
+/// One child's notices of requests that sent nothing (#894 review): route refusals (#636) and pending input share one
+/// chain, so they are told in the order said, and each waits for the latest acknowledgement's task as it stood when
+/// the refusal came, so "Nothing was sent." never comes before its own request's acknowledgement.
+final class AmbientRefusalNotices: Sendable {
+    let chain = SerialTaskChain()
+    private let latest = Mutex<Task<Void, Never>?>(nil)
+
+    func acknowledging(_ task: Task<Void, Never>) { latest.withLock { $0 = task } }
+    var acknowledgement: Task<Void, Never>? { latest.withLock { $0 } }
+}
+
 final class SerialTaskChain: Sendable {
     private let last = Mutex<Task<Void, Never>?>(nil)
 

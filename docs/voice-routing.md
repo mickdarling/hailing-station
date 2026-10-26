@@ -239,12 +239,15 @@ route's name alone, or a near miss), the device that said it is told, in the ord
   error.
 - **One spoken clip.** When the acknowledgement library has a reserved `confirm-not-sent/` folder ("Nothing was
   sent."), one clip plays through the acknowledgement path, to that device only. Like the other confirmations it is
-  then held as a host phrase, so hearing it back is echo.
+  then held as a host phrase, so hearing it back is echo. Privacy always wins (#894): while the connection is
+  private the clip is not played, the line still is, and the log says `confirm=suppressed_privacy` (see
+  [rightyo-input.md](rightyo-input.md#ambient-pending-input-894)). Route refusals share one notice chain per child
+  with pending-input refusals, so they are told in the order said.
 - **Only that device, only while it listens there.** The line and the clip go to the connection whose stream it is,
   and only while it still selects the stream's target; a reconnected, moved or other device gets nothing.
 - **The log.** `ambient_voice_route_refused` carries `reason=…`,
   `shown=sent|unsupported|not_ready|failed|no_connection` and `confirm=<key>/<index>:<outcome>` (for example
-  `confirmnotsent/0:sent`, or `no_clips`), never the route's name or the words. The route's name goes only to the
+  `confirmnotsent/0:sent`, `no_clips` or `suppressed_privacy`), never the route's name or the words. The route's name goes only to the
   owner's own device.
 - **Before turning routing on**, check that the installed app includes #701. An app built between #665 and #701
   advertises request refusals but does not know `voice_route_refused`, and would drop its connection.
