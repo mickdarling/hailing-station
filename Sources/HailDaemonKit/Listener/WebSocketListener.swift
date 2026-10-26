@@ -528,6 +528,9 @@ public final class AmbientRightyoRouter: AmbientAudioSink, AmbientListenerWiring
         /// before its frames are sent. Nil in the daemon, so nothing waits: tests only set it, to decide privacy inside
         /// that window (#913).
         var notSentPlaying: (@Sendable (UUID) async -> Void)?
+        /// Called with the connection once a start has made its child, just before the lock that admits it (#941). Nil
+        /// in the daemon: tests only set it, to change privacy between the two (`admitsPrivacy`).
+        var childMade: (@Sendable (UUID) -> Void)?
         /// How long the owner's spoken duck mode (#735) lasts before it turns itself off: host.json
         /// `ambient.duckTimeout`, or `defaultDuckTimeout`.
         public var duckTimeout: TimeInterval = AmbientRightyoRouter.defaultDuckTimeout
@@ -1041,6 +1044,7 @@ extension AmbientRightyoRouter {
         do { pipeline = try makePipeline(connection: connection, selection: selection, listener: listener) } catch {
             return refuse(stream, connection: connection, reason: Self.describe(error))
         }
+        configuration.childMade?(connection)
         let refused = state.withLock { state -> String? in
             if state.shuttingDown { return "stopping" }
             // Fail closed (#941): a child that may have been made public while privacy is parked never hears audio.
@@ -1778,8 +1782,11 @@ extension AmbientRightyoRouter {
                 ? openPrivacyEntry(connection, wasOn: wasOn, in: &state) : nil
             // An off withdraws every entry still open (round 3): each closes in silence, and never inherits a timeout.
             if !on, reported != nil { state.privacy[connection, default: .init()].withdrawAll() }
-            // The owner's own off clears parked privacy daemon-wide (#941), as the owner's off does a parked mode.
-            if !on, wasOn, reported != nil, reason == "voice" || reason == "device" { clearParkedPrivacy(in: &state) }
+            // The owner's own off clears parked privacy daemon-wide (#941), as the owner's off does a parked mode, and
+            // ends it on the same device's stale connections.
+            if !on, wasOn, reported != nil, reason == "voice" || reason == "device" {
+                ownerOff(connection, reason: reason, in: &state)
+            }
             var change = DuckChange(duck: reported ?? 0, media: nil, still: reported == nil && wasOn, wasOn: wasOn,
                                     entry: entry)
             if reported != nil, on, state.media[connection] != nil {
@@ -1947,8 +1954,8 @@ extension AmbientRightyoRouter {
     /// Duck mode's change under the caller's lock, as `changeMedia`; nil when it was to turn on and no child took it,
     /// in which case every child's wish is withdrawn and nothing else changes (the fail-safe for an older RightyO).
     /// Otherwise how many children took it, and the device notice's place on `mediaNotices`, done once it is sent.
-    private func changeDuck(_ on: Bool, connection: UUID, reason: String,
-                            in state: inout State) -> (reported: Int, notice: Task<Void, Never>)? {
+    func changeDuck(_ on: Bool, connection: UUID, reason: String,
+                    in state: inout State) -> (reported: Int, notice: Task<Void, Never>)? {
         let runs = state.runs.values.filter { $0.connection == connection }
         let reported = runs.filter { $0.pipeline.reportDuck(on) }.count
         guard !on || reported > 0 else {

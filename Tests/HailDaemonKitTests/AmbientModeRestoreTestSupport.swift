@@ -50,7 +50,8 @@ final class RestoreRig: Sendable {
     init(phrase: String? = "meeting mode", speaker: Int = 1,
          timeout: TimeInterval = AmbientRightyoRouter.defaultMeetingTimeout,
          mediaTimeout: TimeInterval = AmbientRightyoRouter.defaultMediaTimeout,
-         meeting: String? = nil, holdStarted: Bool = false, holdSpawn: Int? = nil) async throws {
+         meeting: String? = nil, holdStarted: Bool = false, holdSpawn: Int? = nil,
+         childMade: (@Sendable (UUID) -> Void)? = nil) async throws {
         // A child launched start-private confirms it in its `started` (#941), as a RightyO with S-2b does.
         let confirm = #" -e 's/"duck": {"version": 3}/"duck": {"version": 3'"$PRIV"'}/'"#
         let first = phrase == nil
@@ -79,7 +80,8 @@ final class RestoreRig: Sendable {
                                    replyControl: true, mediaTimeout: mediaTimeout, startDeadline: 30, ackDeadline: 30,
                                    meeting: .init(timeout: timeout, onChange: { change in
             hooks.list.withLock { $0.append(change) }
-        }, now: { clock.now() }), onEvent: { event in events.list.withLock { $0.append(event) } })
+        }, now: { clock.now() }), childMade: childMade,
+                                   onEvent: { event in events.list.withLock { $0.append(event) } })
     }
 
     private static func prepare(_ fake: FakeRightyo, phrase: String, meeting: String?) throws {

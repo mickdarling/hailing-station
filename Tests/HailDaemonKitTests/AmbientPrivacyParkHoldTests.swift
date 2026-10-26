@@ -55,7 +55,8 @@ struct AmbientPrivacyParkHoldTests {
         await rig.finish()
     }
 
-    /// A device that takes `duck_mode` is told privacy is on, with no reason, so its switch shows the host's state.
+    /// A device that takes `duck_mode` is told privacy is on, reason `device` (a protocol reason, never dropped), so its
+    /// switch shows the host's state.
     @Test func theDeviceIsToldItIsPrivate() async throws {
         let rig = try await AmbientPrivacyParkTests.privacyDropped()
         defer { rig.close() }
@@ -65,7 +66,7 @@ struct AmbientPrivacyParkHoldTests {
             let frame = try await receiveFrame(on: socket, step: "restored duck mode notice")
             if case .control(.duckMode) = frame.payload { told = frame.payload }
         }
-        #expect(told == .control(.duckMode(on: true, reason: nil, expires: nil)))
+        #expect(told == .control(.duckMode(on: true, reason: "device", expires: nil)))
         #expect(await eventually { rig.details("ambient_duck_device").last == "on=true device=sent" },
                 "restored device notice log marker")
         await rig.finish()
