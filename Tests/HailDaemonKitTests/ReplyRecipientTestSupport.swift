@@ -16,7 +16,7 @@ actor RecipientContextAdapter: ProviderContextDelivering, ProviderReplyBindingLe
     private(set) var contexts: [ProviderTurnContext] = []
     private(set) var legacy: [String] = []
     private var held = false
-    private var failing = false
+    private var failure: (any Error)?
     private var entered = false
     private var arrivals: [UUID: CheckedContinuation<String?, Never>] = [:]
     private var release: CheckedContinuation<Void, Never>?
@@ -37,7 +37,7 @@ actor RecipientContextAdapter: ProviderContextDelivering, ProviderReplyBindingLe
             for waiter in waiters { waiter.resume(returning: nil) }
             await withCheckedContinuation { release = $0 }
         }
-        if failing { throw ProviderCoordinatorSyntheticError.arbitraryFailure }
+        if let failure { throw failure }
     }
     func acquireReplyBindingLease(_ binding: ProviderSessionBinding) async throws -> ProviderReplyBindingLease {
         guard targets.contains(where: {
@@ -51,7 +51,8 @@ actor RecipientContextAdapter: ProviderContextDelivering, ProviderReplyBindingLe
         for authority in authorities.values { authority.invalidate() }
         self.targets = targets
     }
-    func failHandoff() { failing = true }
+    /// Every later handoff fails after it is recorded; `error` lets a test name the refusal (#894).
+    func failHandoff(with error: any Error = ProviderCoordinatorSyntheticError.arbitraryFailure) { failure = error }
     func holdHandoff() { held = true; entered = false }
     /// #896: neither a missing dispatch nor task cancellation may strand the test's lane.
     func waitForHandoff(within: Duration = .seconds(20)) async {

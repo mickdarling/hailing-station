@@ -117,10 +117,11 @@ rightyo listen … --session-id "$rightyo_session_id" |
   - **Tainted pane:** if anything was typed, the tmux adapter marks that pane tainted (a failed Enter does
     too). Every later delivery to it refuses before typing, whether it was already queued or arrives later,
     because it would otherwise append to the leftover text and submit a concatenation no guard evaluated. The
-    adapter's refusal reads `unsubmitted text left in pane <target>; clear it and restart haild before delivering
-    again`, and a dispatch sees it as `deliveryRefused`. The taint lives in that `haild` process only. Clear the
-    pane's input line by hand, then restart the daemon (`haild run`) to deliver to it again. A delivery
-    abandoned before its first chunk does not taint the pane.
+    adapter refuses with `AdapterError.inputPending(reason: tainted)`, and a dispatch sees it as `inputPending`
+    ([#894](https://github.com/mickdarling/hailing-station/issues/894)); neither carries the text. The taint
+    lives in that `haild` process only, and the refusal no longer says what to do: clear the pane's input line by
+    hand, **then restart the daemon** (`haild run`) to deliver to it again. Clearing the line alone is not enough.
+    A delivery abandoned before its first chunk does not taint the pane.
   - **After the commit point:** the Enter is sent and the prompt runs, even though the daemon's answer is lost.
 
   Either way the client gets no answer, and it reports that the outcome is unknown: the prompt may have run,
@@ -128,6 +129,14 @@ rightyo listen … --session-id "$rightyo_session_id" |
   `LocalReplyEndpointTests.timedOutDispatchNeverPressesEnterAndARetryRefusesOnTheTaintedPane`, `TmuxDeliveryCommitTests`
   and `TmuxTaintedPaneTests`. The [reply block](#the-reply-block) (311 characters plus
   the target id) counts toward every cap.
+
+  **Pending input** is refused before anything is pasted, whatever the deadline: text already at the cursor that
+  does not clear within the wait (`stale_input`), or that appears while the paste buffer fills (`appeared`), is
+  refused as `inputPending`, like a tainted pane (`haild send` prints `inputPending(reason: stale_input)` or
+  `inputPending(reason: appeared)` and exits 4). It is not a taint: clear the input line by hand and the next
+  delivery goes ahead; [`haild targets flush`](host-operations.md#clear-a-stale-prompt-draft-894) clears it too, though
+  never a taint. `haild run`
+  logs each such refusal as `tmux_input_pending reason=…` (tokens and counts only, no words).
 
 Each admitted request sends one `{"kind":"dispatch","connection","target","binding","text"}` line and reads
 one answer. The receipt is:
@@ -147,7 +156,8 @@ one answer. The receipt is:
 Refusals are terminal, as on the direct path, with no automatic retry. `confirmationRequired` exits 8 and
 `bindingMismatch` exits 7, the codes the direct path uses for the same outcomes; every other dispatch refusal
 (unknown, ended, unnegotiated, unauthorized, unselected, reselected or lost connection, capacity,
-`deliveryRefused` for sanitizer/policy/lockdown/adapter refusals the daemon does not distinguish) and every
+`deliveryRefused` for sanitizer/policy/lockdown/adapter refusals the daemon does not distinguish, and
+`inputPending` when the target's input already holds unsent text) and every
 socket-level refusal (rate limited, decode, audit, listener not ready, a missing or badly owned socket) exits 1
 with the daemon's reason, as `haild reply` does. A delivered answer that carries no `request` key at all is a
 reply answer from a daemon that does not dispatch and is refused rather than read as ownership.

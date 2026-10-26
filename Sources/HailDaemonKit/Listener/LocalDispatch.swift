@@ -61,6 +61,8 @@ public enum LocalDispatchRefusal: String, Error, Sendable, Equatable {
     case unsupported, unknownConnection, connectionEnded, sessionNotReady, notAuthorized, targetNotSelected
     case selectionChanged, bindingMismatch, confirmationRequired, capacityExceeded, deliveryRefused
     case ownershipLost, connectionLost
+    /// The target's input already holds unsent text (#894); every other refusal of the target stays `deliveryRefused`.
+    case inputPending
 
     public var message: String {
         let reason = switch self {
@@ -77,6 +79,7 @@ public enum LocalDispatchRefusal: String, Error, Sendable, Equatable {
         case .deliveryRefused: "target action was refused"
         case .ownershipLost: "handed off, but no reply ownership survived"
         case .connectionLost: "handed off, but the connection ended before it could own the reply"
+        case .inputPending: HostDeliveryOutcome.inputPendingReason
         }
         return "dispatch refused [\(rawValue)]: \(reason)"
     }
@@ -175,8 +178,9 @@ extension HostSession {
         case .refused(.rateLimited, _): throw LocalDispatchRefusal.capacityExceeded
         // The host refuses a cancelled caller before its handoff; that is the caller's outcome, not a refusal
         // of the target, and nothing was sent.
-        case .refused where Task.isCancelled: throw CancellationError()
+        case .refused where Task.isCancelled, .inputPending where Task.isCancelled: throw CancellationError()
         case .refused: throw LocalDispatchRefusal.deliveryRefused
+        case .inputPending: throw LocalDispatchRefusal.inputPending
         }
     }
 

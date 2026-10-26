@@ -72,7 +72,8 @@ Each gate refuses before the handoff; nothing falls back to whichever connection
 | `bindingMismatch` | the current listing binding differs from the pinned one, or the target is not listed alive |
 | `confirmationRequired` | the policy answered with a read-back; the minted record is removed and nothing is delivered |
 | `capacityExceeded` | the connection already holds 64 live requests |
-| `deliveryRefused` | sanitizer, policy, lockdown, unknown target, a contextual adapter without a cooperative lease, or an adapter failure. A multi-line prompt whose later line needs confirmation or is denied is `HostError.partial`: earlier lines have landed, the minted record is removed, and the answer is still `deliveryRefused` with `delivered: 0` |
+| `deliveryRefused` | sanitizer, policy, lockdown, unknown target, a contextual adapter without a cooperative lease, or any adapter failure other than pending input. A multi-line prompt whose later line needs confirmation or is denied is `HostError.partial`: earlier lines have landed, the minted record is removed, and the answer is still `deliveryRefused` with `delivered: 0`. A later line that meets pending input is `HostError.partial` too, so it also stays `deliveryRefused` |
+| `inputPending` | the target's input already holds unsent text, so nothing was sent ([#894](https://github.com/mickdarling/hailing-station/issues/894)): the adapter's `AdapterError.inputPending(reason:)` with reason `stale_input` (text at the cursor did not clear in time), `appeared` (text showed up while the paste buffer filled) or `tainted` (an earlier paste there never reached a known submit). The answer is `dispatch refused [inputPending]: the target's input already holds unsent text`, code `publicationFailed`, `delivered: 0`; the client exits 1 with that reason. A cancelled caller still gets no answer, as for any refusal before the handoff |
 | `ownershipLost` | the handoff completed but the selection or authority changed before commit; `delivered` is 1 and `request` is `null` |
 | `connectionLost` | the peer ended or began closing, or left the listener's peer table, while the handoff was in flight; the minted record is revoked, `delivered` is 1 and `request` is `null` |
 
@@ -172,8 +173,17 @@ the 4 s paste-acceptance wait and 1 s of margin, #304; never above the daemon's 
 submission deadline fires during delivery, the tmux adapter either abandons it before its commit point
 (no further chunk, no Enter, typed text left unsubmitted with no rollback) or, once committed, sends the Enter
 anyway. A pane left holding typed-but-unsubmitted text is tainted: every later delivery to it, queued or new,
-refuses before typing (`deliveryRefused`) until the pane is cleared by hand and `haild` restarted
-(`TmuxTaintedPaneTests`). The client reports a written-but-unanswered dispatch as an unknown outcome and says to check the pane
+refuses before typing (`inputPending`, reason `tainted`) until the pane is cleared by hand **and** `haild` restarted
+(`TmuxTaintedPaneTests`). The refusal itself no longer says so: the taint lives only in that `haild` process, so
+clearing the input line alone is not enough. Text that is merely pending at the cursor (`stale_input` or `appeared`)
+is not a taint: clear the input line by hand, or with
+[`haild targets flush`](host-operations.md#clear-a-stale-prompt-draft-894), and the next delivery goes ahead without a
+restart. A flush clears the text but never a taint. A phone's text frame refused this
+way is answered `not_allowed` (or `paste_refused` for a paste to a device that takes request refusals) with the fixed
+message `the target's input already holds unsent text`, and its connection stays open; an ambient run ends logged
+`ambient_ended dispatch inputPending`. None of these carries the pending or refused text. `haild run` also logs each
+refusal to its error log as `tmux_input_pending reason=<stale_input|appeared|tainted>` and each submit as
+`tmux_submit outcome=…`, as tokens and counts only, with the pane named by an opaque ordinal (`pane=p1`). The client reports a written-but-unanswered dispatch as an unknown outcome and says to check the pane
 before retrying (`TmuxDeliveryCommitTests`,
 `LocalReplyEndpointTests.timedOutDispatchNeverPressesEnterAndARetryRefusesOnTheTaintedPane`, slow scripted runner).
 `LocalDispatchProductionAdapterTests` (scripted runner, no tmux process) dispatches 1 MiB through the
