@@ -567,6 +567,10 @@ public actor RightyoInputConsumer {
     /// that cannot take it is held back, its reason left in `lastRouteRefusal` like a dismissal, and ends nothing.
     private let routing: RightyoVoiceRouting?
     private(set) var lastRouteRefusal: RightyoVoiceRouting.Refusal?
+    /// An un-routed request the target refused only because its input already holds unsent text (#894): held back like
+    /// a route refusal, its refusal (`inputPending`) left here, and ends nothing. Any other refusal of an un-routed
+    /// request still ends the consumer.
+    private(set) var lastDeliveryRefusal: LocalDispatchRefusal?
     /// `streamBudgetMs` is an optional ceiling on producer stream time; the default is no ceiling (#188).
     /// `dispatcher` replaces the direct `HailHost.send` step (#188 item 1); without it, `host` delivers directly
     /// and nil `host` validates only. A dispatcher with no host still delivers (it owns its own host access).
@@ -614,10 +618,9 @@ public actor RightyoInputConsumer {
     public func consume(_ event: RightyoInputEvent) async throws -> Bool {
         lastReceipt = nil
         lastDismissal = nil
-        lastVoiceMute = nil
-        lastVoiceMeeting = nil
+        (lastVoiceMute, lastVoiceMeeting) = (nil, nil)
         (lastVoiceMedia, lastVoiceDestination, lastRouteRefusal, lastPrivacy) = (nil, nil, nil, nil)
-        lastPrivacyAck = nil
+        (lastPrivacyAck, lastDeliveryRefusal) = (nil, nil)
         do {
             guard try admit(event) else { return false }
             if event.type == "override" { return true }
@@ -989,7 +992,9 @@ extension RightyoInputConsumer {
 
     /// Types the prompt, its reply block naming `address.target`. A routed request the host refuses before its
     /// handoff (any `LocalDispatchRefusal`: offline, rebound, policy, lockdown, rate) is a route refusal that ends
-    /// nothing; any other failure (audit, size, cancellation, listener stop) ends the consumer, as before.
+    /// nothing. An un-routed one refused because the target's input already holds unsent text (#894) ends nothing
+    /// either; it is left in `lastDeliveryRefusal`. Any other failure (another refusal of the stream's own target,
+    /// audit, size, cancellation, listener stop) ends the consumer, as before.
     func deliver(
         _ event: RightyoInputEvent, to address: Address, with dispatcher: any RightyoDispatching
     ) async throws -> Bool {
@@ -1002,8 +1007,12 @@ extension RightyoInputConsumer {
             return true
         } catch let refusal as LocalDispatchRefusal where !refusal.handedOff {
             guard let route = address.route else {
-                terminal = true
-                throw refusal
+                guard refusal == .inputPending else {
+                    terminal = true
+                    throw refusal
+                }
+                lastDeliveryRefusal = refusal
+                return false
             }
             lastRouteRefusal = .notDelivered(route.name)
             return false

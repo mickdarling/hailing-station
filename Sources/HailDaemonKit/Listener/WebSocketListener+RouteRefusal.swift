@@ -4,7 +4,8 @@ import HailProtocol
 
 extension WebSocketListener {
     /// Tells the connection whose ambient stream it is that a request it addressed to a voice route was not sent
-    /// (#636, slice 5c), while it still selects the stream's `target`, as the clip that follows must: `sent`,
+    /// (#636, slice 5c), or that one was not typed because the target's input already holds unsent text (#894), while
+    /// it still selects the stream's `target`, as the clip that follows must: `sent`,
     /// `unsupported` (it did not advertise request refusals, and an older device ends its connection on any error, so
     /// it is told nothing), `not_ready` (no negotiated session, or it selects another target), `failed` or
     /// `no_connection`. Logged by the caller as tokens.
