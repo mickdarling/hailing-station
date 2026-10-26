@@ -40,15 +40,19 @@ final class RestoreRig: Sendable {
     var changes: [MeetingChange] { hooks.list.withLock { $0 } }
     var parked: ParkedModes? { router.state.withLock { $0.parked } }
 
+    /// `meeting` is every child's `started` advertisement of the meeting control (#735 MM-D), raw JSON, none by
+    /// default; `holdStarted` keeps each child's first line back until the test writes `go`.
     init(phrase: String? = "meeting mode", speaker: Int = 1,
          timeout: TimeInterval = AmbientRightyoRouter.defaultMeetingTimeout,
-         mediaTimeout: TimeInterval = AmbientRightyoRouter.defaultMediaTimeout) async throws {
+         mediaTimeout: TimeInterval = AmbientRightyoRouter.defaultMediaTimeout,
+         meeting: String? = nil, holdStarted: Bool = false) async throws {
         let first = phrase == nil ? "/usr/bin/sed -n -e 1p events.jsonl | /usr/bin/sed -e \"s/formed-demo/$7/g\""
             : "/usr/bin/sed -e '$d' -e \"s/formed-demo/$7/g\" events.jsonl"
         fake = try FakeRightyo("""
         SPAWN=1
         while ! /bin/mkdir "spawn.$SPAWN" 2>/dev/null; do SPAWN=$((SPAWN + 1)); done
         \(FakeRightyo.ackingControl(append: true).replacingOccurrences(of: "control.txt", with: "control.$SPAWN.txt"))
+        \(holdStarted ? FakeRightyo.untilGo : "")
         if [ "$SPAWN" = \(speaker) ]; then
         \(first)
         else
@@ -57,7 +61,7 @@ final class RestoreRig: Sendable {
         \(FakeRightyo.ackingTail)
         """)
         try fake.install(fixture: "enrolled-formed-request.jsonl")
-        try Self.prepare(fake, phrase: phrase ?? "archive the project")
+        try Self.prepare(fake, phrase: phrase ?? "archive the project", meeting: meeting)
         let events = events, hooks = hooks, clock = clock
         env = try await ambientRig(fake, timing: .init(eofGrace: 20, termGrace: 20), acknowledgements: Self.clips,
                                    replyControl: true, mediaTimeout: mediaTimeout, startDeadline: 30, ackDeadline: 30,
@@ -66,12 +70,13 @@ final class RestoreRig: Sendable {
         }, now: { clock.now() }), onEvent: { event in events.list.withLock { $0.append(event) } })
     }
 
-    private static func prepare(_ fake: FakeRightyo, phrase: String) throws {
+    private static func prepare(_ fake: FakeRightyo, phrase: String, meeting: String?) throws {
         var lines = try fake.recorded("events.jsonl").split(separator: "\n").map {
             $0.replacingOccurrences(of: "Rightyo, archive the project.", with: "Rightyo, \(phrase).")
         }
         lines[0] = lines[0].replacingOccurrences(of: "\"phase\": \"started\"",
-            with: "\"addressing\": {\"names\": [\"Rightyo\"]}, \"duck\": {\"version\": 3}, \"phase\": \"started\"")
+            with: "\"addressing\": {\"names\": [\"Rightyo\"]}, \"duck\": {\"version\": 3}, "
+                + FakeRightyo.meetingAdvert(meeting) + "\"phase\": \"started\"")
         try (lines.joined(separator: "\n") + "\n").write(to: fake.directory.appendingPathComponent("events.jsonl"),
                                                          atomically: true, encoding: .utf8)
     }
