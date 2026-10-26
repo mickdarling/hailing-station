@@ -521,6 +521,9 @@ public final class AmbientRightyoRouter: AmbientAudioSink, AmbientListenerWiring
         /// Awaited by each acknowledgement just before its clip is sent. Nil in the daemon, so nothing waits: tests only
         /// set it, to hold an acknowledgement and show a not-sent notice waits for it (#894 review).
         var acknowledgementHold: (@Sendable () async -> Void)?
+        /// Called with the connection once a "Nothing was sent." clip is queued on its privacy clip chain. Nil in the
+        /// daemon: tests only set it, to change privacy at a known point between queuing and playing (#894 review).
+        var notSentQueued: (@Sendable (UUID) -> Void)?
         /// How long the owner's spoken duck mode (#735) lasts before it turns itself off: host.json
         /// `ambient.duckTimeout`, or `defaultDuckTimeout`.
         public var duckTimeout: TimeInterval = AmbientRightyoRouter.defaultDuckTimeout
@@ -1654,6 +1657,7 @@ extension AmbientRightyoRouter {
                 outcome.withLock { $0 = confirm }
             }
         }
+        if piece != nil { configuration.notSentQueued?(connection) }
         await piece?.value
         return outcome.withLock { $0 }
     }

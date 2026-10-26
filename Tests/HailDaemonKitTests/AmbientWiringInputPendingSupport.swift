@@ -5,6 +5,18 @@ import Synchronization
 import Testing
 @testable import HailDaemonKit
 
+/// The router's test-only acknowledgement hold (#894), as a value so a trailing `onEvent` closure never binds to it.
+struct AcknowledgementHold {
+    let wait: @Sendable () async -> Void
+}
+
+/// Records each connection the router queued a "Nothing was sent." clip for (#894), through its test-only hook.
+final class NotSentQueued: Sendable {
+    private let queued = Mutex<[UUID]>([])
+    func note(_ connection: UUID) { queued.withLock { $0.append(connection) } }
+    func count(for connection: UUID) -> Int { queued.withLock { $0.filter { $0 == connection }.count } }
+}
+
 /// What a device received, as `AmbientWiringInputPendingTests` compares it.
 enum PendingInputSeen: Equatable {
     case control(ControlPayload)
@@ -31,6 +43,7 @@ struct PendingInputRun {
     let env: AmbientWiringRig
     let pair: FallbackSocketPair
     let log: AmbientEventDetails
+    let queued: NotSentQueued
     var socket: URLSessionWebSocketTask { pair.sockets[0] }
     var adapter: RecipientContextAdapter { env.rig.adapter }
     /// The device's session connection id, the one the router and the last-input ledger key on (not the peer key
@@ -72,15 +85,16 @@ struct PendingInputRun {
         let fake = try FakeRightyo(script)
         try fake.install(fixture: fixture)
         if !holdFirst { try RightyoAmbientPendingInputTests.release(fake, "go1") }
-        let log = AmbientEventDetails()
+        let (log, queued) = (AmbientEventDetails(), NotSentQueued())
         let library = AmbientAckLibrary(clips: ["default": [ack],
                                                 "confirmnotsent": [AmbientVoiceRouteRefusalTests.notSent]])
         let env = try await ambientRig(fake, timing: .init(eofGrace: 0.5, termGrace: 2), acknowledgements: library,
-                                       routes: routes, acknowledgementHold: hold, onEvent: { log.record($0) })
+                                       routes: routes, acknowledgementHold: hold, notSentQueued: queued,
+                                       onEvent: { log.record($0) })
         let pair = try await FallbackSocketPair.boundedConnect(
             port: env.port, selecting: [RecipientTestRig.target], capabilities: ["probe", RequestRefusals.capability]
         )
-        return Self(fake: fake, env: env, pair: pair, log: log)
+        return Self(fake: fake, env: env, pair: pair, log: log, queued: queued)
     }
 
     func speak() async throws { try await recipientSocketSend(audio(UUID(), 0), on: socket) }

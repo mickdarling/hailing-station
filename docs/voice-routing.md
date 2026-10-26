@@ -248,7 +248,7 @@ route's name alone, or a near miss), the device that said it is told, in the ord
   and only while it still selects the stream's target; a reconnected, moved or other device gets nothing.
 - **The log.** `ambient_voice_route_refused` carries `reason=…`,
   `shown=sent|unsupported|not_ready|failed|no_connection` and `confirm=<key>/<index>:<outcome>` (for example
-  `confirmnotsent/0:sent`, `no_clips`, `suppressed_privacy`, or `no_connection` when the device was already gone), never the route's name or the words. The route's name goes only to the
+  `confirmnotsent/0:sent`, `no_clips`, `suppressed_privacy`, or `no_connection` when the device was gone by the time the clip would be queued), never the route's name or the words. The route's name goes only to the
   owner's own device.
 - **Before turning routing on**, check that the installed app includes #701. An app built between #665 and #701
   advertises request refusals but does not know `voice_route_refused`, and would drop its connection.

@@ -16,11 +16,6 @@ struct AmbientWiringRig {
     let port: UInt16
 }
 
-/// The router's test-only acknowledgement hold (#894), as a value so a trailing `onEvent` closure never binds to it.
-struct AcknowledgementHold {
-    let wait: @Sendable () async -> Void
-}
-
 func ambientRig(
     _ fake: FakeRightyo, timing: RightyoChildProcess.Timing, executable: URL? = nil,
     shutdownGrace: TimeInterval = AmbientRightyoRouter.defaultShutdownGrace, audit: AuditLog? = nil,
@@ -32,7 +27,7 @@ func ambientRig(
     ackDeadline: TimeInterval = RightyoAmbientPipeline.ackDeadline,
     confirmTimeout: TimeInterval? = nil,
     meeting: MeetingTestSettings = .init(),
-    acknowledgementHold: AcknowledgementHold? = nil,
+    acknowledgementHold: AcknowledgementHold? = nil, notSentQueued: NotSentQueued? = nil,
     onEvent: (@Sendable (WebSocketListenerEvent) -> Void)? = nil
 ) async throws -> AmbientWiringRig {
     let rig = try await RecipientTestRig.make()
@@ -48,6 +43,7 @@ func ambientRig(
     (configuration.meetingTimeout, configuration.onMeetingChange) = (meeting.timeout, meeting.onChange)
     if let now = meeting.now { configuration.now = now }
     configuration.acknowledgementHold = acknowledgementHold?.wait
+    if let notSentQueued { configuration.notSentQueued = { notSentQueued.note($0) } }
     configuration.notes.shortcuts = shortcuts
     let router = AmbientRightyoRouter(configuration: configuration, log: { events?.record($0); onEvent?($0) })
     let gate = AmbientAudioGate(target: RecipientTestRig.target, sink: router, sweepInterval: nil)
