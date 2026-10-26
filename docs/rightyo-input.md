@@ -906,9 +906,10 @@ child was stopped with any turns it had queued, and the device was sent a silent
     queued to the device together, under one check of the hold made under the hold's own lock. So a decision that
     lands after the check just before the clip plays still stops it: no frame is queued once privacy is decided, and
     the log says `confirm=suppressed_privacy`. "Privacy on." is not held and plays next.
-  - A clip is decided whole: either all of it was queued before the decision, or none of it is. The device never
-    gets the words without their audio, so it never waits for audio that is not coming (its "reply audio didn't
-    arrive" cue could otherwise sound while private). Only the hand-off to the connection runs under the lock, never
+  - A clip is decided whole: either all of it was queued before the decision, or none of it is. A privacy decision
+    never leaves the device with the words but not their audio, so it never waits for audio that is not coming (its
+    "reply audio didn't arrive" cue could otherwise sound while private). A connection torn down between a clip's
+    two hand-offs can still leave the words alone, but that device is going away. Only the hand-off to the connection runs under the lock, never
     a wait for the send to complete, so a privacy decision never waits behind a slow socket.
   - An exit releases the hold on the router's notice queue, a moment after privacy is off, so a clip in that moment
     is still held (fail-closed).
