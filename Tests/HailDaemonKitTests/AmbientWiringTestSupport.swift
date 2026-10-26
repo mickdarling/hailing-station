@@ -178,7 +178,7 @@ func ambientError(
     on socket: URLSessionWebSocketTask, step: String, code expected: ErrorCode = .notAllowed
 ) async throws -> String {
     let frame = try await receiveFrame(on: socket, step: step)
-    guard case .control(.error(let code, let message)) = frame.payload else {
+    guard case .control(.error(let code, let message, _)) = frame.payload else {
         Issue.record("expected an error frame, got \(frame.payload)")
         return ""
     }

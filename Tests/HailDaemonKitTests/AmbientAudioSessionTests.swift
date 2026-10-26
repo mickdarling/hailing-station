@@ -69,7 +69,7 @@ import Testing
         let stream = UUID()
         _ = await session.receive(audioFrame(ambientSegment(stream: stream, sequence: 0)))
         let bad = await session.receive(audioFrame(ambientSegment(stream: stream, sequence: 1, channels: 2)))
-        guard case .error(let code, _) = try onlyControl(bad) else {
+        guard case .error(let code, _, _) = try onlyControl(bad) else {
             Issue.record("expected refusal")
             return
         }

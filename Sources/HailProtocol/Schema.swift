@@ -169,6 +169,30 @@ public enum Schema {
         ])
     ])
 
+    /// Only the two heard-turn payloads may carry `turn`; an absent field preserves legacy error extensions.
+    private static let heardTurnPayloadRule: JSONValue = .object([
+        "if": .object(["required": .array([.string("turn")])]),
+        "then": .object([
+            "properties": .object([
+                "command": .object(["enum": .array([.string("ambient_heard"), .string("error")])]),
+                "turn": .object([
+                    "type": .string("string"), "format": .string("uuid"),
+                    "pattern": .string("^[0-9A-Fa-f]{8}-[0-9A-Fa-f]{4}-[0-9A-Fa-f]{4}-[0-9A-Fa-f]{4}-[0-9A-Fa-f]{12}$")
+                ])
+            ]),
+            "allOf": .array([.object([
+                "if": .object(["properties": .object(["command": .object(["const": .string("error")])])]),
+                "then": .object([
+                    "additionalProperties": .bool(false),
+                    "properties": .object([
+                        "command": .object([:]), "code": .object(["const": .string("voice_route_refused")]),
+                        "message": .object([:]), "turn": .object([:])
+                    ])
+                ])
+            ])])
+        ])
+    ])
+
     private static let control: JSONValue = .object([
         "type": .string("object"), "required": .array([.string("command")]),
         "properties": .object([
@@ -239,6 +263,7 @@ public enum Schema {
             stopPlaybackPayloadRule,
             ambientMovedHerePayloadRule,
             ambientHeardPayloadRule,
+            heardTurnPayloadRule,
             ambientOverheardPayloadRule,
             overheardScopePayloadRule,
             setReplyMutePayloadRule,

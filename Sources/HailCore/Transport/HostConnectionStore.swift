@@ -241,7 +241,7 @@ extension HostConnectionStore {
         switch event.frame.payload {
         case .control(.ambientMovedHere(let from)):
             onAmbientMovedHere?(event.endpointID, from)
-        case .control(.ambientHeard(let targetID, let text)):
+        case .control(.ambientHeard(let targetID, let text, _)):
             conversation.noteSent(text, endpointID: event.endpointID, targetID: targetID,
                                   targets: snapshots[event.endpointID]?.targets ?? [],
                                   scope: addressScope(event.endpointID))
@@ -252,7 +252,7 @@ extension HostConnectionStore {
         case .control(.healthReport(let report)):
             let generation = snapshots[event.endpointID]?.connectionGeneration
             health[event.endpointID] = HostHealthReading(report: report, connectionGeneration: generation)
-        case .control(.error(let code, let message)) where code.isRequestRefusal:
+        case .control(.error(let code, let message, _)) where code.isRequestRefusal:
             // The one chat line and the one announcement for every request refusal, whatever its code.
             conversation.noteRefusal(message, endpointID: event.endpointID,
                                      targetID: selectedTargets[event.endpointID] ?? "")
