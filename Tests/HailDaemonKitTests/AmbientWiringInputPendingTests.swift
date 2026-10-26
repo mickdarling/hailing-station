@@ -91,6 +91,57 @@ import Testing
         await run.finish()
     }
 
+    /// Review P3-1: the refusal's line and clip wait for that request's acknowledgement, however late it is sent. The
+    /// acknowledgement is held (the router's test-only hold); nothing of the refusal may reach the device meanwhile.
+    @Test func theRefusalWaitsForItsAcknowledgement() async throws {
+        let latch = MeetingLatch()
+        defer { latch.open() }
+        let run = try await PendingInputRun.make(hold: { await latch.wait() })
+        defer { run.close() }
+        await run.adapter.failHandoff(with: AdapterError.inputPending(reason: .staleInput))
+        try await run.speak()
+        #expect(await eventually { await run.adapter.contexts.count == 1 })
+        try await Task.sleep(for: .milliseconds(500))
+        try await barrier(on: run.socket, step: "nothing of the refusal before its acknowledgement")
+        #expect(run.log.details("ambient_delivery_refused").isEmpty)
+        latch.open()
+        #expect(try await run.seen(Self.told.count) == Self.told)
+        #expect(await eventually { run.log.details("ambient_delivery_refused") == [Self.logged] })
+        await run.finish()
+    }
+
+    /// Review P3-2: a voice-route refusal (#636) and then a pending-input refusal on one child are told in the order
+    /// said. The first is held after its line, behind a piece the test queues on the connection's privacy clip chain;
+    /// the second's line may not reach the device until the first's clip has been sent.
+    @Test func aRouteRefusalThenAPendingInputRefusalAreToldInTheOrderSaid() async throws {
+        let run = try await PendingInputRun.make(script: PendingInputRun.routeThenTarget,
+                                                 fixture: "enrolled-formed-request.jsonl",
+                                                 routes: try AmbientVoiceRouteRefusalTests.routes())
+        defer { run.close() }
+        let latch = MeetingLatch()
+        defer { latch.open() }
+        let connection = try #require(await run.connection)
+        run.env.router.state.withLock {
+            AmbientRightyoRouter.clipChain(connection, in: &$0).enqueue { await latch.wait() }
+        }
+        await run.adapter.failHandoff(with: AdapterError.inputPending(reason: .staleInput))
+        try await run.speak()
+        let routeLine = PendingInputSeen.control(.error(code: .voiceRouteRefused,
+                                                        message: "voice route: nothing to send to Deck"))
+        #expect(try await run.seen(1) == [routeLine])
+        try run.release("go2")
+        #expect(try await run.seen(2) == Self.acknowledged, "the second request's acknowledgement")
+        #expect(await eventually { await run.adapter.contexts.count == 1 })
+        try await Task.sleep(for: .milliseconds(500))
+        try await barrier(on: run.socket, step: "the second refusal waits for the first")
+        latch.open()
+        #expect(try await run.seen(5) == [.text("Nothing was sent."), .audio] + Array(Self.told.dropFirst(2)))
+        #expect(await eventually { run.log.details("ambient_delivery_refused") == [Self.logged] })
+        #expect(run.log.details("ambient_voice_route_refused")
+                == ["reason=nothing_to_say shown=sent confirm=confirmnotsent/0:sent"])
+        await run.finish()
+    }
+
     @Test func aRebindRefusalStillEndsItAsDeliveryRefused() async throws {
         let fake = try FakeRightyo("/usr/bin/sed \"s/tool-demo/$7/g\" events.jsonl\nexec /bin/sleep 60")
         defer { fake.cleanUp() }

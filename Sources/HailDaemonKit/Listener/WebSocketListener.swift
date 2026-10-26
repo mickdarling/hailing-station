@@ -518,6 +518,9 @@ public final class AmbientRightyoRouter: AmbientAudioSink, AmbientListenerWiring
         public var onMeetingChange: (@Sendable (MeetingChange) -> Void)?
         /// The wall clock that meeting and media expiries are fixed and restored on (MM-E). Tests only change it.
         var now: @Sendable () -> Date = { Date() }
+        /// Awaited by each acknowledgement just before its clip is sent. Nil in the daemon, so nothing waits: tests only
+        /// set it, to hold an acknowledgement and show a not-sent notice waits for it (#894 review).
+        var acknowledgementHold: (@Sendable () async -> Void)?
         /// How long the owner's spoken duck mode (#735) lasts before it turns itself off: host.json
         /// `ambient.duckTimeout`, or `defaultDuckTimeout`.
         public var duckTimeout: TimeInterval = AmbientRightyoRouter.defaultDuckTimeout
@@ -1128,7 +1131,7 @@ extension AmbientRightyoRouter {
         on connection: UUID, listener: WebSocketListener, notices: AmbientRefusalNotices
     ) -> (@Sendable (AmbientAckRequest) -> Void)? {
         guard let library = configuration.acknowledgements else { return nil }
-        let target = configuration.target
+        let (target, hold) = (configuration.target, configuration.acknowledgementHold)
         return { [weak self, weak listener] request in
             notices.acknowledging(Task { [weak self] in
                 let named = request.persona.flatMap { library.clips[$0] == nil ? nil : $0 }
@@ -1137,6 +1140,7 @@ extension AmbientRightyoRouter {
                     self?.emit("ambient_acknowledged", detail: "outcome=skipped reason=no_clips")
                     return
                 }
+                await hold?()
                 let outcome = await listener?.acknowledgeAmbient(connection: connection, target: target, clip: clip)
                     ?? "no_connection"
                 let host = request.readAt.duration(to: .now).components

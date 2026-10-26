@@ -46,16 +46,37 @@ struct PendingInputRun {
         get async { await env.listener.lastInput.latest(for: RecipientTestRig.target) }
     }
 
-    /// `holdFirst` keeps the first request back until the test releases `go1`.
-    static func make(holdFirst: Bool = false) async throws -> Self {
-        let fake = try FakeRightyo(RightyoAmbientPendingInputTests.twoRequests)
-        try fake.install(fixture: "tool-events.jsonl")
+    /// The enrolled fixture's owner request said as "Deck." (a voice-route refusal, #636), then, once `go2` exists, the
+    /// same request under new ids, as said ("Rightyo, archive the project."), typed to the stream's target; the session
+    /// stops once stdin closes.
+    static let routeThenTarget = #"""
+        names='s/"phase": "started"/"addressing": {"names": ["Rightyo"]}, "phase": "started"/'
+        /usr/bin/sed -n -e '1,3p' events.jsonl | /usr/bin/sed -e "s/formed-demo/$7/g" -e "$names"
+        /usr/bin/sed -n -e '4,6p' events.jsonl | /usr/bin/sed -e 's/Rightyo, archive the project./Deck./g' \
+            -e "s/formed-demo/$7/g"
+        while [ ! -f go2 ]; do /bin/sleep 0.02; done
+        /usr/bin/sed -n -e '4,6p' events.jsonl | /usr/bin/sed -e 's/"sequence": \([4-6]\),/"sequence": 1\1,/' \
+            -e 's/formed-demo:request/formed-demo:again/' -e 's/"utterance_id": "request"/"utterance_id": "again"/g' \
+            -e "s/formed-demo/$7/g"
+        /bin/cat > /dev/null
+        /usr/bin/sed -n -e '$p' events.jsonl | /usr/bin/sed -e 's/"sequence": 7,/"sequence": 17,/' \
+            -e "s/formed-demo/$7/g"
+        """#
+
+    /// `holdFirst` keeps the first request back until the test releases `go1`. `hold` is the router's test-only
+    /// acknowledgement hold.
+    static func make(
+        holdFirst: Bool = false, script: String = RightyoAmbientPendingInputTests.twoRequests,
+        fixture: String = "tool-events.jsonl", routes: VoiceRoutes? = nil, hold: (@Sendable () async -> Void)? = nil
+    ) async throws -> Self {
+        let fake = try FakeRightyo(script)
+        try fake.install(fixture: fixture)
         if !holdFirst { try RightyoAmbientPendingInputTests.release(fake, "go1") }
         let log = AmbientEventDetails()
         let library = AmbientAckLibrary(clips: ["default": [ack],
                                                 "confirmnotsent": [AmbientVoiceRouteRefusalTests.notSent]])
         let env = try await ambientRig(fake, timing: .init(eofGrace: 0.5, termGrace: 2), acknowledgements: library,
-                                       onEvent: { log.record($0) })
+                                       routes: routes, acknowledgementHold: hold, onEvent: { log.record($0) })
         let pair = try await FallbackSocketPair.boundedConnect(
             port: env.port, selecting: [RecipientTestRig.target], capabilities: ["probe", RequestRefusals.capability]
         )
