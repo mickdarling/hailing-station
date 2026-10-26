@@ -9,15 +9,19 @@ package enum ReplyStreamPacerError: Error, Sendable, Equatable {
 ///
 /// - Rate: at most `framesPerMinute` frames in any 60 s, below the reply endpoint's shared
 ///   `LocalReplyEndpoint.maxFramesPerMinute`, so one job never trips it on its own.
-/// - Lead: audio is sent at most `leadSeconds` ahead of real time since its first frame, which bounds what the
-///   phone has to buffer however long the reply is.
+/// - Lead: each frame starts at most `leadSeconds` ahead of real time since the first frame (unless `latest`
+///   caps a wait). Admitting a whole frame can add that frame's duration to the lead.
 /// - Bound: `maxAudioSeconds` of audio per job. Not a listening limit, a stop for a renderer that never ends.
 ///
 /// Pacing is a courtesy that keeps a long reply under the endpoint's limits; the endpoint's own rate limit, and
 /// the request, lease, permit and selection checks on every frame, are unchanged.
 package struct ReplyStreamPacer: Sendable {
     package static let framesPerMinute = 100
-    package static let leadSeconds = 20.0
+    /// #904: 3 s exceeds ReplyPlayoutPolicy's 1.5–2 s catch-up target by at least 1 s for network jitter.
+    /// Playback starts immediately; only a stalled player holds until that target (or final audio) arrives.
+    /// Keeping this above the target lets normal streamed frames refill a hold, while bounding the socket backlog
+    /// far below the former 20 s. Whole 1.25 s frames can bring the sent lead to 4.25 s; this is no jitter guarantee.
+    package static let leadSeconds = 3.0
     package static let maxAudioSeconds = 30.0 * 60
 
     private let paced: Bool
