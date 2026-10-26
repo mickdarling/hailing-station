@@ -117,10 +117,11 @@ struct AmbientPrivacyOffScopeTests {
         await rig.finish()
     }
 
-    /// (iv) A source of another class, or of unknown class, keeps its privacy, even silent.
-    @Test(arguments: ["pad", nil] as [String?])
-    func anotherOrUnknownClassKeepsItsPrivacy(sourceKind: String?) async throws {
-        let (scene, peer) = try await Self.restoredFrom(silent: true, sourceKind: sourceKind)
+    /// (iv) A source of another class, or of unknown class, keeps its privacy, even silent: also when both are unknown,
+    /// since an unknown class never matches (MM-E), even its like.
+    @Test(arguments: [("pad", "phone"), (nil, "phone"), (nil, nil)] as [(String?, String?)])
+    func anotherOrUnknownClassKeepsItsPrivacy(sourceKind: String?, kind: String?) async throws {
+        let (scene, peer) = try await Self.restoredFrom(silent: true, sourceKind: sourceKind, kind: kind)
         defer { peer?.cancel(); scene.rig.close() }
         #expect(await Self.off(scene) == "cleared=0 kept=1 \(scene.source)=class")
         #expect(scene.rig.router.duckMode(connection: scene.source))
