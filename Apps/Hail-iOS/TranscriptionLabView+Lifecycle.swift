@@ -53,7 +53,13 @@ extension TranscriptionLabView {
         // A late cancelled consumer must not tear down a replacement capture on this same view.
         guard activeUtteranceID == utteranceID, bufferTask != nil,
               !isFinalizing, !isInterrupting, !isForcedTeardown else { return }
-        await fail(failure ?? "Capture ended — tap to talk again")
+        capture.stop()
+        bufferTask = nil
+        _ = await transcriber.stop()
+        guard activeUtteranceID == utteranceID else { return } // Escape may replace capture while stop awaits.
+        (activeUtteranceID, isRecording) = (nil, false)
+        releaseCaptureExclusivityAfterWork()
+        status = failure ?? "Capture ended — tap to talk again"
     }
     @MainActor
     func finish(force: Bool = false) async {
@@ -157,12 +163,6 @@ extension TranscriptionLabView {
         releaseCaptureExclusivityAfterWork()
     }
     @MainActor
-    private func fail(_ message: String) async {
-        _ = await cleanUp(waitForBuffer: false)
-        releaseCaptureExclusivityAfterWork()
-        status = message
-    }
-    @MainActor
     private func handleStartCancellation() async {
         if isInterrupting {
             await discardCapture()
@@ -173,11 +173,11 @@ extension TranscriptionLabView {
         releaseCaptureExclusivityAfterWork()
     }
     @MainActor
-    private func cleanUp(waitForBuffer: Bool = true) async -> String {
+    private func cleanUp() async -> String {
         capture.stop()
         let task = bufferTask
         bufferTask = nil
-        if waitForBuffer { await task?.value }
+        await task?.value
         defer { (activeUtteranceID, isRecording) = (nil, false) }
         return await transcriber.stop()
     }
