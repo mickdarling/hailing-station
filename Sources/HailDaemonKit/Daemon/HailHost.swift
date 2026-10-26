@@ -167,12 +167,7 @@ public actor HailHost {
     /// than content delivery, so an explicit tap remains available at the confirm tier; locked targets
     /// and host lockdown still refuse it.
     public func escape(_ id: String) async throws {
-        try requireSendPreflight()
-        let listed = try await listed(id)
-        guard let allowed = policy.targets[id] else { throw HostError.denied(.notAllowed(id)) }
-        guard let binding = listed.binding, !binding.isEmpty else { throw HostError.denied(.unbound(id)) }
-        guard allowed.binding == binding else { throw HostError.denied(.rebound(id)) }
-        guard allowed.tier != .locked else { throw HostError.denied(.locked(id)) }
+        let binding = try await controlBinding(id)
         try await registry.escape(id, binding: binding)
     }
     /// Drops a read-back the user declined, so "cancel" ends it now rather than at the window (#41 item 2).
@@ -204,6 +199,37 @@ public actor HailHost {
     }
 }
 extension HailHost {
+    /// The draft in a tmux target's prompt (#894), read only, for `haild targets flush`; gated exactly as `escape`.
+    public func promptDraft(_ id: String) async throws -> TmuxPromptDraft {
+        let binding = try await controlBinding(id)
+        let (adapter, name) = try await flushAdapter(id)
+        return try await adapter.promptDraft(name, binding: binding)
+    }
+    /// Clears `draft` from a tmux target's prompt if it is still there (#894): `End` and one `BSpace` per character,
+    /// never `Escape`. Gated exactly as `escape`, and checked again here, after the owner confirmed what was shown.
+    public func flushPrompt(_ id: String, expecting draft: TmuxPromptDraft) async throws -> TmuxFlushResult {
+        let binding = try await controlBinding(id)
+        let (adapter, name) = try await flushAdapter(id)
+        return try await adapter.flushPrompt(name, binding: binding, expecting: draft)
+    }
+    /// The binding a safety control (Escape, a prompt flush) may act under: the target is allowed, bound, not rebound
+    /// and not locked; lockdown and an unusable policy refuse. Not content delivery, so the confirm tier allows it.
+    private func controlBinding(_ id: String) async throws -> String {
+        try requireSendPreflight()
+        let listed = try await listed(id)
+        guard let allowed = policy.targets[id] else { throw HostError.denied(.notAllowed(id)) }
+        guard let binding = listed.binding, !binding.isEmpty else { throw HostError.denied(.unbound(id)) }
+        guard allowed.binding == binding else { throw HostError.denied(.rebound(id)) }
+        guard allowed.tier != .locked else { throw HostError.denied(.locked(id)) }
+        return binding
+    }
+    private func flushAdapter(_ id: String) async throws -> (TmuxAdapter, String) {
+        let (adapter, name) = try await registry.resolve(id)
+        guard let tmux = adapter as? TmuxAdapter else {
+            throw AdapterError.deliveryFailed("a prompt flush is for tmux targets only")
+        }
+        return (tmux, name)
+    }
     /// The policy as stored now, for a device's target list: a CLI `targets allow` (another process) is
     /// seen without a restart (#386). Nil when the stored policy cannot be trusted, so the list fails closed.
     public func refreshedPolicy() -> Policy? {

@@ -59,12 +59,10 @@ extension AmbientRightyoRouter {
     /// Whether the connection has a meeting, including the one-participant rubber duck profile.
     public func meetingMode(connection: UUID) -> Bool { state.withLock { $0.meeting[connection] != nil } }
 
-    /// One swappable child write (#735 meeting mode (rightyo#227)): v1 reuses RightyO's media gate, whose attends
-    /// need the assistant's name and the owner's authority, and which refuses every follow-up (`_media_attends`).
-    /// It stays on while either host mode is on. A later capability-gated meeting control belongs here alone.
-    @discardableResult
-    func reportModes(to pipeline: RightyoAmbientPipeline, connection: UUID, in state: State) -> Bool {
-        pipeline.reportMedia(state.media[connection] != nil || state.meeting[connection] != nil)
+    /// One swappable child write (#735 meeting mode (rightyo#227)): the media gate, as before for every child while
+    /// either mode is on, and RightyO's meeting control beside it for a child that advertised it (MM-D).
+    @discardableResult func reportModes(to child: RightyoAmbientPipeline, connection: UUID, in state: State) -> Bool {
+        child.reportModes(media: state.media[connection] != nil, meeting: state.meeting[connection] != nil)
     }
 
     /// Tells every child under the caller's lock, as media mode does; a write never blocks.
@@ -163,6 +161,7 @@ extension AmbientRightyoRouter {
                         resume: MeetingResume? = nil) {
         let hook = change.renewed ? nil : configuration.onMeetingChange
         let listener = state.listener?.value
+        let held = state.runs.values.contains { $0.connection == connection && $0.pipeline.meetingHeld(change.on) }
         meetingChanges.enqueue { [weak self, weak listener] in
             var change = change
             if let resume, let self {
@@ -173,6 +172,7 @@ extension AmbientRightyoRouter {
             self?.emit("ambient_meeting", connection: connection,
                        detail: "on=\(change.on) profile=\(change.profile.rawValue) reason=\(change.reason) "
                           + "reported=\(change.reported)\(renewed)")
+            self?.emit("ambient_meeting_control", connection: connection, detail: "meeting_control=\(held)")
         }
         guard let persona = change.persona else { return }
         Self.clipChain(connection, in: &state).enqueue { [weak self, weak listener] in
