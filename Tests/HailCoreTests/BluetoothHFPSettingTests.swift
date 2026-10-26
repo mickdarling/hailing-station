@@ -33,18 +33,23 @@ struct BluetoothHFPSettingTests {
         #expect(await backend.activationHistory == [true])
     }
 
-    @Test func toggleWhileInactiveWaitsForTheNextActivation() async throws {
+    @Test func inactiveToggleReachesTheSharedCategoryWithoutActivating() async throws {
         let (backend, controller) = session([.builtIn])
         try await controller.setAllowsBluetoothHFP(true)
+        #expect(await backend.idleConfigurations == [true])
         #expect(await backend.configurations.isEmpty)
         try await controller.activate()
         #expect(await backend.configurations == [true])
 
         await controller.deactivate()
         try await controller.setAllowsBluetoothHFP(false)
+        #expect(await backend.idleConfigurations == [true, false])
         #expect(await backend.configurations == [true])
+        #expect(await backend.activationHistory == [true, false])
         try await controller.activate()
         #expect(await backend.configurations == [true, false])
+        try await controller.setAllowsBluetoothHFP(true)
+        #expect(await backend.idleConfigurations == [true, false])
     }
 
     @Test func headsetMicIsSelectableOnlyWhileAllowed() async throws {

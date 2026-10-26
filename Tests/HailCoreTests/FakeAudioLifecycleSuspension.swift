@@ -3,6 +3,8 @@ enum FakeConfigurationError: Error { case refused }
 actor FakeAudioLifecycleSuspension {
     /// Every `configure(allowsBluetoothHFP:)` flag the session sent, in order (#905).
     private(set) var configurations: [Bool] = []
+    /// Flags re-applied to the shared category with no capture session (#905).
+    private(set) var idleConfigurations: [Bool] = []
     private var refusesConfiguration = false
     private var holdConfiguration = false
     private var heldConfiguration: CheckedContinuation<Void, Never>?
@@ -16,6 +18,8 @@ actor FakeAudioLifecycleSuspension {
     }
 
     func refuseConfigurations(_ refuses: Bool) { refusesConfiguration = refuses }
+
+    func configureIdle(allowsBluetoothHFP: Bool) { idleConfigurations.append(allowsBluetoothHFP) }
 
     func suspendConfigurationIfNeeded() async {
         guard holdConfiguration else { return }
@@ -58,8 +62,13 @@ actor FakeAudioLifecycleSuspension {
     }
 }
 
-extension FakeAudioSessionBackend {
+extension FakeAudioSessionBackend: AudioSessionIdleConfiguring {
     var configurations: [Bool] { get async { await lifecycleSuspension.configurations } }
+    var idleConfigurations: [Bool] { get async { await lifecycleSuspension.idleConfigurations } }
+
+    func configureIfStationOwned(allowsBluetoothHFP: Bool) async throws {
+        await lifecycleSuspension.configureIdle(allowsBluetoothHFP: allowsBluetoothHFP)
+    }
 
     func refuseConfigurations(_ refuses: Bool) async {
         await lifecycleSuspension.refuseConfigurations(refuses)

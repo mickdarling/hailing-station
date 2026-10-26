@@ -29,7 +29,31 @@ struct BluetoothHFPRouteTests {
         #expect(AudioInputPreferences.saved(in: defaults).allowsBluetoothHFP == false)
     }
 
-    @Test func togglingNeverUndoesAnOwnersSpeakerChoice() {
+    @Test(arguments: Policy.Category.allCases, [false, true])
+    func idleReconfigureTouchesOnlyTheStationsOwnCategory(_ category: Policy.Category, _ mixes: Bool) {
+        let owned = AudioSessionIdleOwnership.isStationOwned(category, mixesWithOthers: mixes)
+        #expect(owned == (category == .playAndRecord && !mixes))
+    }
+
+    /// Today's behaviour, pinned (#905 review P3-2): if iOS answers the toggle by moving output to the headset, the
+    /// app still makes no effect, but the external output clears the owner's Speaker latch.
+    @Test func toggleThatMovesOutputToTheHeadsetMakesNoEffectButClearsTheSpeakerLatch() {
+        let session = ScriptedOutputSession()
+        session.options.defaultToSpeaker = true
+        session.send(.init(outputs: [.speaker], inputs: [.builtInMic], previousOutputs: [.bluetoothA2DP],
+                           previousInputs: [.builtInMic], reason: .override))
+        #expect(session.state.userChoseBuiltIn)
+
+        session.send(.init(outputs: [.bluetoothHFP], inputs: [.bluetoothHFP],
+                           availableInputs: [.builtInMic, .bluetoothHFP], previousOutputs: [.speaker],
+                           previousInputs: [.builtInMic], reason: .categoryChange))
+        session.drainEchoes()
+        #expect(session.effects.isEmpty)
+        #expect(session.options.defaultToSpeaker)
+        #expect(!session.state.userChoseBuiltIn)
+    }
+
+    @Test func togglingWhileOutputStaysOnTheSpeakerKeepsTheOwnersChoice() {
         let session = ScriptedOutputSession()
         session.options.defaultToSpeaker = true
         session.send(.init(outputs: [.speaker], inputs: [.builtInMic], previousOutputs: [.bluetoothA2DP],
