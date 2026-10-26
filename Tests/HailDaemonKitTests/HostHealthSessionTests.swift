@@ -49,7 +49,7 @@ import Testing
             let session = HostSession(host: host, authorizer: authorizer)
             #expect(try await !capabilities(session).contains(HostHealth.capability))
             let result = await session.receive(sessionFrame(payload: .control(.health)))
-            guard case .error(let code, _) = try onlyControl(result) else {
+            guard case .error(let code, _, _) = try onlyControl(result) else {
                 Issue.record("expected a refusal")
                 return
             }

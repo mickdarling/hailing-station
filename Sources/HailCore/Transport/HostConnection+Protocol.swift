@@ -48,7 +48,7 @@ extension HostConnection {
              .control(.duckMode):
             // Like reply frames, needing no reply capability (#309, #404, #366, #318, rightyo#164, #612, #614, #735).
             await replyObserver(HostReplyEvent(endpointID: snapshot.id, frame: frame))
-        case .control(.error(let code, _)) where code.isRequestRefusal: // #608: that request is over, not the link
+        case .control(.error(let code, _, _)) where code.isRequestRefusal: // #608: that request is over, not the link
             await replyObserver(HostReplyEvent(endpointID: snapshot.id, frame: frame))
         case .control(let control):
             try await process(control)
@@ -73,7 +73,7 @@ extension HostConnection {
             snapshot.targets = targets
             snapshot.receivedTargetList = true
             await observer(snapshot)
-        case .error(let code, let message):
+        case .error(let code, let message, _):
             let failure = HostConnectionFailure.remote("\(code.rawValue): \(message)")
             // The gate (#205) ends only the ambient stream and keeps the connection. Its error frames carry
             // no stream id, so they are recognised by the gate's "ambient" message prefix.

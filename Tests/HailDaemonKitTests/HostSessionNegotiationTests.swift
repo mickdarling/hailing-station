@@ -29,7 +29,7 @@ import Testing
         let session = HostSession(host: host)
 
         let result = await session.receive(helloFrame(versions: [2], envelopeVersion: 2))
-        guard case .error(let code, _) = try onlyControl(result) else {
+        guard case .error(let code, _, _) = try onlyControl(result) else {
             Issue.record("expected protocol error")
             return
         }
@@ -57,7 +57,7 @@ import Testing
         let session = HostSession(host: host)
         _ = await session.receive(helloFrame())
         let result = await session.receive(sessionFrame(version: 2, payload: .control(.ping(nonce: "x"))))
-        guard case .error(let code, _) = try onlyControl(result) else {
+        guard case .error(let code, _, _) = try onlyControl(result) else {
             Issue.record("expected protocol error")
             return
         }
@@ -69,7 +69,7 @@ import Testing
         let (host, _) = try await sessionHost()
         let malformed = await HostSession(host: host).receive(Data("{".utf8))
         #expect(malformed.disposition == .close)
-        guard case .error(let malformedCode, _) = try onlyControl(malformed) else {
+        guard case .error(let malformedCode, _, _) = try onlyControl(malformed) else {
             Issue.record("expected malformed error")
             return
         }
@@ -78,7 +78,7 @@ import Testing
         let oversizedData = Data(repeating: 0x20, count: PayloadLimits.defaultMaxFrameBytes + 1)
         let oversized = await HostSession(host: host).receive(oversizedData)
         #expect(oversized.disposition == .close)
-        guard case .error(let oversizedCode, _) = try onlyControl(oversized) else {
+        guard case .error(let oversizedCode, _, _) = try onlyControl(oversized) else {
             Issue.record("expected oversized error")
             return
         }

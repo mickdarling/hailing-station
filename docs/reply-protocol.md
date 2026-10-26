@@ -139,9 +139,23 @@ lockdown, a changed binding or selection, an audit failure) leaves the words sho
 as before. A heard turn over the 8 KiB cap is not shown (RightyO admits turns up to 16,000 bytes). Both are tracked in
 #392. `text` is the request's heard turn
 (the user's own words), never the prompt envelope or a producer's formed request. It is 1 to 8 KiB of UTF-8, the text
-payload's cap. The decoder and the schema refuse any other key. The command grants no authority, and a host refuses
-it from a device. A device advertises `ambient_heard` (`AmbientHeard.capability`) in its `hello` when it can show the
-text, and a host never sends the command to a device that did not. The host never logs the text.
+payload's cap. Besides the optional `turn` below, the decoder and the schema refuse any other key. The command grants
+no authority, and a host refuses it from a device. A device advertises `ambient_heard` (`AmbientHeard.capability`) in
+its `hello` when it can show the text, and a host never sends the command to a device that did not. The host never logs the text.
+
+### Optional heard-turn correlation (#923, PR A)
+
+The protocol accepts an optional `turn` UUID string on `ambient_heard` and on an `error` with code
+`voice_route_refused`. Omit it for the legacy shape; null, invalid UUIDs and `turn` on any other control command or
+error code are refused. Frames carrying `turn` refuse unknown payload fields; legacy error extension tolerance is
+unchanged. `heard_turns` (`HeardTurns.capability`) is the device capability that permits the host to send this field,
+in addition to the frame's existing capability requirements.
+
+This slice adds protocol support and mechanical consumer compatibility only. Host generation and sending (PR B),
+and device advertising and correlation behavior (PR C), remain deferred. The device does not advertise `heard_turns`
+yet. The host must mint a fresh random UUID per heard turn, never derive it from content or reuse it across
+connections, and never log it beside heard text. The identifier grants no authority.
+Synthetic verification is recorded in [the PR A test record](testing/heard-turn-protocol.md).
 
 ### Overheard remarks (#398)
 
