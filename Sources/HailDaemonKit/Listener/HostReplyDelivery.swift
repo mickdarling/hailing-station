@@ -34,8 +34,9 @@ final class PrivateReplyHold: Sendable {
     func holds(_ connection: UUID) -> Bool { held.withLock { $0.contains(connection) } }
 
     /// Runs `enqueue` unless `connection` is held, under the lock `set` takes (#913), so an entry lands wholly before
-    /// or wholly after it; false, without running it, when held. `enqueue` only submits to the transport and never
-    /// takes the router's lock, which `set` is called under.
+    /// or wholly after it; false, without running it, when held. `enqueue` only hands the frame to the transport
+    /// (`NWConnection.send`, which returns at once) and never waits for its completion, so a privacy entry never waits
+    /// behind a slow socket; nor does it take the router's lock, which `set` is called under.
     func unlessHeld(_ connection: UUID, _ enqueue: () -> Bool) -> Bool {
         held.withLock { $0.contains(connection) ? false : enqueue() }
     }
