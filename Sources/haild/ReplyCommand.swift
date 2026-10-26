@@ -29,6 +29,7 @@ private struct ReplyOptions {
     var metadata: String?
     var requestID: UUID?
     var rendererOutputRoot: URL?
+    var segmentation: ReplySegmentation?
     var sampleRate = 24_000
     var socket = LocalReplyEndpoint.standardSocket()
 
@@ -210,7 +211,8 @@ private func streamReply(_ options: ReplyOptions, rendererRoot: URL, pacing: Rep
         deliveries += result.deliveries
     }
     if let spoken = options.say {
-        let result = try await streamVBSay(spoken, outputRoot: rendererRoot, context: context)
+        let result = try await streamVBSay(spoken, outputRoot: rendererRoot, context: context,
+                                           segmentation: options.segmentation)
         frames += result.frames
         deliveries += result.deliveries
     }
@@ -245,7 +247,10 @@ private func replyOptions(_ arguments: ArraySlice<String>) throws -> ReplyOption
         throw ReplyCommandError.invalid("vbsay output is fixed at 24000 Hz")
     }
     if options.rendererOutputRoot != nil, options.say == nil { throw ReplyCommandError.usage }
-    if let say = options.say { options.say = labelled(say, from: options.target) }
+    if let say = options.say {
+        options.segmentation = try ReplySegmentation.load(environment: ProcessInfo.processInfo.environment)
+        options.say = labelled(say, from: options.target)
+    }
     return options
 }
 
@@ -263,9 +268,9 @@ private func labelled(_ say: String, from target: String) -> String {
 private func sendPCM(
     _ url: URL, context: PCMReplyContext
 ) async throws -> (frames: Int, deliveries: Int) {
-    try await sendPCMFile(
-        url, context: context, sequence: 0, marksFinal: true
-    )
+    var progress = ReplyPCMProgress()
+    try await sendPCMFile(url, context: context, progress: &progress, marksFinal: true)
+    return (progress.sequence, progress.deliveries)
 }
 
 /// A static file's shape, its audio bound and, for a foreground reply, its frame budget, before any frame of it.
@@ -282,81 +287,122 @@ private func requireSendable(_ url: URL, context: PCMReplyContext, from start: I
 }
 
 private func sendPCMFile(
-    _ url: URL, context: PCMReplyContext, sequence startingSequence: Int, marksFinal: Bool, renderedAudio: Bool = false
-) async throws -> (frames: Int, deliveries: Int) {
+    _ url: URL, context: PCMReplyContext, progress: inout ReplyPCMProgress,
+    marksFinal: Bool, segmentEnd: Bool = false
+) async throws {
+    let startingSequence = progress.sequence
     try requireSendable(url, context: context, from: startingSequence, marksFinal: marksFinal)
     let segmentBytes = pcmSegmentBytes
     let handle = try FileHandle(forReadingFrom: url)
     defer { try? handle.close() }
     var current = try handle.read(upToCount: segmentBytes) ?? Data()
-    var sequence = startingSequence
-    var deliveries = 0
     do {
         while !current.isEmpty {
             let next = try handle.read(upToCount: segmentBytes) ?? Data()
             let payload = AudioPayload(
-                codec: .pcm16, sampleRate: context.sampleRate, channels: 1, sequence: sequence,
+                codec: .pcm16, sampleRate: context.sampleRate, channels: 1, sequence: progress.sequence,
                 streamID: context.streamID, isFinal: marksFinal && next.isEmpty,
-                bytes: current, reply: context.descriptor
+                bytes: current, reply: context.descriptor, isSegmentEnd: segmentEnd && next.isEmpty
             )
             let frame = Frame(
                 timestamp: replyTimestamp(), target: context.descriptor.targetID, source: context.descriptor.hostID,
                 payload: .audio(payload)
             )
             try await admit(audioBytes: current.count, sampleRate: context.sampleRate, pacing: context.pacing)
-            if renderedAudio {
-                deliveries += try await submitSpeechAudio(frame, socketURL: context.socket)
+            if !marksFinal {
+                progress.deliveries += try await submitSpeechAudio(frame, socketURL: context.socket)
             } else {
-                deliveries += try await ReplyBackground.submit(frame, socketURL: context.socket)
+                progress.deliveries += try await ReplyBackground.submit(frame, socketURL: context.socket)
                 ReplyBackground.ready()
             }
-            sequence += 1
+            progress.sequence += 1
             current = next
         }
     } catch {
         // A static reply that stops partway still ends its stream, so the phone's queue moves on (#467).
-        if marksFinal, sequence > startingSequence {
-            _ = try? await sendFinalPCM(sequence: sequence, context: context, paced: false)
+        if marksFinal, progress.sequence > startingSequence {
+            _ = try? await sendFinalPCM(sequence: progress.sequence, context: context, paced: false)
         }
         throw error
     }
-    return (sequence - startingSequence, deliveries)
 }
 
-// Generation, incremental publication, finalization, and child cleanup form one failure boundary.
+/// Shared by every segment, including failure recovery: reserve just one terminal marker for the reply.
+private struct ReplyPCMProgress {
+    var sequence = 0
+    var deliveries = 0
+    var terminalAttempted = false
+
+    mutating func finish(context: PCMReplyContext, recovering: Bool = false) async throws {
+        guard !terminalAttempted else { return }
+        if recovering, sequence == 0 || sequence >= context.frameLimit ?? .max { return }
+        terminalAttempted = true
+        deliveries += try await sendFinalPCM(sequence: sequence, context: context, paced: !recovering)
+    }
+}
+
+// Generation, incremental publication, finalization, and child cleanup form one failure boundary per renderer.
 private func streamVBSay(
-    _ text: String, outputRoot: URL, context: PCMReplyContext
+    _ text: String, outputRoot: URL, context: PCMReplyContext, segmentation: ReplySegmentation?
 ) async throws -> (frames: Int, deliveries: Int) {
     var context = context
     let timing = ReplyTimingRecorder()
     context.timing = timing
-    // "played" once the renderer's audio is all sent, even if its cleanup then fails the command.
     var outcome = "failed"
     defer { timing.log(outcome: outcome) }
-    let renderer = try OwnedReplyRenderer(
-        text: text, outputRoot: outputRoot, environment: ProcessInfo.processInfo.environment
-    )
+    let segments = ReplySegmenter(configuration: try segmentation ?? ReplySegmentation()).segments(text)
+    guard !segments.isEmpty else { throw ReplyCommandError.invalid("vbsay produced no PCM audio") }
+    var progress = ReplyPCMProgress()
     do {
-        let result = try await withTaskCancellationHandler {
-            try await publishRenderer(renderer, context: context)
-        } onCancel: {
-            renderer.cancel()
+        for (index, segment) in segments.enumerated() {
+            // No speculative renderer: cancellation/supersession stops before spawning the next owned child.
+            try Task.checkCancellation()
+            try ReplyBackground.requireCaller()
+            guard !ReplyBackground.isSuperseded else { throw supersededRefusal }
+            let piece = ReplyRenderedSegment(text: segment, final: index == segments.count - 1)
+            try await renderReplySegment(piece, outputRoot: outputRoot, context: context,
+                                         progress: &progress, outcome: &outcome)
         }
-        renderer.retire(cancel: false)
-        outcome = "played"
-        try await renderer.waitForCleanup()
-        return result
+        return (progress.sequence + 1, progress.deliveries)
     } catch {
+        try? await progress.finish(context: context, recovering: true)
         if outcome == "failed", ReplyBackground.isSuperseded {
             outcome = "superseded"
         } else if outcome == "failed",
                   error is CancellationError || Task.isCancelled || error as? OwnedReplyRendererError == .cancelled {
             outcome = "cancelled"
         }
+        throw speechReplyFailure(error, cleanupDeferred: false)
+    }
+}
+
+private struct ReplyRenderedSegment {
+    let text: String
+    let final: Bool
+}
+
+private func renderReplySegment(
+    _ segment: ReplyRenderedSegment, outputRoot: URL, context: PCMReplyContext,
+    progress: inout ReplyPCMProgress, outcome: inout String
+) async throws {
+    let renderer = try OwnedReplyRenderer(
+        text: segment.text, outputRoot: outputRoot, environment: ProcessInfo.processInfo.environment
+    )
+    do {
+        try await withTaskCancellationHandler {
+            try await publishRenderer(renderer, context: context, progress: &progress, segmentEnd: !segment.final)
+            if segment.final { try await progress.finish(context: context) }
+        } onCancel: {
+            renderer.cancel()
+        }
+        renderer.retire(cancel: false)
+        // As before, played once all audio and the terminal marker are sent, even if last cleanup fails.
+        if segment.final { outcome = "played" }
+        try await renderer.waitForCleanup()
+    } catch {
+        try? await progress.finish(context: context, recovering: true)
         renderer.retire(cancel: true)
         await renderer.waitForCancellationSignals()
-        // The CLI must remain alive to retain reaping/cleanup ownership. This async suspension is not
-        // a fixed kernel deadline; whole-job deadline supervision belongs to the separate #177 owner.
         do { try await renderer.waitForCleanup() } catch OwnedReplyRendererError.cleanupDeferred {
             throw speechReplyFailure(error, cleanupDeferred: true)
         }
@@ -386,52 +432,39 @@ private func submitSpeechAudio(_ frame: Frame, socketURL: URL) async throws -> I
     }
 }
 
-// Streaming and terminal-marker recovery share their existing single publication failure boundary.
+/// Non-final segments retain one frame until EOF, so an exact-sized last frame can carry segmentEnd.
+/// Final (including one-segment) replies retain the legacy frame boundaries and eager first publication.
 private func publishRenderer(
-    _ renderer: OwnedReplyRenderer, context: PCMReplyContext
-) async throws -> (frames: Int, deliveries: Int) {
-    let directory = renderer.outputDirectory
-    var observed: [URL: Int] = [:]
-    var sent: Set<URL> = []
-    var sequence = 0, deliveries = 0
-    do {
-        // Relay stdout PCM as it arrives (#268): no files, no polling.
-        var pending = Data()
-        for try await bytes in renderer.audio {
-            pending.append(bytes)
-            while pending.count >= StreamedReplyFrames.bytes(sequence: sequence) {
-                let size = StreamedReplyFrames.bytes(sequence: sequence)
-                deliveries += try await sendStreamedPCM(pending.prefix(size), sequence: sequence, context: context)
-                pending.removeFirst(size)
-                sequence += 1
-            }
+    _ renderer: OwnedReplyRenderer, context: PCMReplyContext,
+    progress: inout ReplyPCMProgress, segmentEnd: Bool
+) async throws {
+    let start = progress.sequence
+    var pending = Data()
+    for try await bytes in renderer.audio {
+        pending.append(bytes)
+        while pending.count >= StreamedReplyFrames.bytes(sequence: progress.sequence) {
+            let size = StreamedReplyFrames.bytes(sequence: progress.sequence)
+            if segmentEnd, pending.count == size { break }
+            progress.deliveries += try await sendStreamedPCM(
+                pending.prefix(size), sequence: progress.sequence, context: context
+            )
+            pending.removeFirst(size)
+            progress.sequence += 1
         }
-        try await renderer.requireSuccessfulExit()
-        guard pending.count.isMultiple(of: 2) else { throw ReplyCommandError.invalid("vbsay wrote a partial sample") }
-        if !pending.isEmpty {
-            deliveries += try await sendStreamedPCM(pending, sequence: sequence, context: context)
-            sequence += 1
-        }
-        if sequence == 0 {
-            // A vbsay without VBSAY_STDOUT writes only files; two passes establish their stability.
-            for _ in 0..<2 {
-                let result = try await sendStableVBSayFiles(
-                    in: directory, observed: &observed, sent: &sent, sequence: sequence,
-                    context: context
-                )
-                sequence += result.frames
-                deliveries += result.deliveries
-            }
-        }
-        guard sequence > 0 else { throw ReplyCommandError.invalid("vbsay produced no PCM audio") }
-    } catch {
-        if sequence > 0, sequence < context.frameLimit ?? .max {
-            _ = try? await sendFinalPCM(sequence: sequence, context: context, paced: false)
-        }
-        throw error
     }
-    deliveries += try await sendFinalPCM(sequence: sequence, context: context)
-    return (sequence + 1, deliveries)
+    try await renderer.requireSuccessfulExit()
+    guard pending.count.isMultiple(of: 2) else { throw ReplyCommandError.invalid("vbsay wrote a partial sample") }
+    if !pending.isEmpty {
+        progress.deliveries += try await sendStreamedPCM(
+            pending, sequence: progress.sequence, context: context, segmentEnd: segmentEnd
+        )
+        progress.sequence += 1
+    }
+    if progress.sequence == start {
+        try await sendStableVBSayFiles(in: renderer.outputDirectory, context: context,
+                                      progress: &progress, segmentEnd: segmentEnd)
+    }
+    guard progress.sequence > start else { throw ReplyCommandError.invalid("vbsay produced no PCM audio") }
 }
 
 /// Streamed frame sizes: a short first frame so the phone starts quickly, then larger frames so a long reply needs
@@ -466,13 +499,16 @@ private func admit(audioBytes: Int, sampleRate: Int, pacing: ReplyStreamPacing) 
 private let supersededRefusal = ReplyCommandError.invalid("a newer reply to this target took over")
 private let frameBudgetRefusal = ReplyCommandError.invalid("PCM16 reply exceeds the endpoint frame budget")
 
-private func sendStreamedPCM(_ bytes: Data, sequence: Int, context: PCMReplyContext) async throws -> Int {
+private func sendStreamedPCM(
+    _ bytes: Data, sequence: Int, context: PCMReplyContext, segmentEnd: Bool = false
+) async throws -> Int {
     // A foreground reply keeps one frame reserved for the terminal marker.
     if let limit = context.frameLimit, sequence + 1 >= limit { throw frameBudgetRefusal }
     try await admit(audioBytes: bytes.count, sampleRate: context.sampleRate, pacing: context.pacing)
     let payload = AudioPayload(
         codec: .pcm16, sampleRate: context.sampleRate, channels: 1, sequence: sequence,
-        streamID: context.streamID, isFinal: false, bytes: Data(bytes), reply: context.descriptor
+        streamID: context.streamID, isFinal: false, bytes: Data(bytes), reply: context.descriptor,
+        isSegmentEnd: segmentEnd
     )
     let (sentAt, resendsBefore) = (ContinuousClock.now, ReplyResends.total)
     let delivered = try await submitSpeechAudio(Frame(
@@ -499,9 +535,8 @@ private func sendFinalPCM(sequence: Int, context: PCMReplyContext, paced: Bool =
 }
 
 private func sendStableVBSayFiles(
-    in directory: URL, observed: inout [URL: Int], sent: inout Set<URL>, sequence: Int,
-    context: PCMReplyContext
-) async throws -> (frames: Int, deliveries: Int) {
+    in directory: URL, context: PCMReplyContext, progress: inout ReplyPCMProgress, segmentEnd: Bool
+) async throws {
     let files = try FileManager.default.contentsOfDirectory(
         at: directory, includingPropertiesForKeys: [.contentModificationDateKey, .fileSizeKey]
     ).filter { $0.pathExtension == "raw" }.sorted { lhs, rhs in
@@ -509,22 +544,17 @@ private func sendStableVBSayFiles(
         let right = try? rhs.resourceValues(forKeys: [.contentModificationDateKey]).contentModificationDate
         return (left ?? .distantPast) < (right ?? .distantPast)
     }
-    var frames = 0
-    var deliveries = 0
-    for file in files where !sent.contains(file) {
+    let observed = try Dictionary(uniqueKeysWithValues: files.map {
+        ($0, try $0.resourceValues(forKeys: [.fileSizeKey]).fileSize ?? 0)
+    })
+    let stable = try files.filter { file in
         let size = try file.resourceValues(forKeys: [.fileSizeKey]).fileSize ?? 0
-        guard size > 0, observed[file] == size else {
-            observed[file] = size
-            continue
-        }
-        let result = try await sendPCMFile(
-            file, context: context, sequence: sequence + frames, marksFinal: false, renderedAudio: true
-        )
-        frames += result.frames
-        deliveries += result.deliveries
-        sent.insert(file)
+        return size > 0 && observed[file] == size
     }
-    return (frames, deliveries)
+    for file in stable {
+        try await sendPCMFile(file, context: context, progress: &progress, marksFinal: false,
+                              segmentEnd: segmentEnd && file == stable.last)
+    }
 }
 
 private func replyTimestamp() -> Int64 {

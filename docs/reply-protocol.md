@@ -85,14 +85,38 @@ advertised the command ([rightyo-input.md](rightyo-input.md)).
 
 ## Reply segments (#932)
 
-P1 defines protocol vocabulary only. Neither side advertises `reply_segments` (`ReplySegments.capability`) yet;
-no host producer sets `segmentEnd`, and the device ignores `AudioPayload.isSegmentEnd` during playback.
-P2–P5 (production, host cancellation, device pauses/yield and integration proof) remain deferred.
+P1 defines protocol vocabulary; P2 implements host-side segmentation and rendering only in `haild reply --say`.
+Neither side advertises `reply_segments` (`ReplySegments.capability`) yet, and the device ignores
+`AudioPayload.isSegmentEnd` during playback. P3–P5 (listener capability gating/cancellation/backstop, device
+pauses/yield and integration proof) remain deferred. **P3 must merge before any haild deploy of P2**: this
+producer emits segment markers on the local reply socket; the listener must strip them per peer capability.
+P2 does not change the listener, coaching speech, acknowledgement clips or spoken announcements.
 
-One reply id spans many spoken segments; its text frame still carries the full spoken text. The proposed P2
+One reply id spans many spoken segments; its text frame still carries the full spoken text. The P2
 producer splits at sentence boundaries and puts `"segmentEnd": true` on the last audio frame of each segment
 except the final one. The reply's final audio frame already ends its last segment. All audio frames retain the
 same reply descriptor and stream id, with increasing frame sequences and distinct envelope frame ids.
+
+`ReplySegmentation` supplies both limits: defaults are **v1, pending Mick**, at most two sentences and thirty
+whitespace-delimited words per segment. As with reply pacing, haild reads environment tuning:
+`HAILD_REPLY_SEGMENT_MAX_SENTENCES` (1–20) and `HAILD_REPLY_SEGMENT_MAX_WORDS` (1–300). Invalid values fail before
+text publication or rendering. These are piece sizes, not a cap on total spoken length; existing transport and
+runaway-renderer safeguards remain. The pure segmenter preserves spelling and internal whitespace, protects
+common abbreviations, initials, dotted initialisms, decimals, versions, URL/path internal periods, and closing
+quotes/brackets. Newlines separate sentences/list items. `?` and `!` terminate sentences; ellipses (`...`/`…`)
+terminate before an uppercase next token. Oversized sentences prefer the last clause end (`,`, `;`, `:`, `—`)
+within the word bound, then a word boundary. Ambiguous abbreviations use deterministic lexical rules, not a
+language model. Joins may change whitespace only; one-piece input is unchanged.
+
+Each segment has its own owned vbsay renderer, sequentially retired and joined before the next starts. The
+context, pacing, total frame budget and timing recorder span the whole reply. A non-final stdout segment
+retains its last complete frame until more PCM or EOF: EOF flushes its remainder, or that held complete frame,
+with `segmentEnd`. The final segment keeps legacy framing; `sendFinalPCM` still terminates the whole reply.
+The files-only fallback also renders per segment and marks only the last frame of its last stable raw file.
+Failure, supersession or cancellation stops subsequent renderers and uses existing owned-child retirement,
+cancellation signalling and deferred-cleanup semantics. Rendering is sequential to retain this ownership model;
+synthetic overhead and byte-identity evidence are in [the host test record](testing/reply-segments-host.md).
+This is host-local synthetic proof, not a live captured-output round trip or physical playback validation.
 
 - `segmentEnd` is only `true` or absent, never false, null or another type. It requires reply audio with a
   `streamId` matching `reply.audioStream`, `final: false`, and no `resume`. The property defaults to false and the
