@@ -347,9 +347,6 @@ public actor HostSession {
         return HostSessionResult(frames: [response(.hello(info), version: version)])
     }
 
-    func response(_ control: ControlPayload, version: Int) -> Frame {
-        Frame(version: version, timestamp: now(), source: "haild", payload: .control(control))
-    }
     func failure(
         _ code: ErrorCode, _ message: String, close: Bool, version: Int = ProtocolVersion.current
     ) -> HostSessionResult {
@@ -363,6 +360,12 @@ public actor HostSession {
             frames: [response(.error(code: code, message: message), version: version)],
             disposition: close ? .close : .keepOpen
         )
+    }
+}
+
+extension HostSession {
+    func response(_ control: ControlPayload, version: Int) -> Frame {
+        Frame(version: version, timestamp: now(), source: "haild", payload: .control(control))
     }
 }
 
