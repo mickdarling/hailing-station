@@ -1,3 +1,5 @@
+@testable import HailCore
+
 enum FakeConfigurationError: Error { case refused }
 
 actor FakeAudioLifecycleSuspension {
