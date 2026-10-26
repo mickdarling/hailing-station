@@ -151,11 +151,19 @@ error code are refused. Frames carrying `turn` refuse unknown payload fields; le
 unchanged. `heard_turns` (`HeardTurns.capability`) is the device capability that permits the host to send this field,
 in addition to the frame's existing capability requirements.
 
-This slice adds protocol support and mechanical consumer compatibility only. Host generation and sending (PR B),
-and device advertising and correlation behavior (PR C), remain deferred. The device does not advertise `heard_turns`
-yet. The host must mint a fresh random UUID per heard turn, never derive it from content or reuse it across
-connections, and never log it beside heard text. The identifier grants no authority.
-Synthetic verification is recorded in [the PR A test record](testing/heard-turn-protocol.md).
+The device model (PR C1) stores a received heard UUID on its chat entry within the existing 200-entry in-memory
+history. A `voice_route_refused` with the same UUID on the same endpoint's current connection marks that entry's
+`notSent` state; the separate refusal notice and announcement remain unchanged. Matching uses only UUIDs, never
+content. Missing or unknown turns leave entries unchanged. Correlation is consumed by a matching refusal, evicted
+with its entry, and cleared on disconnect, reconnect, endpoint replacement or removal without rewriting history.
+A heard entry without a refusal stays sent. Neither heard text nor correlation is logged.
+
+Device advertising and visible not-sent styling (PR C2), and host generation and sending (PR B), remain deferred.
+The device does not advertise `heard_turns` yet. An older host simply omits the optional turn and needs no change.
+The host must mint a fresh random UUID per heard turn, never derive it from content or reuse it across connections,
+and never log it beside heard text. The identifier grants no authority.
+Synthetic verification is recorded in [the PR C1 model test record](testing/heard-turn-app.md) and
+[the PR A protocol test record](testing/heard-turn-protocol.md). This is not physical-device proof.
 
 ### Overheard remarks (#398)
 
