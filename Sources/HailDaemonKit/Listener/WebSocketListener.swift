@@ -1641,7 +1641,10 @@ extension AmbientRightyoRouter {
     /// privacy clip chain, so it can never follow a "Privacy on." decided before it. Privacy (`duck`, its internal name)
     /// is read when it is queued and again just before it plays: `suppressed_privacy` if on at either. A privacy
     /// decision landing between that last check and the clip's frames is not caught yet (#913: the clip should respect
-    /// the connection's reply hold). A torn-down connection gets no clip and no new chain: `no_connection`.
+    /// the connection's reply hold). A connection already marked torn down gets no clip and no chain: `no_connection`.
+    /// One whose teardown lands just before the chain is taken (its mark already pruned) gets a chain; once the clip has
+    /// run, a connection with no peer left has that entry dropped, as `stop(connection:)` does, so none is left behind.
+    /// A connection id never comes back, so no live connection loses its chain or a clip.
     private func confirmNotSent(on connection: UUID, listener: WebSocketListener?) async -> String {
         let outcome = Mutex("no_connection")
         let piece = state.withLock { state -> Task<Void, Never>? in
@@ -1657,8 +1660,12 @@ extension AmbientRightyoRouter {
                 outcome.withLock { $0 = confirm }
             }
         }
-        if piece != nil { configuration.notSentQueued?(connection) }
-        await piece?.value
+        guard let piece else { return outcome.withLock { $0 } }
+        configuration.notSentQueued?(connection)
+        await piece.value
+        if await listener?.ambientPeerDevice(connection: connection) == nil {
+            state.withLock { $0.privacyClips[connection] = nil }
+        }
         return outcome.withLock { $0 }
     }
 
