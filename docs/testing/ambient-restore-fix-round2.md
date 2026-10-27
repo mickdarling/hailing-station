@@ -859,3 +859,62 @@ production files; R2 retains its original three, byte-for-byte, with no app
 adaptation commit. These are synthetic package checks; native iOS/older-host
 compiler execution, physical audio/haptic proof, and independent exact-head
 approval remain unclaimed. No remote ref, PR or issue was changed.
+
+## Acceptance completion before the sender continuation
+
+The independent delta finding exposed an executor-ordering gap: the matching
+post-segment pong cleared the restored stream's acceptance proof, but recovery
+remained pending until the first audio sender's continuation resumed. A terminal
+refusal in that interval therefore emitted a failed connection-drop notice and
+suppressed the ordinary stop alert, despite proven stream acceptance.
+
+### Fail-before evidence
+
+The unchanged production tree was built with warnings-as-errors, then the ported
+`AmbientReconnectAcceptanceCompletionTests` and
+`AmbientReconnectAcceptanceOrderingTests` ran serially with the common offline
+flags and `--skip DiagnosticReplyComposition`. The test run exited 1: **6 tests
+in 2 suites, 1 failing test, 2 failed assertions, 14.299 seconds**, with no timeout.
+`acceptedStreamRefusalBeforeSenderContinuationResumesUsesOrdinaryStop` failed at
+`Tests/HailCoreTests/AmbientReconnectAcceptanceCompletionTests.swift:34:9`
+(no failed connection-drop notice) and `:36:9` (one ordinary stop alert).
+The original pending-state observation at line 31 passed. The raw evidence is
+`<scratch>/fail-before.log`; generated runtime identities are not copied here.
+
+All five regression methods in `AmbientReconnectAcceptanceOrderingTests` passed
+before the fix, including both arguments of the first method:
+
+- `orderedRefusalAfterPongUsesOrdinaryStopWhileConfirmationSendIsHeld`
+- `terminalRefusalOfRenewedStreamCannotRewriteUnacceptedRestore`
+- `unrelatedPongCannotAcceptRestore`
+- `stalePongOnReplacementCannotAcceptNewRestore`
+- `sendErrorBeforeMatchingPongRevisesSameNotice`
+
+These cover ordered pong/refusal receipt while the confirmation sender is held,
+a genuinely renewed non-restored stream, unrelated and retired-generation pongs,
+and a send refusal before the matching pong. The latter identity-matched refusal
+still revises the existing notice; another stream cannot revise it.
+
+### Fix and regression coverage
+
+After checking the acceptance object's identity, `accepted()` now settles a still
+pending, renewed restore as applied. The usual finish path cancels its deadline
+and publishes one applied notice immediately. `sent()` explicitly requires a
+pending restore, so its later callback cannot publish a second notice. The
+existing notice delivery and app deduplication therefore retain one haptic per
+drop; physical haptic delivery is not claimed by these package tests.
+
+The original regression now requires no pending restore and exactly one applied
+notice before the refusal and after sender teardown. Its two original refusal
+assertions remain intact. `acceptanceAndSendCompletionPublishOneNoticeAndHapticHook`
+keeps listening active and explicitly checks both orders: matching pong first
+with the sender held, and sender completion first with acceptance still pending.
+It counts exactly one notice/haptic callback after each step and requires the
+same single applied notice ID. A following audio frame proves the held sender
+passed transportSent and resumed its queue.
+`settlingNeverChangesPrivacyOrSendsPrivacy` runs both orders separately, comparing
+the complete `privacyLocal` and `duckMode` dictionaries across each step and
+rejecting every outgoing `set_privacy` frame. The host explicitly confirms
+privacy off before settling; settling cannot change that state. Identity matching and the pre-acceptance refusal
+replacement path are unchanged. No protocol, app, or additional production file
+is changed by this fix.
