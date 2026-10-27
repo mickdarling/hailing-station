@@ -51,7 +51,7 @@ struct RootView: View {
             content
         }
         .modifier(StationMenuStatusPublisher(connections: connections, destination: destination?.label))
-        .modifier(ReplySegmentNotices(playback: playback, banners: $announcementBanners))
+        .modifier(ReplySegmentNotices(connections: connections, banners: $announcementBanners))
         .onChange(of: scenePhase) { _, phase in
             scenePhaseRevision &+= 1
             selectionRevision &+= 1

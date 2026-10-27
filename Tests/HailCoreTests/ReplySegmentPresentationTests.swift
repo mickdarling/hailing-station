@@ -3,8 +3,8 @@ import Testing
 @testable import HailCore
 
 @Suite struct ReplySegmentPresentationTests {
-    private func yield(segment: Int = 1) -> ReplySegmentPause {
-        ReplySegmentPause(endpointID: "synthetic", replyID: UUID(), segment: segment)
+    private func yield(id: UInt64 = 1) -> ReplySegmentYieldEvent {
+        ReplySegmentYieldEvent(id: id, endpointID: "synthetic", replyID: UUID(), segment: 1)
     }
 
     @Test func noticeTextContainsNoReplyContent() {
@@ -35,7 +35,7 @@ import Testing
         let announcement6 = notice.observe(event, at: now, voiceOverRunning: true)
         #expect(!announcement6)
         #expect(!notice.isVisible)
-        let announcement7 = notice.observe(yield(), at: now, voiceOverRunning: true)
+        let announcement7 = notice.observe(yield(id: 2), at: now, voiceOverRunning: true)
         #expect(announcement7)
         notice.expire(at: now.advanced(by: .seconds(4)))
         #expect(!notice.isVisible)
@@ -62,7 +62,7 @@ import Testing
         #expect(announcement11)
         notice.expire(at: now.advanced(by: .seconds(4) - .nanoseconds(1)))
         #expect(notice.isVisible)
-        let announcement12 = notice.observe(yield(), at: now.advanced(by: .seconds(3)), voiceOverRunning: true)
+        let announcement12 = notice.observe(yield(id: 2), at: now.advanced(by: .seconds(3)), voiceOverRunning: true)
         #expect(announcement12)
         notice.expire(at: now.advanced(by: .seconds(4)))
         #expect(notice.isVisible)
@@ -70,17 +70,36 @@ import Testing
         #expect(!notice.isVisible)
     }
 
-    @Test func yieldIdentityIncludesEndpointAndSegment() {
+    @Test func identicalYieldsAfterReplayEachShowAndAnnounceOnce() {
         let first = yield(), now = ContinuousClock.now
+        let replay = ReplySegmentYieldEvent(id: first.id + 1, endpointID: first.endpointID,
+                                           replyID: first.replyID, segment: first.segment)
         var notice = ReplySegmentNotice()
-        let announcement13 = notice.observe(first, at: now, voiceOverRunning: true)
-        #expect(announcement13)
-        let next = ReplySegmentPause(endpointID: first.endpointID, replyID: first.replyID, segment: 2)
-        let announcement14 = notice.observe(next, at: now, voiceOverRunning: true)
-        #expect(announcement14)
-        let other = ReplySegmentPause(endpointID: "other", replyID: first.replyID, segment: 2)
-        let announcement15 = notice.observe(other, at: now, voiceOverRunning: true)
-        #expect(announcement15)
+        for (index, event) in [first, replay].enumerated() {
+            let instant = now.advanced(by: .seconds(index))
+            let announcement = notice.observe(event, at: instant, voiceOverRunning: true)
+            #expect(announcement)
+            #expect(notice.isVisible)
+            #expect(notice.deadline == instant.advanced(by: ReplySegmentNotice.lifetime))
+            let duplicate = notice.observe(event, at: instant, voiceOverRunning: true)
+            #expect(!duplicate)
+            notice.dismiss()
+            let afterDismissal = notice.observe(event, at: instant, voiceOverRunning: true)
+            #expect(!afterDismissal)
+            #expect(!notice.isVisible)
+        }
+    }
+
+    @Test func eventIDAloneControlsNoticeIdentity() {
+        let first = yield(), now = ContinuousClock.now
+        let changedPayload = ReplySegmentYieldEvent(id: first.id, endpointID: "other", replyID: UUID(), segment: 2)
+        var notice = ReplySegmentNotice()
+        let announcement = notice.observe(first, at: now, voiceOverRunning: true)
+        #expect(announcement)
+        notice.dismiss()
+        let duplicate = notice.observe(changedPayload, at: now, voiceOverRunning: true)
+        #expect(!duplicate)
+        #expect(!notice.isVisible)
     }
 
     @Test func settingsBindingsExposeInclusiveBoundsAndDefaults() {

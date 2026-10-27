@@ -1,8 +1,8 @@
-/// Content-free transient notice. Retains only the latest yield, even after dismissal or timeout.
+/// Content-free transient notice. Retains only the latest event id, even after dismissal or timeout.
 public struct ReplySegmentNotice: Sendable {
     public static let text = "Paused — go ahead"
     public static let lifetime: Duration = .seconds(4)
-    private var lastYield: ReplySegmentPause?
+    private var lastEventID: UInt64?
     public private(set) var deadline: ContinuousClock.Instant?
     public var isVisible: Bool { deadline != nil }
 
@@ -10,10 +10,10 @@ public struct ReplySegmentNotice: Sendable {
 
     /// The caller posts VoiceOver only when this returns true; rendering and dismissal never announce.
     public mutating func observe(
-        _ yield: ReplySegmentPause?, at now: ContinuousClock.Instant, voiceOverRunning: Bool
+        _ event: ReplySegmentYieldEvent?, at now: ContinuousClock.Instant, voiceOverRunning: Bool
     ) -> Bool {
-        guard let yield, yield != lastYield else { return false }
-        lastYield = yield
+        guard let event, event.id != lastEventID else { return false }
+        lastEventID = event.id
         deadline = now.advanced(by: Self.lifetime)
         return voiceOverRunning
     }

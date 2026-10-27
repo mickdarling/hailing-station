@@ -3,7 +3,7 @@ import SwiftUI
 
 /// Mounted above the adaptive station so rotation/expanded chat do not replay an announcement.
 struct ReplySegmentNotices: ViewModifier {
-    let playback: ReplyPlaybackController
+    let connections: HostConnectionStore
     @Binding var banners: AnnouncementBanners
     @State private var notice = ReplySegmentNotice()
 
@@ -27,8 +27,9 @@ struct ReplySegmentNotices: ViewModifier {
             }
             .padding(.horizontal)
         }
-        .onChange(of: playback.lastSegmentYield) { _, yield in
-            if notice.observe(yield, at: .now, voiceOverRunning: StationPlatform.voiceOverRunning) {
+        .onChange(of: connections.segmentYieldEvent?.id) { _, _ in
+            if notice.observe(connections.segmentYieldEvent, at: .now,
+                              voiceOverRunning: StationPlatform.voiceOverRunning) {
                 StationPlatform.announce(ReplySegmentNotice.text)
             }
         }

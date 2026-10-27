@@ -216,12 +216,13 @@ existing player path. The store publishes content-free `segmentYieldEvent` value
 `UInt64` ids, distinguishing repeated successful local yields after Replay. Reply generation and admission scope
 bind at frame ingress and remain fixed across reconnect and later windows.
 
-P5 observes changes to `lastSegmentYield` above the shared adaptive station view. A dismissible material banner,
+P5 observes changes to `segmentYieldEvent.id` above the shared adaptive station view. A dismissible material banner,
 “Paused — go ahead”, appears alongside the existing announcement banners for four seconds. It contains no
 reply text and is never passed to the reply player or Announcer. With VoiceOver running, the change posts one
 platform accessibility announcement; rendering, dismissal, repeated identical state, timeout and enabling
 VoiceOver afterward do not repost it. Mounting the view does not announce an existing historical yield. A new
-yield replaces the notice and restarts its deadline; an older timer cannot hide the newer notice.
+yield id replaces the notice and restarts its deadline, even for identical endpoint/reply/segment values after
+Replay; an older timer cannot hide the newer notice.
 
 Station tools → Turn-taking exposes “Pause between reply segments” (0.1–10 s, steps of 0.1 s) and “Voice needed
 to take the turn” (−60…−15 dBFS, steps of 1 dB, Quieter–Louder with a numeric readout). Defaults remain **v1,

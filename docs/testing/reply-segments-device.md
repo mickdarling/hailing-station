@@ -1,8 +1,9 @@
-# Reply segments device wiring (#932 P4a/P4b1/P4b2)
+# Reply segments device wiring and UI (#932 P4a/P4b1/P4b2/P5)
 
 This is offline, synthetic macOS VM evidence, using fake players and an injected clock for controller tests.
 It is not an iOS app build, simulator playback, a live captured-output round trip, acoustic echo testing,
-physical-device proof, or a TestFlight delivery. P5 and host/device validation remain open; this does not close #932.
+physical-device proof, or a TestFlight delivery. P5 UI is implemented below; host/device validation remains open.
+This does not close #932.
 
 ## P4b2 current implementation
 
@@ -721,7 +722,7 @@ as plain counts. Gate reads expire the five-second deadline. No reset API exists
 No extra logging/persistence or capture path is introduced.
 
 `ReplySegmentPresentationTests` covers content-free text, initial/nil state, one announcement per event,
-duplicate-after-dismissal/expiry, VoiceOver enabled later, new endpoint/reply/segment identity, exact timeout
+duplicate-after-dismissal/expiry, VoiceOver enabled later, event-id identity across identical Replay yields, exact timeout
 boundary, stale timeout versus a newer yield, inclusive UI bounds/defaults, invalid/nonfinite binding values,
 consecutive saved edits preserving sustained onset/unknown keys, every histogram bucket and real synthetic-gate
 counter formatting before/after the five-second deadline.
@@ -792,3 +793,63 @@ Final-source results:
    normal/safe tail handoff and tap masking, subsequent normal ambient request admission, privacy/ambient/
    selection/reconnect transitions, stop/dismiss/mute, segmented Replay and old/new-host capability behavior.
    Use privacy-safe evidence only. Signing/install/TestFlight delivery are host work, not VM proof.
+
+## P5 fix round 1 (#960, offline bundle r2)
+
+Starts at `f40498e84583c1633de9e80753af91978102da87` on `codex/932-p5-ui`. Imported only the supplied local
+P4b1 r5/r6 and P4b2 r2 bundles. Merge `2ce06c2bdf049414b79f4b35d492d2bed379d472` brings in P4b2
+`55d738544e0569564ca05eff3a473de9439fa2e7` separately. Only `docs/reply-protocol.md` and this file conflicted;
+resolution preserves both implementation/verification histories. RootView retained both capture wiring and the
+P5 notice mount without a source conflict.
+
+The review finding was a second successful yield after dismiss → Replay with identical endpoint/reply/segment
+values: both the SwiftUI equality observer and notice guard suppressed it. The mounted modifier now observes
+`HostConnectionStore.segmentYieldEvent?.id`, and `ReplySegmentNotice` retains only its latest `UInt64` id.
+Each distinct successful-yield event can show the four-second notice and request one VoiceOver announcement;
+repeated observations of the same id, including after dismissal/timeout or enabling VoiceOver, remain silent.
+No initial observer callback is added. This fix touches three of P5's existing four production files; cumulative
+P5 still changes the same four relative to imported P4b2, with the Station tools link unchanged.
+
+`identicalYieldsAfterReplayEachShowAndAnnounceOnce` supplies equal endpoint/reply/segment values with ids 1/2,
+asserting a visible notice and exactly one announcement decision for each, while duplicate updates before and
+after dismissal stay silent. `eventIDAloneControlsNoticeIdentity` confirms changed payload fields cannot repeat
+an already consumed id. Existing nil/expiry/stale-timer/VoiceOver tests now use event ids.
+
+All tests use `--no-parallel`; each phase runs through `/tmp/hs932-p4-tools/phase.py` (590-second deadline, owned-process-tree
+TERM/KILL traps). Every Swift invocation uses `/tmp/hs932-p4-tools/swift`: `taskpolicy -b`, `-j 4 -Xswiftc -j1`,
+`--disable-automatic-resolution`, and the supplied Testing framework/plugin/rpath flags recorded above.
+No load workers are added. Exact verification commands:
+
+```sh
+python3 /tmp/hs932-p4-tools/phase.py /tmp/hs932-p4-tools/swift build -Xswiftc -warnings-as-errors
+python3 /tmp/hs932-p4-tools/phase.py /tmp/hs932-p4-tools/swift build --build-tests -Xswiftc -warnings-as-errors
+for iteration in 1 2 3 4 5; do
+  python3 /tmp/hs932-p4-tools/phase.py /tmp/hs932-p4-tools/swift test --skip-build --no-parallel \
+    --filter 'HailCoreTests\.ReplySegmentPresentationTests' --skip 'HailDaemonKitTests.DiagnosticReplyComposition'
+done
+python3 /tmp/hs932-p4-tools/phase.py /tmp/hs932-p4-tools/swift test --skip-build --no-parallel \
+  --filter 'HailCoreTests\.ReplySegment' --skip 'HailDaemonKitTests.DiagnosticReplyComposition'
+python3 /tmp/hs932-p4-tools/phase.py /tmp/hs932-p4-tools/swift test --skip-build --no-parallel \
+  --filter 'HailCoreTests\.(ReplySegment|Reply|Playback|Segment)' \
+  --skip 'HailDaemonKitTests.DiagnosticReplyComposition'
+git diff --check
+```
+
+Final-source results:
+
+- Both warnings-as-errors package builds passed: production 7.14 s; build-tests 69.15 s.
+- P5 presentation suite passed 5/5: 12 test functions / 21 case invocations each, 60 function executions /
+  105 case invocations total, in 0.009/0.009/0.010/0.010/0.009 s.
+- Segment suite passed once: 96 test functions in 16 suites / 167 case invocations, 16.140 s.
+- Exact requested serial reply/playback regression passed once: 212 test functions in 38 suites /
+  307 case invocations, 18.130 s. Every test command explicitly excluded
+  `HailDaemonKitTests.DiagnosticReplyComposition` (#955).
+- Every phase completed below 590 seconds; no extra load workers were started. `git diff --check` passed.
+- Local classification with the checker's exact exclusions and rename handling confirmed the same four P5
+  production files relative to `p4b2-r2`, no renames and no security-path matches. SwiftLint is unavailable;
+  changed Swift code was checked against the configured rules, with no added code line over 120 columns.
+- Logs remain host-local `/tmp/hs932-p5-r2-*.log`, outside version control.
+
+Evidence is synthetic macOS VM evidence only. No network, other-clone access, independent review, GitHub check,
+app/simulator build, physical-device audio, signing, installation or upload is performed or claimed. The P5 host
+and physical gate above remains required; include yield → dismiss → Replay → identical yield in VoiceOver checks.
