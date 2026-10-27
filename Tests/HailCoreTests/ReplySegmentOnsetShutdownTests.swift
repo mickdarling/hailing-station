@@ -6,7 +6,7 @@ import Testing
 
 @Suite struct ReplySegmentOnsetShutdownTests {
     @Test(arguments: [false, true])
-    func stoppedObservationCannotAnalyseOrFireEvenAfterReplacement(_ replace: Bool) throws {
+    func stoppedObservationCannotAnalyseOrFireEvenAfterReplacement(_ replace: Bool) async throws {
         let fixture = OnsetFixture()
         let guarder = fixture.guarder
         let authorization = Mutex(fixture.input)
@@ -20,7 +20,7 @@ import Testing
         fixture.clock.advance(by: .milliseconds(300))
         let blocked = BlockedObservation.start(on: guarder)
         defer { blocked.resume.signal() }
-        try #require(blocked.read.wait(timeout: .now() + 5) == .success)
+        try #require(await waitForSignal(blocked.read) == .success)
         fixture.privacy = true
         fixture.ambient = false
         fixture.window = nil
@@ -34,7 +34,7 @@ import Testing
         }
         let before = guarder.segmentOnsetGate.diagnostics
         blocked.resume.signal()
-        try #require(blocked.done.wait(timeout: .now() + 5) == .success)
+        try #require(await waitForSignal(blocked.done) == .success)
         let after = guarder.segmentOnsetGate.diagnostics
         #expect(after.levels.counts == before.levels.counts)
         #expect(after.floors.counts == before.floors.counts)
@@ -42,7 +42,7 @@ import Testing
         #expect(calls.withLock { $0 } == 0)
     }
 
-    @Test func stopWaitsForAnAlreadyRunningCallback() throws {
+    @Test func stopWaitsForAnAlreadyRunningCallback() async throws {
         let fixture = OnsetFixture()
         let guarder = fixture.guarder
         let input = fixture.input
@@ -60,24 +60,26 @@ import Testing
         guarder.segmentOnsetGate.openWindow()
         try fixture.calibrate()
         fixture.clock.advance(by: .milliseconds(300))
-        DispatchQueue.global().async {
+        // Sync test bodies can occupy every cooperative thread on a small runner, leaving the global
+        // queue unable to start an observer (CI run 40456158789). Use dedicated threads and await waits.
+        Thread {
             defer { observed.signal() }
             guard let buffer = try? onsetPCM(-35, seconds: 0.3) else { return }
             guarder.observeSegmentOnset(buffer)
-        }
+        }.start()
         defer { release.signal() }
-        try #require(entered.wait(timeout: .now() + 5) == .success)
-        DispatchQueue.global().async {
+        try #require(await waitForSignal(entered) == .success)
+        Thread {
             stopping.signal()
             guarder.stopSegmentOnset()
             stopped.signal()
-        }
-        try #require(stopping.wait(timeout: .now() + 5) == .success)
-        #expect(stopped.wait(timeout: .now() + 0.02) == .timedOut)
+        }.start()
+        try #require(await waitForSignal(stopping) == .success)
+        #expect(await waitForSignal(stopped, seconds: 0.02) == .timedOut)
         release.signal()
-        try #require(stopped.wait(timeout: .now() + 5) == .success)
+        try #require(await waitForSignal(stopped) == .success)
         #expect(completed.withLock { $0 })
-        try #require(observed.wait(timeout: .now() + 5) == .success)
+        try #require(await waitForSignal(observed) == .success)
         #expect(guarder.segmentOnsetGate.diagnostics.onsets == 1)
     }
 }
@@ -90,14 +92,23 @@ private struct BlockedObservation {
 
     static func start(on guarder: AmbientReplyEchoGuard) -> Self {
         let blocked = Self()
-        DispatchQueue.global().async {
+        Thread {
             defer { blocked.done.signal() }
             guard let buffer = try? onsetPCM(-20, seconds: 0.3) else { return }
             guarder.observeSegmentOnset(buffer, afterAuthorization: {
                 blocked.read.signal()
                 _ = blocked.resume.wait(timeout: .now() + 5)
             })
-        }
+        }.start()
         return blocked
+    }
+}
+
+/// Suspend the test task while a dedicated thread performs the bounded wait, including the negative check.
+private func waitForSignal(_ semaphore: DispatchSemaphore, seconds: Double = 5) async -> DispatchTimeoutResult {
+    await withCheckedContinuation { continuation in
+        Thread {
+            continuation.resume(returning: semaphore.wait(timeout: .now() + seconds))
+        }.start()
     }
 }
