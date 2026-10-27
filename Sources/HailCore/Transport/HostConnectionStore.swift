@@ -281,18 +281,13 @@ extension HostConnectionStore {
     /// The station's connection check (#385) for `ids` only: as `sceneBecameActive`, a ready host is pinged and one
     /// trying to recover skips its backoff. A host disconnected in Mac Setup stays disconnected.
     public func checkConnection(_ ids: [HostEndpoint.Identifier]) async {
-        for id in ids { await foregroundConnection(id) }
-    }
-
-    /// Foreground nudges may replace the receive loop; preserve its restore-aware refusal opt-in.
-    private func foregroundConnection(_ id: HostEndpoint.Identifier) async {
-        await connections[id]?.foregrounded()
+        for id in ids { await connections[id]?.foregrounded() }
     }
 
     /// Active hosts are pinged; hosts already trying to recover skip their backoff and reconnect now.
     public func sceneBecameActive() async {
         for id in order {
-            await foregroundConnection(id)
+            await connections[id]?.foregrounded()
         }
     }
 }
