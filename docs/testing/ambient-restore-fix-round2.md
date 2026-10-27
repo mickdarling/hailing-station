@@ -613,3 +613,38 @@ production files; R2 retains its original three, byte-for-byte, with no app
 adaptation commit. These are synthetic package checks; native iOS/older-host
 compiler execution, physical audio/haptic proof, and independent exact-head
 approval remain unclaimed. No remote ref, PR or issue was changed.
+
+## Acceptance completion before the sender continuation
+
+The independent delta finding exposed an executor-ordering gap: the matching
+post-segment pong cleared the restored stream's acceptance proof, but recovery
+remained pending until the first audio sender's continuation resumed. A terminal
+refusal in that interval therefore emitted a failed connection-drop notice and
+suppressed the ordinary stop alert, despite proven stream acceptance.
+
+### Fail-before evidence
+
+The unchanged production tree was built with warnings-as-errors, then the ported
+`AmbientReconnectAcceptanceCompletionTests` and
+`AmbientReconnectAcceptanceOrderingTests` ran serially with the common offline
+flags and `--skip DiagnosticReplyComposition`. The test run exited 1: **6 tests
+in 2 suites, 1 failing test, 2 failed assertions, 14.299 seconds**, with no timeout.
+`acceptedStreamRefusalBeforeSenderContinuationResumesUsesOrdinaryStop` failed at
+`Tests/HailCoreTests/AmbientReconnectAcceptanceCompletionTests.swift:34:9`
+(no failed connection-drop notice) and `:36:9` (one ordinary stop alert).
+The original pending-state observation at line 31 passed. The raw evidence is
+`<scratch>/fail-before.log`; generated runtime identities are not copied here.
+
+All five regression methods in `AmbientReconnectAcceptanceOrderingTests` passed
+before the fix, including both arguments of the first method:
+
+- `orderedRefusalAfterPongUsesOrdinaryStopWhileConfirmationSendIsHeld`
+- `terminalRefusalOfRenewedStreamCannotRewriteUnacceptedRestore`
+- `unrelatedPongCannotAcceptRestore`
+- `stalePongOnReplacementCannotAcceptNewRestore`
+- `sendErrorBeforeMatchingPongRevisesSameNotice`
+
+These cover ordered pong/refusal receipt while the confirmation sender is held,
+a genuinely renewed non-restored stream, unrelated and retired-generation pongs,
+and a send refusal before the matching pong. The latter identity-matched refusal
+still revises the existing notice; another stream cannot revise it.
