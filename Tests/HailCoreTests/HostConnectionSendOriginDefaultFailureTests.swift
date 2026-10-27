@@ -3,7 +3,7 @@ import HailProtocol
 import Testing
 @testable import HailCore
 
-@Suite struct HostConnectionSendOriginDefaultFailureTests {
+@Suite struct SendOriginDefaultFailureTests {
     @Test func rejectedDefaultSendsDoNotAdvanceSequenceOrPublishRefusal() async throws {
         let rig = try await SendOriginRig.ready()
         let stream = UUID()
