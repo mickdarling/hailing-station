@@ -297,6 +297,7 @@ extension AmbientListeningReconnect {
         drop(snapshot, store: store)
     }
     func veto(_ reason: Reason, host: HostEndpoint.Identifier) {
-        if controller?.binding?.hostID == host || binding?.hostID == host { block(reason) }
+        // A completed restore retains presentation state, but only a pending restore owns this run's veto.
+        if controller?.binding?.hostID == host || (isPending && binding?.hostID == host) { block(reason) }
     }
 }
