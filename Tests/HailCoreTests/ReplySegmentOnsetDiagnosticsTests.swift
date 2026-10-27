@@ -34,18 +34,18 @@ import Testing
         #expect(fixture.gate.diagnostics.withoutAdmittedRequest == 0)
         fixture.clock.advance(by: .milliseconds(1))
         #expect(fixture.gate.diagnostics.withoutAdmittedRequest == 1)
-        fixture.gate.ambientRequestAdmitted() // Late admission cannot erase the expired outcome.
+        fixture.gate.ambientRequestAdmitted(in: fixture.scope) // Late admission cannot erase the expired outcome.
         #expect(fixture.gate.diagnostics.withoutAdmittedRequest == 1)
         #expect(fixture.gate.diagnostics.onsets == 1)
     }
 
     @Test func admittedRequestBeforeDeadlineSatisfiesPendingOnset() throws {
         let fixture = OnsetFixture()
-        fixture.gate.ambientRequestAdmitted() // Earlier requests cannot satisfy a future onset.
+        fixture.gate.ambientRequestAdmitted(in: fixture.scope) // Earlier requests cannot satisfy a future onset.
         try fixture.calibrate()
         #expect(try fixture.feed(-35, seconds: 0.3))
         fixture.clock.advance(by: .milliseconds(4_999))
-        fixture.gate.ambientRequestAdmitted()
+        fixture.gate.ambientRequestAdmitted(in: fixture.scope)
         fixture.clock.advance(by: .seconds(20))
         #expect(fixture.gate.diagnostics.withoutAdmittedRequest == 0)
     }
@@ -61,7 +61,7 @@ import Testing
         fixture.clock.advance(by: .milliseconds(4_100))
         #expect(fixture.gate.diagnostics.onsets == 2)
         #expect(fixture.gate.diagnostics.withoutAdmittedRequest == 1)
-        fixture.gate.ambientRequestAdmitted()
+        fixture.gate.ambientRequestAdmitted(in: fixture.scope)
         fixture.clock.advance(by: .seconds(5))
         #expect(fixture.gate.diagnostics.withoutAdmittedRequest == 1)
     }

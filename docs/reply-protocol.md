@@ -205,13 +205,16 @@ P4b1 retains only scalar detection state, clears it at window close, retains no 
 once per window. The gate itself only signals; P4b2 owns yield, mask handoff and transport. Diagnostics are counts only:
 onsets, onsets without an admitted ambient request within N=5 s, and analysed-level/floor histograms with buckets
 <−60, [−60,−45), [−45,−35), [−35,−25), [−25,0] dBFS. The injected clock expires diagnostic deadlines at 5 s;
-P4b2 feeds `ambientRequestAdmitted()` from the store's existing `ambient_heard` dispatch, only for the yielded
-endpoint and connection generation, passing no text to the detector. A timely request covers earlier pending onsets; late requests cannot
-remove expired counts. This detects energy from any sound, not an identified owner or verified speech.
+P4b2 feeds the actual `ambient_heard` admission hook with an opaque scope token per endpoint/connection generation.
+A timely request satisfies only the oldest pending onset in that scope; late requests cannot remove expired
+counts. Pending entries are capped at 16, with overflow dropping the oldest as missed. Tokens are never logged
+or persisted. This detects energy from any sound, not an identified owner or verified speech.
 
 Bulk Replay containing segment markers re-enters the controller FIFO and honors actual-playback barriers and
 pauses, preserving other queued replies and the existing late-frame ledger. Unsegmented Replay retains its
-existing player path.
+existing player path. The store publishes content-free `segmentYieldEvent` values with monotonically increasing
+`UInt64` ids, distinguishing repeated successful local yields after Replay. Reply generation and admission scope
+bind at frame ingress and remain fixed across reconnect and later windows.
 
 P5 observes changes to `lastSegmentYield` above the shared adaptive station view. A dismissible material banner,
 “Paused — go ahead”, appears alongside the existing announcement banners for four seconds. It contains no
