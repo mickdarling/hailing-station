@@ -1123,7 +1123,7 @@ extension HostConnectionStore {
         )
     }
 
-    /// Install once before capture starts. Authorization is read on the main actor for every buffer and onset.
+    /// Install once before capture starts. Authorization is read on main for buffers/onsets in an open pause window.
     public func wireReplySegments(
         playback: ReplyPlaybackController, echoGuard: AmbientReplyEchoGuard,
         authorization: @escaping @MainActor (HostEndpoint.Identifier) -> (ambientListening: Bool, privacyOn: Bool)
@@ -1184,6 +1184,7 @@ final class ReplySegmentDeviceWiring {
     }
 
     // The capture forwarder is a detached task, never the real-time audio render callback.
+    // It hops to main for input only while a pause window is open.
     // Input is called outside the tap lock; onset holds it, so onset must never configure or stop the tap.
     nonisolated private static func onMain<T: Sendable>(_ body: @MainActor @Sendable () -> T) -> T {
         if Thread.isMainThread { return MainActor.assumeIsolated(body) }
@@ -1202,6 +1203,7 @@ final class ReplySegmentDeviceWiring {
         guard let pause else { return closeWindow() }
         let start = playback.idleNow()
         window = start..<start.advanced(by: .seconds(playback.segmentSettings.pauseAfterSegment))
+        echoGuard.segmentOnsetGate.openWindow()
         generation = replyConnections[ReplyStreamKey(endpointID: pause.endpointID, replyID: pause.replyID)]?.generation
     }
 

@@ -215,6 +215,9 @@ extension AmbientReplyEchoGuard {
         }
     }
 
+    /// Installs/replaces the opt-in tap, closing its detector window.
+    /// Never call on the main actor while capture is running: an in-flight callback holds the tap lock
+    /// and may synchronously hop to main (as P4b2 wiring does), deadlocking a main-actor caller.
     public func configureSegmentOnset(
         input: @escaping @Sendable () -> ReplySegmentOnsetInput, onOnset: @escaping @Sendable () -> Void
     ) {
@@ -225,6 +228,8 @@ extension AmbientReplyEchoGuard {
     }
 
     /// Joins in-flight analysis/callbacks. Callbacks must not synchronously configure or stop the tap.
+    /// Never call on the main actor while capture is running: an in-flight callback holds the tap lock
+    /// and may synchronously hop to main (as P4b2 wiring does), deadlocking a main-actor caller.
     public func stopSegmentOnset() {
         onsetTap.withLock {
             $0 = nil
@@ -233,6 +238,9 @@ extension AmbientReplyEchoGuard {
     }
 
     func observeSegmentOnset(_ buffer: AVAudioPCMBuffer, afterAuthorization: () -> Void = {}) {
+        guard segmentOnsetGate.isWindowOpen else { return }
+        // A missed edge buffer is fine. A stale open reads authoritative input (nil when closed),
+        // so analyse clears its state as usual.
         guard let tap = onsetTap.withLock({ $0 }) else { return }
         let input = tap.input()
         afterAuthorization() // Deterministic interleaving hook; production uses the empty default.
@@ -495,6 +503,9 @@ public final class ReplySegmentOnsetGate: Sendable {
         }
     }
 
+    // Capture's fast path never shares the tap lock or takes the main actor.
+    private let windowOpen = Mutex(false)
+    var isWindowOpen: Bool { windowOpen.withLock { $0 } }
     private let state = Mutex(State())
     private let tail: Duration
     private let now: AmbientReplyEchoGuard.Now
@@ -507,8 +518,14 @@ public final class ReplySegmentOnsetGate: Sendable {
         self.now = now
     }
 
+    /// Enables capture-time input reads after the caller publishes a played pause window.
+    public func openWindow() { windowOpen.withLock { $0 = true } }
+
     /// P4b2 must also call this on window close, without waiting for another capture buffer.
-    public func closeWindow() { state.withLock { $0.window = nil } }
+    public func closeWindow() {
+        windowOpen.withLock { $0 = false }
+        state.withLock { $0.window = nil }
+    }
 
     fileprivate func canEndReplyTail(at instant: ContinuousClock.Instant, quietAt: ContinuousClock.Instant) -> Bool {
         state.withLock { state in

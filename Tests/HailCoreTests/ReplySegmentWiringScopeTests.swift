@@ -81,6 +81,40 @@ import Testing
         await fixture.cleanup()
     }
 
+    @Test(arguments: ["expiry", "stop", "onset"])
+    func captureReadsInputOnlyDuringPauseWindow(_ ending: String) async throws {
+        let fixture = SegmentWireFixture()
+        let inputReads = Mutex(0)
+        // This hook runs immediately after tap.input() returns, including its synchronous main hop.
+        let read: @Sendable () -> Void = { inputReads.withLock { $0 += 1 } }
+        #expect(fixture.controller.segmentPause == nil)
+        for _ in 0..<50 { try await fixture.feed(-50, seconds: 0.001, afterAuthorization: read) }
+        #expect(inputReads.withLock { $0 } == 0)
+        try await fixture.open()
+        #expect(fixture.guarder.segmentOnsetGate.isWindowOpen)
+        try await fixture.feed(-50, seconds: 0.1, afterAuthorization: read)
+        #expect(inputReads.withLock { $0 } == 1)
+        switch ending {
+        case "expiry": fixture.advance(by: .seconds(1.5))
+        case "stop": fixture.controller.stopPlayback(from: nil)
+        default:
+            for seconds in [0.4, 0.2] {
+                try await fixture.feed(-50, seconds: seconds, afterAuthorization: read)
+            }
+            try await fixture.feed(-20, seconds: 0.3, afterAuthorization: read)
+            #expect(fixture.controller.lastSegmentYield?.replyID == fixture.reply.id)
+        }
+        #expect(fixture.controller.segmentPause == nil)
+        #expect(!fixture.guarder.segmentOnsetGate.isWindowOpen)
+        #expect(fixture.store.segmentWiring?.captureInput().window == nil)
+        let expected = ending == "onset" ? 4 : 1
+        #expect(inputReads.withLock { $0 } == expected)
+        for _ in 0..<50 { try await fixture.feed(-50, seconds: 0.001, afterAuthorization: read) }
+        #expect(inputReads.withLock { $0 } == expected)
+        #expect(!fixture.guarder.segmentOnsetGate.isWindowOpen)
+        await fixture.cleanup()
+    }
+
     private func prepareReplay(_ fixture: SegmentWireFixture) async throws {
         try await fixture.open()
         try await fixture.ingest(idleAudio(fixture.reply, sequence: 1, final: true, byte: 9))
