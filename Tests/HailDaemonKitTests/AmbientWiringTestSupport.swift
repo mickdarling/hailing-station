@@ -29,7 +29,8 @@ func ambientRig(
     meeting: MeetingTestSettings = .init(),
     acknowledgementHold: AcknowledgementHold? = nil, notSentQueued: NotSentQueued? = nil,
     notSentPlaying: NotSentPlaying? = nil,
-    onEvent: (@Sendable (WebSocketListenerEvent) -> Void)? = nil
+    onEvent: (@Sendable (WebSocketListenerEvent) -> Void)? = nil,
+    childMade: (@Sendable (UUID) -> Void)? = nil, privacy: PrivacyOffSettings = .init()
 ) async throws -> AmbientWiringRig {
     let rig = try await RecipientTestRig.make()
     let connected = ConnectedPeerIDs()
@@ -45,7 +46,8 @@ func ambientRig(
     if let now = meeting.now { configuration.now = now }
     configuration.acknowledgementHold = acknowledgementHold?.wait
     if let notSentQueued { configuration.notSentQueued = { notSentQueued.note($0) } }
-    configuration.notSentPlaying = notSentPlaying?.wait
+    (configuration.notSentPlaying, configuration.childMade) = (notSentPlaying?.wait, childMade)
+    (configuration.privacyProbeTimeout, configuration.offScoping) = (privacy.probeTimeout, privacy.offScoping)
     configuration.notes.shortcuts = shortcuts
     let router = AmbientRightyoRouter(configuration: configuration, log: { events?.record($0); onEvent?($0) })
     let gate = AmbientAudioGate(target: RecipientTestRig.target, sink: router, sweepInterval: nil)

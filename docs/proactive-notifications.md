@@ -186,6 +186,8 @@ haild keeps, in memory only, each approved key's last privacy report.
   in S-7b. No behaviour is built yet.
   - A reconnect leaves the key's report as it was (Clearing). The host starts every connection public and not
     listening. That is listening privacy, per connection; the key's report governs only proactive delivery.
+    With #941, when a private connection drops, haild parks its privacy, and every
+    fresh stream starts private until the owner's own privacy-off (`docs/rightyo-input.md`, A dropped connection).
   - **The owner's wish (S-7b):** the app keeps the owner's latest privacy choice for each saved host. A privacy-on
     still waiting for the host's confirmation counts as on. Keeping it in the app's defaults, so it survives the app
     being killed, is proposed and pending Mick, since #809 settled that privacy does not survive a host restart

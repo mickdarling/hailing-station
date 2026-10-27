@@ -20,9 +20,6 @@ struct ParkedMedia: Sendable {
     let armed: Int
 }
 
-/// Reserved for privacy restore (#735 S-7a); never set yet.
-struct ParkedPrivacy: Sendable {}
-
 /// The mode parked daemon-wide (MM-E), in RAM only, so a haild restart restores nothing. At most one kind: the latest
 /// owner command wins. There is no authenticated device identity (connection ids are fresh and Hello names are
 /// claims), so any connection's next start restores it, and only ever quieter: the gate, never a recording on
@@ -30,7 +27,6 @@ struct ParkedPrivacy: Sendable {}
 struct ParkedModes: Sendable {
     var meeting: ParkedMeeting?
     var media: ParkedMedia?
-    var privacy: ParkedPrivacy?
     var device: AmbientPeerDevice?
     var parkedAt: Date
     var armed: Int { meeting?.armed ?? media?.armed ?? Int.min }
@@ -51,14 +47,18 @@ struct MeetingResume: Sendable {
 
 /// #735 meeting mode restore (MM-E): a meeting or media mode left on by a dropped connection is parked on teardown, or
 /// still held by a stale one, and carried to the next ambient start on any connection, before its original expiry.
-/// Privacy always wins: a private connection parks and holds nothing, a private start takes nothing, a privacy entry
-/// anywhere discards the park, and the owner's own off (or the other mode's entry) clears it. Logs ids, tokens,
-/// counts and booleans only, never words or device names.
+/// Privacy always wins: a private connection parks no mode and holds nothing, a private start takes nothing, a privacy
+/// entry anywhere discards the park, and the owner's own off (or the other mode's entry) clears it. A private
+/// connection parks its privacy instead (#941). Logs ids, tokens, counts and booleans only, never words or device
+/// names.
 extension AmbientRightyoRouter {
     /// Parks `connection`'s mode under the caller's lock (`stop(connection:device:)`), before teardown removes it. The
-    /// original expiry is kept, so repeated drops never extend a mode; only the latest-armed of two parks is kept.
+    /// original expiry is kept, so repeated drops never extend a mode; only the latest-armed of two parks is kept. A
+    /// private connection parks its privacy (#941), replacing any privacy parked before.
     func park(connection: UUID, device: AmbientPeerDevice?, in state: inout State) {
-        guard state.duck[connection] == nil else { return }
+        guard state.duck[connection] == nil else {
+            return parkPrivacy(connection: connection, device: device, in: &state)
+        }
         let now = configuration.now()
         var mine = ParkedModes(device: device, parkedAt: now)
         if let meeting = state.meeting[connection] {

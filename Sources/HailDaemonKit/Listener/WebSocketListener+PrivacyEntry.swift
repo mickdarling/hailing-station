@@ -89,6 +89,10 @@ struct AmbientPrivacyLedger<Child: AnyObject> {
     /// that opens or decides first is silent; their own clip follows.
     var heardOn: Bool { entries.values.allSatisfy(\.withdrawn) && said == .on }
 
+    /// Privacy carried from a dropped connection whose owner had heard it announced (#941): "Privacy on" is the last
+    /// word here too, so a status answers as on any private connection.
+    mutating func carryHeard() { said = .on }
+
     /// An off: every open entry is withdrawn, and "Recording again." is the last word.
     mutating func withdrawAll() {
         for key in entries.keys { entries[key]?.withdrawn = true }
