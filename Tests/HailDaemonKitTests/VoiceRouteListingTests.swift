@@ -60,7 +60,9 @@ import Testing
         let session = try await connected(routes: try Self.routes())
         for offline in ["tmux:voice", "tmux:deck"] {
             let refused = await session.receive(sessionFrame(payload: .control(.select(targetID: offline))))
-            guard case .error(let code, _) = try onlyControl(refused) else { throw TestSupportError.expectedOneControl }
+            guard case .error(let code, _, _) = try onlyControl(refused) else {
+                throw TestSupportError.expectedOneControl
+            }
             #expect(code == .notAllowed)
             #expect(await session.selectedTarget == nil)
         }

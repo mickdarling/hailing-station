@@ -55,7 +55,7 @@ import Testing
             target: Self.target, payload: .text(TextPayload(text: String(repeating: "b", count: 2_001)))
         )
         let result = await session.receive(phone)
-        guard case .control(.error(_, let message)) = try #require(result.frames.first).payload else {
+        guard case .control(.error(_, let message, _)) = try #require(result.frames.first).payload else {
             Issue.record("phone frame over the default cap was not refused")
             return
         }

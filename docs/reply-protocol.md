@@ -83,6 +83,87 @@ older device refuses an unknown command as malformed. The host sends it when a R
 in its scope, and refuses the rest of every reply that was mid-stream on that connection whether or not the device
 advertised the command ([rightyo-input.md](rightyo-input.md)).
 
+## Reply segments (#932)
+
+P1 defines the wire vocabulary. P2 implements host-side segmentation and rendering in `haild reply --say`.
+P3 adds host listener support: the host advertises `reply_segments` (`ReplySegments.capability`) beside its
+other capabilities, strips `segmentEnd` for devices that did not advertise it, handles `reply_yield` and runs the
+backstop below. Device pauses/yield (P4) and integration proof (P5) are separate work; the device still ignores
+`AudioPayload.isSegmentEnd` during playback. P2 does not change coaching speech, acknowledgement clips or spoken
+announcements. The host behavior below has synthetic test coverage, not physical-device or live captured-output
+proof.
+
+One reply id spans many spoken segments; its text frame still carries the full spoken text. The P2
+producer splits at sentence boundaries and puts `"segmentEnd": true` on the last audio frame of each segment
+except the final one. The reply's final audio frame already ends its last segment. All audio frames retain the
+same reply descriptor and stream id, with increasing frame sequences and distinct envelope frame ids.
+
+`ReplySegmentation` supplies both limits: defaults are **v1, pending Mick**, at most two sentences and thirty
+whitespace-delimited words per segment. As with reply pacing, haild reads environment tuning:
+`HAILD_REPLY_SEGMENT_MAX_SENTENCES` (1–20) and `HAILD_REPLY_SEGMENT_MAX_WORDS` (1–300). An invalid value falls
+back to that value’s default, with a content-free warning naming the variable.
+These are piece sizes, not a cap on total spoken length; existing transport and
+runaway-renderer safeguards remain. The pure segmenter preserves spelling and internal whitespace, protects
+common abbreviations, initials, dotted initialisms, decimals, versions, URL/path internal periods, and closing
+quotes/brackets. Newlines separate sentences/list items. `?` and `!` terminate sentences; ellipses (`...`/`…`)
+terminate before an uppercase next token. Oversized sentences prefer the last clause end (`,`, `;`, `:`, `—`)
+within the word bound, then a word boundary. Ambiguous abbreviations use deterministic lexical rules, not a
+language model. Joins may change whitespace only; one-piece input is unchanged.
+
+Each segment has its own owned vbsay renderer, sequentially retired and joined before the next starts. The
+context, pacing, total frame budget and timing recorder span the whole reply. A non-final stdout segment
+retains its last complete frame until more PCM or EOF: EOF flushes its remainder, or that held complete frame,
+with `segmentEnd`. The final segment keeps legacy framing; `sendFinalPCM` still terminates the whole reply.
+The files-only fallback also renders per segment and marks only the last frame of its last stable raw file.
+Failure, supersession or cancellation stops subsequent renderers and uses existing owned-child retirement,
+cancellation signalling and deferred-cleanup semantics. Rendering is sequential to retain this ownership model;
+synthetic overhead and byte-identity evidence are in [the host test record](testing/reply-segments-host.md).
+This is host-local synthetic proof, not a live captured-output round trip or physical playback validation.
+
+- `segmentEnd` is only `true` or absent, never false, null or another type. It requires reply audio with a
+  `streamId` matching `reply.audioStream`, `final: false`, and no `resume`. The property defaults to false and the
+  encoder omits it when false, preserving legacy frame bytes. Audio decoding tolerates unknown keys: an older
+  device ignores this key and plays audio as before. Even so, a host sends it only to a device that advertised
+  `reply_segments`; an older device receives the segments back to back without the key.
+- `{"command":"reply_yield","reply":"<UUID>","segment":1}` is DEVICE→HOST. `reply` is the `ReplyDescriptor.id`
+  being yielded; `segment` counts segment ends whose playback finished before the owner took the turn. It is
+  an integer from 1 through 10,000 (`ReplySegments.maxSegmentEnds`). Only these three keys are permitted;
+  missing fields, null, invalid UUIDs, fractional/non-integer counts, out-of-range counts and extras fail decoding.
+  A device sends it only to a host that advertised `reply_segments`. An older host refuses the unknown command
+  as malformed; a device refuses it from a host through its existing unexpected-control-frame failure.
+- P3 gates reply audio at `WebSocketPeer.prepareReplyPublication`, immediately before encoding. A device that
+  advertised `reply_segments` receives the original flag; every other device receives `isSegmentEnd = false`,
+  whose encoding omits the field and is byte-identical to legacy audio. Correlated replies, fallback/last-input
+  routing and host clips (including clips gated by privacy) share this boundary. Device-local replay uses the
+  bytes already delivered; there is no separate host replay send path.
+- Both built-in host authorizers permit `reply_yield`, but the session additionally requires a ready connection
+  whose own peer advertised `reply_segments`. A missing capability gets `unauthorized`,
+  `terminal action is not authorized`, with the connection kept open. Before hello, a yield follows the existing
+  non-hello rule: `malformed`, `first frame must be hello`, and the connection closes without a `reply_yield` log.
+  A custom authorizer can still deny it. An authorized yield stops only that reply id if it is in flight on this
+  connection. Later frames are refused as `replyStopped`, so the CLI retires its renderer. No `stop_playback`
+  is sent: the device already stopped.
+  Unknown, finished, already-stopped and other-connection replies do nothing and produce no response frame.
+  `segment` is an informational count, never evidence of authority.
+- After input from this connection is handed off (a delivered phone final text or ambient dispatch, the #370
+  last-input condition), P3 stops every in-flight reply on that connection that has had a segment end enqueued.
+  This backstop runs only on connections whose peers advertised `reply_segments`; older devices retain their
+  existing behavior. Refused, held, unconfirmed and `.unowned` handoffs do not trigger it. It sends no
+  `stop_playback` and leaves unsegmented and other-connection replies alone.
+  Tracking is a subset of the existing 64-entry in-flight list, removed at final audio, stop or teardown. Stopped
+  ids enter the listener's 64-entry stop ledger synchronously, so disconnect cannot hand later frames elsewhere.
+- Content-free logs use `reply_yield` with `outcome=accepted|ignored|not_authorized` and `segment=<count>`, and
+  `reply_backstop` with `outcome=stopped count=<count>` only when at least one reply is stopped.
+  Neither reply ids nor request/reply text is logged by these events. Stop, dismiss and privacy still stop whole
+  reply ids. Echo handling, acknowledgements and the not-sent clip retain their existing behavior.
+
+Proposed device behavior (P4, not shipped or physically validated): after a segment finishes playing, the device
+opens a pause window. Sustained owner speech in that window stops the remaining reply locally and sends
+`reply_yield`; the P3 host then drops later frames for that reply id, allowing its renderer to retire.
+The v1 defaults—1.5 s pause, 300 ms sustained onset, no "go on"—are device configuration pending Mick's confirmation.
+Synthetic P1 verification is recorded in [reply-segments-protocol.md](testing/reply-segments-protocol.md), and
+P3 listener verification in [reply-segments-listener.md](testing/reply-segments-listener.md).
+
 ## Muting reply audio (#404)
 
 `{"command": "set_reply_mute", "muted": true}` is a host-to-device control command that mutes the device's reply
@@ -139,9 +220,41 @@ lockdown, a changed binding or selection, an audit failure) leaves the words sho
 as before. A heard turn over the 8 KiB cap is not shown (RightyO admits turns up to 16,000 bytes). Both are tracked in
 #392. `text` is the request's heard turn
 (the user's own words), never the prompt envelope or a producer's formed request. It is 1 to 8 KiB of UTF-8, the text
-payload's cap. The decoder and the schema refuse any other key. The command grants no authority, and a host refuses
-it from a device. A device advertises `ambient_heard` (`AmbientHeard.capability`) in its `hello` when it can show the
-text, and a host never sends the command to a device that did not. The host never logs the text.
+payload's cap. Besides the optional `turn` below, the decoder and the schema refuse any other key. The command grants
+no authority, and a host refuses it from a device. A device advertises `ambient_heard` (`AmbientHeard.capability`) in
+its `hello` when it can show the text, and a host never sends the command to a device that did not. The host never logs the text.
+
+### Optional heard-turn correlation (#923)
+
+The protocol accepts an optional `turn` UUID string on `ambient_heard` and on an `error` with code
+`voice_route_refused`. Omit it for the legacy shape; null, invalid UUIDs and `turn` on any other control command or
+error code are refused. Frames carrying `turn` refuse unknown payload fields; legacy error extension tolerance is
+unchanged. `heard_turns` (`HeardTurns.capability`) is the device capability that permits the host to send this field,
+in addition to the frame's existing capability requirements.
+
+The host mints a fresh random UUID at the speaking connection's heard-frame enqueue boundary, independently of
+content. It records a host-local request key → turn only after a successful queue, in a 64-entry in-memory FIFO for
+that connection. A matching `voice_route_refused` consumes the record; completion, connection teardown, and oldest
+entry eviction discard it. A request with no successfully queued heard turn on that connection has no turn on its
+refusal. Both frames require `heard_turns` plus their existing capability (`ambient_heard` or `request_refusals`);
+legacy frames omit the field entirely. No other command or error carries it. Neither heard words nor turn IDs are
+logged. The identifier grants no authority.
+
+The device model (PR C1) stores a received heard UUID on its chat entry within the existing 200-entry in-memory
+history. A `voice_route_refused` with the same UUID on the same endpoint's current connection marks that entry's
+`notSent` state; the separate refusal notice and announcement remain unchanged. Matching uses only UUIDs, never
+content. Missing or unknown turns leave entries unchanged. Correlation is consumed by a matching refusal, evicted
+with its entry, and cleared on disconnect, reconnect, endpoint replacement or removal without rewriting history.
+A heard entry without a refusal stays sent. Neither heard text nor correlation is logged.
+
+The device advertises `heard_turns` alongside `ambient_heard` and `request_refusals` (PR C2). A refused heard entry
+shows "You · not sent" with secondary text and heading on a greyed `.quinary` bubble. VoiceOver labels it "You said,
+not sent" before the message text, like "You said, heard but not sent" for overheard entries. The overheard setting
+still hides only overheard entries, so a refused heard request remains visible. An older host simply omits the
+optional turn and needs no change. Synthetic verification is recorded in [the PR B host test
+record](testing/heard-turn-host.md), [the PR C1/C2 app test record](testing/heard-turn-app.md) and [the PR A protocol
+test record](testing/heard-turn-protocol.md). The app still needs physical accessibility checks; this is not
+physical-device proof.
 
 ### Overheard remarks (#398)
 

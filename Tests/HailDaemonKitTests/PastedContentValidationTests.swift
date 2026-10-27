@@ -30,7 +30,7 @@ import Testing
     }
 
     private func expectGuarded(_ result: HostSessionResult, _ adapter: FakeAdapter) async throws {
-        guard case .error(let code, let message) = try onlyControl(result) else {
+        guard case .error(let code, let message, _) = try onlyControl(result) else {
             Issue.record("expected a confirmation refusal")
             return
         }
@@ -89,7 +89,7 @@ import Testing
         let spoken = await GuardBudgetClock.$current.withValue(.expiring()) {
             await ready.session.receive(paste("summarise this", "Synthetic lunch notes.", ready))
         }
-        guard case .error(let code, _) = try onlyControl(spoken) else {
+        guard case .error(let code, _, _) = try onlyControl(spoken) else {
             Issue.record("expected the spoken part's timeout to fail closed")
             return
         }

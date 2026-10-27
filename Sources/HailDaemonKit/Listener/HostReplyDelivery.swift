@@ -14,14 +14,19 @@ enum ReplyFrameDelivery<Receipt: Sendable>: Sendable {
     case delivered(Receipt)
     case abandoned
     case refused
+    /// Refused by the privacy reply hold (#913): nothing was enqueued.
+    case held
+
+    var isHeld: Bool { if case .held = self { true } else { false } }
 }
 
 /// Connections in privacy mode (#735 S-2c, internally duck): the agent's replies to them are refused from the moment
 /// the host takes privacy until it confirms the exit. Set synchronously, under the router's lock, by the entry itself,
-/// and read inside each reply's final enqueue, so no frame the agent sends after entry is enqueued. Released on the
-/// router's serial notice queue after the entry's drop of pending replies has run (or at once when the connection
-/// ends). The host's own clips (privacy on, off and status) go through `deliverRequestlessReply`, which never
-/// consults it.
+/// and checked inside each reply's final enqueue, under its own lock (`unlessHeld`), so no frame is enqueued once the
+/// entry has set it. Released on the router's serial notice queue after the entry's drop of pending replies has run
+/// (or at once when the connection ends). Of the host's own clips, only "Nothing was sent." and the acknowledgement
+/// pass it (#913), each clip whole under one check; the privacy clips (on, off, status) and the other confirmations
+/// never consult it.
 final class PrivateReplyHold: Sendable {
     private let held = Mutex<Set<UUID>>([])
 
@@ -30,6 +35,14 @@ final class PrivateReplyHold: Sendable {
     }
 
     func holds(_ connection: UUID) -> Bool { held.withLock { $0.contains(connection) } }
+
+    /// Runs `enqueue` unless `connection` is held, under the lock `set` takes (#913), so an entry lands wholly before
+    /// or wholly after it; false, without running it, when held. `enqueue` only hands frames to the transport
+    /// (`NWConnection.send`, which returns at once) and never waits for their completion, so a privacy entry never
+    /// waits behind a slow socket; nor does it take the router's lock, which `set` is called under.
+    func unlessHeld(_ connection: UUID, _ enqueue: () -> Bool) -> Bool {
+        held.withLock { $0.contains(connection) ? false : enqueue() }
+    }
 }
 
 /// A host-minted request belongs to this HostSession only. Neither device names nor wire UUIDs create it.
@@ -221,10 +234,18 @@ struct LastInputRoute: Sendable {
 }
 
 extension HostSession {
-    func attachLastInput(_ ledger: LastInputLedger) { lastInputLedger = ledger }
+    func attachLastInput(
+        _ ledger: LastInputLedger, recordStoppedReply: @escaping @Sendable (UUID) -> Void = { _ in },
+        replyEvent: @escaping @Sendable (WebSocketListenerEvent) -> Void = { _ in }
+    ) {
+        lastInputLedger = ledger
+        self.recordStoppedReply = recordStoppedReply
+        self.replyEvent = replyEvent
+    }
 
     /// Called only from `deliver` after a delivered handoff, in the actor turn that confirmed `generation`.
     func noteLastInput(to target: String, generation: UUID) {
+        stopSegmentedRepliesForRequest()
         let entry = LastInputLedger.Entry(connection: connectionID, generation: generation, at: requestClock())
         lastInputLedger?.record(entry, for: target)
     }
@@ -399,6 +420,23 @@ extension HostSession {
         await enqueueRoutedReply(frame, enqueue: enqueue) != nil
     }
 
+    /// A host clip's frames, one reply to one target (#913), enqueued in one step: each still selected and the host
+    /// permit current, then `enqueue` hands them all over at once. False when it enqueued none, or not all.
+    func enqueueRequestlessClip(_ frames: [Frame], enqueue: @Sendable () -> Bool) async -> Bool {
+        guard let first = frames.first, frames.allSatisfy({ $0.target == first.target }), selectsAll(frames),
+              let permit = await requestlessReplyPermit(first) else { return false }
+        // Selection or state may have moved during the await; the gate itself rejects a revoked permit.
+        guard selectsAll(frames), permit.performIfCurrent({ !Task.isCancelled && enqueue() }) == true else {
+            return false
+        }
+        for frame in frames { noteReplyDelivered(frame) }
+        return true
+    }
+
+    private func selectsAll(_ frames: [Frame]) -> Bool {
+        frames.allSatisfy { selectsRequestlessReplyTarget($0, lastInput: nil) }
+    }
+
     /// Delivers to this connection only while it still selects the target (and still holds `lastInput`, when
     /// given) and the host permit is current. Returns the selection it delivered under, so later frames of the same
     /// reply can be pinned to it (#370); nil when nothing was enqueued.
@@ -418,18 +456,27 @@ extension HostSession {
     private func noteReplyDelivered(_ frame: Frame) {
         guard case .audio(let audio) = frame.payload, let reply = audio.reply else { return }
         repliesInFlight.removeAll { $0 == reply.id }
-        guard !audio.isFinal else { return }
+        if audio.isFinal {
+            segmentedReplies.remove(reply.id)
+            return
+        }
+        if audio.isSegmentEnd, peerCapabilities.contains(ReplySegments.capability) {
+            segmentedReplies.insert(reply.id)
+        }
         // An abandoned stream never sends its final frame, so the oldest entry gives way: a live reply is always
         // tracked, and a stale one can at worst be stopped again.
         repliesInFlight.append(reply.id)
         repliesInFlight.removeFirst(max(0, repliesInFlight.count - Self.playbackStopLimit))
+        segmentedReplies.formIntersection(repliesInFlight)
     }
 
     static let playbackStopLimit = 64
 
     /// A reply refused while private (#735 S-2c) is stopped like a dismissed one: its later frames are refused too.
     func stopHeldReply(_ id: UUID) {
+        segmentedReplies.remove(id)
         guard !stoppedReplies.contains(id) else { return }
+        recordStoppedReply(id)
         stoppedReplies.append(id)
         stoppedReplies.removeFirst(max(0, stoppedReplies.count - Self.playbackStopLimit))
         repliesInFlight.removeAll { $0 == id }
@@ -472,6 +519,7 @@ extension HostSession {
         stoppedReplies.append(contentsOf: repliesInFlight)
         stoppedReplies.removeFirst(max(0, stoppedReplies.count - Self.playbackStopLimit))
         repliesInFlight.removeAll()
+        segmentedReplies.removeAll()
         guard peerCapabilities.contains(PlaybackStop.capability) else { return (nil, stopped) }
         return (response(.stopPlayback, version: version), stopped)
     }
@@ -481,9 +529,9 @@ extension WebSocketPeer {
     func replyPublicationStatus(_ frame: Frame) async -> ReplyPublicationStatus {
         // Terminal retirement precedes actor callbacks. Preparation is side-effect-free, and final
         // enqueue independently rechecks transport authority rather than trusting this status snapshot.
-        guard prepareReplyPublication(frame) != nil else { return .absent }
+        guard await prepareReplyPublication(frame) != nil else { return .absent }
         let status = await session.replyPublicationStatus(frame)
-        guard prepareReplyPublication(frame) != nil else { return .absent }
+        guard await prepareReplyPublication(frame) != nil else { return .absent }
         return status
     }
 
@@ -493,18 +541,19 @@ extension WebSocketPeer {
         _ frame: Frame, hold: PrivateReplyHold? = nil, onLateSuccess: (@Sendable () -> Void)? = nil
     ) async -> ReplyFrameDelivery<Void> {
         let connection = session.connectionID
+        let held = Mutex(false)
         guard !ended, await session.unleasedBindingIsCurrent(frame),
-              let prepared = prepareReplyPublication(frame, onLateSuccess: onLateSuccess),
+              let prepared = await prepareReplyPublication(frame, onLateSuccess: onLateSuccess),
               await session.enqueueHostReply(frame, enqueue: {
-                  hold?.holds(connection) != true && prepared.enqueue()
-              }) else { return .refused }
+                  Self.enqueue([prepared], unless: hold, connection, held: held)
+              }) else { return held.withLock { $0 } ? .held : .refused }
         return replyDelivery(await prepared.result(), receipt: ())
     }
 
     func admitsRequestlessReply(_ frame: Frame, lastInput: LastInputRoute? = nil) async -> Bool {
         guard await session.admitsRequestlessReply(frame, lastInput: lastInput) else { return false }
         // A retiring transport cannot be the single recipient.
-        return prepareReplyPublication(frame) != nil
+        return await prepareReplyPublication(frame) != nil
     }
 
     /// Host-originated to this one connection (rightyo#105 acknowledgements): no route, no pin.
@@ -514,18 +563,59 @@ extension WebSocketPeer {
         await deliverRoutedReply(frame, onLateSuccess: onLateSuccess)
     }
 
+    /// A host clip that respects privacy (#913), to this one connection: its frames are decided under one check of
+    /// `hold`, so every frame is enqueued or none is, never its words without its audio; then each is awaited in order.
+    /// One delivery per frame, or one `.held` or `.refused` when none was enqueued. Only the hand-offs run under the
+    /// hold's lock, never a wait for their completion.
+    func deliverRequestlessClip(
+        _ frames: [Frame], hold: PrivateReplyHold, onLateSuccess: [@Sendable () -> Void]
+    ) async -> [ReplyFrameDelivery<Void>] {
+        let connection = session.connectionID
+        let held = Mutex(false)
+        var tickets: [PreparedWebSocketReply] = []
+        for (frame, callback) in zip(frames, onLateSuccess) {
+            if let ticket = await prepareReplyPublication(frame, onLateSuccess: callback) { tickets.append(ticket) }
+        }
+        let prepared = tickets
+        guard !ended, !frames.isEmpty, prepared.count == frames.count,
+              await session.enqueueRequestlessClip(frames, enqueue: {
+                  Self.enqueue(prepared, unless: hold, connection, held: held)
+              }) else { return [held.withLock { $0 } ? .held : .refused] }
+        var deliveries: [ReplyFrameDelivery<Void>] = []
+        for ticket in prepared { deliveries.append(replyDelivery(await ticket.result(), receipt: ())) }
+        return deliveries
+    }
+
     /// Returns the selection the reply was delivered under, so its later frames can be pinned to it (#370). The
-    /// agent's replies pass `hold` (#735 S-2c), checked in the enqueue; the host's own clips pass none.
+    /// agent's replies pass `hold` (#735 S-2c), checked in the enqueue; of the host's own clips, only those that
+    /// respect privacy pass it (#913).
     func deliverRoutedReply(
         _ frame: Frame, lastInput: LastInputRoute? = nil, hold: PrivateReplyHold? = nil,
         onLateSuccess: (@Sendable () -> Void)? = nil
     ) async -> ReplyFrameDelivery<LastInputLedger.Entry> {
         let connection = session.connectionID
-        guard !ended, let prepared = prepareReplyPublication(frame, onLateSuccess: onLateSuccess),
+        let held = Mutex(false)
+        guard !ended, let prepared = await prepareReplyPublication(frame, onLateSuccess: onLateSuccess),
               let delivered = await session.enqueueRoutedReply(
-                frame, lastInput: lastInput, enqueue: { hold?.holds(connection) != true && prepared.enqueue() }
-              ) else { return .refused }
+                frame, lastInput: lastInput, enqueue: { Self.enqueue([prepared], unless: hold, connection, held: held) }
+              ) else { return held.withLock { $0 } ? .held : .refused }
         return replyDelivery(await prepared.result(), receipt: delivered)
+    }
+
+    /// The final enqueue of `prepared`, in order, stopping at the first refused: under one check of `hold`'s lock
+    /// when one is given (#913), so no frame is enqueued once privacy has set it; a hold refusal is recorded in `held`.
+    private static func enqueue(
+        _ prepared: [PreparedWebSocketReply], unless hold: PrivateReplyHold?, _ connection: UUID,
+        held: borrowing Mutex<Bool>
+    ) -> Bool {
+        guard let hold else { return prepared.allSatisfy { $0.enqueue() } }
+        var attempted = false
+        let enqueued = hold.unlessHeld(connection) {
+            attempted = true
+            return prepared.allSatisfy { $0.enqueue() }
+        }
+        if !attempted { held.withLock { $0 = true } }
+        return enqueued
     }
 
     private func replyDelivery<Receipt: Sendable>(
@@ -663,10 +753,13 @@ extension WebSocketListener {
         lastInput.pin(reply, target: target, to: entry)
     }
 
-    private func requireDelivery<Receipt: Sendable>(
+    /// Internal, not private, so a test can hand it a `.held` result directly (#913).
+    func requireDelivery<Receipt: Sendable>(
         _ delivery: ReplyFrameDelivery<Receipt>, frame: Frame, on peer: WebSocketPeer
     ) async throws -> Receipt {
-        guard case .delivered(let receipt) = delivery else { throw await refusal(frame, on: peer) }
+        guard case .delivered(let receipt) = delivery else {
+            throw await refusal(frame, on: peer, held: delivery.isHeld)
+        }
         ambient?.observeReply(frame)
         return receipt
     }
@@ -676,14 +769,15 @@ extension WebSocketListener {
         { [weak ambient] in ambient?.observeReply(frame) }
     }
 
-    /// Why an unconfirmed delivery, including an abandoned enqueue, was refused: `privacyHeld` while its
-    /// connection is private (#735 S-2c), which also stops later frames; `publicationFailed` otherwise.
-    private func refusal(_ frame: Frame, on peer: WebSocketPeer) async -> LocalReplyRefusal {
-        guard replyHold.holds(peer.session.connectionID) else { return .publicationFailed }
+    /// Why an unconfirmed delivery, including an abandoned enqueue, was refused: `privacyHeld` when the hold refused
+    /// it (`held`, decided with the enqueue, #913) or while its connection is private (#735 S-2c), which also stops
+    /// later frames; `publicationFailed` otherwise. `held` is never re-read, so an exit released in between cannot
+    /// turn a held reply into `publicationFailed` and leave it unstopped.
+    private func refusal(_ frame: Frame, on peer: WebSocketPeer, held: Bool) async -> LocalReplyRefusal {
+        guard held || replyHold.holds(peer.session.connectionID) else { return .publicationFailed }
         if let id = HostSession.replyID(frame) {
             await peer.session.stopHeldReply(id)
-            stoppedReplyIDs.append(id)
-            stoppedReplyIDs.removeFirst(max(0, stoppedReplyIDs.count - HostSession.playbackStopLimit))
+            stoppedReplyIDs.record(id)
         }
         return .privacyHeld
     }
@@ -724,5 +818,68 @@ extension WebSocketListener {
         default: throw WebSocketListenerError.invalidReply
         }
         return validated
+    }
+}
+
+// Segment authority is connection-local; counts and fixed outcomes are the only diagnostics.
+extension HostSession {
+    func replyFrameForPeer(_ frame: Frame) -> Frame {
+        guard case .audio(var audio) = frame.payload, audio.reply != nil,
+              !peerCapabilities.contains(ReplySegments.capability) else { return frame }
+        audio.isSegmentEnd = false
+        var legacy = frame
+        legacy.payload = .audio(audio)
+        return legacy
+    }
+
+    func receiveReplyYield(_ frame: Frame, reply: UUID, segment: Int) async -> HostSessionResult {
+        guard case .ready = state, peerCapabilities.contains(ReplySegments.capability),
+              await authorizer.authorize(frame) == .allow else {
+            return refuseReplyYield(segment: segment)
+        }
+        // An injected authorizer may suspend while the connection closes.
+        guard case .ready = state else {
+            return refuseReplyYield(segment: segment)
+        }
+        let accepted = repliesInFlight.contains(reply)
+        if accepted { stopHeldReply(reply) }
+        logReplyEvent("reply_yield", detail: "outcome=\(accepted ? "accepted" : "ignored") segment=\(segment)")
+        return HostSessionResult(frames: [])
+    }
+
+    func refuseReplyYield(segment: Int) -> HostSessionResult {
+        logReplyEvent("reply_yield", detail: "outcome=not_authorized segment=\(segment)")
+        return failure(.unauthorized, "terminal action is not authorized", close: false)
+    }
+
+    func logReplyEvent(_ event: String, detail: String) {
+        replyEvent(WebSocketListenerEvent(event: event, sessionID: connectionID, detail: detail))
+    }
+
+    /// Only called after a successful owner handoff, in the same actor turn as its commit.
+    private func stopSegmentedRepliesForRequest() {
+        guard peerCapabilities.contains(ReplySegments.capability) else { return }
+        let stopped = repliesInFlight.filter { segmentedReplies.contains($0) }
+        guard !stopped.isEmpty else { return }
+        for reply in stopped { stopHeldReply(reply) }
+        logReplyEvent("reply_backstop", detail: "outcome=stopped count=\(stopped.count)")
+    }
+
+    /// Keep the existing in-flight ids available to a dismiss already awaiting this session.
+    func endSegmentTracking() {
+        segmentedReplies.removeAll()
+    }
+}
+
+/// Shared stop memory outlives a peer, with no actor-hop gap between session stop and listener refusal.
+final class ReplyStopLedger: Sendable {
+    private let ids = Mutex<[UUID]>([])
+    func contains(_ id: UUID) -> Bool { ids.withLock { $0.contains(id) } }
+    func record(_ id: UUID) {
+        ids.withLock { ids in
+            guard !ids.contains(id) else { return }
+            ids.append(id)
+            ids.removeFirst(max(0, ids.count - HostSession.playbackStopLimit))
+        }
     }
 }

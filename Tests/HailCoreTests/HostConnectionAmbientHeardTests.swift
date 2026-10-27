@@ -7,7 +7,8 @@ import Testing
 /// as theirs, ahead of the reply that answers it, never in the reply list.
 @MainActor
 @Suite struct HostConnectionAmbientHeardTests {
-    @Test func theHeardRequestJoinsTheChatAsTheUsersAheadOfTheReply() async throws {
+    @Test(arguments: [false, true])
+    func theHeardRequestJoinsTheChatAsTheUsersAheadOfTheReply(carriesTurn: Bool) async throws {
         let endpoint = try endpoint()
         let socket = ScriptedSocket()
         let connector = ScriptedConnector()
@@ -21,13 +22,16 @@ import Testing
             return
         }
         #expect(info.capabilities.contains(AmbientHeard.capability))
+        #expect(info.capabilities.contains(HeardTurns.capability))
 
         try await socket.push(.hello(HelloInfo(
             versions: [ProtocolVersion.current], capabilities: ["receive_replies"], deviceName: "Mac"
         )))
         try await waitUntil { await MainActor.run { store.snapshots[endpoint.id]?.state == .ready } }
         let heard = Frame(timestamp: 1, source: "host",
-                          payload: .control(.ambientHeard(targetID: "tmux:a", text: "Haili, what's next?")))
+                          payload: .control(.ambientHeard(
+                            targetID: "tmux:a", text: "Haili, what's next?", turn: carriesTurn ? UUID() : nil
+                          )))
         try await socket.push(FrameCoding.encode(heard))
         let reply = ReplyDescriptor(id: UUID(), hostID: "mac", targetID: "tmux:a", audioStreamID: UUID())
         let answer = Frame(timestamp: 2, target: "tmux:a", source: "mac",

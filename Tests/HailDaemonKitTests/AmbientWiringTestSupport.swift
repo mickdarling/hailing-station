@@ -28,7 +28,9 @@ func ambientRig(
     confirmTimeout: TimeInterval? = nil,
     meeting: MeetingTestSettings = .init(),
     acknowledgementHold: AcknowledgementHold? = nil, notSentQueued: NotSentQueued? = nil,
-    onEvent: (@Sendable (WebSocketListenerEvent) -> Void)? = nil
+    notSentPlaying: NotSentPlaying? = nil,
+    onEvent: (@Sendable (WebSocketListenerEvent) -> Void)? = nil,
+    childMade: (@Sendable (UUID) -> Void)? = nil, privacy: PrivacyOffSettings = .init()
 ) async throws -> AmbientWiringRig {
     let rig = try await RecipientTestRig.make()
     let connected = ConnectedPeerIDs()
@@ -44,6 +46,8 @@ func ambientRig(
     if let now = meeting.now { configuration.now = now }
     configuration.acknowledgementHold = acknowledgementHold?.wait
     if let notSentQueued { configuration.notSentQueued = { notSentQueued.note($0) } }
+    (configuration.notSentPlaying, configuration.childMade) = (notSentPlaying?.wait, childMade)
+    (configuration.privacyProbeTimeout, configuration.offScoping) = (privacy.probeTimeout, privacy.offScoping)
     configuration.notes.shortcuts = shortcuts
     let router = AmbientRightyoRouter(configuration: configuration, log: { events?.record($0); onEvent?($0) })
     let gate = AmbientAudioGate(target: RecipientTestRig.target, sink: router, sweepInterval: nil)
@@ -178,7 +182,7 @@ func ambientError(
     on socket: URLSessionWebSocketTask, step: String, code expected: ErrorCode = .notAllowed
 ) async throws -> String {
     let frame = try await receiveFrame(on: socket, step: step)
-    guard case .control(.error(let code, let message)) = frame.payload else {
+    guard case .control(.error(let code, let message, _)) = frame.payload else {
         Issue.record("expected an error frame, got \(frame.payload)")
         return ""
     }

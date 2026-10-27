@@ -36,6 +36,7 @@ struct AudioOutputRoutePolicy: Sendable {
         var previousOutputs: [Port] = []
         var previousInputs: [Port] = []
         var reason: Reason
+        var appInitiatedReconfigure = false
     }
 
     struct State: Equatable, Sendable {
@@ -84,7 +85,10 @@ struct AudioOutputRoutePolicy: Sendable {
             result.reason = route.category == .playback ? .keepalive : .unsupportedCategory
             return result
         }
-        if externalOutput { result.state.userChoseBuiltIn = false }
+        // Our HFP reconfigure can move output without an owner choice or hardware arrival (#914).
+        let appReconfigure = route.appInitiatedReconfigure
+            && (route.reason == .categoryChange || route.reason == .routeConfigurationChange)
+        if externalOutput && !appReconfigure { result.state.userChoseBuiltIn = false }
         // Only capture can act on recovery; playback must leave its pending loss and history untouched (#852).
         let episode = updateEpisode(route, state: &result.state)
         // Category/configuration notifications can cache evidence, but never cause effects or latch a choice.

@@ -71,7 +71,7 @@ import Testing
 
         for frame in frames {
             let result = await session.receive(frame)
-            guard case .error(let code, _) = try onlyControl(result) else {
+            guard case .error(let code, _, _) = try onlyControl(result) else {
                 Issue.record("expected unauthorized for \(frame.payload)")
                 continue
             }

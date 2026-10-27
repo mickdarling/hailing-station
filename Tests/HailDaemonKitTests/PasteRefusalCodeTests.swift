@@ -26,7 +26,7 @@ import Testing
     }
 
     private func code(_ result: HostSessionResult) throws -> ErrorCode? {
-        guard case .error(let code, _) = try onlyControl(result) else { return nil }
+        guard case .error(let code, _, _) = try onlyControl(result) else { return nil }
         return code
     }
 

@@ -35,7 +35,7 @@ import Testing
     }
 
     private func refusal(_ result: HostSessionResult) throws -> (ErrorCode, String)? {
-        guard case .error(let code, let message) = try onlyControl(result) else { return nil }
+        guard case .error(let code, let message, _) = try onlyControl(result) else { return nil }
         return (code, message)
     }
 

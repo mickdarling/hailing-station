@@ -8,8 +8,10 @@ extension ConversationChatView {
     func messageContent(_ entry: ConversationEntry, segments: [MessageSegment], isYou: Bool) -> some View {
         if !entry.text.isEmpty {
             Text(Self.linked(segments))
-                .foregroundStyle(entry.overheard ? Color.secondary : isYou ? Color.white : Color.primary)
-                .tint(isYou ? Color.white : Color.accentColor)
+                .foregroundStyle(
+                    (entry.overheard || entry.notSent) ? Color.secondary : isYou ? Color.white : Color.primary
+                )
+                .tint((entry.overheard || entry.notSent) ? Color.secondary : isYou ? Color.white : Color.accentColor)
                 // The words Haili spoke aloud are in a speech style, set apart from the unspoken details (#606).
                 .italic(entry.overheard || (entry.speaker == .haili && entry.spoken))
         }

@@ -34,12 +34,13 @@ import Testing
         sessionFrame(target: target, payload: .audio(audio))
     }
 
-    @Test func defaultOffAdvertisesNothingNewAndRefusesAudioExactlyAsBefore() async throws {
+    @Test func defaultOffAdvertisesNoAmbientCapabilityAndRefusesAudioExactlyAsBefore() async throws {
         let (host, adapter) = try await ambientHost()
         let (session, capabilities) = try await openSession(PersonalTerminalAuthorizer(), host: host)
         // `pasted_text` (#608) is a final-text capability, not an ambient one.
         #expect(capabilities == [
-            "list_targets", "ping", "select_target", "send_text", "escape", "receive_replies", PastedText.capability
+            "list_targets", "ping", "select_target", "send_text", "escape", "receive_replies",
+            PastedText.capability, ReplySegments.capability
         ])
         let result = await session.receive(audioFrame(ambientSegment(stream: UUID(), sequence: 0)))
         #expect(try onlyControl(result) == .error(code: .unauthorized, message: "terminal action is not authorized"))
@@ -51,8 +52,8 @@ import Testing
         let (host, adapter) = try await ambientHost()
         let gate = ambientGate(sink: sink, clock: clock)
         let (session, capabilities) = try await openSession(PersonalTerminalAuthorizer(ambientAudio: gate), host: host)
-        #expect(capabilities.suffix(4) == ["stream_audio", AmbientOverheard.capability, AmbientInput.capability,
-                                          DuckMode.privacySwitchCapability])
+        #expect(capabilities.suffix(5) == ["stream_audio", AmbientOverheard.capability, AmbientInput.capability,
+                                          DuckMode.privacySwitchCapability, ReplySegments.capability])
         let stream = UUID()
         #expect((await session.receive(audioFrame(ambientSegment(stream: stream, sequence: 0)))).frames.isEmpty)
         #expect((await session.receive(audioFrame(ambientSegment(stream: stream, sequence: 2, isFinal: true))))
@@ -69,7 +70,7 @@ import Testing
         let stream = UUID()
         _ = await session.receive(audioFrame(ambientSegment(stream: stream, sequence: 0)))
         let bad = await session.receive(audioFrame(ambientSegment(stream: stream, sequence: 1, channels: 2)))
-        guard case .error(let code, _) = try onlyControl(bad) else {
+        guard case .error(let code, _, _) = try onlyControl(bad) else {
             Issue.record("expected refusal")
             return
         }

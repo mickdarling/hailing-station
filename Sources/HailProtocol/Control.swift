@@ -118,13 +118,16 @@ public enum ControlPayload: Sendable, Equatable {
     case escape(targetID: String)
     case ping(nonce: String)
     case pong(nonce: String)
-    case error(code: ErrorCode, message: String)
+    /// Optional `turn` (#923) is permitted only for `voiceRouteRefused`, with `HeardTurns.capability`.
+    case error(code: ErrorCode, message: String, turn: UUID? = nil)
     /// Device diagnostics (#234): enumerated events with bounded scalar fields, sent only to a host that
     /// advertises `DiagnosticLimits.capability`. They carry no audio or text and grant no authority.
     case diagnostic(events: [DiagnosticEvent])
     /// Host to device (#309): stop reply playback now and drop queued reply audio, sent only to a device that
     /// advertises `PlaybackStop.capability`. It carries nothing else and grants no authority.
     case stopPlayback
+    /// Device to host (#932): yield this reply after playing `segment` ends. Requires `ReplySegments.capability`.
+    case replyYield(reply: UUID, segment: Int)
     /// Host to device (#366): this connection's new ambient stream took listening over from another device of
     /// kind `from` (an `AmbientTakeOver.deviceKinds` token, or nil when that device did not say). Sent only to a
     /// device that advertises `AmbientTakeOver.capability`. It carries nothing else and grants no authority.
@@ -132,7 +135,8 @@ public enum ControlPayload: Sendable, Equatable {
     /// Host to device (#318): the request this connection's ambient stream just handed to `targetID`, as heard,
     /// so the device can show the user's own words in the thread. Sent only to the device that spoke, before the
     /// request is typed, and only when it advertises `AmbientHeard.capability`. It grants no authority.
-    case ambientHeard(targetID: String, text: String)
+    /// `turn` (#923) is content-free and sent only with `HeardTurns.capability`; nil keeps the old wire shape.
+    case ambientHeard(targetID: String, text: String, turn: UUID? = nil)
     /// Host to device (#398): a turn this connection's ambient stream heard but did not send to `targetID`, by the
     /// owner or by someone else, within the scope the device asked for with `overheardScope`. Sent only to the device
     /// that heard it, only when it advertises `AmbientOverheard.capability`. It grants no authority.
@@ -183,7 +187,8 @@ public enum ControlPayload: Sendable, Equatable {
 extension ControlPayload: Codable {
     private enum CodingKeys: String, CodingKey {
         case command, hello, targets, targetID = "target", nonce, code, message, events, from, text, speaker, scope
-        case muted, name, state, route, update, session, priority, card, on, reason, expires, report
+        case muted, name, state, route, update, session, priority, card, on, reason, expires, report, turn
+        case reply, segment
     }
 
     private enum Command: String, Codable {
@@ -191,7 +196,7 @@ extension ControlPayload: Codable {
         case diagnostic, stopPlayback = "stop_playback", ambientMovedHere = "ambient_moved_here"
         case ambientHeard = "ambient_heard", ambientOverheard = "ambient_overheard", overheardScope = "overheard_scope"
         case setReplyMute = "set_reply_mute", ownerVoice = "owner_voice", ambientInput = "ambient_input"
-        case sessionUpdate = "session_update"
+        case replyYield = "reply_yield", sessionUpdate = "session_update"
         case health, healthReport = "health_report"
         case mediaMode = "media_mode", duckMode = "duck_mode", setPrivacy = "set_privacy"
     }
@@ -200,6 +205,7 @@ extension ControlPayload: Codable {
     // swiftlint:disable:next cyclomatic_complexity
     public init(from decoder: any Decoder) throws {
         let container = try decoder.container(keyedBy: CodingKeys.self)
+        let turn = try Self.heardTurn(from: decoder)
         switch try container.decode(Command.self, forKey: .command) {
         case .hello: self = .hello(try container.decode(HelloInfo.self, forKey: .hello))
         case .listTargets: self = .listTargets
@@ -213,24 +219,18 @@ extension ControlPayload: Codable {
         case .error:
             let message = try container.decode(String.self, forKey: .message)
             guard message.count <= ControlLimits.maxErrorMessage else {
-                let context = DecodingError.Context(
-                    codingPath: decoder.codingPath, debugDescription: "message too long"
-                )
-                throw DecodingError.dataCorrupted(context)
+                throw DecodingError.dataCorrupted(.init(codingPath: decoder.codingPath,
+                                                        debugDescription: "message too long"))
             }
-            self = .error(code: try container.decode(ErrorCode.self, forKey: .code), message: message)
-        case .diagnostic:
-            // Strict, unlike the other commands (#234): only `command` and `events`, so nothing rides along.
-            try Self.requireOnly(["command", "events"], "diagnostic", decoder)
-            let events = try container.decode([DiagnosticEvent].self, forKey: .events)
-            try requireRange(events.count, in: 1...DiagnosticLimits.maxEventsPerBatch, "events", decoder)
-            self = .diagnostic(events: events)
+            self = .error(code: try container.decode(ErrorCode.self, forKey: .code), message: message, turn: turn)
+        case .diagnostic: self = try Self.diagnostic(from: decoder)
         case .stopPlayback:
             // Strict, like `diagnostic`: only `command`, so nothing rides along on a stop.
             try Self.requireOnly(["command"], "stop_playback", decoder)
             self = .stopPlayback
+        case .replyYield: self = try Self.replyYield(from: decoder)
         case .ambientMovedHere: self = try Self.ambientMovedHere(from: decoder)
-        case .ambientHeard: self = try Self.ambientHeard(from: decoder)
+        case .ambientHeard: self = try Self.ambientHeard(from: decoder, turn: turn)
         case .ambientOverheard: self = try Self.ambientOverheard(from: decoder)
         case .overheardScope: self = try Self.overheardScope(from: decoder)
         case .setReplyMute: self = try Self.setReplyMute(from: decoder)
@@ -241,6 +241,24 @@ extension ControlPayload: Codable {
         case .mediaMode: self = try Self.mediaMode(from: decoder)
         case .duckMode, .setPrivacy: self = try Self.duckMode(from: decoder)
         }
+    }
+
+    /// Strict (#234): only `command` and `events`, so nothing rides along.
+    private static func diagnostic(from decoder: any Decoder) throws -> ControlPayload {
+        try requireOnly(["command", "events"], "diagnostic", decoder)
+        let container = try decoder.container(keyedBy: CodingKeys.self)
+        let events = try container.decode([DiagnosticEvent].self, forKey: .events)
+        try requireRange(events.count, in: 1...DiagnosticLimits.maxEventsPerBatch, "events", decoder)
+        return .diagnostic(events: events)
+    }
+
+    private static func replyYield(from decoder: any Decoder) throws -> ControlPayload {
+        try requireOnly(["command", "reply", "segment"], "reply_yield", decoder)
+        let container = try decoder.container(keyedBy: CodingKeys.self)
+        let reply = try container.decode(UUID.self, forKey: .reply)
+        let segment = try container.decode(Int.self, forKey: .segment)
+        try requireRange(segment, in: 1...ReplySegments.maxSegmentEnds, "segment", decoder)
+        return .replyYield(reply: reply, segment: segment)
     }
 
     /// Strict (#614): `health` carries only `command`; `health_report` only `command` and a closed `report`.
@@ -392,15 +410,29 @@ extension ControlPayload: Codable {
         return .overheardScope(scope: scope)
     }
 
-    /// Strict (#318): only `command`, a non-empty `target`, and non-empty `text` within the text payload's byte cap.
-    private static func ambientHeard(from decoder: any Decoder) throws -> ControlPayload {
-        try requireOnly(["command", "target", "text"], "ambient_heard", decoder)
+    /// Strict (#318, #923): `command`, non-empty `target` and bounded `text`, plus an optional UUID `turn`.
+    private static func ambientHeard(from decoder: any Decoder, turn: UUID?) throws -> ControlPayload {
+        try requireOnly(["command", "target", "text", "turn"], "ambient_heard", decoder)
         let container = try decoder.container(keyedBy: CodingKeys.self)
         let text = try container.decode(String.self, forKey: .text)
         try requireRange(text.utf8.count, in: 1...PayloadLimits.maxTextBytes, "text", decoder)
         let target = try container.decode(String.self, forKey: .targetID)
         try requireRange(target.utf8.count, in: 1...PayloadLimits.maxTextBytes, "target", decoder)
-        return .ambientHeard(targetID: target, text: text)
+        return .ambientHeard(targetID: target, text: text, turn: turn)
+    }
+
+    /// #923: absent keeps legacy decoding; present must be a UUID on one of the two heard-turn frames.
+    private static func heardTurn(from decoder: any Decoder) throws -> UUID? {
+        let container = try decoder.container(keyedBy: CodingKeys.self)
+        guard container.contains(.turn) else { return nil }
+        let command = try container.decode(Command.self, forKey: .command)
+        if command == .error, try container.decode(ErrorCode.self, forKey: .code) == .voiceRouteRefused {
+            try requireOnly(["command", "code", "message", "turn"], "voice_route_refused", decoder)
+        } else if command != .ambientHeard {
+            throw DecodingError.dataCorrupted(.init(codingPath: decoder.codingPath,
+                                                    debugDescription: "turn is not permitted on this command"))
+        }
+        return try container.decode(UUID.self, forKey: .turn)
     }
 
     /// A closed-vocabulary token as matched, or an encoding error, so this type never writes a frame it would refuse.
@@ -452,7 +484,12 @@ extension ControlPayload: Codable {
         case .pong(let nonce):
             try container.encode(Command.pong, forKey: .command)
             try container.encode(nonce, forKey: .nonce)
-        case .error(let code, let message):
+        case .error(let code, let message, let turn):
+            guard turn == nil || code == .voiceRouteRefused else {
+                throw EncodingError.invalidValue(code, .init(codingPath: encoder.codingPath,
+                                                            debugDescription: "turn requires voice_route_refused"))
+            }
+            try container.encodeIfPresent(turn, forKey: .turn)
             try container.encode(Command.error, forKey: .command)
             try container.encode(code, forKey: .code)
             try container.encode(message, forKey: .message)
@@ -460,10 +497,19 @@ extension ControlPayload: Codable {
             try container.encode(Command.diagnostic, forKey: .command)
             try container.encode(events, forKey: .events)
         case .stopPlayback: try container.encode(Command.stopPlayback, forKey: .command)
+        case .replyYield(let reply, let segment):
+            guard (1...ReplySegments.maxSegmentEnds).contains(segment) else {
+                throw EncodingError.invalidValue(segment, .init(codingPath: encoder.codingPath,
+                                                                debugDescription: "segment out of range"))
+            }
+            try container.encode(Command.replyYield, forKey: .command)
+            try container.encode(reply, forKey: .reply)
+            try container.encode(segment, forKey: .segment)
         case .ambientMovedHere(let from):
             try container.encode(Command.ambientMovedHere, forKey: .command)
             try container.encodeIfPresent(AmbientTakeOver.deviceKind(from), forKey: .from)
-        case .ambientHeard(let id, let text):
+        case .ambientHeard(let id, let text, let turn):
+            try container.encodeIfPresent(turn, forKey: .turn)
             try container.encode(Command.ambientHeard, forKey: .command)
             try container.encode(id, forKey: .targetID)
             try container.encode(text, forKey: .text)
@@ -642,6 +688,20 @@ public enum DuckMode {
 /// a host never sends `ambient_heard` to a device without it, because an older device refuses an unknown command.
 public enum AmbientHeard {
     public static let capability = "ambient_heard"
+}
+
+/// #923: permits an optional content-free UUID `turn` on `ambient_heard` and `voice_route_refused` only.
+/// The host must mint a fresh random UUID per heard turn, never derive it from content, reuse it across
+/// connections, or log it beside heard text. Sending and device advertising are deferred to later slices.
+public enum HeardTurns {
+    public static let capability = "heard_turns"
+}
+
+/// Reply segments (#932). A host sends `segmentEnd` only to a device that advertised this capability;
+/// a device sends `reply_yield` only to a host that advertised it. Neither side advertises it in P1.
+public enum ReplySegments {
+    public static let capability = "reply_segments"
+    public static let maxSegmentEnds = 10_000
 }
 
 /// Overheard remarks in the thread (#398): turns the ambient stream heard but did not send. Both sides advertise
@@ -991,14 +1051,14 @@ extension Schema {
         ])
     ])
 
-    /// `ambient_heard` carries `command`, `target` and `text` and nothing else (#318). The `text` limits live here, not
+    /// `ambient_heard` carries `command`, `target`, `text` and optional `turn` (#923). The `text` limits live here, not
     /// in the shared control properties, so no other command's extension field named `text` is constrained.
     static let ambientHeardPayloadRule: JSONValue = .object([
         "if": .object(["properties": .object(["command": .object(["const": .string("ambient_heard")])])]),
         "then": .object([
             "additionalProperties": .bool(false),
             "properties": .object([
-                "command": .object([:]), "target": .object([:]),
+                "command": .object([:]), "target": .object([:]), "turn": .object([:]),
                 "text": .object([
                     "type": .string("string"), "minLength": .integer(1),
                     "maxLength": .integer(Int64(PayloadLimits.maxTextBytes))

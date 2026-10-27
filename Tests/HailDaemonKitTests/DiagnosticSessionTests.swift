@@ -47,7 +47,7 @@ import Testing
             #expect(!advertised.contains(DiagnosticLimits.streamAbandonedCapability))
             let frame = sessionFrame(payload: .control(.diagnostic(events: try diagnosticEvents(1))))
             let result = await session.receive(frame)
-            guard case .error(let code, _) = try onlyControl(result) else {
+            guard case .error(let code, _, _) = try onlyControl(result) else {
                 Issue.record("expected a refusal")
                 return
             }

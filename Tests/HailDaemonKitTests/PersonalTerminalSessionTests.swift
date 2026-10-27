@@ -28,7 +28,7 @@ import Testing
         let partial = await session.receive(sessionFrame(
             target: "tmux:a", payload: .text(TextPayload(text: "echo", isFinal: false))
         ))
-        guard case .error(let code, _) = try onlyControl(partial) else {
+        guard case .error(let code, _, _) = try onlyControl(partial) else {
             Issue.record("expected refusal")
             return
         }
@@ -47,7 +47,7 @@ import Testing
         let unselected = await session.receive(sessionFrame(
             target: "tmux:a", payload: .text(TextPayload(text: "echo hello"))
         ))
-        guard case .error(let unselectedCode, _) = try onlyControl(unselected) else {
+        guard case .error(let unselectedCode, _, _) = try onlyControl(unselected) else {
             Issue.record("expected selection refusal")
             return
         }
@@ -57,7 +57,7 @@ import Testing
         let confirmation = await session.receive(sessionFrame(
             target: "tmux:a", payload: .text(TextPayload(text: "echo hello"))
         ))
-        guard case .error(let confirmationCode, _) = try onlyControl(confirmation) else {
+        guard case .error(let confirmationCode, _, _) = try onlyControl(confirmation) else {
             Issue.record("expected confirmation refusal")
             return
         }
@@ -76,7 +76,7 @@ import Testing
         let beforeSelection = await session.receive(sessionFrame(
             payload: .control(.escape(targetID: "tmux:a"))
         ))
-        guard case .error(let code, _) = try onlyControl(beforeSelection) else {
+        guard case .error(let code, _, _) = try onlyControl(beforeSelection) else {
             Issue.record("expected selection refusal")
             return
         }
