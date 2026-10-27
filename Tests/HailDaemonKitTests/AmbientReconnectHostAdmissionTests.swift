@@ -8,6 +8,36 @@ import Testing
 /// admission. Real loopback listener and fake RightyO; all device claims and PCM are synthetic.
 @Suite(.serialized, .timeLimit(.minutes(1)), .frozenGuardBudget)
 struct AmbientReconnectHostAdmissionTests {
+    /// #904 fix round 1 step 0: re-assert privacy before opening any stream, with no live or parked privacy.
+    /// Stop before sending PCM if the host cannot confirm this no-stream request.
+    @Test func freshConnectionPrivacyReassertionConfirmsBeforeResume() async throws {
+        let rig = try await RestoreRig(phrase: nil, holdSpawn: 1)
+        defer { rig.close() }
+        let (socket, connection) = try await rig.connect(capabilities: [DuckMode.capability])
+        #expect(rig.router.activeStream == nil && rig.parked == nil)
+        try await AmbientPrivacySwitchTests.send(true, on: socket)
+        // The notice is posted from the router's notice queue, so it can follow the next pong: wait, bounded, as
+        // `offWorksAfterTheStreamEndedOnDoesNot` does.
+        var replies: [FramePayload] = []
+        for _ in 0..<20 where !replies.contains(.control(.duckMode(on: true, reason: "device"))) {
+            replies += try await AmbientPrivacySwitchTests.untilPong(socket, step: "no-stream privacy re-assert")
+        }
+        #expect(rig.router.activeStream == nil, "privacy re-assert must not start capture")
+        try #require(replies.contains(.control(.duckMode(on: true, reason: "device"))),
+                     "No-stream set_privacy on must confirm duck_mode on; observed replies: \(replies)")
+        try #require(rig.router.duckMode(connection: connection), "privacy must be held before resume")
+        try await recipientSocketSend(RestoreRig.segment(UUID(), 0, fill: 0x11, resume: true), on: socket)
+        #expect(await eventually { rig.router.activeConnection() == connection }, "resume start processed")
+        #expect(await eventually {
+            (try? rig.fake.recorded("argv.1.txt"))?.contains("--start-private") == true
+        }, "resume child starts private")
+        #expect(rig.router.activePipeline?.hearsAudio == false, "PCM held until private started")
+        try rig.release()
+        #expect(await eventually { rig.router.activePipeline?.hearsAudio == true }, "private started confirmed")
+        await rig.finish()
+        #expect(!rig.heard(1).contains(0x11), "no pre-confirmation PCM reaches RightyO")
+    }
+
     /// Privacy held before a drop reaches the fresh stream on the new connection, a normal or a resume start (#941).
     /// The peer's step-0 test expected 0 PCM bytes at RightyO. By #735 S-1 and S-8 a child that confirmed it is private
     /// hears audio, in RAM only, to catch the exit phrase, so this pins what privacy promises instead: (a) no byte
