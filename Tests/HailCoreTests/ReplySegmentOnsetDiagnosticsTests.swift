@@ -21,7 +21,7 @@ import Testing
         var expected = ReplyOnsetHistogram()
         expected.record(floor)
         #expect(fixture.gate.diagnostics.floors.counts == expected.counts)
-        #expect(fixture.gate.diagnostics.levels.counts == expected.counts)
+        #expect(fixture.gate.diagnostics.levels.counts == expected.counts.map { $0 * 10 })
         #expect(fixture.gate.diagnostics.onsets == 0)
     }
 

@@ -4,9 +4,9 @@ import Testing
 @testable import HailCore
 
 /// Synthetic constant-amplitude PCM has exactly the requested RMS dBFS; never uses a microphone.
-func onsetPCM(_ dbfs: Double, seconds: Double = 0.1) throws -> AVAudioPCMBuffer {
-    let format = try #require(AVAudioFormat(standardFormatWithSampleRate: 48_000, channels: 1))
-    let frames = AVAudioFrameCount((seconds * 48_000).rounded())
+func onsetPCM(_ dbfs: Double, seconds: Double = 0.1, rate: Double = 48_000) throws -> AVAudioPCMBuffer {
+    let format = try #require(AVAudioFormat(standardFormatWithSampleRate: rate, channels: 1))
+    let frames = AVAudioFrameCount((seconds * rate).rounded())
     let buffer = try #require(AVAudioPCMBuffer(pcmFormat: format, frameCapacity: frames))
     buffer.frameLength = frames
     let samples = try #require(buffer.floatChannelData?[0])

@@ -205,18 +205,30 @@ extension AmbientReplyEchoGuard {
     public func configureSegmentOnset(
         input: @escaping @Sendable () -> ReplySegmentOnsetInput, onOnset: @escaping @Sendable () -> Void
     ) {
-        onsetTap.withLock { $0 = ReplySegmentOnsetTap(input: input, onOnset: onOnset) }
-        segmentOnsetGate.closeWindow()
+        onsetTap.withLock {
+            segmentOnsetGate.closeWindow()
+            $0 = ReplySegmentOnsetTap(input: input, onOnset: onOnset)
+        }
     }
 
+    /// Joins in-flight analysis/callbacks. Callbacks must not synchronously configure or stop the tap.
     public func stopSegmentOnset() {
-        onsetTap.withLock { $0 = nil }
-        segmentOnsetGate.closeWindow()
+        onsetTap.withLock {
+            $0 = nil
+            segmentOnsetGate.closeWindow()
+        }
     }
 
-    func observeSegmentOnset(_ buffer: AVAudioPCMBuffer) {
+    func observeSegmentOnset(_ buffer: AVAudioPCMBuffer, afterAuthorization: () -> Void = {}) {
         guard let tap = onsetTap.withLock({ $0 }) else { return }
-        if segmentOnsetGate.analyse(buffer, input: tap.input()) { tap.onOnset() }
+        let input = tap.input()
+        afterAuthorization() // Deterministic interleaving hook; production uses the empty default.
+        onsetTap.withLock { current in
+            guard current?.generation == tap.generation else { return }
+            let fired = segmentOnsetGate.analyse(buffer, input: input)
+            // Shutdown/replacement and firing share this lock; stop waits for any active callback.
+            if fired, current?.generation == tap.generation { tap.onOnset() }
+        }
     }
 }
 
@@ -384,6 +396,7 @@ final class EchoMaskedCapture: AudioCapturing {
 }
 
 private struct ReplySegmentOnsetTap: Sendable {
+    let generation = UUID()
     let input: @Sendable () -> ReplySegmentOnsetInput
     let onOnset: @Sendable () -> Void
 }
@@ -427,9 +440,10 @@ public struct ReplyOnsetDiagnostics: Sendable {
 private struct ReplyOnsetWindow {
     let range: Range<ContinuousClock.Instant>
     var lastEnd: ContinuousClock.Instant
-    var calibrationSeconds = 0.0
+    let sampleRate: Double
+    var calibrationSamples = 0
     var calibrationEnergy = 0.0
-    var sustainedSeconds = 0.0
+    var sustainedSamples = 0
     var fired = false
 }
 
@@ -492,9 +506,13 @@ public final class ReplySegmentOnsetGate: Sendable {
             }
             let seconds = Double(buffer.frameLength) / buffer.format.sampleRate
             let start = instant.advanced(by: .seconds(-seconds))
-            var window = state.window ?? ReplyOnsetWindow(range: range, lastEnd: max(start, range.lowerBound))
-            if window.range != range {
-                window = ReplyOnsetWindow(range: range, lastEnd: max(start, range.lowerBound))
+            var window = state.window ?? ReplyOnsetWindow(
+                range: range, lastEnd: max(start, range.lowerBound), sampleRate: buffer.format.sampleRate
+            )
+            if window.range != range || window.sampleRate != buffer.format.sampleRate {
+                window = ReplyOnsetWindow(
+                    range: range, lastEnd: max(start, range.lowerBound), sampleRate: buffer.format.sampleRate
+                )
             }
             let fired = consume(buffer, end: instant, window: &window, state: &state, settings: input.settings)
             state.window = window
@@ -515,31 +533,53 @@ private extension ReplySegmentOnsetGate {
         let count = Int(buffer.frameLength)
         guard first < count, !window.fired else { return false }
         if start > window.lastEnd.advanced(by: .seconds(1 / rate)) {
-            window.sustainedSeconds = 0
+            window.sustainedSamples = 0
             // Missing capture during calibration cannot stand in for measured floor audio.
-            if window.calibrationSeconds < Self.calibration {
-                window.calibrationSeconds = 0
+            if window.calibrationSamples < Int(ceil(Self.calibration * rate)) {
+                window.calibrationSamples = 0
                 window.calibrationEnergy = 0
             }
         }
         window.lastEnd = end
-        guard calibrate(buffer, first: &first, window: &window, diagnostics: &state.diagnostics),
-              first < count, let power = Self.power(buffer, frames: first..<count) else {
-            window.sustainedSeconds = 0
+        guard calibrate(buffer, first: &first, window: &window, diagnostics: &state.diagnostics) else {
+            window.sustainedSamples = 0
             return false
         }
-        let level = Self.dbfs(power)
-        let floor = Self.dbfs(window.calibrationEnergy / window.calibrationSeconds)
-        state.diagnostics.levels.record(level)
-        if level + 0.000001 >= max(settings.onsetThresholdDBFS, floor + Self.margin) {
-            window.sustainedSeconds += Double(count - first) / rate
-        } else {
-            window.sustainedSeconds = 0
+        return detect(buffer, first: first, window: &window, state: &state, settings: settings)
+    }
+
+    /// At most 10 ms per RMS interval (shorter at buffer edges); only consecutive qualifying samples count.
+    private func detect(
+        _ buffer: AVAudioPCMBuffer, first: Int, window: inout ReplyOnsetWindow,
+        state: inout State, settings: ReplySegmentSettings
+    ) -> Bool {
+        let interval = max(1, Int((window.sampleRate * 0.01).rounded(.down)))
+        let required = Int(ceil(settings.sustainedOnset * window.sampleRate))
+        let floor = Self.dbfs(window.calibrationEnergy / Double(window.calibrationSamples))
+        var first = first
+        while first < Int(buffer.frameLength) {
+            let last = min(first + interval, Int(buffer.frameLength))
+            if let power = Self.power(buffer, frames: first..<last) {
+                let level = Self.dbfs(power)
+                state.diagnostics.levels.record(level)
+                if level + 0.000001 >= max(settings.onsetThresholdDBFS, floor + Self.margin) {
+                    window.sustainedSamples += last - first
+                } else {
+                    window.sustainedSamples = 0
+                }
+            } else {
+                window.sustainedSamples = 0
+            }
+            if window.sustainedSamples >= required { return recordOnset(window: &window, state: &state) }
+            first = last
         }
-        guard window.sustainedSeconds + 0.000001 >= settings.sustainedOnset else { return false }
+        return false
+    }
+
+    private func recordOnset(window: inout ReplyOnsetWindow, state: inout State) -> Bool {
         window.fired = true
         state.diagnostics.onsets &+= 1
-        state.pending.append(end.advanced(by: .seconds(5)))
+        state.pending.append(window.lastEnd.advanced(by: .seconds(5)))
         return true
     }
 
@@ -547,21 +587,19 @@ private extension ReplySegmentOnsetGate {
         _ buffer: AVAudioPCMBuffer, first: inout Int, window: inout ReplyOnsetWindow,
         diagnostics: inout ReplyOnsetDiagnostics
     ) -> Bool {
-        guard window.calibrationSeconds < Self.calibration else { return true }
-        let rate = buffer.format.sampleRate
-        let needed = Int(ceil((Self.calibration - window.calibrationSeconds) * rate - 0.000001))
-        let last = min(Int(buffer.frameLength), first + needed)
+        let required = Int(ceil(Self.calibration * window.sampleRate))
+        guard window.calibrationSamples < required else { return true }
+        let last = min(Int(buffer.frameLength), first + required - window.calibrationSamples)
         guard let power = Self.power(buffer, frames: first..<last) else {
-            window.calibrationSeconds = 0
+            window.calibrationSamples = 0
             window.calibrationEnergy = 0
             return false
         }
-        let duration = Double(last - first) / rate
-        window.calibrationEnergy += power * duration
-        window.calibrationSeconds += duration
+        window.calibrationEnergy += power * Double(last - first)
+        window.calibrationSamples += last - first
         first = last
-        guard window.calibrationSeconds + 0.000001 >= Self.calibration else { return false }
-        diagnostics.floors.record(Self.dbfs(window.calibrationEnergy / window.calibrationSeconds))
+        guard window.calibrationSamples >= required else { return false }
+        diagnostics.floors.record(Self.dbfs(window.calibrationEnergy / Double(window.calibrationSamples)))
         return true
     }
 

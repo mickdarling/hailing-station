@@ -99,7 +99,7 @@ import Testing
         if mode == 2 { fixture.ambient = false }
         for _ in 0..<5 { #expect(try !fixture.feed(0)) }
         #expect(fixture.gate.diagnostics.onsets == 0)
-        #expect(fixture.gate.diagnostics.levels.counts == [0, 0, 0, 0, 1])
+        #expect(fixture.gate.diagnostics.levels.counts == [0, 0, 0, 0, 20])
         fixture.privacy = false
         fixture.ambient = true
         fixture.open()

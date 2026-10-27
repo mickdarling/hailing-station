@@ -80,6 +80,10 @@ import Testing
             #expect(ReplySegmentSettings.saved(in: defaults) == ReplySegmentSettings(sustainedOnset: 0.7))
             defaults.values = ["pauseAfterSegment": 2.5, "sustainedOnset": value]
             #expect(ReplySegmentSettings.saved(in: defaults) == ReplySegmentSettings(pauseAfterSegment: 2.5))
+            defaults.values = ["pauseAfterSegment": 2.5, "sustainedOnset": 0.7, "onsetThresholdDBFS": value]
+            #expect(ReplySegmentSettings.saved(in: defaults) == ReplySegmentSettings(
+                pauseAfterSegment: 2.5, sustainedOnset: 0.7
+            ))
         }
         defaults.values = ["pauseAfterSegment": NSNumber(value: 2), "sustainedOnset": 0.5]
         #expect(ReplySegmentSettings.saved(in: defaults) == ReplySegmentSettings(
@@ -95,6 +99,11 @@ import Testing
         #expect(ReplySegmentSettings.saved(in: defaults) == ReplySegmentSettings(sustainedOnset: 0.7))
         defaults.set(["pauseAfterSegment": 2.5, "sustainedOnset": value], forKey: ReplySegmentSettings.defaultsKey)
         #expect(ReplySegmentSettings.saved(in: defaults) == ReplySegmentSettings(pauseAfterSegment: 2.5))
+        defaults.set(["pauseAfterSegment": 2.5, "sustainedOnset": 0.7, "onsetThresholdDBFS": value],
+                     forKey: ReplySegmentSettings.defaultsKey)
+        #expect(ReplySegmentSettings.saved(in: defaults) == ReplySegmentSettings(
+            pauseAfterSegment: 2.5, sustainedOnset: 0.7
+        ))
     }
 }
 
