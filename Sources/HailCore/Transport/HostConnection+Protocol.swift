@@ -8,8 +8,9 @@ extension HostConnection {
     func negotiate(
         on opened: any WebSocketTransport, token: UInt64
     ) async throws -> (version: Int, capabilities: [String]) {
+        let connectionGeneration = snapshot.connectionGeneration
         if let reporting = opened as? HostLossReportingSocket {
-            await reporting.bind(snapshot.connectionGeneration)
+            await reporting.bind(connectionGeneration)
         }
         try await send(
             .hello(HelloInfo(
@@ -241,11 +242,17 @@ enum HostNoticeOrigin {
 }
 
 extension HostConnection {
-    /// Told the lost socket's generation (and whether a send found it) before its close or reconnect publication.
+    /// Told the socket's bound generation (and whether a send found it); only CancellationError and
+    /// HostConnectionFailure are ignored. Transport-caused drops report before close or reconnect publication.
+    /// Explicit disconnect or loop replacement can interrupt receive and report after `.disconnected`.
+    /// Callers must veto explicit disconnects before calling disconnect(), as R1's store does.
     public typealias TransportLossObserver = @Sendable (_ generation: UUID, _ sending: Bool) async -> Void
 }
 
 /// Installed only for an explicit loss observer. The default connector and transport stay unchanged.
+/// Only CancellationError and HostConnectionFailure are ignored; transport-caused drops report before close.
+/// Explicit disconnect or loop replacement can report interrupted receive after `.disconnected` with the bound
+/// generation. Callers must veto explicit disconnects before calling disconnect(), as R1's store does.
 struct HostLossReportingConnector: WebSocketConnecting {
     let base: any WebSocketConnecting
     let observer: HostConnection.TransportLossObserver
@@ -260,7 +267,10 @@ struct HostLossReportingConnector: WebSocketConnecting {
     }
 }
 
-/// Reports the socket's immutable generation before a failing operation returns to its close/publish path.
+/// Reports the socket's bound generation, ignoring only CancellationError and HostConnectionFailure.
+/// Transport-caused drops report before close/publication; explicit disconnect or loop replacement can report
+/// interrupted receive after `.disconnected`. Callers must veto explicit disconnects before calling disconnect(),
+/// as R1's store does.
 actor HostLossReportingSocket: WebSocketTransport {
     let base: any WebSocketTransport
     let observer: HostConnection.TransportLossObserver

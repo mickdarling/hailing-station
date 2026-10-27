@@ -23,11 +23,13 @@ import Testing
         let epoch = Mutex<UInt64>(0)
         let admission = AmbientSendAdmission { epoch.withLock { $0 == 0 } }
         let gate = SleepGate()
+        let failures = Mutex(0)
         let queue = AmbientAudioSendQueue(maxPending: 10, send: { audio in
             try await gate.sleep(.zero)
             try await rig.connection.sendAudio(audio)
         }, onFailure: { _, error in
             #expect(error as? HostConnectionFailure == .notReady)
+            failures.withLock { $0 += 1 }
         }, admission: admission)
         let stream = UUID()
         await queue.enqueue(ambientSegment(stream: stream))
@@ -36,6 +38,7 @@ import Testing
         epoch.withLock { $0 += 1 }
         await gate.fire()
         await queue.waitUntilIdle()
+        #expect(failures.withLock { $0 } == 1)
         #expect(await queue.failure as? HostConnectionFailure == .notReady)
         #expect(try await audioFrames(rig.socket).isEmpty)
         #expect(AmbientSendAdmission.isCurrent)
