@@ -9,6 +9,12 @@ import Testing
 /// A device whose WebSocket stack never answers a ping (`autoReplyPing` off, and nothing read once it is set up), as
 /// a dropped phone's socket haild still holds open. The app's own transport, `URLSessionWebSocketTask`, answers pings
 /// itself, as the rig's other devices do. Synthetic only; every wait bounded.
+///
+/// Every callback of its connection (state, send and receive completions) is delivered on the peer's own serial queue,
+/// never on `DispatchQueue.global()` (#963, #971). The global concurrent queue is not overcommit: while a parallel
+/// run keeps every core busy at its QoS, the system gives it no thread, and on CI a peer's `ready` arrived about 11 s
+/// late, after haild had rightly dropped the silent connection on its 10 s hello timeout. A serial queue made with a
+/// label targets the overcommit root queue, which always gets a thread, as haild's own listener queue does.
 final class SilentPeer: @unchecked Sendable {
     let connection: NWConnection
 
@@ -21,7 +27,8 @@ final class SilentPeer: @unchecked Sendable {
     /// Only that refusal is retried: `connect()` refuses the address before any SYN, so the attempt never reached the
     /// listener. It is cancelled and the next attempt binds a random local port, at most `attempts` times. Any other
     /// waiting or failed state (a reset, an aborted or refused upgrade: the listener may have seen it), or no answer
-    /// in 15 s, cancels the connection and is thrown.
+    /// in 15 s, cancels the connection and is thrown. That 15 s is the outer bound on reaching `ready`; the peer's own
+    /// deadlines for the hello exchange (each send and receive's 15 s) are armed only after `ready`, when this returns.
     static func connect(port: UInt16, attempts: Int = 8) async throws -> SilentPeer {
         let url = try #require(URL(string: "ws://127.0.0.1:\(port)"))
         for attempt in 0..<attempts {
@@ -34,9 +41,10 @@ final class SilentPeer: @unchecked Sendable {
                 parameters.requiredLocalEndpoint = .hostPort(host: .ipv4(.loopback), port: local)
             }
             let connection = NWConnection(to: .url(url), using: parameters)
+            let queue = DispatchQueue(label: "hail.tests.silent-peer")
             let refused: Bool
             do {
-                refused = try await addressRefused(connection)
+                refused = try await addressRefused(connection, on: queue)
             } catch {
                 connection.cancel()
                 throw error
@@ -48,10 +56,11 @@ final class SilentPeer: @unchecked Sendable {
         throw SilentPeerNotReady()
     }
 
-    /// Starts `connection`: false once it is ready, true if it waits or fails with `EADDRINUSE` (refused its local
-    /// address before any SYN, so it never reached the listener). Throws on any other waiting or failed state, or if
-    /// it is neither ready nor refused within 15 s (it is cancelled then); the caller cancels it on a throw.
-    private static func addressRefused(_ connection: NWConnection) async throws -> Bool {
+    /// Starts `connection` on `queue`: false once it is ready, true if it waits or fails with `EADDRINUSE` (refused
+    /// its local address before any SYN, so it never reached the listener). Throws on any other waiting or failed
+    /// state, or if it is neither ready nor refused within 15 s (it is cancelled then); the caller cancels it on a
+    /// throw.
+    private static func addressRefused(_ connection: NWConnection, on queue: DispatchQueue) async throws -> Bool {
         let readiness = SilentPeerReadiness()
         let timer = Task {
             try? await Task.sleep(for: .seconds(15))
@@ -69,7 +78,7 @@ final class SilentPeer: @unchecked Sendable {
                 default: break
                 }
             }
-            connection.start(queue: .global())
+            connection.start(queue: queue)
         }
     }
 
