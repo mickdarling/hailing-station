@@ -4,7 +4,7 @@ import Testing
 @testable import HailCore
 
 @MainActor
-@Suite(.serialized) struct AmbientReconnectAcceptanceCompletionTests {
+@Suite(.serialized) struct AmbientReconnectAcceptanceSettlingTests {
     @Test func acceptedStreamRefusalBeforeSenderContinuationResumesUsesOrdinaryStop() async throws {
         let rig = try AmbientReconnectRig()
         let delivery = SleepGate()
