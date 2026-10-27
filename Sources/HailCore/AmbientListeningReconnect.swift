@@ -3,6 +3,7 @@
 public import Foundation
 import HailProtocol
 public import Observation
+import Synchronization
 
 /// Device-side confirmation for the retained capture. A host notice is never an owner veto.
 @MainActor
@@ -52,7 +53,8 @@ final class AmbientRestorePrivacy {
     func receive(on: Bool, host: HostEndpoint.Identifier, generation: UUID?) {
         guard requested, let waiting, waiting.hostID == host,
               waiting.connectionGeneration == generation, let began else { return }
-        guard on, now() - began < .seconds(5) else { return finish(false, binding: waiting) }
+        let elapsed: Duration = now() - began
+        guard on, elapsed < .seconds(5) else { return finish(false, binding: waiting) }
         confirmed = true
         completeIfReady(waiting)
     }
@@ -60,7 +62,8 @@ final class AmbientRestorePrivacy {
     private func completeIfReady(_ binding: AmbientAudioBinding) {
         guard sent, confirmed, let began else { return }
         // An early notice is only half the proof: never cancel an outstanding send that may still fail.
-        finish(now() - began < .seconds(5), binding: binding)
+        let elapsed: Duration = now() - began
+        finish(elapsed < .seconds(5), binding: binding)
     }
 
     func sendFailed(host: HostEndpoint.Identifier, generation: UUID) -> Bool {
@@ -100,7 +103,7 @@ public final class AmbientListeningReconnect {
         case ownerStop = 1, ownerSelection, endpointChanged, explicitDisconnect, privacy, modeChanged
         case bindingChanged, targetChanged, startFailed, nonTransport, timedOut, movedAway
     }
-    public enum Outcome: Sendable { case applied, blocked, failed }
+    public enum Outcome: Sendable { case applied, blocked, failed, interrupted }
     public struct Notice: Equatable, Sendable {
         public let id: UUID
         public let outcome: Outcome
@@ -111,10 +114,12 @@ public final class AmbientListeningReconnect {
             self.reason = reason
         }
         public var notificationTitle: String {
-            outcome == .applied ? "Hailing Station reconnected" : "Hailing Station stopped listening"
+            if outcome == .interrupted { return "Hailing Station reconnecting" }
+            return outcome == .applied ? "Hailing Station reconnected" : "Hailing Station stopped listening"
         }
         public var text: String {
-            outcome == .applied ? "Connection dropped and reconnected; listening resumed"
+            if outcome == .interrupted { return "Connection dropped again; still reconnecting" }
+            return outcome == .applied ? "Connection dropped and reconnected; listening resumed"
                 : "Connection dropped; listening stopped, tap to resume"
         }
     }
@@ -126,6 +131,8 @@ public final class AmbientListeningReconnect {
     @ObservationIgnored var sleep: @Sendable (Duration) async throws -> Void = { try await Task.sleep(for: $0) }
     @ObservationIgnored var now: @Sendable () -> ContinuousClock.Instant = { ContinuousClock().now }
     @ObservationIgnored let privacyConfirmation = AmbientRestorePrivacy()
+    private(set) var acceptance: AmbientResumeAcceptance?
+    @ObservationIgnored private var acceptanceTask: Task<Void, Never>?
     private var pending: Pending?
     private var veto: Reason?
     private var renewed = false
@@ -145,9 +152,13 @@ public final class AmbientListeningReconnect {
     public var isPending: Bool { pending != nil }
     public var wantsListening: Bool { isPending }
     var isReauthorizing: Bool { isPending && !renewed && selectionGeneration != nil }
-    func ownerStarted() { veto = nil; notice = nil; replacedAppliedNotice = false }
+    func ownerStarted() {
+        veto = nil; notice = nil; replacedAppliedNotice = false
+        cancelAcceptance()
+    }
     func block(_ reason: Reason) {
         veto = veto ?? reason // Includes a privacy tap before the receive loop publishes the close, even if send fails.
+        cancelAcceptance()
         guard isPending else { return }
         finish(.blocked, reason: veto)
         controller?.cancelTransportRestore()
@@ -157,11 +168,12 @@ public final class AmbientListeningReconnect {
               current.hostID == snapshot.id else { return }
         // A send failure and the receive loop may report the SAME drop. Only a different socket is a flap.
         guard pending?.droppedGeneration != snapshot.connectionGeneration else { return }
+        cancelAcceptance()
         controller.suspendTransport() // Every gap closes admission, including a renewed stream with no PCM yet.
         let interrupted = pending
-        // Flapping: each interrupted attempt ends once as failed; the next drop owns a new attempt and notice.
+        // Flapping: each interrupted attempt ends once as interrupted; the next drop owns a new attempt and notice.
         // All attempts in this unsettled run share the ORIGINAL 60 s bound; a flap never buys more capture time.
-        if interrupted != nil { finish(.failed, reason: .startFailed) }
+        if interrupted != nil { finish(.interrupted, reason: .startFailed) }
         binding = current
         hostName = snapshot.endpoint.name
         if interrupted == nil { notice = nil }
@@ -178,7 +190,8 @@ public final class AmbientListeningReconnect {
         if let veto { return block(veto) }
         if store.privacyLocal[snapshot.id]?.request != nil { return block(.privacy) }
         guard withinDeadline() else { return }
-        armDeadline(interrupted == nil ? .seconds(60) : .seconds(60) - (now() - began))
+        let elapsed: Duration = now() - began
+        armDeadline(interrupted == nil ? .seconds(60) : .seconds(60) - elapsed)
     }
     private func armDeadline(_ remaining: Duration) {
         deadline = Task { [weak self, sleep] in
@@ -273,19 +286,25 @@ extension AmbientListeningReconnect {
             controller.cancelTransportRestore()
         }
     }
-    // Ambient has no positive host acceptance acknowledgement. A later refusal revises the same outcome;
-    // socket-send success alone cannot promise that the host kept listening.
-    func refused(reason: Reason) {
-        guard let previous = notice, previous.outcome == .applied, renewed else { return }
+    // Ambient has no positive host acceptance acknowledgement. A later refusal revises the same outcome
+    // only for the restored stream before its post-segment round trip proves the host kept listening.
+    func refused(reason: Reason, streamID: UUID?, binding: AmbientAudioBinding?) {
+        guard let previous = notice, previous.outcome == .applied, renewed,
+              let acceptance, acceptance.streamID == streamID, acceptance.binding == binding else { return }
+        let elapsed: Duration = now() - acceptance.began
+        guard elapsed < .seconds(60) else { cancelAcceptance(); return }
         replacedAppliedNotice = true
         notice = Notice(id: previous.id, outcome: .failed, reason: reason)
+        cancelAcceptance()
         if let notice { onNotice?(notice) }
     }
     func sent(_ audio: AudioPayload) {
         if renewed, audio.isResume, withinDeadline() { finish(.applied, reason: nil) }
     }
     func withinDeadline() -> Bool {
-        if let pending, now() - pending.began >= .seconds(60) { block(.timedOut); return false }
+        guard let pending else { return true }
+        let elapsed: Duration = now() - pending.began
+        if elapsed >= .seconds(60) { block(.timedOut); return false }
         return true
     }
     func sendFailed(_ error: any Error, audio: AudioPayload, binding: AmbientAudioBinding,
@@ -293,11 +312,58 @@ extension AmbientListeningReconnect {
         guard !(error is CancellationError), !(error is EncodingError),
               !(error is HostConnectionFailure) || (error as? HostConnectionFailure) == .notReady,
               controller?.ownsAudio(audio.streamID, binding: binding) == true,
-              let snapshot = store.snapshots[binding.hostID] else { return }
+              let snapshot = store.snapshots[binding.hostID],
+              snapshot.connectionGeneration == binding.connectionGeneration else { return }
         drop(snapshot, store: store)
     }
     func veto(_ reason: Reason, host: HostEndpoint.Identifier) {
         // A completed restore retains presentation state, but only a pending restore owns this run's veto.
         if controller?.binding?.hostID == host || (isPending && binding?.hostID == host) { block(reason) }
     }
+}
+
+// Acceptance is scoped to one restored stream, never to the listening run or a scheduling delay.
+extension AmbientListeningReconnect {
+    func confirmAcceptance(of audio: AudioPayload, binding: AmbientAudioBinding, on connection: HostConnection) {
+        guard audio.isResume, renewed, let pending, self.binding == binding, let streamID = audio.streamID else {
+            return
+        }
+        cancelAcceptance()
+        let proof = AmbientResumeAcceptance(streamID: streamID, binding: binding, began: pending.began)
+        acceptance = proof
+        acceptanceTask = Task { [weak self] in
+            do { try await connection.confirmRoundTrip(for: proof) } catch { return }
+            self?.accepted(proof)
+        }
+    }
+
+    func accepted(_ proof: AmbientResumeAcceptance) {
+        guard acceptance === proof else { return }
+        acceptance = nil
+        acceptanceTask = nil
+    }
+
+    private func cancelAcceptance() {
+        acceptanceTask?.cancel()
+        acceptanceTask = nil
+        acceptance = nil
+    }
+}
+
+/// Retain the ping identity so ordered receive callbacks can observe its pong even before the waiter resumes.
+final class AmbientResumeAcceptance: Sendable {
+    let nonce = UUID().uuidString.lowercased()
+    let streamID: UUID
+    let binding: AmbientAudioBinding
+    let began: ContinuousClock.Instant
+    private let registration = Mutex<UInt64?>(nil)
+    var token: UInt64? { registration.withLock { $0 } }
+
+    init(streamID: UUID, binding: AmbientAudioBinding, began: ContinuousClock.Instant) {
+        self.streamID = streamID
+        self.binding = binding
+        self.began = began
+    }
+
+    func register(_ token: UInt64?) { registration.withLock { $0 = token } }
 }

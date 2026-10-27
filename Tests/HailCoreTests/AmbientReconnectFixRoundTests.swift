@@ -36,7 +36,7 @@ import Testing
         await rig.close()
     }
 
-    @Test func lateGenericRefusalMustNotEmitAnExtraOrdinaryStopNotice() async throws {
+    @Test func genericRefusalBeforeAcceptanceMustNotEmitAnExtraOrdinaryStopNotice() async throws {
         let rig = try AmbientReconnectRig()
         try await rig.start()
         try await rig.drop()

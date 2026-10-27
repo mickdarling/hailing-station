@@ -424,3 +424,120 @@ build/test compilation emits CLT linker debug-module-path warnings, as in earlie
 rounds; no Swift source warnings are suppressed. Manual strict-warning lint
 review and `git diff --check` cover the changed test. The iOS app cannot be built
 on this CLT-only VM; package checks remain synthetic.
+
+## R13: refusal identity, flap wording, and retired send failures
+
+This round supersedes the historical unrestricted notice-replacement rule in
+root cause 6 above. An applied restore does not own every later refusal in the
+listening run. Replacement now requires the exact restored stream and binding,
+including its connection generation, before acceptance. The same identity check
+also has the original 60-second restore bound as a backstop; elapsed time alone
+never authorizes replacement. An accepted stream's later refusal follows the
+ordinary stop path, preserving the actual reason or the calm moved-away handoff.
+`replacedAppliedNotice` is set only when that same bounded replacement occurs.
+
+Acceptance uses the existing confirmed ping/pong round-trip machinery. The R1
+store adds an identity-aware `confirmRoundTrip(for:)` overload on the connection,
+using its existing pending pings, generation guard, send API and pong deadline.
+It sends one ping after successful delivery of the restored first segment.
+The host processes that socket's frames in order and refuses ambient streams at
+start, so its matching pong proves acceptance if no refusal preceded it. The
+probe retains its nonce and registration token. Refusal delivery queries that
+exact nonce on the connection actor before stopping the controller. This also
+handles a pong followed immediately by a refusal while the polling confirmation
+task has not resumed. A failed, canceled, unregistered, or retired-generation
+probe cannot prove acceptance. No wire message or R0 file changed.
+
+The pre-acceptance regression now waits for that ping without answering it,
+advances only an injected clock by five seconds, and requires replacement of the
+same notice ID without another ordinary-stop callback. The app's existing
+notice-ID deduplication therefore preserves one haptic per drop. The
+post-acceptance regression answers the ping and immediately sends either final
+refusal, without waiting for the polling task or more PCM. Both require the
+ordinary path. Another test rejects mismatched stream and generation identities.
+None of these acceptance tests depends on wall-clock delay.
+
+An interrupted attempt now has outcome `interrupted` and says
+“Connection dropped again; still reconnecting”, with a reconnecting title.
+Capture remains armed, the original deadline remains in force, and each drop
+still owns one distinct notice. Existing flap/deadline expectations use that
+outcome. The R2 presentation uses current listening/pending state to offer a
+resume action, so this outcome needs no app adaptation.
+
+A send failure is ignored when its immutable binding generation differs from
+the current store snapshot. This prevents a late old-socket error from treating
+the replacement as another drop. The streamer's one-shot transport-resume flag
+is cleared when a recovery decision is consumed, when transport is suspended,
+and when capture stops. A held backoff completing after transport resume cannot
+grant a later unrelated failure a free restart. The admission-versus-queue-check
+race remains fail-closed and is documented beside the check; no admission rule
+was relaxed. Restore still never sends privacy off, capture still discards gap
+PCM, and only an owner start clears an owner veto.
+
+The compiler fix uses exactly a separately typed `let elapsed: Duration =
+now() - began`, followed by the deadline ternary subtracting `elapsed`. The other
+instant differences in this touched coordinator likewise use separately typed
+locals. This follows the supplied older-host type-check evidence; local package
+builds do not claim execution on that older compiler.
+
+### R13 fail-before evidence
+
+The requested probes were ported under normal test names and compiled against
+the unchanged supplied R1 production head. `test --disable-xctest --no-parallel
+--filter AmbientReconnectLate --skip DiagnosticReplyComposition`, with the
+common offline flags, exited 1: **4 tests in 2 suites, 5 failed assertions,
+8.583 seconds**. Both arguments of the parameterized refusal test failed on
+assertions, not setup or timeout. Exact original assertion locations:
+
+- `refusalLongAfterAppliedRestoreUsesOrdinaryStopPath(movedAway:)`, true and
+  false: `AmbientReconnectLateRefusalTests.swift:25`, notice count was 2, not 1.
+  The false argument also failed at line 26: ordinary-stop count was 0, not 1.
+- `interruptedAttemptNoticeDoesNotTellArmedOwnerToTap`:
+  `AmbientReconnectLateDropTests.swift:18`, the notice said listening stopped
+  while capture remained armed and resumed without a tap.
+- `lateOldGenerationSendFailureDoesNotCreateAnotherDrop`:
+  `AmbientReconnectLateDropTests.swift:51`, outcomes were failed then applied
+  instead of one applied notice.
+- `refusalWithoutRestoreUsesOrdinaryStopPath`, the requested P1 control, passed
+  before the fix (0.816 seconds). It is a passing control, not failed evidence.
+
+The raw baseline is `<scratch>/fail-before.log`; test additions and production
+fixes are committed, while the supplied probe file and all build products remain
+outside the repository. Later assertions added to the flap test shift its final
+source locations; the fail-before locations above refer to the actual baseline
+log. No failure is attributed to the passing control.
+
+The focused flag regression was also present in that pre-fix test binary. Its
+separate `--skip-build --no-parallel --filter AmbientReconnectResumeFlag` run
+exited 1: **1 test in 1 suite, 1 failed assertion, 0.398 seconds**.
+`transportResumeDuringBackoffDoesNotAuthorizeAnUnrelatedFailure` failed at
+`AmbientReconnectResumeFlagTests.swift:39`: three stream identities were offered
+instead of two. The binary was built before any production edit; this additional
+baseline used that unchanged binary even though source fixes were being prepared.
+Its raw log is `<scratch>/fail-before-resume-flag.log`.
+
+### R13 R1 pass-after
+
+Both warnings-as-errors builds passed after the final recovery adjustment:
+`build -Xswiftc -warnings-as-errors` (2.85 seconds) and
+`build --build-tests -Xswiftc -warnings-as-errors` (3.90 seconds).
+The targeted serial selection matching `AmbientReconnectLate|AmbientReconnectAcceptance|
+AmbientReconnectResumeFlag|AmbientReconnectReviewRefusal|AmbientReconnectReviewFlapping|
+AmbientReconnectFlappingDeadline|AmbientReconnectFixRound` passed **16 tests in
+8 suites, 33.958 seconds**, including both arguments of each refusal test.
+
+An earlier test build rejected a test input edited during compilation; the
+stable retry passed. The first pass-after also exposed an extra recovery callback
+when stopping cleared the cached queue decision. The final change clears only
+the one-shot permission at stop and preserves the once-per-queue decision.
+The flag regression now requires two stream identities and two decisions, and
+passes. These intermediate failures are retained in scratch logs; neither is
+reported as a passing check.
+
+Manual strict-warning lint review covers changed type/function lengths,
+complexity, nesting, parameters and 120-column code. The unchanged failure
+accessor and its complete explanatory comment moved next to the recovery
+methods to keep the streamer type below the warning threshold. No blank lines
+were deleted to meet a limit, and no suppression was added. `git diff --check`
+passes. CLT linker debug-module-path warnings remain the previously documented
+scratch-path warnings; Swift source warnings are treated as errors.

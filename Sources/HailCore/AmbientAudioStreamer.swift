@@ -344,8 +344,6 @@ public final class AmbientAudioStreamer {
     public var droppedChunkCount: Int { get async { await queue?.droppedCount ?? 0 } }
     /// Capture buffers dropped because more than about one second waited for conversion.
     public var droppedCaptureBufferCount: Int { get async { await queue?.droppedCaptureBuffers ?? 0 } }
-    /// The send error that ended the current or last stream, if any.
-    public var failure: (any Error)? { get async { await queue?.failure } }
 
     public func start() throws {
         guard pump == nil else { throw AudioCaptureError.alreadyRunning }
@@ -388,6 +386,8 @@ public final class AmbientAudioStreamer {
             stopCapture(ifRun: current)
             return nil
         }
+        transportResumeAllowed = false // This decision consumed or superseded the transport's one-shot permission.
+        decision = nil
         let identity = makeStreamID()
         guard let encoder = try? AmbientAudioEncoder(streamID: identity, isResume: true) else {
             stopCapture(ifRun: current)
@@ -408,6 +408,7 @@ public final class AmbientAudioStreamer {
 
     private func stopCapture(ifRun current: UUID, finished: Bool = false) {
         guard run == current, pump != nil else { return }
+        transportResumeAllowed = false
         capture.stop()
         if finished { pump = nil; run = nil; isStreaming = false }
     }
@@ -437,6 +438,8 @@ public final class AmbientAudioStreamer {
         var converted = true
         while let buffer = await buffers.next() {
             guard await preparation.accepts(buffer) else { continue }
+            // A drop between admission and the queue check can report notReady before recovery is armed.
+            // That ordering fails closed by stopping capture; it cannot admit gap PCM or authorize a resume.
             if let failure = await queue.failure {
                 guard let renewed = await renew(queue, failure) else {
                     converted = false
@@ -460,6 +463,9 @@ public final class AmbientAudioStreamer {
 
 /// Recovering from a send failure on a fresh stream (#287).
 extension AmbientAudioStreamer {
+    /// The send error that ended the current or last stream, if any.
+    public var failure: (any Error)? { get async { await queue?.failure } }
+
     /// Decides at once, so a final refusal stops capture without waiting for more audio.
     private func sendFailed(_ failed: AmbientAudioSendQueue, failure: any Error, run current: UUID) {
         guard run == current, failed === queue, !admission.isPaused else { return }
@@ -487,7 +493,10 @@ extension AmbientAudioStreamer {
 
 // #904: the audio session stays active in the background. No suspended PCM enters a stream or a backlog.
 extension AmbientAudioStreamer {
-    func suspendTransport() { admission.setPaused(true) }
+    func suspendTransport() {
+        transportResumeAllowed = false
+        admission.setPaused(true)
+    }
     func resumeTransport() {
         transportResumeAllowed = true
         decision = nil

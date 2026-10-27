@@ -22,17 +22,23 @@ import Testing
         await rig.close()
     }
 
-    @Test func refusalAfterAppliedReplacesNoticeWithoutWaitingForMorePCM() async throws {
+    @Test func refusalBeforeAcceptanceReplacesNoticeWithoutWaitingForMorePCM() async throws {
         let rig = try AmbientReconnectRig()
+        let clock = TestInstantClock()
+        rig.controller.reconnect.now = { clock.now() }
         try await rig.start()
         try await rig.drop()
         try await rig.reconnect()
         #expect(rig.notices.last?.outcome == .applied)
         let noticeID = rig.controller.reconnect.notice?.id
+        try await rig.waitForAcceptancePing()
+        clock.advance(by: .seconds(5)) // Scheduler stalls do not change an unaccepted stream's identity.
         try await rig.socket.push(.error(code: .notAllowed, message: "ambient moved to pad"))
         try await waitUntil { await MainActor.run { !rig.controller.isOn && rig.released == 1 } }
         #expect(rig.controller.handoff == .movedAway(to: "pad"))
         #expect(rig.controller.reconnect.notice?.id == noticeID)
+        #expect(rig.notices.map(\.id) == [noticeID, noticeID]) // One notice ID means one app haptic per drop.
+        #expect(rig.controller.reconnect.replacedAppliedNotice && rig.unexpected.isEmpty)
         #expect(rig.notices.last?.outcome == .failed && rig.notices.last?.reason == .movedAway)
         let count = try await rig.socket.sentFrames().count
         try await rig.feed()
