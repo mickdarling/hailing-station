@@ -29,6 +29,8 @@ import Testing
             engine: AVAudioEngine(), notificationCenter: center, operations: engine.operations
         )
         let rig = TapCaptureLifecycleRig(capture: capture)
+        let livenessClock = TapCaptureLivenessClock()
+        livenessClock.install(on: rig.playback)
         await rig.view.begin()
         let consumer = try #require(rig.view.bufferTask)
         #expect(engine.running)
@@ -36,8 +38,12 @@ import Testing
                     userInfo: [AudioCaptureEndingSignal.Names.interruptionTypeKey: UInt(1)])
         await consumer.value
         #expect(!engine.running)
+        #expect(rig.playback.isCaptureSuppressed)
         // Round-1 reproduction: the real watcher heals a system end even while the UI flag stays set.
-        try await waitUntil(timeout: .seconds(3)) { await !rig.playback.isCaptureSuppressed }
+        // Advance only its sleep and await the heal itself, independently of main-actor scheduling delays.
+        #expect(await livenessClock.advanceUntilHeal(using: rig.playback) == 1)
+        #expect(!rig.playback.isCaptureSuppressed)
+        #expect(livenessClock.intervals == [.seconds(1)])
         rig.expectReleased(labFinished: false)
         #expect(rig.view.sent.isEmpty)
     }
