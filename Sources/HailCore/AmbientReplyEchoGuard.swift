@@ -202,6 +202,19 @@ public final class AmbientReplyEchoGuard: Sendable {
 }
 
 extension AmbientReplyEchoGuard {
+    /// After a successful segment yield, retire only the reply tail. Call before closing the onset window.
+    /// The last analysed window supplies the configured onset; both clocks must have passed the safe interval.
+    @discardableResult
+    public func endReplyTailForYield() -> Bool {
+        let instant = now()
+        return state.withLock { state in
+            guard !state.audible, let quietAt = state.quietAt,
+                  segmentOnsetGate.canEndReplyTail(at: instant, quietAt: quietAt) else { return false }
+            state.quietAt = nil
+            return true
+        }
+    }
+
     public func configureSegmentOnset(
         input: @escaping @Sendable () -> ReplySegmentOnsetInput, onOnset: @escaping @Sendable () -> Void
     ) {
@@ -441,6 +454,7 @@ private struct ReplyOnsetWindow {
     let range: Range<ContinuousClock.Instant>
     var lastEnd: ContinuousClock.Instant
     let sampleRate: Double
+    var sustainedOnset: Duration = .milliseconds(300)
     var calibrationSamples = 0
     var calibrationEnergy = 0.0
     var sustainedSamples = 0
@@ -465,7 +479,8 @@ public final class ReplySegmentOnsetGate: Sendable {
     private let state = Mutex(State())
     private let tail: Duration
     private let now: AmbientReplyEchoGuard.Now
-    private static let calibration = 0.2
+    private static let calibrationDuration: Duration = .milliseconds(200)
+    private static let calibration = calibrationDuration / .seconds(1)
     private static let margin = 6.0
 
     init(tail: Duration, now: @escaping AmbientReplyEchoGuard.Now) {
@@ -475,6 +490,15 @@ public final class ReplySegmentOnsetGate: Sendable {
 
     /// P4b2 must also call this on window close, without waiting for another capture buffer.
     public func closeWindow() { state.withLock { $0.window = nil } }
+
+    fileprivate func canEndReplyTail(at instant: ContinuousClock.Instant, quietAt: ContinuousClock.Instant) -> Bool {
+        state.withLock { state in
+            guard let window = state.window, instant <= window.range.upperBound else { return false }
+            let tailEnd = max(quietAt, window.range.lowerBound.advanced(by: tail))
+            let deadline = tailEnd.advanced(by: Self.calibrationDuration).advanced(by: window.sustainedOnset)
+            return instant >= deadline
+        }
+    }
 
     public var diagnostics: ReplyOnsetDiagnostics {
         let instant = now()
@@ -514,6 +538,7 @@ public final class ReplySegmentOnsetGate: Sendable {
                     range: range, lastEnd: max(start, range.lowerBound), sampleRate: buffer.format.sampleRate
                 )
             }
+            window.sustainedOnset = .seconds(input.settings.sustainedOnset)
             let fired = consume(buffer, end: instant, window: &window, state: &state, settings: input.settings)
             state.window = window
             return fired

@@ -420,3 +420,61 @@ Both warnings-as-errors builds passed (production 5.45 s; build-tests 60.46 s). 
 317 tests in 62 suites, 24.952 s. The #955 daemon diagnostic test was explicitly excluded in every command.
 `git diff --check` passed. Logs are host-local `/tmp/hs932-p4b1-r3-*.log`.
 Evidence is synthetic macOS VM evidence only; no PR, independent review or GitHub checks were created or claimed.
+
+
+## P4b1 safe yield-tail API (#958, offline bundle r4)
+
+Starts at `ebce4446ebbfbcb7b1d5cd27c7dff08b65979180` on `codex/932-p4b1-gate`.
+`AmbientReplyEchoGuard.endReplyTailForYield() -> Bool` is a callable foundation for P4b2 immediately after
+successful yield. No production caller is added. This round changes only `AmbientReplyEchoGuard.swift` among
+production files; P4b1 still has two production files relative to its P4a base.
+
+The no-argument API uses the gate's last analysed window and configured sustained onset. P4b2 must call it
+before closing that onset window. Missing, closed or expired windows fail closed, as do an audible reply or
+an absent reply quiet edge. The injected `ContinuousClock` instant must reach
+`max(replyQuietAt, window.lowerBound + tail) + calibration + sustainedOnset`, where `replyQuietAt` already
+includes the guard's tail. Each addition is a `Duration` advancement, and calibration is the same exact
+200 ms constant used for the detector's sample counts; no wall-clock or floating-point duration sum is used.
+Checking both starts prevents an old window or an old quiet edge from shortening the safe interval.
+
+Success clears only the reply's `quietAt` and returns true; subsequent calls return false. `tapActive` and
+`tapQuietAt` are never written. The next `setReplyAudible(true)` raises the reply mask synchronously as before.
+The ordinary reply tail still expires naturally; this API retires its state after the longer safe interval.
+There is no new logging, identity, PCM retention, yield, transport, advertising or app/controller wiring.
+
+`ReplySegmentEchoTailYieldTests` adds seven test functions (16 case invocations): playback refusal; one
+nanosecond before and exactly at the deadline for three tails × three configured onset durations; independent
+quiet-edge/window-start checks; active tap and tap-tail preservation; next-reply re-masking and its own tail;
+missing/closed/expired-window refusal; and repeated-call idempotence.
+
+Every phase runs serially through the existing 590-second deadline/owned-process-tree kill trap. Every Swift
+command uses the wrapper above (`taskpolicy -b`, `-j 4`, `-Xswiftc -j1`, offline resolution, and all supplied
+Testing framework/plugin/rpath flags). No background load workers are added. Exact commands:
+
+```sh
+python3 /tmp/hs932-p4-tools/phase.py /tmp/hs932-p4-tools/swift build -Xswiftc -warnings-as-errors
+python3 /tmp/hs932-p4-tools/phase.py /tmp/hs932-p4-tools/swift build --build-tests -Xswiftc -warnings-as-errors
+for iteration in 1 2 3; do
+  python3 /tmp/hs932-p4-tools/phase.py /tmp/hs932-p4-tools/swift test --skip-build --no-parallel \
+    --filter 'HailCoreTests\.ReplySegment' --skip 'HailDaemonKitTests.DiagnosticReplyComposition'
+done
+python3 /tmp/hs932-p4-tools/phase.py /tmp/hs932-p4-tools/swift test --skip-build --no-parallel \
+  --filter 'HailCoreTests\.(Echo|Capture|Ambient|ReplySegment|TapCapture)' \
+  --skip 'HailDaemonKitTests.DiagnosticReplyComposition'
+git diff --check
+```
+
+Final-source results:
+
+- Both warnings-as-errors builds passed: production 2.42 s; build-tests 8.13 s.
+- Combined segment/onset filter passed 3/3: 60 test functions in 10 suites, 111 case invocations per run
+  (180 function executions, 333 case invocations total), in 0.813/0.823/0.861 s.
+- Exact requested serial regression passed once: 189 test functions in 38 suites, 23.214 s. The #955 daemon
+  diagnostic test was explicitly excluded in every test command.
+- `git diff --check` passed. Local classification using the checker's exact exclusions found one production file
+  this round, two for cumulative P4b1, and no security-path matches. `rg` found only the API declaration under
+  `Sources`, confirming no production caller. SwiftLint is unavailable; changed Swift lines were checked by hand.
+- Logs are host-local `/tmp/hs932-p4b1-r4-*.log`, outside version control.
+
+Evidence remains synthetic macOS VM evidence only. No network, other-clone access, simulator, physical-device
+audio, install, upload, PR, independent review or GitHub check is performed or claimed.
