@@ -27,6 +27,9 @@ public final class AmbientReplyEchoGuard: Sendable {
         var tapQuietAt: ContinuousClock.Instant?
     }
 
+    /// P4b1 is opt-in and inert: P4b2 must supply fresh flags/window and handle the content-free signal.
+    public let segmentOnsetGate: ReplySegmentOnsetGate
+    private let onsetTap = Mutex<ReplySegmentOnsetTap?>(nil)
     private let state = Mutex(State())
     private let route = ReplyRoute()
     private let tail: Duration
@@ -36,6 +39,7 @@ public final class AmbientReplyEchoGuard: Sendable {
     public init(tail: Duration = defaultTail, now: @escaping Now = { ContinuousClock.now }) {
         self.tail = tail
         self.now = now
+        segmentOnsetGate = ReplySegmentOnsetGate(tail: tail, now: now)
     }
 
     /// Records whether reply audio is audible now. Becoming inaudible starts the tail; it never shortens one.
@@ -197,6 +201,25 @@ public final class AmbientReplyEchoGuard: Sendable {
     }
 }
 
+extension AmbientReplyEchoGuard {
+    public func configureSegmentOnset(
+        input: @escaping @Sendable () -> ReplySegmentOnsetInput, onOnset: @escaping @Sendable () -> Void
+    ) {
+        onsetTap.withLock { $0 = ReplySegmentOnsetTap(input: input, onOnset: onOnset) }
+        segmentOnsetGate.closeWindow()
+    }
+
+    public func stopSegmentOnset() {
+        onsetTap.withLock { $0 = nil }
+        segmentOnsetGate.closeWindow()
+    }
+
+    func observeSegmentOnset(_ buffer: AVAudioPCMBuffer) {
+        guard let tap = onsetTap.withLock({ $0 }) else { return }
+        if segmentOnsetGate.analyse(buffer, input: tap.input()) { tap.onOnset() }
+    }
+}
+
 /// Raises the guard before every call that can make reply audio audible; a failed call lowers it (with the tail).
 /// Each raise is re-checked one main-actor turn later against the followed controller, as a backstop.
 @MainActor
@@ -336,6 +359,7 @@ final class EchoMaskedCapture: AudioCapturing {
         let (stream, continuation) = AsyncStream<AudioCaptureBuffer>.makeStream(bufferingPolicy: .unbounded)
         let forward = Task.detached {
             for await buffer in source {
+                echoGuard.observeSegmentOnset(buffer.pcmBuffer)
                 echoGuard.silenceIfMasking(buffer.pcmBuffer)
                 continuation.yield(buffer)
             }
@@ -356,5 +380,218 @@ final class EchoMaskedCapture: AudioCapturing {
     func stop() {
         capture.stop()
         routing?.detach()
+    }
+}
+
+private struct ReplySegmentOnsetTap: Sendable {
+    let input: @Sendable () -> ReplySegmentOnsetInput
+    let onOnset: @Sendable () -> Void
+}
+
+/// Fresh capture-time authorization. P4b2 owns opening/closing the played P4a window; nil is closed.
+public struct ReplySegmentOnsetInput: Sendable {
+    public let window: Range<ContinuousClock.Instant>?
+    public let ambientListening: Bool
+    public let privacyOn: Bool
+    public let settings: ReplySegmentSettings
+
+    public init(
+        window: Range<ContinuousClock.Instant>?, ambientListening: Bool, privacyOn: Bool,
+        settings: ReplySegmentSettings = .init()
+    ) {
+        self.window = window
+        self.ambientListening = ambientListening
+        self.privacyOn = privacyOn
+        self.settings = settings
+    }
+}
+
+/// Counts only, ordered <−60, [−60,−45), [−45,−35), [−35,−25), [−25,0] dBFS.
+public struct ReplyOnsetHistogram: Sendable {
+    public private(set) var counts = [UInt64](repeating: 0, count: 5)
+
+    mutating func record(_ level: Double) {
+        let bucket = level < -60 ? 0 : level < -45 ? 1 : level < -35 ? 2 : level < -25 ? 3 : 4
+        counts[bucket] &+= 1
+    }
+}
+
+public struct ReplyOnsetDiagnostics: Sendable {
+    public fileprivate(set) var onsets: UInt64 = 0
+    public fileprivate(set) var withoutAdmittedRequest: UInt64 = 0
+    public fileprivate(set) var levels = ReplyOnsetHistogram()
+    public fileprivate(set) var floors = ReplyOnsetHistogram()
+}
+
+/// Scalar detector state only: no PCM, transcripts, reply identities or pre-roll survive an analyse call.
+private struct ReplyOnsetWindow {
+    let range: Range<ContinuousClock.Instant>
+    var lastEnd: ContinuousClock.Instant
+    var calibrationSeconds = 0.0
+    var calibrationEnergy = 0.0
+    var sustainedSeconds = 0.0
+    var fired = false
+}
+
+/// Inert energy gate, v1 pending Mick. It never yields, unmasks, sends or advertises.
+public final class ReplySegmentOnsetGate: Sendable {
+    private struct State {
+        var window: ReplyOnsetWindow?
+        var diagnostics = ReplyOnsetDiagnostics()
+        // Diagnostic timestamps only, separate from disposable detection state. Expired entries are pruned
+        // on every analysis/read/admission; no audio or identities are kept here.
+        var pending: [ContinuousClock.Instant] = []
+
+        mutating func expire(at instant: ContinuousClock.Instant) {
+            diagnostics.withoutAdmittedRequest &+= UInt64(pending.count { instant >= $0 })
+            pending.removeAll { instant >= $0 }
+        }
+    }
+
+    private let state = Mutex(State())
+    private let tail: Duration
+    private let now: AmbientReplyEchoGuard.Now
+    private static let calibration = 0.2
+    private static let margin = 6.0
+
+    init(tail: Duration, now: @escaping AmbientReplyEchoGuard.Now) {
+        self.tail = tail
+        self.now = now
+    }
+
+    /// P4b2 must also call this on window close, without waiting for another capture buffer.
+    public func closeWindow() { state.withLock { $0.window = nil } }
+
+    public var diagnostics: ReplyOnsetDiagnostics {
+        let instant = now()
+        return state.withLock { state in
+            state.expire(at: instant)
+            return state.diagnostics
+        }
+    }
+
+    /// P4b2 supplies a genuinely admitted ambient request, not a capture/transcription attempt.
+    /// One request satisfies all preceding onsets still within their individual five-second deadlines.
+    public func ambientRequestAdmitted() {
+        let instant = now()
+        state.withLock { state in
+            state.expire(at: instant)
+            state.pending.removeAll()
+        }
+    }
+
+    func analyse(_ buffer: AVAudioPCMBuffer, input: ReplySegmentOnsetInput) -> Bool {
+        let instant = now()
+        return state.withLock { state in
+            state.expire(at: instant)
+            guard input.ambientListening, !input.privacyOn, let range = input.window,
+                  instant > range.lowerBound, instant <= range.upperBound,
+                  buffer.frameLength > 0, buffer.format.sampleRate > 0 else {
+                state.window = nil
+                return false
+            }
+            let seconds = Double(buffer.frameLength) / buffer.format.sampleRate
+            let start = instant.advanced(by: .seconds(-seconds))
+            var window = state.window ?? ReplyOnsetWindow(range: range, lastEnd: max(start, range.lowerBound))
+            if window.range != range {
+                window = ReplyOnsetWindow(range: range, lastEnd: max(start, range.lowerBound))
+            }
+            let fired = consume(buffer, end: instant, window: &window, state: &state, settings: input.settings)
+            state.window = window
+            return fired
+        }
+    }
+}
+
+private extension ReplySegmentOnsetGate {
+    private func consume(
+        _ buffer: AVAudioPCMBuffer, end: ContinuousClock.Instant, window: inout ReplyOnsetWindow,
+        state: inout State, settings: ReplySegmentSettings
+    ) -> Bool {
+        let rate = buffer.format.sampleRate
+        let start = end.advanced(by: .seconds(-Double(buffer.frameLength) / rate))
+        let eligible = max(window.lastEnd, window.range.lowerBound.advanced(by: tail))
+        var first = max(0, Int(ceil(Double(start.duration(to: eligible) / .seconds(1)) * rate - 0.000001)))
+        let count = Int(buffer.frameLength)
+        guard first < count, !window.fired else { return false }
+        if start > window.lastEnd.advanced(by: .seconds(1 / rate)) {
+            window.sustainedSeconds = 0
+            // Missing capture during calibration cannot stand in for measured floor audio.
+            if window.calibrationSeconds < Self.calibration {
+                window.calibrationSeconds = 0
+                window.calibrationEnergy = 0
+            }
+        }
+        window.lastEnd = end
+        guard calibrate(buffer, first: &first, window: &window, diagnostics: &state.diagnostics),
+              first < count, let power = Self.power(buffer, frames: first..<count) else {
+            window.sustainedSeconds = 0
+            return false
+        }
+        let level = Self.dbfs(power)
+        let floor = Self.dbfs(window.calibrationEnergy / window.calibrationSeconds)
+        state.diagnostics.levels.record(level)
+        if level + 0.000001 >= max(settings.onsetThresholdDBFS, floor + Self.margin) {
+            window.sustainedSeconds += Double(count - first) / rate
+        } else {
+            window.sustainedSeconds = 0
+        }
+        guard window.sustainedSeconds + 0.000001 >= settings.sustainedOnset else { return false }
+        window.fired = true
+        state.diagnostics.onsets &+= 1
+        state.pending.append(end.advanced(by: .seconds(5)))
+        return true
+    }
+
+    func calibrate(
+        _ buffer: AVAudioPCMBuffer, first: inout Int, window: inout ReplyOnsetWindow,
+        diagnostics: inout ReplyOnsetDiagnostics
+    ) -> Bool {
+        guard window.calibrationSeconds < Self.calibration else { return true }
+        let rate = buffer.format.sampleRate
+        let needed = Int(ceil((Self.calibration - window.calibrationSeconds) * rate - 0.000001))
+        let last = min(Int(buffer.frameLength), first + needed)
+        guard let power = Self.power(buffer, frames: first..<last) else {
+            window.calibrationSeconds = 0
+            window.calibrationEnergy = 0
+            return false
+        }
+        let duration = Double(last - first) / rate
+        window.calibrationEnergy += power * duration
+        window.calibrationSeconds += duration
+        first = last
+        guard window.calibrationSeconds + 0.000001 >= Self.calibration else { return false }
+        diagnostics.floors.record(Self.dbfs(window.calibrationEnergy / window.calibrationSeconds))
+        return true
+    }
+
+    static func dbfs(_ power: Double) -> Double { power > 0 ? 10 * log10(power) : -.infinity }
+
+    /// Normalized RMS power, including every channel. Unsupported or nonfinite PCM fails closed.
+    static func power(_ buffer: AVAudioPCMBuffer, frames: Range<Int>) -> Double? {
+        guard !frames.isEmpty else { return nil }
+        var sum = 0.0
+        var samples = 0
+        for channel in UnsafeMutableAudioBufferListPointer(buffer.mutableAudioBufferList) {
+            guard let data = channel.mData else { return nil }
+            let channels = Int(channel.mNumberChannels)
+            for index in (frames.lowerBound * channels)..<(frames.upperBound * channels) {
+                guard let value = sample(data, index: index, format: buffer.format.commonFormat),
+                      value.isFinite else { return nil }
+                sum += min(1, value * value)
+                samples += 1
+            }
+        }
+        return samples > 0 ? sum / Double(samples) : nil
+    }
+
+    static func sample(_ data: UnsafeMutableRawPointer, index: Int, format: AVAudioCommonFormat) -> Double? {
+        switch format {
+        case .pcmFormatFloat32: return Double(data.assumingMemoryBound(to: Float.self)[index])
+        case .pcmFormatFloat64: return data.assumingMemoryBound(to: Double.self)[index]
+        case .pcmFormatInt16: return Double(data.assumingMemoryBound(to: Int16.self)[index]) / 32_768
+        case .pcmFormatInt32: return Double(data.assumingMemoryBound(to: Int32.self)[index]) / 2_147_483_648
+        default: return nil
+        }
     }
 }

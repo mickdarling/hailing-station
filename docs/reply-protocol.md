@@ -89,8 +89,8 @@ P1 defines the wire vocabulary. P2 implements host-side segmentation and renderi
 P3 adds host listener support: the host advertises `reply_segments` (`ReplySegments.capability`) beside its
 other capabilities, strips `segmentEnd` for devices that did not advertise it, handles `reply_yield` and runs the
 backstop below. P4a adds device live-stream playback pauses and a callable local yield foundation, with synthetic
-coverage only. P4b must complete mic/echo/transport wiring and advertising; P5 supplies the device UI and shared
-TestFlight integration. The device does not yet advertise `reply_segments`, so negotiated hosts still strip markers.
+coverage only. P4b1 adds an inert, opt-in onset gate; P4b2 must complete mic/echo/transport wiring and advertising.
+P5 supplies the device UI and shared TestFlight integration. The device does not yet advertise `reply_segments`, so negotiated hosts still strip markers.
 P2 does not change coaching speech, acknowledgement clips or spoken announcements. The host behavior below has
 synthetic test coverage, not physical-device or live captured-output proof.
 
@@ -167,10 +167,10 @@ an earlier catch-up hold. Stop/cancel invalidates callbacks and timers. The repl
 pause, preserving the existing echo-guard mask and tail rather than unmasking between segments. Existing mute,
 headset stop-and-mute and capture-suppression policies remain in force; no UI is added.
 
-`ReplySegmentSettings` saves both seconds values in one UserDefaults dictionary,
-`hailing-station.reply-segments.v1`. Defaults **v1, pending Mick**: `pauseAfterSegment = 1.5` (0.1–10 seconds),
-`sustainedOnset = 0.3` (0.05–2 seconds). Each invalid/nonfinite value falls back independently. A controller reads
-saved settings at creation; P5 can assign a validated value and save it when Station tools changes. There is no
+`ReplySegmentSettings` merges all validated values into the UserDefaults dictionary
+`hailing-station.reply-segments.v1`, preserving other keys. Defaults **v1, pending Mick**: `pauseAfterSegment = 1.5` (0.1–10 seconds),
+`sustainedOnset = 0.3` (0.05–2 seconds), `onsetThresholdDBFS = -35` (−60…−15 dBFS). Each invalid/nonfinite
+value falls back independently. A controller reads saved settings at creation; P5 can assign a validated value and save it when Station tools changes. There is no
 spoken "go on" resume in v1.
 
 `yieldPausedReply(ambientListening:privacyOn:)` is a callable local foundation, permitted only in a played pause
@@ -181,12 +181,24 @@ It accepts/retains no mic audio and sends no frame. P4b must release that reply'
 losing the triggering onset; no pre-roll storage or replay path. Subsequent samples use the normal ambient path,
 never a new privacy bypass.
 
-Still proposed for P4b: local sustained-onset analysis (any voice in v1), current privacy/ambient gating, immediate
-reply-scoped mask release, capability-gated transport, device hello advertising and content-free yield/false-yield
-counters. Bulk replay integration also remains for P4b; P4a's new barrier applies to live FIFO ingress, while replay
-keeps its existing bulk-player behavior. P5 adds the paused notice and Station tools pause setting. Do not advertise
-or ship this partial foundation as completed P4. See [the device test record](testing/reply-segments-device.md)
-for the four-file split, executed synthetic checks and explicit deferred expectations.
+P4b1 (synthetic only, **v1, pending Mick**) adds an inert energy gate at the existing `EchoMaskedCapture`
+PCM tap, before masking. Opt-in caller input must provide the current played pause window, ambient on and privacy
+off at capture time. No app/controller wiring is added. Calibration starts **after** the configured echo-guard tail
+(default 400 ms), then measures 200 ms of floor RMS power. Only afterward can a sustained onset meet both
+−35 dBFS and floor +6 dB for the configured 300 ms. The tail comes from `AmbientReplyEchoGuard`, not a second
+constant. Calibration/tail audio cannot fire. A short window cannot fit these stages and never signals.
+
+P4b1 retains only scalar detection state, clears it at window close, retains no PCM and emits a content-free callback
+once per window. It does not call yield, release masks, send frames or advertise. Diagnostics are counts only:
+onsets, onsets without an admitted ambient request within N=5 s, and analysed-level/floor histograms with buckets
+<−60, [−60,−45), [−45,−35), [−35,−25), [−25,0] dBFS. The injected clock expires diagnostic deadlines at 5 s;
+P4b2 must supply the actual admission hook. A timely request covers earlier pending onsets; late requests cannot
+remove expired counts. This detects energy from any sound, not an identified owner or verified speech.
+
+Still proposed for P4b2: fresh window/privacy/ambient wiring, immediate reply-scoped mask release, capability-gated
+transport, device hello advertising, actual ambient-request observation and segmented bulk replay. P5 adds the
+paused notice and Station tools pause setting. Do not advertise or ship this partial foundation as completed P4.
+See [the device test record](testing/reply-segments-device.md) for the split, synthetic checks and deferred work.
 Synthetic P1 verification is recorded in [reply-segments-protocol.md](testing/reply-segments-protocol.md), and
 P3 listener verification in [reply-segments-listener.md](testing/reply-segments-listener.md).
 

@@ -6,6 +6,9 @@ import Testing
     @Test func defaultsAndInclusiveBounds() {
         #expect(ReplySegmentSettings().pauseAfterSegment == 1.5)
         #expect(ReplySegmentSettings().sustainedOnset == 0.3)
+        #expect(ReplySegmentSettings().onsetThresholdDBFS == -35)
+        #expect(ReplySegmentSettings(onsetThresholdDBFS: -60).onsetThresholdDBFS == -60)
+        #expect(ReplySegmentSettings(onsetThresholdDBFS: -15).onsetThresholdDBFS == -15)
         #expect(ReplySegmentSettings(pauseAfterSegment: 0.1, sustainedOnset: 0.05).pauseAfterSegment == 0.1)
         #expect(ReplySegmentSettings(pauseAfterSegment: 10, sustainedOnset: 2).sustainedOnset == 2)
     }
@@ -24,6 +27,34 @@ import Testing
         #expect(settings.sustainedOnset == 0.3)
     }
 
+    @Test(arguments: [-60.1, -14.9, .infinity, -.infinity, .nan])
+    func invalidThresholdFallsBackIndependently(_ value: Double) {
+        let settings = ReplySegmentSettings(pauseAfterSegment: 2, sustainedOnset: 0.5, onsetThresholdDBFS: value)
+        #expect(settings.onsetThresholdDBFS == -35)
+        #expect(settings.pauseAfterSegment == 2)
+        #expect(settings.sustainedOnset == 0.5)
+        #expect(ReplySegmentSettings(pauseAfterSegment: -1, onsetThresholdDBFS: -40).onsetThresholdDBFS == -40)
+        #expect(ReplySegmentSettings(sustainedOnset: -1, onsetThresholdDBFS: -40).onsetThresholdDBFS == -40)
+    }
+
+    @Test func savingThresholdPreservesOtherSettingsAndUnknownKeys() throws {
+        let suite = "ReplySegmentSettingsTests-\(UUID())"
+        let defaults = try #require(UserDefaults(suiteName: suite))
+        defer { defaults.removePersistentDomain(forName: suite) }
+        defaults.set(["pauseAfterSegment": 2.5, "sustainedOnset": 0.4, "future": 42],
+                     forKey: ReplySegmentSettings.defaultsKey)
+        let old = ReplySegmentSettings.saved(in: defaults)
+        ReplySegmentSettings(pauseAfterSegment: old.pauseAfterSegment, sustainedOnset: old.sustainedOnset,
+                             onsetThresholdDBFS: -40).save(in: defaults)
+        let saved = ReplySegmentSettings.saved(in: defaults)
+        #expect(saved.pauseAfterSegment == 2.5)
+        #expect(saved.sustainedOnset == 0.4)
+        #expect(saved.onsetThresholdDBFS == -40)
+        #expect(defaults.dictionary(forKey: ReplySegmentSettings.defaultsKey)?["future"] as? Int == 42)
+        defaults.set(["onsetThresholdDBFS": "invalid"], forKey: ReplySegmentSettings.defaultsKey)
+        #expect(ReplySegmentSettings.saved(in: defaults).onsetThresholdDBFS == -35)
+    }
+
     @Test func oneDefaultsValueRoundTripsAndValidatesStoredValues() throws {
         let suite = "ReplySegmentSettingsTests-\(UUID())"
         let defaults = try #require(UserDefaults(suiteName: suite))
@@ -32,7 +63,7 @@ import Testing
         let settings = ReplySegmentSettings(pauseAfterSegment: 2.5, sustainedOnset: 0.4)
         settings.save(in: defaults)
         #expect(ReplySegmentSettings.saved(in: defaults) == settings)
-        #expect(defaults.dictionary(forKey: ReplySegmentSettings.defaultsKey)?.count == 2)
+        #expect(defaults.dictionary(forKey: ReplySegmentSettings.defaultsKey)?.count == 3)
         defaults.set(["pauseAfterSegment": -2, "sustainedOnset": 0.7], forKey: ReplySegmentSettings.defaultsKey)
         #expect(ReplySegmentSettings.saved(in: defaults) == ReplySegmentSettings(sustainedOnset: 0.7))
         defaults.set(["pauseAfterSegment": "invalid"], forKey: ReplySegmentSettings.defaultsKey)
