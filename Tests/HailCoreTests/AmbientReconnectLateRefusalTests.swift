@@ -38,6 +38,8 @@ import Testing
         let rig = try AmbientReconnectRig()
         try await rig.start()
         try await rig.feed()
+        try await waitUntil { try await audioFrames(rig.socket).isEmpty == false }
+        #expect(!rig.controller.reconnect.isPending && rig.notices.isEmpty)
         try await rig.socket.push(.error(code: .notAllowed, message: "ambient busy elsewhere"))
         try await waitUntil { await MainActor.run { !rig.controller.isOn && rig.released == 1 } }
         #expect(rig.notices.isEmpty && rig.unexpected.count == 1)
