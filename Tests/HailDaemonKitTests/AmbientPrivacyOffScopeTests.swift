@@ -55,24 +55,28 @@ struct AmbientPrivacyOffScopeTests {
         return scene.rig.details("ambient_privacy_off_scoped").first
     }
 
-    /// (i) A same-class source that does not answer a ping is stale: its privacy ends, its teardown parks nothing, and
-    /// the next stream starts public.
+    /// (i) A same-class source that does not answer a ping is stale: it stops counting as a source, so a fresh stream on
+    /// another connection starts public, while the source itself stays private (ducked, its replies held). Its
+    /// teardown then parks nothing, and the next stream is public too.
     @Test func aSameClassStaleSourceIsCleared() async throws {
         let (scene, peer) = try await Self.restoredFrom(silent: true)
         let (rig, router) = (scene.rig, scene.rig.router)
         defer { peer?.cancel(); rig.close() }
         #expect(await Self.off(scene) == "cleared=1 kept=0 \(scene.source)=stale")
-        #expect(!router.duckMode(connection: scene.source))
-        #expect(await eventually { await !rig.env.listener.replyHold.holds(scene.source) }, "stale hold released")
+        #expect(router.duckMode(connection: scene.source))
+        #expect(await rig.env.listener.replyHold.holds(scene.source))
+        let (_, fresh) = try await rig.start(name: RestoreRig.appName)
+        #expect(!router.duckMode(connection: fresh) && router.duckMode(connection: scene.source))
+        #expect(await AmbientPrivacyParkTests.launchedPublic(rig, spawn: 3))
         peer?.cancel()
-        // Its teardown drops its (withdrawn) privacy ledger: the marker that `stop(connection:)` has run.
+        // Its teardown drops its privacy ledger: the marker that `stop(connection:)` has run.
         #expect(await eventually { router.state.withLock { $0.privacy[scene.source] == nil } },
                 "stale source teardown marker")
         await rig.drainMeetingChanges()
         #expect(router.state.withLock { $0.parkedPrivacy } == nil && rig.details("ambient_privacy_parked").isEmpty)
         let (_, next) = try await rig.start(name: RestoreRig.appName)
         #expect(!router.duckMode(connection: next))
-        #expect(await AmbientPrivacyParkTests.launchedPublic(rig, spawn: 3))
+        #expect(await AmbientPrivacyParkTests.launchedPublic(rig, spawn: 4))
         await rig.finish()
     }
 

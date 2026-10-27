@@ -643,8 +643,9 @@ public final class AmbientRightyoRouter: AmbientAudioSink, AmbientListenerWiring
         /// The live connection each restored connection took its privacy from (#941), with that arming: the only one
         /// an owner's off there may end. Dropped with the connection.
         var privacySources: [UUID: PrivacySource] = [:]
-        /// Connections an owner's off cleared as stale sources (#941), with the arming cleared: provisional, so any
-        /// later sign of life puts privacy back (`reapplyFalseStale`). Dropped at teardown or an owner's own action.
+        /// Sources an owner's off judged stale (#941), with the arming judged: excluded as a privacy source for other
+        /// streams, and parking nothing, while they hold that arming; their own privacy is untouched. Provisional, so
+        /// any later sign of life lets them count again. Dropped at teardown or the owner's own action there.
         var staleCleared: [UUID: UUID] = [:]
         /// Arming order of meeting and media modes (MM-E): the latest owner command wins a restore or a move.
         var armings = 0
@@ -705,8 +706,7 @@ public final class AmbientRightyoRouter: AmbientAudioSink, AmbientListenerWiring
             default: break
             }
             if case .started(let stream, _, _) = event { state.newestStart = stream }
-            // A connection cleared as stale that sends audio or starts was alive (#941): private again, before its
-            // audio is handled or queued, so its start is made private.
+            // A source judged stale that sends audio or starts was alive (#941): it counts as a source again.
             reapplyOnLife(event, in: &state)
             // Shutting down: nothing more is queued (starts are refused inline as stopping).
             if state.shuttingDown { return false }
