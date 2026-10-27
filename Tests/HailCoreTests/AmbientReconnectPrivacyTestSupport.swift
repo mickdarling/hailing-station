@@ -11,12 +11,14 @@ actor AmbientPrivacyHost: WebSocketTransport {
     private var requested = false
     private var confirmed = false
     private var prematureAudio = 0
+    private var receivedFrames: [Frame] = []
     init(base: ScriptedSocket, response: Response = .confirm) {
         self.base = base
         self.response = response
     }
     func send(_ data: Data) async throws {
         let frame = try FrameCoding.decode(data)
+        receivedFrames.append(frame) // Include requests whose send simulates a transport failure.
         if case .control(.setPrivacy(on: true)) = frame.payload {
             requested = true
             if response == .sendFailure { throw SocketTestError.closed }
@@ -40,6 +42,13 @@ actor AmbientPrivacyHost: WebSocketTransport {
     }
     func receivedRequest() -> Bool { requested }
     func audioBeforeConfirmation() -> Int { prematureAudio }
+    func expectExactlyOnePrivacyOn() {
+        let requests = receivedFrames.filter { frame in
+            if case .control(.setPrivacy) = frame.payload { return true }; return false
+        }
+        #expect(requests.count == 1)
+        #expect(requests.allSatisfy { $0.payload == .control(.setPrivacy(on: true)) })
+    }
     func receive() async throws -> Data { try await base.receive() }
     func close() async { await base.close() }
 }
