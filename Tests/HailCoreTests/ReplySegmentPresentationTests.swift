@@ -101,7 +101,10 @@ import Testing
         #expect(!duplicate)
         #expect(!notice.isVisible)
     }
+}
 
+/// Station tools bindings and diagnostics formatting for reply segments (#932).
+@Suite struct ReplySegmentSettingsPresentationTests {
     @Test func settingsBindingsExposeInclusiveBoundsAndDefaults() {
         #expect(ReplySegmentSetting.pause.bounds == 0.1...10)
         #expect(ReplySegmentSetting.threshold.bounds == -60 ... -15)
