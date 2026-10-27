@@ -22,7 +22,6 @@ public actor HostConnection {
     public typealias DeadlineScheduler = @Sendable (Duration, @escaping @Sendable () -> Void) -> Void
     public typealias MonotonicNow = @Sendable () -> ContinuousClock.Instant
     public typealias WallNow = @Sendable () -> Int64
-
     let connector: any WebSocketConnecting
     let schedule: ReconnectSchedule
     let deviceName: String
@@ -30,13 +29,14 @@ public actor HostConnection {
     let jitter: Jitter
     let observer: Observer
     let replyObserver: ReplyObserver
+    let reportsAmbientRefusals: Bool
+    public typealias TransportLossObserver = @Sendable (_ generation: UUID, _ sending: Bool) async -> Void
     let pongTimeout: Duration
     let negotiationTimeout: Duration
     let deadlineSleep: Sleep
     let negotiationScheduler: DeadlineScheduler
     let monotonicNow: MonotonicNow
     let wallNow: WallNow
-
     var snapshot: HostConnectionSnapshot
     var socket: (any WebSocketTransport)?
     var loopTask: Task<Void, Never>?
@@ -71,13 +71,18 @@ public actor HostConnection {
         wallNow: @escaping WallNow = {
             Int64((Date().timeIntervalSince1970 * 1_000).rounded(.down))
         },
+        reportsAmbientRefusals: Bool = false,
+        transportLossObserver: TransportLossObserver? = nil,
         sleep: @escaping Sleep = HostConnection.taskSleep,
         jitter: @escaping Jitter = { Double.random(in: 0...1) },
         observer: @escaping Observer = { _ in },
         replyObserver: @escaping ReplyObserver = { _ in }
     ) {
         self.snapshot = HostConnectionSnapshot(endpoint: endpoint)
-        self.connector = connector
+        self.connector = transportLossObserver.map {
+            HostLossReportingConnector(base: connector, observer: $0) as any WebSocketConnecting
+        } ?? connector
+        self.reportsAmbientRefusals = reportsAmbientRefusals
         self.schedule = schedule
         self.deviceName = deviceName
         self.pongTimeout = pongTimeout
@@ -95,9 +100,7 @@ public actor HostConnection {
         self.observer = observer
         self.replyObserver = replyObserver
     }
-
     public func currentSnapshot() -> HostConnectionSnapshot { snapshot }
-
     public func sendFinalText(_ text: String, to targetID: String) async throws {
         try requireReady(capability: "send_text")
         let frame = Frame(
@@ -108,12 +111,10 @@ public actor HostConnection {
         guard let socket else { throw HostConnectionFailure.notReady }
         try await socket.send(FrameCoding.encode(frame))
     }
-
     public func sendEscape(to targetID: String) async throws {
         try requireReady(capability: "escape")
         try await send(.escape(targetID: targetID), generation: generation)
     }
-
     public func connect() async {
         wantsConnection = true
         switch snapshot.state {
@@ -121,11 +122,7 @@ public actor HostConnection {
         case .disconnected, .failed: await replaceLoop()
         }
     }
-
-    public func disconnect() async {
-        _ = await beginDisconnect()
-    }
-
+    public func disconnect() async { _ = await beginDisconnect() }
     func requireReady(capability: String) throws {
         guard snapshot.state == .ready, socket != nil else { throw HostConnectionFailure.notReady }
         guard snapshot.capabilities.contains(capability) else {
@@ -135,7 +132,8 @@ public actor HostConnection {
 
     func retire() async -> Task<Void, Never> {
         let localBarrier = await beginDisconnect()
-        guard let predecessor = (connector as? SerializedWebSocketConnector)?.predecessor else {
+        let base = (connector as? HostLossReportingConnector)?.base ?? connector
+        guard let predecessor = (base as? SerializedWebSocketConnector)?.predecessor else {
             return localBarrier
         }
         return Task {

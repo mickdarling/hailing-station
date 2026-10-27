@@ -8,6 +8,9 @@ extension HostConnection {
     func negotiate(
         on opened: any WebSocketTransport, token: UInt64
     ) async throws -> (version: Int, capabilities: [String]) {
+        if let reporting = opened as? HostLossReportingSocket {
+            await reporting.bind(snapshot.connectionGeneration)
+        }
         try await send(
             .hello(HelloInfo(
                 versions: VersionNegotiation.supported,
@@ -89,7 +92,7 @@ extension HostConnection {
             guard message.hasPrefix("ambient"), let stream = ambientStream else { throw failure }
             ambientRefusal = (stream.id, failure)
             // Opt-in for restore-aware callers only. Existing observers receive exactly their old events.
-            if HostNoticeOrigin.reportsAmbientRefusals { await publishNotice(frame, streamID: stream.id) }
+            if reportsAmbientRefusals { await publishNotice(frame, streamID: stream.id) }
         default:
             throw HostConnectionFailure.malformed("unexpected control frame")
         }
@@ -232,8 +235,43 @@ extension HostConnection {
 
 /// Provenance survives the observer's executor hop. Refusal delivery is opt-in for each connection-loop task.
 /// A caller opting in must also scope foreground reconnects, which may replace that loop.
+// The opt-in is now a stored HostConnection flag, surviving timer-born loops without task-local inheritance.
 enum HostNoticeOrigin {
     @TaskLocal static var generation: UUID?
     @TaskLocal static var streamID: UUID?
-    @TaskLocal static var reportsAmbientRefusals = false
+}
+
+/// Installed only for an explicit loss observer. The default connector and transport stay unchanged.
+struct HostLossReportingConnector: WebSocketConnecting {
+    let base: any WebSocketConnecting
+    let observer: HostConnection.TransportLossObserver
+    func open(url: URL, subprotocol: String) async throws -> any WebSocketTransport {
+        let socket = try await base.open(url: url, subprotocol: subprotocol)
+        return HostLossReportingSocket(base: socket, observer: observer)
+    }
+}
+
+/// Reports the socket's immutable generation before a failing operation returns to its close/publish path.
+actor HostLossReportingSocket: WebSocketTransport {
+    let base: any WebSocketTransport
+    let observer: HostConnection.TransportLossObserver
+    private var generation: UUID?
+    init(base: any WebSocketTransport, observer: @escaping HostConnection.TransportLossObserver) {
+        self.base = base
+        self.observer = observer
+    }
+    func bind(_ generation: UUID) { self.generation = generation }
+    func send(_ data: Data) async throws {
+        do { try await base.send(data) }
+        catch { await report(error, sending: true); throw error }
+    }
+    func receive() async throws -> Data {
+        do { return try await base.receive() }
+        catch { await report(error, sending: false); throw error }
+    }
+    private func report(_ error: any Error, sending: Bool) async {
+        guard !(error is CancellationError), !(error is HostConnectionFailure), let generation else { return }
+        await observer(generation, sending)
+    }
+    func close() async { await base.close() }
 }
