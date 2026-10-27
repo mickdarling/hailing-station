@@ -51,7 +51,7 @@ struct RootView: View {
             content
         }
         .modifier(StationMenuStatusPublisher(connections: connections, destination: destination?.label))
-        .overlay(alignment: .top) { AnnouncementBannerView(banners: $announcementBanners) }
+        .modifier(ReplySegmentNotices(playback: playback, banners: $announcementBanners))
         .onChange(of: scenePhase) { _, phase in
             scenePhaseRevision &+= 1
             selectionRevision &+= 1

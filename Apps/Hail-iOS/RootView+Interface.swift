@@ -121,6 +121,13 @@ extension RootView {
             Label("Labs", systemImage: "wrench.and.screwdriver")
                 .frame(maxWidth: .infinity)
         }
+        NavigationLink {
+            ReplySegmentToolsView(playback: playback, gate: echoGuard.segmentOnsetGate)
+        } label: {
+            Label("Turn-taking", systemImage: "pause.circle")
+                .frame(maxWidth: .infinity)
+        }
+        .accessibilityIdentifier("station.turn-taking-tool")
     }
 
     var stationAvailability: StationAvailability {

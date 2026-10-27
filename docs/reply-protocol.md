@@ -92,7 +92,7 @@ backstop below. P4a adds device live-stream playback pauses and a callable local
 coverage only. P4b1 supplies the onset gate; P4b2 wires the device capture, yield, echo-tail handoff,
 transport and segmented bulk Replay. The device now advertises `reply_segments` beside `heard_turns`, making
 segment pauses and onset yield live in code with a P3 host. This is synthetic VM evidence, not a shipped build
-or physically validated behavior. P5 supplies the paused notice, Station tools UI and shared TestFlight integration.
+or physically validated behavior. P5 adds the paused notice and Station tools UI below. App/physical validation and TestFlight integration remain host work.
 P2 does not change coaching speech, acknowledgement clips or spoken announcements. The host behavior below has
 synthetic test coverage, not physical-device or live captured-output proof.
 
@@ -167,12 +167,14 @@ barrier and pause hold the idle watch; resume gets a fresh frame-arrival deadlin
 boundary neither raises its adaptive catch-up target nor records a playout gap, and even a short marker releases
 an earlier catch-up hold. Stop/cancel invalidates callbacks and timers. The reply remains output-busy across the
 pause, preserving the existing echo-guard mask and tail rather than unmasking between segments. Existing mute,
-headset stop-and-mute and capture-suppression policies remain in force; no UI is added.
+headset stop-and-mute and capture-suppression policies remain in force.
 
 `ReplySegmentSettings` merges all validated values into the UserDefaults dictionary
 `hailing-station.reply-segments.v1`, preserving other keys. Defaults **v1, pending Mick**: `pauseAfterSegment = 1.5` (0.1–10 seconds),
 `sustainedOnset = 0.3` (0.05–2 seconds), `onsetThresholdDBFS = -35` (−60…−15 dBFS). Each invalid/nonfinite
-value falls back independently. A controller reads saved settings at creation; P5 can assign a validated value and save it when Station tools changes. There is no
+value falls back independently. A controller reads saved settings at creation; Station tools assigns and saves a
+validated copy on each edit, preserving sustained onset and unknown dictionary keys. A pause already open keeps
+its original deadline; following windows use the edited settings. There is no
 spoken "go on" resume in v1.
 
 `yieldPausedReply(ambientListening:privacyOn:)` is a callable local foundation, permitted only in a played pause
@@ -209,8 +211,29 @@ remove expired counts. This detects energy from any sound, not an identified own
 
 Bulk Replay containing segment markers re-enters the controller FIFO and honors actual-playback barriers and
 pauses, preserving other queued replies and the existing late-frame ledger. Unsegmented Replay retains its
-existing player path. The existing bounded observable `lastSegmentYield` is available to P5; RootView only wires
-the feature and adds no notice UI. P5's notice, Station tools setting and physical/app validation remain deferred.
+existing player path.
+
+P5 observes changes to `lastSegmentYield` above the shared adaptive station view. A dismissible material banner,
+“Paused — go ahead”, appears alongside the existing announcement banners for four seconds. It contains no
+reply text and is never passed to the reply player or Announcer. With VoiceOver running, the change posts one
+platform accessibility announcement; rendering, dismissal, repeated identical state, timeout and enabling
+VoiceOver afterward do not repost it. Mounting the view does not announce an existing historical yield. A new
+yield replaces the notice and restarts its deadline; an older timer cannot hide the newer notice.
+
+Station tools → Turn-taking exposes “Pause between reply segments” (0.1–10 s, steps of 0.1 s) and “Voice needed
+to take the turn” (−60…−15 dBFS, steps of 1 dB, Quieter–Louder with a numeric readout). Defaults remain **v1,
+pending Mick**: 1.5 s and −35 dBFS; this qualifier appears only in comments/docs. Bindings use
+`ReplySegmentSettings` validation and its dictionary-preserving save. The read-only “Turn-taking diagnostics”
+section refreshes once per second while open: yield signals, signals without an admitted request within five
+seconds, and all five buckets of both analysed levels and calibrated floors, as plain counts. P4b1 counts onset
+signals (including signals refused by fresh ambient/privacy state), not confirmed successful yields or identified
+speech. The UI says so. There is no reset API, reset button, persistence or new diagnostic logging.
+
+`StationPlatform` handles UIKit/AppKit announcements; the same `Apps/Hail-iOS` views belong to both `Hail-iOS`
+(iPhone/iPad) and `Hail-macOS` in `project.yml`. VM tests prove only the pure presentation/binding logic. The host
+must build both targets and check VoiceOver once, dismissal/timeout, Dynamic Type, light/dark, and Mac, iPhone
+and iPad layouts (including expanded chat, rotation and narrow Mac windows). Physical acoustic/transport checks
+remain required; see the P5 host gate in the device test record.
 See [the device test record](testing/reply-segments-device.md) for the split, synthetic checks and deferred work.
 Synthetic P1 verification is recorded in [reply-segments-protocol.md](testing/reply-segments-protocol.md), and
 P3 listener verification in [reply-segments-listener.md](testing/reply-segments-listener.md).
