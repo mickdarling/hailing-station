@@ -161,3 +161,154 @@ checks and every earlier privacy/no-off test. Manual strict-warning lint review
 and `git diff --check` passed; the brace-count aid's two Capture protocol findings
 are declaration false positives, not function bodies. The reconnect file uses
 only the expressly permitted, reasoned file-length exemption.
+
+## R8 coordinator rulings and pass-after record
+
+The preceding R7/reapplication entries are historical. This fix starts from R0
+`411ecb1b0be70b8ff13d1f7283c92776b6cd60a9`, R1
+`ad018fa710f90f63e76063399050cf844b9cdf35`, and R2
+`02b2c2676c481a9e358ea1bc38462308df92c2d8`, on main-24be
+`24be5c5180a54103334026793f411bf083f9d172`. The supplied review logs are the
+fail-before evidence on those heads. They are synthetic scripted transports,
+not physical microphone, haptic, device, or native SwiftUI execution evidence.
+Independent review of the new heads remains pending; the prior verdict is
+REQUEST CHANGES. Nothing here claims a completed approval or GitHub checks.
+
+### F1: declined finding, realistic owner-tap orderings retained
+
+No new production veto rule was added for F1. The rejected probe injects a
+successful confirmation after the same socket's receive has already failed.
+That confirmation cannot arrive over the failed receive path. Its hypothetical
+ordering is not evidence that a successful healthy-link tap must latch forever.
+`successfulOwnerTapDuringUnpublishedDropMustRemainLatched` was **not ported**.
+The original log's failing lines included:
+
+```text
+Expectation failed: !((rig.controller → HailCore.AmbientListeningController).isListening → true → true)
+Expectation failed: (rig.notices.last?.reason → nil) == .privacy
+Expectation failed: try await audioFrames(rig.socket).isEmpty
+```
+
+The reachable orderings are pinned instead:
+
+- `failedOwnerPrivacyTapMustNotBeClearedByAnotherHostsConfirmation` sends a tap
+  while close is held; the send fails, the veto survives another host's notice
+  and restoration, no PCM resumes, and only an owner start clears it. Its pending
+  assertion now reflects F3's earlier loss signal, preserving the veto assertions.
+  The two directions in `privacyTapBeforeDropPublicationMustBlock` receive the
+  same pending-state update; both still require a privacy stop and one notice.
+- `unconfirmedOwnerPrivacyTapBlocksRestoreAtDrop` sends successfully but gets no
+  confirmation before loss; drop stops with reason privacy, and restoration
+  sends no PCM.
+- `staleGenerationCannotSettlePendingOwnerPrivacyTap` proves a stale duck_mode
+  leaves the request pending. The existing
+  `delayedOldGenerationModeEventMustNotConfirmNewGenerationPrivacy` proves a stale
+  generation cannot confirm a reassert. `earlyConfirmationWaitsForSuccessfulReassertSend`
+  supplies a matching-generation notice while send is held and proves no resume
+  until send succeeds. Ordinary send-first confirmation remains covered by
+  `knownPrivacyReassertsBeforeResumeWithOrWithoutPark`.
+
+### F2: both send and notice must succeed within the same five seconds
+
+`AmbientRestorePrivacy` records send success and matching-generation confirmation
+separately. Either order is valid. An early notice cannot finish/cancel the send;
+its later error or the five-second timeout fails closed. A failed send reported
+by the loss hook settles the privacy waiter before ordinary drop handling, while
+receive loss during confirmation retains the existing flapping recovery policy.
+This preserves zero PCM before confirmation, the original hard 60-second bound,
+and the rule that restore never sends privacy off. Host notices do not veto.
+
+`confirmationMustNotEraseLaterReassertSendError` preserves the failed probe's
+security assertions. Its old wait for premature binding change is replaced with
+a wait for delivery of the early notice plus an assertion that binding is still
+unchanged; the error is then released. The original failing lines were:
+
+```text
+Expectation failed: !((rig.controller → HailCore.AmbientListeningController).isListening → true → true)
+Expectation failed: try await audioFrames(base).isEmpty
+```
+
+### F3: close latency cannot admit capture or extend the deadline
+
+R0 installs an optional transport wrapper only for opted-in connections. It binds
+the receiving/sending socket's generation before negotiation, awaits the loss
+observer before rethrowing a raw transport failure, and preserves the original
+close/publication behavior when absent. No existing production code is moved.
+R1 installs the observer with store-token and generation guards, suspends capture
+admission, and starts the original deadline immediately. The later reconnecting
+snapshot deduplicates the same generation. The original flapping deadline and
+capture-epoch tests remain intact. The held-close probe is committed as
+`transportCloseMustNotDelayDiscardOrStartOfDeadline`; its failed assertions were:
+
+```text
+Expectation failed: (rig.capture.discardedCount → 0) == (before + 6 → 6)
+Expectation failed: !((rig.controller.reconnect → HailCore.AmbientListeningReconnect).withinDeadline() → true)
+Expectation failed: !((rig.controller → HailCore.AmbientListeningController).isListening → true → true)
+```
+
+R0's `absentLossHookPreservesCloseBeforeReconnectPublication` pins the unchanged
+state/publication order during a held close, and
+`optedInLossReportsLostGenerationBeforeCloseOrStatePublication` pins the early
+opt-in callback. Its other default wire, sequence, notice, queue and failure
+proofs are recorded in ambient-restore-send-origin.md.
+
+### F4: a corrected restore notice owns its stop notification
+
+The coordinator records when a terminal refusal replaces an applied notice.
+Controller end suppresses the ordinary unexpected-stop callback only for that
+replacement, leaving the same notice ID for the app's existing haptic dedupe.
+`lateGenericRefusalMustNotEmitAnExtraOrdinaryStopNotice` keeps the same-ID,
+failed-outcome and empty ordinary-notice assertions; it also pins both outcome
+callbacks to the same notice ID. The supplied failing line was:
+
+```text
+Expectation failed: (rig.unexpected → ["Stopped: the host ended listening (not_allowed: ambient busy)."]).isEmpty → false
+```
+
+`AmbientListeningRecoveryTests.aFinalRefusalStopsAtOnceAndIsReported` remains
+unchanged and requires one ordinary unexpected-stop notice for a non-restore
+terminal refusal. It is included in R1's selected verification and R2's broad lane.
+Native haptic delivery remains unverified; the synthetic proof covers callbacks
+and notice identity, with the app's existing per-ID haptic deduplication retained.
+
+### F6: refusal opt-in survives all loop replacements
+
+R0 replaces the task-local opt-in with an immutable per-HostConnection flag,
+false by default. R1 enables it when constructing its connections; the connect
+and foreground task-local wrappers are removed. Deadline callbacks, foreground
+nudges and reconnect backoff use the same flag. The separate origin-generation
+and stream-ID task-locals remain observer provenance only.
+`refusalOptInMustSurviveNegotiationDeadlineLoopReplacement` ports both assertions
+from the detached deadline probe. The original failed lines were:
+
+```text
+Expectation failed: await recorder.events.count == 1
+Expectation failed: await recorder.streams == [stream]
+```
+
+### R8 verification method and R1 commands
+
+Use the exact common command prefix/flags and scratch path in the R8 section of
+ambient-restore-send-origin.md. Every Swift process runs under taskpolicy -b,
+-j 4 -Xswiftc -j1, the required CLT Testing framework/plugin/rpaths, automatic
+resolution disabled, and a 590-second process-group kill trap. Phases are
+sequential; no phase exceeds ten minutes. DiagnosticReplyComposition is skipped.
+
+R1 actions: `build -Xswiftc -warnings-as-errors`;
+`build --build-tests -Xswiftc -warnings-as-errors`;
+`test --skip-build --disable-xctest --no-parallel --filter
+'AmbientReconnect|SendOrigin|AmbientListeningRecovery' --skip DiagnosticReplyComposition`.
+
+R1 R8 results: the production build and final test build passed with
+warnings-as-errors. The selected **77 tests in 26 suites passed in 126.974 s**.
+An initial selection failed only the two old pending-state expectations in
+`privacyTapBeforeDropPublicationMustBlock`; the corrected full selection above
+passed. The existing ordinary terminal-refusal stop test passed unchanged.
+The ported F2/F3/F4 assertions, realistic F1 tests, generation guards, privacy
+no-off tests, and R0 SendOrigin tests all passed. Strict manual warning-threshold
+lint and `git diff --check` passed. New functions, types, lines, parameter counts,
+complexity and nesting stay within .swiftlint.yml; no lint suppression was added.
+R1's production-file set remains Capture.swift, AmbientAudioStreamer.swift,
+AmbientListeningReconnect.swift and Transport/HostConnectionStore.swift (four
+incremental, six cumulative against main-24be). The R0 set is now three files,
+using HostConnection.swift plus the existing two. No file was renamed or moved.

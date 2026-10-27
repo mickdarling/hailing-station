@@ -12,7 +12,7 @@ import Testing
         try await rig.start()
         await rig.socket.fail()
         try await waitUntil { await closing.gate.isWaiting() }
-        #expect(!rig.controller.reconnect.isPending)
+        #expect(rig.controller.reconnect.isPending) // Transport loss is reported before the held close.
         try? await rig.store.setPrivacy(on: false, host: rig.endpoint.id)
         #expect(rig.store.privacyLocal[rig.endpoint.id]?.request == nil)
         let other = try await confirmOtherHostPrivacy(rig)

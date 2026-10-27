@@ -14,7 +14,7 @@ import Testing
         await rig.socket.fail()
         try await waitUntil { await closing.gate.isWaiting() }
         #expect(rig.store.snapshots[rig.endpoint.id]?.state == .ready)
-        #expect(!rig.controller.reconnect.isPending)
+        #expect(rig.controller.reconnect.isPending) // Loss is now reported before reconnecting is published.
         try? await rig.store.setPrivacy(on: on, host: rig.endpoint.id)
         #expect(rig.store.privacyLocal[rig.endpoint.id]?.request == nil)
         await closing.gate.fire()
