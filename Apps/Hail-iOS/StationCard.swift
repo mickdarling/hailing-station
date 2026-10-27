@@ -168,6 +168,8 @@ extension RootView {
             reconnectNotice
         }
         .onChange(of: connections.ambientController?.reconnect.notice) { _, _ in
+            // Accept core's same-destination generation in background as well as foreground.
+            if acceptAppliedAmbientRestore() { return }
             Task { await reconcileRememberedSelection() }
         }
     }

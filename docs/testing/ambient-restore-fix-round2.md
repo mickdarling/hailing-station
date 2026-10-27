@@ -342,3 +342,93 @@ R1's production-file set remains Capture.swift, AmbientAudioStreamer.swift,
 AmbientListeningReconnect.swift and Transport/HostConnectionStore.swift (four
 incremental, six cumulative against main-24be). The R0 set is now three files,
 using HostConnection.swift plus the existing two. No file was renamed or moved.
+
+### F5: applied background restore advances root authorization
+
+The root destination synchronously accepts the coordinator's applied binding
+only when it equals the store's current ambientBinding for the selected host
+and target and the listening controller still owns it. The existing remembered
+endpoint/target checks still apply. This predicate is independent of scene phase,
+so rendering can retain the real destination in the same update that clears
+pending recovery. The notice-change handler and remembered-selection
+reconciliation also accept that core-authorized generation in the background;
+they do not start another target-selection round trip. Card disappearance and
+current-binding update hooks remain active for genuine destination loss.
+
+`backgroundRestoreMustKeepListeningAfterPendingCardDisappears` ports the review
+probe's desired assertions: changed generation, listening survives, and capture
+starts once. It retains the assertion that the *former* foreground-only predicate
+would remove the card, then checks the corrected predicate keeps it and subsequent
+PCM continues without restarting/releasing capture. The original failed line in
+`r2-app-probe.log` was:
+
+```text
+Expectation failed: (rig.controller → HailCore.AmbientListeningController).isListening → false
+```
+
+`appliedBackgroundBindingNeverAuthorizesARealDestinationLoss` covers target
+removal, endpoint change and owner selection after background restore. All stop
+capture and forbid subsequent PCM through the real disappearance/binding-update
+hooks. The existing `successNoticeNeverRetainsCaptureOrAuthorizesADestination`
+now runs all three lifetime cases both after foreground and background restore.
+The tests model the root/card authorization predicates; **native SwiftUI execution
+is not verified on this VM**. SwiftPM builds do not compile the iOS app, and no
+physical microphone, haptic or captured-output round trip is claimed.
+
+### R8 R2 verification commands
+
+Use the same common prefix/flags/scratch path as R0. Actions:
+
+```text
+build -Xswiftc -warnings-as-errors
+build --build-tests -Xswiftc -warnings-as-errors
+test --skip-build --disable-xctest --no-parallel --filter AmbientReconnectApp --skip DiagnosticReplyComposition
+test --skip-build --disable-xctest --no-parallel --filter AmbientReconnect --skip DiagnosticReplyComposition
+```
+
+The AmbientReconnect selection runs three times. The requested broad expression
+is `Ambient|HostConnection|Listening|Reconnect|Notice|AudioGate|TapCapture|HeardTurn|Privacy|Segment`.
+It runs once across three non-overlapping bounded lanes, each with
+`test --skip-build --disable-xctest --no-parallel`, the common flags, and these
+filter/skip arguments (substitute the expression above for FAMILY):
+
+```text
+--filter 'HailCoreTests.*(FAMILY)' --skip DiagnosticReplyComposition
+--filter 'HailDaemonKitTests.*(FAMILY)' --skip DiagnosticReplyComposition
+--filter 'FAMILY' --skip 'DiagnosticReplyComposition|HailCoreTests|HailDaemonKitTests'
+```
+
+R2 remains exactly two production files incrementally, eight cumulatively
+against main-24be. The root selection file is 200 lines without a new exemption;
+only blank separators, guard layout and call-argument formatting were compacted.
+Existing explanatory comments and production-file locations are preserved.
+
+R2 R8 focused results: both required warnings-as-errors builds passed. The app
+model selection passed **3 tests in 2 suites** in 16.041 s, including six
+foreground/background lifetime cases and the three background destination-loss
+cases. All **63 tests in 22 suites** passed on each of three AmbientReconnect
+runs (142.156 s, 134.965 s, 143.358 s). The fail-before probes' security assertions
+remain in committed tests, including the original F5 broken-predicate assertion
+as a comparison with the corrected destination predicate. No DiagnosticReplyComposition
+suite ran. No production/test/app/manifest source changed during these repetitions.
+
+The broad Core lane passed **396 tests in 109 suites** in 242.220 s. A content
+hash audit confirms all 991 source/test/app/manifest files remained unchanged
+through the repeated selection and this broad lane. The remaining broad lanes
+use the same binary and unchanged sources.
+
+The broad DaemonKit lane passed **593 tests in 135 suites** in 422.415 s; the
+remaining-module lane passed **50 tests in 9 suites** in 0.193 s. Thus the broad
+selection passed **1,039 tests in 253 suites**, with no overlap between lanes and
+no DiagnosticReplyComposition execution. Every phase completed below 590 s.
+All six required builds passed. The source hash audit remains unchanged.
+
+Final strict-lint inspection found two blank-line violations in the newly added
+HostConnectionSendOriginCloseTests.swift: one blank before the suite's closing
+brace and one extra separator before its recorder actor. The earlier R0 manual
+lint statement missed these whitespace rules. The prepared correction removes
+only those two blank lines and preserves every non-whitespace token. Because R0's
+single requested fix commit already exists, applying that correction without
+rewriting history needs a coordinator exception for a second R0 commit followed
+by normal merges into R1/R2. That exception is pending; functional verification
+is complete, but strict lint is not yet complete on the three branch heads.

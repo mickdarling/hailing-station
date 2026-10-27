@@ -8,11 +8,12 @@ import Testing
 @Suite(.serialized) struct AmbientReconnectAppLifetimeTests {
     enum Loss: CaseIterable, Sendable { case targetRemoval, destinationChange, cardDisappearance }
 
-    @Test(arguments: Loss.allCases)
-    func successNoticeNeverRetainsCaptureOrAuthorizesADestination(loss: Loss) async throws {
+    @Test(arguments: Loss.allCases, [false, true])
+    func successNoticeNeverRetainsCaptureOrAuthorizesADestination(loss: Loss, background: Bool) async throws {
         let rig = try AmbientReconnectRig()
         try await rig.start()
         try await rig.drop()
+        if background { await rig.controller.update(binding: nil, scene: .background) }
         try await rig.reconnect()
         let notice = try #require(rig.controller.reconnect.notice)
         let binding = try #require(rig.controller.binding)
@@ -27,7 +28,7 @@ import Testing
             await rig.controller.destinationLost() // The card disappears, while the root still shows its notice.
         case .destinationChange:
             try await rig.select(restoring: false)
-            await rig.controller.update(binding: try rig.currentBinding(), scene: .active)
+            await rig.controller.update(binding: try rig.currentBinding(), scene: background ? .background : .active)
         case .cardDisappearance:
             await rig.controller.destinationLost()
         }

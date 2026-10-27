@@ -1,7 +1,6 @@
 import Foundation
 import HailCore
 import HailProtocol
-
 extension RootView {
     var availableDestinations: [Destination] {
         connections.hosts.flatMap { host in
@@ -11,10 +10,10 @@ extension RootView {
             }
         }
     }
-
     var destination: Destination? {
-        guard selectionAuthorizedForReadyConnection,
-              let authorizedConnectionGeneration,
+        let restored = appliedAmbientBinding
+        guard selectionAuthorizedForReadyConnection || restored != nil,
+              let authorizedConnectionGeneration = restored?.connectionGeneration ?? authorizedConnectionGeneration,
               let selectedHostID, let selectedTargetID, let rememberedSelection else { return nil }
         return availableDestinations.first {
             $0.hostID == selectedHostID && $0.target.id == selectedTargetID
@@ -22,16 +21,30 @@ extension RootView {
                 && rememberedSelection.matches(endpoint: $0.endpoint, target: $0.target)
         }
     }
-
+    /// Only core's applied, still-current binding may advance authorization without a foreground selection.
+    private var appliedAmbientBinding: AmbientAudioBinding? {
+        guard let controller = connections.ambientController, controller.isListening,
+              controller.reconnect.notice?.outcome == .applied, !controller.reconnect.isPending,
+              let binding = controller.reconnect.binding, controller.binding == binding,
+              selectedHostID == binding.hostID, selectedTargetID == binding.targetID,
+              connections.ambientBinding(host: binding.hostID, targetID: binding.targetID) == binding
+        else { return nil }
+        return binding
+    }
+    @MainActor
+    func acceptAppliedAmbientRestore() -> Bool {
+        guard let binding = appliedAmbientBinding else { return false }
+        selectionAuthorizedForReadyConnection = true
+        authorizedConnectionGeneration = binding.connectionGeneration
+        return true
+    }
     @MainActor
     func select(_ option: Destination) async {
         guard scenePhase == .active else { return }
         selectionRevision &+= 1
         let revision = selectionRevision
         let phaseRevision = scenePhaseRevision
-        guard let connectionGeneration = connections.snapshots[option.hostID]?.connectionGeneration else {
-            return
-        }
+        guard let connectionGeneration = connections.snapshots[option.hostID]?.connectionGeneration else { return }
         do {
             try await connections.selectTarget(host: option.hostID, targetID: option.target.id)
             guard scenePhase == .active,
@@ -43,10 +56,8 @@ extension RootView {
             selectedHostID = option.hostID
             selectedTargetID = option.target.id
             let selection = DestinationSelection(
-                hostID: option.hostID,
-                hostURL: option.endpoint.url.absoluteString,
-                targetID: option.target.id,
-                targetName: option.target.name
+                hostID: option.hostID, hostURL: option.endpoint.url.absoluteString,
+                targetID: option.target.id, targetName: option.target.name
             )
             rememberedSelection = selection
             selectionAuthorizedForReadyConnection = true
@@ -57,7 +68,6 @@ extension RootView {
             await forgetSelection()
         }
     }
-
     @MainActor
     func restoreSelectionOnce() async {
         guard !didRestoreSelection else { return }
@@ -65,9 +75,9 @@ extension RootView {
         rememberedSelection = await selectionStore.load()
         await reconcileRememberedSelection()
     }
-
     @MainActor
     func reconcileRememberedSelection() async {
+        if acceptAppliedAmbientRestore() { return }
         // Core confirms a pending transport restore even in the background; do not race its selection round trip.
         guard connections.ambientController?.reconnect.isPending != true else { return }
         guard scenePhase == .active,
@@ -96,11 +106,9 @@ extension RootView {
            authorizedConnectionGeneration == host.connectionGeneration { return }
         selectionAuthorizedForReadyConnection = false
         authorizedConnectionGeneration = nil
-
         await authorizeRememberedSelection(rememberedSelection, host: host, target: target)
     }
 }
-
 extension RootView {
     @MainActor
     private func authorizeRememberedSelection(
@@ -116,10 +124,8 @@ extension RootView {
             try await connections.selectTarget(host: host.id, targetID: target.id, restoring: true)
         } catch {
             authorizationFailed(
-                revision: revision,
-                phaseRevision: phaseRevision,
-                hostID: host.id,
-                connectionGeneration: connectionGeneration
+                revision: revision, phaseRevision: phaseRevision,
+                hostID: host.id, connectionGeneration: connectionGeneration
             )
             return
         }
@@ -147,7 +153,6 @@ extension RootView {
         selectionAuthorizedForReadyConnection = true
         authorizedConnectionGeneration = connectionGeneration
     }
-
     @MainActor
     private func authorizationFailed(
         revision: UInt,
@@ -170,13 +175,11 @@ extension RootView {
             retryReconciliationIfActive()
         }
     }
-
     @MainActor
     private func retryReconciliationIfActive() {
         guard scenePhase == .active else { return }
         Task { await reconcileRememberedSelection() }
     }
-
     @MainActor
     func forgetSelection() async {
         selectionRevision &+= 1
@@ -188,11 +191,9 @@ extension RootView {
         await selectionStore.save(nil)
     }
 }
-
 struct Destination: Identifiable, Equatable {
     let endpoint: HostEndpoint
     let target: TargetInfo
-
     var hostID: HostEndpoint.Identifier { endpoint.id }
     var id: String { "\(hostID)|\(target.id)" }
     var label: String { "\(endpoint.name) · \(target.name)" }
