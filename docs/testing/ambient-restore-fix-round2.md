@@ -578,3 +578,38 @@ normal-stream premise without a wall-clock assumption. Its original fail-before
 run remains a passing control; the full post-refinement repetitions are rerun
 with this explicit ordering barrier. The unsuccessful run is retained as
 `<scratch>/r2-final-focused-1.log`, not counted as a passing repetition.
+
+### R13 completed verification
+The ordered R1 control selection passed **2 tests in 1 suite, 4.095 seconds**.
+The three full R2 serial repetitions after that ordering fix each passed
+**75 tests in 28 suites**: 141.994 seconds, 143.053 seconds, 147.945 seconds.
+All use `--skip-build --disable-xctest --no-parallel --filter AmbientReconnect`
+and `--skip DiagnosticReplyComposition`, with the common offline/resource flags.
+The complete requested broad family ran once in three non-overlapping serial
+module lanes, each with its own 590-second execution bound and process cleanup:
+
+- core: **410 tests in 116 suites**, 281.919 seconds.
+- daemon: **593 tests in 135 suites**, 417.257 seconds.
+- remaining modules: **50 tests in 9 suites**, 0.186 seconds.
+
+Total broad selection: **1053 tests in 260 suites**.
+The final successful logs contain no assertion issues and no
+DiagnosticReplyComposition suite/test start. The raw logs are
+`r2-ordered-focused-1.log` through `r2-ordered-focused-3.log`, and
+`r2-broad-core.log`, `r2-broad-daemon.log`, `r2-broad-remaining.log` in the
+uncommitted scratch directory. Earlier failed runs remain explicitly documented.
+
+Both required warnings-as-errors build commands passed for each slice's final
+production/test tree. After this results-only update, both commands are required
+again on each delivered head before bundling; those logs use `r1-final-build`,
+`r1-final-build-tests`, `r2-final-build`, and `r2-final-build-tests`.
+
+Every Swift launch uses the process gate, `taskpolicy -b`, `-j 4 -Xswiftc -j1`,
+offline resolution, all supplied Testing flags, and process-group TERM/KILL
+cleanup on interruption or a 590-second execution limit. Manual strict-warning
+lint review and `git diff --check` pass. No additional lint suppression or
+blank-line deletion is used. R0 is unchanged. R1 retains exactly its four
+production files; R2 retains its original three, byte-for-byte, with no app
+adaptation commit. These are synthetic package checks; native iOS/older-host
+compiler execution, physical audio/haptic proof, and independent exact-head
+approval remain unclaimed. No remote ref, PR or issue was changed.
