@@ -51,7 +51,7 @@ import Testing
         #expect(!stalled)
         #expect(playout.policy.target == .zero)
         meter.scheduled(.seconds(1), at: start + .seconds(11), startsReply: false)
-        #expect(meter.take().count == 0)
+        #expect(meter.take() == PlayoutGapMeter.Gaps())
         // A subsequent genuine underrun still counts.
         meter.scheduled(.seconds(1), at: start + .seconds(13), startsReply: false)
         #expect(meter.take().count == 1)

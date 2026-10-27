@@ -17,19 +17,9 @@ import Testing
         try fixture.calibrate()
         #expect(try !fixture.feed(-20, seconds: 0.2))
         fixture.clock.advance(by: .milliseconds(300))
-        let read = DispatchSemaphore(value: 0)
-        let resume = DispatchSemaphore(value: 0)
-        let done = DispatchSemaphore(value: 0)
-        DispatchQueue.global().async {
-            defer { done.signal() }
-            guard let buffer = try? onsetPCM(-20, seconds: 0.3) else { return }
-            guarder.observeSegmentOnset(buffer, afterAuthorization: {
-                read.signal()
-                _ = resume.wait(timeout: .now() + 5)
-            })
-        }
-        defer { resume.signal() }
-        try #require(read.wait(timeout: .now() + 5) == .success)
+        let blocked = BlockedObservation.start(on: guarder)
+        defer { blocked.resume.signal() }
+        try #require(blocked.read.wait(timeout: .now() + 5) == .success)
         fixture.privacy = true
         fixture.ambient = false
         fixture.window = nil
@@ -42,8 +32,8 @@ import Testing
             })
         }
         let before = guarder.segmentOnsetGate.diagnostics
-        resume.signal()
-        try #require(done.wait(timeout: .now() + 5) == .success)
+        blocked.resume.signal()
+        try #require(blocked.done.wait(timeout: .now() + 5) == .success)
         let after = guarder.segmentOnsetGate.diagnostics
         #expect(after.levels.counts == before.levels.counts)
         #expect(after.floors.counts == before.floors.counts)
@@ -87,5 +77,25 @@ import Testing
         #expect(completed.withLock { $0 })
         try #require(observed.wait(timeout: .now() + 5) == .success)
         #expect(guarder.segmentOnsetGate.diagnostics.onsets == 1)
+    }
+}
+
+/// An observation of 300 ms at −20 dBFS that blocks just after reading authorization until `resume` is signalled.
+private struct BlockedObservation {
+    let read = DispatchSemaphore(value: 0)
+    let resume = DispatchSemaphore(value: 0)
+    let done = DispatchSemaphore(value: 0)
+
+    static func start(on guarder: AmbientReplyEchoGuard) -> Self {
+        let blocked = Self()
+        DispatchQueue.global().async {
+            defer { blocked.done.signal() }
+            guard let buffer = try? onsetPCM(-20, seconds: 0.3) else { return }
+            guarder.observeSegmentOnset(buffer, afterAuthorization: {
+                blocked.read.signal()
+                _ = blocked.resume.wait(timeout: .now() + 5)
+            })
+        }
+        return blocked
     }
 }

@@ -22,9 +22,10 @@ final class OnsetFixture {
     var ambient = true
     var privacy = false
     var settings = ReplySegmentSettings()
+    var scope = ReplySegmentAdmissionScope()
     var gate: ReplySegmentOnsetGate { guarder.segmentOnsetGate }
     var input: ReplySegmentOnsetInput {
-        .init(window: window, ambientListening: ambient, privacyOn: privacy, settings: settings)
+        .init(scope: scope, window: window, ambientListening: ambient, privacyOn: privacy, settings: settings)
     }
 
     init(tail: Duration = AmbientReplyEchoGuard.defaultTail, length: Double = 1.5) {
