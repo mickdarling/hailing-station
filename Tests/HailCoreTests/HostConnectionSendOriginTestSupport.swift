@@ -28,9 +28,9 @@ struct SendOriginRig {
         let connection = HostConnection(
             endpoint: endpoint, connector: connector, deviceName: "Synthetic",
             deadlineSleep: { _ in throw CancellationError() }, wallNow: { 42 },
-            replyObserver: { await recorder.append($0) }
+            reportsAmbientRefusals: reportRefusals, replyObserver: { await recorder.append($0) }
         )
-        await HostNoticeOrigin.$reportsAmbientRefusals.withValue(reportRefusals) { await connection.connect() }
+        await connection.connect()
         try await awaitHello(connection, socket, capabilities: ["select_target", "stream_audio", "receive_replies"])
         let selection = Task { try await connection.selectTarget(ambientTarget) }
         try await waitUntil { try await socket.sentFrames().count >= 5 }
