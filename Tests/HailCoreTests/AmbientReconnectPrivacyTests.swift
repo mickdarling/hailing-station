@@ -29,6 +29,7 @@ import Testing
         if case .audio(let first) = frames[audio].payload { #expect(first.isResume && first.sequence == 0) }
         await #expect(host.audioBeforeConfirmation() == 0)
         #expect(rig.notices.map(\.outcome) == [.applied])
+        await host.expectExactlyOnePrivacyOn()
         // Reassertion did not latch an owner veto: the next drop can recover, too.
         try await rig.drop()
         let next = try await rig.privateReconnect()
@@ -37,6 +38,7 @@ import Testing
         try await waitUntil { await MainActor.run { rig.controller.binding != restored } }
         try await rig.feed()
         #expect(rig.notices.map(\.outcome) == [.applied, .applied])
+        await next.expectExactlyOnePrivacyOn()
         await rig.close()
     }
 
@@ -61,6 +63,7 @@ import Testing
         await #expect(host.audioBeforeConfirmation() == 0)
         try await rig.socket.push(.duckMode(on: true)) // Late confirmation cannot reopen capture.
         #expect(!rig.controller.isOn && rig.capture.startCount == 1)
+        await host.expectExactlyOnePrivacyOn()
         await rig.close()
     }
 
@@ -77,6 +80,7 @@ import Testing
         #expect(rig.notices.count == 1) // Same stopped notice/haptic hook for each failure.
         try await rig.expectNoRestoredPCM()
         await #expect(host.audioBeforeConfirmation() == 0)
+        await host.expectExactlyOnePrivacyOn()
         await rig.close()
     }
 
