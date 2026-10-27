@@ -1480,36 +1480,25 @@ enum SegmentTailRelease: Equatable, Sendable {
     case notAttempted, released, kept
 }
 
-// R1's identity-aware overload uses the existing confirmed-round-trip machinery without changing R0.
-// Keeping the nonce lets refusal delivery inspect receipt order instead of waiting for the polling task.
+// The restore's acceptance proof: the existing confirmed round trip, with a nonce the store can check in receipt
+// order, so a refusal that follows the pong is not misread as a refusal of the unaccepted stream.
 extension HostConnection {
     func confirmRoundTrip(for proof: AmbientResumeAcceptance) async throws {
         guard snapshot.connectionGeneration == proof.binding.connectionGeneration,
               ambientStream?.id == proof.streamID else { throw HostConnectionFailure.notReady }
         let token = generation
-        pendingPings[proof.nonce] = monotonicNow()
         proof.register(token)
         do {
-            try await send(.ping(nonce: proof.nonce), generation: token)
-            schedulePongDeadline(nonce: proof.nonce, generation: token)
-            while pendingPings[proof.nonce] != nil {
-                guard isCurrent(token), wantsConnection else { throw HostConnectionFailure.notReady }
-                try await Task.sleep(for: .milliseconds(10))
-            }
-            guard isCurrent(token), wantsConnection, snapshot.state == .ready else {
-                throw HostConnectionFailure.notReady
-            }
+            try await confirmRoundTrip(generation: token, nonce: proof.nonce)
         } catch {
             proof.register(nil)
-            pendingPings.removeValue(forKey: proof.nonce)
             throw error
         }
     }
 
     func hasConfirmed(_ proof: AmbientResumeAcceptance) -> Bool {
         guard let token = proof.token else { return false }
-        return isCurrent(token) && wantsConnection && snapshot.state == .ready
+        return hasPong(nonce: proof.nonce, generation: token)
             && snapshot.connectionGeneration == proof.binding.connectionGeneration
-            && pendingPings[proof.nonce] == nil
     }
 }
