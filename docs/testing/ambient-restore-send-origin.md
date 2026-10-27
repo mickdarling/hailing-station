@@ -100,7 +100,7 @@ taskpolicy -b swift <action> -j 4 -Xswiftc -j1
 -Xlinker -rpath -Xlinker /Library/Developer/CommandLineTools/Library/Developer/Frameworks
 -Xlinker -rpath -Xlinker /Library/Developer/CommandLineTools/Library/Developer/usr/lib
 --disable-automatic-resolution --skip-update
---scratch-path /Users/mick/codex-workspaces/hs-904-R-tmp/reapply-build
+--scratch-path <scratch>/reapply-build
 ```
 
 Actions/arguments: `build -Xswiftc -warnings-as-errors`;
@@ -120,3 +120,13 @@ the existing explicit sleep/jitter arguments corrected it. A preliminary build
 was invalidated by a fixture edit; the finalized builds above ran on stable sources.
 CLT debug-module-path linker warnings remain the previously documented toolchain
 artifact; no Swift source warning was suppressed.
+
+## R10 documentation cleanup
+
+The scratch-path example uses `<scratch>/reapply-build`. All documents under
+`docs/testing/` were searched on each supplied R9 branch (12 documents on R0,
+13 each on R1 and R2) for absolute home paths, account names, host addresses and
+device identifiers. The two GitHub owner names in xcode-spec-trace.md also use
+`<account>` placeholders. No other literal home path, account name, host address
+or device identifier was found; maintainer first-name qualifiers are unchanged.
+This docs-only change is merged down from R0 with normal merge commits.
