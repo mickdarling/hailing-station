@@ -141,10 +141,11 @@ import Testing
         #expect(before.onsets == 1)
         #expect(before.withoutAdmittedRequest == 0)
         fixture.clock.advance(by: source == "late" ? .seconds(5) : .seconds(4))
+        let entryCount = fixture.store.conversation.entries.count
         try await (source == "other" ? other : main).push(
             .ambientHeard(targetID: "target", text: "Synthetic request", turn: nil)
         )
-        try await waitUntil { @MainActor in !fixture.store.conversation.entries.isEmpty }
+        try await waitUntil { @MainActor in fixture.store.conversation.entries.count > entryCount }
         fixture.clock.advance(by: .seconds(1))
         #expect(fixture.guarder.segmentOnsetGate.diagnostics.withoutAdmittedRequest == (source == "same" ? 0 : 1))
         await fixture.cleanup()

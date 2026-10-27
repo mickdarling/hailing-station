@@ -19,7 +19,7 @@ Exactly four production files change from `af3ea8212a61bac32cad745d54c4a60212f0d
 - `ReplyPlaybackController+Presentation.swift`: marker-bearing bulk Replay uses the segment FIFO; other queued
   replies and late-frame refusal survive. Unsegmented Replay retains its existing behavior.
 - `RootView.swift`: thin installation using current ambient state, selected endpoint, current duck-mode privacy
-  and pending privacy-on request. P5 can read existing observable `lastSegmentYield`; no notice UI is added.
+  and pending privacy-on request. P5 observes the store’s `segmentYieldEvent`; no notice UI is added.
 
 The capture forwarder (a detached task, not the real-time engine callback) synchronizes with the main actor
 for current state and the onset handler. Installation happens once before capture, and these callbacks never
@@ -31,10 +31,11 @@ PCM retention or pre-roll is added; triggering onset may be lost (choice B).
 
 The yielded endpoint and captured socket generation gate transmission in both the store and actor. A missing,
 older, non-ready, replaced or reconnected destination receives nothing; other endpoints are never fallback
-destinations. Local stop stands even without transmission. Admission passes only the current endpoint identity
-to the gate, only for the yielded connection generation; transcripts remain in the existing conversation path.
+destinations. Local stop stands even without transmission. Admission passes only an opaque scope for the current endpoint and connection generation to the gate;
+transcripts remain in the existing conversation path. Each reply binds its generation and scope at ingress,
+before playback; opening another window or reconnecting never rebinds that reply.
 
-P4b2 tests extend existing files only: actual detached pre-mask onset, two played-marker count, only-reply local
+Initial P4b2 tests extend existing files only: actual detached pre-mask onset, two played-marker count, only-reply local
 stop and queued other-endpoint survival; capable/older/negotiating/disconnected transport and stale-generation
 refusal; privacy/ambient changes between capture authorization and signal; closed-window refusal; safe tail API
 success before close, active tap/tap-tail preservation and unsafe normal-tail fallback; hello advertising and
@@ -614,3 +615,76 @@ Final-source results:
 
 Evidence remains synthetic macOS VM evidence only: no network, other-clone access, simulator, physical-device
 audio, install, upload, PR, independent review or GitHub check is performed or claimed.
+
+## P4b2 fix round 1 continued (#959, offline bundle r2)
+
+Starts at `fc40438918420f06a3be9e8484bacd142ca0019b` on `codex/932-p4b2-wire`. Stashed the prior reconnect
+work and probes, fetched only the supplied local r5/r6 bundles, and merged `p4b1-r6` in separate commit
+`a8ee9a5cd139bc8dabdf022151eac0158432cc64`. Resolved documentation conflicts in `docs/reply-protocol.md`
+and this file by retaining both verification histories and the incoming scoped-admission contract. No source/test
+merge conflicts; stash restoration was clean. The merge includes P4b1 scoped admissions
+`6457ff4eac155ed5567997b331cde78b9a3bd73b` and the host test-only lint fixes.
+
+This fix changes only `HostConnectionStore.swift` among production files. Cumulative P4b2 remains the same
+four production files relative to `p4b1-r6`, with no security-path matches under the checker's exact exclusions
+and rename handling. No P4b1 production file is edited by this fix.
+
+- Reply endpoint/descriptor keys bind their connection generation and opaque admission scope at frame ingress,
+  before playback. Later frames/windows never rebind a known reply. The bounded 256-entry ledger retains
+  active/queued replies; an unbound replay cannot send. Existing store/actor ready, endpoint, generation and
+  capability checks reject an old reply's transmission after reconnect, while its local stop still succeeds.
+- Each endpoint/current generation reuses one `ReplySegmentAdmissionScope`; reconnect creates a fresh token.
+  Capture supplies the reply's bound scope to the gate. Actual `ambient_heard` dispatch supplies the receiving
+  endpoint's current ready-generation scope to `ambientRequestAdmitted(in:)`. A later yield never overwrites
+  another scope's admission authority. The guard owns FIFO matching and deadlines; no transcript enters it.
+- P5 API: observable `HostConnectionStore.segmentYieldEvent: ReplySegmentYieldEvent?`, public read-only.
+  The event is `Identifiable`, `Equatable`, `Sendable`, with `id: UInt64`, `endpointID`, `replyID: UUID`, and
+  `segment: Int`. Each successful local onset yield increments the store-lifetime id, starting at 1, even
+  when transport is unsupported or stale. It retains only the latest event in memory, with no audio/text.
+  Equal endpoint/reply/segment yields after Replay are distinct observable events. Refused yields publish nothing.
+
+`ReplySegmentReviewerProbeTests` includes the reviewer's next-window reconnect probe and ingress-before-first-window
+probe, with positive fresh-reply sending afterward. `ReplySegmentWiringScopeTests` drives real store/connection
+admission dispatch for A-then-B in one scope, another endpoint (admitting either A or B), and a reconnected generation;
+it checks intermediate and final deadlines. Its Replay test observes both equal-payload yields independently and
+checks ids 1/2, plus no event for a refused onset. Existing admission waits now wait for the new conversation entry,
+since actual reply ingress already creates entries. Nine new test functions cover twelve case invocations.
+
+Every build/test uses the previously documented `/tmp/hs932-p4-tools/swift` wrapper, including `taskpolicy -b`,
+`-j 4 -Xswiftc -j1`, offline resolution and all supplied Testing flags. Each phase runs serially under `phase.py`
+with a 590-second deadline and owned-tree TERM/KILL traps. The repetition script owns exactly four background
+`taskpolicy -b yes` workers only in loaded mode, with EXIT/INT/TERM kill-and-wait cleanup.
+
+```sh
+python3 /tmp/hs932-p4-tools/phase.py /tmp/hs932-p4-tools/swift build -Xswiftc -warnings-as-errors
+python3 /tmp/hs932-p4-tools/phase.py /tmp/hs932-p4-tools/swift build --build-tests -Xswiftc -warnings-as-errors
+python3 /tmp/hs932-p4-tools/phase.py /tmp/hs932-p4-tools/repeat-b2-r2.sh normal
+python3 /tmp/hs932-p4-tools/phase.py /tmp/hs932-p4-tools/repeat-b2-r2.sh loaded
+# Each repetition script invokes this five times:
+/tmp/hs932-p4-tools/swift test --skip-build --no-parallel --filter 'HailCoreTests\.ReplySegment' \
+  --skip 'HailDaemonKitTests.DiagnosticReplyComposition'
+python3 /tmp/hs932-p4-tools/phase.py /tmp/hs932-p4-tools/swift test --skip-build --no-parallel \
+  --filter 'HailCoreTests\.(Reply|Playback|PCM16|Playout|Segment|Echo|Capture|Ambient|HostConnection|Privacy|Diagnostic|Heard)' \
+  --skip 'HailDaemonKitTests.DiagnosticReplyComposition'
+git diff --check
+```
+
+Final-source results:
+
+- Warnings-as-errors production build passed in 6.54 s. Final test build passed in 9.71 s (incremental;
+  earlier full test compilation passed in 69.28 s). No compiler diagnostics.
+- Combined P4a/P4b1/P4b2 segment filter: 84 test functions in 15 suites, 146 case invocations per run.
+  All five normal and five loaded repetitions passed: 840 function executions / 1,460 case invocations.
+  Normal test times: 18.615/17.513/18.318/17.063/18.375 s; loaded: 15.455/15.366/14.409/14.920/15.870 s.
+- An initial exploratory probe run passed all reconnect/admission cases, then crashed in the new Replay fixture
+  because it attempted Replay before any completed reply history existed. Corrected the fixture to finish a reply
+  before the two replay/yield cycles; the counted final runs above all passed. This was a test setup correction.
+- Exact requested serial regression passed once: 439 test functions in 94 suites, 96.934 s.
+  `HailDaemonKitTests.DiagnosticReplyComposition` (#955) was explicitly excluded from every test command.
+- Every phase completed below 590 seconds; all four owned load workers were killed and waited for by the trap.
+- `git diff --check` passed. SwiftLint is unavailable on this VM; changed Swift code was checked by hand for
+  the configured line/function/type length, complexity, nesting and opted-in rules. No new waiver was added;
+  the wiring type has 103 nonblank/noncomment code lines, below the 150-line warning threshold.
+- Logs are host-local `/tmp/hs932-p4b2-r2-*.log`, outside version control. No network, other-clone edits, PR/issue
+  changes, independent review, GitHub checks, simulator/physical audio, install, signing or upload is claimed.
+  App/physical validation and P5 notice/settings UI remain deferred as described above.

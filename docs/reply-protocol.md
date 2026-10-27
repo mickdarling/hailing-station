@@ -203,15 +203,18 @@ P4b1 retains only scalar detection state, clears it at window close, retains no 
 once per window. The gate itself only signals; P4b2 owns yield, mask handoff and transport. Diagnostics are counts only:
 onsets, onsets without an admitted ambient request within N=5 s, and analysed-level/floor histograms with buckets
 <−60, [−60,−45), [−45,−35), [−35,−25), [−25,0] dBFS. The injected clock expires diagnostic deadlines at 5 s;
-P4b2 must supply the actual admission hook and reuse an opaque scope token per endpoint/connection generation.
+P4b2 feeds the actual `ambient_heard` admission hook with an opaque scope token per endpoint/connection generation.
 A timely request satisfies only the oldest pending onset in that scope; late requests cannot remove expired
 counts. Pending entries are capped at 16, with overflow dropping the oldest as missed. Tokens are never logged
 or persisted. This detects energy from any sound, not an identified owner or verified speech.
 
 Bulk Replay containing segment markers re-enters the controller FIFO and honors actual-playback barriers and
 pauses, preserving other queued replies and the existing late-frame ledger. Unsegmented Replay retains its
-existing player path. The existing bounded observable `lastSegmentYield` is available to P5; RootView only wires
-the feature and adds no notice UI. P5's notice, Station tools setting and physical/app validation remain deferred.
+existing player path. P5 observes the store’s content-free `segmentYieldEvent`, whose monotonically increasing
+`UInt64` id distinguishes repeated successful local yields of identical endpoint/reply/segment values after Replay.
+Reply generation and admission scope bind at frame ingress and remain fixed across reconnect and later windows.
+RootView only wires the feature and adds no notice UI. P5's notice, Station tools setting and physical/app validation
+remain deferred.
 See [the device test record](testing/reply-segments-device.md) for the split, synthetic checks and deferred work.
 Synthetic P1 verification is recorded in [reply-segments-protocol.md](testing/reply-segments-protocol.md), and
 P3 listener verification in [reply-segments-listener.md](testing/reply-segments-listener.md).

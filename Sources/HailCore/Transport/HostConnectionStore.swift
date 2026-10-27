@@ -21,6 +21,9 @@ public final class HostConnectionStore {
     /// Called once for each request the host refused (any `ErrorCode.isRequestRefusal`), with its message, so the app
     /// can announce it once; the chat already shows it (#608, #636).
     @ObservationIgnored public var onRequestRefusal: (@MainActor (String) -> Void)?
+    /// Each successful local onset yield gets a distinct id, including repeated yields after Replay.
+    /// Content-free, memory-only event for observers such as the P5 notice; transport success is separate.
+    public private(set) var segmentYieldEvent: ReplySegmentYieldEvent?
     @ObservationIgnored var segmentWiring: ReplySegmentDeviceWiring?
     /// The station chat (#288): requests as they are sent and replies as they arrive, in the background too.
     public let conversation = ConversationLog()
@@ -200,6 +203,7 @@ extension HostConnectionStore {
     private func receive(_ event: HostReplyEvent, token: UUID) {
         guard tokens[event.endpointID] == token else { return }
         if receiveAmbientNotice(event) { return }
+        segmentWiring?.receive(event)
         replyFrames.append(event)
         conversation.noteReply(event, selected: selectedTargets[event.endpointID],
                                scope: addressScope(event.endpointID))
@@ -1103,7 +1107,22 @@ public struct DuckModeStatus: Equatable, Sendable {
     }
 }
 
+/// A bounded observable event: equal endpoint/reply/segment values still have distinct ids.
+public struct ReplySegmentYieldEvent: Identifiable, Equatable, Sendable {
+    public let id: UInt64
+    public let endpointID: HostEndpoint.Identifier
+    public let replyID: UUID
+    public let segment: Int
+}
+
 extension HostConnectionStore {
+    func publishSegmentYield(_ yield: ReplySegmentPause) {
+        segmentYieldEvent = ReplySegmentYieldEvent(
+            id: (segmentYieldEvent?.id ?? 0) + 1, endpointID: yield.endpointID,
+            replyID: yield.replyID, segment: yield.segment
+        )
+    }
+
     /// Install once before capture starts. Authorization is read on the main actor for every buffer and onset.
     public func wireReplySegments(
         playback: ReplyPlaybackController, echoGuard: AmbientReplyEchoGuard,
@@ -1139,9 +1158,12 @@ final class ReplySegmentDeviceWiring {
     private var window: Range<ContinuousClock.Instant>?
     private var pause: ReplySegmentPause?
     private var generation: UUID?
+    private var replyConnections: [ReplyStreamKey: (generation: UUID, scope: ReplySegmentAdmissionScope)] = [:]
+    private var admissionScopes: [HostEndpoint.Identifier: (generation: UUID, scope: ReplySegmentAdmissionScope)] = [:]
+    private let inactiveScope = ReplySegmentAdmissionScope()
+    private var receivedReplies: [ReplyStreamKey] = []
     private var yielding = false
     private(set) var lastTailReleased: Bool?
-    private var admittedYield: (endpoint: HostEndpoint.Identifier, generation: UUID)?
 
     init(
         store: HostConnectionStore, playback: ReplyPlaybackController, echoGuard: AmbientReplyEchoGuard,
@@ -1152,7 +1174,8 @@ final class ReplySegmentDeviceWiring {
         self.echoGuard = echoGuard
         self.authorization = authorization
         echoGuard.configureSegmentOnset(input: { [weak self] in
-            Self.onMain { self?.captureInput() ?? .init(window: nil, ambientListening: false, privacyOn: true) }
+            Self.onMain { self?.captureInput() ?? .init(scope: ReplySegmentAdmissionScope(), window: nil,
+                                                ambientListening: false, privacyOn: true) }
         }, onOnset: { [weak self] in
             Self.onMain { self?.onset() }
         })
@@ -1178,7 +1201,25 @@ final class ReplySegmentDeviceWiring {
         guard let pause else { return closeWindow() }
         let start = playback.idleNow()
         window = start..<start.advanced(by: .seconds(playback.segmentSettings.pauseAfterSegment))
-        generation = store?.snapshots[pause.endpointID]?.connectionGeneration
+        generation = replyConnections[ReplyStreamKey(endpointID: pause.endpointID, replyID: pause.replyID)]?.generation
+    }
+
+    /// Bind before playback sees ingress. Later windows, frames and reconnects cannot rebind a known reply.
+    /// Keep queued/playing ownership through history eviction; an unbound replay fails closed.
+    func receive(_ event: HostReplyEvent) {
+        guard let reply = playback.descriptor(in: event.frame),
+              let snapshot = store?.snapshots[event.endpointID], snapshot.state == .ready else { return }
+        let key = ReplyStreamKey(endpointID: event.endpointID, replyID: reply.id)
+        guard replyConnections[key] == nil else { return }
+        if receivedReplies.count == HostConnectionStore.replyFrameLimit {
+            guard let index = receivedReplies.firstIndex(where: {
+                playback.streams[$0] == nil && playback.activeKey != $0
+            }) else { return }
+            replyConnections.removeValue(forKey: receivedReplies.remove(at: index))
+        }
+        replyConnections[key] = (snapshot.connectionGeneration,
+                                 admissionScope(for: event.endpointID, generation: snapshot.connectionGeneration))
+        receivedReplies.append(key)
     }
 
     private func closeWindow() {
@@ -1188,10 +1229,12 @@ final class ReplySegmentDeviceWiring {
 
     func captureInput() -> ReplySegmentOnsetInput {
         guard let pause, playback.segmentPause == pause else {
-            return .init(window: nil, ambientListening: false, privacyOn: true)
+            return .init(scope: inactiveScope, window: nil, ambientListening: false, privacyOn: true)
         }
         let flags = authorization(pause.endpointID)
-        return .init(window: window, ambientListening: flags.ambientListening, privacyOn: flags.privacyOn,
+        let key = ReplyStreamKey(endpointID: pause.endpointID, replyID: pause.replyID)
+        return .init(scope: replyConnections[key]?.scope ?? inactiveScope, window: window,
+                     ambientListening: flags.ambientListening, privacyOn: flags.privacyOn,
                      settings: playback.segmentSettings)
     }
 
@@ -1208,14 +1251,21 @@ final class ReplySegmentDeviceWiring {
         echoGuard.setReplyAudible(playback.isReplyAudioOutputBusy)
         lastTailReleased = echoGuard.endReplyTailForYield() // Before close; false preserves the normal tail.
         closeWindow()
+        store?.publishSegmentYield(result)
         guard let generation, let store else { return }
-        admittedYield = (result.endpointID, generation)
         Task { await store.sendReplyYield(result, connectionGeneration: generation) }
     }
 
     func ambientRequestAdmitted(from endpoint: HostEndpoint.Identifier) {
-        guard let admittedYield, admittedYield.endpoint == endpoint,
-              store?.snapshots[endpoint]?.connectionGeneration == admittedYield.generation else { return }
-        echoGuard.segmentOnsetGate.ambientRequestAdmitted()
+        guard let snapshot = store?.snapshots[endpoint], snapshot.state == .ready else { return }
+        let scope = admissionScope(for: endpoint, generation: snapshot.connectionGeneration)
+        echoGuard.segmentOnsetGate.ambientRequestAdmitted(in: scope)
+    }
+
+    private func admissionScope(for endpoint: HostEndpoint.Identifier, generation: UUID) -> ReplySegmentAdmissionScope {
+        if let existing = admissionScopes[endpoint], existing.generation == generation { return existing.scope }
+        let scope = ReplySegmentAdmissionScope()
+        admissionScopes[endpoint] = (generation, scope)
+        return scope
     }
 }

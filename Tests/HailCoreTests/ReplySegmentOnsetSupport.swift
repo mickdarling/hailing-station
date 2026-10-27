@@ -63,6 +63,7 @@ final class SegmentWireFixture {
     let reply = idleReply()
     var ambient = true
     var privacy = false
+    private var sockets: [String: ScriptedSocket] = [:]
     private var timers: [(ContinuousClock.Instant, @MainActor () -> Void)] = []
 
     init() {
@@ -78,11 +79,13 @@ final class SegmentWireFixture {
         store.wireReplySegments(playback: controller, echoGuard: guarder) { [weak self] _ in
             (self?.ambient == true, self?.privacy ?? true)
         }
+        store.onReplyFrame = { [weak controller] event in controller?.ingest(event) }
     }
 
     func connect(_ id: String, ready: Bool = true, capable: Bool = true) async throws -> ScriptedSocket {
         let endpoint = try endpoint(id, "ws://127.0.0.1:" + (id == "main" ? "8765" : "8766"))
         let socket = ScriptedSocket()
+        sockets[id] = socket
         await connector.enqueue(.socket(socket), for: endpoint.url)
         await store.upsert(endpoint)
         await store.connect(id)
@@ -90,7 +93,8 @@ final class SegmentWireFixture {
         if ready {
             try await socket.push(.hello(HelloInfo(
                 versions: [ProtocolVersion.current],
-                capabilities: capable ? [ReplySegments.capability] : [], deviceName: "Synthetic host"
+                capabilities: ["receive_replies"] + (capable ? [ReplySegments.capability] : []),
+                deviceName: "Synthetic host"
             )))
             try await waitUntil { @MainActor in self.store.snapshots[id]?.state == .ready }
         }
@@ -100,15 +104,28 @@ final class SegmentWireFixture {
     func open(played: Int = 1) async throws {
         for sequence in 0..<played {
             if sequence > 0 {
-                clock.advance(by: .seconds(1.5))
-                let due = timers.filter { $0.0 <= clock.now }
-                timers.removeAll { $0.0 <= clock.now }
-                for timer in due { timer.1() }
+                advance(by: .seconds(1.5))
             }
-            controller.ingest(segmentAudio(reply, sequence: sequence))
+            try await ingest(segmentAudio(reply, sequence: sequence))
             player.completeReply()
         }
         try await waitUntil { @MainActor in self.store.segmentWiring?.captureInput().window != nil }
+    }
+
+    func advance(by duration: Duration) {
+        clock.advance(by: duration)
+        let due = timers.filter { $0.0 <= clock.now }
+        timers.removeAll { $0.0 <= clock.now }
+        for timer in due { timer.1() }
+    }
+
+    func ingest(_ event: HostReplyEvent) async throws {
+        guard store.snapshots[event.endpointID]?.state == .ready, let socket = sockets[event.endpointID] else {
+            controller.ingest(event)
+            return
+        }
+        try await socket.push(FrameCoding.encode(event.frame))
+        try await waitUntil { @MainActor in self.store.replyFrames.contains { $0.frame.id == event.frame.id } }
     }
 
     func feed(_ dbfs: Double, seconds: Double, afterAuthorization: @escaping @Sendable () -> Void = {}) async throws {
