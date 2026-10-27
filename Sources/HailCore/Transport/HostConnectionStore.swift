@@ -21,6 +21,10 @@ public final class HostConnectionStore {
     /// Called once for each request the host refused (any `ErrorCode.isRequestRefusal`), with its message, so the app
     /// can announce it once; the chat already shows it (#608, #636).
     @ObservationIgnored public var onRequestRefusal: (@MainActor (String) -> Void)?
+    /// Each successful local onset yield gets a distinct id, including repeated yields after Replay.
+    /// Content-free, memory-only event for observers such as the P5 notice; transport success is separate.
+    public private(set) var segmentYieldEvent: ReplySegmentYieldEvent?
+    @ObservationIgnored var segmentWiring: ReplySegmentDeviceWiring?
     /// The station chat (#288): requests as they are sent and replies as they arrive, in the background too.
     public let conversation = ConversationLog()
     /// True while ambient listening is streaming; leaving the foreground then keeps the destination authorized (#282).
@@ -199,6 +203,7 @@ extension HostConnectionStore {
     private func receive(_ event: HostReplyEvent, token: UUID) {
         guard tokens[event.endpointID] == token else { return }
         if receiveAmbientNotice(event) { return }
+        segmentWiring?.receive(event)
         replyFrames.append(event)
         conversation.noteReply(event, selected: selectedTargets[event.endpointID],
                                scope: addressScope(event.endpointID))
@@ -255,6 +260,7 @@ extension HostConnectionStore {
                 targets: snapshots[event.endpointID]?.targets ?? [], scope: addressScope(event.endpointID)
             )
             conversation.recordHeardTurn(turn, for: entryID)
+            segmentWiring?.ambientRequestAdmitted(from: event.endpointID)
         case .control(.ambientOverheard(let targetID, let text, let speaker, let name)):
             conversation.noteOverheard(
                 text, owner: speaker == "owner", name: name, endpointID: event.endpointID, targetID: targetID
@@ -1099,4 +1105,176 @@ public struct DuckModeStatus: Equatable, Sendable {
         guard let expires else { return true }
         return expires > now
     }
+}
+
+/// A bounded observable event: equal endpoint/reply/segment values still have distinct ids.
+public struct ReplySegmentYieldEvent: Identifiable, Equatable, Sendable {
+    public let id: UInt64
+    public let endpointID: HostEndpoint.Identifier
+    public let replyID: UUID
+    public let segment: Int
+}
+
+extension HostConnectionStore {
+    func publishSegmentYield(_ yield: ReplySegmentPause) {
+        segmentYieldEvent = ReplySegmentYieldEvent(
+            id: (segmentYieldEvent?.id ?? 0) + 1, endpointID: yield.endpointID,
+            replyID: yield.replyID, segment: yield.segment
+        )
+    }
+
+    /// Install once before capture starts. Authorization is read on main for buffers/onsets in an open pause window.
+    public func wireReplySegments(
+        playback: ReplyPlaybackController, echoGuard: AmbientReplyEchoGuard,
+        authorization: @escaping @MainActor (HostEndpoint.Identifier) -> (ambientListening: Bool, privacyOn: Bool)
+    ) {
+        guard segmentWiring == nil else { return }
+        segmentWiring = ReplySegmentDeviceWiring(store: self, playback: playback, echoGuard: echoGuard,
+                                                authorization: authorization)
+    }
+
+    /// The owned endpoint only. Failure never undoes the device's local stop.
+    @discardableResult
+    func sendReplyYield(_ yield: ReplySegmentPause, connectionGeneration: UUID) async -> Bool {
+        guard let snapshot = snapshots[yield.endpointID], snapshot.state == .ready,
+              snapshot.connectionGeneration == connectionGeneration,
+              snapshot.capabilities.contains(ReplySegments.capability),
+              let connection = connections[yield.endpointID] else { return false }
+        do {
+            try await connection.sendReplyYield(yield, connectionGeneration: connectionGeneration)
+            return true
+        } catch { return false }
+    }
+}
+
+/// Main-actor bridge for the synchronous pre-mask tap. No PCM crosses this bridge or survives analysis.
+/// Installation is once, before capture: it never synchronously stops/reconfigures the tap from a callback.
+@MainActor
+final class ReplySegmentDeviceWiring {
+    private weak var store: HostConnectionStore?
+    private let playback: ReplyPlaybackController
+    private let echoGuard: AmbientReplyEchoGuard
+    private let authorization: @MainActor (HostEndpoint.Identifier) -> (ambientListening: Bool, privacyOn: Bool)
+    private var window: Range<ContinuousClock.Instant>?
+    private var pause: ReplySegmentPause?
+    private var generation: UUID?
+    private var replyConnections: [ReplyStreamKey: (generation: UUID, scope: ReplySegmentAdmissionScope)] = [:]
+    private var admissionScopes: [HostEndpoint.Identifier: (generation: UUID, scope: ReplySegmentAdmissionScope)] = [:]
+    private let inactiveScope = ReplySegmentAdmissionScope()
+    private var receivedReplies: [ReplyStreamKey] = []
+    private var yielding = false
+    /// Whether the last successful yield ended the reply-echo tail early; test observability only.
+    private(set) var lastTailRelease: SegmentTailRelease = .notAttempted
+
+    init(
+        store: HostConnectionStore, playback: ReplyPlaybackController, echoGuard: AmbientReplyEchoGuard,
+        authorization: @escaping @MainActor (HostEndpoint.Identifier) -> (ambientListening: Bool, privacyOn: Bool)
+    ) {
+        self.store = store
+        self.playback = playback
+        self.echoGuard = echoGuard
+        self.authorization = authorization
+        echoGuard.configureSegmentOnset(input: { [weak self] in
+            Self.onMain { self?.captureInput() ?? .init(scope: ReplySegmentAdmissionScope(), window: nil,
+                                                ambientListening: false, privacyOn: true) }
+        }, onOnset: { [weak self] in
+            Self.onMain { self?.onset() }
+        })
+        trackWindow()
+    }
+
+    // The capture forwarder is a detached task, never the real-time audio render callback.
+    // It hops to main for input only while a pause window is open.
+    // Input is called outside the tap lock; onset holds it, so onset must never configure or stop the tap.
+    nonisolated private static func onMain<T: Sendable>(_ body: @MainActor @Sendable () -> T) -> T {
+        if Thread.isMainThread { return MainActor.assumeIsolated(body) }
+        return DispatchQueue.main.sync { MainActor.assumeIsolated(body) }
+    }
+
+    private func trackWindow() {
+        pause = withObservationTracking { playback.segmentPause } onChange: { [weak self] in
+            MainActor.assumeIsolated {
+                guard let self else { return }
+                // Observation fires before mutation. Keep the analysed window until tail release on yield.
+                if !self.yielding { self.closeWindow() }
+                Task { @MainActor [weak self] in self?.trackWindow() }
+            }
+        }
+        guard let pause else { return closeWindow() }
+        let start = playback.idleNow()
+        window = start..<start.advanced(by: .seconds(playback.segmentSettings.pauseAfterSegment))
+        echoGuard.segmentOnsetGate.openWindow()
+        generation = replyConnections[ReplyStreamKey(endpointID: pause.endpointID, replyID: pause.replyID)]?.generation
+    }
+
+    /// Bind before playback sees ingress. Later windows, frames and reconnects cannot rebind a known reply.
+    /// Keep queued/playing ownership through history eviction; an unbound replay fails closed.
+    func receive(_ event: HostReplyEvent) {
+        guard let reply = playback.descriptor(in: event.frame),
+              let snapshot = store?.snapshots[event.endpointID], snapshot.state == .ready else { return }
+        let key = ReplyStreamKey(endpointID: event.endpointID, replyID: reply.id)
+        guard replyConnections[key] == nil else { return }
+        if receivedReplies.count == HostConnectionStore.replyFrameLimit {
+            guard let index = receivedReplies.firstIndex(where: {
+                playback.streams[$0] == nil && playback.activeKey != $0
+            }) else { return }
+            replyConnections.removeValue(forKey: receivedReplies.remove(at: index))
+        }
+        replyConnections[key] = (snapshot.connectionGeneration,
+                                 admissionScope(for: event.endpointID, generation: snapshot.connectionGeneration))
+        receivedReplies.append(key)
+    }
+
+    private func closeWindow() {
+        window = nil
+        echoGuard.segmentOnsetGate.closeWindow()
+    }
+
+    func captureInput() -> ReplySegmentOnsetInput {
+        guard let pause, playback.segmentPause == pause else {
+            return .init(scope: inactiveScope, window: nil, ambientListening: false, privacyOn: true)
+        }
+        let flags = authorization(pause.endpointID)
+        let key = ReplyStreamKey(endpointID: pause.endpointID, replyID: pause.replyID)
+        return .init(scope: replyConnections[key]?.scope ?? inactiveScope, window: window,
+                     ambientListening: flags.ambientListening, privacyOn: flags.privacyOn,
+                     settings: playback.segmentSettings)
+    }
+
+    func onset() {
+        guard let pause, playback.segmentPause == pause, let window,
+              window.contains(playback.idleNow()) else { return }
+        let flags = authorization(pause.endpointID) // Fresh again at the signal, never captured at window open.
+        yielding = true
+        defer { yielding = false }
+        guard let result = playback.yieldPausedReply(
+            ambientListening: flags.ambientListening, privacyOn: flags.privacyOn
+        ) else { return }
+        // A queued replacement may already be audible. Preserve its mask; otherwise start the ordinary tail.
+        echoGuard.setReplyAudible(playback.isReplyAudioOutputBusy)
+        // Before close; a refusal preserves the normal tail.
+        lastTailRelease = echoGuard.endReplyTailForYield() ? .released : .kept
+        closeWindow()
+        store?.publishSegmentYield(result)
+        guard let generation, let store else { return }
+        Task { await store.sendReplyYield(result, connectionGeneration: generation) }
+    }
+
+    func ambientRequestAdmitted(from endpoint: HostEndpoint.Identifier) {
+        guard let snapshot = store?.snapshots[endpoint], snapshot.state == .ready else { return }
+        let scope = admissionScope(for: endpoint, generation: snapshot.connectionGeneration)
+        echoGuard.segmentOnsetGate.ambientRequestAdmitted(in: scope)
+    }
+
+    private func admissionScope(for endpoint: HostEndpoint.Identifier, generation: UUID) -> ReplySegmentAdmissionScope {
+        if let existing = admissionScopes[endpoint], existing.generation == generation { return existing.scope }
+        let scope = ReplySegmentAdmissionScope()
+        admissionScopes[endpoint] = (generation, scope)
+        return scope
+    }
+}
+
+/// What the last segment yield did to the reply-echo tail (#932).
+enum SegmentTailRelease: Equatable, Sendable {
+    case notAttempted, released, kept
 }

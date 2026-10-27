@@ -12,7 +12,7 @@ struct AmbientPrivacyParkHoldTests {
     static func park(_ rig: RestoreRig) -> UUID {
         let from = UUID()
         rig.router.state.withLock {
-            $0.parkedPrivacy = ParkedPrivacy(connection: from, device: nil, parkedAt: rig.clock.now())
+            $0.parks[from] = ParkedPrivacy(connection: from, device: nil, parkedAt: rig.clock.now())
         }
         return from
     }
@@ -134,7 +134,8 @@ struct AmbientPrivacyParkHoldTests {
         let connection = UUID()
         var state = AmbientRightyoRouter.State()
         #expect(AmbientRightyoRouter.admitsPrivacy(connection, in: state))
-        state.parkedPrivacy = ParkedPrivacy(connection: UUID(), device: nil, parkedAt: Date())
+        let parked = UUID()
+        state.parks[parked] = ParkedPrivacy(connection: parked, device: nil, parkedAt: Date())
         #expect(!AmbientRightyoRouter.admitsPrivacy(connection, in: state))
         state.duck[connection] = AmbientDuckTimer(token: UUID(), timer: nil)
         #expect(AmbientRightyoRouter.admitsPrivacy(connection, in: state))

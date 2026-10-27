@@ -12,7 +12,7 @@ struct AmbientPrivacyParkStatusTests {
     @Test func aRestoredConnectionAnswersStatusAsAnyPrivateOne() async throws {
         let rig = try await AmbientPrivacyParkTests.privacyDropped()
         defer { rig.close() }
-        #expect(rig.router.state.withLock { $0.parkedPrivacy?.heard } == true)
+        #expect(rig.router.state.withLock { $0.parks.values.first?.heard } == true)
         let (socket, connection) = try await rig.start()
         let router = rig.router
         #expect(await eventually { router.activePipeline?.hearsAudio == true }, "restored child confirmed private")
@@ -28,7 +28,7 @@ struct AmbientPrivacyParkStatusTests {
     @Test func aParkNeverHeardAnnouncedKeepsStatusSilent() async throws {
         let rig = try await AmbientPrivacyParkWordsTests.privateDropped()
         defer { rig.close() }
-        #expect(rig.router.state.withLock { $0.parkedPrivacy?.heard } == false)
+        #expect(rig.router.state.withLock { $0.parks.values.first?.heard } == false)
         let (socket, connection) = try await rig.start()
         let router = rig.router
         try rig.release()

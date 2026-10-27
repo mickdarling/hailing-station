@@ -53,8 +53,20 @@ public final class ReplyPlaybackController {
     var lastKey: ReplyStreamKey?
     var playbackOrder: [ReplyStreamKey] = []
     /// A reply starting or ending claims or frees the headset's pause (`+Headset`).
-    var activeKey: ReplyStreamKey? { didSet { if (oldValue == nil) != (activeKey == nil) { replyActivityChanged() } } }
-    var playbackGeneration: UInt = 0
+    var activeKey: ReplyStreamKey? {
+        didSet {
+            if oldValue != activeKey { clearSegmentBoundary() }
+            if (oldValue == nil) != (activeKey == nil) { replyActivityChanged() }
+        }
+    }
+    var playbackGeneration: UInt = 0 { didSet { clearSegmentBoundary() } }
+    public var segmentSettings = ReplySegmentSettings.saved()
+    public internal(set) var segmentPause: ReplySegmentPause?
+    public internal(set) var lastSegmentYield: ReplySegmentPause?
+    @ObservationIgnored var segmentBoundary: ReplyStreamKey?
+    @ObservationIgnored var segmentBoundarySequence: Int?
+    @ObservationIgnored var playedSegmentEnds = 0
+    @ObservationIgnored var cancelSegmentPause: (@MainActor () -> Void)?
     var seenFrames: [UUID] = []
     var seenFrameSet: Set<UUID> = []
     var presentationStatuses: [String: String] = [:]
@@ -78,6 +90,7 @@ public final class ReplyPlaybackController {
         self.player = player
         observeAudioInterruptions(on: .default)
         observeCatchUp()
+        observeSegmentDiscards()
     }
     /// An unmuted reply still owns the output path. This is intentionally conservative across
     /// segment gaps: accessibility speech must not compete with a reply that may resume.
@@ -117,9 +130,6 @@ public final class ReplyPlaybackController {
                 ? "Waiting for audio" : "Queued"
         }
     }
-    private func finished(_ key: ReplyStreamKey, generation: UInt) -> @MainActor @Sendable () -> Void {
-        { [weak self] in self?.playbackFinished(key, generation: generation) }
-    }
     func playbackFinished(_ key: ReplyStreamKey, generation: UInt) {
         guard generation == playbackGeneration,
               let index = playbackOrder.firstIndex(of: key) else { return }
@@ -138,6 +148,7 @@ public final class ReplyPlaybackController {
     }
     func drain() {
         watchHeadIfChanged() // before any segment of a new head is scheduled (#469)
+        guard segmentBoundary == nil else { return } // Nothing past a marker enters the player yet.
         dropAbandonedHold() // an abandoned reply's held tail never plays before the next (#825)
         applyPendingMuteIfDue() // before the next reply starts, so it plays silently (#404)
         guard !isCaptureSuppressed, !isPaused else {
@@ -152,7 +163,7 @@ public final class ReplyPlaybackController {
                 if activeKey == nil { activeKey = key }
             }
             let generation = playbackGeneration
-            let onPlayed = segment.isFinal ? finished(key, generation: generation) : nil
+            let onPlayed = completion(for: segment, key: key, generation: generation)
             do {
                 try player.schedule(segment, onPlayed: onPlayed)
             } catch {
@@ -167,34 +178,14 @@ public final class ReplyPlaybackController {
             noteScheduled(segment)
             setPresentationStatus(nil, for: key)
             status = playingStatus
+            if segment.isSegmentEnd { syncIdleHold(); return }
             guard segment.isFinal else { continue }
-            if !key.isAnnouncement { lastAudio = (0..<stream.nextSequence).compactMap { stream.segments[$0] } }
-            if !key.isAnnouncement { lastKey = key } // Replay replays the last reply, never an announcement (#825).
+            if !key.isAnnouncement { // Replay replays the last reply, never an announcement (#825).
+                lastAudio = (0..<stream.nextSequence).compactMap { stream.segments[$0] }
+                lastKey = key
+            }
             completed.insert(key)
             return
         }
-    }
-}
-/// The head stream's idle watch (#469): when its scheduled audio runs out, and when its last frame came.
-struct ReplyIdleWatch {
-    var key: ReplyStreamKey?
-    var bufferedUntil = ContinuousClock.now
-    var lastFrameAt = ContinuousClock.now
-    /// Audio the player plays before the head's: a replay (Codex P1 on #473). The head's audio starts after it.
-    var aheadUntil = ContinuousClock.now
-    var audioInterrupted = false
-    /// While paused, listening or interrupted nothing plays out: the unplayed audio, kept until playback resumes.
-    var heldRemaining: Duration?
-    var cancel: (@MainActor () -> Void)?
-}
-extension ReplyPlaybackController {
-    static func sleepThenFire(
-        _ delay: Duration, _ fire: @escaping @MainActor () -> Void
-    ) -> @MainActor () -> Void {
-        let task = Task { @MainActor in
-            guard (try? await Task.sleep(for: delay)) != nil else { return }
-            fire()
-        }
-        return { task.cancel() }
     }
 }
