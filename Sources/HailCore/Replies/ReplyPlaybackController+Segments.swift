@@ -7,17 +7,22 @@ public struct ReplySegmentSettings: Equatable, Sendable {
     public static let defaultsKey = "hailing-station.reply-segments.v1"
     public let pauseAfterSegment: TimeInterval
     public let sustainedOnset: TimeInterval
+    public let onsetThresholdDBFS: Double
 
-    /// Invalid/nonfinite values fall back individually. A pause is 0.1–10 s; onset is 0.05–2 s.
-    public init(pauseAfterSegment: TimeInterval = 1.5, sustainedOnset: TimeInterval = 0.3) {
+    /// Invalid/nonfinite values fall back individually. Threshold bounds are −60…−15 dBFS.
+    public init(
+        pauseAfterSegment: TimeInterval = 1.5, sustainedOnset: TimeInterval = 0.3, onsetThresholdDBFS: Double = -35
+    ) {
         self.pauseAfterSegment = (0.1...10).contains(pauseAfterSegment) ? pauseAfterSegment : 1.5
         self.sustainedOnset = (0.05...2).contains(sustainedOnset) ? sustainedOnset : 0.3
+        self.onsetThresholdDBFS = (-60 ... -15).contains(onsetThresholdDBFS) ? onsetThresholdDBFS : -35
     }
 
     public static func saved(in defaults: UserDefaults = .standard) -> Self {
         let values = defaults.dictionary(forKey: defaultsKey)
         return Self(pauseAfterSegment: number(values?["pauseAfterSegment"]) ?? 1.5,
-                    sustainedOnset: number(values?["sustainedOnset"]) ?? 0.3)
+                    sustainedOnset: number(values?["sustainedOnset"]) ?? 0.3,
+                    onsetThresholdDBFS: number(values?["onsetThresholdDBFS"]) ?? -35)
     }
 
     private static func number(_ value: Any?) -> Double? {
@@ -27,7 +32,10 @@ public struct ReplySegmentSettings: Equatable, Sendable {
     }
 
     public func save(in defaults: UserDefaults = .standard) {
-        let values = ["pauseAfterSegment": pauseAfterSegment, "sustainedOnset": sustainedOnset]
+        var values = defaults.dictionary(forKey: Self.defaultsKey) ?? [:]
+        values["pauseAfterSegment"] = pauseAfterSegment
+        values["sustainedOnset"] = sustainedOnset
+        values["onsetThresholdDBFS"] = onsetThresholdDBFS
         defaults.set(values, forKey: Self.defaultsKey)
     }
 }
