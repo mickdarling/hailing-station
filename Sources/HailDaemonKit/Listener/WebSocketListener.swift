@@ -646,9 +646,13 @@ public final class AmbientRightyoRouter: AmbientAudioSink, AmbientListenerWiring
         /// #735 meeting mode restore (MM-E): the meeting or media mode a dropped connection left on, daemon-wide and
         /// in RAM only, until the next ambient start restores it or privacy, the owner's off or its expiry ends it.
         var parked: ParkedModes?
-        /// Privacy a dropped connection held (#941), daemon-wide and in RAM only: every fresh stream starts private
-        /// while it is held, until the owner's own privacy-off clears it.
-        var parkedPrivacy: ParkedPrivacy?
+        /// Privacy each dropped connection held (#941), keyed by that connection (#961: one entry each, so one
+        /// connection's stale verdict never drops another's), daemon-wide and in RAM only: every fresh stream starts
+        /// private while any is held, until the owner's own privacy-off clears them all. At most `maxParkedPrivacy`.
+        var parks: [UUID: ParkedPrivacy] = [:]
+        /// A park was evicted at the bound (#961). Every fresh stream starts private while it is set, so an eviction
+        /// never opens privacy; only the owner's own privacy-off clears it.
+        var parkOverflow = false
         /// The live connection each restored connection took its privacy from (#941), with that arming: the only one
         /// an owner's off there may end. Dropped with the connection.
         var privacySources: [UUID: PrivacySource] = [:]
