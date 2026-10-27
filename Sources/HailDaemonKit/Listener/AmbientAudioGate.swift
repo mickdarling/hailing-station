@@ -49,12 +49,16 @@ public protocol AmbientAudioSink: Sendable {
     /// stream, so its first one starts private. Same rules as `ambientAudio`. A sink without it ignores it, which fails
     /// closed: the device is never told privacy is on.
     func ambientPrivacyPreArm(connection: UUID)
+    /// A pre-arm the gate refused (#904), with a fixed reason token: `ended`, a connection this gate already ended (a
+    /// `set_privacy` on still in flight at its teardown). Same rules as `ambientAudio`; for the log only.
+    func ambientPrivacyPreArmRefused(connection: UUID, reason: String)
 }
 
 extension AmbientAudioSink {
     public func ambientInputRoute(_ route: String, connection: UUID) {}
     public func ambientPrivacy(_ on: Bool, connection: UUID) {}
     public func ambientPrivacyPreArm(connection: UUID) {}
+    public func ambientPrivacyPreArmRefused(connection: UUID, reason: String) {}
 }
 
 /// One opt-in ambient microphone stream per daemon (#203). Shape: pcm16, 16 kHz, mono, a stream id, no
@@ -120,6 +124,12 @@ public actor AmbientAudioGate {
     /// Live connections that opened a stream here (#904), dropped when they disconnect: only one not in it may pre-arm
     /// privacy. A refused start never adds one.
     private var streamed: Set<UUID> = []
+    /// Connections this gate ended (#904), the last `endedStreamCapacity` of them, kept and evicted (oldest first) as
+    /// ended streams are: a pre-arm still in flight when its connection was torn down is refused, so no privacy is
+    /// armed for a connection that is gone. `evictConnectionNext` is the oldest slot once the ring is full.
+    private var endedConnections: Set<UUID> = []
+    private var endedConnectionOrder: [UUID] = []
+    private var evictConnectionNext = 0
     private let clock: @Sendable () -> ContinuousClock.Instant
     private let sweepInterval: Duration?
     private var active: Stream?
@@ -158,6 +168,7 @@ public actor AmbientAudioGate {
         moved.removeAll { $0.connection == connection }
         inputRoutes[connection] = nil
         streamed.remove(connection)
+        rememberEnded(connection: connection)
         guard active?.connection == connection else { return }
         end(.peerEnded)
     }
@@ -176,10 +187,14 @@ public actor AmbientAudioGate {
     /// its stream ended (Jarvis: the host stopped listening because no child could keep privacy, and the switch is
     /// then the way out); the connection's privacy lives until the connection ends. An on from a connection that has
     /// not opened a stream here yet is its pre-arm (#904: a device re-asserting privacy on a new connection before it
-    /// resumes), whoever else is listening; an on from one whose stream ended stays refused (Jarvis). Otherwise nothing
-    /// is handed on. Whether privacy already is as asked is the sink's to check.
+    /// resumes), whoever else is listening; an on from one whose stream ended stays refused (Jarvis), and so does one
+    /// from a connection this gate already ended (its teardown ran while the on was in flight), reported as `ended`.
+    /// Otherwise nothing is handed on. Whether privacy already is as asked is the sink's to check.
     public func setPrivacy(_ on: Bool, connection: UUID) {
         if !on || active?.connection == connection { return sink.ambientPrivacy(on, connection: connection) }
+        guard !endedConnections.contains(connection) else {
+            return sink.ambientPrivacyPreArmRefused(connection: connection, reason: "ended")
+        }
         guard !streamed.contains(connection) else { return }
         sink.ambientPrivacyPreArm(connection: connection)
     }
@@ -369,5 +384,17 @@ extension AmbientAudioGate {
         sink.ambientAudio(.started(stream: stream, connection: connection, selection: selection))
         startSweeper()
         return nil
+    }
+}
+
+/// Ended connections (#904), kept as ended streams are.
+extension AmbientAudioGate {
+    /// The ring `remember` keeps for ended streams, for ended connections, with the same bound.
+    private func rememberEnded(connection: UUID) {
+        guard endedConnections.insert(connection).inserted else { return }
+        guard endedConnectionOrder.count == endedStreamCapacity else { return endedConnectionOrder.append(connection) }
+        endedConnections.remove(endedConnectionOrder[evictConnectionNext])
+        endedConnectionOrder[evictConnectionNext] = connection
+        evictConnectionNext = (evictConnectionNext + 1) % endedStreamCapacity
     }
 }

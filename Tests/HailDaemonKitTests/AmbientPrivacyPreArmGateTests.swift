@@ -11,8 +11,9 @@ import Testing
 @Suite(.serialized, .timeLimit(.minutes(1)), .frozenGuardBudget)
 struct AmbientPrivacyPreArmGateTests {
     /// R1: a pre-arm for a connection before its first stream, whoever else is listening; the stream holder's on and
-    /// any off take the switch's path; an on after the connection's stream ended is refused (Jarvis). A refused start
-    /// opens nothing, and a connection's end forgets it.
+    /// any off take the switch's path; an on after the connection's stream ended is refused (Jarvis), a stream opened
+    /// by `resume` included. A refused start opens nothing. An on after the gate ended the connection is refused as
+    /// `ended` (#967 second key), never a pre-arm.
     @Test func theGateHandsAPreArmOnlyBeforeAConnectionsFirstStream() async {
         let sink = PreArmSink(), (holder, fresh) = (UUID(), UUID())
         let gate = AmbientAudioGate(target: "tmux:a", sink: sink, sweepInterval: nil)
@@ -26,10 +27,15 @@ struct AmbientPrivacyPreArmGateTests {
         #expect(await gate.activeStream == nil)
         await gate.setPrivacy(true, connection: holder)
         await gate.setPrivacy(false, connection: holder)
+        let resumed = UUID()
+        var resume = ambientSegment(stream: UUID(), sequence: 0, isFinal: true)
+        resume.isResume = true
+        #expect(await gate.admit(resume, connection: resumed) == nil)
+        await gate.setPrivacy(true, connection: resumed)
         await gate.end(connection: holder)
         await gate.setPrivacy(true, connection: holder)
         #expect(sink.calls.withLock { $0 } == ["prearm \(holder)", "switch true \(holder)", "prearm \(fresh)",
-                                               "switch false \(holder)", "prearm \(holder)"])
+                                               "switch false \(holder)", "refused ended \(holder)"])
     }
 
     /// Not ready: a `set_privacy` before the hello closes the session and reaches nothing. Not authorized: a session
@@ -60,24 +66,25 @@ struct AmbientPrivacyPreArmGateTests {
         #expect(sink.calls.withLock { $0 } == ["prearm \(connection)"])
     }
 
-    /// The router refuses a torn-down connection, one that already started a stream, and any once it is stopping,
-    /// each logged as a token; a connection already private keeps its arming and logs nothing. Privacy held by another
-    /// live connection is taken as a restore takes it, with that connection as its source.
-    @Test func theRouterRefusesAClosedStreamedOrStoppingConnection() async throws {
+    /// The router refuses a connection that already started a stream, and any once it is stopping, each logged as a
+    /// token; a connection already private keeps its arming and logs nothing. Privacy held by another live connection
+    /// is taken as a restore takes it, with that connection as its source. (A torn-down connection is refused at the
+    /// gate, through the real teardown: `AmbientPrivacyPreArmTeardownTests`.)
+    @Test func theRouterRefusesAStreamedOrStoppingConnection() async throws {
         let rig = try await RestoreRig(phrase: nil)
         defer { rig.close() }
         let router = rig.router
-        let (closed, streamed, held, fresh, token) = (UUID(), UUID(), UUID(), UUID(), UUID())
+        let (_, fresh) = try await rig.connect(capabilities: [DuckMode.capability])
+        let (streamed, held, token) = (UUID(), UUID(), UUID())
         router.state.withLock { state in
-            state.closed.insert(closed)
             state.latest[streamed] = UUID()
             state.duck[held] = AmbientDuckTimer(token: token, timer: nil)
         }
-        for connection in [closed, streamed, held, fresh] { router.ambientPrivacyPreArm(connection: connection) }
-        #expect(!router.duckMode(connection: closed) && !router.duckMode(connection: streamed))
+        for connection in [streamed, held, fresh] { router.ambientPrivacyPreArm(connection: connection) }
+        #expect(!router.duckMode(connection: streamed))
         #expect(router.duckArming(connection: held) == token && router.duckMode(connection: fresh))
         #expect(router.state.withLock { $0.privacySources[fresh]?.connection } == held)
-        #expect(rig.details("ambient_privacy_prearmed") == ["refused=closed", "refused=streamed", "source=live"])
+        #expect(rig.details("ambient_privacy_prearmed") == ["refused=streamed", "source=live"])
         await rig.finish()
         let late = UUID()
         router.ambientPrivacyPreArm(connection: late)
@@ -104,7 +111,8 @@ struct AmbientPrivacyPreArmGateTests {
     @Test func anOverflowAlonePreArmsAsARestore() async throws {
         let rig = try await RestoreRig(phrase: nil)
         defer { rig.close() }
-        let router = rig.router, connection = UUID()
+        let router = rig.router
+        let (_, connection) = try await rig.connect(capabilities: [DuckMode.capability])
         router.state.withLock { $0.parkOverflow = true }
         router.ambientPrivacyPreArm(connection: connection)
         #expect(router.duckMode(connection: connection) && !router.privacyHeardOn(connection: connection))
@@ -121,5 +129,8 @@ private final class PreArmSink: AmbientAudioSink {
     func ambientAudio(_ event: AmbientAudioEvent) {}
     func ambientPrivacy(_ on: Bool, connection: UUID) { calls.withLock { $0.append("switch \(on) \(connection)") } }
     func ambientPrivacyPreArm(connection: UUID) { calls.withLock { $0.append("prearm \(connection)") } }
+    func ambientPrivacyPreArmRefused(connection: UUID, reason: String) {
+        calls.withLock { $0.append("refused \(reason) \(connection)") }
+    }
 }
 #endif
