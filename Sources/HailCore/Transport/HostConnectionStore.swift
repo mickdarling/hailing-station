@@ -146,6 +146,10 @@ extension HostConnectionStore {
             negotiationScheduler: negotiationScheduler,
             monotonicNow: monotonicNow,
             wallNow: wallNow,
+            reportsAmbientRefusals: true,
+            transportLossObserver: { [weak self] generation, sending in
+                await self?.transportLost(host: endpoint.id, generation: generation, sending: sending, token: token)
+            },
             sleep: sleep,
             jitter: jitter
         ) { [weak self] snapshot in
@@ -156,7 +160,7 @@ extension HostConnectionStore {
         connections[endpoint.id] = connection
     }
     public func connect(_ id: HostEndpoint.Identifier) async {
-        await HostNoticeOrigin.$reportsAmbientRefusals.withValue(true) { await connections[id]?.connect() }
+        await connections[id]?.connect()
     }
     public func disconnect(_ id: HostEndpoint.Identifier) async {
         ambientController?.reconnect.veto(.explicitDisconnect, host: id)
@@ -219,6 +223,16 @@ extension HostConnectionStore {
         selectionRequests[id] = nil
     }
 
+    private func transportLost(host: HostEndpoint.Identifier, generation: UUID, sending: Bool, token: UUID) {
+        guard tokens[host] == token, let snapshot = snapshots[host],
+              snapshot.connectionGeneration == generation else { return }
+        // A failed reassert send must settle as privacy failure, even if its notice arrived first.
+        // Receive loss during confirmation remains a distinct transport flap and can recover within the bound.
+        if sending, ambientController?.reconnect.privacyConfirmation.sendFailed(host: host, generation: generation)
+            == true { return }
+        ambientController?.reconnect.drop(snapshot, store: self)
+    }
+
     private func receive(_ snapshot: HostConnectionSnapshot, token: UUID) {
         guard tokens[snapshot.id] == token else { return }
         let old = snapshots[snapshot.id]
@@ -274,7 +288,7 @@ extension HostConnectionStore {
 
     /// Foreground nudges may replace the receive loop; preserve its restore-aware refusal opt-in.
     private func foregroundConnection(_ id: HostEndpoint.Identifier) async {
-        await HostNoticeOrigin.$reportsAmbientRefusals.withValue(true) { await connections[id]?.foregrounded() }
+        await connections[id]?.foregrounded()
     }
 
     /// Active hosts are pinged; hosts already trying to recover skip their backoff and reconnect now.
@@ -837,7 +851,9 @@ public final class AmbientListeningController {
         // Moved away (#366) is where listening went, not a failure: no alert, and "Listen here" brings it back.
         handoff = cause == "user" ? nil : movedAway.flatMap { reason == $0.status ? $0 : nil }
         movedAway = nil
-        if cause != "user", !restoring, handoff == nil, let reason { onUnexpectedStop?(reason) }
+        if cause != "user", !restoring, !reconnect.replacedAppliedNotice, handoff == nil, let reason {
+            onUnexpectedStop?(reason)
+        }
         if let systemEndObserver {
             notificationCenter.removeObserver(systemEndObserver)
             self.systemEndObserver = nil

@@ -12,6 +12,8 @@ final class AmbientRestorePrivacy {
     private var waiting: AmbientAudioBinding?
     private var began: ContinuousClock.Instant?
     private var requested = false
+    private var sent = false
+    private var confirmed = false
     private var completion: (@MainActor (Bool) -> Void)?
     private var timeout: Task<Void, Never>?
     private var send: Task<Void, Never>?
@@ -35,6 +37,9 @@ final class AmbientRestorePrivacy {
             do {
                 guard let store else { throw CancellationError() }
                 try await store.reassertPrivacy(for: binding)
+                guard self?.waiting == binding else { return }
+                self?.sent = true
+                self?.completeIfReady(binding)
             } catch { self?.finish(false, binding: binding) }
         }
     }
@@ -47,7 +52,23 @@ final class AmbientRestorePrivacy {
     func receive(on: Bool, host: HostEndpoint.Identifier, generation: UUID?) {
         guard requested, let waiting, waiting.hostID == host,
               waiting.connectionGeneration == generation, let began else { return }
-        finish(on && now() - began < .seconds(5), binding: waiting)
+        guard on, now() - began < .seconds(5) else { return finish(false, binding: waiting) }
+        confirmed = true
+        completeIfReady(waiting)
+    }
+
+    private func completeIfReady(_ binding: AmbientAudioBinding) {
+        guard sent, confirmed, let began else { return }
+        // An early notice is only half the proof: never cancel an outstanding send that may still fail.
+        finish(now() - began < .seconds(5), binding: binding)
+    }
+
+    func sendFailed(host: HostEndpoint.Identifier, generation: UUID) -> Bool {
+        guard requested, let waiting, waiting.hostID == host, waiting.connectionGeneration == generation else {
+            return false
+        }
+        finish(false, binding: waiting)
+        return true
     }
 
     private func finish(_ confirmed: Bool, binding: AmbientAudioBinding) {
@@ -60,6 +81,8 @@ final class AmbientRestorePrivacy {
     func cancel() {
         waiting = nil
         requested = false
+        sent = false
+        confirmed = false
         began = nil
         completion = nil
         timeout?.cancel()
@@ -106,6 +129,7 @@ public final class AmbientListeningReconnect {
     private var pending: Pending?
     private var veto: Reason?
     private var renewed = false
+    private(set) var replacedAppliedNotice = false
     private var selectionGeneration: UUID?
     @ObservationIgnored private var deadline: Task<Void, Never>?
     private struct Pending {
@@ -121,7 +145,7 @@ public final class AmbientListeningReconnect {
     public var isPending: Bool { pending != nil }
     public var wantsListening: Bool { isPending }
     var isReauthorizing: Bool { isPending && !renewed && selectionGeneration != nil }
-    func ownerStarted() { veto = nil; notice = nil }
+    func ownerStarted() { veto = nil; notice = nil; replacedAppliedNotice = false }
     func block(_ reason: Reason) {
         veto = veto ?? reason // Includes a privacy tap before the receive loop publishes the close, even if send fails.
         guard isPending else { return }
@@ -142,6 +166,7 @@ public final class AmbientListeningReconnect {
         hostName = snapshot.endpoint.name
         if interrupted == nil { notice = nil }
         renewed = false
+        replacedAppliedNotice = false
         selectionGeneration = nil
         let began = interrupted?.began ?? now()
         pending = Pending(droppedGeneration: snapshot.connectionGeneration,
@@ -252,6 +277,7 @@ extension AmbientListeningReconnect {
     // socket-send success alone cannot promise that the host kept listening.
     func refused(reason: Reason) {
         guard let previous = notice, previous.outcome == .applied, renewed else { return }
+        replacedAppliedNotice = true
         notice = Notice(id: previous.id, outcome: .failed, reason: reason)
         if let notice { onNotice?(notice) }
     }
