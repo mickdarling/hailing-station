@@ -138,6 +138,21 @@ struct AmbientPrivacyFalseStaleTests {
         await rig.finish()
     }
 
+    /// (f) A later owner's off elsewhere does not report a source a stale verdict already excluded (round 5 P3-1).
+    @Test func anExcludedSourceIsNotListedByALaterOff() async throws {
+        let cleared = try await Self.clearedAsStale()
+        let (rig, router) = (cleared.rig, cleared.rig.router)
+        defer { cleared.peer.cancel(); rig.close() }
+        let (_, other) = try await rig.connect(name: RestoreRig.appName)
+        router.state.withLock { $0.duck[other] = AmbientDuckTimer(token: UUID(), timer: nil) }
+        _ = router.setDuck(false, connection: other, reason: "voice")
+        #expect(!router.duckMode(connection: other) && router.duckMode(connection: cleared.source))
+        // The scope line would be written by a task off the lock at once; give it time to show it is not.
+        try await Task.sleep(for: .milliseconds(500))
+        #expect(rig.details("ambient_privacy_off_scoped") == ["cleared=1 kept=0 \(cleared.source)=stale"])
+        await rig.finish()
+    }
+
     /// A fresh stream on a new connection starts private: some source still counts.
     static func expectPrivateFreshStream(_ rig: RestoreRig, spawn: Int) async throws {
         let (_, fresh) = try await rig.start(name: RestoreRig.appName)

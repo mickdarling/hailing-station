@@ -122,7 +122,10 @@ extension AmbientRightyoRouter {
         if state.parkedPrivacy != nil { logLater("ambient_park_discarded", detail: "reason=off mode=privacy") }
         state.parkedPrivacy = nil
         let source = state.privacySources.removeValue(forKey: connection)
-        let others = state.duck.keys.filter { $0 != connection && $0 != source?.connection }
+        // Only holders that still count: one a stale verdict already excluded is not reported again.
+        let others = state.duck.keys.filter {
+            $0 != connection && $0 != source?.connection && Self.counts($0, in: state)
+        }
         guard source != nil || !others.isEmpty else { return }
         let (listener, timeout, hook) = (state.listener?.value, configuration.privacyProbeTimeout,
                                          configuration.offScoping)
