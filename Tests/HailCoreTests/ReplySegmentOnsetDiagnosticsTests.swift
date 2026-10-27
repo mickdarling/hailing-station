@@ -74,6 +74,7 @@ import Testing
         fixture.guarder.configureSegmentOnset(input: { authorization.withLock { $0 } }, onOnset: {
             calls.withLock { $0 += 1 }
         })
+        fixture.gate.openWindow()
         fixture.guarder.setReplyAudible(true)
         let capture = FakeAudioCapture()
         let masked = fixture.guarder.masking(capture)
