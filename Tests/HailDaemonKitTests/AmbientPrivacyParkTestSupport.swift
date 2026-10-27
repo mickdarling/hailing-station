@@ -20,15 +20,53 @@ struct PrivacyOffSettings: Sendable {
 final class SilentPeer: @unchecked Sendable {
     let connection: NWConnection
 
-    init(port: UInt16) throws {
-        let options = NWProtocolWebSocket.Options(.version13)
-        options.autoReplyPing = false
-        options.setSubprotocols([WebSocketListener.subprotocolName])
-        let parameters = NWParameters(tls: nil, tcp: NWProtocolTCP.Options())
-        parameters.defaultProtocolStack.applicationProtocols.insert(options, at: 0)
+    private init(_ connection: NWConnection) { self.connection = connection }
+
+    /// A peer connected to the loopback listener on `port`, ready to send (#963). Under a busy parallel run a loopback
+    /// connect can draw a local port whose address pair is still in use; the connection then waits (`EADDRINUSE`) and
+    /// never retries on its own, so a send on it hung until the 15 s bound cancelled it. A connection that waits
+    /// before it is ready never reached the listener, so it is cancelled and a fresh one (a fresh local port) tried,
+    /// at most `attempts` times. A failure, or no answer within 15 s, is thrown.
+    static func connect(port: UInt16, attempts: Int = 5) async throws -> SilentPeer {
         let url = try #require(URL(string: "ws://127.0.0.1:\(port)"))
-        connection = NWConnection(to: .url(url), using: parameters)
-        connection.start(queue: .global())
+        var waited: NWError?
+        for _ in 0..<attempts {
+            let options = NWProtocolWebSocket.Options(.version13)
+            options.autoReplyPing = false
+            options.setSubprotocols([WebSocketListener.subprotocolName])
+            let parameters = NWParameters(tls: nil, tcp: NWProtocolTCP.Options())
+            parameters.defaultProtocolStack.applicationProtocols.insert(options, at: 0)
+            let connection = NWConnection(to: .url(url), using: parameters)
+            waited = try await ready(connection)
+            guard waited != nil else { return SilentPeer(connection) }
+            connection.cancel()
+        }
+        Issue.record("silent peer still waiting after \(attempts) connects: \(String(describing: waited))")
+        throw SilentPeerNotReady()
+    }
+
+    /// Starts `connection` and returns nil once it is ready, or the error it waits on if it waits first. Throws if it
+    /// fails, or if it is neither within 15 s (it is cancelled then).
+    private static func ready(_ connection: NWConnection) async throws -> NWError? {
+        let readiness = SilentPeerReadiness()
+        let timer = Task {
+            try? await Task.sleep(for: .seconds(15))
+            if !Task.isCancelled { connection.cancel() }
+        }
+        defer { timer.cancel() }
+        return try await withCheckedThrowingContinuation { continuation in
+            readiness.set(continuation)
+            connection.stateUpdateHandler = { state in
+                switch state {
+                case .ready: readiness.resume(.success(nil))
+                case .waiting(let error): readiness.resume(.success(error))
+                case .failed(let error): readiness.resume(.failure(error))
+                case .cancelled: readiness.resume(.failure(SilentPeerNotReady()))
+                default: break
+                }
+            }
+            connection.start(queue: .global())
+        }
     }
 
     func send(_ frame: Frame) async throws {
@@ -105,6 +143,16 @@ final class SilentPeer: @unchecked Sendable {
     }
 }
 
+/// A silent peer's connection was not ready in time, or never stopped waiting (#963).
+struct SilentPeerNotReady: Error {}
+
+/// The one answer of a silent peer's connect attempt: its first ready, waiting, failed or cancelled state.
+private final class SilentPeerReadiness: Sendable {
+    private let waiter = Mutex<CheckedContinuation<NWError?, any Error>?>(nil)
+    func set(_ continuation: CheckedContinuation<NWError?, any Error>) { waiter.withLock { $0 = continuation } }
+    func resume(_ result: Result<NWError?, any Error>) { waiter.withLock { $0.take() }?.resume(with: result) }
+}
+
 /// The restore rig's pieces for #941's privacy park tests: segments told apart by their bytes, a held child let go,
 /// and what each child read. Synthetic only.
 extension RestoreRig {
@@ -123,7 +171,7 @@ extension RestoreRig {
     func connectSilent(kind: String? = "phone",
                        capabilities: [String] = ["probe"]) async throws -> (SilentPeer, UUID) {
         let before = await Self.connections(of: env.listener)
-        let peer = try SilentPeer(port: env.port)
+        let peer = try await SilentPeer.connect(port: env.port)
         try await peer.send(sessionFrame(payload: .control(.hello(HelloInfo(
             versions: [1], capabilities: capabilities, deviceName: Self.appName, deviceKind: kind
         )))))
