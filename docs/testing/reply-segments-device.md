@@ -1,8 +1,9 @@
-# Reply segments device wiring (#932 P4a/P4b1/P4b2)
+# Reply segments device wiring and UI (#932 P4a/P4b1/P4b2/P5)
 
 This is offline, synthetic macOS VM evidence, using fake players and an injected clock for controller tests.
 It is not an iOS app build, simulator playback, a live captured-output round trip, acoustic echo testing,
-physical-device proof, or a TestFlight delivery. P5 and host/device validation remain open; this does not close #932.
+physical-device proof, or a TestFlight delivery. P5 UI is implemented below; host/device validation remains open.
+This does not close #932.
 
 ## P4b2 current implementation
 
@@ -688,3 +689,167 @@ Final-source results:
 - Logs are host-local `/tmp/hs932-p4b2-r2-*.log`, outside version control. No network, other-clone edits, PR/issue
   changes, independent review, GitHub checks, simulator/physical audio, install, signing or upload is claimed.
   App/physical validation and P5 notice/settings UI remain deferred as described above.
+
+## P5 paused notice and Station tools
+
+Base: `fc40438918420f06a3be9e8484bacd142ca0019b`. Exactly four production files, with no `SECURITY_PATHS`
+matches under `scripts/pr-shape.py`:
+
+- `Sources/HailCore/Replies/ReplySegmentPresentation.swift`: pure notice text, once-only VoiceOver decision,
+  injected-instant four-second expiry/dismissal, settings binding validation, and plain-count diagnostics rows.
+- `Apps/Hail-iOS/ReplySegmentToolsView.swift`: the transient banner modifier and Turn-taking settings screen.
+- `Apps/Hail-iOS/RootView.swift`: mount the modifier above the shared adaptive station.
+- `Apps/Hail-iOS/RootView+Interface.swift`: Station tools → Turn-taking navigation link.
+
+The banner uses the existing `AnnouncementBannerView` material/button pattern, stacking beside unheard cues so
+neither overwrites the other. The existing unheard-cue queue remains dismiss-only; the new paused notice has a
+short four-second lifetime. It wraps text and exposes a dismiss button/hint. The event observer has no initial
+callback, so an old yield is not shown/announced on mount. VoiceOver posts through `StationPlatform.announce`
+only for a new yield while VoiceOver runs. No live-region modifier, reply-player clip, Announcer call, transcript,
+endpoint label or reply identifier is added to the notice. Dismissal/expiry preserve the latest event token;
+a duplicate cannot re-show or reannounce. A later yield replaces the deadline, and stale expiry is harmless.
+
+The pause stepper (0.1–10 s, step 0.1) and Quieter–Louder threshold slider (−60…−15 dBFS, step 1, numeric readout)
+read the active controller's `segmentSettings`. Each binding creates a validated copy, assigns it to the controller
+and calls `ReplySegmentSettings.save()`. Sustained onset and unknown saved keys survive edits. Defaults are
+**v1, pending Mick** (1.5 s, −35 dBFS); that qualifier is not user-facing. Existing open pauses keep their deadline;
+subsequent windows read the updated values.
+
+Diagnostics refresh once per second while the screen is open. “Yield signals” and “No request within 5 s” are the
+P4b1 onset counters; the explanatory line explicitly includes signals refused by fresh listening/privacy state.
+They are not a new confirmed-yield metric. Both level and floor histograms show all five labelled dBFS buckets
+as plain counts. Gate reads expire the five-second deadline. No reset API exists, so there is no reset control.
+No extra logging/persistence or capture path is introduced.
+
+`ReplySegmentPresentationTests` covers content-free text, initial/nil state, one announcement per event,
+duplicate-after-dismissal/expiry, VoiceOver enabled later, event-id identity across identical Replay yields, exact timeout
+boundary, stale timeout versus a newer yield, inclusive UI bounds/defaults, invalid/nonfinite binding values,
+consecutive saved edits preserving sustained onset/unknown keys, every histogram bucket and real synthetic-gate
+counter formatting before/after the five-second deadline.
+
+### P5 VM verification
+
+All Swift build/test commands use the existing `/tmp/hs932-p4-tools/swift` wrapper documented above
+(`taskpolicy -b`, `-j 4 -Xswiftc -j1`, offline resolution, and all supplied Testing framework/plugin/rpath flags).
+Every phase runs serially under `/tmp/hs932-p4-tools/phase.py`: 590-second deadline and owned-process-tree
+TERM/KILL traps on timeout, INT or TERM. No load workers, network or other-clone access are used.
+
+```sh
+python3 /tmp/hs932-p4-tools/phase.py /tmp/hs932-p4-tools/swift build -Xswiftc -warnings-as-errors
+python3 /tmp/hs932-p4-tools/phase.py /tmp/hs932-p4-tools/swift build --build-tests -Xswiftc -warnings-as-errors
+# Five separate bounded phases:
+for iteration in 1 2 3 4 5; do
+  python3 /tmp/hs932-p4-tools/phase.py /tmp/hs932-p4-tools/swift test --skip-build --no-parallel \
+    --filter 'HailCoreTests\.ReplySegmentPresentationTests' --skip 'HailDaemonKitTests.DiagnosticReplyComposition'
+done
+python3 /tmp/hs932-p4-tools/phase.py /tmp/hs932-p4-tools/swift test --skip-build --no-parallel \
+  --filter 'HailCoreTests\.(ReplySegment|Reply|Playback|Segment)' \
+  --skip 'HailDaemonKitTests.DiagnosticReplyComposition'
+git diff --check
+```
+
+Final-source results:
+
+- Both warnings-as-errors package builds passed: production 11.02 s; build-tests 111.66 s.
+- New presentation suite passed 5/5: 11 test functions / 20 case invocations per run, 55 function executions /
+  100 case invocations total. Times: 0.013/0.009/0.010/0.010/0.009 s.
+- The exact requested serial regression passed once: 196 test functions in 35 suites / 288 case invocations,
+  6.548 s. Every test command explicitly excluded `HailDaemonKitTests.DiagnosticReplyComposition` (#955).
+- All phases completed under 590 seconds. No extra load workers were started.
+- `git diff --check` passed. SwiftLint is unavailable. Hand review checked the configured length, complexity,
+  parameter, nesting and opted-in rules: app files are 197/180/113 lines (below the 200-line file warning);
+  the new app types have fewer than 50 body lines, added functions at most 40, and code lines at most 120 columns.
+  RootView's modifier substitution adds no body length; the Interface extension adds seven lines and remains
+  below the 200-line type-body error limit. No waiver was added. New core/tests are 73/154 lines.
+- Local classification using the checker's exact exclusions/rename rules found four production files, no renames
+  and no `SECURITY_PATHS` matches. No app build, simulator, physical audio, independent review, GitHub check,
+  signing, installation or TestFlight delivery is claimed. Logs stay in `/tmp/hs932-p5-*.log`.
+
+### P5 full-Xcode host and physical gate (required, not performed on VM)
+
+1. Generate the project with `xcodegen generate`. Build `Hail-iOS` for generic iOS Simulator using
+   `xcodebuild build-for-testing -project HailingStation.xcodeproj -scheme Hail-iOS
+   -destination 'generic/platform=iOS Simulator' CODE_SIGNING_ALLOWED=NO`, and build `Hail-macOS` with
+   `xcodebuild build -project HailingStation.xcodeproj -scheme Hail-macOS
+   -destination 'generic/platform=macOS' CODE_SIGNING_ALLOWED=NO`. Keep warnings as errors and cap builds at
+   four jobs under background priority with a ten-minute process-tree kill trap. Verify SwiftUI bindings,
+   TimelineView, task cancellation and main-actor isolation on both targets. The Mac target includes the shared
+   `Apps/Hail-iOS` directory; `StationPlatform` supplies the AppKit announcement path.
+2. Run on Mac, iPhone and iPad. Produce an actual yielded segmented reply with ambient on/privacy off. Check
+   “Paused — go ahead” once per yield with VoiceOver on: one accessibility announcement, no new spoken clip,
+   no duplicate on redraw, rotation, expanded-chat toggle, dismissal, timeout or VoiceOver toggling. No notice
+   should appear merely at a segment pause or reappear from historical state on navigation. Check dismissal,
+   four-second timeout and rapid consecutive yields restarting the deadline; unheard-cue banners coexist.
+3. Check default and largest accessibility Dynamic Type on iPhone/iPad, macOS text/accessibility scaling,
+   light and dark appearances, portrait/landscape, iPad wide/compact/split layouts, narrow/wide Mac windows and
+   expanded chat. Notice text, dismiss action, tools link, stepper labels, slider/readout and diagnostic counts
+   must remain readable, reachable and unclipped. Check VoiceOver focus and adjustable control descriptions.
+4. Exercise both settings at both bounds and intermediate values, rapid alternating edits, navigation away/back
+   and app relaunch. Confirm persistence and effective following-window pause/threshold changes while sustained
+   onset/other dictionary keys remain unchanged. Current pause retains its original deadline. Check diagnostics
+   before/after yield signals, admitted/no request at five seconds, and all histogram buckets. Counts are
+   read-only, labels disclose signal semantics, and no identity, text, PCM or audio enters diagnostics.
+5. Preserve the P4b2 physical gate: speaker/headphones, actual played-marker ordering, floor/onset/echo behavior,
+   normal/safe tail handoff and tap masking, subsequent normal ambient request admission, privacy/ambient/
+   selection/reconnect transitions, stop/dismiss/mute, segmented Replay and old/new-host capability behavior.
+   Use privacy-safe evidence only. Signing/install/TestFlight delivery are host work, not VM proof.
+
+## P5 fix round 1 (#960, offline bundle r2)
+
+Starts at `f40498e84583c1633de9e80753af91978102da87` on `codex/932-p5-ui`. Imported only the supplied local
+P4b1 r5/r6 and P4b2 r2 bundles. Merge `2ce06c2bdf049414b79f4b35d492d2bed379d472` brings in P4b2
+`55d738544e0569564ca05eff3a473de9439fa2e7` separately. Only `docs/reply-protocol.md` and this file conflicted;
+resolution preserves both implementation/verification histories. RootView retained both capture wiring and the
+P5 notice mount without a source conflict.
+
+The review finding was a second successful yield after dismiss → Replay with identical endpoint/reply/segment
+values: both the SwiftUI equality observer and notice guard suppressed it. The mounted modifier now observes
+`HostConnectionStore.segmentYieldEvent?.id`, and `ReplySegmentNotice` retains only its latest `UInt64` id.
+Each distinct successful-yield event can show the four-second notice and request one VoiceOver announcement;
+repeated observations of the same id, including after dismissal/timeout or enabling VoiceOver, remain silent.
+No initial observer callback is added. This fix touches three of P5's existing four production files; cumulative
+P5 still changes the same four relative to imported P4b2, with the Station tools link unchanged.
+
+`identicalYieldsAfterReplayEachShowAndAnnounceOnce` supplies equal endpoint/reply/segment values with ids 1/2,
+asserting a visible notice and exactly one announcement decision for each, while duplicate updates before and
+after dismissal stay silent. `eventIDAloneControlsNoticeIdentity` confirms changed payload fields cannot repeat
+an already consumed id. Existing nil/expiry/stale-timer/VoiceOver tests now use event ids.
+
+All tests use `--no-parallel`; each phase runs through `/tmp/hs932-p4-tools/phase.py` (590-second deadline, owned-process-tree
+TERM/KILL traps). Every Swift invocation uses `/tmp/hs932-p4-tools/swift`: `taskpolicy -b`, `-j 4 -Xswiftc -j1`,
+`--disable-automatic-resolution`, and the supplied Testing framework/plugin/rpath flags recorded above.
+No load workers are added. Exact verification commands:
+
+```sh
+python3 /tmp/hs932-p4-tools/phase.py /tmp/hs932-p4-tools/swift build -Xswiftc -warnings-as-errors
+python3 /tmp/hs932-p4-tools/phase.py /tmp/hs932-p4-tools/swift build --build-tests -Xswiftc -warnings-as-errors
+for iteration in 1 2 3 4 5; do
+  python3 /tmp/hs932-p4-tools/phase.py /tmp/hs932-p4-tools/swift test --skip-build --no-parallel \
+    --filter 'HailCoreTests\.ReplySegmentPresentationTests' --skip 'HailDaemonKitTests.DiagnosticReplyComposition'
+done
+python3 /tmp/hs932-p4-tools/phase.py /tmp/hs932-p4-tools/swift test --skip-build --no-parallel \
+  --filter 'HailCoreTests\.ReplySegment' --skip 'HailDaemonKitTests.DiagnosticReplyComposition'
+python3 /tmp/hs932-p4-tools/phase.py /tmp/hs932-p4-tools/swift test --skip-build --no-parallel \
+  --filter 'HailCoreTests\.(ReplySegment|Reply|Playback|Segment)' \
+  --skip 'HailDaemonKitTests.DiagnosticReplyComposition'
+git diff --check
+```
+
+Final-source results:
+
+- Both warnings-as-errors package builds passed: production 7.14 s; build-tests 69.15 s.
+- P5 presentation suite passed 5/5: 12 test functions / 21 case invocations each, 60 function executions /
+  105 case invocations total, in 0.009/0.009/0.010/0.010/0.009 s.
+- Segment suite passed once: 96 test functions in 16 suites / 167 case invocations, 16.140 s.
+- Exact requested serial reply/playback regression passed once: 212 test functions in 38 suites /
+  307 case invocations, 18.130 s. Every test command explicitly excluded
+  `HailDaemonKitTests.DiagnosticReplyComposition` (#955).
+- Every phase completed below 590 seconds; no extra load workers were started. `git diff --check` passed.
+- Local classification with the checker's exact exclusions and rename handling confirmed the same four P5
+  production files relative to `p4b2-r2`, no renames and no security-path matches. SwiftLint is unavailable;
+  changed Swift code was checked against the configured rules, with no added code line over 120 columns.
+- Logs remain host-local `/tmp/hs932-p5-r2-*.log`, outside version control.
+
+Evidence is synthetic macOS VM evidence only. No network, other-clone access, independent review, GitHub check,
+app/simulator build, physical-device audio, signing, installation or upload is performed or claimed. The P5 host
+and physical gate above remains required; include yield → dismiss → Replay → identical yield in VoiceOver checks.
