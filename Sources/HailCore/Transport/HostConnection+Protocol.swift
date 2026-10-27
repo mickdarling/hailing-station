@@ -233,18 +233,27 @@ extension HostConnection {
     }
 }
 
-/// Provenance survives the observer's executor hop. Refusal delivery is opt-in for each connection-loop task.
-/// A caller opting in must also scope foreground reconnects, which may replace that loop.
-// The opt-in is now a stored HostConnection flag, surviving timer-born loops without task-local inheritance.
+/// Provenance survives the observer's executor hop. Refusal delivery is opted into by the connection's stored
+/// `reportsAmbientRefusals` flag, so it survives every loop replacement, timer-born ones included.
 enum HostNoticeOrigin {
     @TaskLocal static var generation: UUID?
     @TaskLocal static var streamID: UUID?
+}
+
+extension HostConnection {
+    /// Told the lost socket's generation (and whether a send found it) before its close or reconnect publication.
+    public typealias TransportLossObserver = @Sendable (_ generation: UUID, _ sending: Bool) async -> Void
 }
 
 /// Installed only for an explicit loss observer. The default connector and transport stay unchanged.
 struct HostLossReportingConnector: WebSocketConnecting {
     let base: any WebSocketConnecting
     let observer: HostConnection.TransportLossObserver
+    static func wrapping(_ connector: any WebSocketConnecting,
+                         observer: HostConnection.TransportLossObserver?) -> any WebSocketConnecting {
+        guard let observer else { return connector }
+        return HostLossReportingConnector(base: connector, observer: observer)
+    }
     func open(url: URL, subprotocol: String) async throws -> any WebSocketTransport {
         let socket = try await base.open(url: url, subprotocol: subprotocol)
         return HostLossReportingSocket(base: socket, observer: observer)
@@ -262,12 +271,20 @@ actor HostLossReportingSocket: WebSocketTransport {
     }
     func bind(_ generation: UUID) { self.generation = generation }
     func send(_ data: Data) async throws {
-        do { try await base.send(data) }
-        catch { await report(error, sending: true); throw error }
+        do {
+            try await base.send(data)
+        } catch {
+            await report(error, sending: true)
+            throw error
+        }
     }
     func receive() async throws -> Data {
-        do { return try await base.receive() }
-        catch { await report(error, sending: false); throw error }
+        do {
+            return try await base.receive()
+        } catch {
+            await report(error, sending: false)
+            throw error
+        }
     }
     private func report(_ error: any Error, sending: Bool) async {
         guard !(error is CancellationError), !(error is HostConnectionFailure), let generation else { return }
