@@ -46,8 +46,11 @@ import Testing
         let rig = try AmbientReconnectRig()
         let timeout = SleepGate()
         rig.controller.reconnect.sleep = { delay in
-            if delay == .seconds(5) { try await timeout.sleep(delay) }
-            else { try await Task.sleep(for: delay) }
+            if delay == .seconds(5) {
+                try await timeout.sleep(delay)
+            } else {
+                try await Task.sleep(for: delay)
+            }
         }
         try await rig.start()
         try await rig.confirmInitialPrivacy()

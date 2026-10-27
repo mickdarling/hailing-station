@@ -18,8 +18,11 @@ import Testing
             return true
         }; return false } }
         let veto = Task {
-            if ownerStop { await rig.controller.turnOff() }
-            else { try? await rig.store.setPrivacy(on: true, host: rig.endpoint.id) }
+            if ownerStop {
+                await rig.controller.turnOff()
+            } else {
+                try? await rig.store.setPrivacy(on: true, host: rig.endpoint.id)
+            }
         }
         try await waitUntil { await MainActor.run { !rig.controller.isOn } }
         await rig.socket.releaseSends()
@@ -66,8 +69,11 @@ import Testing
         let event = try #require(log.nextBatch()?.events.first { $0.name == .captureState })
         #expect(Set(event.fields.keys) == [.state, .on, .error, .code, .ms])
         #expect(event.fields[.on] == .boolean(outcome == .applied))
-        if case .integer(let milliseconds) = event.fields[.ms] { #expect((0...60_000).contains(milliseconds)) }
-        else { Issue.record("Gap milliseconds missing") }
+        if case .integer(let milliseconds) = event.fields[.ms] {
+            #expect((0...60_000).contains(milliseconds))
+        } else {
+            Issue.record("Gap milliseconds missing")
+        }
         let encoded = try JSONEncoder().encode(event)
         #expect(try JSONDecoder().decode(DiagnosticEvent.self, from: encoded) == event)
         await rig.close()
