@@ -26,6 +26,10 @@ final class OwnedStdioChild: Sendable {
     private let continuation: AsyncThrowingStream<Data, any Error>.Continuation
     private let exited = DispatchGroup()
     private let writer = DispatchQueue(label: "hailing.owned-stdio.write")
+    // Labelled serial queues target the overcommit root queue, so the SIGKILL grace and the join never wait for a free
+    // constrained worker, as blocks queued on the global queues do (#980, #931).
+    private let graceQueue = DispatchQueue(label: "hailing.owned-stdio.grace")
+    private let joinQueue = DispatchQueue(label: "hailing.owned-stdio.join")
     private let readable: any DispatchSourceRead
     private let processExit: any DispatchSourceProcess
     private let grace: TimeInterval
@@ -71,14 +75,14 @@ final class OwnedStdioChild: Sendable {
         guard first else { return }
         readable.cancel() // Its cancellation handler owns stdout's sole close after in-flight reads finish.
         continuation.finish(throwing: CodexStdioError.stopped)
-        DispatchQueue.global(qos: .utility).asyncAfter(deadline: .now() + grace) {
+        graceQueue.asyncAfter(deadline: .now() + grace) {
             defer { self.exited.leave() }
             self.resources.withLock { if let pid = $0.pid { _ = kill(pid, SIGKILL) } }
         }
     }
 
     func join() async {
-        await withCheckedContinuation { joined in exited.notify(queue: .global()) { joined.resume() } }
+        await withCheckedContinuation { joined in exited.notify(queue: joinQueue) { joined.resume() } }
     }
 
     func write(_ data: Data) async throws {

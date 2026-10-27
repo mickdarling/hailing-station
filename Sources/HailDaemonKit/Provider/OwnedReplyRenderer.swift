@@ -152,6 +152,12 @@ private final class ReplyRendererLifetime: Sendable {
     private let state: Mutex<ReplyRendererState>
     private let processExit: any DispatchSourceProcess
     private let cleanupQueue = DispatchQueue(label: "hailing.reply-renderer.cleanup")
+    // Labelled serial queues target the overcommit root queue, so the escalation, the reap retry and the waits never
+    // wait for a free constrained worker, as blocks queued on the global queues do (#980). Separate, so a held
+    // escalation never delays a wait or a reap.
+    private let reapRetryQueue = DispatchQueue(label: "hailing.reply-renderer.reap-retry")
+    private let escalationQueue = DispatchQueue(label: "hailing.reply-renderer.escalation")
+    private let waitQueue = DispatchQueue(label: "hailing.reply-renderer.wait")
     private let exited = DispatchGroup()
     private let cleaned = DispatchGroup()
     private let signals = DispatchGroup()
@@ -181,7 +187,7 @@ private final class ReplyRendererLifetime: Sendable {
     var cleanupDisposition: OwnedReplyRendererCleanupDisposition { state.withLock { $0.disposition } }
 
     func requireSuccessfulExit() async throws {
-        await withCheckedContinuation { done in exited.notify(queue: .global()) { done.resume() } }
+        await withCheckedContinuation { done in exited.notify(queue: waitQueue) { done.resume() } }
         try state.withLock {
             if $0.child.ownershipLost { throw OwnedReplyRendererError.ownershipLost }
             if $0.cancelled { throw OwnedReplyRendererError.cancelled }
@@ -227,7 +233,7 @@ private final class ReplyRendererLifetime: Sendable {
 
     private func scheduleEscalation(ifNeeded signal: Bool) {
         if signal {
-            DispatchQueue.global(qos: .utility).asyncAfter(deadline: .now() + 0.1) {
+            escalationQueue.asyncAfter(deadline: .now() + 0.1) {
                 self.hooks.beforeEscalation()
                 // Reaping and signaling share the same lock: no reused PID can be signaled.
                 self.state.withLock { $0.child.signalIfOwned { _ = kill($0, SIGKILL) } }
@@ -237,7 +243,7 @@ private final class ReplyRendererLifetime: Sendable {
     }
 
     func waitForCancellationSignals() async {
-        await withCheckedContinuation { done in signals.notify(queue: .global()) { done.resume() } }
+        await withCheckedContinuation { done in signals.notify(queue: waitQueue) { done.resume() } }
     }
 
     private func reportDeferredRetirement() {
@@ -263,7 +269,7 @@ private final class ReplyRendererLifetime: Sendable {
     }
 
     func waitForCleanup() async throws {
-        await withCheckedContinuation { done in cleaned.notify(queue: .global()) { done.resume() } }
+        await withCheckedContinuation { done in cleaned.notify(queue: waitQueue) { done.resume() } }
         switch cleanupDisposition {
         case .completed: return
         case .deferred: throw OwnedReplyRendererError.cleanupDeferred
@@ -288,7 +294,7 @@ private final class ReplyRendererLifetime: Sendable {
         }
         // An exit event may precede waitpid readiness or be interrupted; never block the callback.
         if isRunning, observedExit {
-            DispatchQueue.global(qos: .utility).asyncAfter(deadline: .now() + 0.01) {
+            reapRetryQueue.asyncAfter(deadline: .now() + 0.01) {
                 self.reap(observedExit: true)
             }
         }
