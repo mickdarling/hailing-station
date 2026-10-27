@@ -14,6 +14,7 @@ import Testing
         guarder.configureSegmentOnset(input: { authorization.withLock { $0 } }, onOnset: {
             calls.withLock { $0 += 1 }
         })
+        guarder.segmentOnsetGate.openWindow()
         try fixture.calibrate()
         #expect(try !fixture.feed(-20, seconds: 0.2))
         fixture.clock.advance(by: .milliseconds(300))
@@ -56,6 +57,7 @@ import Testing
             _ = release.wait(timeout: .now() + 5)
             completed.withLock { $0 = true }
         })
+        guarder.segmentOnsetGate.openWindow()
         try fixture.calibrate()
         fixture.clock.advance(by: .milliseconds(300))
         DispatchQueue.global().async {
