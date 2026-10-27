@@ -13,7 +13,8 @@ import Testing
 /// The suites starve the whole process, so they run one at a time, and each is named for its family so verify.sh
 /// runs it in the serial timing lane (#208), never beside the parallel lane.
 @Suite(.serialized, .timeLimit(.minutes(1)), .frozenGuardBudget) struct GlobalQueueStarvationTests {
-    /// The longest the pool stays parked; released as soon as the path under test returns.
+    /// Post-saturation hold; released as soon as the path under test returns. Setup also parks workers for up to
+    /// 10 s plus a 300 ms canary check: nominal total 18.3 s, plus enqueue and scheduling overhead.
     static let hold: Duration = .seconds(8)
     /// Each path's graces add up to well under a second; half the hold leaves a loaded runner its margin.
     static let bound: Duration = .seconds(4)
@@ -111,8 +112,9 @@ extension GlobalQueueStarvationTests {
 }
 
 /// Runs `work` while every constrained dispatch worker is parked, and returns its result and how long it took. The
-/// pool is released once `work` returns or `hold` passes, whichever is first, and always before this returns, so it
-/// starves the process only for its own window. Work that needs the global queue takes at least `hold`.
+/// post-saturation hold ends once `work` returns or `hold` passes, whichever is first. Setup also parks workers for
+/// up to 10 s plus a 300 ms canary check (plus enqueue/scheduling overhead). The pool is always released before this
+/// returns. Work that needs the global queue takes at least `hold` after saturation.
 func whileGlobalQueueStarved<T: Sendable>(
     hold: Duration = GlobalQueueStarvationTests.hold, _ work: @escaping @Sendable () async throws -> T
 ) async throws -> (value: T, elapsed: Duration) {

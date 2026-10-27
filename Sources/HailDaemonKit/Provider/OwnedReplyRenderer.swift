@@ -36,6 +36,8 @@ struct ReplyRendererLifecycleHooks: Sendable {
     var reaped: @Sendable () -> Void = {}
     var beforeEscalation: @Sendable () -> Void = {}
     var retirementRecorded: @Sendable () -> Void = {}
+    // Test-only waitpid-readiness seam, evaluated under the state lock; nil leaves real observations unchanged.
+    var deferObservedExit: (@Sendable () -> Bool)?
 }
 
 // Pure exact-PID cutoff state, separately testable without process-wide SIGCHLD changes or signals.
@@ -281,6 +283,7 @@ private final class ReplyRendererLifetime: Sendable {
     private func reap(observedExit: Bool = false) {
         let reaped = state.withLock { current -> Bool in
             guard let pid = current.child.pid else { return false }
+            if observedExit, hooks.deferObservedExit?() == true { return false }
             var status: Int32 = 0
             let result = waitpid(pid, &status, WNOHANG)
             return current.child.observe(result: result, status: status, error: errno)
