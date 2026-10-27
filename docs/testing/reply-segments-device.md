@@ -46,10 +46,13 @@ interruption idle holds remain authoritative. Stop/failure/generation replacemen
 late frames of retired replies cannot restart them. Muting keeps its existing whole-reply silent playback behavior;
 headset stop-and-mute retires playback. This slice does not introduce a separate dismiss or privacy UI action.
 Bulk replay retains its prior behavior until the explicit P4b integration above.
+The player ends intentional-pause accounting at the configured deadline, even without a new frame. When no
+following frame is ready then, ordinary adaptive stall recovery resumes and later silence counts as a gap.
 
 `ReplySegmentSettings` reads/saves one UserDefaults dictionary (`hailing-station.reply-segments.v1`). Defaults
 **v1, pending Mick**: pause 1.5 seconds, sustained onset 0.3 seconds. Inclusive bounds are 0.1–10 seconds and
-0.05–2 seconds respectively; each invalid/nonfinite value falls back independently. Settings are read at controller
+0.05–2 seconds respectively; each invalid/nonfinite value falls back independently. Persisted values must be
+numeric; booleans, strings, nulls and nested values are rejected. Settings are read at controller
 creation; callers may assign and save a new validated value. A window uses the pause value when it opens.
 There is no spoken "go on" path.
 
@@ -135,6 +138,57 @@ Final-source results on the Dev Work VM:
 - Local source/security classification used the checker's exact exclusion tuples and `SECURITY_PATHS`:
   four production files, no security-path matches, no renames. Full GitHub PR-shape/review/issue-state checks
   were not run because this job is offline and creates no PR.
+
+## P4a fix round 1 (#956)
+
+Starts at `b716675c973ab4e267e55263b8637c206794a3ee` on `codex/932-p4-device`. Only the two reviewed
+production files, their regression tests/support and this evidence record change. The P4b1 branch is untouched.
+All evidence is offline and synthetic on the Dev Work VM; no network, other clone, simulator, physical audio,
+deployment, upload or installed-build change was used.
+
+The controller's existing pause timer now ends player accounting at the captured deadline, before draining
+queued frames. Missing next audio enters ordinary adaptive catch-up; queued audio does not train a stall.
+User/capture/interruption holds remain authoritative, and cancelled windows never end a replacement window.
+`ReplySegmentPlayoutTests.lateFrameCountsOnlySilenceAfterThePauseDeadlineAndTrainsStallRecovery` checks
+a 1.5-second pause and a frame at +7 seconds: one gap of exactly 5.5 seconds and an adaptive stall. The existing
+planned-silence test still checks no gap or adaptive training. Controller tests check queued/missing audio,
+held windows and cancellation at the deadline boundary without creating an audio engine.
+
+Settings now require numeric values and reject CFBoolean and NSNumber Boolean encodings before conversion.
+The two new settings tests check true/false through real UserDefaults, and independently reject booleans,
+numeric/other strings, NSNull, arrays and dictionaries in either field while preserving a valid companion.
+NSNull dictionaries are injected at the UserDefaults read boundary because NSNull cannot be persisted there.
+Valid numeric NSNumber/Double values and the existing round trip still pass.
+
+Every Swift command uses the `/tmp/hs932-p4-tools/swift` wrapper documented above (`taskpolicy -b`, `-j 4`,
+one compiler worker per target, offline resolution and all supplied Testing flags). Each build/test phase runs
+serially through the existing 590-second `phase.py` deadline and owned-process-tree kill trap; no load workers
+are launched. Exact commands:
+
+```sh
+python3 /tmp/hs932-p4-tools/phase.py /tmp/hs932-p4-tools/swift build -Xswiftc -warnings-as-errors
+python3 /tmp/hs932-p4-tools/phase.py /tmp/hs932-p4-tools/swift build --build-tests -Xswiftc -warnings-as-errors
+for iteration in 1 2 3; do
+  python3 /tmp/hs932-p4-tools/phase.py /tmp/hs932-p4-tools/swift test --skip-build --no-parallel \
+    --filter 'HailCoreTests\.ReplySegment' --skip 'HailDaemonKitTests.DiagnosticReplyComposition'
+done
+python3 /tmp/hs932-p4-tools/phase.py /tmp/hs932-p4-tools/swift test --skip-build --no-parallel \
+  --filter 'HailCoreTests\.(Reply|Playback|PCM16|Playout|Segment)' \
+  --skip 'HailDaemonKitTests.DiagnosticReplyComposition'
+git diff --check
+```
+
+Results:
+
+- Both warnings-as-errors builds passed: production 6.35 s; build-tests 57.88 s.
+- Segment filter passed 3/3: 25 functions in five suites, 38 case invocations per run (75 function executions,
+  114 case invocations total), in 0.499/0.533/0.536 s. The malformed-settings function also checks 24
+  independent invalid-field/valid-companion combinations per run.
+- Exact requested serial regression passed: 160 tests in 30 suites, 1.717 s. The daemon diagnostic test
+  (#955) was explicitly excluded and is outside both HailCore filters.
+- `git diff --check` passed. Changed noncomment Swift lines fit 120 columns; changed types/functions fit
+  the configured length limits, with no new lint waiver. SwiftLint is unavailable; this is a manual check.
+- Exactly two production files change; tests/docs are excluded. No PR, remote review or GitHub checks ran.
 
 ## Host build and physical follow-up
 

@@ -46,12 +46,35 @@ import Testing
         var meter = PlayoutGapMeter()
         meter.scheduled(.seconds(1), at: start, startsReply: true)
         meter.paused(at: start + .seconds(1))
-        meter.restarted(at: start + .seconds(11)) // PCM player restarts on the next segment.
+        var playout = ReplyPlayoutBuffer()
+        let stalled = playout.endSegmentPause(at: start + .seconds(11), waitingForAudio: false, gapMeter: &meter)
+        #expect(!stalled)
+        #expect(playout.policy.target == .zero)
         meter.scheduled(.seconds(1), at: start + .seconds(11), startsReply: false)
         #expect(meter.take().count == 0)
         // A subsequent genuine underrun still counts.
         meter.scheduled(.seconds(1), at: start + .seconds(13), startsReply: false)
         #expect(meter.take().count == 1)
+    }
+
+    @Test func lateFrameCountsOnlySilenceAfterThePauseDeadlineAndTrainsStallRecovery() {
+        let start = ContinuousClock.now
+        var meter = PlayoutGapMeter(), playout = ReplyPlayoutBuffer()
+        meter.scheduled(.seconds(1), at: start - .seconds(1), startsReply: true)
+        meter.paused(at: start)
+        let stalled = playout.endSegmentPause(
+            at: start + .milliseconds(1_500), waitingForAudio: true, gapMeter: &meter
+        )
+        #expect(stalled)
+        #expect(playout.isCatchingUp)
+        #expect(playout.policy.target == .milliseconds(1_500))
+        let plays = playout.queued([.seconds(2)], startsReply: false, endsReply: false)
+        #expect(plays)
+        // As in the player, a catch-up restart must preserve the deadline's gap accounting.
+        meter.scheduled(.seconds(2), at: start + .seconds(7), startsReply: false)
+        let gaps = meter.take()
+        #expect(gaps.count == 1)
+        #expect(gaps.total == .milliseconds(5_500))
     }
 }
 
