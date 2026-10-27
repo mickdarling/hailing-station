@@ -199,3 +199,36 @@ per-connection yield routing, prompt mask release, echo-tail false positives, mu
 ambient on/off transitions and the paused notice/Station tools setting. On real speaker/headphone routes confirm
 that the window begins after sound finishes, lasts the configured interval, does not count as a stall/gap, and
 that any-voice onset works without sending reply echo or private audio. No build upload/installation is in scope.
+
+
+## P4a fix round 2 (#956, offline bundle r3)
+
+Starts at `baf7bfc2f43005b8de4645e5f96ddf72de030931` on `codex/932-p4-device`.
+The settings reader now identifies Booleans only by
+`CFGetTypeID(number as CFTypeRef) == CFBooleanGetTypeID()`. Every other NSNumber reaches the existing
+independent bounds validation; the `objCType` rejection is removed so signed-char numeric values are accepted.
+`numericRepresentationsAreAcceptedIndependently` injects NSNumber values built from Int8(1), Int16, Int,
+Float and Double into each field, checking all ten field/type combinations with a valid companion.
+Existing malformed-value tests still reject true/false NSNumber Booleans, strings, NSNull, arrays and dictionaries
+independently; real UserDefaults Boolean round trips remain covered.
+
+The existing wrappers above supply `taskpolicy -b`, `-j 4`, one compiler worker per target, offline resolution,
+and every supplied Testing framework/plugin/rpath flag. Each serial phase has the 590-second deadline and
+owned-process-tree kill trap. No load workers, network, other clones, simulator, physical audio or delivery were used.
+Exact commands (each test iteration is a separate bounded phase):
+
+```sh
+python3 /tmp/hs932-p4-tools/phase.py /tmp/hs932-p4-tools/swift build -Xswiftc -warnings-as-errors
+python3 /tmp/hs932-p4-tools/phase.py /tmp/hs932-p4-tools/swift build --build-tests -Xswiftc -warnings-as-errors
+for iteration in 1 2 3; do
+  python3 /tmp/hs932-p4-tools/phase.py /tmp/hs932-p4-tools/swift test --skip-build --no-parallel \
+    --filter 'HailCoreTests\.ReplySegment' --skip 'HailDaemonKitTests.DiagnosticReplyComposition'
+done
+git diff --check
+```
+
+Both warnings-as-errors builds passed (production 5.37 s; build-tests 59.20 s). The segment filter passed 3/3:
+26 test functions in five suites, 39 case invocations per run (78 function executions, 117 case invocations total),
+in 0.574/0.457/0.492 s. P4a has no onset detector suites; those belong to P4b1. `git diff --check` passed.
+One production file changes, plus settings regressions and this record. Logs are host-local
+`/tmp/hs932-p4a-r3-*.log`. No PR, independent review or GitHub checks were created or claimed.
