@@ -151,12 +151,10 @@ extension HostConnectionStore {
                 await self?.transportLost(host: endpoint.id, generation: generation, sending: sending, token: token)
             },
             sleep: sleep,
-            jitter: jitter
-        ) { [weak self] snapshot in
-            await self?.receive(snapshot, token: token)
-        } replyObserver: { [weak self] event in
-            await self?.receive(event, token: token)
-        }
+            jitter: jitter,
+            observer: { [weak self] snapshot in await self?.receive(snapshot, token: token) },
+            replyObserver: { [weak self] event in await self?.receive(event, token: token) }
+        )
         connections[endpoint.id] = connection
     }
     public func connect(_ id: HostEndpoint.Identifier) async {
