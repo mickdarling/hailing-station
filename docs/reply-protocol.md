@@ -89,8 +89,10 @@ P1 defines the wire vocabulary. P2 implements host-side segmentation and renderi
 P3 adds host listener support: the host advertises `reply_segments` (`ReplySegments.capability`) beside its
 other capabilities, strips `segmentEnd` for devices that did not advertise it, handles `reply_yield` and runs the
 backstop below. P4a adds device live-stream playback pauses and a callable local yield foundation, with synthetic
-coverage only. P4b1 adds an inert, opt-in onset gate; P4b2 must complete mic/echo/transport wiring and advertising.
-P5 supplies the device UI and shared TestFlight integration. The device does not yet advertise `reply_segments`, so negotiated hosts still strip markers.
+coverage only. P4b1 supplies the onset gate; P4b2 wires the device capture, yield, echo-tail handoff,
+transport and segmented bulk Replay. The device now advertises `reply_segments` beside `heard_turns`, making
+segment pauses and onset yield live in code with a P3 host. This is synthetic VM evidence, not a shipped build
+or physically validated behavior. P5 supplies the paused notice, Station tools UI and shared TestFlight integration.
 P2 does not change coaching speech, acknowledgement clips or spoken announcements. The host behavior below has
 synthetic test coverage, not physical-device or live captured-output proof.
 
@@ -158,7 +160,7 @@ This is host-local synthetic proof, not a live captured-output round trip or phy
   Neither reply ids nor request/reply text is logged by these events. Stop, dismiss and privacy still stop whole
   reply ids. Echo handling, acknowledgements and the not-sent clip retain their existing behavior.
 
-Device foundation (P4a, synthetic only; not shipped or physically validated): the live-stream controller schedules
+Device playback (P4a/P4b2, synthetic only; not shipped or physically validated): the live-stream controller schedules
 through a segment marker, then waits for its actual `.dataPlayedBack` completion before opening `segmentPause`.
 Later frames queue under the same descriptor. After the configured window it drains them normally. The marker
 barrier and pause hold the idle watch; resume gets a fresh frame-arrival deadline. The PCM player's expected
@@ -176,28 +178,39 @@ spoken "go on" resume in v1.
 `yieldPausedReply(ambientListening:privacyOn:)` is a callable local foundation, permitted only in a played pause
 window with ambient on and privacy off. It retires only that reply, ignores its late frames, preserves queued
 other replies and exposes bounded, content-free `lastSegmentYield` (endpoint, descriptor UUID, played-marker count).
-It accepts/retains no mic audio and sends no frame. P4b must release that reply's echo mask promptly and send
-`reply_yield` only on the same ready connection advertising `reply_segments`. Onset audio choice **B**: accept
+It accepts/retains no mic audio. P4b2 calls it from the pre-mask onset signal with fresh main-actor ambient
+and privacy state, scoped to the current ambient endpoint. A refused yield does nothing. On success the device
+synchronizes reply audibility (including any queued replacement), calls `endReplyTailForYield()` before closing
+the analysed window, and then attempts `reply_yield` through the store's owned connection for that endpoint.
+Both store and connection require ready state, the negotiated `reply_segments` capability and the captured
+connection generation; reconnect/replacement never redirects a yield. A failed/unsupported send leaves the local
+stop in force. Tail release fails closed if its safety interval is not met or another reply is audible; then the
+normal reply tail applies. The tap-capture mask and its tail are untouched. Onset audio choice **B**: accept
 losing the triggering onset; no pre-roll storage or replay path. Subsequent samples use the normal ambient path,
 never a new privacy bypass.
 
-P4b1 (synthetic only, **v1, pending Mick**) adds an inert energy gate at the existing `EchoMaskedCapture`
-PCM tap, before masking. Opt-in caller input must provide the current played pause window, ambient on and privacy
-off at capture time. No app/controller wiring is added. Calibration starts **after** the configured echo-guard tail
+P4b1 (synthetic only, **v1, pending Mick**) supplies the energy gate at the existing `EchoMaskedCapture`
+PCM tap, before masking. P4b2 installs its caller once before capture; every buffer reads the current played
+window and fresh main-actor ambient/privacy state. The onset handler reads those flags again, so a privacy or
+ambient change after capture authorization still refuses yield. Window closure explicitly clears analysis
+without waiting for another buffer. The capture forwarder synchronizes with the main actor; no real-time audio
+render callback waits on it. The installed wiring never synchronously reconfigures/stops the tap from a callback. Calibration starts **after** the configured echo-guard tail
 (default 400 ms), then measures 200 ms of floor RMS power. Only afterward can a sustained onset meet both
 −35 dBFS and floor +6 dB for the configured 300 ms. The tail comes from `AmbientReplyEchoGuard`, not a second
 constant. Calibration/tail audio cannot fire. A short window cannot fit these stages and never signals.
 
 P4b1 retains only scalar detection state, clears it at window close, retains no PCM and emits a content-free callback
-once per window. It does not call yield, release masks, send frames or advertise. Diagnostics are counts only:
+once per window. The gate itself only signals; P4b2 owns yield, mask handoff and transport. Diagnostics are counts only:
 onsets, onsets without an admitted ambient request within N=5 s, and analysed-level/floor histograms with buckets
 <−60, [−60,−45), [−45,−35), [−35,−25), [−25,0] dBFS. The injected clock expires diagnostic deadlines at 5 s;
-P4b2 must supply the actual admission hook. A timely request covers earlier pending onsets; late requests cannot
+P4b2 feeds `ambientRequestAdmitted()` from the store's existing `ambient_heard` dispatch, only for the yielded
+endpoint and connection generation, passing no text to the detector. A timely request covers earlier pending onsets; late requests cannot
 remove expired counts. This detects energy from any sound, not an identified owner or verified speech.
 
-Still proposed for P4b2: fresh window/privacy/ambient wiring, immediate reply-scoped mask release, capability-gated
-transport, device hello advertising, actual ambient-request observation and segmented bulk replay. P5 adds the
-paused notice and Station tools pause setting. Do not advertise or ship this partial foundation as completed P4.
+Bulk Replay containing segment markers re-enters the controller FIFO and honors actual-playback barriers and
+pauses, preserving other queued replies and the existing late-frame ledger. Unsegmented Replay retains its
+existing player path. The existing bounded observable `lastSegmentYield` is available to P5; RootView only wires
+the feature and adds no notice UI. P5's notice, Station tools setting and physical/app validation remain deferred.
 See [the device test record](testing/reply-segments-device.md) for the split, synthetic checks and deferred work.
 Synthetic P1 verification is recorded in [reply-segments-protocol.md](testing/reply-segments-protocol.md), and
 P3 listener verification in [reply-segments-listener.md](testing/reply-segments-listener.md).

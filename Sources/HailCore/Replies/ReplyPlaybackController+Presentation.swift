@@ -1,10 +1,7 @@
 import Foundation
 import HailProtocol
-
 extension ReplyPlaybackController {
-    /// Makes microphone capture strictly half-duplex with reply playback. New reply frames may
-    /// continue to queue, but none are scheduled or resumed until capture finalization releases the
-    /// suppression. A user's explicit pause choice remains authoritative across the transition.
+    /// Capture holds reply playback; new frames queue and a user pause remains authoritative.
     public func beginCaptureSuppression() {
         defer { syncIdleHold() }
         guard !isCaptureSuppressed else { return }
@@ -14,7 +11,6 @@ extension ReplyPlaybackController {
         }
         status = "Paused while listening"
     }
-
     public func endCaptureSuppression(resumingPlayback: Bool = true) {
         defer { syncIdleHold() }
         guard isCaptureSuppressed else { return }
@@ -49,7 +45,6 @@ extension ReplyPlaybackController {
             }
         }
     }
-
     public func togglePause() {
         defer { syncIdleHold() }
         if isCaptureSuppressed {
@@ -72,13 +67,11 @@ extension ReplyPlaybackController {
             status = "Paused"
         }
     }
-
     public func toggleMute() {
         isMuted.toggle()
         player.setMuted(isMuted)
         status = isCaptureSuppressed ? "Paused while listening" : playingStatus
     }
-
     public func replayLatest() {
         guard !isCaptureSuppressed else {
             status = "Replay available after listening"
@@ -87,6 +80,10 @@ extension ReplyPlaybackController {
         guard !lastAudio.isEmpty, let lastKey else { return }
         guard activeKey == nil || activeKey == lastKey else {
             status = "Replay available when this reply finishes"
+            return
+        }
+        if lastAudio.contains(where: \.isSegmentEnd) {
+            replaySegmented(lastKey)
             return
         }
         playbackGeneration &+= 1
@@ -107,36 +104,30 @@ extension ReplyPlaybackController {
             setPresentationStatus("Replay failed", for: lastKey)
         }
     }
-
+}
+extension ReplyPlaybackController {
     public var statusForControls: String {
         if isCaptureSuppressed { return "Paused while listening" }
         guard let presentationForControls else { return status }
         return presentationStatuses[presentationForControls.id] ?? status
     }
-
-    /// The status of one reply, independent of whichever other host currently owns playback.
-    /// This does not assert that the reply belongs to the terminal's latest send.
     public func status(for reply: ReplyPresentation) -> String {
         if let recorded = presentationStatuses[reply.id] { return recorded }
         if presentationForControls?.id == reply.id { return statusForControls }
         return "Received"
     }
-
     func presentation(for key: ReplyStreamKey?) -> ReplyPresentation? {
         guard let key else { return nil }
         return replies.first { $0.id == presentationID(for: key) }
     }
-
     func setPresentationStatus(_ status: String?, for key: ReplyStreamKey) {
         guard let presentation = presentation(for: key) else { return }
         presentationStatuses[presentation.id] = status
     }
-
     func rollbackPlaybackStart(for key: ReplyStreamKey) {
         playbackOrder.removeAll { $0 == key }
         if activeKey == key { activeKey = playbackOrder.first }
     }
-
     @discardableResult
     func upsertPresentation(_ event: HostReplyEvent, descriptor: ReplyDescriptor) -> String {
         let id = "\(event.endpointID)|\(descriptor.id.uuidString.lowercased())"
@@ -153,7 +144,6 @@ extension ReplyPlaybackController {
         }
         return id
     }
-
     func trimPresentations(retainingPresentationID: String? = nil) {
         guard replies.count > Self.presentationLimit else { return }
         var retained = Set(presentationKeysToRetain.map(presentationID(for:)))
@@ -168,11 +158,9 @@ extension ReplyPlaybackController {
         let liveIDs = Set(replies.map(\.id))
         presentationStatuses = presentationStatuses.filter { liveIDs.contains($0.key) }
     }
-
     private func presentationID(for key: ReplyStreamKey) -> String {
         "\(key.endpointID)|\(key.replyID.uuidString.lowercased())"
     }
-
     func remember(_ id: UUID) -> Bool {
         guard seenFrameSet.insert(id).inserted else { return false }
         seenFrames.append(id)
@@ -184,12 +172,29 @@ extension ReplyPlaybackController {
         }
         return true
     }
-
     func descriptor(in frame: Frame) -> ReplyDescriptor? {
         switch frame.payload {
         case .text(let text): text.reply
         case .audio(let audio): audio.reply
         default: nil
         }
+    }
+}
+extension ReplyPlaybackController {
+    private func replaySegmented(_ key: ReplyStreamKey) {
+        playbackGeneration &+= 1
+        player.cancel()
+        playbackOrder = []
+        activeKey = nil
+        queue = [key] + queue.filter { $0 != key }
+        streams[key] = ReplyStreamState(segments: Dictionary(uniqueKeysWithValues: lastAudio.map { ($0.sequence, $0) }))
+        idleWatch.aheadUntil = idleNow()
+        idleWatch.bufferedUntil = idleNow()
+        idleWatch.heldRemaining = nil
+        isPaused = false
+        setPresentationStatus(nil, for: key)
+        drain()
+        syncIdleHold()
+        if activeKey == key { status = "Replaying" }
     }
 }
