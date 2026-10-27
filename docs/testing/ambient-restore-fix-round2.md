@@ -567,3 +567,14 @@ The refined R1 warnings-as-errors production and test builds passed. The same
 targeted selection, now including the held-ping send-refusal regression, passed
 **17 tests in 9 suites, 35.838 seconds**. All original probe assertions and
 both refusal delivery paths pass together.
+
+The first refined full R2 run passed all production-fix regressions but failed
+its no-restore control's combined notice/ordinary-stop assertion. That control
+previously returned from `feed()` without awaiting its asynchronous first send;
+it could inject an ambient refusal before the connection had an ambient stream.
+The control now explicitly waits for its first audio frame and requires no
+pending recovery or notice before sending the refusal. This establishes the
+normal-stream premise without a wall-clock assumption. Its original fail-before
+run remains a passing control; the full post-refinement repetitions are rerun
+with this explicit ordering barrier. The unsuccessful run is retained as
+`<scratch>/r2-final-focused-1.log`, not counted as a passing repetition.
