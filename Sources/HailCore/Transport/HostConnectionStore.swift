@@ -246,16 +246,17 @@ extension HostConnectionStore {
         if snapshot.state != .ready { forgetModes(snapshot.id) }
     }
 
+    private func acceptConfirmedResume(on host: HostEndpoint.Identifier) async {
+        guard let proof = ambientController?.reconnect.acceptance, proof.binding.hostID == host,
+              let connection = connections[host], await connection.hasConfirmed(proof) else { return }
+        ambientController?.reconnect.accepted(proof)
+    }
+
     private func receive(_ event: HostReplyEvent, token: UUID) async {
         guard tokens[event.endpointID] == token else { return }
         // The receive loop awaits this callback before processing the next frame. Check the exact probe's
         // pong on the connection actor, so a stalled polling waiter cannot misclassify a post-pong refusal.
-        if HostNoticeOrigin.streamID != nil,
-           let proof = ambientController?.reconnect.acceptance,
-           proof.binding.hostID == event.endpointID,
-           let connection = connections[event.endpointID], await connection.hasConfirmed(proof) {
-            ambientController?.reconnect.accepted(proof)
-        }
+        if HostNoticeOrigin.streamID != nil { await acceptConfirmedResume(on: event.endpointID) }
         guard tokens[event.endpointID] == token else { return }
         if receiveAmbientNotice(event) { return }
         segmentWiring?.receive(event)
@@ -412,6 +413,8 @@ extension HostConnectionStore {
         do {
             try await connection.sendAudio(audio, bindingGeneration: binding.connectionGeneration)
         } catch {
+            // A send can observe the refusal before its ordered notice callback reaches the controller.
+            await acceptConfirmedResume(on: binding.hostID)
             ambientController?.reconnect.sendFailed(error, audio: audio, binding: binding, store: self)
             notePrivateStop(error, binding: binding)
             throw error
