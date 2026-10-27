@@ -4,7 +4,7 @@ import Testing
 @testable import HailCore
 
 @Suite struct ReplySegmentsDeviceSessionTests {
-    @MainActor @Test func deviceSchedulesAcrossSegmentEndWithoutPausing() throws {
+    @MainActor @Test func deviceHoldsFramesAfterSegmentEndUntilPlaybackCompletes() throws {
         let player = SegmentsReplyPlayer()
         let controller = ReplyPlaybackController(player: player)
         let stream = UUID()
@@ -17,13 +17,13 @@ import Testing
             let decoded = try FrameCoding.decode(FrameCoding.encode(frame))
             controller.ingest(HostReplyEvent(endpointID: "synthetic", frame: decoded))
         }
-        #expect(player.scheduled.map(\.sequence) == [0, 1])
-        #expect(player.completions == 1) // Only final completes a reply; a segment marker schedules no pause.
+        #expect(player.scheduled.map(\.sequence) == [0])
+        #expect(player.completions == 1) // Segment completion starts the pause; final has not been scheduled.
         #expect(player.pauses == 0)
         #expect(!controller.isPaused)
     }
 
-    @Test func deviceRefusesReplyYieldFromHostWithoutAdvertisingSegments() async throws {
+    @Test func deviceRefusesReplyYieldFromHostAndDefersAdvertisingUntilP4b() async throws {
         let endpoint = try endpoint()
         let socket = ScriptedSocket()
         let connector = ScriptedConnector()

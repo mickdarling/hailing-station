@@ -49,7 +49,8 @@ final class IdleRig {
     }
 }
 
-final class IdlePlayer: ReplyAudioPlaying {
+final class IdlePlayer: ReplyAudioPlaying, ReplySegmentDiscardReporting {
+    var onSegmentDiscarded: (@MainActor () -> Void)?
     var scheduled: [AudioPayload] = []
     let scheduledBuffers = AsyncStream<AudioPayload>.makeStream(bufferingPolicy: .bufferingNewest(1))
     var cancelCount = 0

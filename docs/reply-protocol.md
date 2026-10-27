@@ -88,10 +88,11 @@ advertised the command ([rightyo-input.md](rightyo-input.md)).
 P1 defines the wire vocabulary. P2 implements host-side segmentation and rendering in `haild reply --say`.
 P3 adds host listener support: the host advertises `reply_segments` (`ReplySegments.capability`) beside its
 other capabilities, strips `segmentEnd` for devices that did not advertise it, handles `reply_yield` and runs the
-backstop below. Device pauses/yield (P4) and integration proof (P5) are separate work; the device still ignores
-`AudioPayload.isSegmentEnd` during playback. P2 does not change coaching speech, acknowledgement clips or spoken
-announcements. The host behavior below has synthetic test coverage, not physical-device or live captured-output
-proof.
+backstop below. P4a adds device live-stream playback pauses and a callable local yield foundation, with synthetic
+coverage only. P4b must complete mic/echo/transport wiring and advertising; P5 supplies the device UI and shared
+TestFlight integration. The device does not yet advertise `reply_segments`, so negotiated hosts still strip markers.
+P2 does not change coaching speech, acknowledgement clips or spoken announcements. The host behavior below has
+synthetic test coverage, not physical-device or live captured-output proof.
 
 One reply id spans many spoken segments; its text frame still carries the full spoken text. The P2
 producer splits at sentence boundaries and puts `"segmentEnd": true` on the last audio frame of each segment
@@ -157,10 +158,35 @@ This is host-local synthetic proof, not a live captured-output round trip or phy
   Neither reply ids nor request/reply text is logged by these events. Stop, dismiss and privacy still stop whole
   reply ids. Echo handling, acknowledgements and the not-sent clip retain their existing behavior.
 
-Proposed device behavior (P4, not shipped or physically validated): after a segment finishes playing, the device
-opens a pause window. Sustained owner speech in that window stops the remaining reply locally and sends
-`reply_yield`; the P3 host then drops later frames for that reply id, allowing its renderer to retire.
-The v1 defaults—1.5 s pause, 300 ms sustained onset, no "go on"—are device configuration pending Mick's confirmation.
+Device foundation (P4a, synthetic only; not shipped or physically validated): the live-stream controller schedules
+through a segment marker, then waits for its actual `.dataPlayedBack` completion before opening `segmentPause`.
+Later frames queue under the same descriptor. After the configured window it drains them normally. The marker
+barrier and pause hold the idle watch; resume gets a fresh frame-arrival deadline. The PCM player's expected
+boundary neither raises its adaptive catch-up target nor records a playout gap, and even a short marker releases
+an earlier catch-up hold. Stop/cancel invalidates callbacks and timers. The reply remains output-busy across the
+pause, preserving the existing echo-guard mask and tail rather than unmasking between segments. Existing mute,
+headset stop-and-mute and capture-suppression policies remain in force; no UI is added.
+
+`ReplySegmentSettings` saves both seconds values in one UserDefaults dictionary,
+`hailing-station.reply-segments.v1`. Defaults **v1, pending Mick**: `pauseAfterSegment = 1.5` (0.1–10 seconds),
+`sustainedOnset = 0.3` (0.05–2 seconds). Each invalid/nonfinite value falls back independently. A controller reads
+saved settings at creation; P5 can assign a validated value and save it when Station tools changes. There is no
+spoken "go on" resume in v1.
+
+`yieldPausedReply(ambientListening:privacyOn:)` is a callable local foundation, permitted only in a played pause
+window with ambient on and privacy off. It retires only that reply, ignores its late frames, preserves queued
+other replies and exposes bounded, content-free `lastSegmentYield` (endpoint, descriptor UUID, played-marker count).
+It accepts/retains no mic audio and sends no frame. P4b must release that reply's echo mask promptly and send
+`reply_yield` only on the same ready connection advertising `reply_segments`. Onset audio choice **B**: accept
+losing the triggering onset; no pre-roll storage or replay path. Subsequent samples use the normal ambient path,
+never a new privacy bypass.
+
+Still proposed for P4b: local sustained-onset analysis (any voice in v1), current privacy/ambient gating, immediate
+reply-scoped mask release, capability-gated transport, device hello advertising and content-free yield/false-yield
+counters. Bulk replay integration also remains for P4b; P4a's new barrier applies to live FIFO ingress, while replay
+keeps its existing bulk-player behavior. P5 adds the paused notice and Station tools pause setting. Do not advertise
+or ship this partial foundation as completed P4. See [the device test record](testing/reply-segments-device.md)
+for the four-file split, executed synthetic checks and explicit deferred expectations.
 Synthetic P1 verification is recorded in [reply-segments-protocol.md](testing/reply-segments-protocol.md), and
 P3 listener verification in [reply-segments-listener.md](testing/reply-segments-listener.md).
 
