@@ -26,8 +26,11 @@ import Testing
         #expect(rig.notices.map(\.id) == [id])
         #expect(rig.notices.last?.outcome == .applied)
         #expect(!rig.controller.reconnect.replacedAppliedNotice)
-        if moved { #expect(rig.controller.handoff == .movedAway(to: "pad") && rig.unexpected.isEmpty) }
-        else { #expect(rig.unexpected.count == 1 && rig.unexpected[0].contains("ambient busy elsewhere")) }
+        if moved {
+            #expect(rig.controller.handoff == .movedAway(to: "pad") && rig.unexpected.isEmpty)
+        } else {
+            #expect(rig.unexpected.count == 1 && rig.unexpected[0].contains("ambient busy elsewhere"))
+        }
         await wire.release()
         await rig.close()
     }

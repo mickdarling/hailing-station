@@ -28,7 +28,8 @@ import Testing
         let nonce = try await rig.waitForAcceptancePing()
         try await rig.socket.push(.pong(nonce: nonce))
         try await waitUntil { await MainActor.run { rig.controller.reconnect.acceptance == nil } }
-        #expect(rig.controller.reconnect.isPending) // Acceptance preceded transportSent on the sender executor.
+        #expect(!rig.controller.reconnect.isPending) // Acceptance preceded transportSent on the sender executor.
+        #expect(rig.notices.map(\.outcome) == [.applied])
         try await rig.socket.push(.error(code: .notAllowed, message: "ambient busy elsewhere"))
         try await waitUntil { await MainActor.run { !rig.controller.isOn } }
         #expect(rig.notices.allSatisfy { $0.outcome != .failed },
@@ -37,6 +38,41 @@ import Testing
                 "A post-acceptance terminal refusal suppressed the ordinary stop alert")
         await delivery.fire()
         try await waitUntil { await MainActor.run { rig.released == 1 } }
+        #expect(rig.notices.map(\.outcome) == [.applied])
+        await rig.close()
+    }
+
+    @Test func acceptanceAndLateSendCompletionPublishOneAppliedNotice() async throws {
+        let rig = try AmbientReconnectRig()
+        let delivery = SleepGate()
+        let store = rig.store
+        rig.controller = AmbientListeningController(
+            notificationCenter: rig.center, requestPermission: { true },
+            makeStreamer: { send in AmbientAudioStreamer(capture: rig.capture, send: send) },
+            releaseSession: { rig.released += 1 },
+            send: { audio, binding in
+                try await store.sendAudio(audio, to: binding)
+                if audio.isResume { try await delivery.sleep(.zero) }
+            }
+        )
+        try await rig.start()
+        try await rig.drop()
+        try await rig.reconnect(selectTarget: false)
+        try await rig.select(restoring: true)
+        for index in 0..<6 { try rig.capture.yield(sineBuffer(offset: index * 4_800)) }
+        try await waitUntil { await delivery.isWaiting() }
+        let nonce = try await rig.waitForAcceptancePing()
+        try await rig.socket.push(.pong(nonce: nonce))
+        try await waitUntil { await MainActor.run { rig.controller.reconnect.acceptance == nil } }
+        #expect(!rig.controller.reconnect.isPending && rig.notices.map(\.outcome) == [.applied])
+        let id = rig.controller.reconnect.notice?.id
+        let count = try await audioFrames(rig.socket).count
+        await delivery.fire()
+        try await rig.feed()
+        // A subsequent send proves the held sender passed transportSent and resumed its queue.
+        try await waitUntil { try await audioFrames(rig.socket).count > count }
+        #expect(rig.controller.isOn && rig.unexpected.isEmpty)
+        #expect(rig.notices.map(\.id) == [id] && rig.notices.map(\.outcome) == [.applied])
         await rig.close()
     }
 }

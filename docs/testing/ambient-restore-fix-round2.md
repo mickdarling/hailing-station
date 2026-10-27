@@ -648,3 +648,21 @@ These cover ordered pong/refusal receipt while the confirmation sender is held,
 a genuinely renewed non-restored stream, unrelated and retired-generation pongs,
 and a send refusal before the matching pong. The latter identity-matched refusal
 still revises the existing notice; another stream cannot revise it.
+
+### Fix and regression coverage
+
+After checking the acceptance object's identity, `accepted()` now settles a still
+pending, renewed restore as applied. The usual finish path cancels its deadline
+and publishes one applied notice immediately. `sent()` explicitly requires a
+pending restore, so its later callback cannot publish a second notice. The
+existing notice delivery and app deduplication therefore retain one haptic per
+drop; physical haptic delivery is not claimed by these package tests.
+
+The original regression now requires no pending restore and exactly one applied
+notice before the refusal and after sender teardown. Its two original refusal
+assertions remain intact. `acceptanceAndLateSendCompletionPublishOneAppliedNotice`
+separately keeps listening active, releases the held sender, waits for a following
+audio frame to prove that continuation and queue progressed, and requires the
+same single applied notice. Identity matching and the pre-acceptance refusal
+replacement path are unchanged. No protocol, app, or additional production file
+is changed by this fix.

@@ -299,7 +299,7 @@ extension AmbientListeningReconnect {
         if let notice { onNotice?(notice) }
     }
     func sent(_ audio: AudioPayload) {
-        if renewed, audio.isResume, withinDeadline() { finish(.applied, reason: nil) }
+        if isPending, renewed, audio.isResume, withinDeadline() { finish(.applied, reason: nil) }
     }
     func withinDeadline() -> Bool {
         guard let pending else { return true }
@@ -341,6 +341,7 @@ extension AmbientListeningReconnect {
         guard acceptance === proof else { return }
         acceptance = nil
         acceptanceTask = nil
+        if isPending, renewed { finish(.applied, reason: nil) }
     }
 
     private func cancelAcceptance() {
