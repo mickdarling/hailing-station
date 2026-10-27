@@ -27,8 +27,12 @@ final class RestoreRig: Sendable {
         AmbientAckLibrary(clips: [AmbientStopConfirmation.meetingOn: [MeetingRig.on],
                                  AmbientStopConfirmation.meetingOff: [MeetingRig.off],
                                  AmbientStopConfirmation.meetingEnded: [MeetingRig.ended],
-                                 AmbientStopConfirmation.meetingResumed: [resumed]])
+                                 AmbientStopConfirmation.meetingResumed: [resumed],
+                                 AmbientStopConfirmation.privacyStatus: [status]])
     }
+    /// The privacy status answer (#941: a restored-private connection's status is told as any private one's).
+    static let status = AmbientAckClip(pcm: Data(repeating: 7, count: 480), sampleRate: 24_000,
+                                       text: "Privacy on. I'm only listening for my name.")
     static let gate = "{\"media\":true}\n"
     let fake: FakeRightyo
     let env: AmbientWiringRig
@@ -41,24 +45,33 @@ final class RestoreRig: Sendable {
     var parked: ParkedModes? { router.state.withLock { $0.parked } }
 
     /// `meeting` is every child's `started` advertisement of the meeting control (#735 MM-D), raw JSON, none by
-    /// default; `holdStarted` keeps each child's first line back until the test writes `go`.
+    /// default; `holdStarted` keeps each child's first line back until the test writes `go` (`release()`), and
+    /// `holdSpawn` only that child's (#941).
     init(phrase: String? = "meeting mode", speaker: Int = 1,
          timeout: TimeInterval = AmbientRightyoRouter.defaultMeetingTimeout,
          mediaTimeout: TimeInterval = AmbientRightyoRouter.defaultMediaTimeout,
-         meeting: String? = nil, holdStarted: Bool = false) async throws {
-        let first = phrase == nil ? "/usr/bin/sed -n -e 1p events.jsonl | /usr/bin/sed -e \"s/formed-demo/$7/g\""
-            : "/usr/bin/sed -e '$d' -e \"s/formed-demo/$7/g\" events.jsonl"
+         meeting: String? = nil, holdStarted: Bool = false, holdSpawn: Int? = nil,
+         childMade: (@Sendable (UUID) -> Void)? = nil, privacy: PrivacyOffSettings = .init()) async throws {
+        // A child launched start-private confirms it in its `started` (#941), as a RightyO with S-2b does.
+        let confirm = #" -e 's/"duck": {"version": 3}/"duck": {"version": 3'"$PRIV"'}/'"#
+        let first = phrase == nil
+            ? "/usr/bin/sed -n -e 1p events.jsonl | /usr/bin/sed -e \"s/formed-demo/$7/g\"\(confirm)"
+            : "/usr/bin/sed -e '$d' -e \"s/formed-demo/$7/g\"\(confirm) events.jsonl"
         fake = try FakeRightyo("""
+        \(AmbientPrivacyEntryTests.startPrivatePrelude)
         SPAWN=1
         while ! /bin/mkdir "spawn.$SPAWN" 2>/dev/null; do SPAWN=$((SPAWN + 1)); done
+        echo "$*" > "argv.$SPAWN.txt"
         \(FakeRightyo.ackingControl(append: true).replacingOccurrences(of: "control.txt", with: "control.$SPAWN.txt"))
         \(holdStarted ? FakeRightyo.untilGo : "")
+        \(holdSpawn.map { "if [ \"$SPAWN\" = \($0) ]; then\n\(FakeRightyo.untilGo)\nfi" } ?? "")
         if [ "$SPAWN" = \(speaker) ]; then
         \(first)
         else
-        /usr/bin/sed -n -e 1p events.jsonl | /usr/bin/sed -e "s/formed-demo/$7/g"
+        /usr/bin/sed -n -e 1p events.jsonl | /usr/bin/sed -e "s/formed-demo/$7/g"\(confirm)
         fi
-        \(FakeRightyo.ackingTail)
+        \(FakeRightyo.ackingTail.replacingOccurrences(of: "/bin/cat > /dev/null",
+                                                    with: "/bin/cat > audio.$SPAWN.raw"))
         """)
         try fake.install(fixture: "enrolled-formed-request.jsonl")
         try Self.prepare(fake, phrase: phrase ?? "archive the project", meeting: meeting)
@@ -67,12 +80,18 @@ final class RestoreRig: Sendable {
                                    replyControl: true, mediaTimeout: mediaTimeout, startDeadline: 30, ackDeadline: 30,
                                    meeting: .init(timeout: timeout, onChange: { change in
             hooks.list.withLock { $0.append(change) }
-        }, now: { clock.now() }), onEvent: { event in events.list.withLock { $0.append(event) } })
+        }, now: { clock.now() }), onEvent: { event in events.list.withLock { $0.append(event) } },
+                                   childMade: childMade, privacy: privacy)
     }
 
     private static func prepare(_ fake: FakeRightyo, phrase: String, meeting: String?) throws {
         var lines = try fake.recorded("events.jsonl").split(separator: "\n").map {
             $0.replacingOccurrences(of: "Rightyo, archive the project.", with: "Rightyo, \(phrase).")
+        }
+        if phrase == "stop recording" {
+            // Privacy entry requires a live owner voiceprint; the meeting fixture alone carries only its role.
+            lines = lines.map { $0.replacingOccurrences(of: #""type": "transcript""#,
+                with: #""role_source": "voiceprint", "type": "transcript""#) }
         }
         lines[0] = lines[0].replacingOccurrences(of: "\"phase\": \"started\"",
             with: "\"addressing\": {\"names\": [\"Rightyo\"]}, \"duck\": {\"version\": 3}, "
@@ -83,12 +102,13 @@ final class RestoreRig: Sendable {
 
     /// A negotiated device with these Hello claims, selecting the rig's target, and its connection id. The default
     /// claims carry a class, so two default devices match (an absent class never does).
-    func connect(name: String = "test", kind: String? = "phone") async throws -> (URLSessionWebSocketTask, UUID) {
+    func connect(name: String = "test", kind: String? = "phone",
+                 capabilities: [String] = ["probe"]) async throws -> (URLSessionWebSocketTask, UUID) {
         let before = await Self.connections(of: env.listener)
         let (session, socket) = try recipientSocket(port: env.port)
         sessions.withLock { $0.append(session) }
         try await recipientSocketSend(sessionFrame(payload: .control(.hello(HelloInfo(
-            versions: [1], capabilities: ["probe"], deviceName: name, deviceKind: kind
+            versions: [1], capabilities: capabilities, deviceName: name, deviceKind: kind
         )))), on: socket)
         _ = try await receiveFrame(on: socket, step: "restore device hello")
         try await recipientSocketSend(sessionFrame(payload: .control(.select(targetID: RecipientTestRig.target))),
@@ -99,9 +119,12 @@ final class RestoreRig: Sendable {
     }
 
     /// Connects a device and starts its stream, waiting until its child is the active one.
-    func start(name: String = "test", kind: String? = "phone") async throws -> (URLSessionWebSocketTask, UUID) {
-        let (socket, connection) = try await connect(name: name, kind: kind)
-        try await recipientSocketSend(audio(UUID(), 0), on: socket)
+    /// `fill` is the first segment's byte (#941: to tell it from later ones in what the child heard).
+    func start(name: String = "test", kind: String? = "phone", resume: Bool = false,
+               capabilities: [String] = ["probe"], fill: UInt8 = 0) async throws -> (URLSessionWebSocketTask, UUID) {
+        let (socket, connection) = try await connect(name: name, kind: kind, capabilities: capabilities)
+        let frame = Self.segment(UUID(), 0, fill: fill, resume: resume)
+        try await recipientSocketSend(frame, on: socket)
         let router = router
         #expect(await eventually { router.activeConnection() == connection }, "restore start marker")
         return (socket, connection)
