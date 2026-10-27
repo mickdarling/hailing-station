@@ -58,7 +58,7 @@ The checker emits an actionable `Xcode test discovery:` diagnostic identifying t
 Use concrete unfiltered compile sources, or extend the checker with reviewed fixtures before adopting
 another form. Named `trace: partial` suite deferrals cannot hide metadata diagnostics.
 
-These constraints are intentionally narrower than the [XcodeGen project specification](https://github.com/<account>/XcodeGen/blob/master/Docs/ProjectSpec.md).
+These constraints are intentionally narrower than the [XcodeGen project specification](https://github.com/yonaskolb/XcodeGen/blob/master/Docs/ProjectSpec.md).
 They do not validate the entire build specification, require a suite to run in a particular scheme, or
 resolve Swift conditional compilation beyond the existing literal-false safeguard.
 
@@ -198,7 +198,7 @@ claimed here.
 ## Round-two cloud finding and 0.1.15 repair (2026-09-29)
 
 The 0.1.14 wrapper repair was committed as `24cf2d7fff4e25cdf565c855dbd5e00aa82eecef` and received
-independent correctness/security approvals. The subsequent [PR149 cloud finding](https://github.com/<account>/hailing-station/pull/149#discussion_r4139213094)
+independent correctness/security approvals. The subsequent [PR149 cloud finding](https://github.com/mickdarling/hailing-station/pull/149#discussion_r4139213094)
 was valid and requires REQUEST CHANGES: flattening target sources combined an empty suite declaration
 in one target with its test-bearing extension in another. No individual target contained the complete
 tested suite. Earlier approvals and passing verification did not establish this missing boundary and
