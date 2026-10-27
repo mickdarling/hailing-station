@@ -17,12 +17,13 @@ final class SilentPeer: @unchecked Sendable {
     /// A peer connected to the loopback listener on `port`, ready to send (#963). A busy parallel run churns loopback
     /// listeners and connections, and the system's port choice can repeat a local and remote port pair still in
     /// TIME_WAIT from an earlier connection: the connection then waits (`EADDRINUSE`), never retries on its own, and
-    /// a send on it hung until the 15 s bound cancelled it. A fresh connection is given the same local port again, so
-    /// a connection that cannot take its address, which never reached the listener, is cancelled and the next attempt
-    /// binds a random local port instead, at most `attempts` times. Any other failure, or no answer in 15 s, is thrown.
+    /// a send on it hung until the 15 s bound cancelled it. A fresh connection is given the same local port again.
+    /// Only that refusal is retried: `connect()` refuses the address before any SYN, so the attempt never reached the
+    /// listener. It is cancelled and the next attempt binds a random local port, at most `attempts` times. Any other
+    /// waiting or failed state (a reset, an aborted or refused upgrade: the listener may have seen it), or no answer
+    /// in 15 s, cancels the connection and is thrown.
     static func connect(port: UInt16, attempts: Int = 8) async throws -> SilentPeer {
         let url = try #require(URL(string: "ws://127.0.0.1:\(port)"))
-        var refused: NWError?
         for attempt in 0..<attempts {
             let options = NWProtocolWebSocket.Options(.version13)
             options.autoReplyPing = false
@@ -33,18 +34,24 @@ final class SilentPeer: @unchecked Sendable {
                 parameters.requiredLocalEndpoint = .hostPort(host: .ipv4(.loopback), port: local)
             }
             let connection = NWConnection(to: .url(url), using: parameters)
-            refused = try await ready(connection)
-            guard refused != nil else { return SilentPeer(connection) }
+            let refused: Bool
+            do {
+                refused = try await addressRefused(connection)
+            } catch {
+                connection.cancel()
+                throw error
+            }
+            guard refused else { return SilentPeer(connection) }
             connection.cancel()
         }
-        Issue.record("silent peer took no local address in \(attempts) connects: \(String(describing: refused))")
+        Issue.record("silent peer was refused its local address (EADDRINUSE) in all \(attempts) connects")
         throw SilentPeerNotReady()
     }
 
-    /// Starts `connection` and returns nil once it is ready, or the error if it waits, or fails, because it could not
-    /// take its local address (it never reached the listener then). Throws on any other failure, or if it is neither
-    /// within 15 s (it is cancelled then).
-    private static func ready(_ connection: NWConnection) async throws -> NWError? {
+    /// Starts `connection`: false once it is ready, true if it waits or fails with `EADDRINUSE` (refused its local
+    /// address before any SYN, so it never reached the listener). Throws on any other waiting or failed state, or if
+    /// it is neither ready nor refused within 15 s (it is cancelled then); the caller cancels it on a throw.
+    private static func addressRefused(_ connection: NWConnection) async throws -> Bool {
         let readiness = SilentPeerReadiness()
         let timer = Task {
             try? await Task.sleep(for: .seconds(15))
@@ -55,10 +62,9 @@ final class SilentPeer: @unchecked Sendable {
             readiness.set(continuation)
             connection.stateUpdateHandler = { state in
                 switch state {
-                case .ready: readiness.resume(.success(nil))
-                case .waiting(let error): readiness.resume(.success(error))
-                case .failed(.posix(.EADDRINUSE)): readiness.resume(.success(.posix(.EADDRINUSE)))
-                case .failed(let error): readiness.resume(.failure(error))
+                case .ready: readiness.resume(.success(false))
+                case .waiting(.posix(.EADDRINUSE)), .failed(.posix(.EADDRINUSE)): readiness.resume(.success(true))
+                case .waiting(let error), .failed(let error): readiness.resume(.failure(error))
                 case .cancelled: readiness.resume(.failure(SilentPeerNotReady()))
                 default: break
                 }
@@ -141,13 +147,13 @@ final class SilentPeer: @unchecked Sendable {
     }
 }
 
-/// A silent peer's connection was not ready in time, or never stopped waiting (#963).
+/// A silent peer's connection was not ready in time, or was refused its local address on every attempt (#963).
 struct SilentPeerNotReady: Error {}
 
 /// The one answer of a silent peer's connect attempt: its first ready, waiting, failed or cancelled state.
 private final class SilentPeerReadiness: Sendable {
-    private let waiter = Mutex<CheckedContinuation<NWError?, any Error>?>(nil)
-    func set(_ continuation: CheckedContinuation<NWError?, any Error>) { waiter.withLock { $0 = continuation } }
-    func resume(_ result: Result<NWError?, any Error>) { waiter.withLock { $0.take() }?.resume(with: result) }
+    private let waiter = Mutex<CheckedContinuation<Bool, any Error>?>(nil)
+    func set(_ continuation: CheckedContinuation<Bool, any Error>) { waiter.withLock { $0 = continuation } }
+    func resume(_ result: Result<Bool, any Error>) { waiter.withLock { $0.take() }?.resume(with: result) }
 }
 #endif
