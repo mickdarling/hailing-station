@@ -128,7 +128,7 @@ import Testing
         try await fixture.feed(-20, seconds: 0.3)
         #expect(fixture.controller.lastSegmentYield != nil)
         // The safe API can return true only while the analysed window still exists.
-        #expect(fixture.store.segmentWiring?.lastTailReleased == true)
+        #expect(fixture.store.segmentWiring?.lastTailRelease == .released)
         #expect(fixture.store.segmentWiring?.captureInput().window == nil)
         #expect(!fixture.guarder.endReplyTailForYield())
         #expect(fixture.guarder.isMasking)
@@ -144,7 +144,7 @@ import Testing
         fixture.guarder.setReplyAudible(true)
         try await fixture.detect()
         #expect(fixture.controller.lastSegmentYield != nil)
-        #expect(fixture.store.segmentWiring?.lastTailReleased == false)
+        #expect(fixture.store.segmentWiring?.lastTailRelease == .kept)
         #expect(fixture.guarder.isMasking)
         fixture.clock.advance(by: .milliseconds(399))
         #expect(fixture.guarder.isMasking)
@@ -160,7 +160,7 @@ import Testing
         try await fixture.detect()
         #expect(fixture.guarder.segmentOnsetGate.diagnostics.onsets == 0)
         #expect(fixture.controller.lastSegmentYield == nil)
-        #expect(fixture.store.segmentWiring?.lastTailReleased == nil)
+        #expect(fixture.store.segmentWiring?.lastTailRelease == .notAttempted)
         #expect(fixture.player.cancelCount == 0)
     }
 }

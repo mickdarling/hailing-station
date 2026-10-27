@@ -5,44 +5,44 @@ import Testing
 
 @MainActor @Suite struct ReplySegmentReviewerProbeTests {
     @Test func privacyToggledMidWindow() async throws {
-        let f = SegmentWireFixture()
-        let socket = try await f.connect("main")
-        try await f.open()
-        try await f.calibrate()
-        f.privacy = true
-        try await f.feed(-20, seconds: 0.3)
-        #expect(f.controller.lastSegmentYield == nil)
-        #expect(f.store.segmentWiring?.lastTailReleased == nil)
+        let fixture = SegmentWireFixture()
+        let socket = try await fixture.connect("main")
+        try await fixture.open()
+        try await fixture.calibrate()
+        fixture.privacy = true
+        try await fixture.feed(-20, seconds: 0.3)
+        #expect(fixture.controller.lastSegmentYield == nil)
+        #expect(fixture.store.segmentWiring?.lastTailRelease == .notAttempted)
         #expect(try await yields(socket).isEmpty)
-        await f.cleanup()
+        await fixture.cleanup()
     }
 
     @Test func reconnectMidWindowDoesNotSendOnReplacement() async throws {
-        let f = SegmentWireFixture()
-        let old = try await f.connect("main")
-        try await f.open()
-        try await f.calibrate()
-        let generation = f.store.snapshots["main"]?.connectionGeneration
-        await f.store.disconnect("main")
-        let replacement = try await f.connect("main")
-        #expect(f.store.snapshots["main"]?.connectionGeneration != generation)
-        try await f.feed(-20, seconds: 0.3)
+        let fixture = SegmentWireFixture()
+        let old = try await fixture.connect("main")
+        try await fixture.open()
+        try await fixture.calibrate()
+        let generation = fixture.store.snapshots["main"]?.connectionGeneration
+        await fixture.store.disconnect("main")
+        let replacement = try await fixture.connect("main")
+        #expect(fixture.store.snapshots["main"]?.connectionGeneration != generation)
+        try await fixture.feed(-20, seconds: 0.3)
         // Flush a main-actor turn and observe the actual asynchronous send attempt.
         for _ in 0..<30 { await Task.yield() }
         #expect(try await yields(old).isEmpty)
         #expect(try await yields(replacement).isEmpty)
-        await f.cleanup()
+        await fixture.cleanup()
     }
 
     @Test func olderHostKeepsLocalStopWithoutSending() async throws {
-        let f = SegmentWireFixture()
-        let socket = try await f.connect("main", capable: false)
-        try await f.open()
-        try await f.detect()
+        let fixture = SegmentWireFixture()
+        let socket = try await fixture.connect("main", capable: false)
+        try await fixture.open()
+        try await fixture.detect()
         for _ in 0..<30 { await Task.yield() }
-        #expect(f.controller.lastSegmentYield?.replyID == f.reply.id)
+        #expect(fixture.controller.lastSegmentYield?.replyID == fixture.reply.id)
         #expect(try await yields(socket).isEmpty)
-        await f.cleanup()
+        await fixture.cleanup()
     }
 
     @Test func actorRejectsEndpointMismatchEvenWithItsCurrentGeneration() async throws {
@@ -66,81 +66,83 @@ import Testing
     }
 
     @Test func nextWindowOfOldReplyCannotYieldOnReconnectedGeneration() async throws {
-        let f = SegmentWireFixture(), timers = ReviewerTimers()
-        f.controller.idleScheduler = { delay, fire in
-            timers.values.append((f.clock.now.advanced(by: delay), fire))
+        let fixture = SegmentWireFixture(), timers = ReviewerTimers()
+        fixture.controller.idleScheduler = { delay, fire in
+            timers.values.append((fixture.clock.now.advanced(by: delay), fire))
             return {}
         }
-        let old = try await f.connect("main")
-        let generation = f.store.snapshots["main"]?.connectionGeneration
-        try await f.open()
-        try await f.ingest(segmentAudio(f.reply, sequence: 1))
-        await f.store.disconnect("main")
-        let replacement = try await f.connect("main")
-        #expect(f.store.snapshots["main"]?.connectionGeneration != generation)
-        f.clock.advance(by: .seconds(1.5))
-        timers.fire(at: f.clock.now)
-        f.player.completeReply()
+        let old = try await fixture.connect("main")
+        let generation = fixture.store.snapshots["main"]?.connectionGeneration
+        try await fixture.open()
+        try await fixture.ingest(segmentAudio(fixture.reply, sequence: 1))
+        await fixture.store.disconnect("main")
+        let replacement = try await fixture.connect("main")
+        #expect(fixture.store.snapshots["main"]?.connectionGeneration != generation)
+        fixture.clock.advance(by: .seconds(1.5))
+        timers.fire(at: fixture.clock.now)
+        fixture.player.completeReply()
         try await waitUntil { @MainActor in
-            f.store.segmentWiring?.captureInput().window != nil && f.controller.segmentPause?.segment == 2
+            fixture.store.segmentWiring?.captureInput().window != nil && fixture.controller.segmentPause?.segment == 2
         }
-        try await f.detect()
+        try await fixture.detect()
         for _ in 0..<30 { await Task.yield() }
         #expect(try await yields(old).isEmpty)
         #expect(try await yields(replacement).isEmpty,
                 "Old-generation reply must not send reply_yield on the replacement connection")
-        #expect(f.controller.lastSegmentYield?.replyID == f.reply.id) // Local playback still stops.
+        #expect(fixture.controller.lastSegmentYield?.replyID == fixture.reply.id) // Local playback still stops.
         let fresh = idleReply()
-        try await f.ingest(segmentAudio(fresh, sequence: 0))
-        f.player.completeReply()
+        try await fixture.ingest(segmentAudio(fresh, sequence: 0))
+        fixture.player.completeReply()
         try await waitUntil { @MainActor in
-            f.controller.segmentPause?.replyID == fresh.id && f.store.segmentWiring?.captureInput().window != nil
+            fixture.controller.segmentPause?.replyID == fresh.id
+                && fixture.store.segmentWiring?.captureInput().window != nil
         }
-        try await f.detect()
+        try await fixture.detect()
         try await waitUntil { try await yields(replacement).count == 1 }
         #expect(try await yields(replacement).first?.payload == .control(.replyYield(reply: fresh.id, segment: 1)))
-        await f.cleanup()
+        await fixture.cleanup()
     }
 
     @Test func receivedReplyKeepsItsGenerationBeforeItsFirstPlayedWindow() async throws {
-        let f = SegmentWireFixture()
-        let old = try await f.connect("main")
-        try await f.ingest(segmentAudio(f.reply, sequence: 0))
-        await f.store.disconnect("main")
-        let replacement = try await f.connect("main")
-        f.player.completeReply()
-        try await waitUntil { @MainActor in f.store.segmentWiring?.captureInput().window != nil }
-        try await f.detect()
+        let fixture = SegmentWireFixture()
+        let old = try await fixture.connect("main")
+        try await fixture.ingest(segmentAudio(fixture.reply, sequence: 0))
+        await fixture.store.disconnect("main")
+        let replacement = try await fixture.connect("main")
+        fixture.player.completeReply()
+        try await waitUntil { @MainActor in fixture.store.segmentWiring?.captureInput().window != nil }
+        try await fixture.detect()
         for _ in 0..<30 { await Task.yield() }
-        #expect(f.controller.lastSegmentYield?.replyID == f.reply.id)
+        #expect(fixture.controller.lastSegmentYield?.replyID == fixture.reply.id)
         #expect(try await yields(old).isEmpty)
         #expect(try await yields(replacement).isEmpty)
-        await f.cleanup()
+        await fixture.cleanup()
     }
 
     @Test func laterEndpointsAdmissionCannotClearEarlierEndpointsCounter() async throws {
-        let f = SegmentWireFixture()
-        _ = try await f.connect("main")
-        let other = try await f.connect("other")
-        try await f.open()
-        try await f.detect()
+        let fixture = SegmentWireFixture()
+        _ = try await fixture.connect("main")
+        let other = try await fixture.connect("other")
+        try await fixture.open()
+        try await fixture.detect()
         // Select/listen to another endpoint while the first onset's five-second deadline remains pending.
         var event = segmentAudio(idleReply(), sequence: 0)
         event.endpointID = "other"
-        try await f.ingest(event)
-        f.player.completeReply()
+        try await fixture.ingest(event)
+        fixture.player.completeReply()
         try await waitUntil { @MainActor in
-            f.store.segmentWiring?.captureInput().window != nil && f.controller.segmentPause?.endpointID == "other"
+            fixture.store.segmentWiring?.captureInput().window != nil
+                && fixture.controller.segmentPause?.endpointID == "other"
         }
-        try await f.detect()
-        #expect(f.guarder.segmentOnsetGate.diagnostics.onsets == 2)
-        let before = f.store.conversation.entries.count
+        try await fixture.detect()
+        #expect(fixture.guarder.segmentOnsetGate.diagnostics.onsets == 2)
+        let before = fixture.store.conversation.entries.count
         try await other.push(.ambientHeard(targetID: "target", text: "Synthetic", turn: nil))
-        try await waitUntil { @MainActor in f.store.conversation.entries.count > before }
-        f.clock.advance(by: .seconds(5))
-        #expect(f.guarder.segmentOnsetGate.diagnostics.withoutAdmittedRequest == 1,
+        try await waitUntil { @MainActor in fixture.store.conversation.entries.count > before }
+        fixture.clock.advance(by: .seconds(5))
+        #expect(fixture.guarder.segmentOnsetGate.diagnostics.withoutAdmittedRequest == 1,
                 "An admission from other must leave main's onset pending until expiry")
-        await f.cleanup()
+        await fixture.cleanup()
     }
 }
 

@@ -1163,7 +1163,8 @@ final class ReplySegmentDeviceWiring {
     private let inactiveScope = ReplySegmentAdmissionScope()
     private var receivedReplies: [ReplyStreamKey] = []
     private var yielding = false
-    private(set) var lastTailReleased: Bool?
+    /// Whether the last successful yield ended the reply-echo tail early; test observability only.
+    private(set) var lastTailRelease: SegmentTailRelease = .notAttempted
 
     init(
         store: HostConnectionStore, playback: ReplyPlaybackController, echoGuard: AmbientReplyEchoGuard,
@@ -1249,7 +1250,8 @@ final class ReplySegmentDeviceWiring {
         ) else { return }
         // A queued replacement may already be audible. Preserve its mask; otherwise start the ordinary tail.
         echoGuard.setReplyAudible(playback.isReplyAudioOutputBusy)
-        lastTailReleased = echoGuard.endReplyTailForYield() // Before close; false preserves the normal tail.
+        // Before close; a refusal preserves the normal tail.
+        lastTailRelease = echoGuard.endReplyTailForYield() ? .released : .kept
         closeWindow()
         store?.publishSegmentYield(result)
         guard let generation, let store else { return }
@@ -1268,4 +1270,9 @@ final class ReplySegmentDeviceWiring {
         admissionScopes[endpoint] = (generation, scope)
         return scope
     }
+}
+
+/// What the last segment yield did to the reply-echo tail (#932).
+enum SegmentTailRelease: Equatable, Sendable {
+    case notAttempted, released, kept
 }
