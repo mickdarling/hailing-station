@@ -68,6 +68,8 @@ extension RootView {
 
     @MainActor
     func reconcileRememberedSelection() async {
+        // Core confirms a pending transport restore even in the background; do not race its selection round trip.
+        guard connections.ambientController?.reconnect.isPending != true else { return }
         guard scenePhase == .active,
               didRestoreSelection,
               !isRestoringSelection,
@@ -109,7 +111,7 @@ extension RootView {
         let phaseRevision = scenePhaseRevision
         let connectionGeneration = host.connectionGeneration
         do {
-            try await connections.selectTarget(host: host.id, targetID: target.id)
+            try await connections.selectTarget(host: host.id, targetID: target.id, restoring: true)
         } catch {
             authorizationFailed(
                 revision: revision,
