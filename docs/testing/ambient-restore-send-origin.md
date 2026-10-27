@@ -126,7 +126,7 @@ artifact; no Swift source warning was suppressed.
 The scratch-path example uses `<scratch>/reapply-build`. All documents under
 `docs/testing/` were searched on each supplied R9 branch (12 documents on R0,
 13 each on R1 and R2) for absolute home paths, account names, host addresses and
-device identifiers. The two GitHub owner names in xcode-spec-trace.md also use
-`<account>` placeholders. No other literal home path, account name, host address
-or device identifier was found; maintainer first-name qualifiers are unchanged.
+device identifiers. Public GitHub URLs (this repository and upstream projects) are
+not identifiers and stay as links. No other literal home path, account name, host
+address or device identifier was found; maintainer first-name qualifiers are unchanged.
 This docs-only change is merged down from R0 with normal merge commits.
