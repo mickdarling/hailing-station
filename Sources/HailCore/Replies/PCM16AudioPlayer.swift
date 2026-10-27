@@ -12,6 +12,7 @@ extension PCM16AudioPlayer: CaptureRoutedReplies {}
 extension PCM16AudioPlayer: PlayoutGapReporting {}
 extension PCM16AudioPlayer: ReplyCatchUpReporting {}
 extension PCM16AudioPlayer: ReplySegmentDiscardReporting {}
+extension PCM16AudioPlayer: ReplySegmentPauseEnding {}
 
 /// AVAudioEngine renderer for the raw signed 16-bit, mono stream produced by the current vbsay bridge.
 @MainActor
@@ -208,6 +209,15 @@ public final class PCM16AudioPlayer: ReplyAudioPlaying {
 
 /// Smooth stall recovery (#825): the player holds a reply whose queue ran dry until it catches up.
 extension PCM16AudioPlayer {
+    func endSegmentPause(at deadline: ContinuousClock.Instant, waitingForAudio: Bool, held: Bool) {
+        guard segmentPaused else { return }
+        segmentPaused = false
+        guard !held else { return } // User/capture/interruption holds remain authoritative.
+        let catchingUp = playout.endSegmentPause(at: deadline, waitingForAudio: waitingForAudio, gapMeter: &gapMeter)
+        if catchingUp { onCatchingUpChanged?(true) }
+        if !catchingUp, engine.isRunning { node.play() }
+    }
+
     /// One buffer finished playing. A queue run dry before the reply's final audio holds playback, rather than
     /// letting each late frame play the moment it lands, which is the stutter.
     fileprivate func bufferPlayed(_ duration: Duration, generation: UInt, segmentEnd: Bool) {
@@ -337,6 +347,16 @@ enum PCM16BufferConverter {
 
 // Segment-aware accounting is pure so synthetic tests need no audio engine.
 extension ReplyPlayoutBuffer {
+    mutating func endSegmentPause(
+        at deadline: ContinuousClock.Instant, waitingForAudio: Bool, gapMeter: inout PlayoutGapMeter
+    ) -> Bool {
+        gapMeter.resumed(at: deadline)
+        guard waitingForAudio else { return false }
+        // At the deadline the empty queue is a genuine underrun, just like a normal buffer running dry.
+        _ = queued([.zero], startsReply: false, endsReply: false)
+        return played(.zero)
+    }
+
     mutating func queued(_ durations: [Duration], payload: AudioPayload) -> Bool {
         // A short segment tail must release an existing catch-up hold: the controller cannot queue
         // the next segment until this one plays. It is a batch boundary, not a completed reply.

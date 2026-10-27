@@ -49,8 +49,9 @@ final class IdleRig {
     }
 }
 
-final class IdlePlayer: ReplyAudioPlaying, ReplySegmentDiscardReporting {
+final class IdlePlayer: ReplyAudioPlaying, ReplySegmentDiscardReporting, ReplySegmentPauseEnding {
     var onSegmentDiscarded: (@MainActor () -> Void)?
+    var endedSegmentPauses: [(deadline: ContinuousClock.Instant, waiting: Bool, held: Bool)] = []
     var scheduled: [AudioPayload] = []
     let scheduledBuffers = AsyncStream<AudioPayload>.makeStream(bufferingPolicy: .bufferingNewest(1))
     var cancelCount = 0
@@ -67,6 +68,9 @@ final class IdlePlayer: ReplyAudioPlaying, ReplySegmentDiscardReporting {
     func setMuted(_ muted: Bool) {}
     func replaceQueue(with payloads: [AudioPayload], onPlayed: (@MainActor @Sendable () -> Void)?) {}
     func completeReply() { completions.removeFirst()() }
+    func endSegmentPause(at deadline: ContinuousClock.Instant, waitingForAudio: Bool, held: Bool) {
+        endedSegmentPauses.append((deadline, waitingForAudio, held))
+    }
 }
 
 func idleReply() -> ReplyDescriptor {

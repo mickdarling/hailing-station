@@ -69,4 +69,37 @@ import Testing
         defaults.set(["pauseAfterSegment": "invalid"], forKey: ReplySegmentSettings.defaultsKey)
         #expect(ReplySegmentSettings.saved(in: defaults) == ReplySegmentSettings())
     }
+
+    @Test func malformedValuesFallBackIndependently() throws {
+        let defaults = try #require(SegmentSettingsDefaults(suiteName: "ReplySegmentSettingsTests-types"))
+        let invalid: [Any] = [true, false, NSNumber(value: true), NSNumber(value: false),
+                              "1", "0.5", "invalid", NSNull(), [1.0], ["nested": 1.0],
+                              [NSNull()], ["nested": NSNull()]]
+        for value in invalid {
+            defaults.values = ["pauseAfterSegment": value, "sustainedOnset": NSNumber(value: 0.7)]
+            #expect(ReplySegmentSettings.saved(in: defaults) == ReplySegmentSettings(sustainedOnset: 0.7))
+            defaults.values = ["pauseAfterSegment": 2.5, "sustainedOnset": value]
+            #expect(ReplySegmentSettings.saved(in: defaults) == ReplySegmentSettings(pauseAfterSegment: 2.5))
+        }
+        defaults.values = ["pauseAfterSegment": NSNumber(value: 2), "sustainedOnset": 0.5]
+        #expect(ReplySegmentSettings.saved(in: defaults) == ReplySegmentSettings(
+            pauseAfterSegment: 2, sustainedOnset: 0.5
+        ))
+    }
+
+    @Test(arguments: [true, false]) func persistedBooleansFallBackIndependently(_ value: Bool) throws {
+        let suite = "ReplySegmentSettingsTests-\(UUID())"
+        let defaults = try #require(UserDefaults(suiteName: suite))
+        defer { defaults.removePersistentDomain(forName: suite) }
+        defaults.set(["pauseAfterSegment": value, "sustainedOnset": 0.7], forKey: ReplySegmentSettings.defaultsKey)
+        #expect(ReplySegmentSettings.saved(in: defaults) == ReplySegmentSettings(sustainedOnset: 0.7))
+        defaults.set(["pauseAfterSegment": 2.5, "sustainedOnset": value], forKey: ReplySegmentSettings.defaultsKey)
+        #expect(ReplySegmentSettings.saved(in: defaults) == ReplySegmentSettings(pauseAfterSegment: 2.5))
+    }
+}
+
+// UserDefaults cannot persist NSNull; inject malformed dictionaries through the same read boundary.
+private final class SegmentSettingsDefaults: UserDefaults, @unchecked Sendable {
+    var values: [String: Any] = [:]
+    override func dictionary(forKey defaultName: String) -> [String: Any]? { values }
 }

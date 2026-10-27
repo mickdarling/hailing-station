@@ -1,4 +1,5 @@
 public import Foundation
+import CoreFoundation
 import HailProtocol
 
 /// Device settings, v1, pending Mick. Seconds; no spoken "go on" resume in v1.
@@ -19,9 +20,16 @@ public struct ReplySegmentSettings: Equatable, Sendable {
 
     public static func saved(in defaults: UserDefaults = .standard) -> Self {
         let values = defaults.dictionary(forKey: defaultsKey)
-        return Self(pauseAfterSegment: values?["pauseAfterSegment"] as? Double ?? 1.5,
-                    sustainedOnset: values?["sustainedOnset"] as? Double ?? 0.3,
-                    onsetThresholdDBFS: values?["onsetThresholdDBFS"] as? Double ?? -35)
+        return Self(pauseAfterSegment: number(values?["pauseAfterSegment"]) ?? 1.5,
+                    sustainedOnset: number(values?["sustainedOnset"]) ?? 0.3,
+                    onsetThresholdDBFS: number(values?["onsetThresholdDBFS"]) ?? -35)
+    }
+
+    private static func number(_ value: Any?) -> Double? {
+        guard let number = value as? NSNumber,
+              CFGetTypeID(number) != CFBooleanGetTypeID(),
+              !["c", "B"].contains(String(cString: number.objCType)) else { return nil }
+        return number.doubleValue
     }
 
     public func save(in defaults: UserDefaults = .standard) {
@@ -44,6 +52,11 @@ public struct ReplySegmentPause: Equatable, Sendable {
 @MainActor
 protocol ReplySegmentDiscardReporting: AnyObject {
     var onSegmentDiscarded: (@MainActor () -> Void)? { get set }
+}
+
+@MainActor
+protocol ReplySegmentPauseEnding: AnyObject {
+    func endSegmentPause(at deadline: ContinuousClock.Instant, waitingForAudio: Bool, held: Bool)
 }
 
 extension ReplyPlaybackController {
@@ -84,11 +97,18 @@ extension ReplyPlaybackController {
         playedSegmentEnds = min(playedSegmentEnds + 1, ReplySegments.maxSegmentEnds)
         segmentPause = ReplySegmentPause(endpointID: key.endpointID, replyID: key.replyID, segment: playedSegmentEnds)
         syncIdleHold()
-        cancelSegmentPause = idleScheduler(.seconds(segmentSettings.pauseAfterSegment)) { [weak self] in
+        let delay = Duration.seconds(segmentSettings.pauseAfterSegment)
+        let deadline = idleNow() + delay
+        cancelSegmentPause = idleScheduler(delay) { [weak self] in
             guard let self, generation == playbackGeneration, segmentBoundary == key else { return }
             segmentPause = nil
             segmentBoundary = nil
             cancelSegmentPause = nil
+            let stream = streams[key]
+            let waiting = stream.flatMap { $0.segments[$0.nextSequence] } == nil
+            let ending = player as? any ReplySegmentPauseEnding
+                ?? (player as? EchoGuardedReplyPlayer)?.gapReporter as? any ReplySegmentPauseEnding
+            ending?.endSegmentPause(at: deadline, waitingForAudio: waiting, held: isIdleHeld)
             // Intentional silence is excluded from both the buffered-audio and frame-arrival deadlines.
             idleWatch.lastFrameAt = idleNow()
             syncIdleHold()
