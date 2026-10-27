@@ -541,3 +541,29 @@ methods to keep the streamer type below the warning threshold. No blank lines
 were deleted to meet a limit, and no suppression was added. `git diff --check`
 passes. CLT linker debug-module-path warnings remain the previously documented
 scratch-path warnings; Swift source warnings are treated as errors.
+
+### R13 supplementary send-refusal ordering
+
+The first R13 implementation passed three full R2 repetitions (74 tests in
+27 suites each), but path review found that a send can observe the connection's
+stored refusal before the wire-refusal callback reaches the controller. The
+send-error path now performs the same exact-pong check before reporting its
+error, through the shared `acceptConfirmedResume` store helper.
+
+`sendRefusalAfterAcceptancePongUsesOrdinaryStopPathWhileWaiterIsHeld` holds the
+post-segment ping's send completion after forwarding it. It waits for the
+matching pong to finish the ordered receive callback, then injects a synthetic
+remote audio-send refusal while the confirmation sender is still held. This
+forces the alternate delivery path without timing assumptions. On the first
+R13 implementation, before the shared-helper fix, it exited 1 with **1 test in
+1 suite, 3 failed assertions, 2.178 seconds**. Original assertion locations in
+`AmbientReconnectAcceptanceSendTests.swift` are line 29 (two notice deliveries
+instead of one), line 30 (replacement incorrectly set), and line 31 (ordinary
+stop callback suppressed). The raw log is
+`<scratch>/acceptance-send-fail-before.log`. No generated identifiers are copied
+from that log. The fixture releases the held ping during teardown in both runs.
+
+The refined R1 warnings-as-errors production and test builds passed. The same
+targeted selection, now including the held-ping send-refusal regression, passed
+**17 tests in 9 suites, 35.838 seconds**. All original probe assertions and
+both refusal delivery paths pass together.
