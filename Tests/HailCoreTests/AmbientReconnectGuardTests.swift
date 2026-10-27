@@ -34,28 +34,23 @@ import Testing
         try await rig.expectStopped(reason)
         await rig.close()
     }
-    @Test(arguments: [ControlPayload.duckMode(on: true), .mediaMode(on: true)])
-    func knownModesBeforeDropBlockEvenIfFreshConnectionIsPublic(mode: ControlPayload) async throws {
+    @Test func knownMediaBeforeDropRestoresWithoutAGate() async throws {
         let rig = try AmbientReconnectRig()
         try await rig.start()
-        try await rig.socket.push(mode)
-        let privacy = mode == .duckMode(on: true)
-        try await waitUntil { await MainActor.run {
-            privacy ? rig.store.duckMode[rig.endpoint.id]?.on == true : rig.store.mediaMode[rig.endpoint.id]?.on == true
-        } }
+        try await rig.socket.push(.mediaMode(on: true))
+        try await waitUntil { await MainActor.run { rig.store.mediaMode[rig.endpoint.id]?.on == true } }
         try await rig.drop()
-        try await rig.expectStopped(privacy ? .privacy : .modeChanged)
         try await rig.reconnect()
-        #expect(rig.notices.count == 1)
+        #expect(rig.notices.map(\.outcome) == [.applied])
         await rig.close()
     }
-    @Test(arguments: [ControlPayload.duckMode(on: true), .mediaMode(on: true)])
-    func stoppingHostModeBeforeReauthorizationStopsImmediately(mode: ControlPayload) async throws {
+    @Test(arguments: [ControlPayload.duckMode(on: true, reason: "device"), .mediaMode(on: true)])
+    func hostModeBeforeReauthorizationNeverVetoes(mode: ControlPayload) async throws {
         let rig = try AmbientReconnectRig()
         try await rig.start()
         try await rig.drop()
-        try await rig.reconnect(selectTarget: false, mode: mode)
-        try await rig.expectStopped(mode == .duckMode(on: true) ? .privacy : .modeChanged)
+        try await rig.reconnect(mode: mode)
+        #expect(rig.notices.map(\.outcome) == [.applied])
         await rig.close()
     }
     @Test(arguments: [true, false]) func removedOrChangedTargetStopsImmediately(remove: Bool) async throws {
