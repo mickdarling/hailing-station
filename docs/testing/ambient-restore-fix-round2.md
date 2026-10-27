@@ -432,3 +432,57 @@ single requested fix commit already exists, applying that correction without
 rewriting history needs a coordinator exception for a second R0 commit followed
 by normal merges into R1/R2. That exception is pending; functional verification
 is complete, but strict lint is not yet complete on the three branch heads.
+
+## R10: host vetoes belong to the current owner run
+
+The previous restored binding survives a stop/start so R2 can inspect the applied
+restore. It must not let removal of that earlier host latch a veto in a fresh run
+on another host. `veto(_:host:)` now matches the controller's current binding, or
+the retained binding only while a restore is pending. The retained binding remains
+available to R2's applied-restore acceptance. Owner stop/off, privacy taps,
+target/endpoint changes or removal, explicit disconnect, and mode changes retain
+their existing current-run veto paths.
+
+The review probe is committed as
+`AmbientReconnectPreviousHostTests.removingPriorRestoredHostMustNotVetoCurrentHostsRecovery(removePrevious:)`.
+Its two arguments are unchanged: `false` keeps host A configured as the control;
+`true` removes A after an applied restore on A, owner stop, and a fresh start on B.
+Both require B's later transport drop to keep capture and arm recovery. Helpers
+only split setup for strict lint; neither assertion is weakened.
+
+Before changing production code, this test ran against supplied R1 head
+`4fa30fbd655708dc2fa9b6f21607aaf8af189c93`. It exited 1 with **1 test, 2 cases,
+2 failed assertions**, both for `removePrevious: true`; the control had no failure.
+The exact failing assertion lines in `AmbientReconnectPreviousHostTests.swift`
+were:
+
+```text
+26:9: Expectation failed: (rig.controller.reconnect → HailCore.AmbientListeningReconnect).isPending → false
+28:9: Expectation failed: (rig.controller → HailCore.AmbientListeningController).isListening → false
+```
+
+The assertion messages were “A stale previous-host recovery binding latched an
+unrelated endpoint-removal veto” and “Current host's transport drop must retain
+capture after only the old host was removed”. The uncommitted-build-products log
+is `<scratch>/r1-fail-before.log`; it reports 4.108 seconds of test execution.
+
+All R10 Swift phases use the common Testing flags above, `taskpolicy -b`,
+`-j 4 -Xswiftc -j1`, offline resolution, and `<scratch>/build`. A process-group
+kill trap covers interruption and a 590-second phase timeout. Phases run
+sequentially with at most four workers. Each new branch head gets both
+`build -Xswiftc -warnings-as-errors` and
+`build --build-tests -Xswiftc -warnings-as-errors`. The R1 pass-after selection is
+`test --skip-build --disable-xctest --no-parallel --filter AmbientReconnectPreviousHost
+--skip DiagnosticReplyComposition`. The R2 head gets three serial
+`AmbientReconnect` selections plus one serial broad selection matching
+`Ambient|HostConnection|Listening|Reconnect|Notice|AudioGate|TapCapture|HeardTurn|Privacy|Segment`,
+partitioned into HailCoreTests and the remaining targets to bound each phase.
+Every test command skips DiagnosticReplyComposition. Results are reported with
+the delivered heads; these remain synthetic package checks, with independent
+exact-head review and physical-device proof pending.
+
+Manual strict-warning lint checks cover the new test's file/type/function length,
+complexity, nesting, parameter count, identifiers and 120-column code lines. The
+veto predicate adds one boolean guard within the existing thresholds. No blank
+line or explanatory comment is removed, and no lint suppression is added.
+R0 remains three production files, R1 four, and R2 two, at their stack boundaries.
