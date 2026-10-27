@@ -660,9 +660,15 @@ drop; physical haptic delivery is not claimed by these package tests.
 
 The original regression now requires no pending restore and exactly one applied
 notice before the refusal and after sender teardown. Its two original refusal
-assertions remain intact. `acceptanceAndLateSendCompletionPublishOneAppliedNotice`
-separately keeps listening active, releases the held sender, waits for a following
-audio frame to prove that continuation and queue progressed, and requires the
-same single applied notice. Identity matching and the pre-acceptance refusal
+assertions remain intact. `acceptanceAndSendCompletionPublishOneNoticeAndHapticHook`
+keeps listening active and explicitly checks both orders: matching pong first
+with the sender held, and sender completion first with acceptance still pending.
+It counts exactly one notice/haptic callback after each step and requires the
+same single applied notice ID. A following audio frame proves the held sender
+passed transportSent and resumed its queue.
+`settlingNeverChangesPrivacyOrSendsPrivacy` runs both orders separately, comparing
+the complete `privacyLocal` and `duckMode` dictionaries across each step and
+rejecting every outgoing `set_privacy` frame. The host explicitly confirms
+privacy off before settling; settling cannot change that state. Identity matching and the pre-acceptance refusal
 replacement path are unchanged. No protocol, app, or additional production file
 is changed by this fix.
