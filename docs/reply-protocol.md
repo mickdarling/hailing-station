@@ -192,8 +192,10 @@ P4b1 retains only scalar detection state, clears it at window close, retains no 
 once per window. It does not call yield, release masks, send frames or advertise. Diagnostics are counts only:
 onsets, onsets without an admitted ambient request within N=5 s, and analysed-level/floor histograms with buckets
 <−60, [−60,−45), [−45,−35), [−35,−25), [−25,0] dBFS. The injected clock expires diagnostic deadlines at 5 s;
-P4b2 must supply the actual admission hook. A timely request covers earlier pending onsets; late requests cannot
-remove expired counts. This detects energy from any sound, not an identified owner or verified speech.
+P4b2 must supply the actual admission hook and reuse an opaque scope token per endpoint/connection generation.
+A timely request satisfies only the oldest pending onset in that scope; late requests cannot remove expired
+counts. Pending entries are capped at 16, with overflow dropping the oldest as missed. Tokens are never logged
+or persisted. This detects energy from any sound, not an identified owner or verified speech.
 
 Still proposed for P4b2: fresh window/privacy/ambient wiring, immediate reply-scoped mask release, capability-gated
 transport, device hello advertising, actual ambient-request observation and segmented bulk replay. P5 adds the

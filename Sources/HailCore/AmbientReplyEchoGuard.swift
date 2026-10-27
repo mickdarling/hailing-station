@@ -414,17 +414,28 @@ private struct ReplySegmentOnsetTap: Sendable {
     let onOnset: @Sendable () -> Void
 }
 
+/// Opaque, content-free correlation token. Callers retain one per endpoint/connection generation and
+/// create a fresh token on reconnect. The guard only compares tokens; it never logs or persists them.
+public struct ReplySegmentAdmissionScope: Hashable, Sendable {
+    private let token: UUID
+
+    public init() { token = UUID() }
+}
+
 /// Fresh capture-time authorization. P4b2 owns opening/closing the played P4a window; nil is closed.
 public struct ReplySegmentOnsetInput: Sendable {
+    public let scope: ReplySegmentAdmissionScope
     public let window: Range<ContinuousClock.Instant>?
     public let ambientListening: Bool
     public let privacyOn: Bool
     public let settings: ReplySegmentSettings
 
     public init(
-        window: Range<ContinuousClock.Instant>?, ambientListening: Bool, privacyOn: Bool,
+        scope: ReplySegmentAdmissionScope, window: Range<ContinuousClock.Instant>?,
+        ambientListening: Bool, privacyOn: Bool,
         settings: ReplySegmentSettings = .init()
     ) {
+        self.scope = scope
         self.window = window
         self.ambientListening = ambientListening
         self.privacyOn = privacyOn
@@ -451,6 +462,7 @@ public struct ReplyOnsetDiagnostics: Sendable {
 
 /// Scalar detector state only: no PCM, transcripts, reply identities or pre-roll survive an analyse call.
 private struct ReplyOnsetWindow {
+    let scope: ReplySegmentAdmissionScope
     let range: Range<ContinuousClock.Instant>
     var lastEnd: ContinuousClock.Instant
     let sampleRate: Double
@@ -463,16 +475,23 @@ private struct ReplyOnsetWindow {
 
 /// Inert energy gate, v1 pending Mick. It never yields, unmasks, sends or advertises.
 public final class ReplySegmentOnsetGate: Sendable {
+    /// Overflow counts the oldest pending entry as missed, even before its five-second deadline.
+    public static let maximumPendingAdmissions = 16
+
+    private struct PendingAdmission {
+        let scope: ReplySegmentAdmissionScope
+        let deadline: ContinuousClock.Instant
+    }
+
     private struct State {
         var window: ReplyOnsetWindow?
         var diagnostics = ReplyOnsetDiagnostics()
-        // Diagnostic timestamps only, separate from disposable detection state. Expired entries are pruned
-        // on every analysis/read/admission; no audio or identities are kept here.
-        var pending: [ContinuousClock.Instant] = []
+        // Only opaque tokens and deadlines, separate from disposable detection state. No audio or identities.
+        var pending: [PendingAdmission] = []
 
         mutating func expire(at instant: ContinuousClock.Instant) {
-            diagnostics.withoutAdmittedRequest &+= UInt64(pending.count { instant >= $0 })
-            pending.removeAll { instant >= $0 }
+            diagnostics.withoutAdmittedRequest &+= UInt64(pending.count { instant >= $0.deadline })
+            pending.removeAll { instant >= $0.deadline }
         }
     }
 
@@ -509,12 +528,15 @@ public final class ReplySegmentOnsetGate: Sendable {
     }
 
     /// P4b2 supplies a genuinely admitted ambient request, not a capture/transcription attempt.
-    /// One request satisfies all preceding onsets still within their individual five-second deadlines.
-    public func ambientRequestAdmitted() {
+    /// Satisfies only the oldest pending onset in this scope, before its five-second deadline.
+    /// Unmatched admissions are a no-op; callers must reuse the capture-time endpoint/connection token.
+    public func ambientRequestAdmitted(in scope: ReplySegmentAdmissionScope) {
         let instant = now()
         state.withLock { state in
             state.expire(at: instant)
-            state.pending.removeAll()
+            if let index = state.pending.firstIndex(where: { $0.scope == scope }) {
+                state.pending.remove(at: index)
+            }
         }
     }
 
@@ -531,11 +553,13 @@ public final class ReplySegmentOnsetGate: Sendable {
             let seconds = Double(buffer.frameLength) / buffer.format.sampleRate
             let start = instant.advanced(by: .seconds(-seconds))
             var window = state.window ?? ReplyOnsetWindow(
-                range: range, lastEnd: max(start, range.lowerBound), sampleRate: buffer.format.sampleRate
+                scope: input.scope, range: range, lastEnd: max(start, range.lowerBound),
+                sampleRate: buffer.format.sampleRate
             )
-            if window.range != range || window.sampleRate != buffer.format.sampleRate {
+            if window.scope != input.scope || window.range != range || window.sampleRate != buffer.format.sampleRate {
                 window = ReplyOnsetWindow(
-                    range: range, lastEnd: max(start, range.lowerBound), sampleRate: buffer.format.sampleRate
+                    scope: input.scope, range: range, lastEnd: max(start, range.lowerBound),
+                    sampleRate: buffer.format.sampleRate
                 )
             }
             window.sustainedOnset = .seconds(input.settings.sustainedOnset)
@@ -604,7 +628,11 @@ private extension ReplySegmentOnsetGate {
     private func recordOnset(window: inout ReplyOnsetWindow, state: inout State) -> Bool {
         window.fired = true
         state.diagnostics.onsets &+= 1
-        state.pending.append(window.lastEnd.advanced(by: .seconds(5)))
+        if state.pending.count == Self.maximumPendingAdmissions {
+            state.pending.removeFirst()
+            state.diagnostics.withoutAdmittedRequest &+= 1
+        }
+        state.pending.append(PendingAdmission(scope: window.scope, deadline: window.lastEnd.advanced(by: .seconds(5))))
         return true
     }
 
