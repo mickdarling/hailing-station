@@ -366,3 +366,61 @@ complexity, nesting, parameter count, identifiers and 120-column code lines. The
 veto predicate adds one boolean guard within the existing thresholds. No blank
 line or explanatory comment is removed, and no lint suppression is added.
 R0 remains three production files, R1 four, and R2 two, at their stack boundaries.
+
+## R12: mutation strength for the latched privacy veto (finding 3)
+
+The supplied per-finding mutation review found three vacuous tests on the R11
+stack: the failed-owner privacy tap probe, plus the app authorization and app
+lifetime suites. The privacy probe tapped only after F3 had reported transport
+loss and armed recovery. That tap ended pending recovery immediately, so the
+other host's later confirmation could not affect the outcome. The two app suites
+copied their app predicates and therefore could not detect mutations to the app.
+
+The R12 privacy probe fails the owner's privacy control send while the connection
+is ready and capture is listening. A synthetic `HostConnectionFailure.remote`
+control refusal leaves the receive loop healthy; unlike a transport error, it
+does not invoke F3's loss observer. Assertions require the failed switch request
+to be settled, no pending restore or notice, and continued listening both before
+and after the other host confirms its own privacy switch. Only then does the
+bound host drop and reconnect. The probe requires a privacy-blocked restore,
+no replacement PCM, and stopped listening. The existing owner-start tail still
+proves that a fresh owner start clears the veto and permits a later restore.
+A cleanup guard also lets a mutant reach that tail after assertion failures,
+without turning its unexpected continued listening into a wait timeout.
+
+This R1 increment changes tests and this evidence document only. Its four
+production files relative to unchanged R0 are still Capture.swift,
+AmbientAudioStreamer.swift, AmbientListeningReconnect.swift, and
+Transport/HostConnectionStore.swift. No production mutation is committed.
+
+### Mutation A: fail before, pass after
+
+The temporary mutation added `clearVetoForMutation() { veto = nil }` to the
+coordinator and called it on every accepted `duck_mode` in the store, regardless
+of host. The targeted command was `test -Xswiftc -warnings-as-errors
+--disable-xctest --no-parallel
+--filter failedOwnerPrivacyTapMustNotBeClearedByAnotherHostsConfirmation
+--skip DiagnosticReplyComposition`, with the common flags above. It exited 1:
+**1 test in 1 suite, 4 failed assertions, 3.068 s**. Exact assertion lines:
+
+```text
+AmbientReconnectReviewVetoTests.swift:23:9: Expectation failed: (rig.notices.last?.reason → nil) == .privacy
+AmbientReconnectReviewVetoTests.swift:25:9: Expectation failed: !((rig.controller → HailCore.AmbientListeningController).isListening → true → true)
+AmbientReconnectReviewVetoTests.swift:27:9: Expectation failed: frames.allSatisfy { if case .audio = $0.payload { return false }; return true }
+AmbientReconnectReviewVetoTests.swift:34:9: Expectation failed: (rig.notices.map(\.outcome) → [HailCore.AmbientListeningReconnect.Outcome.applied, HailCore.AmbientListeningReconnect.Outcome.applied]) == ([.blocked, .applied] → [HailCore.AmbientListeningReconnect.Outcome.blocked, HailCore.AmbientListeningReconnect.Outcome.applied])
+```
+
+Both production files were restored byte-for-byte before the pass-after run.
+The raw mutation and restored logs are `r1-mutation-A.log` and
+`r1-restored-A.log` in `hs-904-R12-scratch`; no build products are committed.
+
+The restored test passed: **1 test in 1 suite, 2.813 s**. Both required R1 head builds use warnings-as-errors,
+including `build --build-tests`. Every R12 phase waits on the supplied literal
+`pgrep -f "swift-build|swift-test|swift-frontend"` gate at 60-second intervals
+before launching Swift. The scratch Python runner applies `taskpolicy -b`,
+`-j 4 -Xswiftc -j1`, offline resolution, all common Testing flags, and process-group
+TERM/KILL cleanup on interruption or the 590-second execution limit. The initial
+build/test compilation emits CLT linker debug-module-path warnings, as in earlier
+rounds; no Swift source warnings are suppressed. Manual strict-warning lint
+review and `git diff --check` cover the changed test. The iOS app cannot be built
+on this CLT-only VM; package checks remain synthetic.

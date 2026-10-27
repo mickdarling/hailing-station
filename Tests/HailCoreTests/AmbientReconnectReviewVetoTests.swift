@@ -7,17 +7,18 @@ import Testing
 @Suite(.serialized) struct AmbientReconnectReviewVetoTests {
     @Test func failedOwnerPrivacyTapMustNotBeClearedByAnotherHostsConfirmation() async throws {
         let rig = try AmbientReconnectRig()
-        let closing = AmbientClosingSocket(base: rig.socket)
-        rig.transport = closing
+        rig.transport = AmbientFailingPrivacySocket(base: rig.socket)
         try await rig.start()
-        await rig.socket.fail()
-        try await waitUntil { await closing.gate.isWaiting() }
-        #expect(rig.controller.reconnect.isPending) // Transport loss is reported before the held close.
-        try? await rig.store.setPrivacy(on: false, host: rig.endpoint.id)
+        do {
+            try await rig.store.setPrivacy(on: false, host: rig.endpoint.id)
+            Issue.record("The owner's privacy send must fail while the link is healthy")
+        } catch { #expect(error as? HostConnectionFailure == .remote("synthetic privacy refusal")) }
         #expect(rig.store.privacyLocal[rig.endpoint.id]?.request == nil)
+        #expect(rig.store.snapshots[rig.endpoint.id]?.state == .ready)
+        #expect(rig.controller.isListening && !rig.controller.reconnect.isPending && rig.notices.isEmpty)
         let other = try await confirmOtherHostPrivacy(rig)
-        await closing.gate.fire()
-        try await waitUntil { await rig.retry.isWaiting() }
+        #expect(rig.controller.isListening && !rig.controller.reconnect.isPending && rig.notices.isEmpty)
+        try await rig.drop()
         try await rig.reconnect()
         #expect(rig.notices.last?.reason == .privacy,
                 "Another host's confirmation cleared the failed owner-tap veto without an owner start")
@@ -25,6 +26,7 @@ import Testing
         let frames = try await rig.socket.sentFrames()
         #expect(frames.allSatisfy { if case .audio = $0.payload { return false }; return true },
                 "Resumed PCM reached the replacement host after the failed owner tap")
+        if rig.controller.isOn { await rig.controller.turnOff() } // Let a mutant reach the owner-start tail too.
         try await waitUntil { await MainActor.run { !rig.controller.isOn } }
         await rig.controller.turnOn(for: try rig.currentBinding()) // An owner start alone clears the veto.
         try await rig.drop()
@@ -70,4 +72,18 @@ import Testing
         } }
         return other
     }
+}
+
+/// Refuse only the control send: the receive loop and active capture stay healthy until the explicit drop.
+private actor AmbientFailingPrivacySocket: WebSocketTransport {
+    let base: ScriptedSocket
+    init(base: ScriptedSocket) { self.base = base }
+    func send(_ data: Data) async throws {
+        if try FrameCoding.decode(data).payload == .control(.setPrivacy(on: false)) {
+            throw HostConnectionFailure.remote("synthetic privacy refusal")
+        }
+        await base.send(data)
+    }
+    func receive() async throws -> Data { try await base.receive() }
+    func close() async { await base.close() }
 }
