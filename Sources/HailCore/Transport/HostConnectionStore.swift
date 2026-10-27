@@ -311,6 +311,9 @@ extension HostConnectionStore {
         _ code: ErrorCode, message: String, turn: UUID?, from endpointID: HostEndpoint.Identifier
     ) {
         if code == .voiceRouteRefused { conversation.noteHeardRefused(turn, endpointID: endpointID) }
+        if let snapshot = snapshots[endpointID] {
+            ambientController?.reconnect.privacyConfirmation.receive(on: false, snapshot: snapshot)
+        }
         // The one chat line and the one announcement for every request refusal, whatever its code.
         conversation.noteRefusal(message, endpointID: endpointID,
                                  targetID: selectedTargets[endpointID] ?? "")
@@ -327,12 +330,19 @@ extension HostConnectionStore {
     private func receiveModeNotice(_ event: HostReplyEvent) -> Bool {
         switch event.frame.payload {
         case .control(.mediaMode(let on, let reason, let expires)):
-            ambientController?.reconnect.hostMode(on: on, host: event.endpointID, privacy: false)
             mediaMode[event.endpointID] = MediaModeStatus(on: on, reason: reason, expiresMilliseconds: expires)
         case .control(.duckMode(let on, let reason, let expires)):
-            ambientController?.reconnect.hostMode(on: on, host: event.endpointID, privacy: true)
             duckMode[event.endpointID] = DuckModeStatus(on: on, reason: reason, expiresMilliseconds: expires)
+            if privacyLocal[event.endpointID]?.request?.on == on,
+               !on || duckMode[event.endpointID]?.isOn() == true {
+                ambientController?.reconnect.ownerPrivacyConfirmed()
+            }
             privacyLocal[event.endpointID] = nil
+            if let snapshot = snapshots[event.endpointID] {
+                ambientController?.reconnect.privacyConfirmation.receive(
+                    on: duckMode[event.endpointID]?.isOn() == true, snapshot: snapshot
+                )
+            }
         default:
             return false
         }
@@ -472,15 +482,27 @@ extension HostConnectionStore {
     /// host's `duck_mode` notice arrives; the tap itself never changes the state shown.
     public func setPrivacy(on: Bool, host id: HostEndpoint.Identifier) async throws {
         ambientController?.reconnect.veto(.privacy, host: id)
-        guard let connection = connections[id] else { throw HostConnectionFailure.notReady }
         let request = PrivacyRequest(on: on)
         privacyLocal[id, default: PrivacySwitchLocal()].request = request
         do {
-            try await connection.sendSetPrivacy(on: on)
+            try await sendPrivacy(on: on, host: id)
         } catch {
             if privacyLocal[id]?.request == request { privacyLocal[id]?.request = nil }
             throw error
         }
+    }
+
+    /// Restore-originated reassertion uses the same control send, without an owner tap or switch request.
+    func reassertPrivacy(for binding: AmbientAudioBinding) async throws {
+        guard ambientBinding(host: binding.hostID, targetID: binding.targetID) == binding else {
+            throw HostConnectionFailure.notReady
+        }
+        try await sendPrivacy(on: true, host: binding.hostID)
+    }
+
+    private func sendPrivacy(on: Bool, host id: HostEndpoint.Identifier) async throws {
+        guard let connection = connections[id] else { throw HostConnectionFailure.notReady }
+        try await connection.sendSetPrivacy(on: on)
     }
 }
 
@@ -1194,5 +1216,65 @@ extension AmbientListeningController {
     }
     static func isTransportError(_ error: any Error) -> Bool {
         !(error is HostConnectionFailure) || (error as? HostConnectionFailure) == .notReady
+    }
+}
+
+/// Device-side confirmation for the retained capture. A host notice is never an owner veto.
+@MainActor
+final class AmbientRestorePrivacy {
+    var sleep: @Sendable (Duration) async throws -> Void = { try await Task.sleep(for: $0) }
+    var now: @Sendable () -> ContinuousClock.Instant = { ContinuousClock().now }
+    private var waiting: AmbientAudioBinding?
+    private var began: ContinuousClock.Instant?
+    private var requested = false
+    private var completion: (@MainActor (Bool) -> Void)?
+    private var timeout: Task<Void, Never>?
+    private var send: Task<Void, Never>?
+
+    func begin(_ binding: AmbientAudioBinding, store: HostConnectionStore,
+               completion: @escaping @MainActor (Bool) -> Void) {
+        guard waiting != binding else { return }
+        cancel()
+        waiting = binding
+        began = now()
+        self.completion = completion
+        // Today's hosts ignore no-stream privacy: fail closed in 5 s. Private restoration depends on a host
+        // per-connection pre-arm that confirms duck_mode on and starts the next stream private (or its parked state).
+        timeout = Task { [weak self, sleep] in
+            guard (try? await sleep(.seconds(5))) != nil, !Task.isCancelled else { return }
+            self?.finish(false, binding: binding)
+        }
+        send = Task { [weak self, weak store] in
+            guard !Task.isCancelled, self?.waiting == binding else { return }
+            self?.requested = true
+            do {
+                guard let store else { throw CancellationError() }
+                try await store.reassertPrivacy(for: binding)
+            } catch { self?.finish(false, binding: binding) }
+        }
+    }
+
+    func receive(on: Bool, snapshot: HostConnectionSnapshot) {
+        guard requested, let waiting, waiting.hostID == snapshot.id, snapshot.state == .ready,
+              waiting.connectionGeneration == snapshot.connectionGeneration, let began else { return }
+        finish(on && now() - began < .seconds(5), binding: waiting)
+    }
+
+    private func finish(_ confirmed: Bool, binding: AmbientAudioBinding) {
+        guard waiting == binding else { return }
+        let completed = completion
+        cancel()
+        completed?(confirmed)
+    }
+
+    func cancel() {
+        waiting = nil
+        requested = false
+        began = nil
+        completion = nil
+        timeout?.cancel()
+        timeout = nil
+        send?.cancel()
+        send = nil
     }
 }

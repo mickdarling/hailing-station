@@ -154,7 +154,8 @@ extension AmbientReconnectRig {
         }.first
     }
 
-    func expectStopped(_ reason: AmbientListeningReconnect.Reason) async throws {
+    func expectStopped(_ reason: AmbientListeningReconnect.Reason,
+                       outcome: AmbientListeningReconnect.Outcome = .blocked) async throws {
         try await waitUntil {
             await MainActor.run { !self.notices.isEmpty && !self.controller.isOn && self.released == 1 }
         }
@@ -162,7 +163,7 @@ extension AmbientReconnectRig {
         #expect(!controller.isOn)
         #expect(capture.startCount == 1)
         #expect(notices.count == 1)
-        #expect(notices.last?.outcome == .blocked)
+        #expect(notices.last?.outcome == outcome)
         #expect(notices.last?.reason == reason)
         #expect(notices.last?.text.contains("tap to resume") == true)
         #expect(unexpected.isEmpty) // Reconnect outcomes do not also emit an ordinary stop notification.
