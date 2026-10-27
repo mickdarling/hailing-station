@@ -151,9 +151,16 @@ actor AmbientAudioSendQueue {
     private var draining = false
     private var idleWaiters: [CheckedContinuation<Void, Never>] = []
     private(set) var droppedCount = 0
-    private(set) var failure: (any Error)?
+    private var sendFailure: (any Error)?
+    private let admission: AmbientSendAdmission?
+    var failure: (any Error)? {
+        if let admission, !admission.accepts() { return HostConnectionFailure.notReady }
+        return sendFailure
+    }
 
-    init(maxPending: Int, send: @escaping Send, onFailure: @escaping FailureHandler) {
+    init(maxPending: Int, send: @escaping Send, onFailure: @escaping FailureHandler,
+         admission: AmbientSendAdmission? = nil) {
+        self.admission = admission
         self.maxPending = maxPending
         self.send = send
         self.onFailure = onFailure
@@ -186,9 +193,12 @@ actor AmbientAudioSendQueue {
         while failure == nil, !pending.isEmpty {
             let next = pending.removeFirst()
             do {
-                try await send(next)
+                try await AmbientSendAdmission.$current.withValue(admission) {
+                    guard AmbientSendAdmission.isCurrent else { throw HostConnectionFailure.notReady }
+                    try await send(next)
+                }
             } catch {
-                failure = error
+                sendFailure = error
                 pending.removeAll()
                 await onFailure(self, error)
             }
@@ -458,4 +468,12 @@ extension AmbientAudioStreamer {
         decision = (failed, task)
         return task
     }
+}
+
+/// An immutable capture-epoch predicate accompanies queued and in-flight sends through executor hops.
+/// Nil preserves existing send behavior; the restore slice supplies the capture gate and its sampled epoch.
+struct AmbientSendAdmission: Sendable {
+    @TaskLocal static var current: AmbientSendAdmission?
+    let accepts: @Sendable () -> Bool
+    static var isCurrent: Bool { current?.accepts() ?? true }
 }

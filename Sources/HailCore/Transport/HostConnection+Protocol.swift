@@ -1,4 +1,4 @@
-import Foundation
+public import Foundation
 public import HailProtocol
 
 // The frame dispatch and its ambient and request-refusal cases stay together with negotiation.
@@ -48,11 +48,11 @@ extension HostConnection {
              .control(.ambientOverheard), .control(.ownerVoice), .control(.mediaMode), .control(.healthReport),
              .control(.duckMode):
             // Like reply frames, needing no reply capability (#309, #404, #366, #318, rightyo#164, #612, #614, #735).
-            await replyObserver(HostReplyEvent(endpointID: snapshot.id, frame: frame))
+            await publishNotice(frame)
         case .control(.error(let code, _, _)) where code.isRequestRefusal: // #608: that request is over, not the link
-            await replyObserver(HostReplyEvent(endpointID: snapshot.id, frame: frame))
+            await publishNotice(frame)
         case .control(let control):
-            try await process(control)
+            try await process(control, frame: frame)
         case .text(let text) where text.isFinal && text.reply != nil:
             try await publishReply(frame)
         case .audio(let audio) where audio.reply != nil:
@@ -62,7 +62,15 @@ extension HostConnection {
         }
     }
 
-    private func process(_ control: ControlPayload) async throws {
+    private func publishNotice(_ frame: Frame, streamID: UUID? = nil) async {
+        let origin = snapshot.connectionGeneration
+        let event = HostReplyEvent(endpointID: snapshot.id, frame: frame)
+        await HostNoticeOrigin.$streamID.withValue(streamID) {
+            await HostNoticeOrigin.$generation.withValue(origin) { await replyObserver(event) }
+        }
+    }
+
+    private func process(_ control: ControlPayload, frame: Frame) async throws {
         switch control {
         case .pong(let nonce):
             guard let began = pendingPings.removeValue(forKey: nonce) else { return }
@@ -80,6 +88,8 @@ extension HostConnection {
             // no stream id, so they are recognised by the gate's "ambient" message prefix.
             guard message.hasPrefix("ambient"), let stream = ambientStream else { throw failure }
             ambientRefusal = (stream.id, failure)
+            // Opt-in for restore-aware callers only. Existing observers receive exactly their old events.
+            if HostNoticeOrigin.reportsAmbientRefusals { await publishNotice(frame, streamID: stream.id) }
         default:
             throw HostConnectionFailure.malformed("unexpected control frame")
         }
@@ -89,7 +99,7 @@ extension HostConnection {
         guard snapshot.capabilities.contains("receive_replies") else {
             throw HostConnectionFailure.unsupportedCapability("receive_replies")
         }
-        await replyObserver(HostReplyEvent(endpointID: snapshot.id, frame: frame))
+        await publishNotice(frame)
     }
 }
 
@@ -105,7 +115,9 @@ extension HostConnection {
     /// Sends one ambient segment (#203) in the existing `.audio` frame, addressed to the selected destination as
     /// the host gate requires. A stream is bound to the socket generation it started on; after a reconnect or
     /// a gate refusal for it, every further segment of that stream throws so the streamer releases the mic.
-    public func sendAudio(_ audio: AudioPayload) async throws {
+    public func sendAudio(_ audio: AudioPayload, bindingGeneration: UUID? = nil) async throws {
+        guard bindingGeneration == nil || bindingGeneration == snapshot.connectionGeneration,
+              AmbientSendAdmission.isCurrent else { throw HostConnectionFailure.notReady }
         try requireReady(capability: Self.streamAudioCapability)
         guard let targetID = desiredTargetID, selectionSettled, socket != nil else {
             throw HostConnectionFailure.notReady
@@ -137,7 +149,8 @@ extension HostConnection {
             version: snapshot.negotiatedVersion ?? ProtocolVersion.current,
             timestamp: wallNow(), target: targetID, source: deviceName, payload: .audio(audio)
         )
-        guard let current = self.socket, snapshot.connectionGeneration == connection else {
+        guard let current = self.socket, snapshot.connectionGeneration == connection,
+              AmbientSendAdmission.isCurrent else {
             throw HostConnectionFailure.notReady
         }
         try await current.send(FrameCoding.encode(frame))
@@ -215,4 +228,12 @@ extension HostConnection {
         snapshot.state = state
         await observer(snapshot)
     }
+}
+
+/// Provenance survives the observer's executor hop. Refusal delivery is opt-in for each connection-loop task.
+/// A caller opting in must also scope foreground reconnects, which may replace that loop.
+enum HostNoticeOrigin {
+    @TaskLocal static var generation: UUID?
+    @TaskLocal static var streamID: UUID?
+    @TaskLocal static var reportsAmbientRefusals = false
 }
