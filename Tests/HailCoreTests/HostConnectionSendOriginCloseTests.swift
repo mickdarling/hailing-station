@@ -74,9 +74,7 @@ import Testing
         await connection.disconnect()
         await retry.fire()
     }
-
 }
-
 
 private actor SendOriginLossRecorder {
     var generations: [UUID] = []
