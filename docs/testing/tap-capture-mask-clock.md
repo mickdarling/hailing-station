@@ -30,17 +30,25 @@ hold creates a ledger. There is no global clock override or public API change. O
 
 The two regression tests install `TapCaptureLivenessClock` before beginning capture. The helper suspends with
 checked continuations, waits for the watcher to register its sleep, installs the player's existing heal reporter,
-and advances exactly one sleep. The test resumes only when the watcher reports the actual heal. It checks one
-healed owner, the exact one-second requested interval, ended suppression, ledger removal, and the existing mask
+and advances exactly one sleep. On success the test resumes only when the watcher reports the actual heal.
+It checks one healed owner, the exact one-second requested interval, ended suppression, ledger removal, and the existing mask
 tail/release assertions. The system-end test also verifies suppression remains held before advancing the poll.
 The helper stops the watcher's next sleep by throwing after healing and removes its reporter. No test body
-blocks a cooperative thread, and no timeout or existing assertion is relaxed. All explanatory comments remain.
+blocks a cooperative thread. The bounded 3 s wall-clock wait was replaced by deterministic advancement with a
+generous 30 s failure-only backstop; existing assertions are unchanged. Successful advancement still completes
+on the heal notification, never by time. A separate detached real-time task bounds both sleep registration and
+heal completion. Expiry stops the clock and resumes the waiting test, which records an Issue naming the wait,
+registered sleep count, and whether a heal was reported. Stop and expiry cancel the backstop, remove the reporter,
+and take and clear every pending continuation before resuming it, preventing leaks and double resumes.
+All explanatory comments remain.
 
 Additional deterministic tests prove that a live owner survives a poll and heals on a later poll after it ends,
 and that one player's clock cannot advance another player's watcher. Both use the production watcher and heal
 reporter. The existing tests continue to cover the app's real stream consumer with synthetic audio/session IO.
 
 ## Load evidence and results
+
+This section records the initial seam implementation, before the failure-backstop review fix described below.
 
 The old executable was built from unchanged main-15d5. Under exactly four `yes` workers it passed 20/20
 parallel runs of `AmbientTapCapture`: 21 reported tests in four suites per run (420 reported tests total),
@@ -171,13 +179,82 @@ that SwiftPM option only for XCTest. Its load phase was stopped and cleaned up. 
 set the toolchain's `SWT_EXPERIMENTAL_MAXIMUM_PARALLELIZATION_WIDTH=4`; those CLI rejections are not behavioral
 failures or included in test counts. No `DiagnosticReplyComposition` test was executed.
 
+## Failure-backstop review fix evidence
+
+This fix changes only the test clock and this record. Both original regressions were run against each of two
+scratch mutations, using the real 30 s backstop without shortening it:
+
+- Missing heal: replace only the watcher's `reconcile(using: playback)` call with
+  `_ = playback.isCaptureSuppressed`, leaving the next manual sleep registered. The #977 test failed after
+  30.026 s and the #965 test after 30.028 s. Each recorded this diagnostic in its own test task:
+  `TapCaptureLivenessClock advanceUntilHeal expired after 30 s; sleeps registered: 2; heal reported: false`.
+- Missing registration: replace the installed sleep closure with `{ _ in throw CancellationError() }`.
+  The #965 test failed after 31.719 s and the #977 test after 31.720 s. Each recorded:
+  `TapCaptureLivenessClock waitForSleep expired after 30 s; sleeps registered: 0; heal reported: false`.
+
+Both processes exited with test-failure status 1, without a kill or continuation-misuse diagnostic. The existing
+assertions also failed as expected; neither mutation hung. Each scratch file was restored in `finally`, and the
+restored helper was compared byte-for-byte with the verified working source. These deliberately broken
+synthetic runs prove failure handling, not reproduction of the CI scheduling failure. The eight-core
+non-reproduction limitation in the initial evidence remains unchanged.
+
+All runs used the Swift flags, idle gate, background policy, and parallel-width cap from the harness above.
+The fix-round runner kills and reaps each run's four load workers before its next idle gate and caps each phase
+at 590 active seconds, excluding waits for other jobs. Build phases, mutation probes, and the broad lane use no
+load workers. The two mutation builds also use `--build-tests -Xswiftc -warnings-as-errors`; their test arguments
+are below. The source mutations are absent from all restored-source runs.
+
+```sh
+--skip-build --parallel \
+  --filter 'missedEndIsHealedWithoutWaitingForAReplyOrSceneActivation|systemEndedStreamReleasesMaskAndReplySuppression' \
+  --skip DiagnosticReplyComposition
+```
+
+Restored-source commands (same runner argument interface as above):
+
+```sh
+python3 phase.py fix-build build 1 idle -Xswiftc -warnings-as-errors
+python3 phase.py restored-build-tests build 1 idle --build-tests -Xswiftc -warnings-as-errors
+python3 phase.py restored-parallel test 10 load --skip-build --parallel \
+  --filter AmbientTapCapture --skip DiagnosticReplyComposition
+python3 phase.py restored-serial test 5 load --skip-build --no-parallel \
+  --filter AmbientTapCapture --skip DiagnosticReplyComposition
+python3 phase.py restored-broad test 1 idle --skip-build --no-parallel \
+  --filter 'AmbientTapCapture|AmbientWiring|ReplyPlayback|TapCapture|AudioCapture' \
+  --skip DiagnosticReplyComposition
+```
+
+| Fix-round phase | Result | Active elapsed seconds |
+| --- | --- | ---: |
+| Production build, warnings as errors | passed | 54.238 |
+| Missing-heal mutation build with tests, warnings as errors | passed | 137.215 |
+| Missing-heal probe | both tests failed as expected | 32.234 |
+| Missing-registration mutation build with tests, warnings as errors | passed | 10.972 |
+| Missing-registration probe | both tests failed as expected | 33.008 |
+| Restored build with tests, warnings as errors | passed | 8.472 |
+| Restored parallel load, 10 runs | passed; 23 tests per run | 8.551 |
+| Restored serial load, 5 runs | passed; 23 tests per run | 6.357 |
+| Restored broad serial filter | passed; 304 tests in 67 suites | 89.121 |
+
+Restored source passed 649 reported tests across 16 runs, separately from the four deliberately failing mutation
+tests. Each original regression passed 16 times after restoration. No restored run emitted a backstop diagnostic
+or skipped a selected test. Every active phase stayed below ten minutes, all owned workers were killed and
+reaped, and no `DiagnosticReplyComposition` test ran. This remains synthetic VM evidence, without simulator or
+physical-device proof.
+
 ## Hand lint review
 
 SwiftLint is unavailable on the VM. The strict warning thresholds in `.swiftlint.yml` were checked by hand:
-changed Swift files have 192, 193, 166, 191, 61, and 46 physical lines (all below 200); the largest changed type
-body has 149 nonblank/noncomment lines (limit 150). Changed function bodies remain below 40 lines, their
-complexity stays below 10, and they have at most two required parameters. No code line exceeds 120 columns.
+the initial implementation's changed Swift files have 192, 193, 166, 191, 61, and 46 physical lines (all below 200).
+The largest changed type body has 149 nonblank/noncomment lines (limit 150). Changed function bodies remain below
+40 lines, their complexity stays below 10, and they have at most two required parameters. No code line exceeds
+120 columns.
 New identifiers meet the minimum length, type nesting stays below two, and there are no new force operations,
 lint suppressions, or shortened explanatory comments. `git diff --check` passes.
+
+The failure-backstop fix changes only the test clock and this record. The clock now has 137 physical lines and
+114 nonblank/noncomment type-body lines. Each function stays below 40 lines and complexity 10, with at most two
+parameters; no code line exceeds 120 columns. The same identifier, nesting, force-operation, and suppression
+checks pass by hand. Production sources and test assertions are unchanged by this fix round.
 
 All work stayed offline: no remote fetch, push, PR/issue mutation, installation, or device operation was performed.
