@@ -918,3 +918,55 @@ rejecting every outgoing `set_privacy` frame. The host explicitly confirms
 privacy off before settling; settling cannot change that state. Identity matching and the pre-acceptance refusal
 replacement path are unchanged. No protocol, app, or additional production file
 is changed by this fix.
+
+
+### Acceptance-completion verification
+
+The clean scratch rebuilds passed with the common offline and Testing flags:
+`build -Xswiftc -warnings-as-errors` (50.75 seconds) and
+`build --build-tests -Xswiftc -warnings-as-errors` (132.85 seconds).
+The serial acceptance-completion, acceptance-ordering, and privacy-settling
+selection passed **8 tests in 3 suites**, 23.433 seconds. This includes both
+parameterized completion orders for the notice/haptic hook and privacy checks,
+and all five ported F1 regression methods (including both ordered-refusal cases).
+The original fail-before assertions remain recorded above and in the pre-fix
+commit; this pass-after run has no assertion issues.
+
+On the merged app tree, both warnings-as-errors build forms passed (4.94 seconds
+and 59.04 seconds). All three full serial `--filter AmbientReconnect` repetitions
+passed **83 tests in 31 suites** each, in 186.539, 191.020, 191.646 seconds.
+Each uses `--skip-build --disable-xctest --no-parallel` and
+`--skip DiagnosticReplyComposition`, with the same common flags.
+The complete requested broad family
+`Ambient|HostConnection|Listening|Reconnect|Notice|AudioGate|TapCapture|HeardTurn|Privacy|Segment`
+ran once in three serial, non-overlapping module lanes:
+
+- core: **418 tests in 119 suites**, 316.741 seconds.
+- daemon: **593 tests in 135 suites**, 415.266 seconds.
+- remaining modules: **50 tests in 9 suites**, 0.199 seconds.
+
+Total broad selection: **1061 tests in 263 suites**.
+The core and daemon filters are `^HailCoreTests[.].*(family)` and
+`^HailDaemonKitTests[.].*(family)`; the remaining lane selects the full family
+and excludes those two modules. Every lane also skips DiagnosticReplyComposition.
+The successful logs contain no recorded assertion issue and no start of that
+excluded suite or its tests. Raw evidence is in `<scratch>/r1-acceptance.log`,
+`r2-focused-1.log` through `r2-focused-3.log`, and `r2-broad-core.log`,
+`r2-broad-daemon.log`, and `r2-broad-remaining.log`.
+
+Every launch first waits on the supplied literal Swift-process gate. Each phase
+uses `taskpolicy -b`, `-j 4 -Xswiftc -j1`, a 590-second execution bound, and
+process-group TERM/KILL cleanup. Scratch products from the interrupted run were
+removed before the clean rebuilds. Missing debug module-cache path warnings
+still appeared during linking after that cleanup; the compiler
+warnings-as-errors builds exited successfully. These are toolchain debug-path
+warnings, not a claim of warning-free linker output.
+
+Manual strict-warning lint review and committed-range `git diff --check` pass.
+No lint suppression, blank-line removal, or code reflow was added to satisfy a
+threshold. The base slice is unchanged; the restore slice retains exactly its
+four production files, and the app slice's incremental production files are
+unchanged. Final delivered-head rechecks use `r1-final-build.log`,
+`r1-final-build-tests.log`, `r2-final-build.log`, and `r2-final-build-tests.log`.
+These remain synthetic package checks; native app builds, physical audio/haptic
+delivery, and independent exact-head approval are not claimed.
