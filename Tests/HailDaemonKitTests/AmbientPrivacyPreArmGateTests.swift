@@ -84,6 +84,35 @@ struct AmbientPrivacyPreArmGateTests {
         #expect(!router.duckMode(connection: late))
         #expect(rig.details("ambient_privacy_prearmed").last == "refused=stopping")
     }
+
+    /// The router's own backstop behind the gate's: a connection with a child but no `latest` entry (as after a
+    /// take-over, which the gate already refuses) is refused as streamed, and its child is left as it was.
+    @Test func theRouterRefusesAConnectionWithAChild() async throws {
+        let rig = try await RestoreRig(phrase: nil)
+        defer { rig.close() }
+        let (_, connection) = try await rig.start()
+        let router = rig.router
+        router.state.withLock { $0.latest[connection] = nil }
+        router.ambientPrivacyPreArm(connection: connection)
+        #expect(!router.duckMode(connection: connection))
+        #expect(rig.details("ambient_privacy_prearmed") == ["refused=streamed"])
+        await rig.finish()
+    }
+
+    /// A park overflow alone (#961) is privacy held elsewhere: the pre-arm takes it as a restore does, from no
+    /// connection (`from=overflow`), and claims nothing heard.
+    @Test func anOverflowAlonePreArmsAsARestore() async throws {
+        let rig = try await RestoreRig(phrase: nil)
+        defer { rig.close() }
+        let router = rig.router, connection = UUID()
+        router.state.withLock { $0.parkOverflow = true }
+        router.ambientPrivacyPreArm(connection: connection)
+        #expect(router.duckMode(connection: connection) && !router.privacyHeardOn(connection: connection))
+        #expect(rig.details("ambient_privacy_prearmed") == ["source=park"])
+        #expect(await eventually { rig.details("ambient_privacy_restored").first?.contains("from=overflow") == true },
+                "restored from the overflow marker")
+        await rig.finish()
+    }
 }
 
 /// Records each privacy switch and pre-arm the gate hands on.

@@ -821,7 +821,7 @@ A haild restart parks nothing, so after one no park can keep a dropped phone pri
 - **Teardown parks it** (R2). A pre-armed connection that drops, streaming or not, parks its privacy as any private connection does, so the next fresh start on any device is private until the owner's off. Nothing of the connection itself is kept.
 - **Its own off is the owner's off.** The app's switch off on the pre-armed connection clears its privacy and reply hold and, as any owner's off does, every park daemon-wide (#941, #961). **The app must never send a reflexive off on reconnect**: that off would clear every park.
 - **Known: a live privacy source** (fail closed). Like any private connection, a pre-armed one counts as privacy held elsewhere, so every other connection's fresh stream starts private (#941's multi-device rule) until it is turned off or judged stale.
-- **Known: another device already listening** (R3). A pre-arm is taken while another device streams in public. That stream is left alone, public and listening, until its next start, which is private. The pre-armed device's own `resume` is refused with the moved message while the other device holds listening.
+- **Known: another device already listening** (R3). A pre-arm is taken while another device streams in public. That stream is left alone, public and listening, until its next start, which is private. A start still being made when the pre-arm lands is not left alone: its child, made public, is refused as `private` (`ambient_refused private`, #941's fail-closed admission), and the device retries into a private start. The pre-armed device's own `resume` is refused with the moved message while the other device holds listening.
 
 #### The app's privacy switch (#735 S-6)
 
