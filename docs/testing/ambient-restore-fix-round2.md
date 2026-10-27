@@ -161,3 +161,34 @@ checks and every earlier privacy/no-off test. Manual strict-warning lint review
 and `git diff --check` passed; the brace-count aid's two Capture protocol findings
 are declaration false positives, not function bodies. The reconnect file uses
 only the expressly permitted, reasoned file-length exemption.
+
+### R2 results and final-tree checks
+
+R2 changes only StationCard.swift and RootView+DestinationSelection.swift in
+production. The completed notice lives on the root surface, independently of
+the card. The card is retained only during pending recovery; disappearance still
+calls destinationLost. The destination-selection helpers are grouped in two
+extensions within the same 199-line file, without another exemption or file.
+The notifier deduplicates the haptic by notice ID when a late refusal corrects a
+success. Existing per-stop notification titles remain unchanged.
+
+Both required SwiftPM builds passed. All **55 focused tests in 19 suites** passed
+on each of five runs. The serial broad lanes passed **378 tests in 100 suites**
+(240.990 s) and **637 tests in 141 suites** (417.080 s). The #932 segment suites
+remain green. DiagnosticReplyComposition was excluded throughout.
+`successNoticeNeverRetainsCaptureOrAuthorizesADestination` models target removal,
+destination change, and card disappearance; all three cases release capture,
+clear the active binding, and forbid later PCM while retaining notice history.
+This model is not native SwiftUI or physical-device proof.
+
+A final blank-closing-brace cleanup in R1 test support preserves every Swift
+token. Both required builds were rechecked on the final R1 and R2 source trees.
+The extra final R1 review selection passed **9 tests in 6 suites**; the extra
+R2 lifetime selection passed **1 test with 3 cases**. Strict-warning manual lint,
+committed-range `git diff --check`, exact production-file counts (including rename
+handling), and the three-commit stack audit passed. No other new lint exemption
+was added. Old R1/R2, interrupted WIP, and main-24be refs remain unchanged.
+
+The initial fail-before evidence remains the recorded old-base run; it was not
+replayed on main-24be. No independent approval, GitHub protection result, native
+iOS build, physical haptic, or live captured-output proof is claimed.
