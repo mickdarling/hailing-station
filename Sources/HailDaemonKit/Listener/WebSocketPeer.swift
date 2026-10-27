@@ -73,6 +73,7 @@ actor WebSocketPeer {
             }
             Task { await self?.connectionChanged(state) }
         }
+        emit("diag_peer_start", endpoint: "\(connection.endpoint)")
         startHelloTimer()
         connection.start(queue: queue)
     }
@@ -84,6 +85,7 @@ actor WebSocketPeer {
     var isLive: Bool { !ended && !closing && !replyTransport.isRetired }
 
     private func connectionChanged(_ state: NWConnection.State) {
+        emit("diag_peer_state", endpoint: "\(connection.endpoint)", detail: "\(state) ended=\(ended)")
         guard !ended else { return }
         switch state {
         case .ready:

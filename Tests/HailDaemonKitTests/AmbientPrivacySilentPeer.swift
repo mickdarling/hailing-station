@@ -34,6 +34,7 @@ final class SilentPeer: @unchecked Sendable {
                 parameters.requiredLocalEndpoint = .hostPort(host: .ipv4(.loopback), port: local)
             }
             let connection = NWConnection(to: .url(url), using: parameters)
+            Diag971.note(port: port, "C attempt=\(attempt)")
             let refused: Bool
             do {
                 refused = try await addressRefused(connection)
@@ -61,6 +62,7 @@ final class SilentPeer: @unchecked Sendable {
         return try await withCheckedThrowingContinuation { continuation in
             readiness.set(continuation)
             connection.stateUpdateHandler = { state in
+                Diag971.client(connection, "C state=\(Diag971.state(state)) local=\(Diag971.local(connection))")
                 switch state {
                 case .ready: readiness.resume(.success(false))
                 case .waiting(.posix(.EADDRINUSE)), .failed(.posix(.EADDRINUSE)): readiness.resume(.success(true))
@@ -134,6 +136,8 @@ final class SilentPeer: @unchecked Sendable {
     /// Runs `operation` until it calls back, or cancels the connection after 15 s, so no wait outlives the suite.
     private func bounded(_ operation: (@escaping @Sendable ((any Error)?) -> Void) -> Void) async throws {
         let connection = connection
+        Diag971.client(connection, "C op begin local=\(Diag971.local(connection))")
+        defer { Diag971.client(connection, "C op end") }
         let timer = Task {
             try? await Task.sleep(for: .seconds(15))
             if !Task.isCancelled { connection.cancel() }
@@ -141,6 +145,7 @@ final class SilentPeer: @unchecked Sendable {
         defer { timer.cancel() }
         try await withCheckedThrowingContinuation { (continuation: CheckedContinuation<Void, any Error>) in
             operation { error in
+                if let error { Diag971.client(connection, "C op error=\(Diag971.code(error))") }
                 if let error { continuation.resume(throwing: error) } else { continuation.resume() }
             }
         }

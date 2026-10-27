@@ -30,6 +30,22 @@ extension RestoreRig {
     func connectSilent(kind: String? = "phone",
                        capabilities: [String] = ["probe"]) async throws -> (SilentPeer, UUID) {
         let before = await Self.connections(of: env.listener)
+        Diag971.note(port: env.port, "S before n=\(before.count) ids=\(Diag971.ids(before))")
+        do {
+            return try await connectSilentDiag(before: before, kind: kind, capabilities: capabilities)
+        } catch {
+            let now = await Self.connections(of: env.listener)
+            Diag971.note(port: env.port, "S threw=\(Diag971.code(error)) now n=\(now.count) ids=\(Diag971.ids(now))")
+            try? await Task.sleep(for: .milliseconds(300))
+            let later = await Self.connections(of: env.listener)
+            Diag971.note(port: env.port, "S later n=\(later.count) ids=\(Diag971.ids(later))")
+            Diag971.dump(port: env.port, "SILENT-CONNECT-FAILED err=\(Diag971.code(error))")
+            throw error
+        }
+    }
+
+    private func connectSilentDiag(before: Set<UUID>, kind: String?,
+                                   capabilities: [String]) async throws -> (SilentPeer, UUID) {
         let peer = try await SilentPeer.connect(port: env.port)
         try await peer.send(sessionFrame(payload: .control(.hello(HelloInfo(
             versions: [1], capabilities: capabilities, deviceName: Self.appName, deviceKind: kind
@@ -40,6 +56,7 @@ extension RestoreRig {
         try await peer.send(sessionFrame(payload: .control(.ping(nonce: nonce))))
         while try await peer.receive().payload != .control(.pong(nonce: nonce)) {}
         let after = await Self.connections(of: env.listener)
+        Diag971.note(port: env.port, "S after n=\(after.count) ids=\(Diag971.ids(after))")
         return (peer, try #require(after.subtracting(before).first))
     }
 

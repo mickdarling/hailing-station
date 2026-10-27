@@ -31,8 +31,14 @@ import Testing
         let second = UUID()
         try await recipientSocketSend(audio(second, 0), on: rig.socket)
         #expect(await eventually { rig.env.router.activePipeline != nil })
-        for _ in 0..<2 {
-            #expect(await eventually { await rig.env.router.reload() == .reloaded })
+        for round in 0..<2 {
+            let reloaded = await eventually {
+                let outcome = await rig.env.router.reload()
+                Diag971.note(port: rig.env.port, "T reload round=\(round) outcome=\(outcome)")
+                return outcome == .reloaded
+            }
+            #expect(reloaded)
+            if !reloaded { Diag971.dump(port: rig.env.port, "RECOVERY-RELOAD-FAILED round=\(round)") }
         }
         FileManager.default.createFile(atPath: rig.fake.directory.appendingPathComponent("go2").path, contents: nil)
         #expect(await eventually { Announce.said(rig).count == 2 })

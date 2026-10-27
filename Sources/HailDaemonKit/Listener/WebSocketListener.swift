@@ -120,7 +120,9 @@ public actor WebSocketListener {
             networkListener.stateUpdateHandler = { [weak self] state in
                 Task { await self?.listenerChanged(state) }
             }
-            networkListener.newConnectionHandler = { [weak self] connection in
+            networkListener.newConnectionHandler = { [weak self, log] connection in
+                // TEMPORARY #971 diagnostics (diag branch only): token-only.
+                log(WebSocketListenerEvent(event: "diag_new_connection", endpoint: "\(connection.endpoint)"))
                 Task { await self?.accept(connection) }
             }
             networkListener.start(queue: queue)
@@ -194,6 +196,8 @@ extension WebSocketListener {
         await session.attachLastInput(lastInput, recordStoppedReply: { [stoppedReplyIDs] id in
             stoppedReplyIDs.record(id)
         }, replyEvent: log)
+        emit(WebSocketListenerEvent(event: "diag_accept", endpoint: "\(connection.endpoint)",
+                                    detail: "stopped=\(stopped) peers=\(peers.count)"))
         guard !stopped else { return connection.cancel() }
         let id = UUID()
         guard peers.count < maxConnections else {

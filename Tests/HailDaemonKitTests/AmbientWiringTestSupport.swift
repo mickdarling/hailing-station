@@ -49,15 +49,16 @@ func ambientRig(
     (configuration.notSentPlaying, configuration.childMade) = (notSentPlaying?.wait, childMade)
     (configuration.privacyProbeTimeout, configuration.offScoping) = (privacy.probeTimeout, privacy.offScoping)
     configuration.notes.shortcuts = shortcuts
-    let router = AmbientRightyoRouter(configuration: configuration, log: { events?.record($0); onEvent?($0) })
+    let tag = String(UUID().uuidString.prefix(8)), log = Diag971.wrap(tag) { events?.record($0); onEvent?($0) }
+    let router = AmbientRightyoRouter(configuration: configuration, log: log)
     let gate = AmbientAudioGate(target: RecipientTestRig.target, sink: router, sweepInterval: nil)
     let listener = try WebSocketListener(
         bindAddress: "127.0.0.1", port: 0, host: rig.host,
         authorizer: PersonalTerminalAuthorizer(ambientAudio: gate).naming(routes), hostName: "mac-test",
-        singleTerminalReplyFallback: true, ambient: router, log: { connected.record($0) }
+        singleTerminalReplyFallback: true, ambient: router, log: { connected.record($0); Diag971.listener(tag, $0) }
     )
     return AmbientWiringRig(rig: rig, listener: listener, router: router, gate: gate, connected: connected,
-                            port: try await boundedAmbientListenerStart(listener))
+                            port: try await Diag971.started(listener, tag: tag))
 }
 
 /// The next frame on `socket`, or a recorded issue naming `step` once `within` passes (#378). Every receive is now
