@@ -22,7 +22,7 @@ import Testing
             return
         }
         #expect(info.capabilities.contains(AmbientHeard.capability))
-        #expect(!info.capabilities.contains(HeardTurns.capability))
+        #expect(info.capabilities.contains(HeardTurns.capability))
 
         try await socket.push(.hello(HelloInfo(
             versions: [ProtocolVersion.current], capabilities: ["receive_replies"], deviceName: "Mac"

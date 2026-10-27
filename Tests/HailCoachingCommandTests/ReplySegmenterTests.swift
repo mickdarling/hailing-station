@@ -1,0 +1,173 @@
+import Foundation
+import Testing
+@testable import haild
+
+struct ReplySegmenterTests {
+    @Test func defaultsAndOverrides() throws {
+        let defaults = try ReplySegmentation.load(environment: [:])
+        #expect(defaults.maxSentences == 2 && defaults.maxWords == 30)
+        #expect(ReplySegmenter(configuration: defaults).segments("First. Second. Third.")
+                == ["First. Second.", "Third."])
+        let custom = try ReplySegmentation.load(environment: [
+            "HAILD_REPLY_SEGMENT_MAX_SENTENCES": "1", "HAILD_REPLY_SEGMENT_MAX_WORDS": "4"
+        ])
+        #expect(ReplySegmenter(configuration: custom).segments("One two. Three four. Five six.")
+                == ["One two.", "Three four.", "Five six."])
+        #expect(ReplySegmenter(configuration: custom).segments("one two three four five six")
+                == ["one two three four", "five six"])
+    }
+
+    @Test func validatedBounds() throws {
+        for invalid in [0, -1, 21, Int.max] {
+            #expect(throws: (any Error).self) { try ReplySegmentation(maxSentences: invalid) }
+        }
+        for invalid in [0, -1, 301, Int.max] {
+            #expect(throws: (any Error).self) { try ReplySegmentation(maxWords: invalid) }
+        }
+        for raw in ["", "0", "-1", "301", "1.5", " 2", "x", "999999999999999999999", "٠٢"] {
+            let words = try ReplySegmentation.load(environment: ["HAILD_REPLY_SEGMENT_MAX_WORDS": raw])
+            let sentences = try ReplySegmentation.load(environment: ["HAILD_REPLY_SEGMENT_MAX_SENTENCES": raw])
+            #expect(try words == ReplySegmentation.load(environment: [:]))
+            #expect(try sentences == ReplySegmentation.load(environment: [:]))
+        }
+        #expect(try ReplySegmentation(maxSentences: 20, maxWords: 300).maxWords == 300)
+        #expect(try ReplySegmentation(maxSentences: 1, maxWords: 1).maxWords == 1)
+    }
+
+    @Test func abbreviationsDecimalsVersionsURLsAndPaths() throws {
+        let segmenter = ReplySegmenter(configuration: try ReplySegmentation(maxSentences: 1))
+        let sentence = "Dr. Example uses e.g. U.S. v3.5.1 at https://example.invalid/a.b and /tmp/a.txt for 3.5 units."
+        #expect(segmenter.segments(sentence + " Next sentence.") == [sentence, "Next sentence."])
+        #expect(segmenter.segments("A. Example uses i.e. small words. Done!")
+                == ["A. Example uses i.e. small words.", "Done!"])
+    }
+
+    @Test func punctuationEllipsesAndClosers() throws {
+        let segmenter = ReplySegmenter(configuration: try ReplySegmentation(maxSentences: 1))
+        #expect(segmenter.segments("Wait... maybe later. Really? Yes! “Done.” (Again.) [End.] {Last.}")
+                == ["Wait... maybe later.", "Really?", "Yes!", "“Done.”", "(Again.)", "[End.]", "{Last.}"])
+        #expect(segmenter.segments("Wait... Next thought. Done…") == ["Wait...", "Next thought.", "Done…"])
+        #expect(segmenter.segments("Wait… Next thought.") == ["Wait…", "Next thought."])
+        #expect(segmenter.segments("Wait... “Next.”") == ["Wait...", "“Next.”"])
+    }
+
+    @Test func unspacedSentencesAndJoin() throws {
+        let cases: [UnspacedCase] = [
+            UnspacedCase("第一句。第二句！第三句？", 2, ["第一句。第二句！", "第三句？"]),
+            UnspacedCase("「第一句。」（第二句！）『第三句？』", 2, ["「第一句。」（第二句！）", "『第三句？』"]),
+            UnspacedCase("第一句．Second!第三句？", 2, ["第一句．Second!", "第三句？"]),
+            UnspacedCase("First!Second?Third.", 1, ["First!", "Second?", "Third."]),
+            UnspacedCase("First!第二句。Third?第四句！", 2, ["First!第二句。", "Third?第四句！"]),
+            UnspacedCase("A!B?", 2, ["A!B?"])
+        ]
+        for item in cases {
+            let configuration = try ReplySegmentation(maxSentences: item.limit, maxWords: 1)
+            let pieces = ReplySegmenter(configuration: configuration).segments(item.text)
+            #expect(pieces == item.expected)
+            #expect(pieces.joined() == item.text)
+        }
+        let segmenter = ReplySegmenter(configuration: try ReplySegmentation(maxSentences: 1))
+        #expect(segmenter.segments("3.5 v1.2 https://example.invalid/a.b e.g. intact. Next.")
+                == ["3.5 v1.2 https://example.invalid/a.b e.g. intact.", "Next."])
+    }
+
+    @Test func internalASCIIEndsProtectStructuredTokensAndLowercaseContinuations() throws {
+        let cases: [(String, [String])] = [
+            ("Use https://example.invalid/search?q=swift today. Next.",
+             ["Use https://example.invalid/search?q=swift today.", "Next."]),
+            ("Use https://example.invalid/search?q=Swift&x=Next today. Next.",
+             ["Use https://example.invalid/search?q=Swift&x=Next today.", "Next."]),
+            ("Use www.example.invalid/a?b today. Next.", ["Use www.example.invalid/a?b today.", "Next."]),
+            ("Use user@example.invalid today. Next.", ["Use user@example.invalid today.", "Next."]),
+            ("Use user@example.invalid?Next today. Next.", ["Use user@example.invalid?Next today.", "Next."]),
+            ("Use /tmp/a!b today. Next.", ["Use /tmp/a!b today.", "Next."]),
+            ("Use www.example.invalid?Next a!B/path a?B#part q?Next=Yes q!Next&x today. Next.",
+             ["Use www.example.invalid?Next a!B/path a?B#part q?Next=Yes q!Next&x today.", "Next."]),
+            ("Really?yes", ["Really?yes"]),
+            ("First!Second?Third.", ["First!", "Second?", "Third."]),
+            ("Really?évidemment!第二句。", ["Really?", "évidemment!", "第二句。"]),
+            ("第一句。Use https://example.invalid/search?q=Swift&x=Next today. 第二句！Next.",
+             ["第一句。", "Use https://example.invalid/search?q=Swift&x=Next today.", "第二句！", "Next."]),
+            ("https://example.invalid/a?Next。第二句！", ["https://example.invalid/a?Next。", "第二句！"])
+        ]
+        let segmenter = ReplySegmenter(configuration: try ReplySegmentation(maxSentences: 1))
+        for (text, expected) in cases {
+            let pieces = segmenter.segments(text)
+            #expect(pieces == expected)
+            // Joining can omit boundary whitespace, but must retain every other character in order.
+            #expect(pieces.joined().filter { !$0.isWhitespace } == text.filter { !$0.isWhitespace })
+        }
+    }
+
+    @Test func manyTrailingClosersKeepSentenceStructure() throws {
+        let closers = String(repeating: ")", count: 16_000)
+        let first = "First." + closers
+        let segmenter = ReplySegmenter(configuration: try ReplySegmentation(maxSentences: 1))
+        #expect(segmenter.segments(first + " Next.") == [first, "Next."])
+        #expect(segmenter.segments("First!" + closers + "Next?") == ["First!" + closers, "Next?"])
+    }
+
+    @Test func newlinesAndLists() throws {
+        let segmenter = ReplySegmenter(configuration: try ReplySegmentation(maxSentences: 1))
+        #expect(segmenter.segments("1. first item\n2. second item\n\n- third item\r\n• fourth item")
+                == ["1. first item", "2. second item", "- third item", "• fourth item"])
+    }
+
+    @Test func lastClauseWithinLimitThenWords() throws {
+        let segmenter = ReplySegmenter(configuration: try ReplySegmentation(maxWords: 5))
+        for punctuation in [",", ";", ":", "—"] {
+            let sentence = "one\(punctuation) two three\(punctuation) four five six seven eight."
+            #expect(segmenter.segments(sentence) == ["one\(punctuation) two three\(punctuation)",
+                                                     "four five six seven eight."])
+        }
+        #expect(segmenter.segments("one two three four five six seven.")
+                == ["one two three four five", "six seven."])
+    }
+
+    @Test func identityAndNoEmptySegments() throws {
+        let segmenter = ReplySegmenter(configuration: try ReplySegmentation())
+        for text in ["A short sentence.", "  First.\t Second! \n", "one", "A  repeated   space."] {
+            #expect(segmenter.segments(text) == [text])
+        }
+        #expect(segmenter.segments("").isEmpty)
+        #expect(segmenter.segments(" \t\n ").isEmpty)
+        let thirty = Array(repeating: "word", count: 30).joined(separator: " ")
+        #expect(segmenter.segments(thirty) == [thirty])
+        #expect(segmenter.segments(thirty + " extra").count == 2)
+    }
+
+    @Test func generatedSentencesPreserveJoinAndBounds() throws {
+        // Small exhaustive deterministic property test; no random seed, logs or content-bearing diagnostics.
+        for sentenceLimit in 1...3 {
+            for wordLimit in 1...9 {
+                let segmenter = ReplySegmenter(configuration: try ReplySegmentation(
+                    maxSentences: sentenceLimit, maxWords: wordLimit
+                ))
+                for count in 1...12 {
+                    let text = (0..<count).map { index in
+                        Array(repeating: "word", count: 1 + index % 11).joined(separator: " ") + "."
+                    }.joined(separator: " \n ")
+                    let pieces = segmenter.segments(text)
+                    #expect(!pieces.isEmpty)
+                    #expect(pieces.allSatisfy { !$0.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty })
+                    #expect(pieces.allSatisfy { $0.split(whereSeparator: \.isWhitespace).count <= wordLimit })
+                    #expect(pieces.allSatisfy { $0.filter { $0 == "." }.count <= sentenceLimit })
+                    #expect(pieces.joined(separator: " ").split(whereSeparator: \.isWhitespace)
+                            == text.split(whereSeparator: \.isWhitespace))
+                    #expect(segmenter.segments(text) == pieces)
+                }
+            }
+        }
+    }
+}
+
+/// One unspaced-sentence case: the text, its sentence limit and the expected segments.
+private struct UnspacedCase {
+    let text: String
+    let limit: Int
+    let expected: [String]
+
+    init(_ text: String, _ limit: Int, _ expected: [String]) {
+        (self.text, self.limit, self.expected) = (text, limit, expected)
+    }
+}

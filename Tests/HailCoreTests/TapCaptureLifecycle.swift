@@ -1,0 +1,1 @@
+../../Apps/Hail-iOS/TranscriptionLabView+Lifecycle.swift

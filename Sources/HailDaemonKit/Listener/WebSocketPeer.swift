@@ -192,6 +192,7 @@ actor WebSocketPeer {
         helloTimer?.cancel()
         helloTimer = nil
         connection.cancel()
+        Task { await session.endSegmentTracking() }
         emit("session_disconnected", detail: reason)
         onEnd(id)
     }
@@ -206,7 +207,8 @@ extension WebSocketPeer {
     /// Preparation is not an enqueue grant; its transport permit must remain current at final admission.
     func prepareReplyPublication(
         _ frame: Frame, onLateSuccess: (@Sendable () -> Void)? = nil
-    ) -> PreparedWebSocketReply? {
+    ) async -> PreparedWebSocketReply? {
+        let frame = await session.replyFrameForPeer(frame)
         guard !ended, !closing, !Task.isCancelled, let data = try? FrameCoding.encode(frame),
               let permit = replyTransport.issuePermit() else { return nil }
         // Synthetic completion control; all production and injected sends retain the same final transport gate.

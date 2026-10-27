@@ -390,7 +390,7 @@ class ReplyCLITests(unittest.TestCase):
             time.sleep(0.05)
 
     @contextlib.contextmanager
-    def reply_server(self, respond, caller_may_vanish=False):
+    def reply_server(self, respond, caller_may_vanish=False, raw_requests=None):
         """A private reply socket answering frame N with respond(N); yields (path, [(arrival, frame)]).
 
         With caller_may_vanish, a test that kills the caller on purpose lets an answer find the CLI gone: the
@@ -420,6 +420,8 @@ class ReplyCLITests(unittest.TestCase):
                                     if not chunk:
                                         raise AssertionError("CLI closed before sending a frame")
                                     request += chunk
+                                if raw_requests is not None:
+                                    raw_requests.append(request)
                                 index = len(frames)
                                 frames.append((time.monotonic(), json.loads(request)))
                                 try:

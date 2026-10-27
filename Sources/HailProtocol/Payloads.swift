@@ -211,10 +211,13 @@ public struct AudioPayload: Codable, Sendable, Equatable {
     /// the host ended its last one (#373), not because someone asked to listen there. A host never lets such a start
     /// take listening over from another device. On the wire it is `"resume": true` or absent, never `false`.
     public var isResume: Bool
+    /// Ends a non-final spoken reply segment (#932). Only `true` or absent on the wire; capability gated.
+    public var isSegmentEnd: Bool
 
     public init(
         codec: AudioCodec, sampleRate: Int, channels: Int, sequence: Int,
-        streamID: UUID? = nil, isFinal: Bool = true, bytes: Data, reply: ReplyDescriptor? = nil, isResume: Bool = false
+        streamID: UUID? = nil, isFinal: Bool = true, bytes: Data, reply: ReplyDescriptor? = nil,
+        isResume: Bool = false, isSegmentEnd: Bool = false
     ) {
         self.codec = codec
         self.sampleRate = sampleRate
@@ -225,6 +228,7 @@ public struct AudioPayload: Codable, Sendable, Equatable {
         self.bytes = bytes
         self.reply = reply
         self.isResume = isResume
+        self.isSegmentEnd = isSegmentEnd
     }
 
     public init(from decoder: any Decoder) throws {
@@ -257,6 +261,21 @@ public struct AudioPayload: Codable, Sendable, Equatable {
             )
             throw DecodingError.dataCorrupted(context)
         }
+        isSegmentEnd = try Self.segmentEnd(from: decoder, reply: reply, stream: streamID,
+                                           final: isFinal, resume: isResume)
+    }
+
+    private static func segmentEnd(
+        from decoder: any Decoder, reply: ReplyDescriptor?, stream: UUID?, final: Bool, resume: Bool
+    ) throws -> Bool {
+        let container = try decoder.container(keyedBy: CodingKeys.self)
+        guard container.contains(.isSegmentEnd) else { return false }
+        guard try container.decode(Bool.self, forKey: .isSegmentEnd),
+              reply != nil, stream != nil, !final, !resume else {
+            throw DecodingError.dataCorrupted(.init(codingPath: decoder.codingPath + [CodingKeys.isSegmentEnd],
+                                                    debugDescription: "segmentEnd needs non-final reply audio"))
+        }
+        return true
     }
 
     public func encode(to encoder: any Encoder) throws {
@@ -270,11 +289,12 @@ public struct AudioPayload: Codable, Sendable, Equatable {
         try container.encode(bytes, forKey: .bytes)
         try container.encodeIfPresent(reply, forKey: .reply)
         if isResume { try container.encode(true, forKey: .isResume) }
+        if isSegmentEnd { try container.encode(true, forKey: .isSegmentEnd) }
     }
 
     private enum CodingKeys: String, CodingKey {
         case codec, sampleRate, channels, sequence, streamID = "streamId", isFinal = "final", bytes, reply
-        case isResume = "resume"
+        case isResume = "resume", isSegmentEnd = "segmentEnd"
     }
 }
 

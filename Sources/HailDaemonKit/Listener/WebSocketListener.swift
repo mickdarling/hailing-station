@@ -49,6 +49,8 @@ public actor WebSocketListener {
     /// The peers, and each one's transport by its session's connection id, so the ambient router can probe a
     /// stale-looking one (#941 `probe(connection:within:)`); dropped with the peer.
     var peers: [UUID: WebSocketPeer] = [:], transports: [UUID: NWConnection] = [:]
+    /// Content-free, bounded request correlation; each ledger belongs to exactly one connection (#923).
+    var heardTurns: [UUID: HeardTurnRecords] = [:]
     private var readyWaiters: [CheckedContinuation<UInt16, any Error>] = []
     private var stopWaiters: [CheckedContinuation<Void, Never>] = []
     var readyResult: Result<UInt16, WebSocketListenerError>?
@@ -56,7 +58,8 @@ public actor WebSocketListener {
     /// `stoppedReplyIDs`: replies stopped on any connection (#309), newest last and bounded. Recorded when the
     /// stop is made, so a stop outlives the device that asked for it. `stopsInFlight` holds each stopping session
     /// until then, so its stop is seen even if its peer ends during the await.
-    var stopped = false, stoppedReplyIDs: [UUID] = [], stopsInFlight: [UUID: HostSession] = [:]
+    var stopped = false, stopsInFlight: [UUID: HostSession] = [:]
+    let stoppedReplyIDs = ReplyStopLedger()
     /// Opt-in ambient listening (#203): the sink of the authorizer's `AmbientAudioGate`. Nil by default.
     let ambient: (any AmbientListenerWiring)?
     /// Per target, the connection that most recently sent it admitted input (#370). Host-side only.
@@ -128,13 +131,17 @@ public actor WebSocketListener {
         if stopped { return }
         await withCheckedContinuation { stopWaiters.append($0) }
     }
+}
 
+extension WebSocketListener {
     public func stop(reason: String = "requested") async {
         guard !stopped else { return }
         stopped = true
         networkListener.cancel()
         let active = Array(peers.values)
         (peers, transports) = ([:], [:])
+        heardTurns.values.forEach { $0.close() }
+        heardTurns.removeAll()
         for peer in active { await peer.stop(reason: reason) }
         await stopAmbient(active)
         if readyResult == nil { finishReady(.failure(.stoppedBeforeReady)) }
@@ -184,7 +191,9 @@ public actor WebSocketListener {
     private func accept(_ connection: NWConnection) async {
         // Attached before the admission checks, so no suspension separates them from the insertion below (#370).
         let session = HostSession(host: host, authorizer: authorizer, hostName: hostName)
-        await session.attachLastInput(lastInput)
+        await session.attachLastInput(lastInput, recordStoppedReply: { [stoppedReplyIDs] id in
+            stoppedReplyIDs.record(id)
+        }, replyEvent: log)
         guard !stopped else { return connection.cancel() }
         let id = UUID()
         guard peers.count < maxConnections else {
@@ -309,6 +318,7 @@ extension WebSocketListener {
     fileprivate func peerEnded(_ id: UUID) async {
         guard let peer = peers.removeValue(forKey: id) else { return }
         transports[peer.session.connectionID] = nil
+        heardTurns.removeValue(forKey: peer.session.connectionID)?.close()
         lastInput.forget(connection: peer.session.connectionID)
         await endAmbient(of: peer)
     }
@@ -450,9 +460,8 @@ extension WebSocketListener {
         let stop = UUID()
         stopsInFlight[stop] = peer.session
         let (frame, cut) = await peer.session.stopReplyPlayback()
-        stoppedReplyIDs.append(contentsOf: cut)
+        for id in cut { stoppedReplyIDs.record(id) }
         stopsInFlight[stop] = nil
-        stoppedReplyIDs.removeFirst(max(0, stoppedReplyIDs.count - HostSession.playbackStopLimit))
         if let frame, await peer.send(frame) { return "stopped" }
         return cut.isEmpty ? "idle" : "cut"
     }
@@ -1097,12 +1106,11 @@ extension AmbientRightyoRouter {
             onAcknowledge: acknowledged(on: connection, listener: listener, notices: notices)
         )
         (settings.replyControl, settings.onAcknowledgementSkipped) = (configuration.replyControl, skipped())
-        (settings.onHeard, settings.onOverheard) = transcriptRelays(on: connection, listener: listener)
+        settings.heardRequests = heardRequests(on: connection, listener: listener, notices: notices)
+        settings.onOverheard = overheard(on: connection, listener: listener)
         settings.onVoiceMute = voiceMuted(on: connection, listener: listener)
         settings.onVoiceMedia = voiceMedia(on: connection, listener: listener)
         settings.onVoiceMeeting = voiceMeeting(on: connection, listener: listener)
-        // Unsent text already in the target's input (#894) refuses that request only; the stream goes on.
-        settings.onDeliveryRefused = deliveryRefused(on: connection, listener: listener, notices: notices)
         // The child's privacy state, held once it exists, so its refusal is said by the state rule (round 4).
         let mark = AmbientRunMark()
         (settings.onVoiceDuck, settings.onDuckUnsupported) = (voiceDuck(on: connection, listener: listener, mark: mark),
@@ -1191,20 +1199,19 @@ extension AmbientRightyoRouter {
         }
     }
 
-    /// Shows the phone that heard an admitted request its own words (#318), awaited before the acknowledgement and the
-    /// typing. Nothing is logged: the text is transcript content.
-    private func heard(on connection: UUID, listener: WebSocketListener) -> @Sendable (String) async -> Void {
+    /// Carries a host-local request key through heard delivery and completion (#923). Neither words nor keys log.
+    func heardRequests(
+        on connection: UUID, listener: WebSocketListener, notices: AmbientRefusalNotices
+    ) -> AmbientHeardRequests {
         let target = configuration.target
-        return { [weak listener] text in
-            await listener?.showAmbientHeard(connection: connection, target: target, text: text)
-        }
-    }
-
-    /// The phone's own words, sent (#318) and not sent (#398), for the stream on `connection`.
-    private func transcriptRelays(
-        on connection: UUID, listener: WebSocketListener
-    ) -> (@Sendable (String) async -> Void, @Sendable (String, Bool, String?) async -> Void) {
-        (heard(on: connection, listener: listener), overheard(on: connection, listener: listener))
+        let refused = deliveryRefused(on: connection, listener: listener, notices: notices)
+        return AmbientHeardRequests(show: { [weak listener] request, text in
+            await listener?.showAmbientHeard(connection: connection, target: target, text: text, request: request)
+        }, finish: { [weak listener] request, refusal in
+            if let refusal { refused(request, refusal) } else if let request {
+                await listener?.finishHeardRequest(request, connection: connection)
+            }
+        })
     }
 
     /// Shows the phone that heard a turn RightyO did not send (#398), within the scope that phone asked for, with a
@@ -1647,8 +1654,8 @@ extension AmbientRightyoRouter {
     /// never the words, the text left in the input, or the target.
     fileprivate func deliveryRefused(
         on connection: UUID, listener: WebSocketListener, notices: AmbientRefusalNotices
-    ) -> @Sendable (LocalDispatchRefusal) -> Void {
-        { [weak self, weak listener] refusal in
+    ) -> @Sendable (UUID?, LocalDispatchRefusal) -> Void {
+        { [weak self, weak listener] request, refusal in
             let acknowledged = notices.acknowledgement
             notices.chain.enqueue { [weak self, weak listener] in
                 guard let self else { return }
@@ -1656,7 +1663,7 @@ extension AmbientRightyoRouter {
                 // out as `voice_route_refused`, the existing request-refusal code; a dedicated code waits for a
                 // protocol change.
                 let (shown, confirm) = await tellNotSent(HostDeliveryOutcome.inputPendingReason, after: acknowledged,
-                                                         on: connection, listener: listener)
+                                                         on: connection, listener: listener, request: request)
                 emit("ambient_delivery_refused", connection: connection,
                      detail: "reason=\(refusal.rawValue) shown=\(shown) confirm=\(confirm)")
             }
@@ -1668,10 +1675,12 @@ extension AmbientRightyoRouter {
     /// before it is typed, so the speaker hears the acknowledgement first), the refusal line, then "Nothing was sent.".
     /// Returns the line's and the clip's outcome tokens. A connection already gone (`no_connection`) gets no clip either.
     private func tellNotSent(
-        _ line: String, after acknowledgement: Task<Void, Never>?, on connection: UUID, listener: WebSocketListener?
+        _ line: String, after acknowledgement: Task<Void, Never>?, on connection: UUID, listener: WebSocketListener?,
+        request: UUID? = nil
     ) async -> (shown: String, confirm: String) {
         await acknowledgement?.value
-        let shown = await listener?.showRouteRefusal(line, target: configuration.target, connection: connection)
+        let shown = await listener?.showRouteRefusal(line, target: configuration.target, connection: connection,
+                                                      request: request)
             ?? "no_connection"
         guard shown != "no_connection" else { return (shown, shown) }
         return (shown, await confirmNotSent(on: connection, listener: listener))
