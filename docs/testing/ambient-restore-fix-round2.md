@@ -544,3 +544,129 @@ build/test compilation emits CLT linker debug-module-path warnings, as in earlie
 rounds; no Swift source warnings are suppressed. Manual strict-warning lint
 review and `git diff --check` cover the changed test. The iOS app cannot be built
 on this CLT-only VM; package checks remain synthetic.
+
+## R12: shared app presentation decisions (finding 5 app half and F5)
+
+The old app authorization and lifetime suites copied predicates into the tests.
+Their passing results did not establish that the app used those predicates. The
+new `Sources/HailCore/AmbientRestorePresentation.swift` is an immutable value
+snapshot of HailCore controller state and the store's confirmed binding. Its
+small decision functions are shared by the actual root/card callers and both
+rewritten suites; the tests contain no duplicate applied-binding or card-retention
+predicate.
+
+`appliedBinding` requires listening, an applied notice, no pending restore,
+matching controller/reconnect/current confirmed bindings, and matching selected
+host/target IDs. `authorizedGeneration` supplies the root's destination fallback
+before foreground selection authorization catches up, preferring the applied
+binding over stale foreground state. The app still checks its available target,
+remembered selection, and snapshot generation when constructing a destination.
+The tests exercise both stale foreground authorization states, stale confirmed
+generations, changed selections, target removal, and endpoint changes.
+
+`card` accepts a confirmed destination first and otherwise retains a card only
+while recovery is pending. `notice` and `offersResume` are separate from that
+lifetime; `resumeBinding` accepts only the current confirmed binding. The tests
+exercise pending disappearance without stopping capture, applied-notice target
+removal in foreground and background, real binding changes, explicit card
+loss, and blocked/failed notices with no available destination. The app's existing
+lifetime hooks now consume these shared results.
+
+The VM cannot compile the iOS application. Reading both app callers against the
+new HailCore file confirms that `AmbientRestorePresentation`, its MainActor
+initializer, `appliedBinding`, `authorizedGeneration`, `card`, `notice`,
+`offersResume`, and `resumeBinding` all exist and have public access. The snapshot
+stores values rather than a controller/capture reference. These are synthetic
+package tests and a source-level app wiring/access check, not native SwiftUI,
+physical audio, or physical haptic proof. Independent exact-head review remains
+pending.
+
+R2 now changes exactly three production files relative to the new R1:
+AmbientRestorePresentation.swift, Apps/Hail-iOS/StationCard.swift, and
+Apps/Hail-iOS/RootView+DestinationSelection.swift. R0 is unchanged; R1 remains
+four production files, with zero production changes in the R12 R1 increment.
+
+### Mutation B1: remove the applied-generation destination fallback
+
+The temporary HailCore mutation changed `authorizedGeneration` to return only
+`generation`, dropping the applied-binding fallback. The command was
+`test -Xswiftc -warnings-as-errors --disable-xctest --no-parallel
+--filter AmbientReconnectAppAuthorization --skip DiagnosticReplyComposition`,
+with the common flags above. It exited 1: **3 tests in 1 suite, 5 failed
+assertions, 7.940 s**. Selected exact assertion lines (all IDs are synthetic):
+
+```text
+AmbientReconnectAppAuthorizationTests.swift:21:9: Expectation failed: (generation → 6190533A-44B8-4714-BA1E-50A7845C5A24) == (binding.connectionGeneration → 94F2B502-9EB1-410B-AC0A-55AD419A7EDF)
+AmbientReconnectAppAuthorizationTests.swift:31:9: Expectation failed: (card?.0 → nil) == (binding → AmbientAudioBinding(hostID: "mac-1", targetID: "tmux:synthetic", connectionGeneration: 94F2B502-9EB1-410B-AC0A-55AD419A7EDF, selection: 2))
+AmbientReconnectAppAuthorizationTests.swift:33:9: Expectation failed: (rig.controller → HailCore.AmbientListeningController).isListening → false
+AmbientReconnectAppAuthorizationTests.swift:38:9: Expectation failed: (rig.released == 0 → false) && (rig.unexpected.isEmpty → <not evaluated>)
+```
+
+The additional failure at line 23 checks the stale foreground-authorized case.
+The mutation causes the real shared destination decision to lose the card and
+stop listening. There was no timeout. The raw log is `r2-mutation-B1.log` in
+`hs-904-R12-scratch`. The HailCore file was restored byte-for-byte before B2.
+
+### Mutation B2: let completed notices retain cached presentation/bindings
+
+The temporary HailCore mutation allowed `card` to fall back to the recovery
+binding when `isPending || notice != nil`, and let `resumeBinding` fall back to
+that cached binding whenever a notice existed. The command was
+`test -Xswiftc -warnings-as-errors --disable-xctest --no-parallel
+--filter AmbientReconnectAppLifetime --skip DiagnosticReplyComposition`, with the
+common flags above. It exited 1: **3 tests in 1 suite, 12 failed assertions,
+13.545 s**. Selected exact assertion lines (all IDs are synthetic):
+
+```text
+AmbientReconnectAppLifetimeTests.swift:37:9: Expectation failed: (presentation.card(hostName: nil) → (HailCore.AmbientAudioBinding(hostID: "mac-1", targetID: "tmux:synthetic", connectionGeneration: 36B6D222-0DDD-4396-BE8B-0A7C278B8A18, selection: 2), "mac-1")) == nil
+AmbientReconnectAppLifetimeTests.swift:38:9: Expectation failed: (presentation.resumeBinding → AmbientAudioBinding(hostID: "mac-1", targetID: "tmux:synthetic", connectionGeneration: 36B6D222-0DDD-4396-BE8B-0A7C278B8A18, selection: 2)) == nil
+AmbientReconnectAppLifetimeTests.swift:79:9: Expectation failed: (presentation.card(hostName: nil) → (HailCore.AmbientAudioBinding(hostID: "mac-1", targetID: "tmux:synthetic", connectionGeneration: 0D024164-CCF6-4C63-B819-0FD07426AB45, selection: 2), "mac-1")) == nil
+AmbientReconnectAppLifetimeTests.swift:81:9: Expectation failed: (presentation.resumeBinding → AmbientAudioBinding(hostID: "mac-1", targetID: "tmux:synthetic", connectionGeneration: 0D024164-CCF6-4C63-B819-0FD07426AB45, selection: 2)) == nil
+AmbientReconnectAppLifetimeTests.swift:63:9: Expectation failed: (!rig.controller.isOn && !rig.controller.isListening → false) && (rig.released == 1 → <not evaluated>)
+```
+
+The card/resume assertions at lines 37/38 also failed for the failed notice;
+lines 79/81 and the retained-capture assertions also failed in the background
+applied-notice case. There was no timeout. The raw log is `r2-mutation-B2.log`
+in `hs-904-R12-scratch`. The shared file was restored byte-for-byte and compared
+with the prepared baseline before the pass-after runs. No mutation is committed.
+
+### R12 pass-after verification
+
+After restoring both B mutations, the shared app suites passed **6 tests in
+2 suites, 21.874 s**, including all parameterized cases. All test invocations
+use `--disable-xctest --no-parallel` and skip DiagnosticReplyComposition.
+The requested full broad family is
+`Ambient|HostConnection|Listening|Reconnect|Notice|AudioGate|TapCapture|HeardTurn|Privacy|Segment`.
+It is partitioned into three serial, non-overlapping bounded lanes:
+`^HailCoreTests[.].*(family)`, `^HailDaemonKitTests[.].*(family)`, and the full
+family excluding both those modules. Each lane has its own 590-second limit and
+process-group kill cleanup, and waits on the same literal process gate.
+
+Manual strict-warning lint review covers the 53-line new core file, the 106-line
+authorization suite and 87-line lifetime suite: type bodies stay below 150 lines,
+function bodies below 40, code lines at most 120 columns, parameters at most four,
+and complexity/nesting within .swiftlint.yml. The changed app adapters are small
+calls/value lookups; existing explanatory app comments are preserved. No lint
+suppression is added, and no blank line or code reflow is used to meet a limit.
+Both staged and unstaged `git diff --check` pass. R1's two required committed-head
+builds passed (0.35 s and 0.40 s). The final R2 head checks are `build
+-Xswiftc -warnings-as-errors` and `build --build-tests -Xswiftc -warnings-as-errors`,
+with the common resource, offline and Testing flags above.
+
+All three restored full `--filter AmbientReconnect` repetitions passed:
+**67 tests in 23 suites** per run, in **130.466 s**, **131.665 s**, and
+**133.772 s**. This includes the strengthened latched-veto probe, both shared app
+suites, host admission, and the existing privacy/refusal/flapping checks. Raw
+logs are `r2-focused-1.log` through `r2-focused-3.log` in `hs-904-R12-scratch`.
+
+The broad lanes all passed, without overlapping module selections:
+
+- core: **400 tests in 110 suites**, 277.372 s.
+- daemon: **593 tests in 135 suites**, 419.847 s.
+- remaining: **50 tests in 9 suites**, 0.188 s.
+
+Total: **1043 tests in 254 suites**. The raw logs are `r2-broad-core.log`,
+`r2-broad-daemon.log`, and `r2-broad-remaining.log` in
+`hs-904-R12-scratch`. An audit of all restored/focused/broad logs found no
+recorded assertion issues and no DiagnosticReplyComposition suite or test start.

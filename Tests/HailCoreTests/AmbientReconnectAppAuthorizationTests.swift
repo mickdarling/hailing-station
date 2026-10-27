@@ -3,34 +3,56 @@ import HailProtocol
 import Testing
 @testable import HailCore
 
-/// Mirrors the root's synchronous applied-binding predicate and pending-card fallback, not native SwiftUI.
+/// Exercises the root's shared applied-binding predicate and destination fallback, not native SwiftUI.
 @MainActor
 @Suite(.serialized) struct AmbientReconnectAppAuthorizationTests {
     @Test func backgroundRestoreMustKeepListeningAfterPendingCardDisappears() async throws {
         let rig = try AmbientReconnectRig()
         try await rig.start()
         let original = try rig.currentBinding()
-        var rootAuthorizedGeneration = original.connectionGeneration
         try await rig.drop()
         await rig.controller.update(binding: nil, scene: .background)
         try await rig.reconnect()
         let binding = try rig.currentBinding()
-        #expect(binding.connectionGeneration != rootAuthorizedGeneration)
-        let cardExists = binding.connectionGeneration == rootAuthorizedGeneration || rig.controller.reconnect.isPending
-        #expect(!cardExists) // The reviewer's former foreground-only predicate loses the card.
-        if appliedBinding(rig, selected: original) != nil { rootAuthorizedGeneration = binding.connectionGeneration }
-        let rootDestinationExists = binding.connectionGeneration == rootAuthorizedGeneration
-        let appliedCardExists = rootDestinationExists || rig.controller.reconnect.isPending
+        #expect(binding.connectionGeneration != original.connectionGeneration)
+        let generation = rig.appPresentation.authorizedGeneration(
+            hostID: original.hostID, targetID: original.targetID,
+            foregroundAuthorized: false, generation: original.connectionGeneration)
+        #expect(generation == binding.connectionGeneration,
+                "Applied background restore must replace the stale foreground authorization generation")
+        #expect(rig.appPresentation.authorizedGeneration(
+            hostID: original.hostID, targetID: original.targetID,
+            foregroundAuthorized: true, generation: original.connectionGeneration) == binding.connectionGeneration)
+        let destinationExists = generation == binding.connectionGeneration
+        let presentation = AmbientRestorePresentation(controller: rig.controller,
+            confirmedBinding: destinationExists ? binding : nil)
+        let card = presentation.card(hostName: destinationExists ? rig.endpoint.name : nil)
         #expect(!rig.controller.reconnect.isPending)
-        #expect(appliedCardExists) // Corrected predicate: the applied generation retains the real destination.
-        if !appliedCardExists { await rig.controller.destinationLost() } // StationCard.onDisappear
+        #expect(card?.0 == binding, "Applied restore lost the destination fallback and removed its card")
+        if card == nil { await rig.controller.destinationLost() } // StationCard.onDisappear
         #expect(rig.controller.isListening, "Successful background restore removes its card and stops capture")
         #expect(rig.capture.startCount == 1)
         let before = try await audioFrames(rig.socket).count
         try await rig.feed()
-        try await waitUntil { try await audioFrames(rig.socket).count > before }
+        if rig.controller.isListening { try await waitUntil { try await audioFrames(rig.socket).count > before } }
         #expect(rig.released == 0 && rig.unexpected.isEmpty)
         await rig.close()
+    }
+
+    @Test func staleConfirmedGenerationAndOtherSelectionsCannotAuthorizeAppliedRestore() async throws {
+        let rig = try AmbientReconnectRig()
+        try await rig.start()
+        let original = try rig.currentBinding()
+        #expect(rig.appPresentation.appliedBinding(hostID: original.hostID, targetID: original.targetID) == nil)
+        try await rig.drop()
+        try await rig.reconnect()
+        let stale = AmbientRestorePresentation(controller: rig.controller, confirmedBinding: original)
+        #expect(stale.appliedBinding(hostID: original.hostID, targetID: original.targetID) == nil,
+                "An applied notice authorized a stale confirmed generation")
+        #expect(rig.appPresentation.appliedBinding(hostID: "other", targetID: original.targetID) == nil)
+        #expect(rig.appPresentation.appliedBinding(hostID: original.hostID, targetID: "other") == nil)
+        await rig.close()
+        #expect(rig.appPresentation.appliedBinding(hostID: original.hostID, targetID: original.targetID) == nil)
     }
 
     enum Loss: CaseIterable, Sendable { case targetRemoval, endpointChange, ownerSelection }
@@ -43,7 +65,7 @@ import Testing
         try await rig.drop()
         await rig.controller.update(binding: nil, scene: .background)
         try await rig.reconnect()
-        #expect(appliedBinding(rig, selected: original) != nil)
+        #expect(rig.appPresentation.appliedBinding(hostID: original.hostID, targetID: original.targetID) != nil)
         switch loss {
         case .targetRemoval:
             try await rig.socket.push(.targets([]))
@@ -54,7 +76,7 @@ import Testing
             await rig.store.upsert(try endpoint(rig.endpoint.id, "ws://127.0.0.1:8766"))
         case .ownerSelection: try await rig.select(restoring: false)
         }
-        #expect(appliedBinding(rig, selected: original) == nil)
+        #expect(rig.appPresentation.appliedBinding(hostID: original.hostID, targetID: original.targetID) == nil)
         switch loss {
         case .ownerSelection: await rig.controller.update(binding: try rig.currentBinding(), scene: .background)
         case .targetRemoval, .endpointChange: await rig.controller.destinationLost()
@@ -64,14 +86,13 @@ import Testing
         try await rig.expectNoAdditionalPCM()
         await rig.close()
     }
+}
 
-    private func appliedBinding(_ rig: AmbientReconnectRig, selected: AmbientAudioBinding) -> AmbientAudioBinding? {
-        let controller = rig.controller
-        guard controller.isListening, controller.reconnect.notice?.outcome == .applied,
-              !controller.reconnect.isPending, let binding = controller.reconnect.binding,
-              controller.binding == binding, selected.hostID == binding.hostID, selected.targetID == binding.targetID,
-              rig.store.ambientBinding(host: binding.hostID, targetID: binding.targetID) == binding else { return nil }
-        return binding
+@MainActor
+extension AmbientReconnectRig {
+    var appPresentation: AmbientRestorePresentation {
+        AmbientRestorePresentation(controller: controller,
+            confirmedBinding: store.ambientBinding(host: endpoint.id, targetID: target.id))
     }
 }
 

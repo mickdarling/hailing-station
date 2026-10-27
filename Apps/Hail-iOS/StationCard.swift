@@ -175,27 +175,27 @@ extension RootView {
     }
 
     private var ambientPresentation: (AmbientAudioBinding, String)? {
-        if let destination,
-           let binding = connections.ambientBinding(host: destination.hostID, targetID: destination.target.id) {
-            return (binding, destination.endpoint.name)
-        }
-        guard let recovery = connections.ambientController?.reconnect,
-              recovery.isPending,
-              let binding = recovery.binding, let name = recovery.hostName else { return nil }
-        return (binding, name)
+        ambientRestorePresentation.card(hostName: destination?.endpoint.name)
+    }
+
+    private var ambientRestorePresentation: AmbientRestorePresentation {
+        let binding = destination.flatMap { connections.ambientBinding(host: $0.hostID, targetID: $0.target.id) }
+        return AmbientRestorePresentation(controller: connections.ambientController, confirmedBinding: binding)
     }
 
     /// A reconnect outcome belongs to the root surface. It never retains a card, capture, or destination binding.
     @ViewBuilder
     private var reconnectNotice: some View {
-        if let controller = connections.ambientController, let notice = controller.reconnect.notice {
+        if let controller = connections.ambientController, let notice = ambientRestorePresentation.notice {
             VStack(alignment: .leading, spacing: 6) {
                 Text(notice.text)
-                if notice.outcome != .applied, !controller.isOn {
+                if ambientRestorePresentation.offersResume {
                     Button("Resume listening") {
-                        if let binding = ambientPresentation?.0 { Task { await controller.turnOn(for: binding) } }
+                        if let binding = ambientRestorePresentation.resumeBinding {
+                            Task { await controller.turnOn(for: binding) }
+                        }
                     }
-                    .disabled(ambientPresentation == nil)
+                    .disabled(ambientRestorePresentation.resumeBinding == nil)
                     .buttonStyle(.borderedProminent)
                 }
             }
@@ -371,7 +371,8 @@ extension AmbientListeningCard {
     /// Only pending recovery keeps the card through an unavailable destination. A notice has no capture lifetime.
     /// Only a current confirmed binding can resume.
     private var currentBinding: AmbientAudioBinding? {
-        connections.ambientBinding(host: binding.hostID, targetID: binding.targetID)
+        AmbientRestorePresentation(controller: controller, confirmedBinding:
+            connections.ambientBinding(host: binding.hostID, targetID: binding.targetID)).resumeBinding
     }
 }
 

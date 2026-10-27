@@ -14,9 +14,10 @@ extension RootView {
     }
 
     var destination: Destination? {
-        let restored = appliedAmbientBinding
-        guard selectionAuthorizedForReadyConnection || restored != nil,
-              let authorizedConnectionGeneration = restored?.connectionGeneration ?? authorizedConnectionGeneration,
+        guard let authorizedConnectionGeneration = ambientRestoreAuthorization.authorizedGeneration(
+            hostID: selectedHostID, targetID: selectedTargetID,
+            foregroundAuthorized: selectionAuthorizedForReadyConnection, generation: authorizedConnectionGeneration
+        ),
               let selectedHostID, let selectedTargetID, let rememberedSelection else { return nil }
         return availableDestinations.first {
             $0.hostID == selectedHostID && $0.target.id == selectedTargetID
@@ -27,13 +28,14 @@ extension RootView {
 
     /// Only core's applied, still-current binding may advance authorization without a foreground selection.
     private var appliedAmbientBinding: AmbientAudioBinding? {
-        guard let controller = connections.ambientController, controller.isListening,
-              controller.reconnect.notice?.outcome == .applied, !controller.reconnect.isPending,
-              let binding = controller.reconnect.binding, controller.binding == binding,
-              selectedHostID == binding.hostID, selectedTargetID == binding.targetID,
-              connections.ambientBinding(host: binding.hostID, targetID: binding.targetID) == binding
-        else { return nil }
-        return binding
+        ambientRestoreAuthorization.appliedBinding(hostID: selectedHostID, targetID: selectedTargetID)
+    }
+
+    private var ambientRestoreAuthorization: AmbientRestorePresentation {
+        let binding = selectedHostID.flatMap { host in
+            selectedTargetID.flatMap { connections.ambientBinding(host: host, targetID: $0) }
+        }
+        return AmbientRestorePresentation(controller: connections.ambientController, confirmedBinding: binding)
     }
 
     @MainActor
