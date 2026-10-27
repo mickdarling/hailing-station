@@ -167,6 +167,7 @@ actor AmbientAudioSendQueue {
     }
 
     var hasFailed: Bool { failure != nil }
+    var pendingCount: Int { pending.count }
 
     private(set) var droppedCaptureBuffers = 0
     /// Counts a capture buffer discarded before conversion (a gap in audio, not in sequence numbers).
@@ -203,6 +204,9 @@ actor AmbientAudioSendQueue {
                 await onFailure(self, error)
             }
         }
+        // Admission retirement drops captured audio without notifying onFailure: the caller already owns
+        // that retirement. A thrown send error still notifies through the existing catch path above.
+        if let admission, !admission.accepts() { pending.removeAll() }
         draining = false
         idleWaiters.forEach { $0.resume() }
         idleWaiters.removeAll()

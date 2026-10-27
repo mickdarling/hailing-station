@@ -60,15 +60,18 @@ physical-device behavior remain unverified.
 Results on main-24be: both builds passed; the seven focused tests passed on each
 of five runs; the broad selection passed **786 tests in 179 suites** in 472.500 s.
 Manual strict-warning lint review found no new violation; `git diff --check` passed.
-R0 changes exactly two production files relative to main-24be.
+R0 changes exactly three production files relative to main-24be.
 
 ## R8 review fix (F3 and F6)
 
 The optional `transportLossObserver` installs a transport wrapper only when a
 caller supplies it. The wrapper is bound once to the socket generation before
 negotiation sends or receives. It awaits the loss callback at raw send/receive
-failure, before rethrowing the same error to the existing close/publication path.
-Cancellation and protocol failures keep their existing classification. The wrapper
+failure, before rethrowing the same error to the existing close/publication path
+for transport-caused drops. Explicit disconnect or loop replacement can instead
+report an interrupted receive after `.disconnected`; callers must veto explicit
+disconnects before calling `disconnect()`, as R1's store does. Only
+`CancellationError` and `HostConnectionFailure` bypass the hook. The wrapper
 also preserves the serialized connector's predecessor when retiring a connection.
 No existing production code moved between files. Without the hook, the original
 connector and socket are used directly; wire bytes, sequencing, notice payloads,
@@ -111,7 +114,7 @@ three `test --skip-build --disable-xctest --no-parallel --filter SendOrigin
 R8 results: both required builds passed with warnings-as-errors; **11 tests in
 5 suites passed on each of three runs** (6.960 s, 6.864 s, 6.672 s). The original
 seven tests and four added tests all ran. Strict manual lint found no new warning:
-HostConnection.swift is 198 lines and its actor body is 150 nonblank code lines;
+HostConnection.swift is 206 lines and its actor body is 149 nonblank code lines;
 new functions/types are below the configured thresholds. The existing protocol
 file-length exemption is unchanged. `git diff --check` passed. R0 now changes
 three production files against main-24be. Initial development exposed Swift's
@@ -130,3 +133,82 @@ device identifiers. Public GitHub URLs (this repository and upstream projects) a
 not identifiers and stay as links. No other literal home path, account name, host
 address or device identifier was found; maintainer first-name qualifiers are unchanged.
 This docs-only change is merged down from R0 with normal merge commits.
+
+## R0 follow-up fix round (five second-key findings)
+
+1. The loss observer, connector and socket comments now distinguish transport-caused
+   drops from interrupted receives caused by explicit disconnect or loop replacement.
+   Only `CancellationError` and `HostConnectionFailure` are ignored. An interrupted
+   receive can report the bound generation after `.disconnected`; callers must veto
+   explicit disconnects before calling `disconnect()`, as R1's store does. The hook's
+   behavior is unchanged.
+2. When admission retires during a successful in-flight send, the queue drops every
+   pending segment before becoming idle. Retirement alone does not call `onFailure`:
+   the caller already owns retirement. Thrown send errors still notify as before.
+   `pendingCount` exposes only the count for synthetic retention assertions. With nil
+   admission the original drain and failure paths remain unchanged.
+3. A new sequence-0 test enters `sendAudio` with admission true, waits for the restored
+   target's re-select/ping round trip, retires admission, then answers the pong. It
+   asserts that the failure handler ran exactly once and that no audio was sent. The
+   existing executor-hop rejection test now also asserts its handler ran exactly once.
+4. Negotiation captures the socket generation before any await, then binds the loss
+   wrapper to that value. The default connector and socket are still used directly
+   when no loss observer is supplied.
+5. The production-file count is corrected to three, and `HostConnection.swift` is
+   recorded at its actual 206 lines (149 nonblank actor-body code lines). This round
+   edits only the existing audio and protocol production files; no R1/R2 code changes.
+
+New tests in `Tests/HailCoreTests/AmbientSendOriginAdmissionTests.swift`:
+
+- `retirementDuringSuccessfulSendDropsAllPendingAudio`: the first send is held after
+  reaching the scripted socket while two segments queue. Admission retires, the send
+  succeeds, and lines 25 and 29 assert `pendingCount == 0`, including after another
+  enqueue attempt. Line 30 pins the sole audio frame; line 31 pins no failure callback.
+- `retirementDuringRouteRoundTripRejectsAudioAndNotifiesFailure`: lines 47–53 prove
+  the entry check admitted the sequence-0 send into re-selection. Line 57 asserts
+  one failure callback and line 59 asserts no audio frame after the pong.
+
+The verification runner gates **every** Swift invocation on no running
+`swift-build|swift-test|swift-frontend` process, waiting 60 seconds between checks.
+Each invocation then uses the R8 command prefix above, with scratch products at
+`<scratch>/build`, a 590-second limit, and process-group kill traps. No network
+resolution is allowed. All test selections skip `DiagnosticReplyComposition`.
+
+Mutation proof (both mutated builds succeeded; each targeted test exited 1 on its
+assertions, with no fixture changes or timeout):
+
+- Removing only the admission-retirement `pending.removeAll()` failed
+  `retirementDuringSuccessfulSendDropsAllPendingAudio` at lines **25 and 29**:
+  `Expectation failed: await queue.pendingCount == 0`. The test completed in
+  0.571 s with two issues. The clearing was restored.
+- Removing only the final `AmbientSendAdmission.isCurrent` condition in `sendAudio`
+  failed `retirementDuringRouteRoundTripRejectsAudioAndNotifiesFailure` at line
+  **57**: `Expectation failed: (failures.withLock { $0 } → 0) == 1`, and line **59**:
+  `Expectation failed: try await audioFrames(socket).isEmpty`. The test completed
+  in 1.257 s with two issues. The check was restored.
+
+Both production files were checked byte-for-byte against their saved fixed versions
+after restoration. Before mutation, both new tests passed (2 tests in 1 suite,
+1.899 s). Mutation commands use the same prefix and testing flags, with action
+`test -Xswiftc -warnings-as-errors --disable-xctest --no-parallel --filter <test-name>
+--skip DiagnosticReplyComposition`; each builds its mutated source before testing.
+
+Final verification after restoring both mutations:
+
+- `build -Xswiftc -warnings-as-errors`: passed (2.20 s).
+- `build --build-tests -Xswiftc -warnings-as-errors`: passed (2.85 s).
+- Three serial `test --skip-build --disable-xctest --no-parallel --filter SendOrigin
+  --skip DiagnosticReplyComposition` runs: **13 tests in 6 suites passed each time**
+  (8.922 s, 9.865 s, 9.121 s), including both new tests and the strengthened existing
+  executor-hop test.
+- One serial `test --skip-build --disable-xctest --no-parallel
+  --filter 'HostConnection|AmbientAudio|SendOrigin|AmbientWiring'
+  --skip DiagnosticReplyComposition`: **276 tests in 71 suites passed**, 160.445 s.
+
+Both builds also passed before the mutation runs. The previously documented CLT
+debug-module-path linker warnings remain; no Swift source warning was suppressed.
+Manual strict SwiftLint threshold review found no new violation: the new test file
+is 74 lines, its test bodies are below 40 code lines, and the unchanged connection
+actor remains at 149 code lines. No blank lines or explanatory comments were removed
+to meet thresholds, and no new lint exemption was added. `git diff --check` passed.
+This remains synthetic macOS transport evidence, with no physical-device claim.
