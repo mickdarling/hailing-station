@@ -54,7 +54,7 @@ struct MeetingResume: Sendable {
 extension AmbientRightyoRouter {
     /// Parks `connection`'s mode under the caller's lock (`stop(connection:device:)`), before teardown removes it. The
     /// original expiry is kept, so repeated drops never extend a mode; only the latest-armed of two parks is kept. A
-    /// private connection parks its privacy (#941), replacing any privacy parked before.
+    /// private connection parks its privacy (#941) as its own entry, beside any parked before (#961).
     func park(connection: UUID, device: AmbientPeerDevice?, in state: inout State) {
         guard state.duck[connection] == nil else {
             return parkPrivacy(connection: connection, device: device, in: &state)

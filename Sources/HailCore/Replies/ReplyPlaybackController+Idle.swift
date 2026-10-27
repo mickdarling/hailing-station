@@ -94,7 +94,7 @@ extension ReplyPlaybackController {
         idleWatch.heldRemaining = isIdleHeld ? .zero : nil
         armIdleWatch()
     }
-    var isIdleHeld: Bool { isPaused || isCaptureSuppressed || idleWatch.audioInterrupted }
+    var isIdleHeld: Bool { segmentBoundary != nil || isPaused || isCaptureSuppressed || idleWatch.audioInterrupted }
     func idleDeadline() -> ContinuousClock.Instant { idleDeadline(idleWatch) }
     /// Paused, listening or interrupted, the player holds its audio (Codex P1s on #473): the unplayed duration
     /// (a replay's included) is kept and the watch stops, then it resumes with that still to play.

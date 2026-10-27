@@ -51,7 +51,7 @@ struct RootView: View {
             content
         }
         .modifier(StationMenuStatusPublisher(connections: connections, destination: destination?.label))
-        .overlay(alignment: .top) { AnnouncementBannerView(banners: $announcementBanners) }
+        .modifier(ReplySegmentNotices(connections: connections, banners: $announcementBanners))
         .onChange(of: scenePhase) { _, phase in
             scenePhaseRevision &+= 1
             selectionRevision &+= 1
@@ -88,6 +88,13 @@ struct RootView: View {
             Task { await reconcileRememberedSelection() }
         }
         .task {
+            let selectedHost = $selectedHostID
+            connections.wireReplySegments(playback: playback, echoGuard: echoGuard) { [weak connections] endpoint in
+                guard let connections else { return (false, true) }
+                let privacy = connections.duckMode[endpoint]?.isOn() == true
+                    || connections.privacyLocal[endpoint]?.request?.on == true
+                return (connections.ambientStreaming && selectedHost.wrappedValue == endpoint, privacy)
+            }
             // Directly from the store, not a view update, so replies also play in the background (#282).
             let playback = playback
             connections.onReplyFrame = { playback.ingest($0) }
