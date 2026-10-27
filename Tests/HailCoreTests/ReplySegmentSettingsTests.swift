@@ -91,6 +91,34 @@ import Testing
         ))
     }
 
+    @Test func numericRepresentationsAreAcceptedIndependently() throws {
+        let defaults = try #require(SegmentSettingsDefaults(suiteName: "ReplySegmentSettingsTests-numbers"))
+        let numbers = [NSNumber(value: Int8(1)), NSNumber(value: Int16(1)), NSNumber(value: Int(1)),
+                       NSNumber(value: Float(0.75)), NSNumber(value: Double(1.25))]
+        for number in numbers {
+            defaults.values = ["pauseAfterSegment": number, "sustainedOnset": 0.7]
+            #expect(ReplySegmentSettings.saved(in: defaults) == ReplySegmentSettings(
+                pauseAfterSegment: number.doubleValue, sustainedOnset: 0.7
+            ))
+            defaults.values = ["pauseAfterSegment": 2.5, "sustainedOnset": number]
+            #expect(ReplySegmentSettings.saved(in: defaults) == ReplySegmentSettings(
+                pauseAfterSegment: 2.5, sustainedOnset: number.doubleValue
+            ))
+        }
+    }
+
+    @Test func numericThresholdRepresentationsPreserveCompanions() throws {
+        let defaults = try #require(SegmentSettingsDefaults(suiteName: "ReplySegmentSettingsTests-thresholds"))
+        let numbers = [NSNumber(value: Int8(-40)), NSNumber(value: Int16(-40)), NSNumber(value: Int(-40)),
+                       NSNumber(value: Float(-40.5)), NSNumber(value: Double(-40.25))]
+        for number in numbers {
+            defaults.values = ["pauseAfterSegment": 2.5, "sustainedOnset": 0.7, "onsetThresholdDBFS": number]
+            #expect(ReplySegmentSettings.saved(in: defaults) == ReplySegmentSettings(
+                pauseAfterSegment: 2.5, sustainedOnset: 0.7, onsetThresholdDBFS: number.doubleValue
+            ))
+        }
+    }
+
     @Test(arguments: [true, false]) func persistedBooleansFallBackIndependently(_ value: Bool) throws {
         let suite = "ReplySegmentSettingsTests-\(UUID())"
         let defaults = try #require(UserDefaults(suiteName: suite))

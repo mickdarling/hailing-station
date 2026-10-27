@@ -347,3 +347,76 @@ per-connection yield routing, prompt mask release, echo-tail false positives, mu
 ambient on/off transitions and the paused notice/Station tools setting. On real speaker/headphone routes confirm
 that the window begins after sound finishes, lasts the configured interval, does not count as a stall/gap, and
 that any-voice onset works without sending reply echo or private audio. No build upload/installation is in scope.
+
+
+## P4a fix round 2 (#956, offline bundle r3)
+
+Starts at `baf7bfc2f43005b8de4645e5f96ddf72de030931` on `codex/932-p4-device`.
+The settings reader now identifies Booleans only by
+`CFGetTypeID(number as CFTypeRef) == CFBooleanGetTypeID()`. Every other NSNumber reaches the existing
+independent bounds validation; the `objCType` rejection is removed so signed-char numeric values are accepted.
+`numericRepresentationsAreAcceptedIndependently` injects NSNumber values built from Int8(1), Int16, Int,
+Float and Double into each field, checking all ten field/type combinations with a valid companion.
+Existing malformed-value tests still reject true/false NSNumber Booleans, strings, NSNull, arrays and dictionaries
+independently; real UserDefaults Boolean round trips remain covered.
+
+The existing wrappers above supply `taskpolicy -b`, `-j 4`, one compiler worker per target, offline resolution,
+and every supplied Testing framework/plugin/rpath flag. Each serial phase has the 590-second deadline and
+owned-process-tree kill trap. No load workers, network, other clones, simulator, physical audio or delivery were used.
+Exact commands (each test iteration is a separate bounded phase):
+
+```sh
+python3 /tmp/hs932-p4-tools/phase.py /tmp/hs932-p4-tools/swift build -Xswiftc -warnings-as-errors
+python3 /tmp/hs932-p4-tools/phase.py /tmp/hs932-p4-tools/swift build --build-tests -Xswiftc -warnings-as-errors
+for iteration in 1 2 3; do
+  python3 /tmp/hs932-p4-tools/phase.py /tmp/hs932-p4-tools/swift test --skip-build --no-parallel \
+    --filter 'HailCoreTests\.ReplySegment' --skip 'HailDaemonKitTests.DiagnosticReplyComposition'
+done
+git diff --check
+```
+
+Both warnings-as-errors builds passed (production 5.37 s; build-tests 59.20 s). The segment filter passed 3/3:
+26 test functions in five suites, 39 case invocations per run (78 function executions, 117 case invocations total),
+in 0.574/0.457/0.492 s. P4a has no onset detector suites; those belong to P4b1. `git diff --check` passed.
+One production file changes, plus settings regressions and this record. Logs are host-local
+`/tmp/hs932-p4a-r3-*.log`. No PR, independent review or GitHub checks were created or claimed.
+
+
+## P4b1 carry-forward of P4a fix round 2 (offline bundle r3)
+
+Starts at `e58bd6f7eb08783e4d0831af2a2498e6769d77c7` on `codex/932-p4b1-gate`.
+`git merge --no-edit codex/932-p4-device` brought in P4a
+`d7e8e2ccaca0b73a03b51c7017bfcc4716112bf9` without conflicts. All three saved fields use the same
+CF-type-only Boolean check. The merge preserves threshold bounds, independent fallback, and dictionary-merging
+saves that retain every existing key. The merge commit also includes the threshold numeric-type regression
+and this evidence record.
+
+The merged numeric tests cover Int8, Int16, Int, Float and Double for pause, sustained onset and threshold
+(15 field/type combinations). The inherited malformed-value and persisted-Boolean tests check independent
+fallback in all three fields, and `savingThresholdPreservesOtherSettingsAndUnknownKeys` checks save preservation.
+P4b1 remains an inert detector; this fix adds no app/controller wiring or physical-device proof.
+
+The same offline Swift wrapper and 590-second owned-process-tree kill trap documented above were used for
+each serial phase, with `taskpolicy -b`, `-j 4`, one compiler worker per target and all supplied Testing flags.
+No load workers, network, other clone, simulator, physical audio, upload or installed-build change was used.
+Exact commands:
+
+```sh
+python3 /tmp/hs932-p4-tools/phase.py /tmp/hs932-p4-tools/swift build -Xswiftc -warnings-as-errors
+python3 /tmp/hs932-p4-tools/phase.py /tmp/hs932-p4-tools/swift build --build-tests -Xswiftc -warnings-as-errors
+for iteration in 1 2 3; do
+  python3 /tmp/hs932-p4-tools/phase.py /tmp/hs932-p4-tools/swift test --skip-build --no-parallel \
+    --filter 'HailCoreTests\.ReplySegment' --skip 'HailDaemonKitTests.DiagnosticReplyComposition'
+done
+python3 /tmp/hs932-p4-tools/phase.py /tmp/hs932-p4-tools/swift test --skip-build --no-parallel \
+  --filter 'HailCoreTests\.(Reply|Playback|PCM16|Playout|Segment|Echo|Capture|Ambient)' \
+  --skip 'HailDaemonKitTests.DiagnosticReplyComposition'
+git diff --check
+```
+
+Both warnings-as-errors builds passed (production 5.45 s; build-tests 60.46 s). Combined segment/onset filter:
+53 test functions in nine suites, 95 case invocations per run; 3/3 passed in 0.816/0.910/0.831 s
+(159 function executions, 285 case invocations total). The exact requested serial regression passed:
+317 tests in 62 suites, 24.952 s. The #955 daemon diagnostic test was explicitly excluded in every command.
+`git diff --check` passed. Logs are host-local `/tmp/hs932-p4b1-r3-*.log`.
+Evidence is synthetic macOS VM evidence only; no PR, independent review or GitHub checks were created or claimed.

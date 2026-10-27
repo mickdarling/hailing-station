@@ -27,8 +27,7 @@ public struct ReplySegmentSettings: Equatable, Sendable {
 
     private static func number(_ value: Any?) -> Double? {
         guard let number = value as? NSNumber,
-              CFGetTypeID(number) != CFBooleanGetTypeID(),
-              !["c", "B"].contains(String(cString: number.objCType)) else { return nil }
+              CFGetTypeID(number as CFTypeRef) != CFBooleanGetTypeID() else { return nil }
         return number.doubleValue
     }
 
