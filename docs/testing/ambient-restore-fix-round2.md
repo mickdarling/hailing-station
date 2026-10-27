@@ -625,7 +625,7 @@ suppressed the ordinary stop alert, despite proven stream acceptance.
 ### Fail-before evidence
 
 The unchanged production tree was built with warnings-as-errors, then the ported
-`AmbientReconnectAcceptanceCompletionTests` and
+`AmbientReconnectAcceptanceSettlingTests` (in AmbientReconnectAcceptanceCompletionTests.swift) and
 `AmbientReconnectAcceptanceOrderingTests` ran serially with the common offline
 flags and `--skip DiagnosticReplyComposition`. The test run exited 1: **6 tests
 in 2 suites, 1 failing test, 2 failed assertions, 14.299 seconds**, with no timeout.
