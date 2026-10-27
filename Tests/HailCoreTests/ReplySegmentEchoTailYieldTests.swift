@@ -2,7 +2,7 @@ import Foundation
 import Testing
 @testable import HailCore
 
-/// Synthetic P4b2 handoff coverage; no controller/capture wiring calls the new API in production.
+/// Synthetic tail safety and P4b2 handoff coverage; no physical audio.
 @MainActor
 @Suite struct ReplySegmentEchoTailYieldTests {
     @Test func audibleReplyCannotReleaseItsMask() throws {
@@ -112,5 +112,55 @@ import Testing
         #expect(try !fixture.feed(-50, seconds: 0.001))
         fixture.clock.advance(by: .seconds(1))
         #expect(!fixture.guarder.endReplyTailForYield())
+    }
+}
+
+@MainActor @Suite struct ReplySegmentWiredTailTests {
+    @Test(arguments: [false, true])
+    func safeTailReleasePrecedesWindowCloseAndPreservesTapMask(_ active: Bool) async throws {
+        let fixture = SegmentWireFixture()
+        try await fixture.open()
+        fixture.guarder.setReplyAudible(true)
+        fixture.guarder.setReplyAudible(false)
+        try await fixture.calibrate()
+        fixture.guarder.setTapCaptureActive(true)
+        if !active { fixture.guarder.setTapCaptureActive(false) }
+        try await fixture.feed(-20, seconds: 0.3)
+        #expect(fixture.controller.lastSegmentYield != nil)
+        // The safe API can return true only while the analysed window still exists.
+        #expect(fixture.store.segmentWiring?.lastTailRelease == .released)
+        #expect(fixture.store.segmentWiring?.captureInput().window == nil)
+        #expect(!fixture.guarder.endReplyTailForYield())
+        #expect(fixture.guarder.isMasking)
+        fixture.clock.advance(by: .milliseconds(99))
+        #expect(fixture.guarder.isMasking)
+        fixture.clock.advance(by: .milliseconds(1))
+        #expect(fixture.guarder.isMasking == active)
+    }
+
+    @Test func unsafeReleaseKeepsTheNormalReplyTail() async throws {
+        let fixture = SegmentWireFixture()
+        try await fixture.open()
+        fixture.guarder.setReplyAudible(true)
+        try await fixture.detect()
+        #expect(fixture.controller.lastSegmentYield != nil)
+        #expect(fixture.store.segmentWiring?.lastTailRelease == .kept)
+        #expect(fixture.guarder.isMasking)
+        fixture.clock.advance(by: .milliseconds(399))
+        #expect(fixture.guarder.isMasking)
+        fixture.clock.advance(by: .milliseconds(1))
+        #expect(!fixture.guarder.isMasking)
+    }
+
+    @Test(arguments: [false, true])
+    func unauthorizedCaptureDoesNotDetectOrYield(_ privacy: Bool) async throws {
+        let fixture = SegmentWireFixture()
+        try await fixture.open()
+        if privacy { fixture.privacy = true } else { fixture.ambient = false }
+        try await fixture.detect()
+        #expect(fixture.guarder.segmentOnsetGate.diagnostics.onsets == 0)
+        #expect(fixture.controller.lastSegmentYield == nil)
+        #expect(fixture.store.segmentWiring?.lastTailRelease == .notAttempted)
+        #expect(fixture.player.cancelCount == 0)
     }
 }

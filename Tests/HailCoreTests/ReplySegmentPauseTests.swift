@@ -133,6 +133,34 @@ import Testing
         rig.controller.endCaptureSuppression()
         #expect(rig.player.scheduled.count == 2)
     }
+    @Test func bulkReplayUsesPlayedMarkerBarriersAndPreservesQueuedReplies() throws {
+        let rig = IdleRig(), reply = idleReply(), later = idleReply()
+        rig.controller.ingest(segmentAudio(reply, sequence: 0))
+        rig.controller.ingest(segmentAudio(reply, sequence: 1))
+        rig.controller.ingest(idleAudio(reply, sequence: 2, final: true, byte: 3))
+        rig.player.completeReply()
+        rig.advance(by: .seconds(1.5))
+        rig.player.completeReply()
+        rig.advance(by: .seconds(1.5))
+        rig.player.completeReply()
+        let before = rig.player.scheduled.count
+        rig.controller.replayLatest()
+        rig.controller.ingest(idleAudio(later, sequence: 0, final: true, byte: 9))
+        #expect(rig.player.scheduled.count == before + 1)
+        #expect(rig.controller.segmentPause == nil)
+        rig.player.completeReply()
+        #expect(rig.controller.segmentPause?.segment == 1)
+        rig.advance(by: .milliseconds(1_400))
+        #expect(rig.player.scheduled.count == before + 1)
+        rig.advance(by: .milliseconds(100))
+        try #require(rig.player.scheduled.count == before + 2)
+        rig.player.completeReply()
+        #expect(rig.controller.segmentPause?.segment == 2)
+        rig.advance(by: .seconds(1.5))
+        #expect(rig.player.scheduled.count == before + 3)
+        rig.player.completeReply()
+        #expect(rig.player.scheduled.last?.bytes.first == 9)
+    }
 }
 
 func segmentAudio(_ reply: ReplyDescriptor, sequence: Int) -> HostReplyEvent {

@@ -1,8 +1,45 @@
-# Reply segments device foundation (#932 P4a/P4b1)
+# Reply segments device wiring (#932 P4a/P4b1/P4b2)
 
 This is offline, synthetic macOS VM evidence, using fake players and an injected clock for controller tests.
 It is not an iOS app build, simulator playback, a live captured-output round trip, acoustic echo testing,
-physical-device proof, or a TestFlight delivery. P4a/P4b1 do not complete P4 or close #932.
+physical-device proof, or a TestFlight delivery. P5 and host/device validation remain open; this does not close #932.
+
+## P4b2 current implementation
+
+P4b2 is live in device code with a P3 host: hello advertises `ReplySegments.capability` beside `HeardTurns.capability`.
+The historical P4a/P4b1 records below describe their inert foundations at those revisions.
+
+Exactly four production files change from `af3ea8212a61bac32cad745d54c4a60212f0df1b`:
+
+- `HostConnectionStore.swift`: one-time pre-mask bridge, fresh authorization on every buffer and onset,
+  played-window observation/closure, local yield and ordered safe tail handoff, owned-connection send and
+  content-free admission from the existing `ambient_heard` dispatch.
+- `HostConnection+Protocol.swift`: hello capability and actor-side ready/capability/generation/endpoint checks.
+  Host-originated `reply_yield` remains an unexpected control frame.
+- `ReplyPlaybackController+Presentation.swift`: marker-bearing bulk Replay uses the segment FIFO; other queued
+  replies and late-frame refusal survive. Unsegmented Replay retains its existing behavior.
+- `RootView.swift`: thin installation using current ambient state, selected endpoint, current duck-mode privacy
+  and pending privacy-on request. P5 observes the store’s `segmentYieldEvent`; no notice UI is added.
+
+The capture forwarder (a detached task, not the real-time engine callback) synchronizes with the main actor
+for current state and the onset handler. Installation happens once before capture, and these callbacks never
+synchronously configure or stop the tap. A stale/closed window or fresh ambient-off/privacy-on state refuses yield.
+On success, reply audibility is synchronized after local cancellation/drain. The existing safe tail API runs
+**before** analysis closes. Its false result retains the normal tail; an audible queued replacement keeps its mask.
+The guard implementation is unchanged. The tap-capture mask and tail remain authoritative. No audio bypass,
+PCM retention or pre-roll is added; triggering onset may be lost (choice B).
+
+The yielded endpoint and captured socket generation gate transmission in both the store and actor. A missing,
+older, non-ready, replaced or reconnected destination receives nothing; other endpoints are never fallback
+destinations. Local stop stands even without transmission. Admission passes only an opaque scope for the current endpoint and connection generation to the gate;
+transcripts remain in the existing conversation path. Each reply binds its generation and scope at ingress,
+before playback; opening another window or reconnecting never rebinds that reply.
+
+Initial P4b2 tests extend existing files only: actual detached pre-mask onset, two played-marker count, only-reply local
+stop and queued other-endpoint survival; capable/older/negotiating/disconnected transport and stale-generation
+refusal; privacy/ambient changes between capture authorization and signal; closed-window refusal; safe tail API
+success before close, active tap/tap-tail preservation and unsafe normal-tail fallback; hello advertising and
+host-originated-yield refusal; timely/other-endpoint/late ambient admission; marker-aware bulk Replay.
 
 ## Split decided before implementation
 
@@ -41,8 +78,7 @@ validated settings into the existing defaults dictionary, preserving other keys.
 
 `EchoMaskedCapture.start()` calls `observeSegmentOnset` immediately before `silenceIfMasking` on each existing
 capture PCM buffer. Until `configureSegmentOnset(input:onOnset:)` is called there is no analysis. The caller must
-supply current ambient/privacy flags, the current played P4a window and its endpoint/connection scope on
-**each buffer**, and call
+supply current ambient/privacy flags and the current played P4a window on **each buffer**, and call
 `segmentOnsetGate.closeWindow()` when the window closes (even without further capture). `stopSegmentOnset()`
 removes the opt-in tap and clears detector state. Shutdown/replacement and analysis/callbacks share a lock;
 a generation token rejects an observation that read authorization before stop, including across reconfiguration.
@@ -66,17 +102,11 @@ still drops onset audio: the existing mask remains raised across the window; P4b
 
 Diagnostics expose only two counters and two five-bucket count histograms (one post-calibration level per
 analysed sub-interval and one completed calibrated floor): <−60, [−60,−45), [−45,−35), [−35,−25), [−25,0] dBFS. Silence is in the first bucket.
-Internal pending entries contain only opaque `ReplySegmentAdmissionScope` tokens and clock deadlines, separately
-from disposable detection state. The caller retains one freshly generated scope token per endpoint/connection
-generation and supplies it in `ReplySegmentOnsetInput`; it creates a new token on reconnect. Tokens contain a
-random UUID, with no endpoint address, name, text or audio. The guard only compares tokens. With the injected
-clock, diagnostics reads, analysis and `ambientRequestAdmitted(in:)` expire deadlines at >=5 s exactly once,
-including after window close. P4b2 must call the admission hook with the same scope for an actual admitted ambient
-request. One request satisfies only the oldest unexpired pending onset in that scope; an unmatched admission is
-a no-op. Earlier/late requests cannot erase an expired outcome. Pending entries are capped at **16**; overflow
-drops the oldest pending entry and counts it once as missed, even before its deadline. Nothing is logged or
-persisted by this detector, and scopes never appear in diagnostics. A scope change discards detection state and
-requires fresh calibration, even when the window range is unchanged.
+Internal pending deadlines contain only clock instants, separately from disposable detection state. With the
+injected clock, diagnostics reads, analysis and `ambientRequestAdmitted()` expire deadlines at >=5 s exactly once,
+including after window close. P4b2 must call the admission hook for an actual admitted ambient request; one such
+request satisfies all earlier onsets still within their own deadlines. Earlier/late requests cannot erase an expired
+outcome. Nothing is logged or persisted by this detector.
 
 ## Implemented behavior and limits
 
@@ -486,6 +516,59 @@ Final-source results:
 Evidence remains synthetic macOS VM evidence only. No network, other-clone access, simulator, physical-device
 audio, install, upload, PR, independent review or GitHub check is performed or claimed.
 
+## P4b2 offline VM verification
+
+Base: `af3ea8212a61bac32cad745d54c4a60212f0df1b`. Every Swift command uses the existing
+`/tmp/hs932-p4-tools/swift` wrapper documented above: `taskpolicy -b`, `-j 4`, one compiler worker
+per target, offline resolution, and all supplied Testing framework/plugin/rpath flags. Every counted phase
+runs serially through `phase.py` with a 590-second deadline and owned-process-tree termination traps.
+The loaded script owns exactly four background `taskpolicy -b yes` workers and kills/waits for them
+on EXIT/INT/TERM. No other clone is used.
+
+Exact final verification commands:
+
+```sh
+python3 /tmp/hs932-p4-tools/phase.py /tmp/hs932-p4-tools/swift build -Xswiftc -warnings-as-errors
+python3 /tmp/hs932-p4-tools/phase.py /tmp/hs932-p4-tools/swift build --build-tests -Xswiftc -warnings-as-errors
+python3 /tmp/hs932-p4-tools/phase.py /tmp/hs932-p4-tools/repeat-b2.sh normal
+python3 /tmp/hs932-p4-tools/phase.py /tmp/hs932-p4-tools/repeat-b2.sh loaded
+# Each repetition script runs this five times; loaded mode owns four yes workers:
+/tmp/hs932-p4-tools/swift test --skip-build --no-parallel --filter 'HailCoreTests\.ReplySegment' \
+  --skip 'HailDaemonKitTests.DiagnosticReplyComposition'
+python3 /tmp/hs932-p4-tools/phase.py /tmp/hs932-p4-tools/swift test --skip-build --no-parallel \
+  --filter 'HailCoreTests\.(Reply|Playback|PCM16|Playout|Segment|Echo|Capture|Ambient|HostConnection|Privacy|Diagnostic|Heard)' \
+  --skip 'HailDaemonKitTests.DiagnosticReplyComposition'
+git diff --check
+```
+
+Final results:
+
+- Both warnings-as-errors builds passed: production 6.66 s; build-tests 50.43 s, no compiler diagnostics.
+- Segment filter: 69 test functions in 12 suites, 128 case invocations per run, including nine new test
+  functions with 17 invocations. All five normal and all five loaded repetitions passed: 690 function
+  executions / 1,280 case invocations across the counted ten runs. Normal test times:
+  6.374/6.357/6.807/7.022/6.958 s; loaded: 5.364/5.376/4.911/4.573/5.111 s.
+- Exact requested serial regression passed once: 424 test functions in 91 suites, 100.856 s.
+  The known #955 daemon diagnostic test was explicitly excluded and is outside these HailCore filters.
+- All phases finished below 590 seconds. Loaded workers exited through their cleanup trap.
+- `git diff --check` passed. SwiftLint is unavailable; hand review checked file/type/function length,
+  line length, parameter count, complexity, nesting and opted-in rules. No new waiver was added.
+  RootView/presentation have 197/200 lines; their type/extension bodies have 134 and 102/73/16 code lines.
+  The new wiring type has 75 code lines. Store/protocol retain their pre-existing file-length waivers;
+  changed code fits 120 columns.
+- Local classification uses the checker's exact exclusion tuples and `SECURITY_PATHS`: exactly four
+  production files, no renames, no security-path matches. Tests extend existing files only.
+- Logs are host-local `/tmp/hs932-p4b2-*.log`, outside version control. No network, PR, independent review,
+  GitHub check, simulator, physical audio, signing, upload or installed-build change is performed or claimed.
+
+A full-Xcode host must build the iOS/iPadOS app (RootView is outside this VM's package build) and macOS app
+with warnings as errors. Check the fresh SwiftUI selected-host binding, weak store capture, actor isolation,
+background installation and capture-forwarder/main-actor synchronization. Confirm actual AVAudioPlayerNode
+played-marker ordering, per-endpoint/generation sends against old/new hosts, normal versus safe tail handoff,
+tap-mask preservation, ambient/privacy/selection/reconnect transitions, stop/dismiss/mute and segmented Replay.
+Physical speaker/headphone tests must check onset/echo behavior, ordinary subsequent ambient admission and
+absence of private/reply-echo audio. P5 still owns the paused notice and Station tools UI. Nothing here is
+a live captured-output round trip, acoustic validation or TestFlight delivery.
 
 ## P4b1 scoped admissions (#958, offline bundle r6)
 
@@ -532,3 +615,76 @@ Final-source results:
 
 Evidence remains synthetic macOS VM evidence only: no network, other-clone access, simulator, physical-device
 audio, install, upload, PR, independent review or GitHub check is performed or claimed.
+
+## P4b2 fix round 1 continued (#959, offline bundle r2)
+
+Starts at `fc40438918420f06a3be9e8484bacd142ca0019b` on `codex/932-p4b2-wire`. Stashed the prior reconnect
+work and probes, fetched only the supplied local r5/r6 bundles, and merged `p4b1-r6` in separate commit
+`a8ee9a5cd139bc8dabdf022151eac0158432cc64`. Resolved documentation conflicts in `docs/reply-protocol.md`
+and this file by retaining both verification histories and the incoming scoped-admission contract. No source/test
+merge conflicts; stash restoration was clean. The merge includes P4b1 scoped admissions
+`6457ff4eac155ed5567997b331cde78b9a3bd73b` and the host test-only lint fixes.
+
+This fix changes only `HostConnectionStore.swift` among production files. Cumulative P4b2 remains the same
+four production files relative to `p4b1-r6`, with no security-path matches under the checker's exact exclusions
+and rename handling. No P4b1 production file is edited by this fix.
+
+- Reply endpoint/descriptor keys bind their connection generation and opaque admission scope at frame ingress,
+  before playback. Later frames/windows never rebind a known reply. The bounded 256-entry ledger retains
+  active/queued replies; an unbound replay cannot send. Existing store/actor ready, endpoint, generation and
+  capability checks reject an old reply's transmission after reconnect, while its local stop still succeeds.
+- Each endpoint/current generation reuses one `ReplySegmentAdmissionScope`; reconnect creates a fresh token.
+  Capture supplies the reply's bound scope to the gate. Actual `ambient_heard` dispatch supplies the receiving
+  endpoint's current ready-generation scope to `ambientRequestAdmitted(in:)`. A later yield never overwrites
+  another scope's admission authority. The guard owns FIFO matching and deadlines; no transcript enters it.
+- P5 API: observable `HostConnectionStore.segmentYieldEvent: ReplySegmentYieldEvent?`, public read-only.
+  The event is `Identifiable`, `Equatable`, `Sendable`, with `id: UInt64`, `endpointID`, `replyID: UUID`, and
+  `segment: Int`. Each successful local onset yield increments the store-lifetime id, starting at 1, even
+  when transport is unsupported or stale. It retains only the latest event in memory, with no audio/text.
+  Equal endpoint/reply/segment yields after Replay are distinct observable events. Refused yields publish nothing.
+
+`ReplySegmentReviewerProbeTests` includes the reviewer's next-window reconnect probe and ingress-before-first-window
+probe, with positive fresh-reply sending afterward. `ReplySegmentWiringScopeTests` drives real store/connection
+admission dispatch for A-then-B in one scope, another endpoint (admitting either A or B), and a reconnected generation;
+it checks intermediate and final deadlines. Its Replay test observes both equal-payload yields independently and
+checks ids 1/2, plus no event for a refused onset. Existing admission waits now wait for the new conversation entry,
+since actual reply ingress already creates entries. Nine new test functions cover twelve case invocations.
+
+Every build/test uses the previously documented `/tmp/hs932-p4-tools/swift` wrapper, including `taskpolicy -b`,
+`-j 4 -Xswiftc -j1`, offline resolution and all supplied Testing flags. Each phase runs serially under `phase.py`
+with a 590-second deadline and owned-tree TERM/KILL traps. The repetition script owns exactly four background
+`taskpolicy -b yes` workers only in loaded mode, with EXIT/INT/TERM kill-and-wait cleanup.
+
+```sh
+python3 /tmp/hs932-p4-tools/phase.py /tmp/hs932-p4-tools/swift build -Xswiftc -warnings-as-errors
+python3 /tmp/hs932-p4-tools/phase.py /tmp/hs932-p4-tools/swift build --build-tests -Xswiftc -warnings-as-errors
+python3 /tmp/hs932-p4-tools/phase.py /tmp/hs932-p4-tools/repeat-b2-r2.sh normal
+python3 /tmp/hs932-p4-tools/phase.py /tmp/hs932-p4-tools/repeat-b2-r2.sh loaded
+# Each repetition script invokes this five times:
+/tmp/hs932-p4-tools/swift test --skip-build --no-parallel --filter 'HailCoreTests\.ReplySegment' \
+  --skip 'HailDaemonKitTests.DiagnosticReplyComposition'
+python3 /tmp/hs932-p4-tools/phase.py /tmp/hs932-p4-tools/swift test --skip-build --no-parallel \
+  --filter 'HailCoreTests\.(Reply|Playback|PCM16|Playout|Segment|Echo|Capture|Ambient|HostConnection|Privacy|Diagnostic|Heard)' \
+  --skip 'HailDaemonKitTests.DiagnosticReplyComposition'
+git diff --check
+```
+
+Final-source results:
+
+- Warnings-as-errors production build passed in 6.54 s. Final test build passed in 9.71 s (incremental;
+  earlier full test compilation passed in 69.28 s). No compiler diagnostics.
+- Combined P4a/P4b1/P4b2 segment filter: 84 test functions in 15 suites, 146 case invocations per run.
+  All five normal and five loaded repetitions passed: 840 function executions / 1,460 case invocations.
+  Normal test times: 18.615/17.513/18.318/17.063/18.375 s; loaded: 15.455/15.366/14.409/14.920/15.870 s.
+- An initial exploratory probe run passed all reconnect/admission cases, then crashed in the new Replay fixture
+  because it attempted Replay before any completed reply history existed. Corrected the fixture to finish a reply
+  before the two replay/yield cycles; the counted final runs above all passed. This was a test setup correction.
+- Exact requested serial regression passed once: 439 test functions in 94 suites, 96.934 s.
+  `HailDaemonKitTests.DiagnosticReplyComposition` (#955) was explicitly excluded from every test command.
+- Every phase completed below 590 seconds; all four owned load workers were killed and waited for by the trap.
+- `git diff --check` passed. SwiftLint is unavailable on this VM; changed Swift code was checked by hand for
+  the configured line/function/type length, complexity, nesting and opted-in rules. No new waiver was added;
+  the wiring type has 103 nonblank/noncomment code lines, below the 150-line warning threshold.
+- Logs are host-local `/tmp/hs932-p4b2-r2-*.log`, outside version control. No network, other-clone edits, PR/issue
+  changes, independent review, GitHub checks, simulator/physical audio, install, signing or upload is claimed.
+  App/physical validation and P5 notice/settings UI remain deferred as described above.
