@@ -45,26 +45,29 @@ struct AmbientPrivacyPreArmTeardownTests {
         await rig.finish()
     }
 
-    /// The router's backstop, reached past the gate: an arming with no source for a connection already gone is undone
-    /// once its notice finds no connection: no privacy, no reply hold, no source; logged.
-    @Test func anArmingForAGoneDeviceIsUndone() async throws {
+    /// The router's backstop, reached past the gate: an arming with no source for a connection already gone is parked
+    /// once its notice finds no connection (Jarvis: privacy wins ties), then leaves the connection: no privacy and no
+    /// reply hold on it; the next start anywhere restores the park, private.
+    @Test func anArmingForAGoneDeviceIsParked() async throws {
         let rig = try await RestoreRig(phrase: nil)
         defer { rig.close() }
         let dead = try await Self.tornDown(rig)
         let router = rig.router, listener = rig.env.listener
+        let release = AmbientPrivacyPreArmDisarmTests.holdNotices(router)
         router.ambientPrivacyPreArm(connection: dead)
         #expect(rig.details("ambient_privacy_prearmed") == ["source=none"])
-        #expect(await eventually { rig.details("ambient_privacy_disarmed") == ["reason=no_connection"] },
+        let token = try #require(router.duckArming(connection: dead))
+        release()
+        #expect(await eventually { rig.details("ambient_privacy_disarmed") == ["reason=no_connection parked=true"] },
                 "disarmed marker")
-        #expect(!router.duckMode(connection: dead) && !Self.anySource(router))
+        #expect(!router.duckMode(connection: dead))
+        #expect(router.state.withLock { $0.parks[dead]?.token } == token)
         #expect(await eventually { await !listener.replyHold.holds(dead) }, "hold released marker")
-        let (_, other) = try await rig.start(name: "other", kind: "pad")
-        #expect(!router.duckMode(connection: other))
-        await rig.finish()
+        try await AmbientPrivacyPreArmDisarmTests.nextStartRestoresThePark(rig)
     }
 
-    /// A restore's arming (from a live source) for a gone device is undone with the source it recorded, while one that
-    /// was armed again meanwhile (a newer token) is left as it is.
+    /// A restore's arming (from a live source) for a gone device is dropped with the source it recorded, never parked
+    /// (its source is not consumed), while one that was armed again meanwhile (a newer token) is left as it is.
     @Test func onlyTheArmingTheNoticeWasForIsUndone() async throws {
         let rig = try await RestoreRig(phrase: nil)
         defer { rig.close() }
@@ -83,9 +86,9 @@ struct AmbientPrivacyPreArmTeardownTests {
         let drained = MeetingLatch()
         router.mediaNotices.enqueue { drained.open() }
         #expect(await eventually { drained.isOpen }, "both notices done marker")
-        #expect(rig.details("ambient_privacy_disarmed") == ["reason=no_connection"])
+        #expect(rig.details("ambient_privacy_disarmed") == ["reason=no_connection parked=false"])
         #expect(!router.duckMode(connection: dead))
-        #expect(router.state.withLock { $0.privacySources[dead] == nil })
+        #expect(router.state.withLock { $0.privacySources[dead] == nil && $0.parks.isEmpty }, "a restore is not parked")
         #expect(await eventually { await !rig.env.listener.replyHold.holds(dead) }, "hold released marker")
         #expect(router.duckArming(connection: rearmed) == newer && router.duckMode(connection: holder))
         await rig.finish()

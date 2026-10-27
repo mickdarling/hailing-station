@@ -14,7 +14,7 @@ extension AmbientRightyoRouter {
     /// left alone until it starts again (R3). Under one lock:
     /// - refused, logged `ambient_privacy_prearmed refused=<stopping|closed|streamed>`: haild stopping, the connection
     ///   torn down, or one that already started a stream (`latest`, or a run of it). A connection the gate already
-    ///   ended never reaches here (`refused=ended`), and an arming for a device gone anyway is undone (`disarmIfGone`);
+    ///   ended never reaches here (`refused=ended`), and an arming for a device gone anyway is parked (`disarmIfGone`);
     /// - already private: nothing at all, as a switch that matches the state held (S-6);
     /// - privacy held elsewhere (another live connection, a park, or a park overflow, #961): taken exactly as
     ///   `restorePrivacy` takes it, with its source, its heard state and its notice; logged `source=<live|park>`;
@@ -47,22 +47,27 @@ extension AmbientRightyoRouter {
     }
 
     /// The backstop behind the gate's `ended` refusal (#967 second key): an arming (a pre-arm's or a restore's) whose
-    /// `duck_mode` notice found no connection is for a device already gone, so it is undone, only while it is still
-    /// that arming (`token`), never a newer one: the connection's privacy, its reply hold and the live source it
-    /// recorded, with a privacy ledger nothing announced on, as teardown drops it. Nothing else changes. Logged
-    /// `ambient_privacy_disarmed reason=no_connection`. A teardown still to come then parks nothing for it.
-    func disarmIfGone(_ connection: UUID, token: UUID, sent: String?) {
+    /// `duck_mode` notice found no connection is for a device already gone, so it leaves the connection, only while it
+    /// is still that arming (`token`), never a newer one. An unsourced pre-arm's (`park`) is parked first, by teardown's
+    /// own `parkPrivacy` (Jarvis: privacy wins ties; the device may already hold its confirmation), so the next start
+    /// anywhere restores it, private; a restore's is only dropped, since its park or live source is never consumed.
+    /// Then the connection's privacy, its reply hold and the live source it recorded go, with a privacy ledger nothing
+    /// announced on, as teardown drops them. Nothing else changes. Logged `ambient_privacy_disarmed
+    /// reason=no_connection parked=<bool>`, beside the park's own `ambient_privacy_parked`.
+    func disarmIfGone(_ connection: UUID, token: UUID, sent: String?, park: Bool = false) {
         guard sent == nil || sent == "no_connection" else { return }
-        let undone = state.withLock { state -> Bool in
-            guard state.duck[connection]?.token == token else { return false }
+        let (undone, parked) = state.withLock { state -> (Bool, Bool) in
+            guard state.duck[connection]?.token == token else { return (false, false) }
+            // The device's claims are gone with it (nil, unknown), as for any park whose claims were not read.
+            if park { parkPrivacy(connection: connection, device: nil, in: &state) }
             state.duck[connection] = nil
             state.privacySources[connection] = nil
             if state.privacy[connection]?.entries.isEmpty != false { state.privacy[connection] = nil }
             state.listener?.value?.replyHold.set(false, connection: connection)
-            return true
+            return (true, state.parks[connection]?.token == token)
         }
         guard undone else { return }
-        emit("ambient_privacy_disarmed", connection: connection, detail: "reason=no_connection")
+        emit("ambient_privacy_disarmed", connection: connection, detail: "reason=no_connection parked=\(parked)")
     }
 
     /// Arms `connection`'s privacy with no source, under the caller's lock, as `restorePrivacy` arms it from one.
@@ -76,7 +81,7 @@ extension AmbientRightyoRouter {
             let sent = await listener?.showDuckMode(true, reason: "device", expires: nil, connection: connection)
             self?.emit("ambient_duck_device", connection: connection,
                        detail: "on=true device=\(sent ?? "no_connection")")
-            self?.disarmIfGone(connection, token: token, sent: sent)
+            self?.disarmIfGone(connection, token: token, sent: sent, park: true)
         }
     }
 }
