@@ -74,7 +74,8 @@ extension AmbientRightyoRouter {
             state.privacySources[connection] = PrivacySource(connection: from, token: token)
         }
         endHeld(connection, reason: "privacy", in: &state)
-        state.duck[connection] = AmbientDuckTimer(token: UUID(), timer: nil)
+        let token = UUID()
+        state.duck[connection] = AmbientDuckTimer(token: token, timer: nil)
         if Self.privacyHeard(except: connection, in: state) {
             state.privacy[connection, default: .init()].carryHeard()
         }
@@ -93,6 +94,8 @@ extension AmbientRightyoRouter {
             let sent = await listener?.showDuckMode(true, reason: "device", expires: nil, connection: connection)
             self?.emit("ambient_duck_device", connection: connection,
                        detail: "on=true device=\(sent ?? "no_connection")")
+            // A device already gone (#967 second key): the arming is undone, never left on a dead connection.
+            self?.disarmIfGone(connection, token: token, sent: sent)
         }
     }
 
