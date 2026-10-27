@@ -11,6 +11,8 @@ public enum ReplyAudioPlayerError: Error, Equatable, Sendable {
 extension PCM16AudioPlayer: CaptureRoutedReplies {}
 extension PCM16AudioPlayer: PlayoutGapReporting {}
 extension PCM16AudioPlayer: ReplyCatchUpReporting {}
+extension PCM16AudioPlayer: ReplySegmentDiscardReporting {}
+extension PCM16AudioPlayer: ReplySegmentPauseEnding {}
 
 /// AVAudioEngine renderer for the raw signed 16-bit, mono stream produced by the current vbsay bridge.
 @MainActor
@@ -28,6 +30,9 @@ public final class PCM16AudioPlayer: ReplyAudioPlaying {
     fileprivate var playoutGeneration: UInt = 0
     /// Audio queued while holding, not yet handed to the gap meter: the stall is measured when it plays on.
     fileprivate var heldDuration: Duration = .zero
+    private var segmentPaused = false
+    private var segmentScheduled = false
+    var onSegmentDiscarded: (@MainActor () -> Void)?
     public var onCatchingUpChanged: (@MainActor (Bool) -> Void)?
     public var isCatchingUp: Bool { playout.isCatchingUp }
     #if os(iOS)
@@ -48,12 +53,13 @@ public final class PCM16AudioPlayer: ReplyAudioPlaying {
 
     public func schedule(_ payload: AudioPayload, onPlayed: (@MainActor @Sendable () -> Void)?) throws {
         let buffers = try PCM16PlaybackBuffers.forPayload(payload)
+        segmentPaused = false
         let wasPlaying = node.isPlaying && engine.isRunning
         try prepare()
-        schedule(buffers, onPlayed: onPlayed)
+        segmentScheduled = payload.isSegmentEnd
+        schedule(buffers, onPlayed: onPlayed, segmentEnd: payload.isSegmentEnd)
         let wasCatchingUp = playout.isCatchingUp
-        guard playout.queued(buffers.map { Self.duration(of: [$0]) }, startsReply: payload.sequence == 0,
-                             endsReply: payload.isFinal) else {
+        guard playout.queued(buffers.map { Self.duration(of: [$0]) }, payload: payload) else {
             heldDuration += Self.duration(of: buffers) // Held: a stalled reply plays on once it catches up (#825).
             return
         }
@@ -83,6 +89,7 @@ public final class PCM16AudioPlayer: ReplyAudioPlaying {
     }
 
     public func resume() throws {
+        guard !segmentPaused else { return } // A user/capture resume cannot shorten the segment window.
         try prepare()
         gapMeter.resumed(at: .now)
         guard !playout.isCatchingUp else { return } // Still catching up: it plays on when enough is queued (#825).
@@ -126,14 +133,19 @@ public final class PCM16AudioPlayer: ReplyAudioPlaying {
     /// Every buffer reports when it has played, so a queue that runs dry mid-reply is seen (#825); the last also
     /// fires `onPlayed`, including when a stop flushes it.
     private func schedule(
-        _ buffers: [AVAudioPCMBuffer], onPlayed: (@MainActor @Sendable () -> Void)?
+        _ buffers: [AVAudioPCMBuffer], onPlayed: (@MainActor @Sendable () -> Void)?, segmentEnd: Bool = false
     ) {
         for (index, buffer) in buffers.enumerated() {
-            let finished = index == buffers.indices.last ? onPlayed : nil
+            let last = index == buffers.indices.last
+            let finished = last ? onPlayed : nil
             let (duration, generation) = (Self.duration(of: [buffer]), playoutGeneration)
             node.scheduleBuffer(buffer, completionCallbackType: .dataPlayedBack) { [weak self] _ in
                 Task { @MainActor in
-                    self?.bufferPlayed(duration, generation: generation)
+                    guard let self else { return }
+                    // AVAudioPlayerNode also fires callbacks when stopped/reset. A flushed marker
+                    // never opens a voice window; final callbacks retain their existing drain semantics.
+                    if segmentEnd && last && generation != self.playoutGeneration { return }
+                    self.bufferPlayed(duration, generation: generation, segmentEnd: segmentEnd && last)
                     finished?()
                 }
             }
@@ -197,21 +209,44 @@ public final class PCM16AudioPlayer: ReplyAudioPlaying {
 
 /// Smooth stall recovery (#825): the player holds a reply whose queue ran dry until it catches up.
 extension PCM16AudioPlayer {
+    func endSegmentPause(at deadline: ContinuousClock.Instant, waitingForAudio: Bool, held: Bool) {
+        guard segmentPaused else { return }
+        segmentPaused = false
+        guard !held else { return } // User/capture/interruption holds remain authoritative.
+        let catchingUp = playout.endSegmentPause(at: deadline, waitingForAudio: waitingForAudio, gapMeter: &gapMeter)
+        if catchingUp { onCatchingUpChanged?(true) }
+        if !catchingUp, engine.isRunning { node.play() }
+    }
+
     /// One buffer finished playing. A queue run dry before the reply's final audio holds playback, rather than
     /// letting each late frame play the moment it lands, which is the stutter.
-    fileprivate func bufferPlayed(_ duration: Duration, generation: UInt) {
-        guard generation == playoutGeneration, playout.played(duration) else { return }
+    fileprivate func bufferPlayed(_ duration: Duration, generation: UInt, segmentEnd: Bool) {
+        guard generation == playoutGeneration else { return }
+        let catchingUp = playout.played(duration, segmentEnd: segmentEnd)
+        if segmentEnd {
+            segmentScheduled = false
+            playoutGeneration &+= 1 // Discard any earlier buffer callbacks still waiting on the main actor.
+            segmentPaused = true
+            node.pause()
+            gapMeter.paused(at: .now)
+            return
+        }
+        guard catchingUp else { return }
         node.pause()
         onCatchingUpChanged?(true)
     }
 
     /// The queue is dropped: completions from before never count, and nothing is held.
     fileprivate func dropPlayout() {
+        let discardedSegment = segmentScheduled
+        segmentScheduled = false
         let wasCatchingUp = playout.isCatchingUp
         playout.cleared()
         playoutGeneration &+= 1
         heldDuration = .zero
+        segmentPaused = false
         if wasCatchingUp { onCatchingUpChanged?(false) }
+        if discardedSegment { onSegmentDiscarded?() }
     }
 }
 
@@ -307,5 +342,32 @@ enum PCM16BufferConverter {
             throw ReplyAudioPlayerError.invalidBuffer
         }
         return output
+    }
+}
+
+// Segment-aware accounting is pure so synthetic tests need no audio engine.
+extension ReplyPlayoutBuffer {
+    mutating func endSegmentPause(
+        at deadline: ContinuousClock.Instant, waitingForAudio: Bool, gapMeter: inout PlayoutGapMeter
+    ) -> Bool {
+        gapMeter.resumed(at: deadline)
+        guard waitingForAudio else { return false }
+        // At the deadline the empty queue is a genuine underrun, just like a normal buffer running dry.
+        _ = queued([.zero], startsReply: false, endsReply: false)
+        return played(.zero)
+    }
+
+    mutating func queued(_ durations: [Duration], payload: AudioPayload) -> Bool {
+        // A short segment tail must release an existing catch-up hold: the controller cannot queue
+        // the next segment until this one plays. It is a batch boundary, not a completed reply.
+        queued(durations, startsReply: payload.sequence == 0, endsReply: payload.isFinal || payload.isSegmentEnd)
+    }
+
+    mutating func played(_ duration: Duration, segmentEnd: Bool) -> Bool {
+        guard segmentEnd else { return played(duration) }
+        // Nothing past a marker is queued. Preserve the policy: planned silence is neither a stall
+        // nor a clean whole reply, and will not train the adaptive buffer in either direction.
+        cleared()
+        return false
     }
 }
