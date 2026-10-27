@@ -61,8 +61,7 @@ struct AmbientPrivacyPreArmTests {
         let (socket, connection) = try await Self.preArmed(rig)
         socket.cancel(with: .goingAway, reason: nil)
         let router = rig.router
-        #expect(await eventually { router.state.withLock { $0.parkedPrivacy?.connection } == connection },
-                "pre-arm parked marker")
+        #expect(await eventually { router.state.withLock { $0.parks[connection] != nil } }, "pre-arm parked marker")
         #expect(router.state.withLock { state in
             state.duck[connection] == nil && state.privacySources[connection] == nil
                 && state.staleCleared[connection] == nil && state.privacyClips[connection] == nil
@@ -70,7 +69,8 @@ struct AmbientPrivacyPreArmTests {
                 && !state.runs.values.contains { $0.connection == connection }
         }, "no per-connection privacy state remains")
         #expect(await !rig.env.listener.replyHold.holds(connection))
-        #expect(await eventually { rig.details("ambient_privacy_parked") == ["replaced=false"] }, "parked log marker")
+        #expect(await eventually { rig.details("ambient_privacy_parked") == ["parks=1 overflow=false"] },
+                "parked log marker")
         let (next, other) = try await rig.start(name: "other", kind: "watch")
         #expect(router.duckMode(connection: other))
         #expect(await eventually { rig.details("ambient_privacy_restored").first?.contains("source=park") == true },
@@ -83,8 +83,9 @@ struct AmbientPrivacyPreArmTests {
     @Test func itsOwnOffClearsThePreArm() async throws {
         let rig = try await RestoreRig(phrase: nil)
         defer { rig.close() }
+        let parked = UUID()
         rig.router.state.withLock {
-            $0.parkedPrivacy = ParkedPrivacy(connection: UUID(), device: nil, parkedAt: rig.clock.now(), heard: true)
+            $0.parks[parked] = ParkedPrivacy(connection: parked, device: nil, parkedAt: rig.clock.now(), heard: true)
         }
         let (socket, connection) = try await Self.preArmed(rig)
         let router = rig.router
@@ -92,8 +93,10 @@ struct AmbientPrivacyPreArmTests {
         #expect(router.privacyHeardOn(connection: connection), "a park the owner heard announced answers a status")
         try await AmbientPrivacySwitchTests.send(false, on: socket)
         try await Self.until(.duckMode(on: false, reason: "device"), on: socket, step: "pre-arm off notice")
-        #expect(!router.duckMode(connection: connection) && router.state.withLock { $0.parkedPrivacy } == nil)
-        #expect(await eventually { rig.details("ambient_park_discarded") == ["reason=off mode=privacy"] },
+        #expect(!router.duckMode(connection: connection) && router.state.withLock { $0.parks.isEmpty })
+        #expect(await eventually {
+            rig.details("ambient_park_discarded") == ["reason=off mode=privacy count=1 overflow=false"]
+        },
                 "park cleared by the off marker")
         #expect(await eventually { await !rig.env.listener.replyHold.holds(connection) }, "hold released marker")
         try await recipientSocketSend(audio(UUID(), 0), on: socket)

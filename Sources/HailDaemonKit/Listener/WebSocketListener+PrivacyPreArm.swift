@@ -15,8 +15,8 @@ extension AmbientRightyoRouter {
     /// - refused, logged `ambient_privacy_prearmed refused=<stopping|closed|streamed>`: haild stopping, the connection
     ///   torn down, or one that already started a stream (`latest`, or a run of it);
     /// - already private: nothing at all, as a switch that matches the state held (S-6);
-    /// - privacy held elsewhere (another live connection, or the park): taken exactly as `restorePrivacy` takes it, with
-    ///   its source, its heard state and its notice; logged `source=<live|park>`;
+    /// - privacy held elsewhere (another live connection, a park, or a park overflow, #961): taken exactly as
+    ///   `restorePrivacy` takes it, with its source, its heard state and its notice; logged `source=<live|park>`;
     /// - otherwise armed here, logged `source=none`: the connection's own mode ends (never in both), the agent's replies
     ///   are held and its pending ones dropped, and the device is told `duck_mode` on with reason `device`. No clip and
     ///   no announcement: a status answers nothing until privacy is announced (6362119223).
