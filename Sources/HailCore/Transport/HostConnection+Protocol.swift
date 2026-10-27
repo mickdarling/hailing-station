@@ -187,8 +187,8 @@ extension HostConnection {
     /// Confirms that the host processed every frame before this ping, including target selection.
     /// WebSocket message ordering makes the pong a lightweight selection acknowledgement without a
     /// protocol-version change that would break terminals already installed through TestFlight.
-    func confirmRoundTrip(generation token: UInt64) async throws {
-        let nonce = UUID().uuidString.lowercased()
+    /// A caller that supplies `nonce` can ask `hasPong` whether this ping's pong was already received.
+    func confirmRoundTrip(generation token: UInt64, nonce: String = UUID().uuidString.lowercased()) async throws {
         pendingPings[nonce] = monotonicNow()
         do {
             try await send(.ping(nonce: nonce), generation: token)
@@ -204,6 +204,11 @@ extension HostConnection {
             pendingPings.removeValue(forKey: nonce)
             throw error
         }
+    }
+
+    /// Whether ping `nonce`, sent on generation `token`, has had its pong on a still-current ready connection.
+    func hasPong(nonce: String, generation token: UInt64) -> Bool {
+        isCurrent(token) && wantsConnection && snapshot.state == .ready && pendingPings[nonce] == nil
     }
 
     func schedulePongDeadline(nonce: String, generation token: UInt64) {
