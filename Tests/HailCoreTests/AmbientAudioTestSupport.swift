@@ -7,11 +7,14 @@ import Testing
 @MainActor
 final class FakeAudioCapture: AudioCapturing {
     private var continuation: AsyncStream<AudioCaptureBuffer>.Continuation?
+    private var admission: AudioCaptureAdmission?
+    private(set) var discardedCount = 0
     private(set) var startCount = 0
     private(set) var stopCount = 0
 
     func start() throws -> AsyncStream<AudioCaptureBuffer> {
         guard continuation == nil else { throw AudioCaptureError.alreadyRunning }
+        admission = AudioCaptureAdmission.current
         startCount += 1
         let pair = AsyncStream<AudioCaptureBuffer>.makeStream(bufferingPolicy: .unbounded)
         continuation = pair.continuation
@@ -25,7 +28,8 @@ final class FakeAudioCapture: AudioCapturing {
     }
 
     func yield(_ buffer: AVAudioPCMBuffer) throws {
-        let owned = try #require(AudioCaptureBuffer(copying: buffer))
+        if let admission, admission.isPaused { discardedCount += 1; return }
+        let owned = try #require(AudioCaptureAdmission.copy(buffer, through: admission))
         continuation?.yield(owned)
     }
 }

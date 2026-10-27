@@ -19,10 +19,16 @@ public protocol Trigger: Sendable {
 /// An owned snapshot of one engine callback buffer, safe to hand to another concurrency domain.
 public struct AudioCaptureBuffer: @unchecked Sendable {
     public let pcmBuffer: AVAudioPCMBuffer
+    let admissionEpoch: UInt64
 
     public init?(copying buffer: AVAudioPCMBuffer) {
+        self.init(copying: buffer, admissionEpoch: 0)
+    }
+
+    init?(copying buffer: AVAudioPCMBuffer, admissionEpoch: UInt64) {
         guard let copy = buffer.copy() as? AVAudioPCMBuffer else { return nil }
         pcmBuffer = copy
+        self.admissionEpoch = admissionEpoch
     }
 }
 
@@ -82,6 +88,7 @@ public final class AVAudioEngineCapture: AudioCapturing {
     private let routeOverrideWindow: AppRouteOverrideWindow
     private var continuation: AsyncStream<AudioCaptureBuffer>.Continuation?
     private var runID: UUID?
+    private var admission: AudioCaptureAdmission?
     private var hasTap = false
     private var observer: AudioCaptureEndingObserver?
     /// Read when a run starts; set it before `start` to watch that run for stalls (#443).
@@ -134,6 +141,7 @@ public final class AVAudioEngineCapture: AudioCapturing {
             }
         }
 
+        admission = AudioCaptureAdmission.current
         installTap(streamContinuation)
         // Observe before starting, so a call or route change that lands while the engine starts is not lost. Its
         // signal is handled on the main actor after `start` returns, against the engine's state at that point.
@@ -186,9 +194,10 @@ public final class AVAudioEngineCapture: AudioCapturing {
 
     private func installTap(_ continuation: AsyncStream<AudioCaptureBuffer>.Continuation) {
         let delivered = delivered
+        let admission = admission
         operations.installTap(engine) { @Sendable buffer, _ in
             delivered.increment()
-            guard let ownedBuffer = AudioCaptureBuffer(copying: buffer) else { return }
+            guard let ownedBuffer = AudioCaptureAdmission.copy(buffer, through: admission) else { return }
             continuation.yield(ownedBuffer)
         }
         hasTap = true
@@ -416,4 +425,28 @@ final class AudioCaptureEndingObserver {
     private typealias Names = AudioCaptureEndingSignal.Names
 
     deinit { tokens.forEach(center.removeObserver) }
+}
+
+/// #904: scoped through synchronous capture wrappers at start; the tap retains it across engine heals. Closing it
+/// discards before copying or yielding. Epochs also retire buffers/encoders/queues already ahead of the drop.
+final class AudioCaptureAdmission: Sendable {
+    @TaskLocal static var current: AudioCaptureAdmission?
+    private struct State { var epoch: UInt64 = 0; var paused = false }
+    private let state = Mutex(State())
+    var epoch: UInt64 { state.withLock { $0.epoch } }
+    var isPaused: Bool { state.withLock { $0.paused } }
+    func accepts(_ epoch: UInt64) -> Bool { state.withLock { !$0.paused && $0.epoch == epoch } }
+    func setPaused(_ paused: Bool) {
+        state.withLock { $0.epoch &+= 1; $0.paused = paused }
+    }
+    func copy(_ buffer: AVAudioPCMBuffer) -> AudioCaptureBuffer? {
+        state.withLock { state in
+            guard !state.paused else { return nil }
+            return AudioCaptureBuffer(copying: buffer, admissionEpoch: state.epoch)
+        }
+    }
+    static func copy(_ buffer: AVAudioPCMBuffer, through admission: AudioCaptureAdmission?) -> AudioCaptureBuffer? {
+        if let admission { return admission.copy(buffer) }
+        return AudioCaptureBuffer(copying: buffer)
+    }
 }

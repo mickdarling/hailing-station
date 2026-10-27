@@ -276,6 +276,8 @@ public final class AmbientAudioStreamer {
     @ObservationIgnored private let makeStreamID: StreamIdentity
     @ObservationIgnored private let maxBacklogChunks: Int
     @ObservationIgnored private var pump: Task<Void, Never>?
+    @ObservationIgnored private let admission = AudioCaptureAdmission()
+    @ObservationIgnored private var transportResumeAllowed = false
     @ObservationIgnored private var queue: AmbientAudioSendQueue?
     /// One per `start()`, so a recovered stream's new identity does not orphan the capture run.
     @ObservationIgnored private var run: UUID?
@@ -345,7 +347,7 @@ public final class AmbientAudioStreamer {
         guard pump == nil else { throw AudioCaptureError.alreadyRunning }
         let identity = makeStreamID()
         let encoder = try AmbientAudioEncoder(streamID: identity, isResume: opensAsResume)
-        let buffers = try capture.start()
+        let buffers = try AudioCaptureAdmission.$current.withValue(admission) { try capture.start() }
         let current = UUID()
         let queue = makeQueue(run: current)
         self.queue = queue
@@ -354,8 +356,9 @@ public final class AmbientAudioStreamer {
         isStreaming = true
         let bounded = Self.bound(buffers, queue: queue)
         let beforeEncode = beforeEncode
+        let preparation = AmbientCapturePreparation(beforeEncode: beforeEncode, admission: admission)
         pump = Task.detached { [weak self] in
-            await Self.pump(bounded, encoder: encoder, queue: queue, beforeEncode: beforeEncode) { [weak self] in
+            await Self.pump(bounded, encoder: encoder, queue: queue, preparation: preparation) { [weak self] in
                 await self?.renew($0, failure: $1, run: current)
             }
             await self?.stopCapture(ifRun: current, finished: true)
@@ -365,9 +368,11 @@ public final class AmbientAudioStreamer {
     /// Without a recovery, ending capture on a send failure finishes the buffer stream, so the pump exits
     /// without new audio. With one, the pump asks it on the next buffer.
     private func makeQueue(run current: UUID) -> AmbientAudioSendQueue {
-        AmbientAudioSendQueue(maxPending: maxBacklogChunks, send: send) { [weak self] failed, error in
+        let epoch = admission.epoch
+        let sendAdmission = AmbientSendAdmission { [admission] in admission.accepts(epoch) }
+        return AmbientAudioSendQueue(maxPending: maxBacklogChunks, send: send, onFailure: { [weak self] failed, error in
             await self?.sendFailed(failed, failure: error, run: current)
-        }
+        }, admission: sendAdmission)
     }
 
     /// A fresh encoder and queue under a new stream identity, or nil (capture stopped) when recovery declines.
@@ -420,14 +425,14 @@ public final class AmbientAudioStreamer {
 
     private nonisolated static func pump(
         _ buffers: AmbientCaptureBacklog, encoder initial: AmbientAudioEncoder,
-        queue initialQueue: AmbientAudioSendQueue, beforeEncode: (@Sendable () async -> Void)?,
+        queue initialQueue: AmbientAudioSendQueue, preparation: AmbientCapturePreparation,
         renew: @Sendable (AmbientAudioSendQueue, any Error) async -> (AmbientAudioEncoder, AmbientAudioSendQueue)?
     ) async {
         var encoder = initial
         var queue = initialQueue
         var converted = true
         while let buffer = await buffers.next() {
-            await beforeEncode?()
+            guard await preparation.accepts(buffer) else { continue }
             if let failure = await queue.failure {
                 guard let renewed = await renew(queue, failure) else {
                     converted = false
@@ -453,7 +458,7 @@ public final class AmbientAudioStreamer {
 extension AmbientAudioStreamer {
     /// Decides at once, so a final refusal stops capture without waiting for more audio.
     private func sendFailed(_ failed: AmbientAudioSendQueue, failure: any Error, run current: UUID) {
-        guard run == current, failed === queue else { return }
+        guard run == current, failed === queue, !admission.isPaused else { return }
         guard let task = decide(failed, failure: failure) else { return stopCapture(ifRun: current) }
         Task { @MainActor [weak self] in
             if !(await task.value) { self?.stopCapture(ifRun: current) }
@@ -462,11 +467,38 @@ extension AmbientAudioStreamer {
 
     /// The one recovery decision for `failed`, nil without a recovery or once a newer queue has replaced it.
     private func decide(_ failed: AmbientAudioSendQueue, failure: any Error) -> Task<Bool, Never>? {
-        guard failed === queue, let recovery else { return nil }
+        guard failed === queue else { return nil }
         if let decision, decision.queue === failed { return decision.task }
-        let task = Task { @MainActor in await recovery(failure) }
+        let allowed = transportResumeAllowed
+        transportResumeAllowed = false
+        guard allowed || recovery != nil else { return nil }
+        let task = Task { @MainActor in
+            if allowed { return true }
+            return await self.recovery?(failure) ?? false
+        }
         decision = (failed, task)
         return task
+    }
+}
+
+// #904: the audio session stays active in the background. No suspended PCM enters a stream or a backlog.
+extension AmbientAudioStreamer {
+    func suspendTransport() { admission.setPaused(true) }
+    func resumeTransport() {
+        transportResumeAllowed = true
+        decision = nil
+        admission.setPaused(false)
+    }
+    func discardCapture() { admission.setPaused(true); capture.stop() }
+}
+
+/// The converter hook may suspend; check the capture epoch after it, before touching PCM.
+private struct AmbientCapturePreparation: Sendable {
+    let beforeEncode: (@Sendable () async -> Void)?
+    let admission: AudioCaptureAdmission
+    func accepts(_ buffer: AudioCaptureBuffer) async -> Bool {
+        await beforeEncode?()
+        return admission.accepts(buffer.admissionEpoch)
     }
 }
 
