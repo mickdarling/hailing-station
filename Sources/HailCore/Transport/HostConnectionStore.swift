@@ -246,7 +246,16 @@ extension HostConnectionStore {
         if snapshot.state != .ready { forgetModes(snapshot.id) }
     }
 
-    private func receive(_ event: HostReplyEvent, token: UUID) {
+    private func receive(_ event: HostReplyEvent, token: UUID) async {
+        guard tokens[event.endpointID] == token else { return }
+        // The receive loop awaits this callback before processing the next frame. Check the exact probe's
+        // pong on the connection actor, so a stalled polling waiter cannot misclassify a post-pong refusal.
+        if HostNoticeOrigin.streamID != nil,
+           let proof = ambientController?.reconnect.acceptance,
+           proof.binding.hostID == event.endpointID,
+           let connection = connections[event.endpointID], await connection.hasConfirmed(proof) {
+            ambientController?.reconnect.accepted(proof)
+        }
         guard tokens[event.endpointID] == token else { return }
         if receiveAmbientNotice(event) { return }
         segmentWiring?.receive(event)
@@ -406,6 +415,9 @@ extension HostConnectionStore {
             ambientController?.reconnect.sendFailed(error, audio: audio, binding: binding, store: self)
             notePrivateStop(error, binding: binding)
             throw error
+        }
+        if audio.isResume, ambientController?.ownsAudio(audio.streamID, binding: binding) == true {
+            ambientController?.reconnect.confirmAcceptance(of: audio, binding: binding, on: connection)
         }
         if audio.sequence > 0 { privacyLocal[binding.hostID]?.listeningStopped = false }
     }
@@ -881,7 +893,8 @@ extension AmbientListeningController {
         if reconnect.isPending, Self.isTransportError(error) { return }
         movedAway = AmbientHandoff(refusal: error)
         if case HostConnectionFailure.remote = error, !Self.isTransient(error) {
-            reconnect.refused(reason: movedAway == nil ? .startFailed : .movedAway)
+            reconnect.refused(reason: movedAway == nil ? .startFailed : .movedAway,
+                              streamID: streamID, binding: binding)
         }
         sendFailure = movedAway?.status ?? "Stopped: \(Self.describe(error))"
         sendFailureCause = Self.diagnosticCause(error)
@@ -1462,4 +1475,38 @@ final class ReplySegmentDeviceWiring {
 /// What the last segment yield did to the reply-echo tail (#932).
 enum SegmentTailRelease: Equatable, Sendable {
     case notAttempted, released, kept
+}
+
+// R1's identity-aware overload uses the existing confirmed-round-trip machinery without changing R0.
+// Keeping the nonce lets refusal delivery inspect receipt order instead of waiting for the polling task.
+extension HostConnection {
+    func confirmRoundTrip(for proof: AmbientResumeAcceptance) async throws {
+        guard snapshot.connectionGeneration == proof.binding.connectionGeneration,
+              ambientStream?.id == proof.streamID else { throw HostConnectionFailure.notReady }
+        let token = generation
+        pendingPings[proof.nonce] = monotonicNow()
+        proof.register(token)
+        do {
+            try await send(.ping(nonce: proof.nonce), generation: token)
+            schedulePongDeadline(nonce: proof.nonce, generation: token)
+            while pendingPings[proof.nonce] != nil {
+                guard isCurrent(token), wantsConnection else { throw HostConnectionFailure.notReady }
+                try await Task.sleep(for: .milliseconds(10))
+            }
+            guard isCurrent(token), wantsConnection, snapshot.state == .ready else {
+                throw HostConnectionFailure.notReady
+            }
+        } catch {
+            proof.register(nil)
+            pendingPings.removeValue(forKey: proof.nonce)
+            throw error
+        }
+    }
+
+    func hasConfirmed(_ proof: AmbientResumeAcceptance) -> Bool {
+        guard let token = proof.token else { return false }
+        return isCurrent(token) && wantsConnection && snapshot.state == .ready
+            && snapshot.connectionGeneration == proof.binding.connectionGeneration
+            && pendingPings[proof.nonce] == nil
+    }
 }

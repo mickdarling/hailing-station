@@ -24,7 +24,7 @@ import Testing
         try await host.answer()
         try await waitUntil { await MainActor.run { rig.controller.binding != before } }
         try await rig.feed()
-        #expect(rig.notices.map(\.outcome) == [.failed, .applied])
+        #expect(rig.notices.map(\.outcome) == [.interrupted, .applied])
         #expect(rig.capture.startCount == 1 && rig.makeCalls == 1 && rig.permissionCalls == 1)
         await oldHost.expectExactlyOnePrivacyOn()
         await host.expectExactlyOnePrivacyOn()
@@ -44,7 +44,7 @@ import Testing
         #expect(rig.capture.discardedCount == before + 10)
         try await rig.reconnect()
         #expect(rig.controller.isListening && rig.capture.startCount == 1 && rig.makeCalls == 1)
-        #expect(rig.notices.map(\.outcome) == [.failed, .applied])
+        #expect(rig.notices.map(\.outcome) == [.interrupted, .applied])
         await rig.close()
     }
 }
