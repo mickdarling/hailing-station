@@ -512,6 +512,9 @@ final class AmbientRequestOutcomes: Sendable {
                   entry.confirmed?.terminal != true, entry.confirmed != value else { return false }
             if value == .accepted, entry.confirmed != nil { return false }
             if value == .replyPublished, entry.confirmed != .accepted { return false }
+            // The host never terminates an acknowledged physical span with a failure: only its real end
+            // can close it. This subset avoids an unacknowledged close-only transition after termination.
+            if entry.confirmed == .replyStarted, value != .replyEnded { return false }
             if [.replyStarted, .replyEnded].contains(value),
                entry.confirmed != .accepted && entry.confirmed != .replyStarted { return false }
             guard write(RightyoRequestOutcome(session: session, request: entry.producer,
