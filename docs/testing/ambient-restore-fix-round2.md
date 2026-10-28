@@ -936,8 +936,8 @@ armed capture, discarded gap PCM, one capture start, the retained target, and
 exactly three connection opens. `staleSelectionFailureCannotRetryANewerGeneration`
 rejects a retry for the failed generation while its successor awaits selection
 confirmation, then applies normally. `selectionFailureNeverExtendsTheOriginalDeadline`
-expires the injected clock during retry, then handshakes without selecting or
-sending PCM: timedOut remains the final outcome and capture is stopped.
+expires the injected clock during retry, then handshakes without confirming a
+restored selection or sending PCM: timedOut remains the final outcome and capture is stopped.
 
 The targeted serial run passed **5 tests in 3 suites, 7 cases**, 13.407 seconds,
 including the original flapping and explicit remote authorization-refusal tests
@@ -949,3 +949,6 @@ line lengths and identifiers; the full declaration scan reports zero names over
 40 characters. Both existing authorization paths retain reauthorizationNeeded,
 the visible owner notice, its destination-selection action, and the fixed
 `reauthorization_needed` token.
+
+Both core warnings-as-errors build forms pass for this follow-up; the four-file
+production boundary and approved infrastructure head are unchanged.
