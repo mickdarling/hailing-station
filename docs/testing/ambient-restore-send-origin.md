@@ -1,6 +1,6 @@
 # Ambient send provenance infrastructure (#904, R0)
 
-This slice is inert for existing callers. Default `sendAudio` arguments retain
+This slice is inert for existing callers. The default `sendAudio` overload retains
 all wire fields, sequence checks, refusal behavior, and target confirmation.
 The optional binding generation rejects mismatches before sending. A queue's
 optional immutable admission predicate carries its sampled capture epoch through
@@ -212,3 +212,24 @@ is 74 lines, its test bodies are below 40 code lines, and the unchanged connecti
 actor remains at 149 code lines. No blank lines or explanatory comments were removed
 to meet thresholds, and no new lint exemption was added. `git diff --check` passed.
 This remains synthetic macOS transport evidence, with no physical-device claim.
+
+
+## Actor-method default hygiene
+
+The zero-nonce round-trip overload generates its nonce in the actor method and
+forwards it explicitly. The public one-argument audio overload forwards a nil
+binding generation. Notice call sites explicitly supply nil when no stream is
+associated. The explicit overloads live in the protocol extension, preserving
+the actor body's strict length budget. These are #206 hygiene changes only;
+they did not cause the host's async-sleep abort. That separate runtime issue is
+tracked in #991. The default observer and store remain inert, with no opt-in
+caller added and no wire or selection behavior changed.
+
+Both warnings-as-errors build forms passed (52.42 s and 135.02 s). The serial
+`SendOrigin` selection passed 13 tests in 6 suites (8.595 s), including the default
+wire/observer checks and explicit generation opt-in checks. Every run used the
+literal shared-process gate, background priority, four compiler jobs with one
+Swift frontend job, all supplied Testing flags, offline resolution, and the
+590-second process-group cleanup bound. Both build forms are repeated after this
+results-only commit on the delivered head. Strict-warning manual lint review and
+`git diff --check` pass; no new suppression or caller opt-in was added.

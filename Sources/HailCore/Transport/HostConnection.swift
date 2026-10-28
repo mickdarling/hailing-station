@@ -200,6 +200,7 @@ extension HostConnection {
 
     /// The default sleeps. A closure literal in this actor's default arguments compiled to a task whose
     /// allocations were freed out of order when a pong deadline woke (`swift_task_dealloc` abort, #206).
+    /// Avoid defaults that run code on this actor; see #991 for async sleep values called from Tasks on macOS 15.
     public nonisolated static func taskSleep(_ duration: Duration) async throws {
         try await Task.sleep(for: duration)
     }
