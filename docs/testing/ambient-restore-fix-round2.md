@@ -1160,3 +1160,39 @@ the serial focused core selection passed **5 tests in 4 suites**, 12.569 seconds
 regressions and found only the older unanswered privacy confirmation assumption,
 which was then corrected. Cleanup waits on the sender's explicit gate; the
 privacy test also waits for the new controller generation before supplying PCM.
+
+### Persistence through recovery and destination-selection action
+
+RootView.swift remains unchanged. Its scheduled `forgetSelection()` callback now
+routes through the existing destination-selection helper: a permitted pending
+same-host/same-target refresh retains the remembered identity and selected IDs
+while clearing foreground authorization. A callback delayed until after apply
+accepts core's current proof instead. Real removal and explicit invalidation
+still forget. Applied recovery advances the live URL and now also saves it to
+selection storage; the save task checks the selection revision and remembered
+value before writing. This supersedes the preceding round's decision to leave
+the persisted selection URL unchanged.
+
+The root notice uses a typed action. Reauthorization-needed offers an enabled
+Choose destination button, which sets the existing destination sheet state.
+Resume is constructed only with a current confirmed binding. The test drives the
+actual action handler and verifies the sheet opens, capture stays stopped, and
+no resume/PCM occurs.
+
+The package compiles the actual RootView+DestinationSelection.swift extension
+through a test-only relative symlink against a small state shell. The shell
+models RootView.persist's scheduled invalidation; a source contract checks that
+the native persist adapter still invokes that callback. The integration test
+runs this callback, the real helper, handshake, selection confirmation, PCM/apply,
+then checks selected IDs, live URL, stored URL, authorized generation, and card
+identity. Both pending and delayed-after-apply callbacks are covered. Native
+SwiftUI rendering is not claimed.
+
+This app-adapter selection passed **4 tests in 1 suite**, 4.179 seconds
+(`<scratch>/r2-adapter-pass.log`). Deleting the actual root helper's URL-update
+block compiled but failed the integration test in both callback orders at
+`Tests/HailCoreTests/AmbientReconnectRootSelectionTests.swift:31:9`. The stored-URL
+checks at line 33 also expired their ten-second waits: **1 parameterized test in
+1 suite, 6 issues**, 23.256 seconds, no phase timeout. Evidence is
+`<scratch>/mutation-url.log`; production was restored afterward. Both requested
+deletions are therefore caught by committed regressions.

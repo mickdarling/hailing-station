@@ -186,16 +186,11 @@ extension RootView {
     /// A reconnect outcome belongs to the root surface. It never retains a card, capture, or destination binding.
     @ViewBuilder
     private var reconnectNotice: some View {
-        if let controller = connections.ambientController, let notice = ambientRestorePresentation.notice {
+        if let notice = ambientRestorePresentation.notice {
             VStack(alignment: .leading, spacing: 6) {
                 Text(notice.text)
-                if ambientRestorePresentation.offersResume {
-                    Button("Resume listening") {
-                        if let binding = ambientRestorePresentation.resumeBinding {
-                            Task { await controller.turnOn(for: binding) }
-                        }
-                    }
-                    .disabled(ambientRestorePresentation.resumeBinding == nil)
+                if let action = ambientRestorePresentation.noticeAction {
+                    Button(action.title) { performAmbientNoticeAction(action) }
                     .buttonStyle(.borderedProminent)
                 }
             }

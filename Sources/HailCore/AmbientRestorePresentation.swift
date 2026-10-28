@@ -4,6 +4,13 @@ public import HailProtocol
 /// A snapshot of the core state used by the root destination and ambient card.
 /// Notices describe history; only pending recovery can retain an unavailable destination's card.
 public struct AmbientRestorePresentation: Sendable {
+    public enum NoticeAction: Equatable, Sendable {
+        case resume(AmbientAudioBinding), selectDestination
+        public var title: String {
+            if case .selectDestination = self { return "Choose destination" }
+            return "Resume listening"
+        }
+    }
     public let confirmedBinding: AmbientAudioBinding?
     public let notice: AmbientListeningReconnect.Notice?
     private let controllerBinding: AmbientAudioBinding?
@@ -57,6 +64,14 @@ public struct AmbientRestorePresentation: Sendable {
                                     targetID: selection.targetID, targetName: selection.targetName)
     }
 
+    /// Persistence may invalidate an old URL while core is replacing its transport for the retained identity.
+    public func retainsSelection(_ selection: DestinationSelection, endpoint: HostEndpoint) -> Bool {
+        guard isPending, isOn, recoveryBinding?.hostID == selection.hostID,
+              recoveryBinding?.targetID == selection.targetID, endpoint.id == selection.hostID else { return false }
+        return !(URL(string: selection.hostURL)?.scheme?.lowercased() == "wss"
+            && endpoint.url.scheme?.lowercased() == "ws")
+    }
+
     public func card(hostName: String?) -> (AmbientAudioBinding, String)? {
         if let binding = confirmedBinding, let hostName { return (binding, hostName) }
         guard isPending, let binding = recoveryBinding, let name = recoveryHostName else { return nil }
@@ -65,5 +80,10 @@ public struct AmbientRestorePresentation: Sendable {
 
     /// History and a pending card's cached binding never authorize an owner start.
     public var resumeBinding: AmbientAudioBinding? { confirmedBinding }
+    public var noticeAction: NoticeAction? {
+        guard offersResume else { return nil }
+        if notice?.reason == .reauthorizationNeeded { return .selectDestination }
+        return resumeBinding.map(NoticeAction.resume)
+    }
     public var offersResume: Bool { notice != nil && notice?.outcome != .applied && !isOn }
 }

@@ -46,10 +46,25 @@ extension RootView {
            let refreshed = ambientRestoreAuthorization.restoredSelection(selection, endpoint: host.endpoint,
                                                                          target: target) {
             rememberedSelection = refreshed
+            if refreshed != selection {
+                let revision = selectionRevision
+                Task {
+                    guard selectionRevision == revision, rememberedSelection == refreshed else { return }
+                    await selectionStore.save(refreshed)
+                }
+            }
         }
         selectionAuthorizedForReadyConnection = true
         authorizedConnectionGeneration = binding.connectionGeneration
         return true
+    }
+
+    @MainActor
+    func performAmbientNoticeAction(_ action: AmbientRestorePresentation.NoticeAction) {
+        switch action {
+        case .selectDestination: showingDestinations = true
+        case .resume(let binding): Task { await connections.ambientController?.turnOn(for: binding) }
+        }
     }
 
     @MainActor
@@ -83,7 +98,7 @@ extension RootView {
             await selectionStore.save(selection)
         } catch {
             guard selectionRevision == revision else { return }
-            await forgetSelection()
+            await forgetSelection(preservingRestore: false)
         }
     }
 
@@ -208,7 +223,20 @@ extension RootView {
     }
 
     @MainActor
-    func forgetSelection() async {
+    private func retainAmbientSelectionForPersistence() -> Bool {
+        if acceptAppliedAmbientRestore() { return true }
+        guard let selection = rememberedSelection,
+              selectedHostID == selection.hostID, selectedTargetID == selection.targetID,
+              let host = connections.snapshots[selection.hostID],
+              ambientRestoreAuthorization.retainsSelection(selection, endpoint: host.endpoint) else { return false }
+        selectionAuthorizedForReadyConnection = false
+        authorizedConnectionGeneration = nil
+        return true
+    }
+
+    @MainActor
+    func forgetSelection(preservingRestore: Bool = true) async {
+        if preservingRestore, retainAmbientSelectionForPersistence() { return }
         selectionRevision &+= 1
         selectedHostID = nil
         selectedTargetID = nil
