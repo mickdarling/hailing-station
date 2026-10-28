@@ -71,6 +71,9 @@ import Testing
         try FileManager.default.removeItem(at: delegated)
         try FileManager.default.createSymbolicLink(at: delegated, withDestinationURL: module)
         #expect(throws: CodexRecoveryFault.unavailable) { try CodexRecoveryConfiguration.load(manifest) }
+        try FileManager.default.removeItem(at: delegated)
+        try Data("{}".utf8).write(to: delegated)
+        _ = try CodexRecoveryConfiguration.load(manifest)
     }
 }
 #endif
