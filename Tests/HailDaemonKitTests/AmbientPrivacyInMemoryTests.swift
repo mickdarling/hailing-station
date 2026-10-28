@@ -41,6 +41,8 @@ import Testing
     @Test func aRestartedRouterStartsPublic() async throws {
         let first = try await DuckRig(script: Self.argv + AmbientDuckReloadTests.entry)
         #expect(await eventually { first.details("ambient_duck").count == 1 })
+        // `ambient_started` is emitted from the run's own task after the child launches, so wait for it.
+        #expect(await eventually { first.connection() != nil })
         let before = try #require(first.connection())
         #expect(first.env.router.duckMode(connection: before))
         await first.finish()
@@ -53,6 +55,7 @@ import Testing
         #expect(await eventually {
             (try? second.fake.recorded("argv.txt"))?.split(separator: "\n").count == 1
         })
+        #expect(await eventually { second.connection() != nil })
         let connection = try #require(second.connection())
         #expect(connection != before)
         #expect(!second.env.router.duckMode(connection: connection))
