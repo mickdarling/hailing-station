@@ -59,6 +59,14 @@ struct GuardClockAmbientSink: AmbientAudioSink {
     func ambientPrivacy(_ on: Bool, connection: UUID) {
         GuardBudgetClock.$current.withValue(clock) { router.ambientPrivacy(on, connection: connection) }
     }
+    func ambientPrivacyPreArm(connection: UUID) {
+        GuardBudgetClock.$current.withValue(clock) { router.ambientPrivacyPreArm(connection: connection) }
+    }
+    func ambientPrivacyPreArmRefused(connection: UUID, reason: String) {
+        GuardBudgetClock.$current.withValue(clock) {
+            router.ambientPrivacyPreArmRefused(connection: connection, reason: reason)
+        }
+    }
 }
 
 #endif
