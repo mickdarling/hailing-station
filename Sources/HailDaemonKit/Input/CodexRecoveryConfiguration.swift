@@ -56,8 +56,11 @@ struct CodexRecoveryConfiguration: Sendable {
             _ = try resource(directory.appendingPathComponent(name).path, executable: false)
         }
         let dependency = directory.appendingPathComponent("node_modules/ws")
+        var failed = false
         guard let files = FileManager.default.enumerator(at: dependency,
-            includingPropertiesForKeys: nil, options: []) else { throw CodexRecoveryFault.unavailable }
+            includingPropertiesForKeys: nil, options: [], errorHandler: { _, _ in
+                failed = true; return false
+            }) else { throw CodexRecoveryFault.unavailable }
         var count = 0
         while let file = files.nextObject() as? URL {
             count += 1
@@ -69,6 +72,7 @@ struct CodexRecoveryConfiguration: Sendable {
             if info.st_mode & S_IFMT == S_IFDIR { continue }
             guard info.st_mode & S_IFMT == S_IFREG else { throw CodexRecoveryFault.unavailable }
         }
+        guard !failed else { throw CodexRecoveryFault.unavailable }
     }
     private static func privateObject(_ file: URL) throws -> [String: Any] {
         guard file.isFileURL, file.path.hasPrefix("/") else { throw CodexRecoveryFault.unavailable }
