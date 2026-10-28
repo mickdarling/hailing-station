@@ -2,6 +2,7 @@
 import Foundation
 import HailCore
 import HailProtocol
+import SwiftUI
 
 extension RootView {
     var availableDestinations: [Destination] {
@@ -271,4 +272,20 @@ struct Destination: Identifiable, Equatable {
     var hostID: HostEndpoint.Identifier { endpoint.id }
     var id: String { "\(hostID)|\(target.id)" }
     var label: String { "\(endpoint.name) · \(target.name)" }
+}
+
+/// The shipped card's navigation lifetime, separate from its audio controls and presentation.
+/// Root destination observation continues to deliver real binding loss while this view is covered.
+struct AmbientListeningCard<Content: View>: View {
+    let connections: HostConnectionStore
+    let reconcileDestination: @MainActor () async -> Void
+    let content: Content
+
+    var controller: AmbientListeningController? { connections.ambientController }
+
+    var body: some View {
+        content.onDisappear {
+            Task { await reconcileDestination() }
+        }
+    }
 }

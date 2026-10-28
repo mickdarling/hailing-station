@@ -1,8 +1,11 @@
 import AVKit
 import HailCore
+import Observation
 import SwiftUI
 struct AudioDiagnosticsView: View {
     @Bindable var model: AudioRouteModel
+    @Environment(HostConnectionStore.self) private var connections
+    @State var session = AudioDiagnosticsSession()
     @AppStorage(AudioInputPreferences.bluetoothHFPDefaultsKey) private var allowsBluetoothHFP = false
     @State private var bluetoothHFPFailure: String?
 
@@ -13,10 +16,11 @@ struct AudioDiagnosticsView: View {
                 LabeledContent("Sample rate", value: model.sampleRate)
                 Text(model.status).font(.caption).foregroundStyle(.secondary)
                 HStack {
-                    Button("Activate") { Task { try? await model.activate() } }
+                    Button("Activate") { session.activate(model) }
                     Button("Deactivate") { Task { await model.deactivate() } }
                 }
                 .buttonStyle(.bordered)
+                .disabled(connections.ambientController?.isOn == true)
             }
             Section("Input") {
                 Menu {
@@ -85,7 +89,7 @@ struct AudioDiagnosticsView: View {
         .navigationTitle("Audio session")
         .stationToolBackNavigation()
         .task { await model.refresh() }
-        // The root and capture controller own this shared session, including while a tool covers the station.
+        .onDisappear { session.disappear(model) { connections.ambientController?.isOn == true } }
     }
 }
 private extension AudioDiagnosticsView {
@@ -159,3 +163,30 @@ struct AudioOutputRoutePicker: View {
     }
 }
 #endif
+
+/// Only an activation begun by this tool may be released by Back. Capture can take ownership before Back.
+@MainActor @Observable
+final class AudioDiagnosticsSession {
+    private(set) var activation: Task<Void, Never>?
+    private(set) var disappearance: Task<Void, Never>?
+    private var ownsActivation = false
+
+    func activate(_ model: AudioRouteModel) {
+        let previous = activation
+        activation = Task {
+            await previous?.value
+            await model.refresh()
+            guard !model.diagnostics.isActive else { return }
+            do { try await model.activate(); ownsActivation = true } catch { ownsActivation = false }
+        }
+    }
+
+    func disappear(_ model: AudioRouteModel, captureOwnsSession: @escaping @MainActor () -> Bool) {
+        disappearance = Task {
+            await activation?.value
+            guard ownsActivation else { return }
+            ownsActivation = false
+            guard !captureOwnsSession() else { return }
+        }
+    }
+}

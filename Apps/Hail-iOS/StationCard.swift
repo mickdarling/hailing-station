@@ -8,6 +8,8 @@ import UserNotifications
 import UIKit
 #endif
 
+// SwiftPM's native lifecycle adapter compiles the real card, with peripheral panels supplied by its fixture.
+#if !SWIFT_PACKAGE
 extension View {
     func stationCard(minHeight: CGFloat = 320) -> some View {
         frame(maxWidth: .infinity, minHeight: minHeight)
@@ -159,12 +161,12 @@ extension RootView {
     var ambientListeningSurface: some View {
         VStack(alignment: .leading, spacing: 12) {
             if let (binding, hostName) = ambientPresentation {
-                AmbientListeningCard(
-                    binding: binding, hostName: hostName,
-                    connections: connections, audioSession: audioRoutes, playback: playback,
-                    echoGuard: echoGuard, diagnostics: diagnostics
-                )
-                .onDisappear { Task { await reconcileAmbientDestination() } }
+                AmbientListeningCard(connections: connections, reconcileDestination: reconcileAmbientDestination,
+                    content: AmbientListeningCardContent(
+                        binding: binding, hostName: hostName,
+                        connections: connections, audioSession: audioRoutes, playback: playback,
+                        echoGuard: echoGuard, diagnostics: diagnostics
+                    ))
             }
             reconnectNotice
         }
@@ -200,6 +202,8 @@ extension RootView {
     }
 }
 
+#endif
+
 /// The toggle starts off on launch. It starts only in the foreground, keeps capture alive through the background
 /// and guarded transport restore (#904), and stops on a real destination loss or the owner's off. Card disappearance
 /// during recovery is not an owner stop. Replies play while it is on (#227) through
@@ -207,7 +211,7 @@ extension RootView {
 /// speaking" restores the #227 behaviour (silence to the host while a reply is audible) for A/B comparison.
 /// With headphones as the output when listening starts, capture runs without voice processing so they keep their
 /// route, and the mic is silenced while replies play (#343).
-struct AmbientListeningCard: View {
+struct AmbientListeningCardContent: View {
     let binding: AmbientAudioBinding
     let hostName: String
     let playback: ReplyPlaybackController
@@ -359,7 +363,7 @@ struct AmbientListeningCard: View {
     }
 }
 
-extension AmbientListeningCard {
+extension AmbientListeningCardContent {
     /// Only pending recovery keeps the card through an unavailable destination. A notice has no capture lifetime.
     /// Only a current confirmed binding can resume.
     private var currentBinding: AmbientAudioBinding? {
@@ -368,6 +372,7 @@ extension AmbientListeningCard {
     }
 }
 
+#if !SWIFT_PACKAGE
 /// RightyO does not recognise the owner's voice on this input (rightyo#164): say so, instead of owner-only features
 /// failing silently, and point to enrolment on this mic. It clears by itself once the voice is recognised.
 struct OwnerVoiceUnrecognizedView: View {
@@ -613,3 +618,5 @@ extension TranscriptionLabView {
 enum StationUITestReset {
     static var didRun = false
 }
+
+#endif

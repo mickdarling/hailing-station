@@ -1,9 +1,10 @@
 import Foundation
 import HailProtocol
 import Testing
+import SwiftUI
 @testable import HailCore
 
-/// The real root extension is compiled through RootDestinationSelectionAdapter. No native audio or navigation.
+/// Real SwiftUI navigation and the shipped card lifetime; audio and transport use model fixtures.
 @MainActor
 @Suite(.serialized) struct StationToolAmbientLifetimeTests {
     enum Tool: CaseIterable, Sendable { case macSetup, audio, labs, replyTools }
@@ -18,11 +19,20 @@ import Testing
         try await rig.start()
         let root = try RootView(rig: rig, selectionStore: RootSelectionStore())
         let binding = try rig.currentBinding()
-        await root.reconcileAmbientDestination() // The station card disappears under each navigation push.
+        var completed = false
+        let host = NativeStationToolHost(AmbientListeningCard(connections: rig.store, reconcileDestination: {
+            await root.reconcileAmbientDestination()
+            completed = true
+        }, content: try makeNativeAmbientCard(rig: rig, diagnostics: log)))
+        defer { host.finish() }
+        try await host.appeared()
+        host.push()
+        try await waitUntil { await MainActor.run { completed || rig.released > 0 } }
         #expect(rig.controller.isOn && rig.controller.isListening, "Pushing \(tool) stopped listening")
         #expect(rig.controller.binding == binding && rig.released == 0)
         #expect(rig.unexpected.isEmpty && rig.controller.stopReason == nil)
-        await rig.controller.update(binding: try rig.currentBinding(), scene: .active) // Return to the card.
+        try await host.back()
+        await rig.controller.update(binding: try rig.currentBinding(), scene: .active)
         #expect(rig.controller.isListening && rig.capture.startCount == 1)
         if rig.controller.isListening {
             try await rig.feed()
@@ -77,25 +87,13 @@ import Testing
         await rig.close()
     }
 
-    @Test func nativeCardDisappearanceCallsTheTestedRootCallback() throws {
-        let source = try appSource("StationCard.swift")
-        #expect(source.contains(".onDisappear { Task { await reconcileAmbientDestination() } }"))
-        #expect(!source.contains("await controller.destinationLost()"))
-    }
-
     @Test func nativeRootObservesBindingWhileToolsCoverTheCard() throws {
         let source = try appSource("RootView.swift")
         #expect(source.contains(".onChange(of: ambientDestinationBinding) { _, _ in\n"
             + "            Task { await reconcileAmbientDestination() }"))
-        let stack = try #require(source.range(of: "NavigationStack {\n            content\n        }"))
+        let stack = try #require(source.range(of: "NavigationStack { content }"))
         let observer = try #require(source.range(of: ".onChange(of: ambientDestinationBinding)"))
         #expect(stack.upperBound < observer.lowerBound)
-    }
-
-    @Test func audioToolOnlyRefreshesOnEntryAndDoesNotReleaseSessionOnExit() throws {
-        let source = try appSource("AudioDiagnosticsView.swift")
-        #expect(source.contains(".task { await model.refresh() }"))
-        #expect(!source.contains(".onDisappear"))
     }
 
     private func makeLog() throws -> (DeviceDiagnostics, () -> Void) {

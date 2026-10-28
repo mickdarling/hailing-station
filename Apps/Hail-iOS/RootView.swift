@@ -47,9 +47,8 @@ struct RootView: View {
     }
 
     var body: some View {
-        NavigationStack {
-            content
-        }
+        NavigationStack { content }
+        .environment(connections)
         .modifier(StationMenuStatusPublisher(connections: connections, destination: destination?.label))
         .modifier(ReplySegmentNotices(connections: connections, banners: $announcementBanners))
         .onChange(of: ambientDestinationBinding) { _, _ in
