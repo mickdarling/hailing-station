@@ -86,13 +86,7 @@ final class CodexRecoveryChannel: Sendable {
                 return invalid
             }
             if incomplete { stop() }
-        } catch {
-            let terminal = state.withLock { state in
-                state.eof = true
-                return state.pending.isEmpty && state.latest?.state.terminal == true
-            }
-            if !terminal { stop() }
-        }
+        } catch { stop() }
     }
     private func accept(_ chunk: Data) throws {
         try state.withLock { state in

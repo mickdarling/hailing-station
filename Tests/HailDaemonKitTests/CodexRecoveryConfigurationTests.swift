@@ -33,6 +33,8 @@ import Testing
         let config = try CodexRecoveryConfiguration.load(manifest)
         #expect(config.target == "tmux:authored" && config.binding == "pinned")
         #expect(config.command.arguments.contains("host"))
+        #expect(config.command.environment.contains("WS_NO_BUFFER_UTIL=1"))
+        #expect(config.command.environment.contains("WS_NO_UTF_8_VALIDATE=1"))
         #expect(config.command.arguments.contains(profile.path))
         try refusesUnsafeResources(root: root, bundle: bundle, manifest: manifest, value: value)
         #expect(chmod(profile.path, 0o644) == 0)

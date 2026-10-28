@@ -71,13 +71,18 @@ import Testing
         let body = #"$_=<STDIN>; $v=decode_json($_); delete $v->{op}; $v->{state}='interrupted'; "#
             + #"$v->{recovered}=JSON::PP::true; print encode_json($v)."\n"; "#
             + "print decode_json('" + list + "')->[0];"
+            + (tail.hasSuffix("\n") ? "while(<STDIN>) {}" : "")
         let channel = try CodexRecoveryChannel(command: command(body), request: UUID(), generation: UUID())
         try await channel.send("prepare")
         await #expect(throws: (any Error).self) {
             try await channel.wait(for: [.interrupted], until: .now.advanced(by: .seconds(3)))
         }
-        channel.stop(); await channel.join()
+        let began = ContinuousClock().now
+        let safety = Task { try? await Task.sleep(for: .seconds(4)); channel.stop() }
+        await channel.join()
+        #expect(began.duration(to: .now) < .seconds(2))
         #expect(channel.report == nil && channel.reaped)
+        safety.cancel(); await safety.value
     }
     @Test func cancellingASendToANonreadingWorkerRevokesAndReaps() async throws {
         let channel = try CodexRecoveryChannel(command: command("while(1) { select undef,undef,undef,1; }"),

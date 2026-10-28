@@ -31,7 +31,8 @@ struct CodexRecoveryConfiguration: Sendable {
         try delegatedCode(beside: script)
         return Self(target: target, binding: binding, command: OwnedStdioCommand(
             executable: program, arguments: ["-I", script, "host", "--config", profile, "--node", runtime],
-            environment: ["PATH=/usr/bin:/bin:/usr/sbin:/sbin:/opt/homebrew/bin"]))
+            environment: ["PATH=/usr/bin:/bin:/usr/sbin:/sbin:/opt/homebrew/bin",
+                          "WS_NO_BUFFER_UTIL=1", "WS_NO_UTF_8_VALIDATE=1"]))
     }
     /// Reuse the existing Codex path-trust checks, without enabling the experimental provider adapter.
     private static func resource(_ raw: String, executable: Bool) throws -> String {
