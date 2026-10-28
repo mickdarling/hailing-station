@@ -1045,6 +1045,10 @@ extension AmbientRightyoRouter {
                                              message: "ambient stopped: listener input closed") }
     }
 
+    /// The drain grace's queue: labelled and serial, so it targets the overcommit root queue and fires even while the
+    /// default global queue is starved (#980).
+    private static let drainGrace = DispatchQueue(label: "hail.ambient.drain-grace")
+
     /// True once no run remains; false when `grace` passes first.
     fileprivate func drain(within grace: TimeInterval) async -> Bool {
         let id = UUID()
@@ -1055,7 +1059,7 @@ extension AmbientRightyoRouter {
                 return false
             }
             if empty { return waiter.resume() }
-            DispatchQueue.global().asyncAfter(deadline: .now() + grace) {
+            Self.drainGrace.asyncAfter(deadline: .now() + grace) {
                 self.state.withLock { $0.drainWaiters.removeValue(forKey: id) }?.resume()
             }
         }
