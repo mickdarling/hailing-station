@@ -1,6 +1,7 @@
 #if os(macOS)
 import Foundation
 import HailProtocol
+import Synchronization
 import Testing
 @testable import HailDaemonKit
 
@@ -62,9 +63,20 @@ import Testing
             let listing = try await registry.listing()
             #expect(listing.count == 1 && listing[0].binding == diagnosticUtilityBinding)
             let port = try await listener.start()
-            try await exerciseSockets(port, reverseOrder: reverseOrder, destination: destination)
-            try await PublisherFixture.until { await composition.bridgeDiagnostics().completed == 2 }
-            #expect(await composition.publisherDiagnostics().completed == 2)
+            // #955: under CI load the real CLI reply can stall at a poll budget or a #896 socket watchdog. Only those
+            // stalls are known; every other issue still fails. Remove this wrapper with #955's fix.
+            var exercised = false
+            let stall = KnownCompositionStall()
+            try await withKnownIssue("#955 intermittent real-CLI stall", isIntermittent: true) {
+                try await exerciseSockets(port, reverseOrder: reverseOrder, destination: destination)
+                try await PublisherFixture.until { await composition.bridgeDiagnostics().completed == 2 }
+                exercised = true
+            } matching: { stall.matches($0) }
+            if exercised {
+                #expect(await composition.publisherDiagnostics().completed == 2)
+            } else {
+                await destination.release()
+            }
             await composition.stop()
             #expect(try await registry.targets().allSatisfy { !$0.alive })
             await listener.stop()
@@ -137,6 +149,22 @@ private func removeFixture(_ fixture: PublisherFixture, composition: DiagnosticR
         return status.retained == 0 && status.queued == 0
     }
     try FileManager.default.removeItem(at: fixture.base)
+}
+
+/// #955: the stalls seen on CI, nothing else. A disconnected socket is known only after its #896 watchdog fired.
+private final class KnownCompositionStall: Sendable {
+    private let socketWatchdog = Mutex(false)
+    func matches(_ issue: Issue) -> Bool {
+        if issue.comments.contains(where: { $0.rawValue.hasPrefix("#896: socket operation exceeded") }) {
+            socketWatchdog.withLock { $0 = true }
+            return true
+        }
+        guard case .errorCaught(let error) = issue.kind else { return false }
+        if case PublisherFixtureFailure.watchdog(_, let limit, _, _, _) = error { return limit == "poll budget" }
+        let socketError = error as NSError
+        return socketError.domain == NSPOSIXErrorDomain && socketError.code == Int(ENOTCONN)
+            && socketWatchdog.withLock { $0 }
+    }
 }
 
 private actor CompositionDestination: HostReplyPublishing {

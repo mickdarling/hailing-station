@@ -78,6 +78,10 @@ final class RightyoControlWriter: Sendable {
     /// Meeting mode (#735 MM-D, rightyo#227): written only to a child whose `started` advertised `meeting` v1
     /// (`AmbientMeetingControl`); exactly that key and a boolean.
     func meeting(_ on: Bool) -> Bool { write("{\"meeting\":\(on)}\n") }
+    func outcome(_ outcome: RightyoRequestOutcome) -> Bool {
+        guard let line = outcome.line else { return false }
+        return write(line)
+    }
     private func write(_ text: String) -> Bool {
         let line = Array(text.utf8)
         return descriptor.withLock { fd in
@@ -118,6 +122,9 @@ extension RightyoChildProcess {
     /// started without `replyControl`, its control input is closed, or the pipe is full (the report is dropped).
     @discardableResult public func reportReply(_ phase: RightyoReplyPhase, asked: Bool = false) -> Bool {
         control.report(phase, asked: asked)
+    }
+    @discardableResult func reportRequestOutcome(_ value: RightyoRequestOutcome) -> Bool {
+        control.outcome(value)
     }
     /// Sets the child's media mode (#551) the same way; false when it could not be written.
     @discardableResult public func reportMedia(_ on: Bool) -> Bool { control.media(on) }
