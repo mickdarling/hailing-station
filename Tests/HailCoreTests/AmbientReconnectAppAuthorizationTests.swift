@@ -55,7 +55,7 @@ import Testing
         #expect(rig.appPresentation.appliedBinding(hostID: original.hostID, targetID: original.targetID) == nil)
     }
 
-    enum Loss: CaseIterable, Sendable { case targetRemoval, endpointChange, ownerSelection }
+    enum Loss: CaseIterable, Sendable { case targetRemoval, endpointRemoval, ownerSelection }
 
     @Test(arguments: Loss.allCases)
     func appliedBackgroundBindingNeverAuthorizesARealDestinationLoss(loss: Loss) async throws {
@@ -72,14 +72,14 @@ import Testing
             try await waitUntil { await MainActor.run {
                 rig.store.snapshots[rig.endpoint.id]?.targets.isEmpty == true
             } }
-        case .endpointChange:
-            await rig.store.upsert(try endpoint(rig.endpoint.id, "ws://127.0.0.1:8766"))
+        case .endpointRemoval:
+            await rig.store.remove(rig.endpoint.id)
         case .ownerSelection: try await rig.select(restoring: false)
         }
         #expect(rig.appPresentation.appliedBinding(hostID: original.hostID, targetID: original.targetID) == nil)
         switch loss {
         case .ownerSelection: await rig.controller.update(binding: try rig.currentBinding(), scene: .background)
-        case .targetRemoval, .endpointChange: await rig.controller.destinationLost()
+        case .targetRemoval, .endpointRemoval: await rig.controller.destinationLost()
         }
         #expect(!rig.controller.isListening && !rig.controller.isOn)
         #expect(rig.controller.binding == nil && rig.released == 1)

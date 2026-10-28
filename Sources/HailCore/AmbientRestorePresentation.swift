@@ -1,4 +1,5 @@
 public import Foundation
+public import HailProtocol
 
 /// A snapshot of the core state used by the root destination and ambient card.
 /// Notices describe history; only pending recovery can retain an unavailable destination's card.
@@ -39,6 +40,21 @@ public struct AmbientRestorePresentation: Sendable {
         let restored = appliedBinding(hostID: hostID, targetID: targetID)
         guard foregroundAuthorized || restored != nil else { return nil }
         return restored?.connectionGeneration ?? generation
+    }
+
+    /// A live, applied core restore can recognize a refreshed address for the same retained destination.
+    public func matches(_ selection: DestinationSelection, endpoint: HostEndpoint, target: TargetInfo) -> Bool {
+        selection.matches(endpoint: endpoint, target: target)
+            || restoredSelection(selection, endpoint: endpoint, target: target) != nil
+    }
+
+    public func restoredSelection(_ selection: DestinationSelection, endpoint: HostEndpoint,
+                                  target: TargetInfo) -> DestinationSelection? {
+        guard appliedBinding(hostID: selection.hostID, targetID: selection.targetID) != nil,
+              endpoint.id == selection.hostID, target.id == selection.targetID,
+              target.name == selection.targetName, target.alive else { return nil }
+        return DestinationSelection(hostID: selection.hostID, hostURL: endpoint.url.absoluteString,
+                                    targetID: selection.targetID, targetName: selection.targetName)
     }
 
     public func card(hostName: String?) -> (AmbientAudioBinding, String)? {

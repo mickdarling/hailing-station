@@ -1045,3 +1045,23 @@ The final core selection passed **9 tests in 4 suites**, 18.618 seconds.
 Both warnings-as-errors build forms are checked on the delivered core head.
 Linking emits stale debug module-cache path warnings; compiler warnings-as-errors
 checks pass. No native app or physical microphone/haptic proof is claimed.
+
+### App destination recognition after refresh
+
+Inspection found a companion app defect: the root's remembered-URL equality
+would remove the destination card immediately after core successfully applied a
+same-host URL refresh. The root now uses the shared presentation predicate to
+recognize a currently applied binding for the same host, target, and target name.
+The first render can use that proof before the notice handler runs. The handler
+then advances the live remembered URL synchronously, preserving the card through
+a later microphone pause or owner stop. Persistent selection storage is not
+rewritten; without current applied proof, a stale saved address still fails
+closed. Historical notices, stale generations, other hosts, and renamed targets
+cannot authorize a refresh. Endpoint removal replaces the obsolete endpoint-
+refresh case in the existing real-destination-loss test.
+
+The ask-3 race shapes passed without another selection/pause bug. The additional
+fixes found during implementation were the app's URL-equality gate and immediate
+active-stream shutdown on a transport downgrade. All changes stay in the existing
+production file sets. The shared helper is exercised by package tests; native
+SwiftUI execution and physical microphone/haptic behavior remain unclaimed.

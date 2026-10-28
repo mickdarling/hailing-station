@@ -22,7 +22,7 @@ extension RootView {
         return availableDestinations.first {
             $0.hostID == selectedHostID && $0.target.id == selectedTargetID
                 && connections.snapshots[$0.hostID]?.connectionGeneration == authorizedConnectionGeneration
-                && rememberedSelection.matches(endpoint: $0.endpoint, target: $0.target)
+                && ambientRestoreAuthorization.matches(rememberedSelection, endpoint: $0.endpoint, target: $0.target)
         }
     }
 
@@ -41,6 +41,12 @@ extension RootView {
     @MainActor
     func acceptAppliedAmbientRestore() -> Bool {
         guard let binding = appliedAmbientBinding else { return false }
+        if let selection = rememberedSelection, let host = connections.snapshots[binding.hostID],
+           let target = host.targets.first(where: { $0.id == binding.targetID }),
+           let refreshed = ambientRestoreAuthorization.restoredSelection(selection, endpoint: host.endpoint,
+                                                                         target: target) {
+            rememberedSelection = refreshed
+        }
         selectionAuthorizedForReadyConnection = true
         authorizedConnectionGeneration = binding.connectionGeneration
         return true
