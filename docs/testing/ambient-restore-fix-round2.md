@@ -1110,3 +1110,53 @@ files. No new suppression, code reflow, or blank-line deletion was used to meet
 a threshold. Package test results are synthetic; host Swift 6.2.4 execution of
 the deterministic pause shape, native SwiftUI, physical audio/haptics, and
 independent exact-head approval remain separately unclaimed.
+
+## Refresh privacy and destination follow-up
+
+### Privacy fail-before
+
+The independent refresh probe is committed as
+`AmbientReconnectRefreshPrivacyTests.pendingRefreshMustPreservePrivacyConfirmedAfterOriginalDrop`.
+With unchanged production, the warnings-as-errors test build passed and the
+serial test failed without a timeout: **1 test in 1 suite, 2 assertion issues**,
+at `Tests/HailCoreTests/AmbientReconnectRefreshPrivacyTests.swift:32:9` (missing
+privacy-on reassertion) and `:34:9` (PCM reached the replacement socket).
+The original drop was public; privacy-on was confirmed on its renewed socket
+while the first sender continuation was held. Evidence is
+`<scratch>/privacy-fail-before.log`.
+
+### Privacy latch and actionable authorization failure
+
+A confirmed privacy-on notice now latches the pending run's retained requirement,
+including confirmation after the original public drop. Before replacing a
+transport, refresh also merges its currently confirmed privacy state. Neither
+operation replaces the intent or its original began time. Even a later off
+notice cannot weaken this requirement. The replacement must send privacy-on and
+receive a matching duck-mode-on confirmation through the existing five-second
+gate before any PCM; the original sixty-second bound still applies.
+
+A retained selection that the replacement cannot reauthorize now stops with the
+distinct `reauthorizationNeeded` reason and visible re-authorization copy. Its
+fixed local OSLog token is `reauthorization_needed`. Device diagnostics keep the
+numeric reason (13) in their existing vocabulary, avoiding an unknown wire token
+on older hosts. Connection tokens, selection confirmation, and pending requests
+are still replaced; no retired authorization is resurrected.
+
+The privacy probe and the additional on-then-off latch test pass. The pending,
+renewed admission test holds PCM before conversion across another refresh, checks
+that capture rejects gap buffers, and distinguishes fresh silent PCM from held
+speech on the replacement. Deleting only refresh's `suspendTransport()` compiled
+successfully but failed that test at
+`Tests/HailCoreTests/AmbientReconnectRefreshAdmissionTests.swift:25:9`: zero
+buffers discarded instead of six. **1 test in 1 suite, 1 assertion issue**, no
+timeout (`<scratch>/mutation-suspend.log`). Production was restored afterward.
+The previous host-mode guard test now answers the required privacy reassertion;
+it still proves that a host notice is not an owner veto. The optional injected
+sleep/direct production Task.sleep shape remains unchanged.
+
+After restoring the mutation and answering the tightened host-mode privacy gate,
+the serial focused core selection passed **5 tests in 4 suites**, 12.569 seconds
+(`<scratch>/r1-fix-pass.log`). The preceding full reconnect run passed all new
+regressions and found only the older unanswered privacy confirmation assumption,
+which was then corrected. Cleanup waits on the sender's explicit gate; the
+privacy test also waits for the new controller generation before supplying PCM.

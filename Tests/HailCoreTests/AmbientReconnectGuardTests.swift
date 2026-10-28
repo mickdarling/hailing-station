@@ -49,7 +49,17 @@ import Testing
         let rig = try AmbientReconnectRig()
         try await rig.start()
         try await rig.drop()
-        try await rig.reconnect(mode: mode)
+        try await rig.reconnect(selectTarget: false, mode: mode)
+        try await rig.select(restoring: true)
+        if case .duckMode = mode {
+            try await waitUntil { try await rig.socket.sentFrames().contains {
+                $0.payload == .control(.setPrivacy(on: true))
+            } }
+            try await rig.socket.push(.duckMode(on: true, reason: "device"))
+            try await waitUntil { await MainActor.run { rig.controller.binding?.connectionGeneration
+                == rig.store.snapshots[rig.endpoint.id]?.connectionGeneration } }
+        }
+        try await rig.feed()
         #expect(rig.notices.map(\.outcome) == [.applied])
         await rig.close()
     }
