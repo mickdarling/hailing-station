@@ -76,7 +76,7 @@ private extension Array where Element == String {
             _ = try rig.command.control("status")
             #expect(!rig.argumentsExist)
             _ = try rig.command.control("enable aware")
-            let deadline = ContinuousClock.now.advanced(by: .seconds(4))
+            let deadline = ContinuousClock.now.advanced(by: .seconds(TestTiming.bound(4)))
             while !rig.argumentsExist, ContinuousClock.now < deadline {
                 try await Task.sleep(for: .milliseconds(10))
             }

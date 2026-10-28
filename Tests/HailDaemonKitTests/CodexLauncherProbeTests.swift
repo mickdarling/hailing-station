@@ -20,27 +20,35 @@ extension CodexLauncherTests {
     @Test func oversizedProbeOutputIsRefused() async throws {
         let folder = try Self.scratch()
         defer { try? FileManager.default.removeItem(at: folder) }
-        let child = try Self.script("#!/usr/bin/perl\n$|=1; print 'x' x 4096; sleep 30;\n", in: folder)
+        // Timed from before the backstop, so a backstop-ended child can never land inside the bound.
         let started = ContinuousClock.now
+        let backstop = try ProbeChildBackstop(in: folder, after: TestTiming.bound(20))
+        defer { backstop.stop() }
+        let child = try Self.script("#!/usr/bin/perl\n$|=1; print 'x' x 4096; \(backstop.wait)\n", in: folder)
         await #expect(throws: CodexLaunchError.versionUnavailable) {
             _ = try await CodexLauncher.readVersion(child, deadline: .seconds(60))
         }
-        // With a 60 s deadline and a 30 s child, finishing early proves the byte cap refused it, even on loaded CI.
-        #expect(ContinuousClock.now - started < .seconds(20))
+        // With a 60 s deadline and a child that runs up to 300 s, finishing early proves the byte cap refused it,
+        // even on loaded CI.
+        #expect(ContinuousClock.now - started < .seconds(TestTiming.bound(20)))
     }
 
     @Test func aSilentProbePastItsDeadlineIsRefusedAndReaped() async throws {
         let folder = try Self.scratch()
         defer { try? FileManager.default.removeItem(at: folder) }
         let pidFile = folder.appendingPathComponent("pid").path
-        let child = try Self.script(
-            "#!/usr/bin/perl\n$SIG{TERM}='IGNORE'; open(F,'>','\(pidFile)'); print F $$; close F; sleep 30;\n",
-            in: folder)
+        // Timed from before the backstop, so a backstop-ended child can never land inside the bound.
         let started = ContinuousClock.now
+        let backstop = try ProbeChildBackstop(in: folder, after: TestTiming.bound(20))
+        defer { backstop.stop() }
+        let child = try Self.script(
+            "#!/usr/bin/perl\n$SIG{TERM}='IGNORE'; open(F,'>','\(pidFile)'); print F $$; close F; \(backstop.wait)\n",
+            in: folder)
         await #expect(throws: CodexLaunchError.versionUnavailable) {
             _ = try await CodexLauncher.readVersion(child, deadline: .seconds(2))
         }
-        #expect(ContinuousClock.now - started < .seconds(20)) // The child ignores TERM and sleeps 30 s.
+        // The child ignores TERM and runs up to 300 s.
+        #expect(ContinuousClock.now - started < .seconds(TestTiming.bound(20)))
         let pid = try #require(pid_t(String(contentsOfFile: pidFile, encoding: .utf8)))
         #expect(kill(pid, 0) == -1 && errno == ESRCH)
     }
@@ -64,5 +72,25 @@ extension CodexLauncherTests {
             }
         }
     }
+}
+
+/// #1012: a probe child runs only while its marker file exists, and for at most 300 s, so the bounds can scale on CI
+/// and still prove the launcher killed it. Removing the scratch folder at teardown ends a child the launcher left
+/// alive. The backstop removes the marker after the scaled bound plus 5 s, counted from after the test's stopwatch
+/// starts, so a launcher regression can neither pass the bound, hold CI, nor leak the child. It sends no signal,
+/// so a reused PID is never at risk.
+private struct ProbeChildBackstop {
+    let wait: String
+    private let task: Task<Void, Never>
+    init(in folder: URL, after seconds: Double) throws {
+        let marker = folder.appendingPathComponent("run").path
+        guard FileManager.default.createFile(atPath: marker, contents: nil) else { throw CocoaError(.fileWriteUnknown) }
+        wait = "for (1..3000) { last unless -e '\(marker)'; select(undef, undef, undef, 0.1); }"
+        task = Task {
+            guard (try? await Task.sleep(for: .seconds(seconds + 5))) != nil else { return }
+            try? FileManager.default.removeItem(atPath: marker)
+        }
+    }
+    func stop() { task.cancel() }
 }
 #endif
