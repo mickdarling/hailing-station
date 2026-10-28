@@ -444,21 +444,26 @@ meeting frame: meeting state remains unresolved on the device and must block any
 [rightyo-input.md](rightyo-input.md#effective-modes-after-hello-941-pr-b-host-side) for the admission rule and limits.
 
 An authorized `set_privacy {off}` from an opting-in, live connection clears privacy parks and overflow even if it
-never streamed or armed. An unarmed connection receives `duck_mode {on:false, reason:"device"}`; an armed one uses
-the existing switch exit. Stopping, closed and ended peers cannot use this new path. An older connection's unarmed
-off still does nothing. This is host groundwork, with synthetic tests only; app opt-in and automatic restore are
-later work, and missing or unresolved state blocks restore.
+never streamed or armed. Under the same router lock, the host then re-evaluates the snapshot's effective privacy
+rule. If an unrelated counting live holder still applies, the unarmed connection receives `duck_mode {on:true,
+reason:"held_elsewhere"}`; otherwise it receives `duck_mode {on:false, reason:"device"}`. Neither response arms the
+connection, holds its replies or starts a child. An armed one uses the existing switch exit. The initial
+after-hello snapshot itself remains boolean with no reason (#993). Stopping, closed and ended peers cannot use this
+new path. An older connection's unarmed off still does nothing. This is host groundwork, with synthetic tests only;
+app opt-in and automatic restore are later work, and missing or unresolved state blocks restore.
 
 ### Duck mode state (#735)
 
 Duck mode is the owner's rubber-duck mode ("let me think out loud"): while it is on, the owner's turns are kept for
 later instead of being sent as requests. Like media mode it lives on the host, so a device needs to be told.
 
-`{"command": "duck_mode", "on": true | false, "reason"?: "voice" | "timeout" | "device", "expires"?: <Unix ms>}` is
-shaped exactly like `media_mode`. `reason` says why it last changed: `voice` when the owner said so, `timeout` when an
-on mode turned itself off, `device` when a device asked. `expires` comes only with `on: true`. It is sent only to a
-device that advertised `duck_mode` (`DuckMode.capability`), apart from the explicit `mode_snapshot` opt-in above.
-It shows state only and grants no authority. The host privacy behavior is described in `docs/rightyo-input.md`.
+`duck_mode` is shaped exactly like `media_mode`: `command` and boolean `on`, with optional `reason` and `expires`
+(Unix milliseconds). Its reason tokens are `voice`, `timeout`, `device` and `held_elsewhere`. `reason` says why it
+last changed: `voice` when the owner said so, `timeout` when an on mode turned itself off, `device` when a device
+asked, or the fixed token `held_elsewhere` when a capable off cleared parks but another counting live holder keeps
+the next start private. `expires` comes only with `on: true`. It is sent only to a device that advertised
+`duck_mode` (`DuckMode.capability`), apart from the explicit `mode_snapshot` opt-in above. It shows state only and
+grants no authority. The host privacy behavior is described in `docs/rightyo-input.md`.
 
 The decoder and the schema refuse the same things as for `media_mode`.
 

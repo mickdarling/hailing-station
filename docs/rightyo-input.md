@@ -828,8 +828,11 @@ parks, extend an expiry or start a child.
   off. Missing or unresolved state must block the later ask-3 automatic restore.
 - An authorized `set_privacy {off}` from a `mode_snapshot` connection is the owner's off even before its first
   stream, when the snapshot itself did not arm it. It clears all parks and the overflow through `ownerOff`, logging
-  the same token-only `ambient_park_discarded reason=off mode=privacy count=… overflow=…`, and sends `duck_mode` off
-  with reason `device`. Its own armed privacy still takes the existing switch exit. Other live holders keep their
+  the same token-only `ambient_park_discarded reason=off mode=privacy count=… overflow=…`. Under that same router lock,
+  it re-evaluates effective privacy with the snapshot's rule. If another counting live holder still applies, it sends
+  `duck_mode {on:true, reason:"held_elsewhere"}`; otherwise off with reason `device`. This never arms the connection,
+  holds its replies or starts a child. The initial after-hello snapshot still has no reason (#993).
+  Its own armed privacy still takes the existing switch exit. Other live holders keep their
   existing scoped-off rules. A stopping host, closed router connection or ended peer refuses the new off path.
   Older connections retain their existing off behavior. Never send a reflexive off on reconnect.
 

@@ -762,7 +762,9 @@ public final class AmbientRightyoRouter: AmbientAudioSink, AmbientListenerWiring
             // An armed connection keeps the existing gate/switch exit, including its clips and notice.
             if state.duck[connection] != nil { return .armed }
             ownerOff(connection, reason: "device", in: &state)
-            return .cleared
+            let stillPrivate = state.duck[connection] != nil
+                || Self.privacySource(except: connection, in: state) != nil
+            return .cleared(stillPrivate: stillPrivate)
         }
     }
 

@@ -174,7 +174,8 @@ public struct HostSessionResult: Sendable, Equatable {
 
 /// A snapshot-capable owner's off: refused, an armed switch exit, or parks cleared without an arming.
 public enum ModeSnapshotPrivacyOff: Sendable, Equatable {
-    case refused, armed, cleared
+    case refused, armed
+    case cleared(stillPrivate: Bool)
 }
 
 /// One peer's protocol state. Every path to `HailHost.send` runs through this session's authorizer and its captured
@@ -416,9 +417,10 @@ extension HostSession {
                 switch await snapshotOff(connectionID) {
                 case .refused: return HostSessionResult(frames: [])
                 case .armed: break
-                case .cleared:
-                    let off = response(.duckMode(on: false, reason: "device"), version: version)
-                    return HostSessionResult(frames: [off])
+                case .cleared(let stillPrivate):
+                    let reason = stillPrivate ? "held_elsewhere" : "device"
+                    let notice = response(.duckMode(on: stillPrivate, reason: reason), version: version)
+                    return HostSessionResult(frames: [notice])
                 }
             }
             await gate.setPrivacy(on, connection: connectionID)
