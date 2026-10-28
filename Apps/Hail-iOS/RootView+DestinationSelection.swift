@@ -38,6 +38,12 @@ extension RootView {
         return AmbientRestorePresentation(controller: connections.ambientController, confirmedBinding: binding)
     }
 
+    /// The ambient card's disappearance callback, shared with the model-level app fixture.
+    @MainActor
+    func reconcileAmbientDestination() async {
+        await connections.ambientController?.destinationLost()
+    }
+
     @MainActor
     func acceptAppliedAmbientRestore() -> Bool {
         guard let binding = appliedAmbientBinding else { return false }

@@ -164,6 +164,7 @@ extension RootView {
                     connections: connections, audioSession: audioRoutes, playback: playback,
                     echoGuard: echoGuard, diagnostics: diagnostics
                 )
+                .onDisappear { Task { await reconcileAmbientDestination() } }
             }
             reconnectNotice
         }
@@ -346,7 +347,6 @@ struct AmbientListeningCard: View {
         }
         .onDisappear {
             connections.onAmbientMovedHere = nil
-            Task { await controller.destinationLost() }
         }
         .onAppear { echoGuard.masksDuringReplies = masksDuringReplies }
         .onChange(of: masksDuringReplies) { _, masks in echoGuard.masksDuringReplies = masks }
