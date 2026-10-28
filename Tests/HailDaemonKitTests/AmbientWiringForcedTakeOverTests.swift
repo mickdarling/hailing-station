@@ -99,7 +99,7 @@ import Testing
         env.router.ambientAudio(.started(stream: newest, connection: UUID()))
         env.router.ambientAudio(.segment(stream: newest, sequence: 0, bytes: Data(repeating: 7, count: 3_200)))
         #expect(await eventually { env.router.activeStream == newest })
-        #expect(ContinuousClock.now - started < .seconds(4))
+        #expect(ContinuousClock.now - started < .seconds(TestTiming.bound(4)))
         #expect(events.all.filter { $0 == "ambient_retired_forced" }.count == 1)
         env.router.ambientAudio(.ended(stream: newest, reason: .final))
         await env.listener.stop(reason: "synthetic test complete")
@@ -128,7 +128,7 @@ import Testing
         }
         let last = newest
         #expect(await eventually { env.router.activeStream == last })
-        #expect(ContinuousClock.now - started < .seconds(8))
+        #expect(ContinuousClock.now - started < .seconds(TestTiming.bound(8)))
         let bound = AmbientRightyoRouter.maxQueuedSegments + AmbientRightyoRouter.maxRuns + 4
         #expect(env.router.peakQueue <= bound)
         // On a loaded runner the worker can catch up mid-flood and spawn a then-newest stream, which a later start
@@ -151,6 +151,7 @@ import Testing
         await env.listener.stop(reason: "synthetic stop during a forced stop")
         #expect(env.router.liveRuns == 0)
         #expect(env.router.activeStream == nil)
+        // Not scaled: tripled, it would exceed the suite's one-minute time limit (#1012).
         #expect(ContinuousClock.now - started < .seconds(30))
         await settle(env.router, step: "settle after shutdown")
     }
