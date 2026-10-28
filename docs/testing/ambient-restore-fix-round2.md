@@ -1329,3 +1329,39 @@ checking the gap. The deterministic cases also verify a late snapshot cannot
 restart selection and that the original deadline expires at sixty seconds.
 The targeted serial selection passed **6 tests in 4 suites**, 11.880 seconds,
 including both authorization paths (`<scratch>/r1-fix-pass.log`).
+
+
+CI follow-up verification: both warnings-as-errors build forms passed on the
+new core and merged app heads. Manual declaration checks found no struct, class,
+enum, actor, or protocol name longer than 40 characters on either head; the
+maximum was 40. The full expanded serial family
+`AmbientReconnect|SendOrigin|AmbientRecovery|AmbientSuspension|AmbientRestore`
+passed three times:
+
+- repetition 1: **116 tests in 48 suites**, 254.579 seconds.
+- repetition 2: **116 tests in 48 suites**, 252.020 seconds.
+- repetition 3: **116 tests in 48 suites**, 249.426 seconds.
+
+The broad serial family ran once in three disjoint module lanes:
+
+- core: **438 tests in 130 suites**, 366.641 seconds.
+- daemon: **593 tests in 135 suites**, 424.831 seconds.
+- remaining: **50 tests in 9 suites**, 0.221 seconds.
+
+Broad total: **1081 tests in 274 suites**. At the end, the single 20-run
+filtered loop passed **20/20 invocations**: the original CI flapping test passed
+20/20, and the deterministic notReady and cancellation cases each passed 20/20
+(**40 test executions, 60 cases** across the two test methods). No further test
+run follows this loop. Evidence is `<scratch>/r2-loop-1.log` through
+`<scratch>/r2-loop-20.log`, plus `r2-focused-*.log` and `r2-broad-*.log`.
+
+All test launches are serial and exclude DiagnosticReplyComposition. Every Swift
+launch uses the shared-process gate, taskpolicy background priority, four-job
+limit with one compiler job, supplied Testing flags, offline resolution,
+a 590-second execution bound, and process-group cleanup. Strict warning
+thresholds and `git diff --check` pass. The infrastructure head and production
+file sets are unchanged. No new suppression, lint-driven code reflow, or async
+sleep default was introduced. Final app-head build logs are
+`<scratch>/r2-final-build.log` and `<scratch>/r2-final-build-tests.log`. Tests use
+synthetic transport/capture; native SwiftUI rendering, physical audio/haptics,
+CI Swift 6.3.3 execution, and independent approval of these heads remain unclaimed.
