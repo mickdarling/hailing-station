@@ -536,7 +536,7 @@ final class AmbientRequestOutcomes: Sendable {
         }
     }
     /// Hold the same generation gate as Stop/privacy through a synchronous commit, never an await.
-    func withAuthority<Value>(host: UUID, generation: UUID, _ action: () -> Value) -> Value? {
+    func withAuthority<Value: Sendable>(host: UUID, generation: UUID, _ action: () -> Value) -> Value? {
         state.withLock { state in
             guard state.capable, !state.closed, !state.privateMode, state.generation == generation,
                   let entry = state.entries[host], entry.confirmed?.terminal != true else { return nil }
