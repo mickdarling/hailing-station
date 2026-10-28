@@ -208,6 +208,13 @@ extension HostConnectionStore {
         guard restoring else { return reconnect.veto(.bindingChanged, host: id) }
         reconnect.selectionFailed(error, snapshot: snapshot, store: self)
     }
+    func retryAmbientTransport(host id: HostEndpoint.Identifier, generation: UUID) async -> Bool {
+        guard let connection = connections[id], snapshots[id]?.connectionGeneration == generation,
+              privacyLocal[id]?.request == nil,
+              ambientController?.reconnect.allowsTransportRetry(host: id, generation: generation) == true
+        else { return false }
+        return await connection.retryAmbientTransport(generation: generation)
+    }
     /// The ambient binding for a destination, or nil unless the host is ready, advertises `stream_audio`, and
     /// `targetID` is the target its connection has confirmed: the connection addresses every segment to that
     /// selection, so a binding for any other target would misstate where audio goes (#218).
@@ -1507,6 +1514,14 @@ enum SegmentTailRelease: Equatable, Sendable {
 // The restore's acceptance proof: the existing confirmed round trip, with a nonce the store can check in receipt
 // order, so a refusal that follows the pong is not misread as a refusal of the unaccepted stream.
 extension HostConnection {
+    /// A failed selection send can leave receive open; restart only that still-current socket's loop.
+    func retryAmbientTransport(generation failed: UUID) async -> Bool {
+        guard !Task.isCancelled, wantsConnection, snapshot.connectionGeneration == failed,
+              snapshot.state == .ready, socket != nil else { return false }
+        await replaceLoop(reconnectAttempt: 1)
+        return true
+    }
+
     func confirmRoundTrip(for proof: AmbientResumeAcceptance) async throws {
         guard snapshot.connectionGeneration == proof.binding.connectionGeneration,
               ambientStream?.id == proof.streamID else { throw HostConnectionFailure.notReady }

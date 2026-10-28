@@ -919,3 +919,33 @@ warnings-as-errors compilation passed. Evidence: `<scratch>/selection-fail-befor
 Capture remains armed and gap PCM is discarded; the missing retry alone stalls
 recovery. The test adds no timing delay: a held selection send injects the error,
 and the existing condition waiter observes the retry gate.
+
+Selection transport failures now schedule the existing reconnect loop for the
+failed host, after recording the flap. The store checks the pending restore and
+failed generation; the connection actor checks that generation again, plus its
+ready socket, connection intent, and cancellation, before replacing the loop.
+A physical loss already draining that socket owns its normal reconnect instead.
+The retry task is cancelled on settlement, veto, or endpoint replacement. Owner
+stop, privacy, destination changes, and explicit disconnect retain their existing
+vetoes. The retained target, monotonic start, and privacy requirement are unchanged;
+no privacy-off frame is introduced.
+
+The parameterized regression now observes retry without a second injected drop,
+then handshakes and applies at 59 seconds under the original deadline. It checks
+armed capture, discarded gap PCM, one capture start, the retained target, and
+exactly three connection opens. `staleSelectionFailureCannotRetryANewerGeneration`
+rejects a retry for the failed generation while its successor awaits selection
+confirmation, then applies normally. `selectionFailureNeverExtendsTheOriginalDeadline`
+expires the injected clock during retry, then handshakes without selecting or
+sending PCM: timedOut remains the final outcome and capture is stopped.
+
+The targeted serial run passed **5 tests in 3 suites, 7 cases**, 13.407 seconds,
+including the original flapping and explicit remote authorization-refusal tests
+(`<scratch>/r1-fix-pass.log`). The deadline assertion permits the existing
+discard/stop cleanup calls while requiring capture to have ended. No timing
+sleep is added; continuations and the injected monotonic clock control the races.
+Manual strict checks cover the new functions, type bodies, parameters, complexity,
+line lengths and identifiers; the full declaration scan reports zero names over
+40 characters. Both existing authorization paths retain reauthorizationNeeded,
+the visible owner notice, its destination-selection action, and the fixed
+`reauthorization_needed` token.

@@ -26,18 +26,54 @@ import Testing
         #expect(rig.notices.map(\.outcome) == [.interrupted, .applied])
         #expect(rig.controller.isListening && rig.capture.startCount == 1 && rig.makeCalls == 1)
         #expect(rig.permissionCalls == 1 && rig.unexpected.isEmpty)
+        #expect(await rig.connector.openCount(for: rig.endpoint.url) == 3)
+        #expect(try rig.currentBinding().targetID == rig.target.id)
+        #expect(try await rig.socket.sentFrames().allSatisfy { frame in
+            if case .control(.setPrivacy(on: false)) = frame.payload { return false }; return true
+        })
         await rig.close()
     }
 
     @Test func selectionFailureNeverExtendsTheOriginalDeadline() async throws {
         let run = try SelectionFailureRun()
         try await run.failSelection(.notReady)
-        #expect(run.rig.controller.reconnect.isPending)
+        let rig = run.rig
+        try await waitUntil { await rig.retry.isWaiting() }
+        #expect(rig.controller.reconnect.isPending && rig.controller.isListening)
         run.clock.advance(by: .seconds(5))
-        #expect(!run.rig.controller.reconnect.withinDeadline())
-        #expect(run.rig.notices.map(\.outcome) == [.interrupted, .blocked])
-        #expect(run.rig.notices.last?.reason == .timedOut)
-        await run.rig.close()
+        #expect(!rig.controller.reconnect.withinDeadline())
+        rig.wrapReconnect = { $0 }
+        try await rig.reconnect(selectTarget: false)
+        #expect(rig.notices.map(\.outcome) == [.interrupted, .blocked])
+        #expect(rig.notices.last?.reason == .timedOut)
+        #expect(!rig.controller.isOn && !rig.controller.isListening && rig.capture.stopCount >= 1)
+        #expect(rig.store.ambientBinding(host: rig.endpoint.id, targetID: rig.target.id) == nil)
+        #expect(try await rig.socket.sentFrames().allSatisfy { frame in
+            if case .audio = frame.payload { return false }; return true
+        })
+        await rig.close()
+    }
+
+    @Test func staleSelectionFailureCannotRetryANewerGeneration() async throws {
+        let run = try SelectionFailureRun()
+        try await run.failSelection(.notReady)
+        let rig = run.rig
+        try await waitUntil { await rig.retry.isWaiting() }
+        let failed = try #require(rig.store.snapshots[rig.endpoint.id]?.connectionGeneration)
+        rig.wrapReconnect = { $0 }
+        try await rig.reconnect(selectTarget: false)
+        try await waitUntil { try await rig.selectionPing(after: 0) != nil }
+        let newer = try #require(rig.store.snapshots[rig.endpoint.id]?.connectionGeneration)
+        #expect(newer != failed && rig.controller.reconnect.isPending)
+        #expect(await rig.store.retryAmbientTransport(host: rig.endpoint.id, generation: failed) == false)
+        #expect(rig.store.snapshots[rig.endpoint.id]?.connectionGeneration == newer)
+        #expect(await rig.connector.openCount(for: rig.endpoint.url) == 3)
+        #expect(await rig.retry.isWaiting() == false)
+        try await rig.select(restoring: true)
+        try await rig.feed()
+        #expect(rig.notices.map(\.outcome) == [.interrupted, .applied])
+        #expect(rig.controller.isListening && rig.capture.startCount == 1)
+        await rig.close()
     }
 }
 
