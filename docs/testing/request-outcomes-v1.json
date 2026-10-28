@@ -14,7 +14,8 @@
     "timed_out",
     "cancelled",
     "reply_started",
-    "reply_ended"
+    "reply_ended",
+    "reply_published"
   ],
   "rejected": [
     {

@@ -158,3 +158,50 @@ shared checkout or copy private setup files into Git.
 - [ws client and IPC documentation](https://github.com/websockets/ws/blob/master/doc/ws.md)
 - [Existing owned adapter boundary](codex-app-server-adapter.md)
 - [Host operations](host-operations.md)
+
+## Host-owned worker protocol (next integration slice)
+
+`run.py host --config <private-profile>` owns the same inherited kernel lock and
+uses the existing controller; it is a private supervised child, not an end-user
+Terminal recovery command. It accepts bounded newline JSON controls on stdin:
+`version: 1`, `op`, `request` (fresh host UUID), `generation` (host lifetime UUID).
+The only operations are `prepare`, `commit`, `authorize`, and `retire`.
+
+Prepare requires an idle exact configured Codex backend and records its baseline.
+Commit follows a successful existing-pipeline dispatch. The worker binds only a
+new turn whose first user message ends in the exact host-generated request reply
+block. A quoted ID or later user message cannot supply authority. Authorize must
+follow the exact RightyO child's sequenced `accepted` acknowledgement, within five
+seconds of commit. An unconfirmed commit/request observation expires after 30s.
+The worker applies the original first-response deadline and activity protections,
+then rechecks request, turn and ownership in the final interrupt snapshot.
+
+EOF, retirement, malformed control or owner change revokes the worker. It never
+starts/replays a model turn, kills Codex, changes provider or opens audio. Its
+stdout is a private bounded control channel containing fixed states plus opaque
+request/generation IDs; persisted status contains only states and recovery proof.
+The existing checkpoint is written before an interrupt, including when its ack is
+lost. Recovery still requires the exact interrupted terminal state.
+
+This slice provides the worker and authored Unix-WebSocket/control regressions.
+Native host spawning, request/generation ownership, RightyO acknowledgement
+plumbing, originating-device notices and installed runtime provisioning still
+require their paired integration. No worker is installed or automatically enabled
+by adding this module. `npm test --prefix scripts/codex-recovery` runs both controller
+and host-worker suites. Python process-lock tests continue to cover kernel locking
+through exec, competing controllers and release on death.
+
+The paired v1 outcome vocabulary also accepts `reply_published`: confirmed final
+publication of that exact request's audio stream (or final text for text-only output).
+It clears matching pending-answer state without pretending the device played or
+heard it. A provider turn ending or merely enqueuing a frame cannot supply this
+proof. Existing confirmed transport-completion callbacks are the integration point;
+question metadata may be carried explicitly. Scoped physical playback remains a
+separate event, and unknown, retired or competing request identities still refuse.
+
+The Hailing host chooses one completion mode per request. Publication fallback is
+allowed only from acknowledged `accepted`; a request with acknowledged scoped
+`reply_started` must finish through its actual `reply_ended`. The host cannot switch
+a playing request to terminal publication and strand its physical end. The generic
+RightyO producer supports close-only late physical edges, but this host API prevents
+the mixed lifecycle rather than waiting for an acknowledgement that is not emitted.
