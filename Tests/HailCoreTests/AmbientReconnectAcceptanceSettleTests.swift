@@ -31,14 +31,17 @@ final class AmbientAcceptanceSettleRun {
     let delivery = SleepGate()
     private var nonce = ""
 
-    init() throws {
+    init(beforeEncode: (@Sendable () async -> Void)? = nil) throws {
         rig = try AmbientReconnectRig()
         let rig = rig
         let store = rig.store
         let delivery = delivery
         rig.controller = AmbientListeningController(
             notificationCenter: rig.center, requestPermission: { true },
-            makeStreamer: { send in AmbientAudioStreamer(capture: rig.capture, send: send) },
+            makeStreamer: { send in
+                AmbientAudioStreamer(capture: rig.capture, maxBacklogChunks: 10, makeStreamID: { UUID() },
+                                     beforeEncode: beforeEncode, send: send)
+            },
             releaseSession: { rig.released += 1 },
             send: { audio, binding in
                 try await store.sendAudio(audio, to: binding)

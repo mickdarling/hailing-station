@@ -37,4 +37,34 @@ import Testing
         await rig.close()
     }
 
+    @Test func confirmedPrivateRequirementSurvivesAnOffNoticeBeforeRefresh() async throws {
+        let run = try AmbientAcceptanceSettleRun()
+        let rig = run.rig
+        try await run.start()
+        try await rig.socket.push(.duckMode(on: true, reason: "voice"))
+        try await waitUntil { await MainActor.run { rig.store.duckMode[rig.endpoint.id]?.isOn() == true } }
+        try await rig.socket.push(.duckMode(on: false, reason: "voice"))
+        try await waitUntil { await MainActor.run { rig.store.duckMode[rig.endpoint.id]?.isOn() == false } }
+        var refreshed = rig.endpoint
+        refreshed.name = "Refreshed synthetic name"
+        rig.socket = ScriptedSocket()
+        await rig.connector.enqueue(.socket(rig.socket), for: refreshed.url)
+        await rig.store.upsert(refreshed)
+        try await rig.handshake(rig.socket)
+        try await rig.select(restoring: true)
+        try await waitUntil { try await rig.socket.sentFrames().contains {
+            $0.payload == .control(.setPrivacy(on: true))
+        } }
+        await run.delivery.fire()
+        for _ in 0..<6 { try rig.capture.yield(sineBuffer()) }
+        #expect(try await audioFrames(rig.socket).isEmpty)
+        try await rig.socket.push(.duckMode(on: true, reason: "device"))
+        try await waitUntil { await MainActor.run { rig.controller.binding?.connectionGeneration
+            == rig.store.snapshots[rig.endpoint.id]?.connectionGeneration } }
+        for _ in 0..<12 { try rig.capture.yield(sineBuffer()) }
+        try await waitUntil { try await audioFrames(rig.socket).isEmpty == false }
+        try await waitUntil { await run.delivery.isWaiting() }
+        await run.delivery.fire()
+        await rig.close()
+    }
 }

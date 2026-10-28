@@ -2,6 +2,7 @@
 // The restore coordinator and its generation-bound privacy confirmation share the same lifetime and guards.
 public import Foundation
 import HailProtocol
+import OSLog
 public import Observation
 import Synchronization
 
@@ -108,7 +109,7 @@ final class AmbientRestorePrivacy {
 public final class AmbientListeningReconnect {
     public enum Reason: Int64, Sendable {
         case ownerStop = 1, ownerSelection, endpointChanged, explicitDisconnect, privacy, modeChanged
-        case bindingChanged, targetChanged, startFailed, nonTransport, timedOut, movedAway
+        case bindingChanged, targetChanged, startFailed, nonTransport, timedOut, movedAway, reauthorizationNeeded
     }
     public enum Outcome: Sendable { case applied, blocked, failed, interrupted }
     public struct Notice: Equatable, Sendable {
@@ -125,6 +126,9 @@ public final class AmbientListeningReconnect {
             return outcome == .applied ? "Hailing Station reconnected" : "Hailing Station stopped listening"
         }
         public var text: String {
+            if reason == .reauthorizationNeeded {
+                return "Listening stopped; re-authorization needed. Choose a destination to continue."
+            }
             if outcome == .interrupted { return "Connection dropped again; still reconnecting" }
             return outcome == .applied ? "Connection dropped and reconnected; listening resumed"
                 : "Connection dropped; listening stopped, tap to resume"
@@ -153,7 +157,7 @@ public final class AmbientListeningReconnect {
         let binding: AmbientAudioBinding
         let target: TargetInfo?
         let began: ContinuousClock.Instant
-        let privateBeforeDrop: Bool
+        var privateBeforeDrop: Bool
     }
     public init() {}
     public var isPending: Bool { pending != nil }
@@ -220,6 +224,10 @@ public final class AmbientListeningReconnect {
             .error: .integer(reason?.rawValue ?? 0), .code: .token(outcome == .failed ? "resume_failed" : "other"),
             .ms: .integer(max(0, elapsed.seconds * 1_000 + elapsed.attoseconds / 1_000_000_000_000_000))
         ])
+        if let token = reason?.diagnosticToken {
+            Logger(subsystem: "com.mickdarling.hailing-station", category: "ambient-restore")
+                .notice("\(token, privacy: .public)")
+        }
         if let notice { onNotice?(notice) }
     }
 }
@@ -352,6 +360,7 @@ extension AmbientListeningReconnect {
         guard !(previous.endpoint.url.scheme?.lowercased() == "wss" && endpoint.url.scheme?.lowercased() == "ws")
         else { return false }
         guard pending?.binding.hostID == endpoint.id else { return false }
+        confirmedPrivacy(on: store.duckMode[endpoint.id]?.isOn() == true, host: endpoint.id)
         controller?.suspendTransport()
         cancelAcceptance()
         privacyConfirmation.cancel()
@@ -360,6 +369,12 @@ extension AmbientListeningReconnect {
         pending?.endpoint = endpoint
         hostName = endpoint.name
         return withinDeadline()
+    }
+
+    /// A confirmed private point in this recovery remains a requirement for every replacement transport.
+    func confirmedPrivacy(on: Bool, host: HostEndpoint.Identifier) {
+        guard on, pending?.binding.hostID == host else { return }
+        pending?.privateBeforeDrop = true
     }
 
     func accepted(_ proof: AmbientResumeAcceptance) {
@@ -392,4 +407,9 @@ final class AmbientResumeAcceptance: Sendable {
     }
 
     func register(_ token: UInt64?) { registration.withLock { $0 = token } }
+}
+
+public extension AmbientListeningReconnect.Reason {
+    /// Fixed local log vocabulary; device diagnostics retain the numeric reason for older hosts.
+    var diagnosticToken: String? { self == .reauthorizationNeeded ? "reauthorization_needed" : nil }
 }

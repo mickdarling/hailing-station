@@ -190,7 +190,9 @@ extension HostConnectionStore {
         let serial = selectionSerials[id]
         guard let connection = connections[id] else { throw HostConnectionFailure.notReady }
         do { try await connection.selectTarget(targetID) } catch {
-            if selectionRequests[id] == request { ambientController?.reconnect.veto(.bindingChanged, host: id) }
+            if selectionRequests[id] == request {
+                ambientController?.reconnect.veto(restoring ? .reauthorizationNeeded : .bindingChanged, host: id)
+            }
             throw error
         }
         // A later selection, endpoint change or removal owns the outcome.
@@ -390,6 +392,8 @@ extension HostConnectionStore {
                request.on != on || (on && duckMode[event.endpointID]?.isOn() != true) {
                 ambientController?.reconnect.veto(.privacy, host: event.endpointID)
             }
+            ambientController?.reconnect.confirmedPrivacy(on: duckMode[event.endpointID]?.isOn() == true,
+                                                         host: event.endpointID)
             privacyLocal[event.endpointID] = nil
             if let snapshot = snapshots[event.endpointID] {
                 ambientController?.reconnect.privacyConfirmation.receive(
