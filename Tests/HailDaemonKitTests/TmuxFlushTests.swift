@@ -81,6 +81,15 @@ import Testing
         await redrawn.expectNoInterrupt()
     }
 
+    @Test func aDraftThatMovedToAnotherRowAfterTheEndIsNeverCleared() async throws {
+        // The same text, but the End's redraw put a row above the input: it is no longer the row the owner was shown,
+        // so only the End, which deletes nothing, was sent (#899 review, W5).
+        let moved = FlushHarness(Self.pane("ZULIP") { $0.onEnd = { $0.above.insert("  ⏺ working…", at: 0) } })
+        await #expect(throws: TmuxFlushRefusal.changed) { _ = try await flush(moved) }
+        #expect(moved.pane.keys == ["End"])
+        await moved.expectNoInterrupt()
+    }
+
     @Test func aReboundTargetGetsNoKeys() async throws {
         let harness = FlushHarness(FlushPane("ZULIP"))
         let draft = try await harness.adapter.promptDraft(target, binding: FlushHarness.binding)

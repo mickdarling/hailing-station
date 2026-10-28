@@ -1,9 +1,9 @@
 import Darwin
 import Foundation
 
-/// One `haild doctor` check: a stable name, the outcome, what was seen, and a plain-language fix (#247).
+/// One `haild doctor` check: a stable name, the outcome (`warn` is advisory, #894), what was seen, and a fix (#247).
 public struct HealthCheck: Codable, Sendable, Equatable {
-    public enum Outcome: String, Codable, Sendable { case ok, fail }
+    public enum Outcome: String, Codable, Sendable { case ok, warn, fail }
 
     public var name: String
     public var outcome: Outcome
@@ -36,7 +36,7 @@ public struct HealthReport: Codable, Sendable, Equatable {
     /// Absent when the audit history cannot be read.
     public var refusals: RefusalSummary?
     public var checks: [HealthCheck]
-    public var healthy: Bool { checks.allSatisfy { $0.outcome == .ok } }
+    public var healthy: Bool { checks.allSatisfy { $0.outcome != .fail } }
 
     private enum CodingKeys: String, CodingKey { case cli, daemon, refusals, checks, healthy }
 
@@ -99,7 +99,7 @@ public struct HealthReport: Codable, Sendable, Equatable {
             ))
         }
         checks.append(listenerCheck(daemon.listener))
-        if let ambient = daemon.ambient { checks.append(ambientCheck(ambient)) }
+        checks += daemon.ambient.map { [ambientCheck($0), pendingInputCheck($0)].compactMap(\.self) } ?? []
         checks.append(daemon.connectedSessions > 0
             ? .ok("device_connected", "\(daemon.connectedSessions) connected")
             : .fail("device_connected", "no device connected",
@@ -183,5 +183,18 @@ public struct HealthReport: Codable, Sendable, Equatable {
 
     public static func processIsRunning(_ pid: Int32) -> Bool {
         pid > 0 && (kill(pid, 0) == 0 || errno == EPERM)
+    }
+}
+
+extension HealthReport {
+    /// A `target_input` warning (#894) with its age: haild is healthy, and only the next ambient event replaces it.
+    private static func pendingInputCheck(_ ambient: DaemonStatus.Ambient) -> HealthCheck? {
+        guard ambient.lastEvent == "ambient_delivery_refused",
+              ambient.lastDetail?.split(separator: " ").first == "reason=inputPending" else { return nil }
+        let age = ambient.lastEventAt.map { ", \(max(0, Int(Date().timeIntervalSince($0) / 60))) min ago," } ?? ""
+        return .init(name: "target_input", outcome: .warn, detail: "ambient request\(age) refused: inputPending",
+                     fix: "the target's prompt holds unsent text; clear it with haild targets flush <target-id>, and "
+                         + "if ~/Library/Logs/HailingStation/haild.err.log shows tmux_input_pending reason=tainted, "
+                         + "run scripts/host.sh restart (a flush cannot clear a taint)")
     }
 }

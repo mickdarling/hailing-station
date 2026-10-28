@@ -16,7 +16,7 @@ import Testing
 
     @Test func theCapabilityAndReasonsAreFixed() {
         #expect(DuckMode.capability == "duck_mode")
-        #expect(DuckMode.reasons == ["voice", "timeout", "device"])
+        #expect(DuckMode.reasons == ["voice", "timeout", "device", "held_elsewhere"])
     }
 
     @Test func onAndOffRoundTripWithTheirReasonAndExpiry() throws {

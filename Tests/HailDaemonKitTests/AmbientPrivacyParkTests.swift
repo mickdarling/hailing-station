@@ -16,7 +16,7 @@ struct AmbientPrivacyParkTests {
         try #require(await eventually { rig.router.duckMode(connection: dropped) }, "first connection holds privacy")
         #expect(await eventually { !rig.details("ambient_duck_confirmed").isEmpty }, "privacy entry settled")
         await rig.drop(first, dropped)
-        #expect(rig.router.state.withLock { $0.parkedPrivacy?.connection } == dropped)
+        #expect(rig.router.state.withLock { Array($0.parks.keys) } == [dropped])
         return rig
     }
 
@@ -56,7 +56,7 @@ struct AmbientPrivacyParkTests {
             rig.details("ambient_privacy_restored").first?.contains("device_match=false") == true
         },
                 "unmatched restore log marker")
-        #expect(rig.router.state.withLock { $0.parkedPrivacy } != nil, "an unmatched start leaves the park held")
+        #expect(rig.router.state.withLock { !$0.parks.isEmpty }, "an unmatched start leaves the park held")
         try await Self.expectHeardOnlyPrivately(rig, on: socket, spawn: 2)
     }
 
@@ -70,7 +70,7 @@ struct AmbientPrivacyParkTests {
             rig.details("ambient_privacy_restored").first?.contains("device_match=true") == true
         },
                 "matched restore log marker")
-        #expect(rig.details("ambient_privacy_parked") == ["replaced=false"])
+        #expect(rig.details("ambient_privacy_parked") == ["parks=1 overflow=false"])
         try await Self.expectHeardOnlyPrivately(rig, on: socket, spawn: 2)
     }
 
@@ -95,9 +95,10 @@ struct AmbientPrivacyParkTests {
         let router = rig.router
         #expect(await eventually { router.activePipeline?.hearsAudio == true }, "restored child confirmed private")
         #expect(router.setDuck(false, connection: restored, reason: "voice") == 1)
-        #expect(router.state.withLock { $0.parkedPrivacy } == nil)
-        #expect(await eventually { rig.details("ambient_park_discarded") == ["reason=off mode=privacy"] },
-                "privacy park cleared log marker")
+        #expect(router.state.withLock { $0.parks.isEmpty })
+        #expect(await eventually {
+            rig.details("ambient_park_discarded") == ["reason=off mode=privacy count=1 overflow=false"]
+        }, "privacy park cleared log marker")
         let (_, next) = try await rig.start(name: "other", kind: "watch")
         #expect(!router.duckMode(connection: next))
         #expect(await Self.launchedPublic(rig, spawn: 3))
@@ -112,7 +113,7 @@ struct AmbientPrivacyParkTests {
         let router = rig.router
         #expect(await eventually { router.activePipeline?.hearsAudio == true }, "restored child confirmed private")
         router.ambientPrivacy(false, connection: restored)
-        #expect(!router.duckMode(connection: restored) && router.state.withLock { $0.parkedPrivacy } == nil)
+        #expect(!router.duckMode(connection: restored) && router.state.withLock { $0.parks.isEmpty })
         let (_, next) = try await rig.start()
         #expect(!router.duckMode(connection: next))
         #expect(await Self.launchedPublic(rig, spawn: 3))
@@ -127,25 +128,27 @@ struct AmbientPrivacyParkTests {
         let (_, restored) = try await rig.start()
         let router = rig.router
         #expect(router.setDuck(false, connection: UUID(), reason: "voice") == 0)
-        #expect(router.state.withLock { $0.parkedPrivacy } != nil, "an off where privacy was not on keeps the park")
+        #expect(router.state.withLock { !$0.parks.isEmpty }, "an off where privacy was not on keeps the park")
         _ = router.setDuck(false, connection: restored, reason: "timeout")
         #expect(!router.duckMode(connection: restored))
-        #expect(router.state.withLock { $0.parkedPrivacy } != nil, "a non-owner off keeps the park")
+        #expect(router.state.withLock { !$0.parks.isEmpty }, "a non-owner off keeps the park")
         let (socket, next) = try await rig.start(name: "other", kind: "watch")
         #expect(router.duckMode(connection: next))
         #expect(rig.details("ambient_park_discarded").isEmpty)
         try await Self.expectHeardOnlyPrivately(rig, on: socket, spawn: 3)
     }
 
-    /// A restored connection that drops again parks its privacy again, so a third connection is private too.
+    /// A restored connection that drops again parks its privacy again, beside the first park (#961), so a third
+    /// connection is private too, restored from the newest.
     @Test func aRestoredConnectionDroppingAgainParksAgain() async throws {
         let rig = try await Self.privacyDropped()
         defer { rig.close() }
         let (again, restored) = try await rig.start()
         await rig.drop(again, restored)
-        #expect(rig.router.state.withLock { $0.parkedPrivacy?.connection } == restored)
-        #expect(await eventually { rig.details("ambient_privacy_parked") == ["replaced=false", "replaced=true"] },
-                "parked again log marker")
+        #expect(rig.router.state.withLock { $0.parks.count == 2 && $0.parks[restored] != nil })
+        #expect(await eventually {
+            rig.details("ambient_privacy_parked") == ["parks=1 overflow=false", "parks=2 overflow=false"]
+        }, "parked again log marker")
         let (socket, next) = try await rig.start(resume: true)
         #expect(rig.router.duckMode(connection: next))
         try await Self.expectHeardOnlyPrivately(rig, on: socket, spawn: 3)

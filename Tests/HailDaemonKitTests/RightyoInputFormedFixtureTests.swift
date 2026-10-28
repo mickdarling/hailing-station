@@ -55,7 +55,7 @@ extension RightyoInputConsumerTests {
         let (consumer, adapter) = try await rig()
         _ = try await consumer.consume(formingStart())
         let formed = try await formedRequest(consumer, formed: "Owner (Speaker A) asked: \"delete the project.\".")
-        await #expect(throws: RightyoInputError.confirmationRequired) { try await consumer.consume(formed) }
+        #expect(try await !consumer.consume(formed))
         #expect(try await !consumer.consume(formed))
         #expect(await adapter.deliveries.isEmpty)
     }

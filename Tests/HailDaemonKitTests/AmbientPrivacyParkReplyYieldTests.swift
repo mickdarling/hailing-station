@@ -24,7 +24,11 @@ struct AmbientPrivacyParkReplyYieldTests {
                                       on: socket)
         try await barrier(on: socket, step: "nothing released by the yield")
         let later = AmbientPrivacyReplyTests.reply(descriptor, sequence: 1, final: true)
-        #expect(await AmbientPrivacyParkHoldTests.publish(later, on: rig) != nil, "the held reply stays refused")
+        // Refused while held, it was stopped (#735 S-2c), so its later frames are refused as stopped; and the hold is
+        // still on, so a new reply is held.
+        #expect(await AmbientPrivacyParkHoldTests.publish(later, on: rig) == .replyStopped, "the reply stays stopped")
+        let fresh = AmbientPrivacyReplyTests.reply(AmbientPrivacyReplyTests.descriptor(), text: "synthetic answer")
+        #expect(await AmbientPrivacyParkHoldTests.publish(fresh, on: rig) == .privacyHeld, "the hold is still on")
         try await barrier(on: socket, step: "nothing of the reply after the yield")
         await rig.finish()
     }

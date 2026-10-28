@@ -139,7 +139,8 @@ import Testing
     }
 
     /// Only the own connection: the command carries no connection, and another device without the stream can neither
-    /// end this one's privacy nor start any.
+    /// end this one's privacy nor start it. Its on, before any stream of its own, is its own pre-arm (#904, R3), and its
+    /// off ends only that.
     @Test func anotherConnectionCannotSwitchIt() async throws {
         let rig = try await Self.startedRig()
         defer { rig.close() }
@@ -154,15 +155,16 @@ import Testing
         )))), on: other)
         _ = try await receiveFrame(on: other, step: "other hello")
         try await Self.send(true, on: other)
-        #expect(try await Self.untilPong(other, step: "other on").isEmpty)
+        try await AmbientPrivacyPreArmTests.until(.duckMode(on: true, reason: "device"), on: other, step: "other on")
         #expect(!router.duckMode(connection: connection))
         try await Self.send(true, on: rig.socket)
         _ = try await Self.untilWords(rig.socket, step: "privacy on")
         try await Self.send(false, on: other)
-        #expect(try await Self.untilPong(other, step: "other off").isEmpty)
+        try await AmbientPrivacyPreArmTests.until(.duckMode(on: false, reason: "device"), on: other, step: "other off")
         #expect(router.duckMode(connection: connection))
         await rig.finish()
-        #expect(rig.details("ambient_duck") == ["on=true reason=device reported=1"])
+        #expect(rig.details("ambient_duck") == ["on=true reason=device reported=1",
+                                                "on=false reason=device reported=0"])
     }
 }
 #endif

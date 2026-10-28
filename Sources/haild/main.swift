@@ -284,6 +284,7 @@ func rightyo(_ arguments: ArraySlice<String>) async throws {
     }
     if !buffer.isEmpty { try await consumeRightyo(buffer, with: consumer, options: options) }
     try await consumer.finish()
+    if let refusal = await consumer.requestRefusal { throw refusal }
 }
 
 private func rightyoReadChunk() throws -> Data? {
@@ -306,7 +307,12 @@ private func rightyoBinding(_ host: HailHost?, target: String) async throws -> S
 
 private func consumeRightyo(_ line: Data, with consumer: RightyoInputConsumer, options: RightyoOptions) async throws {
     let event = try RightyoInputEvent.decode(line)
-    guard try await consumer.consume(event) else { return }
+    do {
+        guard try await consumer.consume(event) else { return }
+    } catch ReplyClientError.refused(let reason)
+        where RightyoSocketDispatcher.refusal(named: reason) == .capacityExceeded {
+        throw RightyoInputError.capacity
+    }
     let receipt: String
     if let superseded = event.supersededRequestId {
         receipt = "rightyo: override \(superseded)"

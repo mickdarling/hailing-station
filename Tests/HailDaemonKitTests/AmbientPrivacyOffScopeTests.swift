@@ -73,7 +73,7 @@ struct AmbientPrivacyOffScopeTests {
         #expect(await eventually { router.state.withLock { $0.privacy[scene.source] == nil } },
                 "stale source teardown marker")
         await rig.drainMeetingChanges()
-        #expect(router.state.withLock { $0.parkedPrivacy } == nil && rig.details("ambient_privacy_parked").isEmpty)
+        #expect(router.state.withLock { $0.parks.isEmpty } && rig.details("ambient_privacy_parked").isEmpty)
         let (_, next) = try await rig.start(name: RestoreRig.appName)
         #expect(!router.duckMode(connection: next))
         #expect(await AmbientPrivacyParkTests.launchedPublic(rig, spawn: 4))
@@ -116,7 +116,7 @@ struct AmbientPrivacyOffScopeTests {
         try await first.send(audio(UUID(), 0))
         try #require(await eventually { router.duckMode(connection: dropped) }, "first connection holds privacy")
         first.cancel()
-        #expect(await eventually { router.state.withLock { $0.parkedPrivacy?.connection } == dropped }, "parked")
+        #expect(await eventually { router.state.withLock { Array($0.parks.keys) } == [dropped] }, "parked")
         let (_, restored) = try await rig.start(name: RestoreRig.appName)
         let (later, laterConnection) = try await rig.connectSilent()
         defer { later.cancel() }
