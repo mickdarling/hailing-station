@@ -113,3 +113,44 @@ import Testing
     }
     #endif
 }
+
+// Test convenience captures the token synchronously; production must retain it across dispatch suspension.
+extension AmbientRequestOutcomes {
+    func register(host: UUID, producer: String) -> Bool {
+        guard let generation else { return false }
+        return register(host: host, producer: producer, generation: generation)
+    }
+}
+
+extension RightyoRequestOutcomeTests {
+    @Test func suspendedDeliveryCannotPublishAfterPrivacyOnOffOrClose() throws {
+        let ledger = AmbientRequestOutcomes(session: fixture.session)
+        ledger.observe(try started())
+        let before = try #require(ledger.generation)
+        ledger.setPrivate(true)
+        #expect(ledger.generation == nil)
+        ledger.setPrivate(false)
+        #expect(!ledger.register(host: UUID(), producer: "tool-demo:request", generation: before))
+        let current = try #require(ledger.generation)
+        ledger.close()
+        #expect(!ledger.register(host: UUID(), producer: "tool-demo:request", generation: current))
+    }
+    @Test func terminalPrivacyAndExactProducerRetirementFenceTheLedger() throws {
+        let ledger = AmbientRequestOutcomes(session: fixture.session), first = UUID(), second = UUID()
+        ledger.observe(try started())
+        #expect(ledger.register(host: first, producer: "tool-demo:request"))
+        #expect(ledger.register(host: second, producer: "tool-demo:second"))
+        ledger.observe(try fixture.event("override", sequence: 6,
+            extra: ["superseded_request_id": "tool-demo:request", "by_utterance_id": "owner", "role": "owner"]))
+        #expect(!ledger.contains(first))
+        #expect(ledger.contains(second))
+        ledger.observe(try fixture.event("privacy", sequence: 7, extra: ["action": "on", "at_ms": 2000]))
+        #expect(!ledger.contains(second))
+        #expect(ledger.generation == nil)
+        ledger.setPrivate(false)
+        #expect(ledger.register(host: second, producer: "tool-demo:second"))
+        ledger.observe(try fixture.event("session", sequence: 8, extra: ["phase": "stopped"]))
+        #expect(!ledger.supported)
+        #expect(!ledger.contains(second))
+    }
+}

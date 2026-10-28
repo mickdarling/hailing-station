@@ -294,9 +294,7 @@ extension RightyoAmbientPipeline {
             for try await line in child.lines {
                 let event = try RightyoInputEvent.decode(line)
                 let relayed = observeBeforeConsuming(event)
-                let admitted = try await consumer.consume(event)
-                if admitted, event.type == "request" { delivered += 1 }
-                await observeRequestOutcome(event, admitted: admitted)
+                if try await consumeRequestOutcome(event), event.type == "request" { delivered += 1 }
                 // Only after the consumer admitted the line: an invalid one has already ended the stream.
                 if relayed { await overheard.observe(event) }
                 ownerVoice.observe(event)
@@ -314,9 +312,11 @@ extension RightyoAmbientPipeline {
                 }
                 await observeRefusals(event)
             }
+            requestOutcomes.close()
             try await consumer.finish()
             try duck.checkStarted()
         } catch {
+            requestOutcomes.close()
             await heard.finish()
             await child.stop()
             throw duck.refusal ?? error
@@ -330,12 +330,15 @@ extension RightyoAmbientPipeline {
 extension RightyoAmbientPipeline {
     /// Hands an admitted media (#551) or meeting (#735 meeting mode (rightyo#227)) command to the host, never to the
     /// agent. A turn is at most one of them.
-    private func observeRequestOutcome(_ event: RightyoInputEvent, admitted: Bool) async {
-        if admitted, event.type == "request", let producer = event.requestId,
+    private func consumeRequestOutcome(_ event: RightyoInputEvent) async throws -> Bool {
+        let generation = requestOutcomes.generation
+        let admitted = try await consumer.consume(event)
+        if admitted, event.type == "request", let generation, let producer = event.requestId,
            let receipt = await consumer.lastReceipt, let reference = receipt.request {
-            requestOutcomes.register(host: reference, producer: producer)
+            requestOutcomes.register(host: reference, producer: producer, generation: generation)
         }
         requestOutcomes.observe(event)
+        return admitted
     }
 
     private func observeModes(_ event: RightyoInputEvent) async {
@@ -405,7 +408,7 @@ extension RightyoAmbientPipeline {
     /// Asked before `started`, the wish is kept and written once a child that advertised it starts; if its start
     /// deadline already passed unwished, a fresh one is armed (#735 S-8 HS-C round 2). Never blocks.
     @discardableResult public func reportDuck(_ on: Bool) -> Bool {
-        if on { requestOutcomes.revokeRequests() }
+        requestOutcomes.setPrivate(on)
         return duck.report(on, write: { [child] on in child.reportDuck(on) }, written: armAckDeadline,
                     restart: armFreshStartDeadline)
     }

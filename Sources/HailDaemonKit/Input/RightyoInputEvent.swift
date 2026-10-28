@@ -442,15 +442,22 @@ final class AmbientRequestOutcomes: Sendable {
         var confirmed: RightyoRequestOutcomeState?
     }
     private struct State {
-        var capable = false, closed = false
+        var capable = false, closed = false, privateMode = false
+        var generation = UUID()
         var entries: [UUID: Entry] = [:]
     }
     private let session: String
     private let state = Mutex(State())
     init(session: String) { self.session = session }
     var supported: Bool { state.withLock { $0.capable && !$0.closed } }
+    var generation: UUID? {
+        state.withLock { $0.capable && !$0.closed && !$0.privateMode ? $0.generation : nil }
+    }
     func observe(_ event: RightyoInputEvent) {
         guard event.sessionId == session else { return }
+        if event.type == "session", event.phase != "started" { close(); return }
+        if event.type == "privacy", event.action == "on" { setPrivate(true); return }
+        retireProducers(event)
         state.withLock { state in
             guard !state.closed else { return }
             if event.type == "session", event.phase == "started" {
@@ -464,13 +471,23 @@ final class AmbientRequestOutcomes: Sendable {
             }
         }
     }
-    @discardableResult func register(host: UUID, producer: String) -> Bool {
+    private func retireProducers(_ event: RightyoInputEvent) {
+        let producers: Set<String>
+        switch event.type {
+        case "override": producers = Set(event.supersededRequestId.map { [$0] } ?? [])
+        case "dismiss": producers = Set(event.withdrawnRequestIds ?? [])
+        default: return
+        }
+        state.withLock { state in state.entries = state.entries.filter { !producers.contains($0.value.producer) } }
+    }
+    @discardableResult func register(host: UUID, producer: String, generation: UUID) -> Bool {
         state.withLock { state in
+            guard state.capable, !state.closed, !state.privateMode, state.generation == generation else { return false }
             if state.entries.count >= 64,
                let done = state.entries.first(where: { $0.value.confirmed?.terminal == true })?.key {
                 state.entries[done] = nil
             }
-            guard state.capable, !state.closed, state.entries.count < 64, state.entries[host] == nil,
+            guard state.entries.count < 64, state.entries[host] == nil,
                   !state.entries.values.contains(where: { $0.producer == producer }),
                   RightyoInputEvent.requestID(producer, session: session) else { return false }
             state.entries[host] = Entry(producer: producer)
@@ -478,13 +495,16 @@ final class AmbientRequestOutcomes: Sendable {
         }
     }
     func isConfirmed(_ host: UUID, _ value: RightyoRequestOutcomeState) -> Bool {
-        state.withLock { !$0.closed && $0.entries[host]?.confirmed == value }
+        state.withLock { !$0.closed && !$0.privateMode && $0.entries[host]?.confirmed == value }
     }
-    func contains(_ host: UUID) -> Bool { state.withLock { !$0.closed && $0.entries[host] != nil } }
+    func contains(_ host: UUID) -> Bool {
+        state.withLock { !$0.closed && !$0.privateMode && $0.entries[host] != nil }
+    }
     @discardableResult func report(_ value: RightyoRequestOutcomeState, host: UUID, asked: Bool = false,
                                    write: (RightyoRequestOutcome) -> Bool) -> Bool {
         state.withLock { state in
-            guard !state.closed, state.capable, let entry = state.entries[host], entry.waiting == nil,
+            guard !state.closed, !state.privateMode, state.capable,
+                  let entry = state.entries[host], entry.waiting == nil,
                   entry.confirmed?.terminal != true else { return false }
             if value == .accepted, entry.confirmed != nil { return false }
             if [.replyStarted, .replyEnded].contains(value),
@@ -496,6 +516,16 @@ final class AmbientRequestOutcomes: Sendable {
         }
     }
     func retire(_ host: UUID) { state.withLock { $0.entries[host] = nil } }
-    func revokeRequests() { state.withLock { $0.entries.removeAll() } }
-    func close() { state.withLock { $0.closed = true; $0.entries.removeAll() } }
+    func revokeRequests() {
+        state.withLock { $0.generation = UUID(); $0.entries.removeAll() }
+    }
+    func setPrivate(_ on: Bool) {
+        state.withLock {
+            if on || $0.privateMode != on { $0.generation = UUID(); $0.entries.removeAll() }
+            $0.privateMode = on
+        }
+    }
+    func close() {
+        state.withLock { $0.closed = true; $0.generation = UUID(); $0.entries.removeAll() }
+    }
 }
