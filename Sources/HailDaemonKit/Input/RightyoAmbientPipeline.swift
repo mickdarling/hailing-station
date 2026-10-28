@@ -183,6 +183,7 @@ public final class RightyoAmbientPipeline: Sendable {
     public let session: String
     private let child: RightyoChildProcess
     private let consumer: RightyoInputConsumer
+    let requestOutcomes: AmbientRequestOutcomes
     private let onDismiss: (@Sendable (RightyoDismissReceipt) -> Void)?
     private let onVoiceMute: (@Sendable (Bool) -> Void)?
     private let onVoiceMedia: (@Sendable (Bool) -> Void)?
@@ -210,6 +211,7 @@ public final class RightyoAmbientPipeline: Sendable {
     /// Validates the target and the executable before launching the child; a refusal launches nothing.
     public init(configuration: Configuration, dispatcher: any RightyoAmbientDispatching) throws {
         let session = "hail-\(UUID().uuidString.lowercased())"
+        requestOutcomes = AmbientRequestOutcomes(session: session)
         let relay = AmbientAckRelay(onAcknowledge: configuration.onAcknowledge,
                                     onSkip: configuration.onAcknowledgementSkipped)
         let heard = AmbientHeardRelay(onHeard: configuration.onHeard, requests: configuration.heardRequests)
@@ -256,14 +258,16 @@ public final class RightyoAmbientPipeline: Sendable {
     @discardableResult public func reportMedia(_ on: Bool) -> Bool { child.reportMedia(on) }
 
     /// Ends the audio (EOF after queued audio is written); the child then emits `stopped` and `run` returns.
-    public func finishInput() { child.closeInput() }
+    public func finishInput() { requestOutcomes.close(); child.closeInput() }
 
     /// Tears the child down (EOF, then SIGTERM, then SIGKILL) and waits until it is reaped.
-    public func stop() async { await child.stop() }
+    public func stop() async { requestOutcomes.close(); await child.stop() }
 
     /// The same teardown with short graces (#366): EOF, SIGTERM after `grace`, SIGKILL after `grace` more. For a
     /// retired child that must make room for a new one at once; a dispatch it has not yet made is lost.
-    public func stop(grace: TimeInterval) async { await child.stop(eofGrace: grace, termGrace: grace) }
+    public func stop(grace: TimeInterval) async {
+        requestOutcomes.close(); await child.stop(eofGrace: grace, termGrace: grace)
+    }
 
     public var counters: RightyoChildProcess.Counters { child.counters }
     /// Requests dropped as the host's own reply heard back (#269). A count only.
@@ -283,13 +287,16 @@ extension RightyoAmbientPipeline {
             deadline?.cancel()
             duck.end()
             ackDeadlines.close()
+            requestOutcomes.close()
         }
         var delivered = 0
         do {
             for try await line in child.lines {
                 let event = try RightyoInputEvent.decode(line)
                 let relayed = observeBeforeConsuming(event)
-                if try await consumer.consume(event), event.type == "request" { delivered += 1 }
+                let admitted = try await consumer.consume(event)
+                if admitted, event.type == "request" { delivered += 1 }
+                await observeRequestOutcome(event, admitted: admitted)
                 // Only after the consumer admitted the line: an invalid one has already ended the stream.
                 if relayed { await overheard.observe(event) }
                 ownerVoice.observe(event)
@@ -323,6 +330,14 @@ extension RightyoAmbientPipeline {
 extension RightyoAmbientPipeline {
     /// Hands an admitted media (#551) or meeting (#735 meeting mode (rightyo#227)) command to the host, never to the
     /// agent. A turn is at most one of them.
+    private func observeRequestOutcome(_ event: RightyoInputEvent, admitted: Bool) async {
+        if admitted, event.type == "request", let producer = event.requestId,
+           let receipt = await consumer.lastReceipt, let reference = receipt.request {
+            requestOutcomes.register(host: reference, producer: producer)
+        }
+        requestOutcomes.observe(event)
+    }
+
     private func observeModes(_ event: RightyoInputEvent) async {
         guard event.type == "request" else { return }
         if let command = await consumer.lastVoiceMedia { onVoiceMedia?(command == .on) }
@@ -390,7 +405,8 @@ extension RightyoAmbientPipeline {
     /// Asked before `started`, the wish is kept and written once a child that advertised it starts; if its start
     /// deadline already passed unwished, a fresh one is armed (#735 S-8 HS-C round 2). Never blocks.
     @discardableResult public func reportDuck(_ on: Bool) -> Bool {
-        duck.report(on, write: { [child] on in child.reportDuck(on) }, written: armAckDeadline,
+        if on { requestOutcomes.revokeRequests() }
+        return duck.report(on, write: { [child] on in child.reportDuck(on) }, written: armAckDeadline,
                     restart: armFreshStartDeadline)
     }
 

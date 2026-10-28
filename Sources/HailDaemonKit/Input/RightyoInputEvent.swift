@@ -1,4 +1,5 @@
 import CryptoKit
+import Synchronization
 public import Foundation
 import HailProtocol
 // The event shape and its dismissal rules (rightyo#98) form one review boundary within the four-file budget.
@@ -105,13 +106,10 @@ public struct RightyoInputEvent: Codable, Sendable {
     /// role came from a live voiceprint, not a label or inference; `voiceprint_label` the same binding with some words
     /// inferred under it (#735). Any other value is kept and means neither.
     let acknowledgement, acknowledge, speakerNames, speakerName, ownerVoice, duck: JSONValue?
+    /// Optional trusted control-FD outcome capability and acknowledgements (rightyo#262).
+    let requestOutcomes: JSONValue?
+    let version: Int?
     let action, roleSource: String?
-    public static func decode(_ data: Data) throws -> Self {
-        guard !data.isEmpty, data.count <= 1_200_000 else { throw RightyoInputError.capacity }
-        let decoder = JSONDecoder()
-        decoder.keyDecodingStrategy = .convertFromSnakeCase
-        do { return try decoder.decode(Self.self, from: data) } catch { throw RightyoInputError.invalidEvent }
-    }
     /// Stream time has no default ceiling for ambient listening (#188); `Int` decoding already rejects values
     /// past Int64 and `budgetMs` is the caller's optional explicit limit.
     func validate(session: String, enrolled: Bool, budgetMs: Int? = nil) throws {
@@ -122,6 +120,7 @@ public struct RightyoInputEvent: Codable, Sendable {
         }
         try validateOverride(session: session, enrolled: enrolled)
         try validateDismiss(session: session, enrolled: enrolled)
+        try validateRequestOutcome(session: session)
         try validateConversation(session: session)
         try validateFormed()
         if let turn { try validate(turn, session: session, enrolled: enrolled) }
@@ -281,10 +280,39 @@ private struct DismissalKey: CodingKey {
 /// `conversation` at `started` may emit `conversation` events: the conversation became `engaged` with a speaker
 /// after a request, or returned to `ambient`. They deliver nothing and grant nothing; ids and labels only, never text.
 extension RightyoInputEvent {
+    public static func decode(_ data: Data) throws -> Self {
+        guard !data.isEmpty, data.count <= 1_200_000 else { throw RightyoInputError.capacity }
+        let decoder = JSONDecoder()
+        decoder.keyDecodingStrategy = .convertFromSnakeCase
+        do { return try decoder.decode(Self.self, from: data) } catch { throw RightyoInputError.invalidEvent }
+    }
     static let eventTypes: Set<String> = ["session", "transcript", "attention", "request", "override", "dismiss",
-                                          "conversation", "owner_voice", "privacy"]
+                                          "conversation", "owner_voice", "privacy", "request_outcome"]
     static let ownerVoiceStates: Set<String> = ["unrecognized", "recognized"]
-    static let conversationReasons: Set<String> = ["request", "timeout", "other_human", "closed", "dismissed"]
+    static let conversationReasons: Set<String> = ["request", "timeout", "other_human", "closed",
+                                                    "dismissed", "request_ended"]
+
+    static func supportsRequestOutcomes(_ value: JSONValue?) -> Bool {
+        guard case .object(let object) = value, object.count == 1,
+              case .integer(1)? = object["version"] else { return false }
+        return true
+    }
+
+    private func validateRequestOutcome(session: String) throws {
+        if requestOutcomes != nil, type != "session" || phase != "started" {
+            throw RightyoInputError.invalidEvent
+        }
+        guard type == "request_outcome" else {
+            guard version == nil else { throw RightyoInputError.invalidEvent }
+            return
+        }
+        guard version == 1, let requestId, Self.requestID(requestId, session: session),
+              let state, RightyoRequestOutcomeState(rawValue: state) != nil,
+              turn == nil, context == nil, decision == nil, phase == nil, capabilities == nil,
+              utteranceId == nil, reason == nil, atMs == nil, untilMs == nil,
+              speakerId == nil, role == nil, confidence == nil, speechEndMs == nil,
+              scope == nil, withdrawnRequestIds == nil else { throw RightyoInputError.invalidEvent }
+    }
 
     /// A request's recipient: `system`, or `unknown` on a conversation-mode follow-up (rightyo#82). Whether the
     /// session advertised conversation mode is the consumer's rule.
@@ -299,7 +327,8 @@ extension RightyoInputEvent {
             throw RightyoInputError.invalidEvent
         }
         guard type == "conversation" else {
-            guard state == nil || type == "owner_voice", atMs == nil || type == "privacy", untilMs == nil else {
+            guard state == nil || type == "owner_voice" || type == "request_outcome",
+                  atMs == nil || type == "privacy", untilMs == nil else {
                 throw RightyoInputError.invalidEvent
             }
             try validatePrivacy()
@@ -321,7 +350,9 @@ extension RightyoInputEvent {
         case "ambient":
             // A timeout names no turn; every other return to ambient names the speaker's own turn.
             guard reason != "request", requestId == nil, untilMs == nil,
-                  (reason == "timeout") == (utteranceId == nil) else { throw RightyoInputError.invalidEvent }
+                  (["timeout", "request_ended"].contains(reason)) == (utteranceId == nil) else {
+                throw RightyoInputError.invalidEvent
+            }
         default: throw RightyoInputError.invalidEvent
         }
     }
@@ -377,4 +408,94 @@ extension RightyoInputEvent {
             throw RightyoInputError.invalidEvent
         }
     }
+}
+
+/// Version 1 shared with RightyO's docs/request-outcomes-v1.md; request identity is not transcript text.
+enum RightyoRequestOutcomeState: String, Sendable, CaseIterable {
+    case accepted, failed, timedOut = "timed_out", cancelled
+    case replyStarted = "reply_started", replyEnded = "reply_ended"
+    var terminal: Bool { [.failed, .timedOut, .cancelled, .replyEnded].contains(self) }
+}
+
+struct RightyoRequestOutcome: Sendable {
+    let session: String, request: String
+    let state: RightyoRequestOutcomeState
+    var asked = false
+    var line: String? {
+        guard RightyoInputEvent.identifier(session), RightyoInputEvent.requestID(request, session: session),
+              !asked || state == .replyEnded else { return nil }
+        var value: [String: Any] = ["version": 1, "session_id": session, "request_id": request,
+                                    "state": state.rawValue]
+        if asked { value["asked"] = true }
+        guard let data = try? JSONSerialization.data(withJSONObject: ["request_outcome": value],
+                                                      options: [.sortedKeys]), data.count <= 512,
+              let text = String(data: data, encoding: .utf8) else { return nil }
+        return text + "\n"
+    }
+}
+
+/// Per-child capability, request identity and outstanding acknowledgement. A pipe write is never an ack.
+final class AmbientRequestOutcomes: Sendable {
+    private struct Entry {
+        let producer: String
+        var waiting: RightyoRequestOutcomeState?
+        var confirmed: RightyoRequestOutcomeState?
+    }
+    private struct State {
+        var capable = false, closed = false
+        var entries: [UUID: Entry] = [:]
+    }
+    private let session: String
+    private let state = Mutex(State())
+    init(session: String) { self.session = session }
+    var supported: Bool { state.withLock { $0.capable && !$0.closed } }
+    func observe(_ event: RightyoInputEvent) {
+        guard event.sessionId == session else { return }
+        state.withLock { state in
+            guard !state.closed else { return }
+            if event.type == "session", event.phase == "started" {
+                state.capable = RightyoInputEvent.supportsRequestOutcomes(event.requestOutcomes)
+            } else if event.type == "request_outcome", event.version == 1, let producer = event.requestId,
+                      let raw = event.state, let value = RightyoRequestOutcomeState(rawValue: raw),
+                      let key = state.entries.first(where: { $0.value.producer == producer })?.key,
+                      state.entries[key]?.waiting == value {
+                state.entries[key]?.waiting = nil
+                state.entries[key]?.confirmed = value
+            }
+        }
+    }
+    @discardableResult func register(host: UUID, producer: String) -> Bool {
+        state.withLock { state in
+            if state.entries.count >= 64,
+               let done = state.entries.first(where: { $0.value.confirmed?.terminal == true })?.key {
+                state.entries[done] = nil
+            }
+            guard state.capable, !state.closed, state.entries.count < 64, state.entries[host] == nil,
+                  !state.entries.values.contains(where: { $0.producer == producer }),
+                  RightyoInputEvent.requestID(producer, session: session) else { return false }
+            state.entries[host] = Entry(producer: producer)
+            return true
+        }
+    }
+    func isConfirmed(_ host: UUID, _ value: RightyoRequestOutcomeState) -> Bool {
+        state.withLock { !$0.closed && $0.entries[host]?.confirmed == value }
+    }
+    func contains(_ host: UUID) -> Bool { state.withLock { !$0.closed && $0.entries[host] != nil } }
+    @discardableResult func report(_ value: RightyoRequestOutcomeState, host: UUID, asked: Bool = false,
+                                   write: (RightyoRequestOutcome) -> Bool) -> Bool {
+        state.withLock { state in
+            guard !state.closed, state.capable, let entry = state.entries[host], entry.waiting == nil,
+                  entry.confirmed?.terminal != true else { return false }
+            if value == .accepted, entry.confirmed != nil { return false }
+            if [.replyStarted, .replyEnded].contains(value),
+               entry.confirmed != .accepted && entry.confirmed != .replyStarted { return false }
+            guard write(RightyoRequestOutcome(session: session, request: entry.producer,
+                                               state: value, asked: asked)) else { return false }
+            state.entries[host]?.waiting = value
+            return true
+        }
+    }
+    func retire(_ host: UUID) { state.withLock { $0.entries[host] = nil } }
+    func revokeRequests() { state.withLock { $0.entries.removeAll() } }
+    func close() { state.withLock { $0.closed = true; $0.entries.removeAll() } }
 }
