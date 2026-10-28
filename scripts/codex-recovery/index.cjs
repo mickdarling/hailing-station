@@ -260,21 +260,22 @@ async function cycle(config, clock = new FirstResponse(), seen = new Set(), { lo
     return { state: outcome, recovered: outcome === 'interrupted' };
   } finally { control.close(); }
 }
+function validateKernelLock(config) {
+  const fd = Number(process.env.HAIL_CODEX_RECOVERY_LOCK_FD);
+  if (!Number.isInteger(fd) || fd < 3) refuse('kernel_lock_required');
+  protectedDirectory(config.stateDirectory);
+  const lock = path.join(config.stateDirectory, 'lock');
+  const held = fs.fstatSync(fd), named = fs.lstatSync(lock);
+  aclFree(lock);
+  if (held.dev !== named.dev || held.ino !== named.ino || held.uid !== process.getuid()
+      || !held.isFile() || (held.mode & 0o077)) refuse('kernel_lock_required');
+}
 async function main() {
   if (process.platform !== 'darwin') refuse('unsupported_platform');
   const [mode, flag, file] = process.argv.slice(2);
   if (!['status', 'recover', 'watch'].includes(mode) || flag !== '--config' || !file) refuse('usage');
   const config = configAt(file);
-  const validateLock = () => {
-    const fd = Number(process.env.HAIL_CODEX_RECOVERY_LOCK_FD);
-    if (!Number.isInteger(fd) || fd < 3) refuse('kernel_lock_required');
-    protectedDirectory(config.stateDirectory);
-    const lock = path.join(config.stateDirectory, 'lock');
-    const held = fs.fstatSync(fd), named = fs.lstatSync(lock);
-    aclFree(lock);
-    if (held.dev !== named.dev || held.ino !== named.ino || held.uid !== process.getuid()
-        || !held.isFile() || (held.mode & 0o077)) refuse('kernel_lock_required');
-  };
+  const validateLock = () => validateKernelLock(config);
   if (mode !== 'status') validateLock();
   const clock = new FirstResponse(), seen = readAttempt(config);
   let failures = 0;
@@ -299,5 +300,5 @@ async function status(config) {
     return { state: new FirstResponse().inspect(await control.snapshot(config.threadId), config.firstResponseSeconds), recovered: false };
   } finally { control.close(); }
 }
-module.exports = { Control, ControlError, FirstResponse, configAt, cycle, discover, privateSocket, readAttempt, recover, visibleActivity, writeStatus };
+module.exports = { Control, ControlError, FirstResponse, configAt, cycle, discover, privateSocket, readAttempt, recover, visibleActivity, writeStatus, validateKernelLock };
 if (require.main === module) main().catch(() => { console.error('codex_recovery_unavailable'); process.exitCode = 1; });
