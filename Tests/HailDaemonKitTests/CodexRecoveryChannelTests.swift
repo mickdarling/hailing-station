@@ -78,9 +78,9 @@ import Testing
             try await channel.wait(for: [.interrupted], until: .now.advanced(by: .seconds(3)))
         }
         let began = ContinuousClock().now
-        // The CI-scaled bound can outlast this safety stop, so the test also asserts it never fired (#1012).
+        // The safety stop scales with the bound, so it always outlasts it; the test also asserts it never fired (#1012).
         let safety = Task { () -> Bool in
-            guard (try? await Task.sleep(for: .seconds(4))) != nil else { return false }
+            guard (try? await Task.sleep(for: .seconds(TestTiming.bound(4)))) != nil else { return false }
             channel.stop()
             return true
         }
@@ -93,9 +93,9 @@ import Testing
     @Test func cancellingASendToANonreadingWorkerRevokesAndReaps() async throws {
         let channel = try CodexRecoveryChannel(command: command("while(1) { select undef,undef,undef,1; }"),
                                                 request: UUID(), generation: UUID())
-        // The CI-scaled bound can outlast this safety stop, so the test also asserts it never fired (#1012).
+        // The safety stop scales with the bound, so it always outlasts it; the test also asserts it never fired (#1012).
         let safety = Task { () -> Bool in
-            guard (try? await Task.sleep(for: .seconds(4))) != nil else { return false }
+            guard (try? await Task.sleep(for: .seconds(TestTiming.bound(4)))) != nil else { return false }
             channel.stop()
             return true
         }
