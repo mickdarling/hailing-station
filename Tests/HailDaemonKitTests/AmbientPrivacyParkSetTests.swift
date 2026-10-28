@@ -90,14 +90,27 @@ struct AmbientPrivacyParkSetTests {
             (try? rig.fake.recorded("argv.1.txt"))?.contains("--start-private") == true
         }, "overflow start-private marker")
         #expect(await eventually { router.activePipeline?.hearsAudio == true }, "restored child confirmed private")
-        router.ambientPrivacy(false, connection: fresh)
+        // Remove this restored connection's own contribution, without an owner's off. A second fresh
+        // connection must still inherit the overflow, even after the first restore (K1 consumes it).
+        let token = try #require(router.duckArming(connection: fresh))
+        await rig.env.listener.authorizer.ambientAudio?.end(connection: fresh)
+        router.stop(connection: fresh)
+        router.endStaleSource(PrivacySource(connection: fresh, token: token), verdict: "stale", off: UUID(),
+                              notSources: [], reason: "device")
+        let (_, further) = try await rig.start(name: RestoreRig.appName)
+        #expect(router.duckMode(connection: further), "a restore never consumes overflow privacy")
+        #expect(await eventually {
+            (try? rig.fake.recorded("argv.2.txt"))?.contains("--start-private") == true
+        }, "a further connection also launches start-private")
+        #expect(await eventually { router.activePipeline?.hearsAudio == true }, "further private started confirmed")
+        router.ambientPrivacy(false, connection: further)
         #expect(router.state.withLock { $0.parks.isEmpty && !$0.parkOverflow })
         #expect(await eventually {
             rig.details("ambient_park_discarded").last == "reason=off mode=privacy count=0 overflow=true"
         }, "overflow cleared marker")
         let (_, next) = try await rig.start(name: RestoreRig.appName)
         #expect(!router.duckMode(connection: next))
-        #expect(await AmbientPrivacyParkTests.launchedPublic(rig, spawn: 2))
+        #expect(await AmbientPrivacyParkTests.launchedPublic(rig, spawn: 3))
         await rig.finish()
     }
 

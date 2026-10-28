@@ -648,7 +648,8 @@ public final class AmbientRightyoRouter: AmbientAudioSink, AmbientListenerWiring
         var parked: ParkedModes?
         /// Privacy each dropped connection held (#941), keyed by that connection (#961: one entry each, so one
         /// connection's stale verdict never drops another's), daemon-wide and in RAM only: every fresh stream starts
-        /// private while any is held, until the owner's own privacy-off clears them all. At most `maxParkedPrivacy`.
+        /// private while any is held, until the owner's own privacy-off clears them all. A stale verdict also
+        /// drops the judged source's own park. At most `maxParkedPrivacy`.
         var parks: [UUID: ParkedPrivacy] = [:]
         /// A park was evicted at the bound (#961). Every fresh stream starts private while it is set, so an eviction
         /// never opens privacy; only the owner's own privacy-off clears it.
