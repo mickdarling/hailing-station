@@ -62,7 +62,13 @@ import Testing
         #expect(harness.activity == [true])
 
         harness.interruption(began: false)
-        try await waitUntil { await MainActor.run { controller.isListening } }
+        await harness.steps.release()
+        try await harness.waitForBackoff()
+        #expect(!controller.isListening && harness.fakes.count == 1)
+        #expect(controller.pausedReason == AmbientListeningController.foregroundPausedStatus)
+        #expect(harness.activity == [true])
+        await controller.update(binding: current, scene: .active)
+        #expect(controller.isListening && controller.pausedReason == nil)
         #expect(harness.activity == [true])
         await controller.turnOff()
         #expect(harness.activity == [true, false])

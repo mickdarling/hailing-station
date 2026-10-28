@@ -49,11 +49,11 @@ final class AmbientReconnectRig {
     )
     }
 
-    init() throws {
+    init(retrySleep: HostConnection.Sleep? = nil, jitter: @escaping HostConnection.Jitter = { 0.5 }) throws {
         endpoint = try makeReconnectEndpoint()
         let retry = retry
         store = HostConnectionStore(connector: connector, deadlineSleep: { _ in throw CancellationError() },
-                                    sleep: { delay in try await retry.sleep(delay) })
+                                    sleep: retrySleep ?? { delay in try await retry.sleep(delay) }, jitter: jitter)
     }
 
     func start(listening: Bool = true) async throws {
@@ -74,12 +74,20 @@ final class AmbientReconnectRig {
 
     func drop() async throws {
         await socket.fail()
-        try await waitUntil { await self.retry.isWaiting() }
+        try await waitUntil {
+            if await self.retry.isWaiting() { return true }
+            return await MainActor.run { self.controller.reconnect.pacing?.isCancelled == true }
+        }
     }
 
     func reconnect(selectTarget: Bool = true, mode: ControlPayload? = nil) async throws {
         socket = ScriptedSocket()
         await connector.enqueue(.socket(wrapReconnect(socket)), for: endpoint.url)
+        if controller.reconnect.pacing?.isCancelled == true, !controller.isOn {
+            // An explicit fixture reconnect after a veto; automatic recovery has already been cancelled.
+            await store.disconnect(endpoint.id)
+            await store.connect(endpoint.id)
+        }
         await retry.fire()
         try await handshake(socket, mode: mode)
         if selectTarget {
