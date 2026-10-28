@@ -31,7 +31,7 @@ import Testing
         rig.env.router.ambientPrivacy(true, connection: connection)
         rig.env.router.switchPrivacy(true, connection: UUID(), armedAs: nil)
         #expect(await eventually { rig.details("ambient_duck_confirmed").count == 2 })
-        #expect(began.duration(to: .now) < .seconds(2))
+        #expect(began.duration(to: .now) < .seconds(TestTiming.bound(2)))
         // Each connection has its own clip chain (round 3): the other's clip never waits behind this one.
         let confirmed = rig.details("ambient_duck_confirmed")
         #expect(confirmed.contains("on=true reason=device refused playback=idle " + Self.unavailable))

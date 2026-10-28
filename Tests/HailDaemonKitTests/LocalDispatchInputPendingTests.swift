@@ -72,8 +72,8 @@ import Testing
             try await tainted.adapter.deliver("later input", to: "codex", binding: nil)
         }
 
-        // The appeared case also pins the paste step's refusal text that `performDelivery` names: were it reworded,
-        // this would be a generic `deliveryFailed`. The error's reason is the evidence line's token (#894 PR 1).
+        // The paste step throws the appeared case already named, so there is no refusal text to match: the error is
+        // the typed one above, never a generic `deliveryFailed`. Its reason is the evidence line's token (#894 PR 1).
         for (harness, reason) in [(stale, PendingInputReason.staleInput), (appeared, .appeared), (tainted, .tainted)] {
             let line = try #require(harness.evidence.lines("tmux_input_pending").only)
             #expect(line.hasPrefix("tmux_input_pending reason=\(reason.rawValue) "))

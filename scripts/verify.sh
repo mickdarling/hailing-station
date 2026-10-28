@@ -235,6 +235,9 @@ scripts_() {
   done < <(find "${dirs[@]}" -type f \( -name '*.sh' -o -name 'hail-*' \) | sort)
   scripts/tests/test-testflight.sh
   scripts/tests/test-host.sh
+  npm ci --prefix scripts/codex-recovery --ignore-scripts --no-audit --no-fund
+  npm test --prefix scripts/codex-recovery
+  python3 -m unittest scripts/tests/test_codex_recovery_lock.py
   trace_tests
   python3 -m unittest discover -s Tests/LocalIntentEvalTests
   python3 -m unittest scripts/tests/test_verify_test_output.py

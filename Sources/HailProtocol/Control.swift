@@ -179,7 +179,8 @@ public enum ControlPayload: Sendable, Equatable {
     case duckMode(on: Bool, reason: String? = nil, expires: Int64? = nil)
     /// Device to host (#735 S-6): turn privacy (internally duck) on or off for this connection's own ambient stream,
     /// from the app's privacy switch. Only `command` and the boolean `on`; sent only to a host that advertises
-    /// `DuckMode.privacySwitchCapability`. The host answers only with its `duck_mode` notice (reason `device`), never
+    /// `DuckMode.privacySwitchCapability`. The host answers only with its `duck_mode` notice (reason `device`, or
+    /// `held_elsewhere` when a capable off leaves effective privacy on), never
     /// with a reply frame, and the device shows privacy only once that notice says so.
     case setPrivacy(on: Bool)
 }
@@ -645,11 +646,19 @@ public enum AmbientInput {
     }
 }
 
+/// Effective first-start modes after hello (#941). Opting in permits one `duck_mode` and `media_mode`
+/// snapshot immediately after the host hello, before audio admission. It grants no arming authority and
+/// carries no meeting state (there is no device frame for it).
+public enum ModeSnapshot {
+    public static let capability = "mode_snapshot"
+}
+
 /// Media mode state (#612): the owner's spoken media mode (#551) is host-side, so without this a device only notices
 /// that replies stopped. A host tells the device whose ambient stream it is when the mode changes. The device
-/// advertises `capability` in its `hello`; a host never sends `media_mode` to a device without it, because an older
-/// device refuses an unknown command. `reason` says why it last changed: `voice` (the owner said so) or `timeout`
-/// (it turned itself off). `expires` is when an on mode turns itself off, in Unix milliseconds like a frame's `ts`.
+/// advertises `capability` in its `hello`; changes require it, while the initial snapshot requires the explicit
+/// `ModeSnapshot.capability` opt-in. An older device receives neither unknown shape. `reason` says why it last
+/// changed: `voice` (the owner said so) or `timeout` (it turned itself off). `expires` is when an on mode turns
+/// itself off, in Unix milliseconds like a frame's `ts`.
 public enum MediaMode {
     public static let capability = "media_mode"
     public static let reasons = ["voice", "timeout"]
@@ -667,16 +676,18 @@ public enum MediaMode {
 }
 
 /// Duck mode state (#735): the owner's rubber-duck mode ("let me think out loud") is host-side, like media mode, so a
-/// device is told when it changes for its ambient stream. The device advertises `capability` in its `hello`; a host
-/// never sends `duck_mode` to a device without it, because an older device refuses an unknown command. `reason` says
-/// why it last changed: `voice` (the owner said so), `timeout` (it turned itself off) or `device` (a device asked).
+/// device is told when it changes for its ambient stream. Changes require the device's `capability` in its `hello`;
+/// the initial snapshot and its unarmed off notice require `ModeSnapshot.capability`. Older devices receive nothing
+/// new. `reason` says why it last changed: `voice` (the owner said so), `timeout` (it turned itself off) or
+/// `device` (a device asked), or `held_elsewhere` (a snapshot-capable off cleared parks but another counting
+/// live holder still makes this connection's next start private). The after-hello snapshot carries no reason (#993).
 /// `expires` is when an on mode turns itself off, in Unix milliseconds like a frame's `ts`. Off by default.
 /// The app's privacy switch (#735 S-6) sends `set_privacy` only to a host that advertises `privacySwitchCapability`
 /// in its `hello`; an older host refuses the unknown command, so a device never sends it there.
 public enum DuckMode {
     public static let capability = "duck_mode"
     public static let privacySwitchCapability = "set_privacy"
-    public static let reasons = ["voice", "timeout", "device"]
+    public static let reasons = ["voice", "timeout", "device", "held_elsewhere"]
 
     /// `value` when it is exactly one of `reasons`, else nil.
     public static func reason(_ value: String?) -> String? {

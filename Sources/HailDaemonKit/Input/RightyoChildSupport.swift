@@ -165,6 +165,9 @@ final class RightyoExitLatch: Sendable {
         var waiters: [UUID: CheckedContinuation<RightyoChildExit?, Never>] = [:]
     }
     private let state = Mutex(Waiting())
+    /// Timeouts fire on a labelled serial queue, which targets the overcommit root queue (#980). The default global
+    /// queue runs only while the process has a constrained worker free, so a starved one held `stop()`'s escalation.
+    private static let timeouts = DispatchQueue(label: "hailing.rightyo-child.exit-timeout")
     var value: RightyoChildExit? { state.withLock { $0.exit } }
 
     func signal(_ exit: RightyoChildExit) {
@@ -187,7 +190,7 @@ final class RightyoExitLatch: Sendable {
             }
             if let done { return waiter.resume(returning: done) }
             guard let timeout else { return }
-            DispatchQueue.global().asyncAfter(deadline: .now() + timeout) {
+            Self.timeouts.asyncAfter(deadline: .now() + timeout) {
                 self.state.withLock { $0.waiters.removeValue(forKey: id) }?.resume(returning: nil)
             }
         }

@@ -4,7 +4,8 @@ import Testing
 
 /// #894 ask 3: an un-routed request the target refused because its input already holds unsent text sends nothing,
 /// says why in `lastDeliveryRefusal`, and ends nothing, so the next request is tried as usual. Every other refusal of
-/// the stream's own target still ends the consumer. Synthetic events and a recording dispatcher only.
+/// the stream's own target, except confirmation/capacity (#847), still ends the consumer. Synthetic events and a
+/// recording dispatcher only.
 extension RightyoInputConsumerTests {
     @Test func pendingInputRefusesThatRequestOnlyAndTheNextIsTyped() async throws {
         let (consumer, dispatcher) = try await routingRig()
@@ -32,9 +33,8 @@ extension RightyoInputConsumerTests {
         #expect(await dispatcher.calls.isEmpty)
     }
 
-    /// Any other refusal of the stream's own target still ends the consumer, as before #894.
-    @Test(arguments: [LocalDispatchRefusal.deliveryRefused, .bindingMismatch, .selectionChanged, .capacityExceeded,
-                      .confirmationRequired, .notAuthorized])
+    /// Selection, binding, authorization and delivery refusals still end the consumer (#894, #847).
+    @Test(arguments: [LocalDispatchRefusal.deliveryRefused, .bindingMismatch, .selectionChanged, .notAuthorized])
     func everyOtherRefusalOfTheTargetStillEndsTheConsumer(_ refusal: LocalDispatchRefusal) async throws {
         let (consumer, dispatcher) = try await routingRig()
         await dispatcher.refuse(refusal)

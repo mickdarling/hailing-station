@@ -162,7 +162,7 @@ extension TmuxAdapter {
             let fresh = await observePane(session.paneID)
             if let fresh, await pendingIndex(fresh, pending, in: session.paneID) != nil {
                 evidence.inputPending(.appeared, in: session.paneID, seen: fresh, own: pending[1])
-                throw AdapterError.deliveryFailed("unsubmitted text appeared in the input of pane \(target)")
+                throw AdapterError.inputPending(reason: .appeared)
             }
             try abandoned.check()
             try await pasteBuffer(buffer, holding: text, into: session.paneID, pasting: pasting)
