@@ -1505,3 +1505,56 @@ The targeted serial selection passed **9 tests in 4 suites, 11 cases**,
 reauthorization paths and the complete flapping and selection-failure suites.
 All new scheduling control uses held continuations and an injected clock; no CPU
 load, timing sleep, tool upgrade, or async sleep default is introduced.
+
+
+Closing-selection follow-up verification: both warnings-as-errors build forms
+pass on the new core and merged app heads. Manual strict lint passes; the full
+struct/class/enum/actor/protocol declaration audit reports zero names over
+40 characters on both heads. The serial focused family
+`AmbientReconnect|SendOrigin|AmbientRecovery|AmbientSuspension|AmbientRestore`
+passed three times:
+
+- repetition 1: **119 tests in 48 suites**, 258.062 seconds.
+- repetition 2: **119 tests in 48 suites**, 251.135 seconds.
+- repetition 3: **119 tests in 48 suites**, 254.085 seconds.
+
+The broad serial family uses three disjoint module lanes. The initial daemon
+lane ran 593 tests in 135 suites, 319.802 seconds, and failed the existing
+`AmbientPrivacyRoundFourRigTests.aReloadLateInAnEntryIsWaitedForNotKilled`
+assertions at lines 44 and 45: a real confirmation timeout produced unavailable
+rather than privacy on. That fixture uses real 4-second and 6.5-second waits
+around a 6-second confirmation bound. It does not exercise the changed restore
+controller; no daemon source or fixture is changed. The isolated check passed
+**1 test in 1 suite**, 7.722 seconds (`<scratch>/daemon-privacy-isolated.log`).
+The initial failure is preserved as `<scratch>/r2-broad-daemon-initial.log`.
+The isolated check and daemon rerun use the same built binary without source
+changes. Only the affected daemon lane is rerun; core is not repeated. Passing counts:
+
+
+- core: **441 tests in 130 suites**, 284.907 seconds.
+- daemon: **593 tests in 135 suites**, 387.434 seconds.
+- remaining: **50 tests in 9 suites**, 0.176 seconds.
+
+Broad total: **1084 tests in 274 suites**. The final loop runs the complete
+flapping, selection-failure, and authorization-refusal suites. It passed
+**30/30 invocations: 240 test executions, 300 cases**. The original host-flaky
+method and both forced-close regressions each pass 30/30, alongside all three
+selection transport errors, stale-generation rejection, the original-deadline
+case, private-confirmation flapping, and actionable authorization refusal. No
+test run follows that loop. Evidence: `<scratch>/r2-focused-*.log`,
+`r2-broad-*.log`, `r2-loop-1.log` through `r2-loop-30.log`. Both authorization
+paths pass in all focused runs; reauthorizationNeeded and its enabled
+destination-selection action remain unchanged.
+
+All Swift launches use the shared-process gate, taskpolicy background priority,
+four jobs with one compiler job, supplied Testing flags, offline resolution,
+a 590-second bound per invocation, and process-group cleanup. Runtime lanes are
+serial and exclude DiagnosticReplyComposition. Diagnosis uses held continuations
+and injected time, with no CPU load or timing sleeps. No tool is upgraded.
+The approved infrastructure head and production file sets are unchanged.
+`git diff --check`, manual lint and both declaration audits pass. No new
+suppression, production sleep default, or Instant/Duration arithmetic is added.
+Final app-head build logs are `<scratch>/r2-final-build.log` and
+`r2-final-build-tests.log`; the scratch build directory is removed afterward.
+Validation uses synthetic transport/capture, not the host's loaded Swift 6.2.4
+gate or physical audio/UI. Independent approval of these heads remains pending.
