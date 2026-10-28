@@ -1452,3 +1452,56 @@ is introduced. Final app-head build logs are `<scratch>/r2-final-build.log` and
 Validation uses synthetic transport/capture; native SwiftUI rendering, physical
 audio/haptics, CI Swift 6.3.3 execution, and independent approval of these heads
 remain unclaimed.
+
+
+CI follow-up: late selection completion during socket close is a product race.
+The host failure is reproduced at `73103808b01a58a73449572265e3a9e13f18bd13`
+without CPU load or timing sleeps. The scratch-only closing probe holds the
+replacement socket's close, allowing pending-ping cleanup to release its
+selection waiter before reconnecting is published. The snapshot is still ready,
+and the drop has already armed a new pending attempt. The old waiter succeeds
+and restore completion accepts the dropped generation because only selection
+initiation checks that generation. Capture admission reopens; gap buffers reach
+the failed queue, capture ends, and the watcher finishes recovery as failed.
+The retry error classifier is bypassed because this selection returns success.
+
+`AmbientReconnectClosingProbeTests.delayedCloseReproducesTheTerminalFlap`
+reproduces the host's three assertions at probe lines **27, 34, 35**: zero
+discarded buffers, listening stopped, and interrupted/failed rather than
+interrupted/applied. **1 test, 1 suite, 3 issues**, 2.598 seconds, no timeout;
+evidence: `<scratch>/closing-probe-before.log` and the scratch probe source.
+
+The committed regression candidate uses the same forced-close interleaving and
+observes selection completion through the store, independently of the result
+being asserted. At the unchanged production head,
+`AmbientReconnectReviewFlappingTests.selectionCompletionDuringCloseCannotReopenTheGap`
+fails at **58:9, 61:9, 66:9, 67:9** in
+`Tests/HailCoreTests/AmbientReconnectReviewFlappingTests.swift`: changed binding,
+zero discards, listening stopped, interrupted/failed.
+`selectionCompletionDuringCloseKeepsTheOriginalDeadline` fails its unchanged
+binding assertion at **79:9**. **2 tests, 1 suite, 5 assertion issues**,
+2.138 seconds, no timeout (`<scratch>/closing-regression-before.log`).
+The existing host-gate assertions at lines 42, 46, 48, and 49 are unchanged.
+
+Restore completion now also rejects the pending attempt's dropped generation,
+matching the existing check before selection starts. It ignores that late
+completion without settling or vetoing the attempt: capture admission stays
+closed, the transport's normal reconnect continues, and the original deadline
+remains armed. This is one additional generation guard in the coordinator; no
+retry, error-classification, authorization, privacy, or owner-veto rule changes.
+The approved infrastructure files and the app production files are untouched.
+
+The deterministic fixture holds close until the store observes the old selection
+completion, then releases it. The recovery regression requires unchanged binding,
+ten discarded gap buffers, one capture/permission activation, the same host and
+target, and interrupted/applied after a later handshake at 59 seconds. It rejects
+PCM on the dropped socket and privacy-off frames on both sockets. The companion
+case expires at 60 seconds during that retry and requires timedOut, ended capture,
+and no applied notice. Existing flapping assertions are not weakened.
+The scratch probe is preserved only as evidence outside the repository.
+
+The targeted serial selection passed **9 tests in 4 suites, 11 cases**,
+10.806 seconds (`<scratch>/r1-fix-pass.log`), including both genuine owner
+reauthorization paths and the complete flapping and selection-failure suites.
+All new scheduling control uses held continuations and an injected clock; no CPU
+load, timing sleep, tool upgrade, or async sleep default is introduced.
