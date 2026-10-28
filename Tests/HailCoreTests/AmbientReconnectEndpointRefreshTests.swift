@@ -47,7 +47,8 @@ import Testing
         await rig.close()
     }
 
-    @Test func secureTransportDowngradeVetoesRefresh() async throws {
+    @Test(arguments: [false, true])
+    func secureTransportDowngradeVetoesRefresh(pending: Bool) async throws {
         let rig = try AmbientReconnectRig()
         var secure = rig.endpoint
         secure.url = try #require(URL(string: "wss://127.0.0.1:18765"))
@@ -59,7 +60,7 @@ import Testing
         try await rig.handshake(rig.socket)
         try await rig.select(restoring: false)
         await rig.controller.turnOn(for: try rig.currentBinding())
-        try await rig.drop()
+        if pending { try await rig.drop() }
         await rig.store.upsert(rig.endpoint)
         try await rig.expectStopped(.endpointChanged)
         await rig.close()

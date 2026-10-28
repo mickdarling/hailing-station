@@ -347,10 +347,10 @@ extension AmbientListeningReconnect {
     /// Keep the owner's destination authorization while replacing this host's transport and confirmation.
     func refreshEndpoint(_ endpoint: HostEndpoint, previous: HostConnectionSnapshot?,
                          store: HostConnectionStore) -> Bool {
-        guard let previous, previous.id == endpoint.id,
-              !(previous.endpoint.url.scheme?.lowercased() == "wss" && endpoint.url.scheme?.lowercased() == "ws")
-        else { return false }
+        guard let previous, previous.id == endpoint.id else { return false }
         if !isPending { drop(previous, store: store) }
+        guard !(previous.endpoint.url.scheme?.lowercased() == "wss" && endpoint.url.scheme?.lowercased() == "ws")
+        else { return false }
         guard pending?.binding.hostID == endpoint.id else { return false }
         controller?.suspendTransport()
         cancelAcceptance()

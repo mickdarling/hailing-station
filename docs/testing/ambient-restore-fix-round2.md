@@ -787,3 +787,10 @@ It uses the interruption cause because a generic engine stop ends listening in
 ask 3; that policy is preserved. Explicit gates replace scheduling delays for
 host execution on Swift 6.2.4. The endpoint-replacement race is shared with the
 URL/name and public/private refresh test rather than copied from another API.
+
+The first pass-after selection passed all 9 tests in 4 suites (16.573 s),
+including all three adapted suspension shapes. They exposed no additional
+selection-order or pause-ownership defect. A further security check extends the
+downgrade probe to active listening: arm the existing recovery intent before
+rejecting the downgrade, so the endpoint veto ends capture immediately even
+without a UI binding update. This preserves the same fail-closed pending path.
