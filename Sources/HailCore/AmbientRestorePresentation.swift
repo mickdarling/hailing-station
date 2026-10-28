@@ -1,0 +1,89 @@
+public import Foundation
+public import HailProtocol
+
+/// A snapshot of the core state used by the root destination and ambient card.
+/// Notices describe history; only pending recovery can retain an unavailable destination's card.
+public struct AmbientRestorePresentation: Sendable {
+    public enum NoticeAction: Equatable, Sendable {
+        case resume(AmbientAudioBinding), selectDestination
+        public var title: String {
+            if case .selectDestination = self { return "Choose destination" }
+            return "Resume listening"
+        }
+    }
+    public let confirmedBinding: AmbientAudioBinding?
+    public let notice: AmbientListeningReconnect.Notice?
+    private let controllerBinding: AmbientAudioBinding?
+    private let recoveryBinding: AmbientAudioBinding?
+    private let recoveryHostName: String?
+    private let isListening: Bool
+    private let isOn: Bool
+    private let isPending: Bool
+
+    @MainActor
+    public init(controller: AmbientListeningController?, confirmedBinding: AmbientAudioBinding?) {
+        self.confirmedBinding = confirmedBinding
+        notice = controller?.reconnect.notice
+        controllerBinding = controller?.binding
+        recoveryBinding = controller?.reconnect.binding
+        recoveryHostName = controller?.reconnect.hostName
+        isListening = controller?.isListening == true
+        isOn = controller?.isOn == true
+        isPending = controller?.reconnect.isPending == true
+    }
+
+    /// Only core's applied, still-current binding may advance authorization without a foreground selection.
+    public func appliedBinding(hostID: HostEndpoint.Identifier?, targetID: String?) -> AmbientAudioBinding? {
+        guard isListening, notice?.outcome == .applied, !isPending,
+              let binding = recoveryBinding, controllerBinding == binding,
+              hostID == binding.hostID, targetID == binding.targetID,
+              confirmedBinding == binding else { return nil }
+        return binding
+    }
+
+    /// The root may use a successful background restore before its foreground selection task runs.
+    public func authorizedGeneration(hostID: HostEndpoint.Identifier?, targetID: String?,
+                                     foregroundAuthorized: Bool, generation: UUID?) -> UUID? {
+        let restored = appliedBinding(hostID: hostID, targetID: targetID)
+        guard foregroundAuthorized || restored != nil else { return nil }
+        return restored?.connectionGeneration ?? generation
+    }
+
+    /// A live, applied core restore can recognize a refreshed address for the same retained destination.
+    public func matches(_ selection: DestinationSelection, endpoint: HostEndpoint, target: TargetInfo) -> Bool {
+        selection.matches(endpoint: endpoint, target: target)
+            || restoredSelection(selection, endpoint: endpoint, target: target) != nil
+    }
+
+    public func restoredSelection(_ selection: DestinationSelection, endpoint: HostEndpoint,
+                                  target: TargetInfo) -> DestinationSelection? {
+        guard appliedBinding(hostID: selection.hostID, targetID: selection.targetID) != nil,
+              endpoint.id == selection.hostID, target.id == selection.targetID,
+              target.name == selection.targetName, target.alive else { return nil }
+        return DestinationSelection(hostID: selection.hostID, hostURL: endpoint.url.absoluteString,
+                                    targetID: selection.targetID, targetName: selection.targetName)
+    }
+
+    /// Persistence may invalidate an old URL while core is replacing its transport for the retained identity.
+    public func retainsSelection(_ selection: DestinationSelection, endpoint: HostEndpoint) -> Bool {
+        guard isPending, isOn, recoveryBinding?.hostID == selection.hostID,
+              recoveryBinding?.targetID == selection.targetID, endpoint.id == selection.hostID else { return false }
+        return !(URL(string: selection.hostURL)?.scheme?.lowercased() == "wss"
+            && endpoint.url.scheme?.lowercased() == "ws")
+    }
+
+    public func card(hostName: String?) -> (AmbientAudioBinding, String)? {
+        if let binding = confirmedBinding, let hostName { return (binding, hostName) }
+        guard isPending, let binding = recoveryBinding, let name = recoveryHostName else { return nil }
+        return (binding, name)
+    }
+
+    /// History and a pending card's cached binding never authorize an owner start.
+    public var resumeBinding: AmbientAudioBinding? { confirmedBinding }
+    public var noticeAction: NoticeAction? {
+        guard offersResume else { return nil }
+        if notice?.reason == .reauthorizationNeeded { return .selectDestination }
+        return resumeBinding.map(NoticeAction.resume)
+    }
+    public var offersResume: Bool { notice != nil && notice?.outcome != .applied && !isOn }
+}

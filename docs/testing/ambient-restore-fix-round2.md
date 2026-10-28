@@ -162,6 +162,36 @@ and `git diff --check` passed; the brace-count aid's two Capture protocol findin
 are declaration false positives, not function bodies. The reconnect file uses
 only the expressly permitted, reasoned file-length exemption.
 
+### R2 results and final-tree checks
+
+R2 changes only StationCard.swift and RootView+DestinationSelection.swift in
+production. The completed notice lives on the root surface, independently of
+the card. The card is retained only during pending recovery; disappearance still
+calls destinationLost. The destination-selection helpers are grouped in two
+extensions within the same 199-line file, without another exemption or file.
+The notifier deduplicates the haptic by notice ID when a late refusal corrects a
+success. Existing per-stop notification titles remain unchanged.
+
+Both required SwiftPM builds passed. All **55 focused tests in 19 suites** passed
+on each of five runs. The serial broad lanes passed **378 tests in 100 suites**
+(240.990 s) and **637 tests in 141 suites** (417.080 s). The #932 segment suites
+remain green. DiagnosticReplyComposition was excluded throughout.
+`successNoticeNeverRetainsCaptureOrAuthorizesADestination` models target removal,
+destination change, and card disappearance; all three cases release capture,
+clear the active binding, and forbid later PCM while retaining notice history.
+This model is not native SwiftUI or physical-device proof.
+
+A final blank-closing-brace cleanup in R1 test support preserves every Swift
+token. Both required builds were rechecked on the final R1 and R2 source trees.
+The extra final R1 review selection passed **9 tests in 6 suites**; the extra
+R2 lifetime selection passed **1 test with 3 cases**. Strict-warning manual lint,
+committed-range `git diff --check`, exact production-file counts (including rename
+handling), and the three-commit stack audit passed. No other new lint exemption
+was added. Old R1/R2, interrupted WIP, and main-24be refs remain unchanged.
+
+The initial fail-before evidence remains the recorded old-base run; it was not
+replayed on main-24be. No independent approval, GitHub protection result, native
+iOS build, physical haptic, or live captured-output proof is claimed.
 ## R8 coordinator rulings and pass-after record
 
 The preceding R7/reapplication entries are historical. This fix starts from R0
@@ -313,6 +343,96 @@ AmbientListeningReconnect.swift and Transport/HostConnectionStore.swift (four
 incremental, six cumulative against main-24be). The R0 set is now three files,
 using HostConnection.swift plus the existing two. No file was renamed or moved.
 
+### F5: applied background restore advances root authorization
+
+The root destination synchronously accepts the coordinator's applied binding
+only when it equals the store's current ambientBinding for the selected host
+and target and the listening controller still owns it. The existing remembered
+endpoint/target checks still apply. This predicate is independent of scene phase,
+so rendering can retain the real destination in the same update that clears
+pending recovery. The notice-change handler and remembered-selection
+reconciliation also accept that core-authorized generation in the background;
+they do not start another target-selection round trip. Card disappearance and
+current-binding update hooks remain active for genuine destination loss.
+
+`backgroundRestoreMustKeepListeningAfterPendingCardDisappears` ports the review
+probe's desired assertions: changed generation, listening survives, and capture
+starts once. It retains the assertion that the *former* foreground-only predicate
+would remove the card, then checks the corrected predicate keeps it and subsequent
+PCM continues without restarting/releasing capture. The original failed line in
+`r2-app-probe.log` was:
+
+```text
+Expectation failed: (rig.controller → HailCore.AmbientListeningController).isListening → false
+```
+
+`appliedBackgroundBindingNeverAuthorizesARealDestinationLoss` covers target
+removal, endpoint change and owner selection after background restore. All stop
+capture and forbid subsequent PCM through the real disappearance/binding-update
+hooks. The existing `successNoticeNeverRetainsCaptureOrAuthorizesADestination`
+now runs all three lifetime cases both after foreground and background restore.
+The tests model the root/card authorization predicates; **native SwiftUI execution
+is not verified on this VM**. SwiftPM builds do not compile the iOS app, and no
+physical microphone, haptic or captured-output round trip is claimed.
+
+### R8 R2 verification commands
+
+Use the same common prefix/flags/scratch path as R0. Actions:
+
+```text
+build -Xswiftc -warnings-as-errors
+build --build-tests -Xswiftc -warnings-as-errors
+test --skip-build --disable-xctest --no-parallel --filter AmbientReconnectApp --skip DiagnosticReplyComposition
+test --skip-build --disable-xctest --no-parallel --filter AmbientReconnect --skip DiagnosticReplyComposition
+```
+
+The AmbientReconnect selection runs three times. The requested broad expression
+is `Ambient|HostConnection|Listening|Reconnect|Notice|AudioGate|TapCapture|HeardTurn|Privacy|Segment`.
+It runs once across three non-overlapping bounded lanes, each with
+`test --skip-build --disable-xctest --no-parallel`, the common flags, and these
+filter/skip arguments (substitute the expression above for FAMILY):
+
+```text
+--filter 'HailCoreTests.*(FAMILY)' --skip DiagnosticReplyComposition
+--filter 'HailDaemonKitTests.*(FAMILY)' --skip DiagnosticReplyComposition
+--filter 'FAMILY' --skip 'DiagnosticReplyComposition|HailCoreTests|HailDaemonKitTests'
+```
+
+R2 remains exactly two production files incrementally, eight cumulatively
+against main-24be. The root selection file is 200 lines without a new exemption;
+only blank separators, guard layout and call-argument formatting were compacted.
+Existing explanatory comments and production-file locations are preserved.
+
+R2 R8 focused results: both required warnings-as-errors builds passed. The app
+model selection passed **3 tests in 2 suites** in 16.041 s, including six
+foreground/background lifetime cases and the three background destination-loss
+cases. All **63 tests in 22 suites** passed on each of three AmbientReconnect
+runs (142.156 s, 134.965 s, 143.358 s). The fail-before probes' security assertions
+remain in committed tests, including the original F5 broken-predicate assertion
+as a comparison with the corrected destination predicate. No DiagnosticReplyComposition
+suite ran. No production/test/app/manifest source changed during these repetitions.
+
+The broad Core lane passed **396 tests in 109 suites** in 242.220 s. A content
+hash audit confirms all 991 source/test/app/manifest files remained unchanged
+through the repeated selection and this broad lane. The remaining broad lanes
+use the same binary and unchanged sources.
+
+The broad DaemonKit lane passed **593 tests in 135 suites** in 422.415 s; the
+remaining-module lane passed **50 tests in 9 suites** in 0.193 s. Thus the broad
+selection passed **1,039 tests in 253 suites**, with no overlap between lanes and
+no DiagnosticReplyComposition execution. Every phase completed below 590 s.
+All six required builds passed. The source hash audit remains unchanged.
+
+Final strict-lint inspection found two blank-line violations in the newly added
+HostConnectionSendOriginCloseTests.swift: one blank before the suite's closing
+brace and one extra separator before its recorder actor. The earlier R0 manual
+lint statement missed these whitespace rules. The prepared correction removes
+only those two blank lines and preserves every non-whitespace token. Because R0's
+single requested fix commit already exists, applying that correction without
+rewriting history needs a coordinator exception for a second R0 commit followed
+by normal merges into R1/R2. That exception is pending; functional verification
+is complete, but strict lint is not yet complete on the three branch heads.
+
 ## R10: host vetoes belong to the current owner run
 
 The previous restored binding survives a stop/start so R2 can inspect the applied
@@ -424,6 +544,132 @@ build/test compilation emits CLT linker debug-module-path warnings, as in earlie
 rounds; no Swift source warnings are suppressed. Manual strict-warning lint
 review and `git diff --check` cover the changed test. The iOS app cannot be built
 on this CLT-only VM; package checks remain synthetic.
+
+## R12: shared app presentation decisions (finding 5 app half and F5)
+
+The old app authorization and lifetime suites copied predicates into the tests.
+Their passing results did not establish that the app used those predicates. The
+new `Sources/HailCore/AmbientRestorePresentation.swift` is an immutable value
+snapshot of HailCore controller state and the store's confirmed binding. Its
+small decision functions are shared by the actual root/card callers and both
+rewritten suites; the tests contain no duplicate applied-binding or card-retention
+predicate.
+
+`appliedBinding` requires listening, an applied notice, no pending restore,
+matching controller/reconnect/current confirmed bindings, and matching selected
+host/target IDs. `authorizedGeneration` supplies the root's destination fallback
+before foreground selection authorization catches up, preferring the applied
+binding over stale foreground state. The app still checks its available target,
+remembered selection, and snapshot generation when constructing a destination.
+The tests exercise both stale foreground authorization states, stale confirmed
+generations, changed selections, target removal, and endpoint changes.
+
+`card` accepts a confirmed destination first and otherwise retains a card only
+while recovery is pending. `notice` and `offersResume` are separate from that
+lifetime; `resumeBinding` accepts only the current confirmed binding. The tests
+exercise pending disappearance without stopping capture, applied-notice target
+removal in foreground and background, real binding changes, explicit card
+loss, and blocked/failed notices with no available destination. The app's existing
+lifetime hooks now consume these shared results.
+
+The VM cannot compile the iOS application. Reading both app callers against the
+new HailCore file confirms that `AmbientRestorePresentation`, its MainActor
+initializer, `appliedBinding`, `authorizedGeneration`, `card`, `notice`,
+`offersResume`, and `resumeBinding` all exist and have public access. The snapshot
+stores values rather than a controller/capture reference. These are synthetic
+package tests and a source-level app wiring/access check, not native SwiftUI,
+physical audio, or physical haptic proof. Independent exact-head review remains
+pending.
+
+R2 now changes exactly three production files relative to the new R1:
+AmbientRestorePresentation.swift, Apps/Hail-iOS/StationCard.swift, and
+Apps/Hail-iOS/RootView+DestinationSelection.swift. R0 is unchanged; R1 remains
+four production files, with zero production changes in the R12 R1 increment.
+
+### Mutation B1: remove the applied-generation destination fallback
+
+The temporary HailCore mutation changed `authorizedGeneration` to return only
+`generation`, dropping the applied-binding fallback. The command was
+`test -Xswiftc -warnings-as-errors --disable-xctest --no-parallel
+--filter AmbientReconnectAppAuthorization --skip DiagnosticReplyComposition`,
+with the common flags above. It exited 1: **3 tests in 1 suite, 5 failed
+assertions, 7.940 s**. Selected exact assertion lines (all IDs are synthetic):
+
+```text
+AmbientReconnectAppAuthorizationTests.swift:21:9: Expectation failed: (generation → 6190533A-44B8-4714-BA1E-50A7845C5A24) == (binding.connectionGeneration → 94F2B502-9EB1-410B-AC0A-55AD419A7EDF)
+AmbientReconnectAppAuthorizationTests.swift:31:9: Expectation failed: (card?.0 → nil) == (binding → AmbientAudioBinding(hostID: "mac-1", targetID: "tmux:synthetic", connectionGeneration: 94F2B502-9EB1-410B-AC0A-55AD419A7EDF, selection: 2))
+AmbientReconnectAppAuthorizationTests.swift:33:9: Expectation failed: (rig.controller → HailCore.AmbientListeningController).isListening → false
+AmbientReconnectAppAuthorizationTests.swift:38:9: Expectation failed: (rig.released == 0 → false) && (rig.unexpected.isEmpty → <not evaluated>)
+```
+
+The additional failure at line 23 checks the stale foreground-authorized case.
+The mutation causes the real shared destination decision to lose the card and
+stop listening. There was no timeout. The raw log is `r2-mutation-B1.log` in
+`hs-904-R12-scratch`. The HailCore file was restored byte-for-byte before B2.
+
+### Mutation B2: let completed notices retain cached presentation/bindings
+
+The temporary HailCore mutation allowed `card` to fall back to the recovery
+binding when `isPending || notice != nil`, and let `resumeBinding` fall back to
+that cached binding whenever a notice existed. The command was
+`test -Xswiftc -warnings-as-errors --disable-xctest --no-parallel
+--filter AmbientReconnectAppLifetime --skip DiagnosticReplyComposition`, with the
+common flags above. It exited 1: **3 tests in 1 suite, 12 failed assertions,
+13.545 s**. Selected exact assertion lines (all IDs are synthetic):
+
+```text
+AmbientReconnectAppLifetimeTests.swift:37:9: Expectation failed: (presentation.card(hostName: nil) → (HailCore.AmbientAudioBinding(hostID: "mac-1", targetID: "tmux:synthetic", connectionGeneration: 36B6D222-0DDD-4396-BE8B-0A7C278B8A18, selection: 2), "mac-1")) == nil
+AmbientReconnectAppLifetimeTests.swift:38:9: Expectation failed: (presentation.resumeBinding → AmbientAudioBinding(hostID: "mac-1", targetID: "tmux:synthetic", connectionGeneration: 36B6D222-0DDD-4396-BE8B-0A7C278B8A18, selection: 2)) == nil
+AmbientReconnectAppLifetimeTests.swift:79:9: Expectation failed: (presentation.card(hostName: nil) → (HailCore.AmbientAudioBinding(hostID: "mac-1", targetID: "tmux:synthetic", connectionGeneration: 0D024164-CCF6-4C63-B819-0FD07426AB45, selection: 2), "mac-1")) == nil
+AmbientReconnectAppLifetimeTests.swift:81:9: Expectation failed: (presentation.resumeBinding → AmbientAudioBinding(hostID: "mac-1", targetID: "tmux:synthetic", connectionGeneration: 0D024164-CCF6-4C63-B819-0FD07426AB45, selection: 2)) == nil
+AmbientReconnectAppLifetimeTests.swift:63:9: Expectation failed: (!rig.controller.isOn && !rig.controller.isListening → false) && (rig.released == 1 → <not evaluated>)
+```
+
+The card/resume assertions at lines 37/38 also failed for the failed notice;
+lines 79/81 and the retained-capture assertions also failed in the background
+applied-notice case. There was no timeout. The raw log is `r2-mutation-B2.log`
+in `hs-904-R12-scratch`. The shared file was restored byte-for-byte and compared
+with the prepared baseline before the pass-after runs. No mutation is committed.
+
+### R12 pass-after verification
+
+After restoring both B mutations, the shared app suites passed **6 tests in
+2 suites, 21.874 s**, including all parameterized cases. All test invocations
+use `--disable-xctest --no-parallel` and skip DiagnosticReplyComposition.
+The requested full broad family is
+`Ambient|HostConnection|Listening|Reconnect|Notice|AudioGate|TapCapture|HeardTurn|Privacy|Segment`.
+It is partitioned into three serial, non-overlapping bounded lanes:
+`^HailCoreTests[.].*(family)`, `^HailDaemonKitTests[.].*(family)`, and the full
+family excluding both those modules. Each lane has its own 590-second limit and
+process-group kill cleanup, and waits on the same literal process gate.
+
+Manual strict-warning lint review covers the 53-line new core file, the 106-line
+authorization suite and 87-line lifetime suite: type bodies stay below 150 lines,
+function bodies below 40, code lines at most 120 columns, parameters at most four,
+and complexity/nesting within .swiftlint.yml. The changed app adapters are small
+calls/value lookups; existing explanatory app comments are preserved. No lint
+suppression is added, and no blank line or code reflow is used to meet a limit.
+Both staged and unstaged `git diff --check` pass. R1's two required committed-head
+builds passed (0.35 s and 0.40 s). The final R2 head checks are `build
+-Xswiftc -warnings-as-errors` and `build --build-tests -Xswiftc -warnings-as-errors`,
+with the common resource, offline and Testing flags above.
+
+All three restored full `--filter AmbientReconnect` repetitions passed:
+**67 tests in 23 suites** per run, in **130.466 s**, **131.665 s**, and
+**133.772 s**. This includes the strengthened latched-veto probe, both shared app
+suites, host admission, and the existing privacy/refusal/flapping checks. Raw
+logs are `r2-focused-1.log` through `r2-focused-3.log` in `hs-904-R12-scratch`.
+
+The broad lanes all passed, without overlapping module selections:
+
+- core: **400 tests in 110 suites**, 277.372 s.
+- daemon: **593 tests in 135 suites**, 419.847 s.
+- remaining: **50 tests in 9 suites**, 0.188 s.
+
+Total: **1043 tests in 254 suites**. The raw logs are `r2-broad-core.log`,
+`r2-broad-daemon.log`, and `r2-broad-remaining.log` in
+`hs-904-R12-scratch`. An audit of all restored/focused/broad logs found no
+recorded assertion issues and no DiagnosticReplyComposition suite or test start.
 
 ## R13: refusal identity, flap wording, and retired send failures
 
@@ -800,6 +1046,71 @@ Both warnings-as-errors build forms are checked on the delivered core head.
 Linking emits stale debug module-cache path warnings; compiler warnings-as-errors
 checks pass. No native app or physical microphone/haptic proof is claimed.
 
+### App destination recognition after refresh
+
+Inspection found a companion app defect: the root's remembered-URL equality
+would remove the destination card immediately after core successfully applied a
+same-host URL refresh. The root now uses the shared presentation predicate to
+recognize a currently applied binding for the same host, target, and target name.
+The first render can use that proof before the notice handler runs. The handler
+then advances the live remembered URL synchronously, preserving the card through
+a later microphone pause or owner stop. Persistent selection storage is not
+rewritten; without current applied proof, a stale saved address still fails
+closed. Historical notices, stale generations, other hosts, and renamed targets
+cannot authorize a refresh. Endpoint removal replaces the obsolete endpoint-
+refresh case in the existing real-destination-loss test.
+
+The ask-3 race shapes passed without another selection/pause bug. The additional
+fixes found during implementation were the app's URL-equality gate and immediate
+active-stream shutdown on a transport downgrade. All changes stay in the existing
+production file sets. The shared helper is exercised by package tests; native
+SwiftUI execution and physical microphone/haptic behavior remain unclaimed.
+
+
+### Completed verification for deadline and refresh changes
+
+Both required warnings-as-errors build forms passed on the delivered
+infrastructure and core heads. The core's final serial deadline, endpoint,
+suspension, and re-entrant pause selection passed **9 tests in 4 suites**, 18.618 seconds.
+The inert default/explicit send-origin selection passed **13 tests in 6 suites**, 8.595 seconds.
+
+The merged app tree passed both build forms before tests. The requested expanded
+serial family `AmbientReconnect|SendOrigin|AmbientRecovery|AmbientSuspension`
+passed three times:
+
+- repetition 1: **105 tests in 42 suites**, 210.510 seconds.
+- repetition 2: **105 tests in 42 suites**, 214.310 seconds.
+- repetition 3: **105 tests in 42 suites**, 209.646 seconds.
+
+The full serial broad family
+`Ambient|HostConnection|Listening|Reconnect|Notice|AudioGate|TapCapture|HeardTurn|Privacy|Segment`
+ran once in three non-overlapping module lanes:
+
+- core: **427 tests in 124 suites**, 323.924 seconds.
+- daemon: **593 tests in 135 suites**, 404.630 seconds.
+- remaining: **50 tests in 9 suites**, 0.216 seconds.
+
+Total broad selection: **1070 tests in 268 suites**.
+The core and daemon lanes use their module prefix and the full family; the
+remaining lane excludes those two modules. Every test command excludes
+DiagnosticReplyComposition and uses `--skip-build --disable-xctest --no-parallel`.
+No successful runtime log records an assertion issue or a start of the excluded
+suite or its tests. Raw logs are `<scratch>/r0-inert.log`, `r1-guard-pass.log`,
+`r2-focused-1.log` through `r2-focused-3.log`, and `r2-broad-*.log`.
+
+Every Swift launch uses the supplied literal process gate, background priority,
+`-j 4 -Xswiftc -j1`, offline resolution, all supplied Testing flags, a 590-second
+execution bound, and process-group cleanup. Link-stage debug module-cache path
+warnings are recorded; compiler warnings-as-errors checks passed. Final app-head
+build logs are `r2-final-build.log` and `r2-final-build-tests.log`.
+
+Strict-warning manual lint review and `git diff --check` pass. The production
+file sets remain three infrastructure files, four restore files, and three app
+files. No new suppression, code reflow, or blank-line deletion was used to meet
+a threshold. Package test results are synthetic; host Swift 6.2.4 execution of
+the deterministic pause shape, native SwiftUI, physical audio/haptics, and
+independent exact-head approval remain separately unclaimed.
+
 ## Refresh privacy and destination follow-up
 
 ### Privacy fail-before
@@ -850,6 +1161,84 @@ regressions and found only the older unanswered privacy confirmation assumption,
 which was then corrected. Cleanup waits on the sender's explicit gate; the
 privacy test also waits for the new controller generation before supplying PCM.
 
+### Persistence through recovery and destination-selection action
+
+RootView.swift remains unchanged. Its scheduled `forgetSelection()` callback now
+routes through the existing destination-selection helper: a permitted pending
+same-host/same-target refresh retains the remembered identity and selected IDs
+while clearing foreground authorization. A callback delayed until after apply
+accepts core's current proof instead. Real removal and explicit invalidation
+still forget. Applied recovery advances the live URL and now also saves it to
+selection storage; the save task checks the selection revision and remembered
+value before writing. This supersedes the preceding round's decision to leave
+the persisted selection URL unchanged.
+
+The root notice uses a typed action. Reauthorization-needed offers an enabled
+Choose destination button, which sets the existing destination sheet state.
+Resume is constructed only with a current confirmed binding. The test drives the
+actual action handler and verifies the sheet opens, capture stays stopped, and
+no resume/PCM occurs.
+
+The package compiles the actual RootView+DestinationSelection.swift extension
+through a test-only relative symlink against a small state shell. The shell
+models RootView.persist's scheduled invalidation; a source contract checks that
+the native persist adapter still invokes that callback. The integration test
+runs this callback, the real helper, handshake, selection confirmation, PCM/apply,
+then checks selected IDs, live URL, stored URL, authorized generation, and card
+identity. Both pending and delayed-after-apply callbacks are covered. Native
+SwiftUI rendering is not claimed.
+
+This app-adapter selection passed **4 tests in 1 suite**, 4.179 seconds
+(`<scratch>/r2-adapter-pass.log`). Deleting the actual root helper's URL-update
+block compiled but failed the integration test in both callback orders at
+`Tests/HailCoreTests/AmbientReconnectRootSelectionTests.swift:31:9`. The stored-URL
+checks at line 33 also expired their ten-second waits: **1 parameterized test in
+1 suite, 6 issues**, 23.256 seconds, no phase timeout. Evidence is
+`<scratch>/mutation-url.log`; production was restored afterward. Both requested
+deletions are therefore caught by committed regressions.
+
+
+### Completed refresh follow-up verification
+
+The approved infrastructure head is unchanged. Both required warnings-as-errors
+build forms passed on the new core head and merged app head. The app destination
+selection extension is also compiled in the package test build through the
+test-only adapter link. The requested expanded serial family
+`AmbientReconnect|SendOrigin|AmbientRecovery|AmbientSuspension` passed three times:
+
+- repetition 1: **113 tests in 46 suites**, 235.636 seconds.
+- repetition 2: **113 tests in 46 suites**, 234.709 seconds.
+- repetition 3: **113 tests in 46 suites**, 234.434 seconds.
+
+The broad serial family
+`Ambient|HostConnection|Listening|Reconnect|Notice|AudioGate|TapCapture|HeardTurn|Privacy|Segment`
+ran once in three non-overlapping module lanes:
+
+- core: **435 tests in 128 suites**, 346.570 seconds.
+- daemon: **593 tests in 135 suites**, 421.095 seconds.
+- remaining: **50 tests in 9 suites**, 0.213 seconds.
+
+Total broad selection: **1078 tests in 272 suites**. Every test
+launch uses `--skip-build --disable-xctest --no-parallel` and excludes
+DiagnosticReplyComposition. No successful runtime log contains an assertion issue
+or a start of the excluded tests. Raw evidence is `<scratch>/r2-focused-*.log`
+and `<scratch>/r2-broad-*.log`.
+
+Every Swift launch passed the supplied shared-process gate and used background
+priority, `-j 4 -Xswiftc -j1`, offline resolution, all supplied Testing framework,
+plugin, and rpath flags, a 590-second execution bound, and process-group cleanup.
+Strict warning thresholds were checked by hand and `git diff --check` passed.
+The production file sets remain three infrastructure files, four restore files,
+and three app files. No new suppression, code reflow, blank-line deletion for
+lint, or stored async sleep default was introduced.
+
+Final app-head build logs are `<scratch>/r2-final-build.log` and
+`<scratch>/r2-final-build-tests.log`; core-head logs are
+`<scratch>/r1-final-build.log` and `<scratch>/r1-final-build-tests.log`.
+Package results use synthetic transport/capture and a root state shell. Native
+SwiftUI rendering, host Swift 6.2.4 execution, physical audio/haptics, and a fresh
+independent exact-head approval remain unclaimed.
+
 ## Remote authorization refusal follow-up
 
 The independent remote-authorization probe was found in the adjacent refresh
@@ -872,6 +1261,42 @@ the existing notice copy, fixed log token, and destination-selection action.
 Other failures retain their existing classification. This changes only the
 failed-state branch; request cleanup, privacy, deadlines, sleep defaults, and
 app production code are unchanged.
+
+Both warnings-as-errors build forms passed on the new core head. Its targeted
+remote-refusal test passed **1 test in 1 suite**, 1.395 seconds
+(`<scratch>/r1-refusal-pass.log`). The merged app test retains the core notice-copy
+check and restores the reviewer's destination-selection action assertion at
+line 24, alongside the original reason and token checks. No app production
+change is needed for the corrected reason to use the existing enabled action.
+
+
+### Completed remote-refusal verification
+
+Both warnings-as-errors build forms passed on the new core and merged app heads.
+The requested serial family
+`AmbientReconnect|SendOrigin|AmbientRecovery|AmbientSuspension|AmbientRestore`
+passed twice on the app tree:
+
+- repetition 1: **114 tests in 47 suites**, 242.368 seconds.
+- repetition 2: **114 tests in 47 suites**, 242.452 seconds.
+
+Both runs include the ported remote-refusal regression with its reason, fixed
+token, destination-selection action, notice copy, and no-PCM checks. Every test
+launch uses `--skip-build --disable-xctest --no-parallel` and excludes
+DiagnosticReplyComposition. All Swift launches use the supplied shared-process
+gate, background priority, `-j 4 -Xswiftc -j1`, offline resolution, supplied Testing
+flags, a 590-second execution limit, and process-group cleanup. Raw results are
+`<scratch>/r2-focused-1.log` and `<scratch>/r2-focused-2.log`.
+
+Strict warning thresholds and `git diff --check` pass. The infrastructure head
+is unchanged; the four restore and three app production file sets remain within
+their limits. No new lint suppression, blank-line deletion, code reflow, or
+stored async sleep default was introduced. The change is confined to failed-state
+classification; the existing request cleanup and app action are reused.
+Final app-head build logs are `<scratch>/r2-final-build.log` and
+`<scratch>/r2-final-build-tests.log`. Tests use synthetic transport and capture;
+native SwiftUI rendering, physical audio/haptics, host Swift 6.2.4 execution,
+and fresh independent exact-head approval remain unclaimed.
 
 ## CI follow-up
 
@@ -904,6 +1329,42 @@ checking the gap. The deterministic cases also verify a late snapshot cannot
 restart selection and that the original deadline expires at sixty seconds.
 The targeted serial selection passed **6 tests in 4 suites**, 11.880 seconds,
 including both authorization paths (`<scratch>/r1-fix-pass.log`).
+
+
+CI follow-up verification: both warnings-as-errors build forms passed on the
+new core and merged app heads. Manual declaration checks found no struct, class,
+enum, actor, or protocol name longer than 40 characters on either head; the
+maximum was 40. The full expanded serial family
+`AmbientReconnect|SendOrigin|AmbientRecovery|AmbientSuspension|AmbientRestore`
+passed three times:
+
+- repetition 1: **116 tests in 48 suites**, 254.579 seconds.
+- repetition 2: **116 tests in 48 suites**, 252.020 seconds.
+- repetition 3: **116 tests in 48 suites**, 249.426 seconds.
+
+The broad serial family ran once in three disjoint module lanes:
+
+- core: **438 tests in 130 suites**, 366.641 seconds.
+- daemon: **593 tests in 135 suites**, 424.831 seconds.
+- remaining: **50 tests in 9 suites**, 0.221 seconds.
+
+Broad total: **1081 tests in 274 suites**. At the end, the single 20-run
+filtered loop passed **20/20 invocations**: the original CI flapping test passed
+20/20, and the deterministic notReady and cancellation cases each passed 20/20
+(**40 test executions, 60 cases** across the two test methods). No further test
+run follows this loop. Evidence is `<scratch>/r2-loop-1.log` through
+`<scratch>/r2-loop-20.log`, plus `r2-focused-*.log` and `r2-broad-*.log`.
+
+All test launches are serial and exclude DiagnosticReplyComposition. Every Swift
+launch uses the shared-process gate, taskpolicy background priority, four-job
+limit with one compiler job, supplied Testing flags, offline resolution,
+a 590-second execution bound, and process-group cleanup. Strict warning
+thresholds and `git diff --check` pass. The infrastructure head and production
+file sets are unchanged. No new suppression, lint-driven code reflow, or async
+sleep default was introduced. Final app-head build logs are
+`<scratch>/r2-final-build.log` and `<scratch>/r2-final-build-tests.log`. Tests use
+synthetic transport/capture; native SwiftUI rendering, physical audio/haptics,
+CI Swift 6.3.3 execution, and independent approval of these heads remain unclaimed.
 
 
 CI follow-up: selection-send failures must initiate transport retry. At
@@ -952,6 +1413,45 @@ the visible owner notice, its destination-selection action, and the fixed
 
 Both core warnings-as-errors build forms pass for this follow-up; the four-file
 production boundary and approved infrastructure head are unchanged.
+
+
+Selection retry follow-up verification: both warnings-as-errors build forms pass
+on the new core and merged app heads. The strict manual audit and declaration
+scan pass on both heads: no type name exceeds 40 characters. The full serial
+`AmbientReconnect|SendOrigin|AmbientRecovery|AmbientSuspension|AmbientRestore`
+family passed three times:
+
+- repetition 1: **117 tests in 48 suites**, 260.500 seconds.
+- repetition 2: **117 tests in 48 suites**, 260.814 seconds.
+- repetition 3: **117 tests in 48 suites**, 260.906 seconds.
+
+The broad serial family ran once in three disjoint module lanes:
+
+- core: **439 tests in 130 suites**, 377.799 seconds.
+- daemon: **593 tests in 135 suites**, 435.324 seconds.
+- remaining: **50 tests in 9 suites**, 0.199 seconds.
+
+Broad total: **1082 tests in 274 suites**. The final 20-run filtered loop
+passed **20/20 invocations**, covering the whole SelectFailure suite plus the
+original second-drop-during-reauthorization test: **80 test executions, 120
+cases**. The three transport failure cases, stale-generation case, deadline case,
+and original flapping case each pass 20/20. No test run follows this loop.
+Evidence: `<scratch>/r2-focused-*.log`, `r2-broad-*.log`, `r2-loop-1.log` through
+`r2-loop-20.log`; fail-before evidence remains `selection-fail-before.log`. Both
+authorization paths pass in every focused run, retaining the enabled destination
+action and `reauthorization_needed`.
+
+Every Swift launch uses the shared-process gate, taskpolicy background priority,
+four jobs with one compiler job, supplied Testing flags, offline resolution, a
+590-second execution bound, and process-group cleanup. All runtime lanes are
+serial and exclude DiagnosticReplyComposition. The approved infrastructure head
+and production file boundaries are unchanged; `git diff --check` is clean. No
+new suppression, timing sleep, Instant/Duration expression, or async sleep default
+is introduced. Final app-head build logs are `<scratch>/r2-final-build.log` and
+`r2-final-build-tests.log`; the scratch build directory is removed after them.
+Validation uses synthetic transport/capture; native SwiftUI rendering, physical
+audio/haptics, CI Swift 6.3.3 execution, and independent approval of these heads
+remain unclaimed.
 
 
 CI follow-up: late selection completion during socket close is a product race.
@@ -1005,3 +1505,56 @@ The targeted serial selection passed **9 tests in 4 suites, 11 cases**,
 reauthorization paths and the complete flapping and selection-failure suites.
 All new scheduling control uses held continuations and an injected clock; no CPU
 load, timing sleep, tool upgrade, or async sleep default is introduced.
+
+
+Closing-selection follow-up verification: both warnings-as-errors build forms
+pass on the new core and merged app heads. Manual strict lint passes; the full
+struct/class/enum/actor/protocol declaration audit reports zero names over
+40 characters on both heads. The serial focused family
+`AmbientReconnect|SendOrigin|AmbientRecovery|AmbientSuspension|AmbientRestore`
+passed three times:
+
+- repetition 1: **119 tests in 48 suites**, 258.062 seconds.
+- repetition 2: **119 tests in 48 suites**, 251.135 seconds.
+- repetition 3: **119 tests in 48 suites**, 254.085 seconds.
+
+The broad serial family uses three disjoint module lanes. The initial daemon
+lane ran 593 tests in 135 suites, 319.802 seconds, and failed the existing
+`AmbientPrivacyRoundFourRigTests.aReloadLateInAnEntryIsWaitedForNotKilled`
+assertions at lines 44 and 45: a real confirmation timeout produced unavailable
+rather than privacy on. That fixture uses real 4-second and 6.5-second waits
+around a 6-second confirmation bound. It does not exercise the changed restore
+controller; no daemon source or fixture is changed. The isolated check passed
+**1 test in 1 suite**, 7.722 seconds (`<scratch>/daemon-privacy-isolated.log`).
+The initial failure is preserved as `<scratch>/r2-broad-daemon-initial.log`.
+The isolated check and daemon rerun use the same built binary without source
+changes. Only the affected daemon lane is rerun; core is not repeated. Passing counts:
+
+
+- core: **441 tests in 130 suites**, 284.907 seconds.
+- daemon: **593 tests in 135 suites**, 387.434 seconds.
+- remaining: **50 tests in 9 suites**, 0.176 seconds.
+
+Broad total: **1084 tests in 274 suites**. The final loop runs the complete
+flapping, selection-failure, and authorization-refusal suites. It passed
+**30/30 invocations: 240 test executions, 300 cases**. The original host-flaky
+method and both forced-close regressions each pass 30/30, alongside all three
+selection transport errors, stale-generation rejection, the original-deadline
+case, private-confirmation flapping, and actionable authorization refusal. No
+test run follows that loop. Evidence: `<scratch>/r2-focused-*.log`,
+`r2-broad-*.log`, `r2-loop-1.log` through `r2-loop-30.log`. Both authorization
+paths pass in all focused runs; reauthorizationNeeded and its enabled
+destination-selection action remain unchanged.
+
+All Swift launches use the shared-process gate, taskpolicy background priority,
+four jobs with one compiler job, supplied Testing flags, offline resolution,
+a 590-second bound per invocation, and process-group cleanup. Runtime lanes are
+serial and exclude DiagnosticReplyComposition. Diagnosis uses held continuations
+and injected time, with no CPU load or timing sleeps. No tool is upgraded.
+The approved infrastructure head and production file sets are unchanged.
+`git diff --check`, manual lint and both declaration audits pass. No new
+suppression, production sleep default, or Instant/Duration arithmetic is added.
+Final app-head build logs are `<scratch>/r2-final-build.log` and
+`r2-final-build-tests.log`; the scratch build directory is removed afterward.
+Validation uses synthetic transport/capture, not the host's loaded Swift 6.2.4
+gate or physical audio/UI. Independent approval of these heads remains pending.
