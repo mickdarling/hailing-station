@@ -5,16 +5,6 @@ import Testing
 
 @MainActor
 @Suite(.serialized) struct AmbientReconnectAdditionalGuardTests {
-    @Test func endpointReplacementDuringGapStopsBeforeAnyNewHandshake() async throws {
-        let rig = try AmbientReconnectRig()
-        try await rig.start()
-        try await rig.drop()
-        var replacement = rig.endpoint
-        replacement.name = "Replacement"
-        await rig.store.upsert(replacement)
-        try await rig.expectStopped(.endpointChanged)
-        await rig.close()
-    }
     @Test func pendingPrivacyRequestBeforeDropRemainsAVeto() async throws {
         let rig = try AmbientReconnectRig()
         try await rig.start()

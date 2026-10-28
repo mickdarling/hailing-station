@@ -744,3 +744,46 @@ a timeout: **1 test in 1 suite, 3 assertion issues** at
 `Tests/HailCoreTests/AmbientReconnectAcceptanceDeadlineTests.swift:28:9`,
 `:30:9`, and `:31:9`: applied instead of blocked, no timedOut reason, and capture
 still listening. Evidence is `<scratch>/deadline-fail-before.log`.
+
+### Deadline and endpoint policy
+
+Identity-matched acceptance now calls `withinDeadline()` before settling the
+pending restore. At or after 60 seconds the existing timedOut block path ends
+capture; the pong cannot publish applied or cancel that bound as a success.
+The sender-completion deadline guard remains in place.
+
+A same-host endpoint refresh updates the pending endpoint and display name,
+suspends admission, and cancels old acceptance/privacy confirmation work. It
+retains the original began time, target identity, known privacy requirement, and
+owner selection serial. An active stream can enter that same bounded recovery
+path when its endpoint is refreshed. A secure-to-insecure scheme downgrade is
+rejected as endpointChanged. Removal, explicit disconnect, owner host/target
+changes, and a missing or dead retained target continue to end listening.
+
+The per-connection callback token is always replaced, never resurrected. Confirmed
+selectedTargets and outstanding selectionRequests are cleared; only the existing
+owner selection serial is retained for a permitted refresh. The new connection
+must handshake, advertise the matching live retained target, and complete a new
+selection ping/pong before producing a binding. Known-private recovery uses the
+existing privacy-on reassertion and confirmation before PCM. No remembered URL,
+old token, old confirmation, or different target authorizes a send. Connection
+construction is factored into a helper to keep the upsert body within strict
+warning limits without code reflow or another production file.
+
+### Adapted suspension races
+
+`offRevokesResumeInsideTransportSelectionConfirmation` holds the restore's
+selection pong, turns listening off, then delivers the pong. Capture starts only
+once and no sequence-zero segment may reach the wire.
+`newerDestinationOwnsSelectionWhileTheOlderOneDrains` holds A's sender, applies
+the existing binding-observer stop path, requests B then C, and confirms C before
+B. Only C may retain a binding or send audio when A drains. Ask 3 does not expose
+Part 10's drain-aware destinationSelected API: B may appear on the wire while it
+is current, but its later confirmation must never overwrite C.
+`systemEndDuringStopThenTheStreamWatcherClaimsOnlyOnePause` posts an interruption
+synchronously from capture stop, holds both the retry and release, and checks one
+pause owner, one release, and one capture start while the stream watcher ends.
+It uses the interruption cause because a generic engine stop ends listening in
+ask 3; that policy is preserved. Explicit gates replace scheduling delays for
+host execution on Swift 6.2.4. The endpoint-replacement race is shared with the
+URL/name and public/private refresh test rather than copied from another API.
