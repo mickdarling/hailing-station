@@ -1,0 +1,39 @@
+{
+  "version": 1,
+  "accepted": {
+    "request_outcome": {
+      "version": 1,
+      "session_id": "authored-session",
+      "request_id": "authored-session:turn-1",
+      "state": "accepted"
+    }
+  },
+  "states": [
+    "accepted",
+    "failed",
+    "timed_out",
+    "cancelled",
+    "reply_started",
+    "reply_ended"
+  ],
+  "rejected": [
+    {
+      "version": 2,
+      "session_id": "authored-session",
+      "request_id": "authored-session:turn-1",
+      "state": "accepted"
+    },
+    {
+      "version": 1,
+      "session_id": "authored-session",
+      "request_id": "foreign:turn-1",
+      "state": "cancelled"
+    },
+    {
+      "version": 1,
+      "session_id": "authored-session",
+      "request_id": "authored-session:turn-1",
+      "state": "completed"
+    }
+  ]
+}
