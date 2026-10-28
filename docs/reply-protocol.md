@@ -388,7 +388,7 @@ The host answers on the same connection:
 
 - `version` is the host's release version.
 - `build` is the first 16 hex digits of the running executable's SHA-256.
-- `checks` holds 1 to 16 checks, each name at most once. Each check is one of the `haild doctor` names, with whether it passed: `daemon_running`, `build_match`, `host_id_match`, `listener_ready`, `ambient_listening`, `device_connected`, `recent_refusals`, `audit_history`.
+- `checks` holds 1 to 16 checks, each name at most once. Each check is one of the `haild doctor` names, with whether it passed: `daemon_running`, `build_match`, `host_id_match`, `listener_ready`, `ambient_listening`, `device_connected`, `recent_refusals`, `audit_history`. The doctor's `target_input` check (#894) is not one of them, so it is left off.
 
 The doctor's free-text detail and fix never cross the wire, because they can name paths, ports and identities. The device words each check itself and points to `haild doctor` on the Mac for the detail.
 

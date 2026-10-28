@@ -36,9 +36,13 @@ import Testing
         let pane = Pane("> \n2,0,80\n")
         pane.showAfterFill.withLock { $0 = "> synthetic input\n17,0,80\n" }
         let runner = FakeCommandRunner { pane.respond($0) }
-        let adapter = TmuxAdapter(runner: runner, pollInterval: nil, submitTiming: Self.timing)
+        // Virtual time (#917): the later delivery's submit waits never depend on how fast this run is scheduled.
+        let adapter = TmuxAdapter(
+            runner: runner, pollInterval: nil, submitTiming: Self.timing, submitClock: ManualSubmitClock().clock
+        )
 
-        await #expect(throws: AdapterError.self) {
+        // The paste step names it (#894): pending input that appeared, not a generic delivery failure.
+        await #expect(throws: AdapterError.inputPending(reason: .appeared)) {
             try await adapter.deliver("synthetic input", to: "codex", binding: nil)
         }
         let calls = await runner.calls

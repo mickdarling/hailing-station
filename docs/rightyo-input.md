@@ -925,7 +925,9 @@ child was stopped with any turns it had queued, and the device was sent a silent
   confirm=<key>/<index>:<outcome>` (or `confirm=no_clips`, `confirm=suppressed_privacy`, or `confirm=no_connection`
   when the device was gone by the time the clip would be queued, so no clip was sent; `shown` says whether the line
   still was): tokens only, never the words, the pending text or
-  the target. The adapter's own `tmux_input_pending reason=…` line, logged just before, names the reason.
+  the target. The adapter's own `tmux_input_pending reason=…` line, logged just before, names the reason. Until the
+  next ambient event, `haild doctor` warns `target_input` (advisory: exit 0, still healthy) with the flush in its
+  fix, and a restart for a taint ([Health checks](host-operations.md#health-checks)).
 - **Nothing looks sent.** The request's reply ownership is dropped before it is committed, so no reply recipient is
   armed and no last-input device is recorded. The audit chain keeps the `pushed` record it writes before every
   ambient dispatch attempt, as for any refused dispatch; there is no `delivered` record.

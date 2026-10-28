@@ -113,7 +113,7 @@ import Testing
         }
         let harness = EvidenceHarness(runner, timing: Self.timing())
 
-        await #expect(throws: AdapterError.self) {
+        await #expect(throws: AdapterError.inputPending(reason: .appeared)) {
             try await harness.adapter.deliver("ZULIP", to: "codex", binding: nil)
         }
 
