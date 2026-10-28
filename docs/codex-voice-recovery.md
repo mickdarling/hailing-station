@@ -198,3 +198,10 @@ heard it. A provider turn ending or merely enqueuing a frame cannot supply this
 proof. Existing confirmed transport-completion callbacks are the integration point;
 question metadata may be carried explicitly. Scoped physical playback remains a
 separate event, and unknown, retired or competing request identities still refuse.
+
+The Hailing host chooses one completion mode per request. Publication fallback is
+allowed only from acknowledged `accepted`; a request with acknowledged scoped
+`reply_started` must finish through its actual `reply_ended`. The host cannot switch
+a playing request to terminal publication and strand its physical end. The generic
+RightyO producer supports close-only late physical edges, but this host API prevents
+the mixed lifecycle rather than waiting for an acknowledgement that is not emitted.

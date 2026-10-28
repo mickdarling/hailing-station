@@ -511,7 +511,8 @@ final class AmbientRequestOutcomes: Sendable {
                   let entry = state.entries[host], entry.waiting == nil,
                   entry.confirmed?.terminal != true, entry.confirmed != value else { return false }
             if value == .accepted, entry.confirmed != nil { return false }
-            if [.replyStarted, .replyEnded, .replyPublished].contains(value),
+            if value == .replyPublished, entry.confirmed != .accepted { return false }
+            if [.replyStarted, .replyEnded].contains(value),
                entry.confirmed != .accepted && entry.confirmed != .replyStarted { return false }
             guard write(RightyoRequestOutcome(session: session, request: entry.producer,
                                                state: value, asked: asked)) else { return false }
