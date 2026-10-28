@@ -31,7 +31,13 @@ final class CodexRecoveryChannel: Sendable {
         child = try OwnedStdioChild(command: command)
         Task { await read() }
     }
-    var report: CodexRecoveryReport? { state.withLock { $0.revoked ? nil : $0.latest } }
+    var report: CodexRecoveryReport? {
+        state.withLock { state in
+            guard !state.revoked, let latest = state.latest,
+                  !latest.state.terminal || state.eof else { return nil }
+            return latest
+        }
+    }
     var stopped: Bool { state.withLock { $0.revoked || $0.eof } }
     var reaped: Bool { child.isReaped }
     func stop() { state.withLock { $0.revoked = true }; child.cancel() }
@@ -44,7 +50,13 @@ final class CodexRecoveryChannel: Sendable {
                                      "generation": generation.uuidString.lowercased()]
         var data = try JSONSerialization.data(withJSONObject: fields, options: [.sortedKeys])
         data.append(10)
-        do { try await child.write(data) } catch { stop(); throw CodexRecoveryFault.unavailable }
+        try await withTaskCancellationHandler {
+            do {
+                try Task.checkCancellation()
+                try await child.write(data)
+                try Task.checkCancellation()
+            } catch { stop(); throw CodexRecoveryFault.unavailable }
+        } onCancel: { stop() }
     }
     func wait(for phases: Set<CodexRecoveryPhase>, until deadline: ContinuousClock.Instant) async throws
         -> CodexRecoveryReport {
@@ -53,8 +65,8 @@ final class CodexRecoveryChannel: Sendable {
                 let snapshot = state.withLock { ($0.revoked, $0.eof, $0.latest) }
                 guard !snapshot.0 else { throw CodexRecoveryFault.stopped }
                 if let latest = snapshot.2 {
-                    if phases.contains(latest.state), !snapshot.1 || latest.state.terminal { return latest }
-                    if latest.state.terminal { throw CodexRecoveryFault.unavailable }
+                    if phases.contains(latest.state), latest.state.terminal ? snapshot.1 : !snapshot.1 { return latest }
+                    if latest.state.terminal, snapshot.1 { throw CodexRecoveryFault.unavailable }
                 }
                 guard !snapshot.1 else { throw CodexRecoveryFault.unavailable }
                 try await Task.sleep(for: .milliseconds(20))
@@ -69,32 +81,42 @@ final class CodexRecoveryChannel: Sendable {
             }
             let incomplete = state.withLock { state in
                 state.eof = true
-                return !state.pending.isEmpty || state.latest?.state.terminal != true
+                let invalid = !state.pending.isEmpty || state.latest?.state.terminal != true
+                if invalid { state.revoked = true }
+                return invalid
             }
             if incomplete { stop() }
-        } catch { stop() }
+        } catch {
+            let terminal = state.withLock { state in
+                state.eof = true
+                return state.pending.isEmpty && state.latest?.state.terminal == true
+            }
+            if !terminal { stop() }
+        }
     }
     private func accept(_ chunk: Data) throws {
         try state.withLock { state in
-            guard !state.revoked, state.pending.count + chunk.count <= 8192 else {
-                throw CodexRecoveryFault.unavailable
-            }
-            state.pending.append(chunk)
-            while let end = state.pending.firstIndex(of: 10) {
-                let line = state.pending.prefix(upTo: end)
-                state.pending.removeSubrange(...end)
-                guard !line.isEmpty, line.count <= 1024,
-                      let object = try JSONSerialization.jsonObject(with: line) as? [String: Any],
-                      Set(object.keys) == ["version", "state", "request", "generation", "recovered"] else {
+            do {
+                guard !state.revoked, state.pending.count + chunk.count <= 8192 else {
                     throw CodexRecoveryFault.unavailable
                 }
-                let value = try JSONDecoder().decode(CodexRecoveryReport.self, from: line)
-                guard state.latest?.state.terminal != true, value.version == 1,
-                      value.request == request, value.generation == generation,
-                      !value.recovered || value.state == .interrupted else { throw CodexRecoveryFault.unavailable }
-                state.latest = value
-            }
-            guard state.pending.count <= 1024 else { throw CodexRecoveryFault.unavailable }
+                state.pending.append(chunk)
+                while let end = state.pending.firstIndex(of: 10) {
+                    let line = state.pending.prefix(upTo: end)
+                    state.pending.removeSubrange(...end)
+                    guard !line.isEmpty, line.count <= 1024,
+                          let object = try JSONSerialization.jsonObject(with: line) as? [String: Any],
+                          Set(object.keys) == ["version", "state", "request", "generation", "recovered"] else {
+                        throw CodexRecoveryFault.unavailable
+                    }
+                    let value = try JSONDecoder().decode(CodexRecoveryReport.self, from: line)
+                    guard state.latest?.state.terminal != true, value.version == 1,
+                          value.request == request, value.generation == generation,
+                          !value.recovered || value.state == .interrupted else { throw CodexRecoveryFault.unavailable }
+                    state.latest = value
+                }
+                guard state.pending.count <= 1024 else { throw CodexRecoveryFault.unavailable }
+            } catch { state.revoked = true; throw error }
         }
     }
 }

@@ -28,6 +28,7 @@ struct CodexRecoveryConfiguration: Sendable {
         let program = try resource(python, executable: true)
         let script = try resource(runner, executable: false)
         let runtime = try resource(node, executable: true)
+        try delegatedCode(beside: script)
         return Self(target: target, binding: binding, command: OwnedStdioCommand(
             executable: program, arguments: ["-I", script, "host", "--config", profile, "--node", runtime],
             environment: ["PATH=/usr/bin:/bin:/usr/sbin:/sbin:/opt/homebrew/bin"]))
@@ -48,9 +49,30 @@ struct CodexRecoveryConfiguration: Sendable {
               !executable || access(path, X_OK) == 0 else { throw CodexRecoveryFault.unavailable }
         return path
     }
+    private static func delegatedCode(beside runner: String) throws {
+        let directory = URL(fileURLWithPath: runner).deletingLastPathComponent()
+        for name in ["host.cjs", "index.cjs", "node_modules/ws/package.json"] {
+            _ = try resource(directory.appendingPathComponent(name).path, executable: false)
+        }
+        let dependency = directory.appendingPathComponent("node_modules/ws")
+        guard let files = FileManager.default.enumerator(at: dependency,
+            includingPropertiesForKeys: nil, options: []) else { throw CodexRecoveryFault.unavailable }
+        var count = 0
+        while let file = files.nextObject() as? URL {
+            count += 1
+            var info = stat()
+            guard count <= 256, lstat(file.path, &info) == 0,
+                  CodexLauncher.safelyOwned(info), !CodexLauncher.hasExtendedACL(folder: file.path) else {
+                throw CodexRecoveryFault.unavailable
+            }
+            if info.st_mode & S_IFMT == S_IFDIR { continue }
+            guard info.st_mode & S_IFMT == S_IFREG else { throw CodexRecoveryFault.unavailable }
+        }
+    }
     private static func privateObject(_ file: URL) throws -> [String: Any] {
         guard file.isFileURL, file.path.hasPrefix("/") else { throw CodexRecoveryFault.unavailable }
         let parent = file.deletingLastPathComponent().path
+        guard try CodexLauncher.ancestorsAreTrusted(parent) else { throw CodexRecoveryFault.unavailable }
         let directory = open(parent, O_RDONLY | O_DIRECTORY | O_NOFOLLOW | O_CLOEXEC)
         guard directory >= 0 else { throw CodexRecoveryFault.unavailable }
         defer { close(directory) }
