@@ -93,6 +93,25 @@ class CodexRecoveryLockTests(unittest.TestCase):
             self.assertIn("codex_recovery_unavailable", result.stderr)
             self.assertFalse((Path(temporary) / ".codex-recovery-state").exists())
 
+    def test_fifo_checkpoint_is_refused_without_blocking_at_open(self):
+        with tempfile.TemporaryDirectory(prefix="hailing-codex-fifo-") as temporary:
+            root = Path(temporary)
+            state = root / ".codex-recovery-state"
+            state.mkdir(mode=0o700)
+            os.mkfifo(state / "status.json.attempt", 0o600)
+            config = root / "config.json"
+            config.write_text(json.dumps({
+                "version": 1, "target": "tmux:authored-absent",
+                "threadId": "11111111-1111-4111-8111-111111111111",
+                "binding": "$1@2/%3:4", "firstResponseSeconds": 90,
+                "statusFile": str(state / "status.json"),
+            }))
+            config.chmod(0o600)
+            result = subprocess.run([sys.executable, str(WRAPPER), "watch", "--config", str(config),
+                                     "--node", shutil.which("node")], capture_output=True, text=True, timeout=3)
+            self.assertEqual(result.returncode, 1)
+            self.assertIn("codex_recovery_unavailable", result.stderr)
+
 
 if __name__ == "__main__":
     unittest.main()

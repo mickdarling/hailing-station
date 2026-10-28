@@ -117,7 +117,7 @@ function protectedDirectory(file) {
   aclFree(file);
 }
 function privateRead(file, maxBytes, code) {
-  const fd = fs.openSync(file, fs.constants.O_RDONLY | fs.constants.O_NOFOLLOW);
+  const fd = fs.openSync(file, fs.constants.O_RDONLY | fs.constants.O_NOFOLLOW | fs.constants.O_NONBLOCK);
   try {
     const before = fs.fstatSync(fd);
     if (!before.isFile() || before.uid !== process.getuid() || (before.mode & 0o077) || before.size > maxBytes) refuse(code);
