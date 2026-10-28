@@ -2,8 +2,14 @@
   "name": "hailing-codex-recovery",
   "version": "0.1.0",
   "private": true,
-  "engines": {"node": ">=20"},
+  "engines": {
+    "node": ">=20"
+  },
   "main": "index.cjs",
-  "scripts": {"test": "node --test ../tests/test-codex-recovery.cjs"},
-  "dependencies": {"ws": "8.21.0"}
+  "scripts": {
+    "test": "node --test ../tests/test-codex-recovery.cjs ../tests/test-codex-recovery-host.cjs"
+  },
+  "dependencies": {
+    "ws": "8.21.0"
+  }
 }

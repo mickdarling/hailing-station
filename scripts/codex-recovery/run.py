@@ -22,7 +22,7 @@ def acl_free(path: Path) -> None:
 
 def main() -> int:
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument("mode", choices=("status", "recover", "watch"))
+    parser.add_argument("mode", choices=("status", "recover", "watch", "host"))
     parser.add_argument("--config", required=True, type=Path)
     parser.add_argument("--node", default=shutil.which("node"))
     args = parser.parse_args()
@@ -61,7 +61,7 @@ def main() -> int:
             return 75
         os.set_inheritable(fd, True)
         os.environ["HAIL_CODEX_RECOVERY_LOCK_FD"] = str(fd)
-    script = Path(__file__).with_name("index.cjs")
+    script = Path(__file__).with_name("host.cjs" if args.mode == "host" else "index.cjs")
     os.execv(str(node), [str(node), str(script), args.mode, "--config", str(args.config)])
     return 1
 
