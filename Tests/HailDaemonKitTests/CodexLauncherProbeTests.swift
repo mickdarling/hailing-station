@@ -20,10 +20,11 @@ extension CodexLauncherTests {
     @Test func oversizedProbeOutputIsRefused() async throws {
         let folder = try Self.scratch()
         defer { try? FileManager.default.removeItem(at: folder) }
+        // Timed from before the backstop, so a backstop-ended child can never land inside the bound.
+        let started = ContinuousClock.now
         let backstop = try ProbeChildBackstop(in: folder, after: TestTiming.bound(20))
         defer { backstop.stop() }
         let child = try Self.script("#!/usr/bin/perl\n$|=1; print 'x' x 4096; \(backstop.wait)\n", in: folder)
-        let started = ContinuousClock.now
         await #expect(throws: CodexLaunchError.versionUnavailable) {
             _ = try await CodexLauncher.readVersion(child, deadline: .seconds(60))
         }
@@ -36,12 +37,13 @@ extension CodexLauncherTests {
         let folder = try Self.scratch()
         defer { try? FileManager.default.removeItem(at: folder) }
         let pidFile = folder.appendingPathComponent("pid").path
+        // Timed from before the backstop, so a backstop-ended child can never land inside the bound.
+        let started = ContinuousClock.now
         let backstop = try ProbeChildBackstop(in: folder, after: TestTiming.bound(20))
         defer { backstop.stop() }
         let child = try Self.script(
             "#!/usr/bin/perl\n$SIG{TERM}='IGNORE'; open(F,'>','\(pidFile)'); print F $$; close F; \(backstop.wait)\n",
             in: folder)
-        let started = ContinuousClock.now
         await #expect(throws: CodexLaunchError.versionUnavailable) {
             _ = try await CodexLauncher.readVersion(child, deadline: .seconds(2))
         }
@@ -74,8 +76,9 @@ extension CodexLauncherTests {
 
 /// #1012: a probe child runs only while its marker file exists, and for at most 300 s, so the bounds can scale on CI
 /// and still prove the launcher killed it. Removing the scratch folder at teardown ends a child the launcher left
-/// alive, and the backstop removes the marker after the scaled bound plus 5 s, so a launcher regression can neither
-/// hold CI nor leak the child. It sends no signal, so a reused PID is never at risk.
+/// alive. The backstop removes the marker after the scaled bound plus 5 s, counted from after the test's stopwatch
+/// starts, so a launcher regression can neither pass the bound, hold CI, nor leak the child. It sends no signal,
+/// so a reused PID is never at risk.
 private struct ProbeChildBackstop {
     let wait: String
     private let task: Task<Void, Never>
