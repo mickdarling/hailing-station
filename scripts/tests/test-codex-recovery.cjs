@@ -5,6 +5,7 @@ const fs = require('node:fs');
 const os = require('node:os');
 const path = require('node:path');
 const http = require('node:http');
+const { execFileSync } = require('node:child_process');
 const { once } = require('node:events');
 const { WebSocketServer } = require('../codex-recovery/node_modules/ws');
 const { Control, FirstResponse, configAt, cycle, discover, privateSocket, readAttempt, recover, writeStatus } = require('../codex-recovery');
@@ -109,6 +110,25 @@ test('empty reasoning is not a first visible response', () => {
   const value = silent(); value.turn.items.push({ type: 'reasoning', summary: [], content: [] });
   assert.equal(new FirstResponse().inspect(value, 90, 300, 10), 'stalled');
 });
+test('first response stays latched when a later same-turn snapshot regresses', () => {
+  const value = silent(), clock = new FirstResponse();
+  value.turn.items.push({ type: 'agentMessage', text: 'Working on it.' });
+  assert.equal(clock.inspect(value, 90, 300, 10), 'working');
+  value.turn.items = [{ type: 'userMessage' }];
+  assert.equal(clock.inspect(value, 90, 301, 11), 'working');
+  value.turn.id = 'new-turn'; value.turn.startedAt = 301;
+  assert.equal(clock.inspect(value, 90, 302, 12), 'waiting');
+});
+test('unknown reasoning shapes never establish silence or interruption authority', async () => {
+  for (const fields of [{ summary: {} }, { content: { text: 'authored visible step' } },
+    { summary: 42 }, { summary: null }, { summary: [{}] }, { content: [false] }]) {
+    const value = silent(); value.turn.items.push({ type: 'reasoning', summary: [], content: [], ...fields });
+    assert.throws(() => new FirstResponse().inspect(value, 90, 300, 10), /invalid_reasoning/);
+    const control = recoveryMock(value, []);
+    await assert.rejects(recover(control, { threadId }, silent(), { validate() {} }), /invalid_reasoning/);
+    assert.equal(control.requests.length, 0);
+  }
+});
 test('waiting for owner input or approval is protected', () => {
   for (const flag of ['waitingOnApproval', 'waitingOnUserInput', 'unknownFutureWait']) {
     const value = silent(); value.thread.status.activeFlags = [flag];
@@ -124,6 +144,7 @@ test('clock steps and changed start-time authority do not cause interruption', (
 });
 test('missing timing or unknown runtime state is unavailable', () => {
   for (const mutate of [value => { delete value.turn.startedAt; }, value => { value.turn.startedAt = 501; },
+    value => { value.turn.startedAt = -1; },
     value => { value.thread.status = { type: 'notLoaded' }; }, value => { delete value.thread.status.activeFlags; }]) {
     const value = silent(); mutate(value);
     assert.equal(new FirstResponse().inspect(value, 90, 300, 10), 'unavailable');
@@ -195,15 +216,47 @@ test('config is private, bounded, exact-shape and cannot redirect status outside
   const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'hailing-codex-config-')); fs.chmodSync(dir, 0o700);
   t.after(() => fs.rmSync(dir, { recursive: true, force: true }));
   const file = path.join(dir, 'config.json');
-  const value = { version: 1, target: 'tmux:voice', threadId, binding: '$1@2/%3:4', firstResponseSeconds: 90, statusFile: path.join(dir, 'status.json') };
+  const state = path.join(dir, '.codex-recovery-state');
+  const value = { version: 1, target: 'tmux:voice', threadId, binding: '$1@2/%3:4', firstResponseSeconds: 90, statusFile: path.join(state, 'status.json') };
   const write = data => { fs.writeFileSync(file, JSON.stringify(data), { mode: 0o600 }); fs.chmodSync(file, 0o600); };
   write(value); assert.equal(configAt(file).target, 'tmux:voice');
   for (const change of [{ target: 'tmux:-option' }, { firstResponseSeconds: 0 }, { firstResponseSeconds: 601 },
-    { arbitrary: true }, { statusFile: '/tmp/not-this-config.json' }]) {
+    { arbitrary: true }, { statusFile: '/tmp/not-this-config.json' },
+    { statusFile: file }, { statusFile: file + '.lock' }, { statusFile: path.join(state, 'lock') },
+    { statusFile: path.join(state, 'STATUS.json') }, { statusFile: path.join(state, 'status.json.attempt') }]) {
     write({ ...value, ...change }); assert.throws(() => configAt(file), /invalid_config/);
   }
   write(value); fs.chmodSync(file, 0o644); assert.throws(() => configAt(file), /unsafe_config/);
   fs.chmodSync(file, 0o600); fs.chmodSync(dir, 0o777); assert.throws(() => configAt(file), /unsafe_config/);
+});
+test('macOS ACLs refuse private config files, directories and socket parents despite private mode bits',
+  { skip: process.platform !== 'darwin' }, async t => {
+    const { dir, socket } = await fixture(t, () => {});
+    const file = path.join(dir, 'config.json');
+    const value = { version: 1, target: 'tmux:voice', threadId, binding: '$1@2/%3:4', firstResponseSeconds: 90,
+      statusFile: path.join(dir, '.codex-recovery-state/status.json') };
+    fs.writeFileSync(file, JSON.stringify(value), { mode: 0o600 });
+    execFileSync('/bin/chmod', ['+a', `user:${os.userInfo().username} allow read`, file]);
+    assert.equal(fs.statSync(file).mode & 0o777, 0o600);
+    assert.throws(() => configAt(file), /extended_acl/);
+    execFileSync('/bin/chmod', ['-N', file]);
+    execFileSync('/bin/chmod', ['+a', `user:${os.userInfo().username} allow list,search`, dir]);
+    assert.equal(fs.statSync(dir).mode & 0o777, 0o700);
+    assert.throws(() => configAt(file), /extended_acl/);
+    assert.throws(() => privateSocket(socket), /extended_acl/);
+    execFileSync('/bin/chmod', ['-N', dir]);
+  });
+test('configuration bytes are bounded and state directories cannot be symlink aliases', t => {
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'hailing-codex-bounds-')); fs.chmodSync(dir, 0o700);
+  t.after(() => fs.rmSync(dir, { recursive: true, force: true }));
+  const file = path.join(dir, 'config.json');
+  fs.writeFileSync(file, 'x'.repeat(16385), { mode: 0o600 });
+  assert.throws(() => configAt(file), /unsafe_config/);
+  fs.writeFileSync(file, JSON.stringify({ version: 1, target: 'tmux:voice', threadId,
+    binding: '$1@2/%3:4', firstResponseSeconds: 90, statusFile: path.join(dir, '.codex-recovery-state/status.json') }));
+  const outside = path.join(dir, 'outside'); fs.mkdirSync(outside, { mode: 0o700 });
+  fs.symlinkSync(outside, path.join(dir, '.codex-recovery-state'));
+  assert.throws(() => configAt(file), /unsafe_directory/);
 });
 test('discovery refuses replaced or non-agent panes before process or socket access', () => {
   for (const row of ['voice|$1@2/%3:5|codex', 'voice|$1@2/%3:4|zsh', 'different|$1@2/%3:4|codex']) {

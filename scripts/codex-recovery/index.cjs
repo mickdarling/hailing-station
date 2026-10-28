@@ -87,30 +87,54 @@ class Control {
 }
 
 function configAt(file) {
-  const stat = fs.lstatSync(file);
-  if (!stat.isFile() || stat.uid !== process.getuid() || (stat.mode & 0o077)) refuse('unsafe_config');
+  if (path.basename(file).toLowerCase() === '.codex-recovery-state') refuse('invalid_config');
   const parent = fs.lstatSync(path.dirname(file));
   if (!parent.isDirectory() || parent.uid !== process.getuid() || (parent.mode & 0o077)) refuse('unsafe_config');
-  const config = JSON.parse(fs.readFileSync(file, 'utf8'));
+  aclFree(path.dirname(file));
+  const config = JSON.parse(privateRead(file, 16384, 'unsafe_config'));
+  const stateDirectory = path.join(path.dirname(file), '.codex-recovery-state');
+  if (fs.existsSync(stateDirectory)) protectedDirectory(stateDirectory);
   const keys = ['version', 'target', 'threadId', 'binding', 'firstResponseSeconds', 'statusFile'];
   if (Object.keys(config).some(key => !keys.includes(key))) refuse('invalid_config');
   if (config.version !== 1 || !/^tmux:[A-Za-z0-9][A-Za-z0-9._-]{0,63}$/.test(config.target)
       || !/^[0-9a-f]{8}(?:-[0-9a-f]{4}){3}-[0-9a-f]{12}$/.test(config.threadId) || typeof config.binding !== 'string'
       || !/^\$\d+@\d+\/%\d+:\d+$/.test(config.binding)
       || !Number.isInteger(config.firstResponseSeconds) || config.firstResponseSeconds < 5
-      || config.firstResponseSeconds > 600 || !path.isAbsolute(config.statusFile ?? '')
-      || path.dirname(config.statusFile) !== path.dirname(file) || config.statusFile === file) refuse('invalid_config');
-  return config;
+      || config.firstResponseSeconds > 600
+      || config.statusFile !== path.join(stateDirectory, 'status.json')) refuse('invalid_config');
+  return { ...config, stateDirectory };
 }
 function command(program, args) {
   try { return execFileSync(program, args, { encoding: 'utf8', timeout: 2000, maxBuffer: 1048576, stdio: ['ignore', 'pipe', 'pipe'] }); }
   catch { refuse('discovery_failed'); }
+}
+function aclFree(file) {
+  if (process.platform === 'darwin' && command('/bin/ls', ['-lde', file]).split('\n').some(line => /^\s*\d+:/.test(line))) refuse('extended_acl');
+}
+function protectedDirectory(file) {
+  const stat = fs.lstatSync(file);
+  if (!stat.isDirectory() || stat.uid !== process.getuid() || (stat.mode & 0o077)) refuse('unsafe_directory');
+  aclFree(file);
+}
+function privateRead(file, maxBytes, code) {
+  const fd = fs.openSync(file, fs.constants.O_RDONLY | fs.constants.O_NOFOLLOW);
+  try {
+    const before = fs.fstatSync(fd);
+    if (!before.isFile() || before.uid !== process.getuid() || (before.mode & 0o077) || before.size > maxBytes) refuse(code);
+    aclFree(file);
+    const bytes = Buffer.alloc(maxBytes + 1), length = fs.readSync(fd, bytes, 0, bytes.length, 0);
+    const after = fs.fstatSync(fd), named = fs.lstatSync(file);
+    if (length > maxBytes || before.size !== after.size || before.mtimeMs !== after.mtimeMs
+        || before.ctimeMs !== after.ctimeMs || named.dev !== after.dev || named.ino !== after.ino) refuse(code);
+    return bytes.subarray(0, length).toString('utf8');
+  } finally { fs.closeSync(fd); }
 }
 function privateSocket(socket) {
   for (const [file, kind] of [[path.dirname(socket), 'directory'], [socket, 'socket']]) {
     const stat = fs.lstatSync(file);
     if (stat.uid !== process.getuid() || (stat.mode & 0o077)
         || (kind === 'directory' ? !stat.isDirectory() : !stat.isSocket())) refuse('unsafe_socket');
+    aclFree(file);
   }
   const stat = fs.lstatSync(socket);
   return `${stat.dev}:${stat.ino}`;
@@ -141,7 +165,12 @@ function visibleActivity(turn) {
     if (!item || typeof item.type !== 'string') refuse('invalid_item');
     if (item.type === 'userMessage') return false;
     if (item.type === 'agentMessage') return typeof item.text !== 'string' || item.text.trim().length > 0;
-    if (item.type === 'reasoning') return (item.summary?.length ?? 0) > 0 || (item.content?.length ?? 0) > 0;
+    if (item.type === 'reasoning') {
+      const arrays = [item.summary ?? [], item.content ?? []];
+      if (('summary' in item && item.summary === null) || ('content' in item && item.content === null)
+          || arrays.some(values => !Array.isArray(values) || values.some(value => typeof value !== 'string'))) refuse('invalid_reasoning');
+      return arrays.some(values => values.length > 0);
+    }
     // A tool, approval, unknown/new item, or actual output protects substantive work.
     return true;
   });
@@ -152,11 +181,12 @@ class FirstResponse {
     if (thread.status?.type === 'idle') { this.origin = null; return 'idle'; }
     if (thread.status?.type !== 'active' || !Array.isArray(thread.status.activeFlags)) return 'unavailable';
     if (!turn || turn.status !== 'inProgress') return 'unavailable';
-    if (thread.status.activeFlags.length || visibleActivity(turn)) return 'working';
-    if (!Number.isInteger(turn.startedAt) || turn.startedAt > wall + 2) return 'unavailable';
-    if (this.origin?.id !== turn.id) this.origin = { id: turn.id, start: turn.startedAt, wall, mono, age: Math.max(0, wall - turn.startedAt) };
+    if (!Number.isInteger(turn.startedAt) || turn.startedAt < 0 || turn.startedAt > wall + 2) return 'unavailable';
+    if (this.origin?.id !== turn.id) this.origin = { id: turn.id, start: turn.startedAt, wall, mono, age: Math.max(0, wall - turn.startedAt), responded: false };
     const base = this.origin;
     if (base.start !== turn.startedAt || Math.abs((wall - base.wall) - (mono - base.mono)) > 5) return 'clock_changed';
+    if (thread.status.activeFlags.length || visibleActivity(turn)) base.responded = true;
+    if (base.responded) return 'working';
     return base.age + mono - base.mono >= seconds ? 'stalled' : 'waiting';
   }
 }
@@ -187,18 +217,21 @@ async function recover(control, config, snapshot, { validate, timeoutMs = 5000 }
   refuse('interrupt_unconfirmed');
 }
 function writeStatus(file, value) {
+  protectedDirectory(path.dirname(file));
   const temporary = `${file}.${process.pid}.tmp`;
   const fd = fs.openSync(temporary, 'wx', 0o600);
-  try { fs.writeFileSync(fd, JSON.stringify({ ...value, updatedAt: new Date().toISOString() }) + '\n'); }
+  try {
+    aclFree(temporary);
+    fs.writeFileSync(fd, JSON.stringify({ ...value, updatedAt: new Date().toISOString() }) + '\n');
+  }
   finally { fs.closeSync(fd); }
   fs.renameSync(temporary, file);
 }
 function readAttempt(config) {
   const file = `${config.statusFile}.attempt`;
   if (!fs.existsSync(file)) return new Set();
-  const stat = fs.lstatSync(file);
-  if (!stat.isFile() || stat.uid !== process.getuid() || (stat.mode & 0o077) || stat.size > 2048) refuse('unsafe_checkpoint');
-  const value = JSON.parse(fs.readFileSync(file, 'utf8'));
+  protectedDirectory(path.dirname(file));
+  const value = JSON.parse(privateRead(file, 2048, 'unsafe_checkpoint'));
   if (value.version !== 1 || typeof value.turnId !== 'string' || value.turnId.length > 128
       || !value.turnId.length || /\s/.test(value.turnId)) refuse('invalid_checkpoint');
   return value.threadId === config.threadId && value.binding === config.binding ? new Set([value.turnId]) : new Set();
@@ -225,24 +258,34 @@ async function cycle(config, clock = new FirstResponse(), seen = new Set(), { lo
   } finally { control.close(); }
 }
 async function main() {
+  if (process.platform !== 'darwin') refuse('unsupported_platform');
   const [mode, flag, file] = process.argv.slice(2);
   if (!['status', 'recover', 'watch'].includes(mode) || flag !== '--config' || !file) refuse('usage');
   const config = configAt(file);
-  if (mode !== 'status') {
+  const validateLock = () => {
     const fd = Number(process.env.HAIL_CODEX_RECOVERY_LOCK_FD);
     if (!Number.isInteger(fd) || fd < 3) refuse('kernel_lock_required');
-    const held = fs.fstatSync(fd), named = fs.lstatSync(`${file}.lock`);
+    protectedDirectory(config.stateDirectory);
+    const lock = path.join(config.stateDirectory, 'lock');
+    const held = fs.fstatSync(fd), named = fs.lstatSync(lock);
+    aclFree(lock);
     if (held.dev !== named.dev || held.ino !== named.ino || held.uid !== process.getuid()
         || !held.isFile() || (held.mode & 0o077)) refuse('kernel_lock_required');
-  }
+  };
+  if (mode !== 'status') validateLock();
   const clock = new FirstResponse(), seen = readAttempt(config);
   let failures = 0;
   do {
     let value;
-    try { value = mode === 'status' ? await status(config) : await cycle(config, clock, seen); failures = 0; }
+    try {
+      value = mode === 'status' ? await status(config) : await cycle(config, clock, seen, {
+        lookup: current => { validateLock(); return discover(current); },
+      });
+      failures = 0;
+    }
     catch (error) { value = { state: error instanceof ControlError ? error.code : 'unavailable', recovered: false }; failures++; }
     if (mode !== 'watch') { console.log(JSON.stringify(value)); process.exitCode = failures ? 1 : 0; return; }
-    writeStatus(config.statusFile, value);
+    validateLock(); writeStatus(config.statusFile, value);
     await pause(Math.min(30000, 3000 * 2 ** Math.min(failures, 4)));
   } while (true);
 }

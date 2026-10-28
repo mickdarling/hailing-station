@@ -9,7 +9,15 @@ import os
 from pathlib import Path
 import shutil
 import stat
+import subprocess
 import sys
+import re
+
+
+def acl_free(path: Path) -> None:
+    result = subprocess.run(["/bin/ls", "-lde", str(path)], capture_output=True, text=True, timeout=2, check=True)
+    if any(re.match(r"\s*\d+:", line) for line in result.stdout.splitlines()):
+        raise ValueError("extended_acl")
 
 
 def main() -> int:
@@ -18,6 +26,8 @@ def main() -> int:
     parser.add_argument("--config", required=True, type=Path)
     parser.add_argument("--node", default=shutil.which("node"))
     args = parser.parse_args()
+    if sys.platform != "darwin":
+        raise ValueError("unsupported_platform")
     node = Path(args.node or "")
     if not node.is_absolute() or not node.is_file() or not args.config.is_absolute():
         raise ValueError("invalid_runtime_path")
@@ -26,10 +36,22 @@ def main() -> int:
     if (not stat.S_ISREG(source.st_mode) or source.st_uid != os.getuid() or source.st_mode & 0o077
             or not stat.S_ISDIR(parent.st_mode) or parent.st_uid != os.getuid() or parent.st_mode & 0o077):
         raise ValueError("unsafe_config")
+    acl_free(args.config)
+    acl_free(args.config.parent)
     if args.mode != "status":
-        fd = os.open(str(args.config) + ".lock", os.O_CREAT | os.O_RDWR | os.O_NOFOLLOW, 0o600)
+        state_dir = args.config.parent / ".codex-recovery-state"
+        state_dir.mkdir(mode=0o700, exist_ok=True)
+        state = state_dir.lstat()
+        if not stat.S_ISDIR(state.st_mode) or state.st_uid != os.getuid() or state.st_mode & 0o077:
+            raise ValueError("unsafe_state_directory")
+        acl_free(state_dir)
+        lock = state_dir / "lock"
+        fd = os.open(lock, os.O_CREAT | os.O_RDWR | os.O_NOFOLLOW, 0o600)
         held = os.fstat(fd)
-        if not stat.S_ISREG(held.st_mode) or held.st_uid != os.getuid() or held.st_mode & 0o077:
+        named = lock.lstat()
+        acl_free(lock)
+        if (not stat.S_ISREG(held.st_mode) or held.st_uid != os.getuid() or held.st_mode & 0o077
+                or (held.st_dev, held.st_ino) != (named.st_dev, named.st_ino)):
             raise ValueError("unsafe_lock")
         try:
             fcntl.flock(fd, fcntl.LOCK_EX | fcntl.LOCK_NB)
@@ -47,6 +69,6 @@ def main() -> int:
 if __name__ == "__main__":
     try:
         sys.exit(main())
-    except (OSError, ValueError):
+    except (OSError, ValueError, subprocess.SubprocessError):
         print("codex_recovery_unavailable", file=sys.stderr)
         sys.exit(1)

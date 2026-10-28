@@ -33,8 +33,9 @@ were Mac0.1.191/build19, iPhone0.1.116 (owner reported), and iPad0.1.115.
   servers/sockets, unsafe file permissions and unavailable control refuse action.
 - An original first-response deadline. User steering does not renew it. A visible
   assistant response, reasoning progress, tool activity or waiting-for-owner flag
-  protects substantive work. Unknown timing/runtime shape and clock discontinuity
-  do not grant cancellation authority.
+  protects substantive work for the rest of that exact turn, even if later history
+  regresses. Unknown reasoning shapes, negative/missing timing, unknown runtime
+  shape and clock discontinuity do not grant cancellation authority.
 - A second runtime/ownership check immediately before exact-ID `turn/interrupt`.
   Success requires observing the same turn's explicit `interrupted` terminal while
   the binding remains unchanged. Natural completion stays natural completion.
@@ -47,6 +48,11 @@ were Mac0.1.191/build19, iPhone0.1.116 (owner reported), and iPad0.1.115.
 `run.py` holds a nonblocking kernel lock through `exec` of the controller. Only one
 recovering process owns a configuration at a time. Process death releases the lock;
 there is no PID-file deletion procedure and no leaked parent lock-holder process.
+Lock, status, checkpoint and temporary files live in a separate fixed
+`.codex-recovery-state/` directory. A configured status filename cannot replace the
+lock or configuration. macOS extended ACLs on protected objects are refused even
+when their POSIX mode is0600/0700; configuration/checkpoint reads are byte-bounded
+and checked against the opened inode. The runtime control profile is macOS-only.
 
 No code replays a user request, switches provider, falls back to Claude, kills a
 Codex daemon, changes policy, or touches microphone/audio configuration.
@@ -76,12 +82,14 @@ directory (0700). Example values below are invented, not discovery instructions:
   "threadId": "11111111-1111-4111-8111-111111111111",
   "binding": "$1@2/%3:4",
   "firstResponseSeconds": 90,
-  "statusFile": "/private/operator-config/recovery-status.json"
+  "statusFile": "/private/operator-config/.codex-recovery-state/status.json"
 }
 ```
 
-`statusFile` must be beside the config and must not be the config itself. IDs and
-bindings must come from trusted host composition, never from model text. This
+`statusFile` must be exactly `.codex-recovery-state/status.json` below the config's
+parent directory; arbitrary output aliases are refused. The wrapper provisions
+and validates that owner-only state directory before taking its kernel lock.
+IDs and bindings must come from trusted host composition, never from model text. This
 first slice accepts an explicit operator config; it does not invent a live binding.
 
 ```sh

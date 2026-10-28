@@ -7,12 +7,15 @@ import subprocess
 import tempfile
 import time
 import unittest
+import sys
+import pwd
 
 
 ROOT = Path(__file__).resolve().parents[2]
 WRAPPER = ROOT / "scripts/codex-recovery/run.py"
 
 
+@unittest.skipUnless(sys.platform == "darwin", "the runtime control profile is macOS-only")
 class CodexRecoveryLockTests(unittest.TestCase):
     def test_one_watcher_holds_lock_through_exec_and_death_releases_it(self):
         with tempfile.TemporaryDirectory(prefix="hailing-codex-lock-") as temporary:
@@ -24,7 +27,7 @@ class CodexRecoveryLockTests(unittest.TestCase):
             fake.write_text("#!/bin/sh\nexit 0\n", encoding="utf-8")
             fake.chmod(0o700)
             config = root / "config.json"
-            status = root / "status.json"
+            status = root / ".codex-recovery-state/status.json"
             config.write_text(json.dumps({
                 "version": 1, "target": "tmux:authored-absent",
                 "threadId": "11111111-1111-4111-8111-111111111111",
@@ -59,6 +62,36 @@ class CodexRecoveryLockTests(unittest.TestCase):
             result = subprocess.run(retry, env=env, capture_output=True, text=True, timeout=5)
             self.assertEqual(result.returncode, 1, result.stderr)
             self.assertEqual(json.loads(result.stdout)["state"], "binding_changed")
+
+    def test_status_cannot_replace_the_kernel_lock(self):
+        with tempfile.TemporaryDirectory(prefix="hailing-codex-alias-") as temporary:
+            root = Path(temporary)
+            config = root / "config.json"
+            config.write_text(json.dumps({
+                "version": 1, "target": "tmux:authored-absent",
+                "threadId": "11111111-1111-4111-8111-111111111111",
+                "binding": "$1@2/%3:4", "firstResponseSeconds": 90,
+                "statusFile": str(config) + ".lock",
+            }))
+            config.chmod(0o600)
+            command = [sys.executable, str(WRAPPER), "watch", "--config", str(config), "--node", shutil.which("node")]
+            result = subprocess.run(command, capture_output=True, text=True, timeout=5)
+            self.assertEqual(result.returncode, 1)
+            self.assertFalse(Path(str(config) + ".lock").exists())
+            self.assertTrue((root / ".codex-recovery-state/lock").is_file())
+
+    def test_wrapper_refuses_an_extended_acl(self):
+        with tempfile.TemporaryDirectory(prefix="hailing-codex-acl-") as temporary:
+            config = Path(temporary) / "config.json"
+            config.write_text("{}")
+            config.chmod(0o600)
+            name = pwd.getpwuid(os.getuid()).pw_name
+            subprocess.run(["/bin/chmod", "+a", f"user:{name} allow read", str(config)], check=True)
+            result = subprocess.run([sys.executable, str(WRAPPER), "recover", "--config", str(config),
+                                     "--node", shutil.which("node")], capture_output=True, text=True, timeout=5)
+            self.assertEqual(result.returncode, 1)
+            self.assertIn("codex_recovery_unavailable", result.stderr)
+            self.assertFalse((Path(temporary) / ".codex-recovery-state").exists())
 
 
 if __name__ == "__main__":
