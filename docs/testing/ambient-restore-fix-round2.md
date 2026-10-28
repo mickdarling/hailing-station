@@ -1196,3 +1196,45 @@ checks at line 33 also expired their ten-second waits: **1 parameterized test in
 1 suite, 6 issues**, 23.256 seconds, no phase timeout. Evidence is
 `<scratch>/mutation-url.log`; production was restored afterward. Both requested
 deletions are therefore caught by committed regressions.
+
+
+### Completed refresh follow-up verification
+
+The approved infrastructure head is unchanged. Both required warnings-as-errors
+build forms passed on the new core head and merged app head. The app destination
+selection extension is also compiled in the package test build through the
+test-only adapter link. The requested expanded serial family
+`AmbientReconnect|SendOrigin|AmbientRecovery|AmbientSuspension` passed three times:
+
+- repetition 1: **113 tests in 46 suites**, 235.636 seconds.
+- repetition 2: **113 tests in 46 suites**, 234.709 seconds.
+- repetition 3: **113 tests in 46 suites**, 234.434 seconds.
+
+The broad serial family
+`Ambient|HostConnection|Listening|Reconnect|Notice|AudioGate|TapCapture|HeardTurn|Privacy|Segment`
+ran once in three non-overlapping module lanes:
+
+- core: **435 tests in 128 suites**, 346.570 seconds.
+- daemon: **593 tests in 135 suites**, 421.095 seconds.
+- remaining: **50 tests in 9 suites**, 0.213 seconds.
+
+Total broad selection: **1078 tests in 272 suites**. Every test
+launch uses `--skip-build --disable-xctest --no-parallel` and excludes
+DiagnosticReplyComposition. No successful runtime log contains an assertion issue
+or a start of the excluded tests. Raw evidence is `<scratch>/r2-focused-*.log`
+and `<scratch>/r2-broad-*.log`.
+
+Every Swift launch passed the supplied shared-process gate and used background
+priority, `-j 4 -Xswiftc -j1`, offline resolution, all supplied Testing framework,
+plugin, and rpath flags, a 590-second execution bound, and process-group cleanup.
+Strict warning thresholds were checked by hand and `git diff --check` passed.
+The production file sets remain three infrastructure files, four restore files,
+and three app files. No new suppression, code reflow, blank-line deletion for
+lint, or stored async sleep default was introduced.
+
+Final app-head build logs are `<scratch>/r2-final-build.log` and
+`<scratch>/r2-final-build-tests.log`; core-head logs are
+`<scratch>/r1-final-build.log` and `<scratch>/r1-final-build-tests.log`.
+Package results use synthetic transport/capture and a root state shell. Native
+SwiftUI rendering, host Swift 6.2.4 execution, physical audio/haptics, and a fresh
+independent exact-head approval remain unclaimed.
