@@ -49,4 +49,43 @@ import Testing
         #expect(rig.notices.map(\.outcome) == [.interrupted, .applied])
         await rig.close()
     }
+
+    @Test func selectionCompletionDuringCloseCannotReopenTheGap() async throws {
+        let run = try AmbientClosingSelectionRun()
+        let original = try await run.holdCloseDuringSelection()
+        let rig = run.rig
+        #expect(rig.notices.map(\.outcome) == [.interrupted] && rig.controller.reconnect.isPending)
+        #expect(rig.controller.binding == original)
+        let before = rig.capture.discardedCount
+        for _ in 0..<10 { try rig.capture.yield(sineBuffer()) }
+        #expect(rig.capture.discardedCount == before + 10)
+        try await run.releaseClose()
+        await rig.controller.update(binding: nil, scene: .background)
+        run.clock.advance(by: .seconds(4))
+        try await rig.reconnect()
+        #expect(rig.controller.isListening && rig.capture.startCount == 1 && rig.makeCalls == 1)
+        #expect(rig.notices.map(\.outcome) == [.interrupted, .applied])
+        #expect(try rig.currentBinding().hostID == original.hostID)
+        #expect(try rig.currentBinding().targetID == original.targetID)
+        #expect(rig.permissionCalls == 1 && rig.unexpected.isEmpty)
+        try await run.expectNoGapAudioOrPrivacyOff()
+        await rig.close()
+    }
+
+    @Test func selectionCompletionDuringCloseKeepsTheOriginalDeadline() async throws {
+        let run = try AmbientClosingSelectionRun()
+        let original = try await run.holdCloseDuringSelection()
+        let rig = run.rig
+        #expect(rig.controller.binding == original)
+        try await run.releaseClose()
+        run.clock.advance(by: .seconds(5))
+        #expect(!rig.controller.reconnect.withinDeadline())
+        try await rig.reconnect(selectTarget: false)
+        try await waitUntil { await MainActor.run { !rig.controller.isOn && rig.released == 1 } }
+        #expect(rig.notices.map(\.outcome) == [.interrupted, .blocked])
+        #expect(rig.notices.last?.reason == .timedOut)
+        #expect(!rig.controller.isListening && rig.capture.stopCount >= 1 && rig.capture.startCount == 1)
+        try await run.expectNoGapAudioOrPrivacyOff()
+        await rig.close()
+    }
 }

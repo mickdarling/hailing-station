@@ -952,3 +952,33 @@ the visible owner notice, its destination-selection action, and the fixed
 
 Both core warnings-as-errors build forms pass for this follow-up; the four-file
 production boundary and approved infrastructure head are unchanged.
+
+
+CI follow-up: late selection completion during socket close is a product race.
+The host failure is reproduced at `73103808b01a58a73449572265e3a9e13f18bd13`
+without CPU load or timing sleeps. The scratch-only closing probe holds the
+replacement socket's close, allowing pending-ping cleanup to release its
+selection waiter before reconnecting is published. The snapshot is still ready,
+and the drop has already armed a new pending attempt. The old waiter succeeds
+and restore completion accepts the dropped generation because only selection
+initiation checks that generation. Capture admission reopens; gap buffers reach
+the failed queue, capture ends, and the watcher finishes recovery as failed.
+The retry error classifier is bypassed because this selection returns success.
+
+`AmbientReconnectClosingProbeTests.delayedCloseReproducesTheTerminalFlap`
+reproduces the host's three assertions at probe lines **27, 34, 35**: zero
+discarded buffers, listening stopped, and interrupted/failed rather than
+interrupted/applied. **1 test, 1 suite, 3 issues**, 2.598 seconds, no timeout;
+evidence: `<scratch>/closing-probe-before.log` and the scratch probe source.
+
+The committed regression candidate uses the same forced-close interleaving and
+observes selection completion through the store, independently of the result
+being asserted. At the unchanged production head,
+`AmbientReconnectReviewFlappingTests.selectionCompletionDuringCloseCannotReopenTheGap`
+fails at **58:9, 61:9, 66:9, 67:9** in
+`Tests/HailCoreTests/AmbientReconnectReviewFlappingTests.swift`: changed binding,
+zero discards, listening stopped, interrupted/failed.
+`selectionCompletionDuringCloseKeepsTheOriginalDeadline` fails its unchanged
+binding assertion at **79:9**. **2 tests, 1 suite, 5 assertion issues**,
+2.138 seconds, no timeout (`<scratch>/closing-regression-before.log`).
+The existing host-gate assertions at lines 42, 46, 48, and 49 are unchanged.
