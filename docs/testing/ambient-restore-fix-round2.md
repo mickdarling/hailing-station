@@ -799,3 +799,17 @@ The final core selection passed **9 tests in 4 suites**, 18.618 seconds.
 Both warnings-as-errors build forms are checked on the delivered core head.
 Linking emits stale debug module-cache path warnings; compiler warnings-as-errors
 checks pass. No native app or physical microphone/haptic proof is claimed.
+
+## Refresh privacy and destination follow-up
+
+### Privacy fail-before
+
+The independent refresh probe is committed as
+`AmbientReconnectRefreshPrivacyTests.pendingRefreshMustPreservePrivacyConfirmedAfterOriginalDrop`.
+With unchanged production, the warnings-as-errors test build passed and the
+serial test failed without a timeout: **1 test in 1 suite, 2 assertion issues**,
+at `Tests/HailCoreTests/AmbientReconnectRefreshPrivacyTests.swift:32:9` (missing
+privacy-on reassertion) and `:34:9` (PCM reached the replacement socket).
+The original drop was public; privacy-on was confirmed on its renewed socket
+while the first sender continuation was held. Evidence is
+`<scratch>/privacy-fail-before.log`.
