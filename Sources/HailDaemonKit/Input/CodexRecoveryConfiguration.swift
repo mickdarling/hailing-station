@@ -13,11 +13,12 @@ struct CodexRecoveryConfiguration: Sendable {
     }
     private static func checked(_ file: URL) throws -> Self {
         let manifest = try privateObject(file)
-        guard Set(manifest.keys) == ["version", "profile", "runner", "python", "node"],
+        guard Set(manifest.keys) == ["version", "profile", "runner", "python", "node", "tmux"],
               (manifest["version"] as? NSNumber)?.objCType.pointee != 99,
               manifest["version"] as? Int == 1,
               let profile = manifest["profile"] as? String, let runner = manifest["runner"] as? String,
-              let python = manifest["python"] as? String, let node = manifest["node"] as? String else {
+              let python = manifest["python"] as? String, let node = manifest["node"] as? String,
+              let tmux = manifest["tmux"] as? String else {
             throw CodexRecoveryFault.unavailable
         }
         let settings = try privateObject(URL(fileURLWithPath: profile))
@@ -29,9 +30,11 @@ struct CodexRecoveryConfiguration: Sendable {
         let script = try resource(runner, executable: false)
         let runtime = try resource(node, executable: true)
         try delegatedCode(beside: script)
+        let discovery = try resource(tmux, executable: true)
+        guard (discovery as NSString).lastPathComponent == "tmux" else { throw CodexRecoveryFault.unavailable }
         return Self(target: target, binding: binding, command: OwnedStdioCommand(
             executable: program, arguments: ["-I", script, "host", "--config", profile, "--node", runtime],
-            environment: ["PATH=/usr/bin:/bin:/usr/sbin:/sbin:/opt/homebrew/bin",
+            environment: ["PATH=/usr/bin:/bin:/usr/sbin:/sbin", "HAIL_CODEX_RECOVERY_TMUX=\(discovery)",
                           "WS_NO_BUFFER_UTIL=1", "WS_NO_UTF_8_VALIDATE=1"]))
     }
     /// Reuse the existing Codex path-trust checks, without enabling the experimental provider adapter.
@@ -46,9 +49,26 @@ struct CodexRecoveryConfiguration: Sendable {
         var info = stat()
         guard fstat(descriptor, &info) == 0, info.st_mode & S_IFMT == S_IFREG,
               CodexLauncher.safelyOwned(info), !CodexLauncher.hasExtendedACL(descriptor: descriptor),
-              try CodexLauncher.ancestorsAreTrusted((path as NSString).deletingLastPathComponent),
+              try runtimeAncestors((path as NSString).deletingLastPathComponent),
               !executable || access(path, X_OK) == 0 else { throw CodexRecoveryFault.unavailable }
         return path
+    }
+    /// macOS root/admin groups are privileged authorities, including Homebrew's owner:admin directories.
+    /// Other writable groups, world write, foreign owners and permissive ACLs never supply executable authority.
+    static func runtimeDirectoryIsTrusted(_ info: stat) -> Bool {
+        let privileged = info.st_gid == 0 || info.st_gid == 80
+        return info.st_mode & S_IFMT == S_IFDIR && (info.st_uid == 0 || info.st_uid == geteuid())
+            && info.st_mode & S_IWOTH == 0 && (info.st_mode & S_IWGRP == 0 || privileged)
+    }
+    private static func runtimeAncestors(_ folder: String) throws -> Bool {
+        var path = folder
+        while true {
+            var info = stat()
+            guard lstat(path, &info) == 0, runtimeDirectoryIsTrusted(info),
+                  !CodexLauncher.aclAllowsChanges(folder: path) else { return false }
+            if path == "/" { return true }
+            path = (path as NSString).deletingLastPathComponent
+        }
     }
     private static func delegatedCode(beside runner: String) throws {
         let directory = URL(fileURLWithPath: runner).deletingLastPathComponent()
@@ -78,7 +98,7 @@ struct CodexRecoveryConfiguration: Sendable {
     private static func privateObject(_ file: URL) throws -> [String: Any] {
         guard file.isFileURL, file.path.hasPrefix("/") else { throw CodexRecoveryFault.unavailable }
         let parent = file.deletingLastPathComponent().path
-        guard try CodexLauncher.ancestorsAreTrusted(parent) else { throw CodexRecoveryFault.unavailable }
+        guard try runtimeAncestors(parent) else { throw CodexRecoveryFault.unavailable }
         let directory = open(parent, O_RDONLY | O_DIRECTORY | O_NOFOLLOW | O_CLOEXEC)
         guard directory >= 0 else { throw CodexRecoveryFault.unavailable }
         defer { close(directory) }

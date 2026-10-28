@@ -139,21 +139,22 @@ function privateSocket(socket) {
   const stat = fs.lstatSync(socket);
   return `${stat.dev}:${stat.ino}`;
 }
-function discover(config, run = command) {
-  const rows = run('tmux', ['list-sessions', '-F', '#{session_name}|#{session_id}@#{session_created}/#{pane_id}:#{pane_pid}|#{pane_current_command}'])
+function discover(config, run = command, tmux = process.env.HAIL_CODEX_RECOVERY_TMUX || 'tmux') {
+  if (tmux !== 'tmux' && (!path.isAbsolute(tmux) || tmux.includes('\0'))) refuse('unsafe_discovery');
+  const rows = run(tmux, ['list-sessions', '-F', '#{session_name}|#{session_id}@#{session_created}/#{pane_id}:#{pane_pid}|#{pane_current_command}'])
     .trim().split('\n').map(line => line.split('|')).filter(row => row[0] === config.target.slice(5));
   if (rows.length !== 1 || rows[0][1] !== config.binding || rows[0][2] !== 'codex') refuse('binding_changed');
   const parent = Number(config.binding.split(':').at(-1));
-  const children = run('ps', ['-axo', 'pid=,ppid=,uid=,comm=']).trim().split('\n')
+  const children = run('/bin/ps', ['-axo', 'pid=,ppid=,uid=,comm=']).trim().split('\n')
     .map(line => line.trim().split(/\s+/, 4))
     .filter(row => Number(row[1]) === parent && Number(row[2]) === process.getuid() && path.basename(row[3] ?? '') === 'codex');
-  const servers = children.filter(row => /(?:^|\s)app-server(?:\s|$)/.test(run('ps', ['-p', row[0], '-o', 'args='])));
+  const servers = children.filter(row => /(?:^|\s)app-server(?:\s|$)/.test(run('/bin/ps', ['-p', row[0], '-o', 'args='])));
   if (servers.length !== 1) refuse('ambiguous_server');
   const pid = servers[0][0];
-  const born = run('ps', ['-p', pid, '-o', 'lstart=']).trim();
+  const born = run('/bin/ps', ['-p', pid, '-o', 'lstart=']).trim();
   if (!born) refuse('server_gone');
   const prefix = `/private/tmp/codex-daemon-${process.getuid()}/`;
-  const sockets = [...new Set(run('lsof', ['-a', '-p', pid, '-U', '-Fn']).split('\n')
+  const sockets = [...new Set(run('/usr/sbin/lsof', ['-a', '-p', pid, '-U', '-Fn']).split('\n')
     .filter(line => line.startsWith(`n${prefix}`)).map(line => line.slice(1)))];
   if (sockets.length !== 1) refuse('ambiguous_socket');
   const socket = sockets[0];
