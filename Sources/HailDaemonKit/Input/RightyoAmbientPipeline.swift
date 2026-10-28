@@ -212,6 +212,7 @@ public final class RightyoAmbientPipeline: Sendable {
     public init(configuration: Configuration, dispatcher: any RightyoAmbientDispatching) throws {
         let session = "hail-\(UUID().uuidString.lowercased())"
         requestOutcomes = AmbientRequestOutcomes(session: session)
+        requestOutcomes.setPrivate(configuration.startPrivate)
         let relay = AmbientAckRelay(onAcknowledge: configuration.onAcknowledge,
                                     onSkip: configuration.onAcknowledgementSkipped)
         let heard = AmbientHeardRelay(onHeard: configuration.onHeard, requests: configuration.heardRequests)

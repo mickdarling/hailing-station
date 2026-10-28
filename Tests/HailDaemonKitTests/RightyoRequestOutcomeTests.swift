@@ -22,17 +22,17 @@ import Testing
         #expect(ledger.register(host: host, producer: "tool-demo:request"))
         #expect(ledger.report(.accepted, host: host, write: { $0.line != nil }))
         #expect(!ledger.isConfirmed(host, .accepted))
-        ledger.observe(try ack(producer: "tool-demo:foreign"))
-        ledger.observe(try ack("failed"))
+        ledger.observe(try ack(producer: "tool-demo:foreign", sequence: 2))
+        ledger.observe(try ack("failed", sequence: 3))
         #expect(!ledger.isConfirmed(host, .accepted))
-        ledger.observe(try ack(version: 2))
+        ledger.observe(try ack(version: 2, sequence: 4))
         #expect(!ledger.isConfirmed(host, .accepted))
         ledger.observe(try ack())
         #expect(ledger.isConfirmed(host, .accepted))
         #expect(ledger.report(.replyStarted, host: host, write: { _ in true }))
         ledger.observe(try ack()) // An old ack never confirms the new transaction.
         #expect(!ledger.isConfirmed(host, .replyStarted))
-        ledger.observe(try ack("reply_started"))
+        ledger.observe(try ack("reply_started", sequence: 6))
         #expect(ledger.isConfirmed(host, .replyStarted))
     }
     @Test func aDroppedWriteMayRetryAndRetirementRevokesAuthority() throws {
@@ -144,6 +144,7 @@ extension RightyoRequestOutcomeTests {
             extra: ["superseded_request_id": "tool-demo:request", "by_utterance_id": "owner", "role": "owner"]))
         #expect(!ledger.contains(first))
         #expect(ledger.contains(second))
+        ledger.setPrivate(true)
         ledger.observe(try fixture.event("privacy", sequence: 7, extra: ["action": "on", "at_ms": 2000]))
         #expect(!ledger.contains(second))
         #expect(ledger.generation == nil)
@@ -152,5 +153,28 @@ extension RightyoRequestOutcomeTests {
         ledger.observe(try fixture.event("session", sequence: 8, extra: ["phase": "stopped"]))
         #expect(!ledger.supported)
         #expect(!ledger.contains(second))
+    }
+    @Test func delayedPrivacyAckCannotRestoreAnAlreadyEndedPrivacyWish() throws {
+        let ledger = AmbientRequestOutcomes(session: fixture.session)
+        ledger.observe(try started())
+        ledger.setPrivate(true)
+        ledger.setPrivate(false)
+        let before = try #require(ledger.generation)
+        ledger.observe(try fixture.event("privacy", sequence: 7, extra: ["action": "on", "at_ms": 2000]))
+        let after = try #require(ledger.generation)
+        #expect(after != before)
+        #expect(ledger.register(host: UUID(), producer: "tool-demo:public", generation: after))
+    }
+    @Test func oldPrivacyReplayCannotRevokeANewerPublicRequest() throws {
+        let ledger = AmbientRequestOutcomes(session: fixture.session)
+        ledger.observe(try started())
+        ledger.setPrivate(true)
+        let old = try fixture.event("privacy", sequence: 7, extra: ["action": "on", "at_ms": 2000])
+        ledger.observe(old)
+        ledger.setPrivate(false)
+        let host = UUID()
+        #expect(ledger.register(host: host, producer: "tool-demo:public"))
+        ledger.observe(old)
+        #expect(ledger.contains(host))
     }
 }
