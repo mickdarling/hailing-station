@@ -1238,3 +1238,26 @@ Final app-head build logs are `<scratch>/r2-final-build.log` and
 Package results use synthetic transport/capture and a root state shell. Native
 SwiftUI rendering, host Swift 6.2.4 execution, physical audio/haptics, and a fresh
 independent exact-head approval remain unclaimed.
+
+## Remote authorization refusal follow-up
+
+The independent remote-authorization probe was found in the adjacent refresh
+review evidence and ported as
+`AmbientReconnectAuthorizationRefusalTests.explicitAuthorizationRefusalRequiresAnActionableOwnerNotice`.
+Against unchanged production on the preceding app head, its warnings-as-errors
+test build passed. The serial test failed without a timeout: **1 test in 1 suite,
+3 assertion issues**, 1.240 seconds, at
+`Tests/HailCoreTests/AmbientReconnectAuthorizationRefusalTests.swift:22:9`
+(wrong reason), `:23:9` (missing `reauthorization_needed` token), and `:24:9`
+(missing destination-selection action). Evidence is
+`<scratch>/refusal-fail-before.log`. The core-only version checks notice copy
+instead of the app action; the merged app version restores that action assertion.
+
+Failed snapshot handling now classifies the connection's explicit unauthorized
+error prefix before the generic non-transport block. The store already calls
+this handler before clearing selection requests, so the notice settles with
+`reauthorizationNeeded` even when the selection catch runs afterward. It reuses
+the existing notice copy, fixed log token, and destination-selection action.
+Other failures retain their existing classification. This changes only the
+failed-state branch; request cleanup, privacy, deadlines, sleep defaults, and
+app production code are unchanged.
