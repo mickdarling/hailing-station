@@ -164,8 +164,8 @@ extension RightyoInputConsumerTests {
                                             session: "enrolled-demo", allowSynthetic: true)
         var refused = 0
         for line in lines {
-            do { _ = try await live.consume(RightyoInputEvent.decode(Data(line.utf8))) } catch
-                RightyoInputError.confirmationRequired { refused += 1 } catch RightyoInputError.invalidLifecycle {}
+            _ = try await live.consume(RightyoInputEvent.decode(Data(line.utf8)))
+            if case .confirmationRequired = await live.lastDeliveryRefusal { refused += 1 }
         }
         #expect(refused == 1)
         #expect(await adapter.deliveries.isEmpty)

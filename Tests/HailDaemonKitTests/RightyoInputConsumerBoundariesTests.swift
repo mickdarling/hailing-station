@@ -63,7 +63,7 @@ extension RightyoInputConsumerTests {
         var dangerous = turn()
         dangerous["text"] = "rm -rf build"
         let event = try await preparedRequest(guarded, customTurn: dangerous)
-        await #expect(throws: RightyoInputError.confirmationRequired) { try await guarded.consume(event) }
+        #expect(try await !guarded.consume(event))
         #expect(await other.deliveries.isEmpty)
     }
     @Test func unknownOverlappingSpeakersStayDataAndControlsCannotHideGuardPatterns() async throws {

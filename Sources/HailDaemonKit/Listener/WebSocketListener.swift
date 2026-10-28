@@ -1400,7 +1400,9 @@ extension AmbientRightyoRouter {
         var failure: String?
         let detail: String
         do {
-            let summary = try await pipeline.run()
+            let summary = try await RightyoGuardRefusal.$current.withValue(RightyoGuardRefusal()) {
+                try await pipeline.run()
+            }
             let echo = await pipeline.echoDropped
             let gateEnd = state.withLock { $0.runs[id]?.gateEnd.map { "\($0)" } } ?? "none"
             detail = "delivered=\(summary.delivered) written=\(summary.child.writtenBytes)"
@@ -1722,25 +1724,36 @@ extension AmbientRightyoRouter {
         }
     }
 
-    /// An ambient request the stream's own target refused because its input already holds unsent text (#894): nothing
-    /// was typed and the stream goes on. The device that said it is told as for a voice route's refusal, in the order
-    /// said: one refusal line with tap-to-talk's fixed message (`showRouteRefusal`, only to a device that takes request
-    /// refusals) and one `confirm-not-sent/` clip (`tellNotSent`). Logs the refusal's name and both outcomes as tokens;
-    /// never the words, the text left in the input, or the target.
+    /// Own-target refusals (#894, #847), through the existing heard-turn and ordered, privacy-held notice path.
+    /// Capture sanitized rule tokens before the next request resets the per-run evidence. Never log text or turn ids.
     fileprivate func deliveryRefused(
         on connection: UUID, listener: WebSocketListener, notices: AmbientRefusalNotices
     ) -> @Sendable (UUID?, LocalDispatchRefusal) -> Void {
         { [weak self, weak listener] request, refusal in
             let acknowledged = notices.acknowledgement
+            let line: String, persona: String, event: String, token: String
+            switch refusal {
+            case .confirmationRequired:
+                line = "request requires confirmation at the Mac; nothing was sent"
+                persona = AmbientStopConfirmation.needsConfirmation
+                event = "ambient_request_refused"
+                token = "reason=confirmation_required rules=\(RightyoGuardRefusal.current?.ruleTokens ?? "none")"
+            case .capacityExceeded:
+                line = "request capacity reached; nothing was sent"
+                persona = AmbientStopConfirmation.notSent
+                event = "ambient_request_refused"
+                token = "reason=capacity_exceeded rules=none"
+            default:
+                line = HostDeliveryOutcome.inputPendingReason
+                persona = AmbientStopConfirmation.notSent
+                event = "ambient_delivery_refused"
+                token = "reason=\(refusal.rawValue)"
+            }
             notices.chain.enqueue { [weak self, weak listener] in
                 guard let self else { return }
-                // Always tap-to-talk's fixed line: the consumer holds back no refusal but `inputPending`. It goes
-                // out as `voice_route_refused`, the existing request-refusal code; a dedicated code waits for a
-                // protocol change.
-                let (shown, confirm) = await tellNotSent(HostDeliveryOutcome.inputPendingReason, after: acknowledged,
-                                                         on: connection, listener: listener, request: request)
-                emit("ambient_delivery_refused", connection: connection,
-                     detail: "reason=\(refusal.rawValue) shown=\(shown) confirm=\(confirm)")
+                let (shown, confirm) = await tellNotSent(line, after: acknowledged, on: connection, listener: listener,
+                                                       request: request, persona: persona)
+                emit(event, connection: connection, detail: "\(token) shown=\(shown) confirm=\(confirm)")
             }
         }
     }
@@ -1751,14 +1764,14 @@ extension AmbientRightyoRouter {
     /// Returns the line's and the clip's outcome tokens. A connection already gone (`no_connection`) gets no clip either.
     private func tellNotSent(
         _ line: String, after acknowledgement: Task<Void, Never>?, on connection: UUID, listener: WebSocketListener?,
-        request: UUID? = nil
+        request: UUID? = nil, persona: String = AmbientStopConfirmation.notSent
     ) async -> (shown: String, confirm: String) {
         await acknowledgement?.value
         let shown = await listener?.showRouteRefusal(line, target: configuration.target, connection: connection,
                                                       request: request)
             ?? "no_connection"
         guard shown != "no_connection" else { return (shown, shown) }
-        return (shown, await confirmNotSent(on: connection, listener: listener))
+        return (shown, await confirmNotSent(on: connection, listener: listener, persona: persona))
     }
 
     /// "Nothing was sent." unless the connection is private (#894, Jarvis: privacy wins). Queued on the connection's
@@ -1771,7 +1784,9 @@ extension AmbientRightyoRouter {
     /// One whose teardown lands just before the chain is taken (its mark already pruned) gets a chain; once the clip has
     /// run, a connection with no peer left has that entry dropped, as `stop(connection:)` does, so none is left behind.
     /// A connection id never comes back, so no live connection loses its chain or a clip.
-    private func confirmNotSent(on connection: UUID, listener: WebSocketListener?) async -> String {
+    private func confirmNotSent(
+        on connection: UUID, listener: WebSocketListener?, persona: String
+    ) async -> String {
         let outcome = Mutex("no_connection")
         let piece = state.withLock { state -> Task<Void, Never>? in
             guard !state.closed.contains(connection) else { return nil }
@@ -1782,7 +1797,7 @@ extension AmbientRightyoRouter {
                     return outcome.withLock { $0 = "suppressed_privacy" }
                 }
                 await configuration.notSentPlaying?(connection)
-                let confirm = await confirmVoiceMute(AmbientStopConfirmation.notSent, on: connection,
+                let confirm = await confirmVoiceMute(persona, on: connection,
                                                      listener: listener, heldWhilePrivate: true)
                 outcome.withLock { $0 = confirm }
             }
