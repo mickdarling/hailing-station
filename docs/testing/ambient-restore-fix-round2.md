@@ -1065,3 +1065,48 @@ fixes found during implementation were the app's URL-equality gate and immediate
 active-stream shutdown on a transport downgrade. All changes stay in the existing
 production file sets. The shared helper is exercised by package tests; native
 SwiftUI execution and physical microphone/haptic behavior remain unclaimed.
+
+
+### Completed verification for deadline and refresh changes
+
+Both required warnings-as-errors build forms passed on the delivered
+infrastructure and core heads. The core's final serial deadline, endpoint,
+suspension, and re-entrant pause selection passed **9 tests in 4 suites**, 18.618 seconds.
+The inert default/explicit send-origin selection passed **13 tests in 6 suites**, 8.595 seconds.
+
+The merged app tree passed both build forms before tests. The requested expanded
+serial family `AmbientReconnect|SendOrigin|AmbientRecovery|AmbientSuspension`
+passed three times:
+
+- repetition 1: **105 tests in 42 suites**, 210.510 seconds.
+- repetition 2: **105 tests in 42 suites**, 214.310 seconds.
+- repetition 3: **105 tests in 42 suites**, 209.646 seconds.
+
+The full serial broad family
+`Ambient|HostConnection|Listening|Reconnect|Notice|AudioGate|TapCapture|HeardTurn|Privacy|Segment`
+ran once in three non-overlapping module lanes:
+
+- core: **427 tests in 124 suites**, 323.924 seconds.
+- daemon: **593 tests in 135 suites**, 404.630 seconds.
+- remaining: **50 tests in 9 suites**, 0.216 seconds.
+
+Total broad selection: **1070 tests in 268 suites**.
+The core and daemon lanes use their module prefix and the full family; the
+remaining lane excludes those two modules. Every test command excludes
+DiagnosticReplyComposition and uses `--skip-build --disable-xctest --no-parallel`.
+No successful runtime log records an assertion issue or a start of the excluded
+suite or its tests. Raw logs are `<scratch>/r0-inert.log`, `r1-guard-pass.log`,
+`r2-focused-1.log` through `r2-focused-3.log`, and `r2-broad-*.log`.
+
+Every Swift launch uses the supplied literal process gate, background priority,
+`-j 4 -Xswiftc -j1`, offline resolution, all supplied Testing flags, a 590-second
+execution bound, and process-group cleanup. Link-stage debug module-cache path
+warnings are recorded; compiler warnings-as-errors checks passed. Final app-head
+build logs are `r2-final-build.log` and `r2-final-build-tests.log`.
+
+Strict-warning manual lint review and `git diff --check` pass. The production
+file sets remain three infrastructure files, four restore files, and three app
+files. No new suppression, code reflow, or blank-line deletion was used to meet
+a threshold. Package test results are synthetic; host Swift 6.2.4 execution of
+the deterministic pause shape, native SwiftUI, physical audio/haptics, and
+independent exact-head approval remain separately unclaimed.
