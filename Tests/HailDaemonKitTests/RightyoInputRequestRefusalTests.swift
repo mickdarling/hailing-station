@@ -6,11 +6,12 @@ import Testing
 
 private struct SessionRequestDispatcher: RightyoDispatching {
     let session: HostSession
+    let listener: WebSocketListener
 
     func dispatch(text: String, target: String, binding: String) async throws -> RightyoDispatchReceipt {
-        let request = try await session.dispatch(.init(
-            connection: UUID(), target: target, binding: binding, text: text
-        ))
+        let request = try await listener.dispatchAmbient(.init(
+            connection: await session.connectionID, target: target, binding: binding, text: text
+        ), selection: await session.selectionGeneration)
         return .init(request: request)
     }
 }
@@ -32,8 +33,7 @@ extension RightyoInputConsumerTests {
         let hash = try DeliveryRequest(target: "tmux:demo", binding: "original",
                                        lines: [refused.prompt(speakers: "enrolled", target: "tmux:demo")],
                                        device: RightyoHostDispatcher.device).confirmationHash
-        // The host dispatcher cancels the stored read-back; the session path does so from #847's follow-up.
-        if !sessionDispatch { #expect(await host.cancel(hash) == false) }
+        #expect(await host.cancel(hash) == false)
         #expect(try await !consumer.consume(refused)) // Never retry a refused request.
         #expect(try await consumer.consume(request(consumer, 1, saying: "SYNTHETIC_BENIGN")))
         #expect(await consumer.lastDeliveryRefusal == nil)
@@ -43,12 +43,14 @@ extension RightyoInputConsumerTests {
         ]))
         try await consumer.finish()
         #expect(await consumer.requestRefusal == .confirmationRequired)
+        await rig.listener?.stop(reason: "synthetic test complete")
     }
 
     private struct RequestRefusalRig {
         let consumer: RightyoInputConsumer
         let host: HailHost
         let adapter: FakeAdapter
+        let listener: WebSocketListener?
     }
 
     private func requestRefusalRig(sessionDispatch: Bool) async throws -> RequestRefusalRig {
@@ -61,17 +63,25 @@ extension RightyoInputConsumerTests {
         try policy.allow("tmux:demo", binding: "original", tier: .open)
         let host = try HailHost(registry: registry, store: InMemoryPolicyStore(policy))
         let dispatcher: any RightyoDispatching
+        let listener: WebSocketListener?
         if sessionDispatch {
             let selected = HostSession(host: host, authorizer: PersonalTerminalAuthorizer(), hostName: "mac-test")
             _ = await selected.receive(helloFrame())
             _ = await selected.receive(sessionFrame(payload: .control(.select(targetID: "tmux:demo"))))
-            dispatcher = SessionRequestDispatcher(session: selected)
+            let ambient = try WebSocketListener(
+                bindAddress: "127.0.0.1", port: 0, host: host, authorizer: PersonalTerminalAuthorizer(),
+                hostName: "mac-test"
+            )
+            await ambient.installFallbackSyntheticPeers([selected])
+            listener = ambient
+            dispatcher = SessionRequestDispatcher(session: selected, listener: ambient)
         } else {
+            listener = nil
             dispatcher = RightyoHostDispatcher(host: host)
         }
         let consumer = try RightyoInputConsumer(host: nil, target: "tmux:demo", binding: "original", session: session,
                                                 allowSynthetic: true, dispatcher: dispatcher)
-        return RequestRefusalRig(consumer: consumer, host: host, adapter: adapter)
+        return RequestRefusalRig(consumer: consumer, host: host, adapter: adapter, listener: listener)
     }
 
     @Test(arguments: [LocalDispatchRefusal.confirmationRequired, .capacityExceeded])
