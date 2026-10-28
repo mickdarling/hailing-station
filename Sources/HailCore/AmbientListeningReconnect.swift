@@ -144,6 +144,7 @@ public final class AmbientListeningReconnect {
     @ObservationIgnored let privacyConfirmation = AmbientRestorePrivacy()
     private(set) var acceptance: AmbientResumeAcceptance?
     @ObservationIgnored private var acceptanceTask: Task<Void, Never>?
+    @ObservationIgnored private var retryTask: Task<Void, Never>?
     private var pending: Pending?
     private var veto: Reason?
     private var renewed = false
@@ -214,6 +215,8 @@ public final class AmbientListeningReconnect {
     func finish(_ outcome: Outcome, reason: Reason?) {
         guard let pending else { return }
         self.pending = nil
+        retryTask?.cancel()
+        retryTask = nil
         privacyConfirmation.cancel()
         deadline?.cancel()
         deadline = nil
@@ -272,6 +275,7 @@ extension AmbientListeningReconnect {
         guard isPending, binding?.hostID == snapshot.id else { return }
         if AmbientListeningController.isTransportError(error) {
             drop(snapshot, store: store)
+            retrySelectionTransport(snapshot, store: store)
             return
         }
         let reason: Reason
@@ -284,6 +288,20 @@ extension AmbientListeningReconnect {
             reason = .nonTransport
         }
         veto(reason, host: snapshot.id)
+    }
+    private func retrySelectionTransport(_ snapshot: HostConnectionSnapshot, store: HostConnectionStore) {
+        guard let intent = pending, allowsTransportRetry(host: snapshot.id, generation: snapshot.connectionGeneration)
+        else { return }
+        retryTask?.cancel()
+        retryTask = Task { [weak self, weak store] in
+            guard let self, let store, self.pending?.id == intent.id, !Task.isCancelled else { return }
+            _ = await store.retryAmbientTransport(host: snapshot.id, generation: snapshot.connectionGeneration)
+        }
+    }
+    func allowsTransportRetry(host id: HostEndpoint.Identifier, generation: UUID) -> Bool {
+        guard veto == nil, let pending, pending.binding.hostID == id, pending.droppedGeneration == generation,
+              controller?.isOn == true, controller?.isListening == true else { return false }
+        return withinDeadline()
     }
     /// Reauthorize the same selection on a new generation. No fresh capture start or foreground requirement.
     func restore(store: HostConnectionStore) {
@@ -382,6 +400,8 @@ extension AmbientListeningReconnect {
         guard pending?.binding.hostID == endpoint.id else { return false }
         confirmedPrivacy(on: store.duckMode[endpoint.id]?.isOn() == true, host: endpoint.id)
         controller?.suspendTransport()
+        retryTask?.cancel()
+        retryTask = nil
         cancelAcceptance()
         privacyConfirmation.cancel()
         renewed = false

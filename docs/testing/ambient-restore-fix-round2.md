@@ -1365,3 +1365,51 @@ sleep default was introduced. Final app-head build logs are
 `<scratch>/r2-final-build.log` and `<scratch>/r2-final-build-tests.log`. Tests use
 synthetic transport/capture; native SwiftUI rendering, physical audio/haptics,
 CI Swift 6.3.3 execution, and independent approval of these heads remain unclaimed.
+
+
+CI follow-up: selection-send failures must initiate transport retry. At
+`1ff44c162ea350c24e0fedf616df211f7ba162ee`, the existing deterministic
+`AmbientReconnectSelectFailureTests.selectionFailureBeforeObservedDropFlapsAndRestores`
+now removes the manually injected second drop and includes networkConnectionLost
+alongside notReady and cancellation. Its retry wait fails at
+`Tests/HailCoreTests/AmbientReconnectSelectFailureTests.swift:21`; each case records
+`WaitUntil.swift:34:17` and the caught error at
+`AmbientReconnectSelectFailureTests.swift:8:6`. **1 test, 1 suite, 3 cases,
+6 issues**, 33.847 seconds; each wait reports zero connector opens. The baseline
+warnings-as-errors compilation passed. Evidence: `<scratch>/selection-fail-before.log`.
+Capture remains armed and gap PCM is discarded; the missing retry alone stalls
+recovery. The test adds no timing delay: a held selection send injects the error,
+and the existing condition waiter observes the retry gate.
+
+Selection transport failures now schedule the existing reconnect loop for the
+failed host, after recording the flap. The store checks the pending restore and
+failed generation; the connection actor checks that generation again, plus its
+ready socket, connection intent, and cancellation, before replacing the loop.
+A physical loss already draining that socket owns its normal reconnect instead.
+The retry task is cancelled on settlement, veto, or endpoint replacement. Owner
+stop, privacy, destination changes, and explicit disconnect retain their existing
+vetoes. The retained target, monotonic start, and privacy requirement are unchanged;
+no privacy-off frame is introduced.
+
+The parameterized regression now observes retry without a second injected drop,
+then handshakes and applies at 59 seconds under the original deadline. It checks
+armed capture, discarded gap PCM, one capture start, the retained target, and
+exactly three connection opens. `staleSelectionFailureCannotRetryANewerGeneration`
+rejects a retry for the failed generation while its successor awaits selection
+confirmation, then applies normally. `selectionFailureNeverExtendsTheOriginalDeadline`
+expires the injected clock during retry, then handshakes without confirming a
+restored selection or sending PCM: timedOut remains the final outcome and capture is stopped.
+
+The targeted serial run passed **5 tests in 3 suites, 7 cases**, 13.407 seconds,
+including the original flapping and explicit remote authorization-refusal tests
+(`<scratch>/r1-fix-pass.log`). The deadline assertion permits the existing
+discard/stop cleanup calls while requiring capture to have ended. No timing
+sleep is added; continuations and the injected monotonic clock control the races.
+Manual strict checks cover the new functions, type bodies, parameters, complexity,
+line lengths and identifiers; the full declaration scan reports zero names over
+40 characters. Both existing authorization paths retain reauthorizationNeeded,
+the visible owner notice, its destination-selection action, and the fixed
+`reauthorization_needed` token.
+
+Both core warnings-as-errors build forms pass for this follow-up; the four-file
+production boundary and approved infrastructure head are unchanged.
