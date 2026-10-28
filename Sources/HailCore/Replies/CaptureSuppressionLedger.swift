@@ -1,5 +1,7 @@
 public import Foundation
 
+typealias CaptureLivenessSleep = @MainActor (Duration) async throws -> Void
+
 /// Who holds reply playback's capture suppression (#91): replies are held while any owner's tap-to-talk capture
 /// runs, and suppression ends only when no owner is left.
 ///
@@ -178,9 +180,10 @@ public enum CapturePlaybackSuppression {
 
     /// Bound a missed end callback to one liveness check, without expiring a genuinely live long capture (#935).
     private static func watchLiveness(_ playback: ReplyPlaybackController, _ ledger: CaptureSuppressionLedger) {
+        let sleep = playback.captureLivenessSleep
         Task { @MainActor [weak playback, weak ledger] in
             while true {
-                do { try await Task.sleep(for: .seconds(1)) } catch { return }
+                do { try await sleep(.seconds(1)) } catch { return }
                 guard let playback, let ledger, existing(playback) === ledger else { return }
                 reconcile(using: playback)
             }
