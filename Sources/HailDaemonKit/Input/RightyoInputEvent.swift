@@ -441,12 +441,21 @@ final class AmbientRequestOutcomes: Sendable {
         var waiting: RightyoRequestOutcomeState?
         var confirmed: RightyoRequestOutcomeState?
     }
+    private struct Revoker {
+        let producer: String
+        let stop: @Sendable () -> Void
+    }
     private struct State {
         var capable = false, closed = false, privateMode = false
         var generation = UUID()
         var observedSequence = 0
         var entries: [UUID: Entry] = [:]
-        mutating func revoke() { generation = UUID(); entries.removeAll() }
+        var revokers: [UUID: Revoker] = [:]
+        mutating func revoke() {
+            // Only synchronous private-channel close callbacks; never call back into this ledger or a job.
+            revokers.values.forEach { $0.stop() }
+            revokers.removeAll(); generation = UUID(); entries.removeAll()
+        }
         mutating func retire(_ event: RightyoInputEvent) {
             if event.type == "session", event.phase != "started" { closed = true; revoke(); return }
             if event.type == "privacy", event.action == "on" { revoke(); return }
@@ -457,6 +466,9 @@ final class AmbientRequestOutcomes: Sendable {
             default: return
             }
             entries = entries.filter { !producers.contains($0.value.producer) }
+            for key in revokers.filter({ producers.contains($0.value.producer) }).keys {
+                revokers.removeValue(forKey: key)?.stop()
+            }
         }
     }
     private let session: String
@@ -521,6 +533,32 @@ final class AmbientRequestOutcomes: Sendable {
                                                state: value, asked: asked)) else { return false }
             state.entries[host]?.waiting = value
             return true
+        }
+    }
+    /// Hold the same generation gate as Stop/privacy through a synchronous commit, never an await.
+    func withAuthority<Value>(host: UUID, generation: UUID, _ action: () -> Value) -> Value? {
+        state.withLock { state in
+            guard state.capable, !state.closed, !state.privateMode, state.generation == generation,
+                  let entry = state.entries[host], entry.confirmed?.terminal != true else { return nil }
+            return action()
+        }
+    }
+    /// Close the owned worker's input under revocation, ordering its actual pipe writes against this gate.
+    func watch(producer: String, generation: UUID, stop: @escaping @Sendable () -> Void) -> UUID? {
+        state.withLock { state in
+            guard state.capable, !state.closed, !state.privateMode, state.generation == generation,
+                  RightyoInputEvent.requestID(producer, session: session), state.revokers.count < 64 else { return nil }
+            let key = UUID(); state.revokers[key] = Revoker(producer: producer, stop: stop); return key
+        }
+    }
+    func unwatch(_ key: UUID) { state.withLock { $0.revokers[key] = nil } }
+    /// Negative outcome for a consumer-admitted request that was never handed off. It grants no reply/interrupt
+    /// authority and needs no table slot, so a full positive-ownership ledger cannot swallow a capacity refusal.
+    func refuse(producer: String, generation: UUID, write: (RightyoRequestOutcome) -> Bool) -> Bool {
+        state.withLock { state in
+            guard state.capable, !state.closed, !state.privateMode, state.generation == generation,
+                  RightyoInputEvent.requestID(producer, session: session) else { return false }
+            return write(RightyoRequestOutcome(session: session, request: producer, state: .failed))
         }
     }
     func retire(_ host: UUID) { state.withLock { $0.entries[host] = nil } }
