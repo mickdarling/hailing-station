@@ -190,7 +190,12 @@ extension WebSocketListener {
 
     private func accept(_ connection: NWConnection) async {
         // Attached before the admission checks, so no suspension separates them from the insertion below (#370).
-        let session = HostSession(host: host, authorizer: authorizer, hostName: hostName)
+        let session = HostSession(host: host, authorizer: authorizer, hostName: hostName,
+                                  modeSnapshot: { [ambient] in
+            ambient?.modeSnapshot(connection: $0) ?? [.duckMode(on: false), .mediaMode(on: false)]
+        }, snapshotPrivacyOff: { [weak self] in
+            await self?.privacyOffFromSnapshot(connection: $0) ?? .refused
+        })
         await session.attachLastInput(lastInput, recordStoppedReply: { [stoppedReplyIDs] id in
             stoppedReplyIDs.record(id)
         }, replyEvent: log)
@@ -214,6 +219,13 @@ extension WebSocketListener {
         await peer.start()
     }
 
+    /// No suspension between checking peer membership and the router's off. `peerEnded` removes the peer
+    /// before ending it at the gate, so even an off in flight at teardown cannot clear a later park.
+    private func privacyOffFromSnapshot(connection: UUID) -> ModeSnapshotPrivacyOff {
+        guard !stopped, peers.values.contains(where: { $0.session.connectionID == connection }) else { return .refused }
+        return ambient?.privacyOffFromSnapshot(connection: connection) ?? .refused
+    }
+
     private func emit(_ event: WebSocketListenerEvent) { log(event) }
 }
 
@@ -230,6 +242,11 @@ extension AmbientAudioEvent {
 /// and drained on shutdown.
 public protocol AmbientListenerWiring: AnyObject, Sendable {
     func attach(_ listener: WebSocketListener)
+    /// Read-only effective first-start state (#941); never arms the connection or consumes parked state.
+    func modeSnapshot(connection: UUID) -> [ControlPayload]
+    /// An authorized snapshot-capable device's own off: refused, an armed switch exit, or parks cleared
+    /// without an arming and needing an off notice.
+    func privacyOffFromSnapshot(connection: UUID) -> ModeSnapshotPrivacyOff
     /// Stops every child serving `connection`; never cancels a run, so an in-flight dispatch finishes typing.
     func stop(connection: UUID)
     /// `stop(connection:)` with the ended peer's Hello claims (#735 meeting mode restore (MM-E)), which a parked
@@ -281,6 +298,11 @@ extension AmbientListenerWiring {
 }
 
 extension AmbientListenerWiring {
+    public func modeSnapshot(connection: UUID) -> [ControlPayload] {
+        [.duckMode(on: false), .mediaMode(on: false)]
+    }
+    public func privacyOffFromSnapshot(connection: UUID) -> ModeSnapshotPrivacyOff { .refused }
+
     /// A wiring that cannot reload refuses rather than touching the stream.
     public func reload() async -> AmbientReloadOutcome { .refused("unsupported") }
     public func status() -> AmbientRouterStatus { AmbientRouterStatus() }
@@ -648,7 +670,8 @@ public final class AmbientRightyoRouter: AmbientAudioSink, AmbientListenerWiring
         var parked: ParkedModes?
         /// Privacy each dropped connection held (#941), keyed by that connection (#961: one entry each, so one
         /// connection's stale verdict never drops another's), daemon-wide and in RAM only: every fresh stream starts
-        /// private while any is held, until the owner's own privacy-off clears them all. At most `maxParkedPrivacy`.
+        /// private while any is held, until the owner's own privacy-off clears them all. A stale verdict also
+        /// drops the judged source's own park. At most `maxParkedPrivacy`.
         var parks: [UUID: ParkedPrivacy] = [:]
         /// A park was evicted at the bound (#961). Every fresh stream starts private while it is set, so an eviction
         /// never opens privacy; only the owner's own privacy-off clears it.
@@ -699,6 +722,50 @@ public final class AmbientRightyoRouter: AmbientAudioSink, AmbientListenerWiring
             await self?.drainQueue()
         }
         state.withLock { $0.worker = worker }
+    }
+
+    /// The same privacy source selection as restore/admission, read under one lock. Media follows the
+    /// latest unexpired arming across held and parked modes, as `carryModes` does; a winning meeting is
+    /// deliberately absent from the wire. Privacy wins over every media/meeting candidate.
+    public func modeSnapshot(connection: UUID) -> [ControlPayload] {
+        state.withLock { state in
+            let privateStart = state.duck[connection] != nil || Self.privacySource(except: connection, in: state) != nil
+            let now = configuration.now()
+            var expiry: Date?
+            if !privateStart {
+                if let media = state.media[connection], media.expiresAt > now {
+                    expiry = media.expiresAt
+                } else if state.meeting[connection] == nil {
+                    var candidates: [(armed: Int, mediaExpiry: Date?)] = []
+                    if let park = state.parked, park.expiresAt > now {
+                        candidates.append((park.armed, park.media?.expiresAt))
+                    }
+                    candidates += state.meeting.filter { $0.value.expiresAt > now && state.duck[$0.key] == nil }
+                        .map { ($0.value.armed, nil) }
+                    candidates += state.media.filter { $0.value.expiresAt > now && state.duck[$0.key] == nil }
+                        .map { ($0.value.armed, $0.value.expiresAt) }
+                    expiry = candidates.max { $0.armed < $1.armed }?.mediaExpiry
+                }
+            }
+            return [.duckMode(on: privateStart),
+                    .mediaMode(on: expiry != nil, expires: expiry.map { Int64($0.timeIntervalSince1970 * 1_000) })]
+        }
+    }
+
+    /// The snapshot never armed this connection, but its owner's switch off still clears every park and
+    /// overflow through the existing owner-off path. A stopping or closed router refuses, as pre-arm does.
+    public func privacyOffFromSnapshot(connection: UUID) -> ModeSnapshotPrivacyOff {
+        state.withLock { state in
+            guard !state.shuttingDown, state.listener?.value != nil, !state.closed.contains(connection) else {
+                return .refused
+            }
+            // An armed connection keeps the existing gate/switch exit, including its clips and notice.
+            if state.duck[connection] != nil { return .armed }
+            ownerOff(connection, reason: "device", in: &state)
+            let stillPrivate = state.duck[connection] != nil
+                || Self.privacySource(except: connection, in: state) != nil
+            return .cleared(stillPrivate: stillPrivate)
+        }
     }
 
     public func attach(_ listener: WebSocketListener) {

@@ -38,6 +38,17 @@ struct AmbientPrivacyPreArmGateTests {
                                                "switch false \(holder)", "refused ended \(holder)"])
     }
 
+    /// #967 P3-1: the ended-connection ring shares the stream bound and evicts oldest first.
+    @Test func endedConnectionRingEvictsOldestAtBound() async {
+        let sink = PreArmSink()
+        let gate = AmbientAudioGate(target: "tmux:a", sink: sink, sweepInterval: nil, endedStreamCapacity: 2)
+        let (oldest, middle, newest) = (UUID(), UUID(), UUID())
+        for connection in [oldest, middle, newest] { await gate.end(connection: connection) }
+        for connection in [oldest, middle, newest] { await gate.setPrivacy(true, connection: connection) }
+        #expect(sink.calls.withLock { $0 } == ["prearm \(oldest)", "refused ended \(middle)",
+                                               "refused ended \(newest)"])
+    }
+
     /// Not ready: a `set_privacy` before the hello closes the session and reaches nothing. Not authorized: a session
     /// whose authorizer has no ambient gate (the probe, or personal mode without ambient) refuses it. A ready session
     /// on the gate's authorizer reaches the pre-arm, for its own connection only.

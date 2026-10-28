@@ -8,7 +8,8 @@ import Foundation
 /// when it was parked, and whether the owner had heard it announced there (`heardOn`), so a restored connection's status
 /// answers the same. Unlike a parked mode it has no expiry, since privacy has none (Mick, round 2), and it is never
 /// consumed by a start: while it is held, every fresh ambient stream on any connection starts private (the claims and
-/// its age are logged), until the owner's own privacy-off clears it. In RAM only, so a haild restart restores nothing.
+/// its age are logged), until the owner's own privacy-off clears it. A stale verdict also drops the judged source's
+/// own park. In RAM only, so a haild restart restores nothing.
 /// `sequence` is its place in parking order (#961): the newest is the one a restore logs, the oldest the one evicted.
 struct ParkedPrivacy: Sendable {
     let connection: UUID
