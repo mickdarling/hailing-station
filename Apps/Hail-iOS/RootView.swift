@@ -52,6 +52,9 @@ struct RootView: View {
         }
         .modifier(StationMenuStatusPublisher(connections: connections, destination: destination?.label))
         .modifier(ReplySegmentNotices(connections: connections, banners: $announcementBanners))
+        .onChange(of: ambientDestinationBinding) { _, _ in
+            Task { await reconcileAmbientDestination() }
+        }
         .onChange(of: scenePhase) { _, phase in
             scenePhaseRevision &+= 1
             selectionRevision &+= 1

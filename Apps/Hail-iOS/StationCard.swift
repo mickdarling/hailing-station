@@ -345,9 +345,6 @@ struct AmbientListeningCard: View {
             Task { await controller.update(binding: currentBinding, scene: scene) }
             connections.onAmbientMovedHere = { [controller] host, from in controller.movedHere(from: from, host: host) }
         }
-        .onDisappear {
-            connections.onAmbientMovedHere = nil
-        }
         .onAppear { echoGuard.masksDuringReplies = masksDuringReplies }
         .onChange(of: masksDuringReplies) { _, masks in echoGuard.masksDuringReplies = masks }
         .modifier(StationMenuListeningPublisher(controller: controller, binding: binding))

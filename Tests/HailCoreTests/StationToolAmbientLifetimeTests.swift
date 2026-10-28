@@ -7,7 +7,7 @@ import Testing
 @MainActor
 @Suite(.serialized) struct StationToolAmbientLifetimeTests {
     enum Tool: CaseIterable, Sendable { case macSetup, audio, labs, replyTools }
-    enum Loss: CaseIterable, Sendable { case hostRemoval, targetDeselection }
+    enum Loss: CaseIterable, Sendable { case hostRemoval, targetDeselection, targetRemoval, hostDisconnect }
 
     @Test(arguments: Tool.allCases)
     func pushingAndReturningFromToolKeepsTheSameCapture(_ tool: Tool) async throws {
@@ -24,6 +24,10 @@ import Testing
         #expect(rig.unexpected.isEmpty && rig.controller.stopReason == nil)
         await rig.controller.update(binding: try rig.currentBinding(), scene: .active) // Return to the card.
         #expect(rig.controller.isListening && rig.capture.startCount == 1)
+        if rig.controller.isListening {
+            try await rig.feed()
+            try await waitUntil { try await !audioFrames(rig.socket).isEmpty }
+        }
         #expect(log.nextBatch()?.events.contains { $0.name == .ambientStop
             || $0.fields[.reason] == .token("binding_changed") } == false)
         await rig.close()
@@ -37,9 +41,15 @@ import Testing
         rig.controller.diagnostics = log
         try await rig.start()
         let root = try RootView(rig: rig, selectionStore: RootSelectionStore())
+        await root.reconcileAmbientDestination() // Push a tool before the later loss, with no second disappearance.
+        #expect(rig.controller.isListening)
         switch loss {
         case .hostRemoval: await rig.store.remove(rig.endpoint.id)
         case .targetDeselection: await root.forgetSelection(preservingRestore: false)
+        case .targetRemoval:
+            try await rig.socket.push(.targets([]))
+            try await waitUntil { await MainActor.run { root.ambientDestinationBinding == nil } }
+        case .hostDisconnect: await rig.store.disconnect(rig.endpoint.id)
         }
         // The root callback must also work after the card has left the screen, with no second disappearance.
         await root.reconcileAmbientDestination()
@@ -50,10 +60,42 @@ import Testing
         await rig.close()
     }
 
+    @Test func disappearanceDuringAndAfterBackgroundRestoreKeepsListening() async throws {
+        let rig = try AmbientReconnectRig()
+        try await rig.start()
+        let root = try RootView(rig: rig, selectionStore: RootSelectionStore())
+        try await rig.drop()
+        root.scenePhase = .background
+        await rig.controller.update(binding: nil, scene: .background)
+        await root.reconcileAmbientDestination()
+        #expect(rig.controller.isListening && rig.controller.reconnect.isPending)
+        try await rig.reconnect()
+        #expect(root.acceptAppliedAmbientRestore())
+        await root.reconcileAmbientDestination()
+        #expect(rig.controller.isListening && rig.controller.binding == root.ambientDestinationBinding)
+        #expect(rig.capture.startCount == 1 && rig.released == 0)
+        await rig.close()
+    }
+
     @Test func nativeCardDisappearanceCallsTheTestedRootCallback() throws {
         let source = try appSource("StationCard.swift")
         #expect(source.contains(".onDisappear { Task { await reconcileAmbientDestination() } }"))
         #expect(!source.contains("await controller.destinationLost()"))
+    }
+
+    @Test func nativeRootObservesBindingWhileToolsCoverTheCard() throws {
+        let source = try appSource("RootView.swift")
+        #expect(source.contains(".onChange(of: ambientDestinationBinding) { _, _ in\n"
+            + "            Task { await reconcileAmbientDestination() }"))
+        let stack = try #require(source.range(of: "NavigationStack {\n            content\n        }"))
+        let observer = try #require(source.range(of: ".onChange(of: ambientDestinationBinding)"))
+        #expect(stack.upperBound < observer.lowerBound)
+    }
+
+    @Test func audioToolOnlyRefreshesOnEntryAndDoesNotReleaseSessionOnExit() throws {
+        let source = try appSource("AudioDiagnosticsView.swift")
+        #expect(source.contains(".task { await model.refresh() }"))
+        #expect(!source.contains(".onDisappear"))
     }
 
     private func makeLog() throws -> (DeviceDiagnostics, () -> Void) {

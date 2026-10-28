@@ -38,12 +38,6 @@ extension RootView {
         return AmbientRestorePresentation(controller: connections.ambientController, confirmedBinding: binding)
     }
 
-    /// The ambient card's disappearance callback, shared with the model-level app fixture.
-    @MainActor
-    func reconcileAmbientDestination() async {
-        await connections.ambientController?.destinationLost()
-    }
-
     @MainActor
     func acceptAppliedAmbientRestore() -> Bool {
         guard let binding = appliedAmbientBinding else { return false }
@@ -250,6 +244,23 @@ extension RootView {
         selectionAuthorizedForReadyConnection = false
         authorizedConnectionGeneration = nil
         await selectionStore.save(nil)
+    }
+}
+
+extension RootView {
+    /// Independent of card visibility and foreground authorization, including a live background restore.
+    var ambientDestinationBinding: AmbientAudioBinding? {
+        selectedHostID.flatMap { host in
+            selectedTargetID.flatMap { connections.ambientBinding(host: host, targetID: $0) }
+        }
+    }
+
+    /// Re-read the root's binding when the task runs; a tool push has not relinquished the destination.
+    @MainActor
+    func reconcileAmbientDestination() async {
+        guard let controller = connections.ambientController, controller.isOn,
+              controller.binding != ambientDestinationBinding else { return }
+        await controller.destinationLost()
     }
 }
 

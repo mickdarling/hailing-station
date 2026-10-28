@@ -85,7 +85,7 @@ struct AudioDiagnosticsView: View {
         .navigationTitle("Audio session")
         .stationToolBackNavigation()
         .task { await model.refresh() }
-        .onDisappear { Task { await model.deactivate() } }
+        // The root and capture controller own this shared session, including while a tool covers the station.
     }
 }
 private extension AudioDiagnosticsView {
