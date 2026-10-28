@@ -5,10 +5,17 @@ import HailProtocol
 public import Observation
 import Synchronization
 
+/// Production waits call `Task.sleep(for:)` directly; only tests inject `sleep`. Calling a stored closure-literal
+/// sleep default from a Task aborted ("freed pointer was not the last allocation") on the macOS 15 runtime (#904).
+func ambientSleep(for duration: Duration, injected sleep: (@Sendable (Duration) async throws -> Void)?) async throws {
+    guard let sleep else { return try await Task.sleep(for: duration) }
+    try await sleep(duration)
+}
+
 /// Device-side confirmation for the retained capture. A host notice is never an owner veto.
 @MainActor
 final class AmbientRestorePrivacy {
-    var sleep: @Sendable (Duration) async throws -> Void = { try await Task.sleep(for: $0) }
+    var sleep: (@Sendable (Duration) async throws -> Void)?
     var now: @Sendable () -> ContinuousClock.Instant = { ContinuousClock().now }
     private var waiting: AmbientAudioBinding?
     private var began: ContinuousClock.Instant?
@@ -29,7 +36,7 @@ final class AmbientRestorePrivacy {
         // Today's hosts ignore no-stream privacy: fail closed in 5 s. Private restoration depends on a host
         // per-connection pre-arm that confirms duck_mode on and starts the next stream private (or its parked state).
         timeout = Task { [weak self, sleep] in
-            guard (try? await sleep(.seconds(5))) != nil, !Task.isCancelled else { return }
+            guard (try? await ambientSleep(for: .seconds(5), injected: sleep)) != nil, !Task.isCancelled else { return }
             self?.finish(false, binding: binding)
         }
         send = Task { [weak self, weak store] in
@@ -128,7 +135,7 @@ public final class AmbientListeningReconnect {
     public private(set) var notice: Notice?
     @ObservationIgnored public var onNotice: (@MainActor (Notice) -> Void)?
     @ObservationIgnored weak var controller: AmbientListeningController?
-    @ObservationIgnored var sleep: @Sendable (Duration) async throws -> Void = { try await Task.sleep(for: $0) }
+    @ObservationIgnored var sleep: (@Sendable (Duration) async throws -> Void)?
     @ObservationIgnored var now: @Sendable () -> ContinuousClock.Instant = { ContinuousClock().now }
     @ObservationIgnored let privacyConfirmation = AmbientRestorePrivacy()
     private(set) var acceptance: AmbientResumeAcceptance?
@@ -195,7 +202,7 @@ public final class AmbientListeningReconnect {
     }
     private func armDeadline(_ remaining: Duration) {
         deadline = Task { [weak self, sleep] in
-            guard (try? await sleep(remaining)) != nil, !Task.isCancelled else { return }
+            guard (try? await ambientSleep(for: remaining, injected: sleep)) != nil, !Task.isCancelled else { return }
             self?.block(.timedOut)
         }
     }

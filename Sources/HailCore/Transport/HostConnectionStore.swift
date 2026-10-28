@@ -745,7 +745,8 @@ public final class AmbientListeningController {
     @ObservationIgnored private let notificationCenter: NotificationCenter
     /// Watches for capture ended by the system, so the toggle drops before queued audio finishes draining.
     @ObservationIgnored private var systemEndObserver: (any NSObjectProtocol)?
-    @ObservationIgnored private let sleep: @Sendable (Duration) async throws -> Void
+    /// Nil in production: waits then call `Task.sleep(for:)` directly (#904).
+    @ObservationIgnored private let sleep: (@Sendable (Duration) async throws -> Void)?
     @ObservationIgnored private let now: @Sendable () -> ContinuousClock.Instant
     /// Fresh streams started this session since the last quiet spell, and when the latest began (#287).
     @ObservationIgnored private var recoveries = 0
@@ -762,7 +763,7 @@ public final class AmbientListeningController {
         requestPermission: @escaping @MainActor () async -> Bool,
         makeStreamer: @escaping MakeStreamer,
         releaseSession: @escaping @MainActor () async -> Void,
-        sleep: @escaping @Sendable (Duration) async throws -> Void = { try await Task.sleep(for: $0) },
+        sleep: (@Sendable (Duration) async throws -> Void)? = nil,
         now: @escaping @Sendable () -> ContinuousClock.Instant = { ContinuousClock().now },
         send: @escaping Send
     ) {
@@ -1009,7 +1010,7 @@ extension AmbientListeningController {
         handoff = .movedHere(from: kind)
         let sleep = sleep
         Task { [weak self] in
-            try? await sleep(AmbientHandoff.confirmationDuration)
+            try? await ambientSleep(for: AmbientHandoff.confirmationDuration, injected: sleep)
             guard let self, self.confirmation == current, case .movedHere? = self.handoff else { return }
             self.handoff = nil
         }
@@ -1044,7 +1045,7 @@ extension AmbientListeningController {
         let sleep = sleep
         let delay = Self.recoveryBackoff[recoveries]
         recoveries += 1
-        let wait = Task { try await sleep(delay) }
+        let wait = Task { try await ambientSleep(for: delay, injected: sleep) }
         recoveryWait = wait
         guard (try? await wait.value) != nil, session == current, isOn, isLive(streamer) else { return false }
         recoveryWait = nil
@@ -1182,7 +1183,7 @@ final class AmbientResumer {
     private var retries: Task<Void, Never>?
 
     init(
-        center: NotificationCenter, sleep: @escaping @Sendable (Duration) async throws -> Void,
+        center: NotificationCenter, sleep: (@Sendable (Duration) async throws -> Void)?,
         backoff: [Duration], attempt: @escaping Attempt, exhausted: @escaping @MainActor () async -> Void
     ) {
         self.center = center
@@ -1192,7 +1193,7 @@ final class AmbientResumer {
         }
         retries = Task { @MainActor [weak self] in
             for delay in backoff {
-                guard (try? await sleep(delay)) != nil, !Task.isCancelled else { return }
+                guard (try? await ambientSleep(for: delay, injected: sleep)) != nil, !Task.isCancelled else { return }
                 if await attempt("retry") { return }
             }
             // An interruption-ended attempt may still be running: let it decide before giving up.
