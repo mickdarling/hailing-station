@@ -305,9 +305,11 @@ extension AmbientListeningReconnect {
     }
     /// Reauthorize the same selection on a new generation. No fresh capture start or foreground requirement.
     func restore(store: HostConnectionStore) {
+        // A closing socket can release its selection waiter before reconnecting is published.
         guard let intent = pending, !renewed,
               let current = store.ambientBinding(host: intent.binding.hostID, targetID: intent.binding.targetID),
-              current.connectionGeneration != intent.binding.connectionGeneration else { return }
+              current.connectionGeneration != intent.binding.connectionGeneration,
+              current.connectionGeneration != intent.droppedGeneration else { return }
         guard withinDeadline() else { return }
         guard current.selection == intent.binding.selection,
               store.snapshots[current.hostID]?.endpoint == intent.endpoint else { return block(.bindingChanged) }

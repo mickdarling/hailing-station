@@ -982,3 +982,26 @@ zero discards, listening stopped, interrupted/failed.
 binding assertion at **79:9**. **2 tests, 1 suite, 5 assertion issues**,
 2.138 seconds, no timeout (`<scratch>/closing-regression-before.log`).
 The existing host-gate assertions at lines 42, 46, 48, and 49 are unchanged.
+
+Restore completion now also rejects the pending attempt's dropped generation,
+matching the existing check before selection starts. It ignores that late
+completion without settling or vetoing the attempt: capture admission stays
+closed, the transport's normal reconnect continues, and the original deadline
+remains armed. This is one additional generation guard in the coordinator; no
+retry, error-classification, authorization, privacy, or owner-veto rule changes.
+The approved infrastructure files and the app production files are untouched.
+
+The deterministic fixture holds close until the store observes the old selection
+completion, then releases it. The recovery regression requires unchanged binding,
+ten discarded gap buffers, one capture/permission activation, the same host and
+target, and interrupted/applied after a later handshake at 59 seconds. It rejects
+PCM on the dropped socket and privacy-off frames on both sockets. The companion
+case expires at 60 seconds during that retry and requires timedOut, ended capture,
+and no applied notice. Existing flapping assertions are not weakened.
+The scratch probe is preserved only as evidence outside the repository.
+
+The targeted serial selection passed **9 tests in 4 suites, 11 cases**,
+10.806 seconds (`<scratch>/r1-fix-pass.log`), including both genuine owner
+reauthorization paths and the complete flapping and selection-failure suites.
+All new scheduling control uses held continuations and an injected clock; no CPU
+load, timing sleep, tool upgrade, or async sleep default is introduced.
