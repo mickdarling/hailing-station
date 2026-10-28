@@ -139,7 +139,9 @@ extension HostSession {
             switch try await send(input, owner: owner) {
             case .delivered:
                 return handedOff(input.target, owner: owner, generation: generation, recordsInput: recordsInput)
-            case .needsConfirmation:
+            case .needsConfirmation(let readBack):
+                // Ambient refusals say nothing was sent; other input keeps confirmation at the Mac.
+                if Self.ambientInputDispatch { await host.cancel(readBack.hash) }
                 if let owner { dropUncommitted(owner.context.id) }
                 return .confirmationRequired
             }
