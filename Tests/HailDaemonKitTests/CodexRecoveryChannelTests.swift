@@ -80,7 +80,7 @@ import Testing
         let began = ContinuousClock().now
         let safety = Task { try? await Task.sleep(for: .seconds(4)); channel.stop() }
         await channel.join()
-        #expect(began.duration(to: .now) < .seconds(2))
+        #expect(began.duration(to: .now) < .seconds(TestTiming.bound(2)))
         #expect(channel.report == nil && channel.reaped)
         safety.cancel(); await safety.value
     }
@@ -94,7 +94,7 @@ import Testing
         send.cancel()
         await #expect(throws: (any Error).self) { try await send.value }
         await channel.join()
-        #expect(began.duration(to: .now) < .seconds(2))
+        #expect(began.duration(to: .now) < .seconds(TestTiming.bound(2)))
         #expect(channel.stopped && channel.reaped)
         safety.cancel(); await safety.value
     }

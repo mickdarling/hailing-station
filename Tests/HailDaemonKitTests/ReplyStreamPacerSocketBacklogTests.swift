@@ -64,7 +64,7 @@ import Testing
         #expect(result.frames <= 5) // Includes a frame crossing the submit/read observation boundary.
         #expect(result.pcm <= 300_000)
         // One full frame plus 1 s for loopback observation scheduling under CI load.
-        #expect(result.lead <= ReplyStreamPacer.leadSeconds + 1.25 + 1)
+        #expect(result.lead <= ReplyStreamPacer.leadSeconds + 1.25 + TestTiming.bound(1))
         #expect(result.read == 37)
     }
 
