@@ -163,3 +163,26 @@ test('bounded UTF-8 controls reject duplicate and escaped duplicate keys', () =>
   assert.throws(() => parseControl(Buffer.alloc(1025, 32)), /invalid_control/);
   assert.throws(() => parseControl(Buffer.from([0xff])), /invalid_control/);
 });
+
+test('a late commit cannot renew expired admission when the timer has not run', async t => {
+  const { worker, state, voice } = await fixture(t);
+  await worker.command(record('prepare')); voice(); state.wall = state.mono = 131;
+  await assert.rejects(worker.command(record('commit')), /admission_expired/);
+  await worker.poll(); assert.equal(state.interrupts, 0);
+});
+test('late child authorization cannot revive original expired admission', async t => {
+  const { worker, state, voice } = await fixture(t);
+  await worker.command(record('prepare')); voice(); state.wall = state.mono = 129;
+  await worker.command(record('commit')); await worker.poll();
+  state.wall = state.mono = 131;
+  await assert.rejects(worker.command(record('authorize')), /admission_expired/);
+  await worker.poll(); assert.equal(state.interrupts, 0);
+});
+test('a matching snapshot returned after admission expiry cannot bind or interrupt', async t => {
+  const { worker, state, voice } = await fixture(t, {
+    beforeRead: value => { if (value.snapshotReads === 2) value.wall = value.mono = 131; },
+  });
+  await worker.command(record('prepare')); voice(); await worker.command(record('commit'));
+  await worker.command(record('authorize')); await worker.poll();
+  assert.equal(worker.pinned, undefined); assert.equal(state.interrupts, 0);
+});

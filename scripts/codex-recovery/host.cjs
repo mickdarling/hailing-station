@@ -68,7 +68,7 @@ class HostRecovery {
       if (this.lease || this.done) refuse('invalid_control');
       this.lease = value; this.busy = true;
       try {
-        this.lock(); this.owned = this.lookup(this.config);
+        this.lock(); readAttempt(this.config); this.owned = this.lookup(this.config);
         this.control = this.open(this.owned.socket);
         await this.control.initialize(); this.validate();
         const snapshot = await this.control.snapshot(this.config.threadId); this.validate();
@@ -82,6 +82,7 @@ class HostRecovery {
     if (!this.lease || value.request !== this.lease.request || value.generation !== this.lease.generation) refuse('foreign_control');
     if (value.op === 'retire') { this.retire(); return; }
     if (!this.ready || this.done) refuse('invalid_control');
+    if (this.mono() >= this.admissionDeadline) refuse('admission_expired');
     if (value.op === 'commit') {
       if (this.committed) refuse('invalid_control');
       this.committed = true; this.authorizationDeadline = this.mono() + 5;
@@ -107,12 +108,13 @@ class HostRecovery {
         if (this.mono() >= this.admissionDeadline) this.retire('commit_unconfirmed');
         return;
       }
-      if (!this.authorized && this.mono() >= this.authorizationDeadline) {
+      if (!this.authorized && this.mono() >= Math.min(this.authorizationDeadline, this.admissionDeadline)) {
         this.retire('child_ack_unconfirmed'); return;
       }
       const snapshot = await this.control.snapshot(this.config.threadId); this.validate();
       const turn = snapshot.turn;
       if (!this.pinned) {
+        if (this.mono() >= this.admissionDeadline) { this.retire('request_unobserved'); return; }
         if (!turn || turn.id === this.baseline) {
           if (this.mono() >= this.admissionDeadline) this.retire('request_unobserved');
           return;
