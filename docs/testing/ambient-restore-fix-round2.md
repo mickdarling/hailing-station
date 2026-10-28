@@ -872,3 +872,17 @@ the existing notice copy, fixed log token, and destination-selection action.
 Other failures retain their existing classification. This changes only the
 failed-state branch; request cleanup, privacy, deadlines, sleep defaults, and
 app production code are unchanged.
+
+## CI follow-up
+
+At the preceding core head, the deterministic
+`AmbientReconnectSelectFailureTests.selectionFailureBeforeObservedDropFlapsAndRestores`
+probe holds the selection ping and injects notReady or cancellation before any
+second socket loss is reported. Both cases failed at
+`Tests/HailCoreTests/AmbientReconnectSelectFailureTests.swift:13:9`, `:14:9`,
+`:15:9`, and `:16:9`: blocked instead of interrupted, reauthorizationNeeded,
+capture no longer armed, and capture stopped. **1 parameterized test in 1 suite,
+2 cases, 8 assertion issues**, 2.745 seconds, no timeout. The warnings-as-errors
+baseline build passed. Evidence is `<scratch>/selection-fail-before.log`.
+The fixture uses held continuations and an injected clock, with deadline checks
+performed explicitly; it introduces no timed race or sleep delay.
