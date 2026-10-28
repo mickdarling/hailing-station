@@ -183,8 +183,13 @@ public actor HostSession {
         case closed
     }
 
-    public static let capabilities = ["connection_probe", "list_targets", "ping", ReplySegments.capability]
+    public static let capabilities = ["connection_probe", "list_targets", "ping", ReplySegments.capability,
+                                      ModeSnapshot.capability]
 
+    /// Listener-owned state readers; absent for callers without ambient wiring. The off callback checks the
+    /// live peer before clearing parks, so teardown and shutdown cannot authorize a late snapshot switch.
+    let snapshot: @Sendable (UUID) -> [ControlPayload]
+    let snapshotOff: (@Sendable (UUID) async -> Bool?)?
     let host: HailHost
     let authorizer: any HostSessionAuthorizing
     let hostName: String
@@ -227,8 +232,14 @@ public actor HostSession {
             Int64((Date().timeIntervalSince1970 * 1_000).rounded(.down))
         },
         requestClock: @escaping @Sendable () -> ContinuousClock.Instant = { .now },
-        providerTurnEndsReported: Bool = false
+        providerTurnEndsReported: Bool = false,
+        modeSnapshot: @escaping @Sendable (UUID) -> [ControlPayload] = { _ in
+            [.duckMode(on: false), .mediaMode(on: false)]
+        },
+        snapshotPrivacyOff: (@Sendable (UUID) async -> Bool?)? = nil
     ) {
+        snapshot = modeSnapshot
+        snapshotOff = snapshotPrivacyOff
         self.host = host
         self.providerTurnEndsReported = providerTurnEndsReported
         self.authorizer = authorizer
@@ -341,10 +352,14 @@ public actor HostSession {
         peerDeviceKind = AmbientTakeOver.deviceKind(hello.deviceKind)
         let info = HelloInfo(
             versions: VersionNegotiation.supported,
-            capabilities: authorizer.capabilities + [ReplySegments.capability],
+            capabilities: authorizer.capabilities + [ReplySegments.capability, ModeSnapshot.capability],
             deviceName: hostName
         )
-        return HostSessionResult(frames: [response(.hello(info), version: version)])
+        // WebSocketPeer sends this whole batch before receiving the next frame. Reading the snapshot is
+        // synchronous and does not arm privacy, hold replies, consume parks or start a child.
+        let modes = peerCapabilities.contains(ModeSnapshot.capability) ? snapshot(connectionID) : []
+        return HostSessionResult(frames: [response(.hello(info), version: version)]
+            + modes.map { response($0, version: version) })
     }
 
     func failure(
@@ -389,9 +404,16 @@ extension HostSession {
             await gate.noteInputRoute(route, connection: connectionID)
             return HostSessionResult(frames: [])
         }
-        // The privacy switch (#735 S-6) for this connection's own ambient stream only, never another's. Never answered:
-        // the `duck_mode` notice follows when privacy changed.
+        // The privacy switch (#735 S-6). A capable, unarmed owner's off also clears parks (#941),
+        // answered here; an armed switch keeps the existing gate path and its notice.
         if case .control(.setPrivacy(let on)) = frame.payload, let gate = authorizer.ambientAudio {
+            if !on, peerCapabilities.contains(ModeSnapshot.capability), let snapshotOff {
+                guard let armed = await snapshotOff(connectionID) else { return HostSessionResult(frames: []) }
+                if !armed {
+                    let off = response(.duckMode(on: false, reason: "device"), version: version)
+                    return HostSessionResult(frames: [off])
+                }
+            }
             await gate.setPrivacy(on, connection: connectionID)
             return HostSessionResult(frames: [])
         }

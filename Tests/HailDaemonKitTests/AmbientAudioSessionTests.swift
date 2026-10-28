@@ -40,7 +40,7 @@ import Testing
         // `pasted_text` (#608) is a final-text capability, not an ambient one.
         #expect(capabilities == [
             "list_targets", "ping", "select_target", "send_text", "escape", "receive_replies",
-            PastedText.capability, ReplySegments.capability
+            PastedText.capability, ReplySegments.capability, ModeSnapshot.capability
         ])
         let result = await session.receive(audioFrame(ambientSegment(stream: UUID(), sequence: 0)))
         #expect(try onlyControl(result) == .error(code: .unauthorized, message: "terminal action is not authorized"))
@@ -52,8 +52,8 @@ import Testing
         let (host, adapter) = try await ambientHost()
         let gate = ambientGate(sink: sink, clock: clock)
         let (session, capabilities) = try await openSession(PersonalTerminalAuthorizer(ambientAudio: gate), host: host)
-        #expect(capabilities.suffix(5) == ["stream_audio", AmbientOverheard.capability, AmbientInput.capability,
-                                          DuckMode.privacySwitchCapability, ReplySegments.capability])
+        #expect(capabilities.suffix(6) == ["stream_audio", AmbientOverheard.capability, AmbientInput.capability,
+                                          DuckMode.privacySwitchCapability, ReplySegments.capability, ModeSnapshot.capability])
         let stream = UUID()
         #expect((await session.receive(audioFrame(ambientSegment(stream: stream, sequence: 0)))).frames.isEmpty)
         #expect((await session.receive(audioFrame(ambientSegment(stream: stream, sequence: 2, isFinal: true))))
