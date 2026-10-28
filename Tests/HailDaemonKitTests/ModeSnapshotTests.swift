@@ -115,7 +115,7 @@ struct ModeSnapshotTests {
         _ = await session.receive(sessionFrame(payload: .control(.setPrivacy(on: false))))
         #expect(rig.router.state.withLock { $0.parkOverflow })
         await rig.finish()
-        #expect(rig.router.privacyOffFromSnapshot(connection: UUID()) == nil)
+        #expect(rig.router.privacyOffFromSnapshot(connection: UUID()) == .refused)
         #expect(rig.router.state.withLock { $0.parkOverflow })
     }
 }
@@ -145,7 +145,8 @@ struct SnapshotPeer {
         }
         self.hello = hello
         if capable {
-            let duck = try await receiveFrame(on: socket, step: "snapshot privacy before any start", within: .seconds(3))
+            let duck = try await receiveFrame(on: socket, step: "snapshot privacy before any start",
+                                              within: .seconds(3))
             let media = try await receiveFrame(on: socket, step: "snapshot media before any start", within: .seconds(3))
             modes = [duck.payload, media.payload]
             let extra = try await AmbientPrivacySwitchTests.untilPong(socket, step: "snapshot exactly once")

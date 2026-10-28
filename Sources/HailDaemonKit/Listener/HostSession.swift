@@ -172,6 +172,11 @@ public struct HostSessionResult: Sendable, Equatable {
     }
 }
 
+/// A snapshot-capable owner's off: refused, an armed switch exit, or parks cleared without an arming.
+public enum ModeSnapshotPrivacyOff: Sendable, Equatable {
+    case refused, armed, cleared
+}
+
 /// One peer's protocol state. Every path to `HailHost.send` runs through this session's authorizer and its captured
 /// selection: `deliver` accepts only an `AuthorizedInput`, which only the authorizer's own allow decision on that
 /// (possibly voice-routed) frame can produce. `authorize` must be free of side effects: a frame to a selected voice
@@ -189,7 +194,7 @@ public actor HostSession {
     /// Listener-owned state readers; absent for callers without ambient wiring. The off callback checks the
     /// live peer before clearing parks, so teardown and shutdown cannot authorize a late snapshot switch.
     let snapshot: @Sendable (UUID) -> [ControlPayload]
-    let snapshotOff: (@Sendable (UUID) async -> Bool?)?
+    let snapshotOff: (@Sendable (UUID) async -> ModeSnapshotPrivacyOff)?
     let host: HailHost
     let authorizer: any HostSessionAuthorizing
     let hostName: String
@@ -236,7 +241,7 @@ public actor HostSession {
         modeSnapshot: @escaping @Sendable (UUID) -> [ControlPayload] = { _ in
             [.duckMode(on: false), .mediaMode(on: false)]
         },
-        snapshotPrivacyOff: (@Sendable (UUID) async -> Bool?)? = nil
+        snapshotPrivacyOff: (@Sendable (UUID) async -> ModeSnapshotPrivacyOff)? = nil
     ) {
         snapshot = modeSnapshot
         snapshotOff = snapshotPrivacyOff
@@ -335,6 +340,23 @@ public actor HostSession {
         }
     }
 
+    func failure(
+        _ code: ErrorCode, _ message: String, close: Bool, version: Int = ProtocolVersion.current
+    ) -> HostSessionResult {
+        if close {
+            state = .closed
+            segmentedReplies.removeAll()
+            replyRequests.removeAll()
+            evictedForHandoff.removeAll() // Nothing can be restored into a closed session (#723).
+        }
+        return HostSessionResult(
+            frames: [response(.error(code: code, message: message), version: version)],
+            disposition: close ? .close : .keepOpen
+        )
+    }
+}
+
+extension HostSession {
     private func negotiate(_ frame: Frame) async -> HostSessionResult {
         guard case .control(.hello(let hello)) = frame.payload else {
             return failure(.malformed, "first frame must be hello", close: true)
@@ -362,23 +384,6 @@ public actor HostSession {
             + modes.map { response($0, version: version) })
     }
 
-    func failure(
-        _ code: ErrorCode, _ message: String, close: Bool, version: Int = ProtocolVersion.current
-    ) -> HostSessionResult {
-        if close {
-            state = .closed
-            segmentedReplies.removeAll()
-            replyRequests.removeAll()
-            evictedForHandoff.removeAll() // Nothing can be restored into a closed session (#723).
-        }
-        return HostSessionResult(
-            frames: [response(.error(code: code, message: message), version: version)],
-            disposition: close ? .close : .keepOpen
-        )
-    }
-}
-
-extension HostSession {
     func response(_ control: ControlPayload, version: Int) -> Frame {
         Frame(version: version, timestamp: now(), source: "haild", payload: .control(control))
     }
@@ -408,8 +413,10 @@ extension HostSession {
         // answered here; an armed switch keeps the existing gate path and its notice.
         if case .control(.setPrivacy(let on)) = frame.payload, let gate = authorizer.ambientAudio {
             if !on, peerCapabilities.contains(ModeSnapshot.capability), let snapshotOff {
-                guard let armed = await snapshotOff(connectionID) else { return HostSessionResult(frames: []) }
-                if !armed {
+                switch await snapshotOff(connectionID) {
+                case .refused: return HostSessionResult(frames: [])
+                case .armed: break
+                case .cleared:
                     let off = response(.duckMode(on: false, reason: "device"), version: version)
                     return HostSessionResult(frames: [off])
                 }

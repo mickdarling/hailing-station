@@ -86,23 +86,7 @@ struct AmbientPrivacyParkSetTests {
         #expect(await eventually {
             rig.details("ambient_privacy_restored").last == "source=park from=overflow to=\(fresh) device_match=false"
         }, "restored from the overflow marker")
-        #expect(await eventually {
-            (try? rig.fake.recorded("argv.1.txt"))?.contains("--start-private") == true
-        }, "overflow start-private marker")
-        #expect(await eventually { router.activePipeline?.hearsAudio == true }, "restored child confirmed private")
-        // Remove this restored connection's own contribution, without an owner's off. A second fresh
-        // connection must still inherit the overflow, even after the first restore (K1 consumes it).
-        let token = try #require(router.duckArming(connection: fresh))
-        await rig.env.listener.authorizer.ambientAudio?.end(connection: fresh)
-        router.stop(connection: fresh)
-        router.endStaleSource(PrivacySource(connection: fresh, token: token), verdict: "stale", off: UUID(),
-                              notSources: [], reason: "device")
-        let (_, further) = try await rig.start(name: RestoreRig.appName)
-        #expect(router.duckMode(connection: further), "a restore never consumes overflow privacy")
-        #expect(await eventually {
-            (try? rig.fake.recorded("argv.2.txt"))?.contains("--start-private") == true
-        }, "a further connection also launches start-private")
-        #expect(await eventually { router.activePipeline?.hearsAudio == true }, "further private started confirmed")
+        let further = try await furtherOverflowStart(rig, after: fresh)
         router.ambientPrivacy(false, connection: further)
         #expect(router.state.withLock { $0.parks.isEmpty && !$0.parkOverflow })
         #expect(await eventually {
@@ -156,6 +140,30 @@ struct AmbientPrivacyParkSetTests {
                               notSources: [], reason: "voice")
         #expect(router.state.withLock { Array($0.parks.keys) } == [other])
         #expect(scoped.withLock { $0 } == ["cleared=0 kept=1 \(judged)=armed", "cleared=1 kept=0 \(judged)=stale"])
+    }
+}
+
+private extension AmbientPrivacyParkSetTests {
+    func furtherOverflowStart(_ rig: RestoreRig, after fresh: UUID) async throws -> UUID {
+        let router = rig.router
+        #expect(await eventually {
+            (try? rig.fake.recorded("argv.1.txt"))?.contains("--start-private") == true
+        }, "overflow start-private marker")
+        #expect(await eventually { router.activePipeline?.hearsAudio == true }, "restored child confirmed private")
+        // Remove this restored connection's own contribution, without an owner's off. A second fresh
+        // connection must still inherit the overflow, even after the first restore (K1 consumes it).
+        let token = try #require(router.duckArming(connection: fresh))
+        await rig.env.listener.authorizer.ambientAudio?.end(connection: fresh)
+        router.stop(connection: fresh)
+        router.endStaleSource(PrivacySource(connection: fresh, token: token), verdict: "stale", off: UUID(),
+                              notSources: [], reason: "device")
+        let (_, further) = try await rig.start(name: RestoreRig.appName)
+        #expect(router.duckMode(connection: further), "a restore never consumes overflow privacy")
+        #expect(await eventually {
+            (try? rig.fake.recorded("argv.2.txt"))?.contains("--start-private") == true
+        }, "a further connection also launches start-private")
+        #expect(await eventually { router.activePipeline?.hearsAudio == true }, "further private started confirmed")
+        return further
     }
 }
 

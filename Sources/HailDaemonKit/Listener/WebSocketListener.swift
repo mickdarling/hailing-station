@@ -194,7 +194,7 @@ extension WebSocketListener {
                                   modeSnapshot: { [ambient] in
             ambient?.modeSnapshot(connection: $0) ?? [.duckMode(on: false), .mediaMode(on: false)]
         }, snapshotPrivacyOff: { [weak self] in
-            await self?.privacyOffFromSnapshot(connection: $0)
+            await self?.privacyOffFromSnapshot(connection: $0) ?? .refused
         })
         await session.attachLastInput(lastInput, recordStoppedReply: { [stoppedReplyIDs] id in
             stoppedReplyIDs.record(id)
@@ -221,9 +221,9 @@ extension WebSocketListener {
 
     /// No suspension between checking peer membership and the router's off. `peerEnded` removes the peer
     /// before ending it at the gate, so even an off in flight at teardown cannot clear a later park.
-    private func privacyOffFromSnapshot(connection: UUID) -> Bool? {
-        guard !stopped, peers.values.contains(where: { $0.session.connectionID == connection }) else { return nil }
-        return ambient?.privacyOffFromSnapshot(connection: connection)
+    private func privacyOffFromSnapshot(connection: UUID) -> ModeSnapshotPrivacyOff {
+        guard !stopped, peers.values.contains(where: { $0.session.connectionID == connection }) else { return .refused }
+        return ambient?.privacyOffFromSnapshot(connection: connection) ?? .refused
     }
 
     private func emit(_ event: WebSocketListenerEvent) { log(event) }
@@ -244,9 +244,9 @@ public protocol AmbientListenerWiring: AnyObject, Sendable {
     func attach(_ listener: WebSocketListener)
     /// Read-only effective first-start state (#941); never arms the connection or consumes parked state.
     func modeSnapshot(connection: UUID) -> [ControlPayload]
-    /// An authorized snapshot-capable device's own off: nil refuses, true uses the armed switch path,
-    /// false cleared parks without an arming and needs an off notice.
-    func privacyOffFromSnapshot(connection: UUID) -> Bool?
+    /// An authorized snapshot-capable device's own off: refused, an armed switch exit, or parks cleared
+    /// without an arming and needing an off notice.
+    func privacyOffFromSnapshot(connection: UUID) -> ModeSnapshotPrivacyOff
     /// Stops every child serving `connection`; never cancels a run, so an in-flight dispatch finishes typing.
     func stop(connection: UUID)
     /// `stop(connection:)` with the ended peer's Hello claims (#735 meeting mode restore (MM-E)), which a parked
@@ -301,7 +301,7 @@ extension AmbientListenerWiring {
     public func modeSnapshot(connection: UUID) -> [ControlPayload] {
         [.duckMode(on: false), .mediaMode(on: false)]
     }
-    public func privacyOffFromSnapshot(connection: UUID) -> Bool? { nil }
+    public func privacyOffFromSnapshot(connection: UUID) -> ModeSnapshotPrivacyOff { .refused }
 
     /// A wiring that cannot reload refuses rather than touching the stream.
     public func reload() async -> AmbientReloadOutcome { .refused("unsupported") }
@@ -754,15 +754,15 @@ public final class AmbientRightyoRouter: AmbientAudioSink, AmbientListenerWiring
 
     /// The snapshot never armed this connection, but its owner's switch off still clears every park and
     /// overflow through the existing owner-off path. A stopping or closed router refuses, as pre-arm does.
-    public func privacyOffFromSnapshot(connection: UUID) -> Bool? {
+    public func privacyOffFromSnapshot(connection: UUID) -> ModeSnapshotPrivacyOff {
         state.withLock { state in
             guard !state.shuttingDown, state.listener?.value != nil, !state.closed.contains(connection) else {
-                return nil
+                return .refused
             }
             // An armed connection keeps the existing gate/switch exit, including its clips and notice.
-            if state.duck[connection] != nil { return true }
+            if state.duck[connection] != nil { return .armed }
             ownerOff(connection, reason: "device", in: &state)
-            return false
+            return .cleared
         }
     }
 

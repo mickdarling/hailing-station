@@ -53,7 +53,8 @@ import Testing
         let gate = ambientGate(sink: sink, clock: clock)
         let (session, capabilities) = try await openSession(PersonalTerminalAuthorizer(ambientAudio: gate), host: host)
         #expect(capabilities.suffix(6) == ["stream_audio", AmbientOverheard.capability, AmbientInput.capability,
-                                          DuckMode.privacySwitchCapability, ReplySegments.capability, ModeSnapshot.capability])
+                                          DuckMode.privacySwitchCapability, ReplySegments.capability,
+                                          ModeSnapshot.capability])
         let stream = UUID()
         #expect((await session.receive(audioFrame(ambientSegment(stream: stream, sequence: 0)))).frames.isEmpty)
         #expect((await session.receive(audioFrame(ambientSegment(stream: stream, sequence: 2, isFinal: true))))
