@@ -863,3 +863,12 @@ test build passed. The serial test failed without a timeout: **1 test in 1 suite
 (missing destination-selection action). Evidence is
 `<scratch>/refusal-fail-before.log`. The core-only version checks notice copy
 instead of the app action; the merged app version restores that action assertion.
+
+Failed snapshot handling now classifies the connection's explicit unauthorized
+error prefix before the generic non-transport block. The store already calls
+this handler before clearing selection requests, so the notice settles with
+`reauthorizationNeeded` even when the selection catch runs afterward. It reuses
+the existing notice copy, fixed log token, and destination-selection action.
+Other failures retain their existing classification. This changes only the
+failed-state branch; request cleanup, privacy, deadlines, sleep defaults, and
+app production code are unchanged.

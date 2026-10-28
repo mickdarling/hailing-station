@@ -236,7 +236,9 @@ extension AmbientListeningReconnect {
     func receive(_ snapshot: HostConnectionSnapshot, previous: HostConnectionSnapshot?, store: HostConnectionStore) {
         recordDrop(snapshot, previous: previous, store: store)
         guard let intent = pending, intent.binding.hostID == snapshot.id else { return }
-        if case .failed = snapshot.state { return block(.nonTransport) }
+        if case .failed(let reason) = snapshot.state {
+            return block(reason.hasPrefix("host error: unauthorized:") ? .reauthorizationNeeded : .nonTransport)
+        }
         if snapshot.state == .disconnected { return block(.explicitDisconnect) }
         if snapshot.endpoint != intent.endpoint { return block(.endpointChanged) }
         guard snapshot.state == .ready, snapshot.receivedTargetList else { return }
