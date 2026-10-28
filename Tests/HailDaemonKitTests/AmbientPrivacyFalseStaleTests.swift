@@ -94,7 +94,7 @@ struct AmbientPrivacyFalseStaleTests {
         cleared.peer.cancel()
         #expect(await eventually { router.state.withLock { $0.privacy[cleared.source] == nil } }, "teardown marker")
         await rig.drainMeetingChanges()
-        #expect(router.state.withLock { $0.staleCleared.isEmpty && $0.parkedPrivacy == nil })
+        #expect(router.state.withLock { $0.staleCleared.isEmpty && $0.parks.isEmpty })
         #expect(rig.details("ambient_privacy_parked").isEmpty)
         #expect(rig.details("ambient_privacy_source_restored").isEmpty)
         let (_, next) = try await rig.start(name: RestoreRig.appName)

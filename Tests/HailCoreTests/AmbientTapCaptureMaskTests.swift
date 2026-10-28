@@ -113,9 +113,13 @@ import Testing
 
     @Test func missedEndIsHealedWithoutWaitingForAReplyOrSceneActivation() async throws {
         let rig = TapMaskRig()
+        let livenessClock = TapCaptureLivenessClock()
+        livenessClock.install(on: rig.playback)
         CapturePlaybackSuppression.begin(rig.owner, using: rig.playback) // No live capture behind this owner.
         #expect(rig.echoGuard.isMasking)
-        try await waitUntil(timeout: .seconds(3)) { await !rig.playback.isCaptureSuppressed }
+        #expect(await livenessClock.advanceUntilHeal(using: rig.playback) == 1)
+        #expect(!rig.playback.isCaptureSuppressed)
+        #expect(livenessClock.intervals == [.seconds(1)])
         #expect(!CapturePlaybackSuppression.hasLedger(for: rig.playback))
         rig.clock.advance(by: .milliseconds(400))
         #expect(!rig.echoGuard.isMasking)

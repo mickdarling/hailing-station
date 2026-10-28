@@ -1,8 +1,6 @@
 #if os(macOS)
 import Foundation
 import HailProtocol
-import Network
-import Synchronization
 import Testing
 @testable import HailDaemonKit
 
@@ -12,97 +10,6 @@ struct PrivacyOffSettings: Sendable {
     static let silent = Self(probeTimeout: .milliseconds(500))
     var probeTimeout: Duration = .seconds(3)
     var offScoping: (@Sendable (UUID) async -> Void)?
-}
-
-/// A device whose WebSocket stack never answers a ping (`autoReplyPing` off, and nothing read once it is set up), as
-/// a dropped phone's socket haild still holds open. The app's own transport, `URLSessionWebSocketTask`, answers pings
-/// itself, as the rig's other devices do. Synthetic only; every wait bounded.
-final class SilentPeer: @unchecked Sendable {
-    let connection: NWConnection
-
-    init(port: UInt16) throws {
-        let options = NWProtocolWebSocket.Options(.version13)
-        options.autoReplyPing = false
-        options.setSubprotocols([WebSocketListener.subprotocolName])
-        let parameters = NWParameters(tls: nil, tcp: NWProtocolTCP.Options())
-        parameters.defaultProtocolStack.applicationProtocols.insert(options, at: 0)
-        let url = try #require(URL(string: "ws://127.0.0.1:\(port)"))
-        connection = NWConnection(to: .url(url), using: parameters)
-        connection.start(queue: .global())
-    }
-
-    func send(_ frame: Frame) async throws {
-        let context = NWConnection.ContentContext(identifier: "silent", metadata: [
-            NWProtocolWebSocket.Metadata(opcode: .binary)
-        ])
-        let data = try FrameCoding.encode(frame)
-        try await bounded { done in
-            self.connection.send(content: data, contentContext: context, isComplete: true,
-                                 completion: .contentProcessed { done($0.map { $0 as any Error }) })
-        }
-    }
-
-    /// The next frame, skipping control messages (it never answers a ping).
-    func receive() async throws -> Frame {
-        while true {
-            let message = Mutex<(Data, Bool)?>(nil)
-            try await bounded { done in
-                self.connection.receiveMessage { data, context, _, error in
-                    let metadata = context?.protocolMetadata(definition: NWProtocolWebSocket.definition)
-                        as? NWProtocolWebSocket.Metadata
-                    let control = metadata.map { $0.opcode != .binary && $0.opcode != .text } ?? true
-                    message.withLock { $0 = (data ?? Data(), control) }
-                    done(error)
-                }
-            }
-            if let received = message.withLock({ $0 }), !received.1 { return try FrameCoding.decode(received.0) }
-        }
-    }
-
-    func cancel() { connection.cancel() }
-
-    /// From now on reads every message, and answers each ping `delay` late, as a slow peer would (#941); other frames
-    /// are dropped. Ends with the connection.
-    func answerPingsLate(after delay: Duration) {
-        let connection = connection
-        Task {
-            while true {
-                let ping = Mutex<Data?>(nil)
-                let failed = Mutex(false)
-                await withCheckedContinuation { (continuation: CheckedContinuation<Void, Never>) in
-                    connection.receiveMessage { data, context, _, error in
-                        let metadata = context?.protocolMetadata(definition: NWProtocolWebSocket.definition)
-                            as? NWProtocolWebSocket.Metadata
-                        if metadata?.opcode == .ping { ping.withLock { $0 = data ?? Data() } }
-                        failed.withLock { $0 = error != nil || context == nil }
-                        continuation.resume()
-                    }
-                }
-                if failed.withLock({ $0 }) { return }
-                guard let payload = ping.withLock({ $0 }) else { continue }
-                try? await Task.sleep(for: delay)
-                let pong = NWConnection.ContentContext(identifier: "late-pong", metadata: [
-                    NWProtocolWebSocket.Metadata(opcode: .pong)
-                ])
-                connection.send(content: payload, contentContext: pong, isComplete: true, completion: .idempotent)
-            }
-        }
-    }
-
-    /// Runs `operation` until it calls back, or cancels the connection after 15 s, so no wait outlives the suite.
-    private func bounded(_ operation: (@escaping @Sendable ((any Error)?) -> Void) -> Void) async throws {
-        let connection = connection
-        let timer = Task {
-            try? await Task.sleep(for: .seconds(15))
-            if !Task.isCancelled { connection.cancel() }
-        }
-        defer { timer.cancel() }
-        try await withCheckedThrowingContinuation { (continuation: CheckedContinuation<Void, any Error>) in
-            operation { error in
-                if let error { continuation.resume(throwing: error) } else { continuation.resume() }
-            }
-        }
-    }
 }
 
 /// The restore rig's pieces for #941's privacy park tests: segments told apart by their bytes, a held child let go,
@@ -123,7 +30,7 @@ extension RestoreRig {
     func connectSilent(kind: String? = "phone",
                        capabilities: [String] = ["probe"]) async throws -> (SilentPeer, UUID) {
         let before = await Self.connections(of: env.listener)
-        let peer = try SilentPeer(port: env.port)
+        let peer = try await SilentPeer.connect(port: env.port)
         try await peer.send(sessionFrame(payload: .control(.hello(HelloInfo(
             versions: [1], capabilities: capabilities, deviceName: Self.appName, deviceKind: kind
         )))))

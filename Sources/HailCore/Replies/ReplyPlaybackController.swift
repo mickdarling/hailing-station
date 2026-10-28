@@ -79,6 +79,8 @@ public final class ReplyPlaybackController {
     @ObservationIgnored var undeliveredLosses = ReplyClaimWindow() // awaiting observation, oldest first
     // #825: inject a small overflow bound in tests; production retains 1,024 claims.
     @ObservationIgnored var firstAudioClaimLimit = ReplyPlaybackController.seenFrameLimit
+    /// Captured when a suppression ledger starts watching; each player can supply its own sleep (#965, #977).
+    @ObservationIgnored var captureLivenessSleep: CaptureLivenessSleep = { try await Task.sleep(for: $0) }
     @ObservationIgnored var idleNow: @MainActor () -> ContinuousClock.Instant = { .now }
     @ObservationIgnored var idleScheduler: @MainActor (Duration, @escaping @MainActor () -> Void)
         -> @MainActor () -> Void = ReplyPlaybackController.sleepThenFire

@@ -388,7 +388,7 @@ The host answers on the same connection:
 
 - `version` is the host's release version.
 - `build` is the first 16 hex digits of the running executable's SHA-256.
-- `checks` holds 1 to 16 checks, each name at most once. Each check is one of the `haild doctor` names, with whether it passed: `daemon_running`, `build_match`, `host_id_match`, `listener_ready`, `ambient_listening`, `device_connected`, `recent_refusals`, `audit_history`.
+- `checks` holds 1 to 16 checks, each name at most once. Each check is one of the `haild doctor` names, with whether it passed: `daemon_running`, `build_match`, `host_id_match`, `listener_ready`, `ambient_listening`, `device_connected`, `recent_refusals`, `audit_history`. The doctor's `target_input` check (#894) is not one of them, so it is left off.
 
 The doctor's free-text detail and fix never cross the wire, because they can name paths, ports and identities. The device words each check itself and points to `haild doctor` on the Mac for the detail.
 
@@ -422,23 +422,48 @@ to stop.
 `{"command": "media_mode", "on": true | false, "reason"?: "voice" | "timeout", "expires"?: <Unix ms>}` is sent by a
 host to the device whose ambient stream it is, each time the mode changes for that stream. `reason` says why: `voice`
 when the owner said so, `timeout` when an on mode turned itself off. `expires` comes only with `on: true`: when the
-mode will turn itself off, in Unix milliseconds like a frame's `ts`. It is sent only to a device that advertised
+mode will turn itself off, in Unix milliseconds like a frame's `ts`. Changes are sent only to a device that advertised
 `media_mode` (`MediaMode.capability`), because an older device refuses an unknown command. It shows state only: it
 grants no authority, and a device cannot change the mode with it.
 
 The decoder refuses any other key, an unknown `reason`, a non-positive `expires`, or `expires` with `on: false`; the
 schema refuses all but the last, which only the decoder can check.
 
+### Effective first-start mode snapshot (#941 PR B)
+
+`mode_snapshot` (`ModeSnapshot.capability`) is advertised by haild. A device opting in receives exactly one
+`duck_mode {on}` followed by `media_mode {on, expires?}` immediately after the host hello, before the peer reads
+another frame or admits audio. This opt-in permits these two existing frames independently of the individual
+`duck_mode` and `media_mode` capabilities. Older devices receive no snapshot. Capabilities are free strings in the
+hello schema, so no schema change or new command is needed.
+
+The snapshot reports effective first-start privacy (own duck/pre-arm, counting live source, park or overflow) and
+unexpired media state with its original expiry. Privacy wins; otherwise the latest held/parked media-or-meeting
+arming wins. It carries no reason, claims, words, names or hashes, and does not arm or consume anything. There is no
+meeting frame: meeting state remains unresolved on the device and must block any restore requiring it. See
+[rightyo-input.md](rightyo-input.md#effective-modes-after-hello-941-pr-b-host-side) for the admission rule and limits.
+
+An authorized `set_privacy {off}` from an opting-in, live connection clears privacy parks and overflow even if it
+never streamed or armed. Under the same router lock, the host then re-evaluates the snapshot's effective privacy
+rule. If an unrelated counting live holder still applies, the unarmed connection receives `duck_mode {on:true,
+reason:"held_elsewhere"}`; otherwise it receives `duck_mode {on:false, reason:"device"}`. Neither response arms the
+connection, holds its replies or starts a child. An armed one uses the existing switch exit. The initial
+after-hello snapshot itself remains boolean with no reason (#993). Stopping, closed and ended peers cannot use this
+new path. An older connection's unarmed off still does nothing. This is host groundwork, with synthetic tests only;
+app opt-in and automatic restore are later work, and missing or unresolved state blocks restore.
+
 ### Duck mode state (#735)
 
 Duck mode is the owner's rubber-duck mode ("let me think out loud"): while it is on, the owner's turns are kept for
 later instead of being sent as requests. Like media mode it lives on the host, so a device needs to be told.
 
-`{"command": "duck_mode", "on": true | false, "reason"?: "voice" | "timeout" | "device", "expires"?: <Unix ms>}` is
-shaped exactly like `media_mode`. `reason` says why it last changed: `voice` when the owner said so, `timeout` when an
-on mode turned itself off, `device` when a device asked. `expires` comes only with `on: true`. It is sent only to a
-device that advertised `duck_mode` (`DuckMode.capability`), because an older device refuses an unknown command. It
-shows state only and grants no authority. Nothing turns duck mode on yet; the host behaviour comes later in #735.
+`duck_mode` is shaped exactly like `media_mode`: `command` and boolean `on`, with optional `reason` and `expires`
+(Unix milliseconds). Its reason tokens are `voice`, `timeout`, `device` and `held_elsewhere`. `reason` says why it
+last changed: `voice` when the owner said so, `timeout` when an on mode turned itself off, `device` when a device
+asked, or the fixed token `held_elsewhere` when a capable off cleared parks but another counting live holder keeps
+the next start private. `expires` comes only with `on: true`. It is sent only to a device that advertised
+`duck_mode` (`DuckMode.capability`), apart from the explicit `mode_snapshot` opt-in above. It shows state only and
+grants no authority. The host privacy behavior is described in `docs/rightyo-input.md`.
 
 The decoder and the schema refuse the same things as for `media_mode`.
 
@@ -447,8 +472,11 @@ The decoder and the schema refuse the same things as for `media_mode`.
 `{"command": "set_privacy", "on": true | false}` is sent by a device to a host that advertised `set_privacy`
 (`DuckMode.privacySwitchCapability`), when the owner flips the privacy switch in the app. Privacy is duck mode
 internally. It carries nothing else: no target, connection, reason or words. The host turns privacy on or off for that
-connection's own ambient stream only, and only while that connection has one. It answers only with its `duck_mode`
-notice, `reason: "device"`; there is no reply frame. A request that matches the state already held does nothing.
+connection's own ambient stream only, and only while that connection has one. An on from a connection that has not
+opened a stream yet is its pre-arm (#904): the device re-asserts privacy before it resumes after a reconnect, and the
+connection's first stream then starts private. An on after the connection's stream ended is not acted on. It answers
+only with its `duck_mode` notice, `reason: "device"`; there is no reply frame. Except for the snapshot-capable owner-off above, a request that matches the state
+already held does nothing, and so does a refused pre-arm, so a device that hears no notice fails closed.
 
 The device shows privacy as on only once a `duck_mode` notice says so on a live connection; until then (a pending
 switch, connecting, a stale or lost connection, an older host) it shows not private. An older host does not advertise

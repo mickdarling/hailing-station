@@ -342,6 +342,8 @@ enum AmbientStopConfirmation {
     static let saved = RightyoAddressing.key("confirm-saved"), notSaved = RightyoAddressing.key("confirm-not-saved")
     /// An ambient request the owner addressed to a voice route that did not take it (#636): "Nothing was sent."
     static let notSent = RightyoAddressing.key("confirm-not-sent")
+    /// A guarded request needs confirmation at the Mac; until recorded, says "Nothing was sent."
+    static let needsConfirmation = RightyoAddressing.key("confirm-needs-confirmation")
     /// Privacy mode (#735, internally duck): `confirm-privacy-on/` ("Privacy on. I'm only listening for my name.") is
     /// worded as a status, since it also answers an entry said while privacy is already on; `confirm-privacy-off/`
     /// ("Recording again."); `confirm-privacy-status/` answers RightyO's status event while private, and
@@ -359,6 +361,7 @@ enum AmbientStopConfirmation {
     /// "I can't listen privately right now.": a child that cannot keep privacy was refused; privacy stays on.
     static let privacyUnavailable = RightyoAddressing.key("confirm-privacy-unavailable")
     static let reserved: Set<String> = [stopped, idle, muted, unmuted, mediaOn, mediaOff, saved, notSaved, notSent,
+                                        needsConfirmation,
                                         privacyOn, privacyOff, privacyStatus, stillRecording, privacyRefused,
                                         privacyHint, privacyUnavailable, meetingOn, meetingOff, meetingEnded,
                                         rubberDuckOn, rubberDuckOff, meetingResumed]
@@ -386,7 +389,7 @@ enum AmbientStopConfirmation {
     /// The next clip for `persona`; an idle stop without its own clips says "Stopped." instead, and a privacy refusal
     /// without its own "Nothing was sent.". Rubber duck without its own uses the matching meeting clip (#735).
     static func clip(_ persona: String, in library: AmbientAckLibrary) -> Pick? {
-        let fallback = [idle: stopped, privacyRefused: notSent, rubberDuckOn: meetingOn,
+        let fallback = [idle: stopped, privacyRefused: notSent, needsConfirmation: notSent, rubberDuckOn: meetingOn,
                         rubberDuckOff: meetingOff][persona]
         for candidate in [persona] + (fallback.map { [$0] } ?? []) {
             if let (index, clip) = library.nextReserved(candidate) {
@@ -438,7 +441,7 @@ final class HostPhrases: Sendable {
 }
 #endif
 /// The final delivery step of an admitted request. The consumer keeps every validation and correlation rule
-/// in front of this call and treats any thrown error as terminal; implementations must not retry on their own.
+/// in front of this call; per-request refusals may leave the stream running. Implementations must never retry.
 /// `RightyoHostDispatcher` is the direct path; `haild rightyo --reply-to` supplies a reply-socket dispatcher.
 public protocol RightyoDispatching: Sendable {
     func dispatch(text: String, target: String, binding: String) async throws -> RightyoDispatchReceipt
@@ -469,6 +472,25 @@ public struct RightyoHostDispatcher: RightyoDispatching {
             throw RightyoInputError.confirmationRequired
         }
         return RightyoDispatchReceipt(request: nil)
+    }
+}
+/// Per-run guard evidence, reset before dispatch and captured synchronously before a refusal notice is queued.
+/// Only exact built-in rules contribute names; custom names and patterns never leave the policy boundary.
+final class RightyoGuardRefusal: Sendable {
+    @TaskLocal static var current: RightyoGuardRefusal?
+    let hits = Mutex<[String]>([])
+
+    func record(_ names: [String], patterns: [GuardPattern]) {
+        let known = Set(patterns.filter { DangerousPatternGuard.defaults.contains($0) }.map(\.name))
+        hits.withLock { $0 = names.map { known.contains($0) ? $0 : "custom" } }
+    }
+
+    var ruleTokens: String {
+        let known = Set(DangerousPatternGuard.defaults.map(\.name))
+        let tokens = hits.withLock { $0 }.map {
+            known.contains($0) ? $0.replacingOccurrences(of: " ", with: "_") : "custom"
+        }
+        return tokens.isEmpty ? "none" : tokens.joined(separator: "+")
     }
 }
 /// Why a target id cannot be named in the reply block (#188 item 1); refused at startup, before any event. The
@@ -556,7 +578,7 @@ public actor RightyoInputConsumer {
     /// `started` advertised `duck` version 2 or higher ("keeps nothing", rightyo S-1): only then is `privacy` admitted.
     private var privacyCapable = false
     /// `started` advertised `duck` version 3 or higher (#735 S-8, "acks every on-line"): only then is `on` admitted.
-    private var privacyAcks = false
+    private var privacyAcks = false, requestOutcomes = false
     /// Utterances whose transcript RightyO attributed to the owner from a live voiceprint (`role_source`): only these
     /// may enter privacy. A subset of `finals`, so its cap bounds this.
     private var voiceprintOwners = Set<String>()
@@ -567,10 +589,11 @@ public actor RightyoInputConsumer {
     /// that cannot take it is held back, its reason left in `lastRouteRefusal` like a dismissal, and ends nothing.
     private let routing: RightyoVoiceRouting?
     private(set) var lastRouteRefusal: RightyoVoiceRouting.Refusal?
-    /// An un-routed request the target refused only because its input already holds unsent text (#894): held back like
-    /// a route refusal, its refusal (`inputPending`) left here, and ends nothing. Any other refusal of an un-routed
-    /// request still ends the consumer.
+    /// Non-terminal own-target refusals (#894, #847): pending input, confirmation or capacity. The existing heard
+    /// completion path carries each to the listener, including its content-free turn id when available.
     private(set) var lastDeliveryRefusal: LocalDispatchRefusal?
+    /// The first confirmation/capacity refusal survives later successes for the standalone CLI's exit status.
+    public private(set) var requestRefusal: RightyoInputError?
     /// `streamBudgetMs` is an optional ceiling on producer stream time; the default is no ceiling (#188).
     /// `dispatcher` replaces the direct `HailHost.send` step (#188 item 1); without it, `host` delivers directly
     /// and nil `host` validates only. A dispatcher with no host still delivers (it owns its own host access).
@@ -589,9 +612,7 @@ public actor RightyoInputConsumer {
         (self.echoFilter, self.mediaCommands, self.destinations) = (echoFilter, mediaCommands, destinations)
         (self.routing, self.duckActive) = (routing, duckActive)
         self.allowSynthetic = allowSynthetic
-        self.target = target
-        self.binding = binding
-        self.session = session
+        (self.target, self.binding, self.session) = (target, binding, session)
         self.streamBudgetMs = streamBudgetMs
     }
     /// The reply block is a shell-shaped instruction that names the target verbatim, so the id must match the
@@ -687,6 +708,7 @@ public actor RightyoInputConsumer {
             // Only an accepted first `started` mutates session state; a rejected repeat changes nothing.
             if let caps {
                 activationEnabled = caps.activation == "finalized-turn"
+                requestOutcomes = RightyoInputEvent.supportsRequestOutcomes(event.requestOutcomes)
                 speakers = caps.speakers
                 voiceNames = VoiceMute.names(in: event.addressing)
                 forming = event.requestForming != nil
@@ -846,7 +868,13 @@ extension RightyoInputConsumer {
         case "dismiss": try dismiss(event)
         case "conversation": try conversation(event)
         case "request": try request(event)
-        default: break
+        default: try requestOutcome(event)
+        }
+    }
+    private func requestOutcome(_ event: RightyoInputEvent) throws {
+        guard event.type == "request_outcome" else { return }
+        guard requestOutcomes, let request = event.requestId, requests.contains(request) else {
+            throw RightyoInputError.invalidEvent
         }
     }
     private func request(_ event: RightyoInputEvent) throws {
@@ -902,6 +930,7 @@ extension RightyoInputConsumer {
     /// It delivers nothing; the state is kept for status and counted.
     private func conversation(_ event: RightyoInputEvent) throws {
         guard conversational, let state = event.state, conversationStatus.changes < Int.max,
+              event.reason != "request_ended" || requestOutcomes,
               event.utteranceId.map({ finals[$0] != nil }) ?? true,
               event.requestId.map({ attentions[$0] != nil }) ?? true else {
             throw RightyoInputError.invalidEvent
@@ -992,34 +1021,51 @@ extension RightyoInputConsumer {
 
     /// Types the prompt, its reply block naming `address.target`. A routed request the host refuses before its
     /// handoff (any `LocalDispatchRefusal`: offline, rebound, policy, lockdown, rate) is a route refusal that ends
-    /// nothing. An un-routed one refused because the target's input already holds unsent text (#894) ends nothing
-    /// either; it is left in `lastDeliveryRefusal`. Any other failure (another refusal of the stream's own target,
-    /// audit, size, cancellation, listener stop) ends the consumer, as before.
+    /// nothing. Pending input, confirmation and capacity on the own target leave `lastDeliveryRefusal` and continue.
+    /// Any other failure (another refusal of the stream's own target, a refusal after handoff, audit, size,
+    /// cancellation, listener stop) ends the consumer, as before.
     func deliver(
         _ event: RightyoInputEvent, to address: Address, with dispatcher: any RightyoDispatching
     ) async throws -> Bool {
+        let evidence = RightyoGuardRefusal.current ?? RightyoGuardRefusal()
+        evidence.hits.withLock { $0 = [] }
         do {
             try Task.checkCancellation()
-            lastReceipt = try await dispatcher.dispatch(
-                text: event.prompt(speakers: speakers, target: address.target), target: address.target,
-                binding: address.binding, routed: address.route != nil
-            )
-            return true
-        } catch let refusal as LocalDispatchRefusal where !refusal.handedOff {
-            guard let route = address.route else {
-                guard refusal == .inputPending else {
-                    terminal = true
-                    throw refusal
-                }
-                lastDeliveryRefusal = refusal
-                return false
+            lastReceipt = try await RightyoGuardRefusal.$current.withValue(evidence) {
+                try await dispatcher.dispatch(
+                    text: event.prompt(speakers: speakers, target: address.target), target: address.target,
+                    binding: address.binding, routed: address.route != nil
+                )
             }
-            lastRouteRefusal = .notDelivered(route.name)
-            return false
+            return true
+        } catch RightyoInputError.confirmationRequired {
+            return refuse(.confirmationRequired, at: address)
+        } catch let refusal as LocalDispatchRefusal where !refusal.handedOff {
+            if address.route != nil || [.inputPending, .confirmationRequired, .capacityExceeded].contains(refusal) {
+                return refuse(refusal, at: address)
+            }
+            terminal = true
+            throw refusal
         } catch {
             terminal = true
             throw error
         }
+    }
+
+    private func refuse(_ refusal: LocalDispatchRefusal, at address: Address) -> Bool {
+        if requestRefusal == nil {
+            switch refusal {
+            case .confirmationRequired: requestRefusal = .confirmationRequired
+            case .capacityExceeded: requestRefusal = .capacity
+            default: break
+            }
+        }
+        if let route = address.route {
+            lastRouteRefusal = .notDelivered(route.name)
+        } else {
+            lastDeliveryRefusal = refusal
+        }
+        return false
     }
 }
 
