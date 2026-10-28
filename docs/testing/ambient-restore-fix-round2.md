@@ -794,3 +794,8 @@ selection-order or pause-ownership defect. A further security check extends the
 downgrade probe to active listening: arm the existing recovery intent before
 rejecting the downgrade, so the endpoint veto ends capture immediately even
 without a UI binding update. This preserves the same fail-closed pending path.
+
+The final core selection passed **9 tests in 4 suites**, 18.618 seconds.
+Both warnings-as-errors build forms are checked on the delivered core head.
+Linking emits stale debug module-cache path warnings; compiler warnings-as-errors
+checks pass. No native app or physical microphone/haptic proof is claimed.
