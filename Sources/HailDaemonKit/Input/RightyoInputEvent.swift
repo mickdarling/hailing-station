@@ -413,8 +413,8 @@ extension RightyoInputEvent {
 /// Version 1 shared with RightyO's docs/request-outcomes-v1.md; request identity is not transcript text.
 enum RightyoRequestOutcomeState: String, Sendable, CaseIterable {
     case accepted, failed, timedOut = "timed_out", cancelled
-    case replyStarted = "reply_started", replyEnded = "reply_ended"
-    var terminal: Bool { [.failed, .timedOut, .cancelled, .replyEnded].contains(self) }
+    case replyStarted = "reply_started", replyEnded = "reply_ended", replyPublished = "reply_published"
+    var terminal: Bool { [.failed, .timedOut, .cancelled, .replyEnded, .replyPublished].contains(self) }
 }
 
 struct RightyoRequestOutcome: Sendable {
@@ -423,7 +423,7 @@ struct RightyoRequestOutcome: Sendable {
     var asked = false
     var line: String? {
         guard RightyoInputEvent.identifier(session), RightyoInputEvent.requestID(request, session: session),
-              !asked || state == .replyEnded else { return nil }
+              !asked || state == .replyEnded || state == .replyPublished else { return nil }
         var value: [String: Any] = ["version": 1, "session_id": session, "request_id": request,
                                     "state": state.rawValue]
         if asked { value["asked"] = true }
@@ -511,7 +511,7 @@ final class AmbientRequestOutcomes: Sendable {
                   let entry = state.entries[host], entry.waiting == nil,
                   entry.confirmed?.terminal != true, entry.confirmed != value else { return false }
             if value == .accepted, entry.confirmed != nil { return false }
-            if [.replyStarted, .replyEnded].contains(value),
+            if [.replyStarted, .replyEnded, .replyPublished].contains(value),
                entry.confirmed != .accepted && entry.confirmed != .replyStarted { return false }
             guard write(RightyoRequestOutcome(session: session, request: entry.producer,
                                                state: value, asked: asked)) else { return false }

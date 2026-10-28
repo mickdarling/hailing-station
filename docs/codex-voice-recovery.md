@@ -190,3 +190,11 @@ require their paired integration. No worker is installed or automatically enable
 by adding this module. `npm test --prefix scripts/codex-recovery` runs both controller
 and host-worker suites. Python process-lock tests continue to cover kernel locking
 through exec, competing controllers and release on death.
+
+The paired v1 outcome vocabulary also accepts `reply_published`: confirmed final
+publication of that exact request's audio stream (or final text for text-only output).
+It clears matching pending-answer state without pretending the device played or
+heard it. A provider turn ending or merely enqueuing a frame cannot supply this
+proof. Existing confirmed transport-completion callbacks are the integration point;
+question metadata may be carried explicitly. Scoped physical playback remains a
+separate event, and unknown, retired or competing request identities still refuse.
