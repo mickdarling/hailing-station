@@ -42,6 +42,9 @@ were Mac0.1.191/build19, iPhone0.1.116 (owner reported), and iPad0.1.115.
 - An owner-only interruption-attempt checkpoint written before the interrupt.
   A lost acknowledgement is not blindly retried after restarting the watcher.
   The checkpoint is control state (opaque IDs only), not a transcript or diagnostic.
+  A different thread/binding cannot overwrite that checkpoint: foreign state is
+  refused, never treated as an empty attempt set. Host composition must provision
+  a separate private configuration directory for each managed session generation.
 - Content-free status and bounded control failure/backoff. It never answers a
   server approval, authentication, tool or attestation request.
 
@@ -53,6 +56,8 @@ Lock, status, checkpoint and temporary files live in a separate fixed
 lock or configuration. macOS extended ACLs on protected objects are refused even
 when their POSIX mode is0600/0700; configuration/checkpoint reads are byte-bounded
 and checked against the opened inode. The runtime control profile is macOS-only.
+Protected reads open nonblocking before requiring a regular file, so a FIFO cannot
+hang the controller while it holds the kernel lock.
 
 No code replays a user request, switches provider, falls back to Claude, kills a
 Codex daemon, changes policy, or touches microphone/audio configuration.

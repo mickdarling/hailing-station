@@ -234,9 +234,12 @@ function readAttempt(config) {
   const value = JSON.parse(privateRead(file, 2048, 'unsafe_checkpoint'));
   if (value.version !== 1 || typeof value.turnId !== 'string' || value.turnId.length > 128
       || !value.turnId.length || /\s/.test(value.turnId)) refuse('invalid_checkpoint');
-  return value.threadId === config.threadId && value.binding === config.binding ? new Set([value.turnId]) : new Set();
+  if (value.threadId !== config.threadId || value.binding !== config.binding) refuse('checkpoint_scope_mismatch');
+  return new Set([value.turnId]);
 }
 async function cycle(config, clock = new FirstResponse(), seen = new Set(), { lookup = discover } = {}) {
+  // Scope ownership is checked every cycle, not only at process startup.
+  for (const turn of readAttempt(config)) seen.add(turn);
   const owned = lookup(config);
   const validate = () => { if (lookup(config).identity !== owned.identity) refuse('binding_changed'); };
   const control = new Control(owned.socket);

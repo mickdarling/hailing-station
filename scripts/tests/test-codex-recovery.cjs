@@ -311,3 +311,21 @@ test('lost interruption acknowledgement is checkpointed before write and not ret
   assert.deepEqual(result, { state: 'already_attempted', recovered: false });
   assert.equal(interrupts, 1);
 });
+test('a second configuration cannot erase a foreign lost-ack tombstone before the first restarts', async t => {
+  let interrupts = 0;
+  const value = silent();
+  const { socket, dir } = await fixture(t, (peer, request) => {
+    if (request.method === 'turn/interrupt') { interrupts++; peer.close(); return; }
+    const result = request.method === 'thread/read' ? { thread: value.thread } : { data: [value.turn] };
+    peer.send(JSON.stringify({ id: request.id, result }));
+  });
+  const config = { threadId, binding: '$1@2/%3:4', firstResponseSeconds: 90, statusFile: path.join(dir, 'status.json') };
+  const services = { lookup: () => ({ socket, identity: 'authored-owner' }) };
+  await assert.rejects(cycle(config, new FirstResponse(), new Set(), services), /control_closed/);
+  const checkpoint = fs.readFileSync(config.statusFile + '.attempt', 'utf8');
+  await assert.rejects(cycle({ ...config, binding: '$2@3/%4:5' }, new FirstResponse(), new Set(), services), /checkpoint_scope_mismatch/);
+  assert.equal(fs.readFileSync(config.statusFile + '.attempt', 'utf8'), checkpoint);
+  const result = await cycle(config, new FirstResponse(), new Set(), services);
+  assert.equal(result.state, 'already_attempted');
+  assert.equal(interrupts, 1);
+});
