@@ -578,7 +578,7 @@ public actor RightyoInputConsumer {
     /// `started` advertised `duck` version 2 or higher ("keeps nothing", rightyo S-1): only then is `privacy` admitted.
     private var privacyCapable = false
     /// `started` advertised `duck` version 3 or higher (#735 S-8, "acks every on-line"): only then is `on` admitted.
-    private var privacyAcks = false
+    private var privacyAcks = false, requestOutcomes = false
     /// Utterances whose transcript RightyO attributed to the owner from a live voiceprint (`role_source`): only these
     /// may enter privacy. A subset of `finals`, so its cap bounds this.
     private var voiceprintOwners = Set<String>()
@@ -708,6 +708,7 @@ public actor RightyoInputConsumer {
             // Only an accepted first `started` mutates session state; a rejected repeat changes nothing.
             if let caps {
                 activationEnabled = caps.activation == "finalized-turn"
+                requestOutcomes = RightyoInputEvent.supportsRequestOutcomes(event.requestOutcomes)
                 speakers = caps.speakers
                 voiceNames = VoiceMute.names(in: event.addressing)
                 forming = event.requestForming != nil
@@ -867,7 +868,13 @@ extension RightyoInputConsumer {
         case "dismiss": try dismiss(event)
         case "conversation": try conversation(event)
         case "request": try request(event)
-        default: break
+        default: try requestOutcome(event)
+        }
+    }
+    private func requestOutcome(_ event: RightyoInputEvent) throws {
+        guard event.type == "request_outcome" else { return }
+        guard requestOutcomes, let request = event.requestId, requests.contains(request) else {
+            throw RightyoInputError.invalidEvent
         }
     }
     private func request(_ event: RightyoInputEvent) throws {
@@ -923,6 +930,7 @@ extension RightyoInputConsumer {
     /// It delivers nothing; the state is kept for status and counted.
     private func conversation(_ event: RightyoInputEvent) throws {
         guard conversational, let state = event.state, conversationStatus.changes < Int.max,
+              event.reason != "request_ended" || requestOutcomes,
               event.utteranceId.map({ finals[$0] != nil }) ?? true,
               event.requestId.map({ attentions[$0] != nil }) ?? true else {
             throw RightyoInputError.invalidEvent
