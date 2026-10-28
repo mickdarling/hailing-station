@@ -904,3 +904,18 @@ checking the gap. The deterministic cases also verify a late snapshot cannot
 restart selection and that the original deadline expires at sixty seconds.
 The targeted serial selection passed **6 tests in 4 suites**, 11.880 seconds,
 including both authorization paths (`<scratch>/r1-fix-pass.log`).
+
+
+CI follow-up: selection-send failures must initiate transport retry. At
+`1ff44c162ea350c24e0fedf616df211f7ba162ee`, the existing deterministic
+`AmbientReconnectSelectFailureTests.selectionFailureBeforeObservedDropFlapsAndRestores`
+now removes the manually injected second drop and includes networkConnectionLost
+alongside notReady and cancellation. Its retry wait fails at
+`Tests/HailCoreTests/AmbientReconnectSelectFailureTests.swift:21`; each case records
+`WaitUntil.swift:34:17` and the caught error at
+`AmbientReconnectSelectFailureTests.swift:8:6`. **1 test, 1 suite, 3 cases,
+6 issues**, 33.847 seconds; each wait reports zero connector opens. The baseline
+warnings-as-errors compilation passed. Evidence: `<scratch>/selection-fail-before.log`.
+Capture remains armed and gap PCM is discarded; the missing retry alone stalls
+recovery. The test adds no timing delay: a held selection send injects the error,
+and the existing condition waiter observes the retry gate.

@@ -18,8 +18,7 @@ import Testing
         for _ in 0..<10 { try rig.capture.yield(sineBuffer()) }
         #expect(rig.capture.discardedCount == discarded + 10)
         guard rig.controller.isOn else { await rig.close(); return }
-        try await run.observeReadySnapshotFromFailedSocket()
-        try await rig.drop()
+        try await waitUntil { await rig.retry.isWaiting() }
         #expect(rig.notices.map(\.outcome) == [.interrupted])
         run.clock.advance(by: .seconds(4))
         rig.wrapReconnect = { $0 }
@@ -42,7 +41,7 @@ import Testing
     }
 }
 
-enum SelectionTransportFailure: CaseIterable, Sendable { case notReady, cancelled }
+enum SelectionTransportFailure: CaseIterable, Sendable { case notReady, networkLost, cancelled }
 
 @MainActor
 private final class SelectionFailureRun {
@@ -51,17 +50,6 @@ private final class SelectionFailureRun {
     private let failureGate = SleepGate()
 
     init() throws { rig = try AmbientReconnectRig() }
-
-    func observeReadySnapshotFromFailedSocket() async throws {
-        let ping = try #require(try await rig.socket.sentFrames().compactMap { frame -> String? in
-            if case .control(.ping(let nonce)) = frame.payload { return nonce }; return nil
-        }.first)
-        try await rig.socket.push(.pong(nonce: ping))
-        try await waitUntil { await MainActor.run {
-            self.rig.store.snapshots[self.rig.endpoint.id]?.lastPingMilliseconds != nil
-        } }
-        #expect(!rig.controller.reconnect.isReauthorizing)
-    }
 
     func failSelection(_ failure: SelectionTransportFailure) async throws {
         let clock = clock
@@ -78,8 +66,6 @@ private final class SelectionFailureRun {
         clock.advance(by: .seconds(55))
         await failureGate.fire()
         try await waitUntil { await MainActor.run { !self.rig.notices.isEmpty } }
-        #expect(rig.store.snapshots[rig.endpoint.id]?.state == .ready)
-        #expect(await rig.retry.isWaiting() == false)
     }
 }
 
@@ -102,8 +88,11 @@ private actor SelectionFailSocket: WebSocketTransport {
         if selecting, case .control(.ping) = frame.payload {
             selecting = false
             try await gate.sleep(.zero)
-            if failure == .notReady { throw HostConnectionFailure.notReady }
-            throw CancellationError()
+            switch failure {
+            case .notReady: throw HostConnectionFailure.notReady
+            case .networkLost: throw URLError(.networkConnectionLost)
+            case .cancelled: throw CancellationError()
+            }
         }
     }
     func receive() async throws -> Data { try await base.receive() }
