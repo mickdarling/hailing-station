@@ -53,7 +53,8 @@ struct CodexRecoveryConfiguration: Sendable {
     private static func delegatedCode(beside runner: String) throws {
         let directory = URL(fileURLWithPath: runner).deletingLastPathComponent()
         for name in ["host.cjs", "index.cjs", "node_modules/ws/package.json"] {
-            _ = try resource(directory.appendingPathComponent(name).path, executable: false)
+            let expected = directory.appendingPathComponent(name).path
+            guard try resource(expected, executable: false) == expected else { throw CodexRecoveryFault.unavailable }
         }
         let dependency = directory.appendingPathComponent("node_modules/ws")
         var failed = false

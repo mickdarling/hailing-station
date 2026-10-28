@@ -61,6 +61,16 @@ import Testing
         #expect(chmod(delegated.path, 0o666) == 0)
         #expect(throws: CodexRecoveryFault.unavailable) { try CodexRecoveryConfiguration.load(manifest) }
         #expect(chmod(delegated.path, 0o644) == 0)
+        let elsewhere = root.appendingPathComponent("relocated")
+        try FileManager.default.createDirectory(at: elsewhere, withIntermediateDirectories: false)
+        let module = elsewhere.appendingPathComponent("host.cjs")
+        try Data("{}".utf8).write(to: module)
+        let unsafe = elsewhere.appendingPathComponent("index.cjs")
+        try Data("{}".utf8).write(to: unsafe)
+        #expect(chmod(unsafe.path, 0o666) == 0)
+        try FileManager.default.removeItem(at: delegated)
+        try FileManager.default.createSymbolicLink(at: delegated, withDestinationURL: module)
+        #expect(throws: CodexRecoveryFault.unavailable) { try CodexRecoveryConfiguration.load(manifest) }
     }
 }
 #endif
