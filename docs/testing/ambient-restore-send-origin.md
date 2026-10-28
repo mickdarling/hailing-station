@@ -224,3 +224,12 @@ the actor body's strict length budget. These are #206 hygiene changes only;
 they did not cause the host's async-sleep abort. That separate runtime issue is
 tracked in #991. The default observer and store remain inert, with no opt-in
 caller added and no wire or selection behavior changed.
+
+Both warnings-as-errors build forms passed (52.42 s and 135.02 s). The serial
+`SendOrigin` selection passed 13 tests in 6 suites (8.595 s), including the default
+wire/observer checks and explicit generation opt-in checks. Every run used the
+literal shared-process gate, background priority, four compiler jobs with one
+Swift frontend job, all supplied Testing flags, offline resolution, and the
+590-second process-group cleanup bound. Both build forms are repeated after this
+results-only commit on the delivered head. Strict-warning manual lint review and
+`git diff --check` pass; no new suppression or caller opt-in was added.
