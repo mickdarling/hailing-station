@@ -110,14 +110,16 @@ struct RecipientTestRig {
     let clock = RecipientTestClock()
     static let target = "recipient:reply"
 
-    static func make() async throws -> Self {
+    static func make(guardPatterns: [GuardPattern]? = nil) async throws -> Self {
         _ = StallWatchdog.started // #704: names what stalls the pool, on CI only
         let adapter = RecipientContextAdapter()
         let registry = Registry()
         try await registry.register(adapter)
         // Recipient authority is tested here; default guard matching has its own suites.
         // One authored guard reduces unrelated wall-budget exposure in parallel lifecycle tests.
-        var policy = Policy(guardPatterns: [.init(name: "synthetic guard", regex: "^synthetic guarded command$")],
+        var policy = Policy(guardPatterns: guardPatterns ?? [
+            .init(name: "synthetic guard", regex: "^synthetic guarded command$")
+        ],
                             deliveriesPerMinute: 1_000)
         try policy.allow(target, binding: "reply-binding", tier: .open)
         try policy.allow("recipient:other", binding: "other-binding", tier: .open)

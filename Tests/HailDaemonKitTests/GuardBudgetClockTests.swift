@@ -44,6 +44,25 @@ extension Trait where Self == FrozenGuardBudget {
     static var frozenGuardBudget: Self { Self() }
 }
 
+#if os(macOS)
+/// Socket callbacks lose the test's task locals. Rebind its guard clock before starting a run,
+/// so a semantic fixture cannot become a second refusal through a budget timeout.
+struct GuardClockAmbientSink: AmbientAudioSink {
+    let router: AmbientRightyoRouter
+    private let clock = GuardBudgetClock.current
+    func ambientAudio(_ event: AmbientAudioEvent) {
+        GuardBudgetClock.$current.withValue(clock) { router.ambientAudio(event) }
+    }
+    func ambientInputRoute(_ route: String, connection: UUID) {
+        GuardBudgetClock.$current.withValue(clock) { router.ambientInputRoute(route, connection: connection) }
+    }
+    func ambientPrivacy(_ on: Bool, connection: UUID) {
+        GuardBudgetClock.$current.withValue(clock) { router.ambientPrivacy(on, connection: connection) }
+    }
+}
+
+#endif
+
 @Suite struct GuardBudgetClockTests {
     static let benign = "Please summarize our discussion and list the open questions for tomorrow. "
         + String(repeating: "The project notes are in the shared folder. ", count: 40)
@@ -88,9 +107,7 @@ extension RightyoInputConsumerTests {
         let (consumer, adapter) = try await rig()
         _ = try await consumer.consume(start())
         let attended = try await lateRequest(consumer, role: nil, decisionRole: "unknown")
-        await #expect(throws: RightyoInputError.confirmationRequired) {
-            try await GuardBudgetClock.$current.withValue(.expiring()) { try await consumer.consume(attended) }
-        }
+        #expect(try await !GuardBudgetClock.$current.withValue(.expiring()) { try await consumer.consume(attended) })
         #expect(await adapter.deliveries.isEmpty)
         try GuardBudgetClock.$current.withValue(.expiring()) {
             try RightyoInputConsumer.validateTarget("tmux:demo")
