@@ -158,8 +158,8 @@ test('missing child acceptance expires the host authority instead of waiting for
 test('bounded UTF-8 controls reject duplicate and escaped duplicate keys', () => {
   assert.deepEqual(parseControl(Buffer.from(JSON.stringify(record('prepare')))), record('prepare'));
   const valid = JSON.stringify(record('prepare'));
-  assert.throws(() => parseControl(Buffer.from(valid.replace('{', '{"op":"retire",'))), /invalid_control/);
-  assert.throws(() => parseControl(Buffer.from(valid.replace('{', '{"\\u006fp":"retire",'))), /invalid_control/);
+  assert.throws(() => parseControl(Buffer.from('{"op":"retire",' + valid.slice(1))), /invalid_control/);
+  assert.throws(() => parseControl(Buffer.from('{"\\u006fp":"retire",' + valid.slice(1))), /invalid_control/);
   assert.throws(() => parseControl(Buffer.alloc(1025, 32)), /invalid_control/);
   assert.throws(() => parseControl(Buffer.from([0xff])), /invalid_control/);
 });
