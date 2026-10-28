@@ -1413,3 +1413,42 @@ the visible owner notice, its destination-selection action, and the fixed
 
 Both core warnings-as-errors build forms pass for this follow-up; the four-file
 production boundary and approved infrastructure head are unchanged.
+
+
+Selection retry follow-up verification: both warnings-as-errors build forms pass
+on the new core and merged app heads. The strict manual audit and declaration
+scan pass on both heads: no type name exceeds 40 characters. The full serial
+`AmbientReconnect|SendOrigin|AmbientRecovery|AmbientSuspension|AmbientRestore`
+family passed three times:
+
+- repetition 1: **117 tests in 48 suites**, 260.500 seconds.
+- repetition 2: **117 tests in 48 suites**, 260.814 seconds.
+- repetition 3: **117 tests in 48 suites**, 260.906 seconds.
+
+The broad serial family ran once in three disjoint module lanes:
+
+- core: **439 tests in 130 suites**, 377.799 seconds.
+- daemon: **593 tests in 135 suites**, 435.324 seconds.
+- remaining: **50 tests in 9 suites**, 0.199 seconds.
+
+Broad total: **1082 tests in 274 suites**. The final 20-run filtered loop
+passed **20/20 invocations**, covering the whole SelectFailure suite plus the
+original second-drop-during-reauthorization test: **80 test executions, 120
+cases**. The three transport failure cases, stale-generation case, deadline case,
+and original flapping case each pass 20/20. No test run follows this loop.
+Evidence: `<scratch>/r2-focused-*.log`, `r2-broad-*.log`, `r2-loop-1.log` through
+`r2-loop-20.log`; fail-before evidence remains `selection-fail-before.log`. Both
+authorization paths pass in every focused run, retaining the enabled destination
+action and `reauthorization_needed`.
+
+Every Swift launch uses the shared-process gate, taskpolicy background priority,
+four jobs with one compiler job, supplied Testing flags, offline resolution, a
+590-second execution bound, and process-group cleanup. All runtime lanes are
+serial and exclude DiagnosticReplyComposition. The approved infrastructure head
+and production file boundaries are unchanged; `git diff --check` is clean. No
+new suppression, timing sleep, Instant/Duration expression, or async sleep default
+is introduced. Final app-head build logs are `<scratch>/r2-final-build.log` and
+`r2-final-build-tests.log`; the scratch build directory is removed after them.
+Validation uses synthetic transport/capture; native SwiftUI rendering, physical
+audio/haptics, CI Swift 6.3.3 execution, and independent approval of these heads
+remain unclaimed.
