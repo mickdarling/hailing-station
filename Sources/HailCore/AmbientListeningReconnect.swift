@@ -257,6 +257,7 @@ extension AmbientListeningReconnect {
     }
     private func reauthorize(_ snapshot: HostConnectionSnapshot, intent: Pending, store: HostConnectionStore) {
         guard snapshot.connectionGeneration != intent.binding.connectionGeneration,
+              snapshot.connectionGeneration != intent.droppedGeneration,
               selectionGeneration != snapshot.connectionGeneration else { return }
         selectionGeneration = snapshot.connectionGeneration
         // Background recovery cannot depend on the foreground-only remembered-selection view task.
@@ -266,6 +267,23 @@ extension AmbientListeningReconnect {
                   store.snapshots[snapshot.id]?.connectionGeneration == snapshot.connectionGeneration else { return }
             try? await store.selectTarget(host: snapshot.id, targetID: intent.binding.targetID, restoring: true)
         }
+    }
+    func selectionFailed(_ error: any Error, snapshot: HostConnectionSnapshot, store: HostConnectionStore) {
+        guard isPending, binding?.hostID == snapshot.id else { return }
+        if AmbientListeningController.isTransportError(error) {
+            drop(snapshot, store: store)
+            return
+        }
+        let reason: Reason
+        switch error {
+        case HostConnectionFailure.unsupportedCapability("select_target"):
+            reason = .reauthorizationNeeded
+        case HostConnectionFailure.remote(let message) where message.hasPrefix("unauthorized:"):
+            reason = .reauthorizationNeeded
+        default:
+            reason = .nonTransport
+        }
+        veto(reason, host: snapshot.id)
     }
     /// Reauthorize the same selection on a new generation. No fresh capture start or foreground requirement.
     func restore(store: HostConnectionStore) {

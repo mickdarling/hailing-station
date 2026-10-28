@@ -38,6 +38,8 @@ import Testing
         try await rig.reconnect(selectTarget: false)
         try await waitUntil { try await rig.selectionPing(after: 0) != nil }
         try await rig.drop()
+        try await waitUntil { await MainActor.run { !rig.notices.isEmpty } }
+        #expect(rig.notices.map(\.outcome) == [.interrupted] && rig.controller.reconnect.isPending)
         await rig.controller.update(binding: nil, scene: .background)
         let before = rig.capture.discardedCount
         for _ in 0..<10 { try rig.capture.yield(sineBuffer()) }
