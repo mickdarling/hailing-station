@@ -1268,3 +1268,32 @@ remote-refusal test passed **1 test in 1 suite**, 1.395 seconds
 check and restores the reviewer's destination-selection action assertion at
 line 24, alongside the original reason and token checks. No app production
 change is needed for the corrected reason to use the existing enabled action.
+
+
+### Completed remote-refusal verification
+
+Both warnings-as-errors build forms passed on the new core and merged app heads.
+The requested serial family
+`AmbientReconnect|SendOrigin|AmbientRecovery|AmbientSuspension|AmbientRestore`
+passed twice on the app tree:
+
+- repetition 1: **114 tests in 47 suites**, 242.368 seconds.
+- repetition 2: **114 tests in 47 suites**, 242.452 seconds.
+
+Both runs include the ported remote-refusal regression with its reason, fixed
+token, destination-selection action, notice copy, and no-PCM checks. Every test
+launch uses `--skip-build --disable-xctest --no-parallel` and excludes
+DiagnosticReplyComposition. All Swift launches use the supplied shared-process
+gate, background priority, `-j 4 -Xswiftc -j1`, offline resolution, supplied Testing
+flags, a 590-second execution limit, and process-group cleanup. Raw results are
+`<scratch>/r2-focused-1.log` and `<scratch>/r2-focused-2.log`.
+
+Strict warning thresholds and `git diff --check` pass. The infrastructure head
+is unchanged; the four restore and three app production file sets remain within
+their limits. No new lint suppression, blank-line deletion, code reflow, or
+stored async sleep default was introduced. The change is confined to failed-state
+classification; the existing request cleanup and app action are reused.
+Final app-head build logs are `<scratch>/r2-final-build.log` and
+`<scratch>/r2-final-build-tests.log`. Tests use synthetic transport and capture;
+native SwiftUI rendering, physical audio/haptics, host Swift 6.2.4 execution,
+and fresh independent exact-head approval remain unclaimed.
