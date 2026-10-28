@@ -21,6 +21,7 @@ import Testing
         let notice = try #require(rig.notices.first)
         #expect(rig.notices.count == 1 && notice.reason == .reauthorizationNeeded)
         #expect(notice.reason?.diagnosticToken == "reauthorization_needed")
+        #expect(rig.appPresentation.noticeAction == .selectDestination)
         #expect(notice.text.contains("re-authorization needed"))
         #expect(try await audioFrames(rig.socket).isEmpty)
         await rig.close()

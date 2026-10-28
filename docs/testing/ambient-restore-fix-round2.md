@@ -1261,3 +1261,10 @@ the existing notice copy, fixed log token, and destination-selection action.
 Other failures retain their existing classification. This changes only the
 failed-state branch; request cleanup, privacy, deadlines, sleep defaults, and
 app production code are unchanged.
+
+Both warnings-as-errors build forms passed on the new core head. Its targeted
+remote-refusal test passed **1 test in 1 suite**, 1.395 seconds
+(`<scratch>/r1-refusal-pass.log`). The merged app test retains the core notice-copy
+check and restores the reviewer's destination-selection action assertion at
+line 24, alongside the original reason and token checks. No app production
+change is needed for the corrected reason to use the existing enabled action.
