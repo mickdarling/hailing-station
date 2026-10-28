@@ -151,15 +151,23 @@ actor AmbientAudioSendQueue {
     private var draining = false
     private var idleWaiters: [CheckedContinuation<Void, Never>] = []
     private(set) var droppedCount = 0
-    private(set) var failure: (any Error)?
+    private var sendFailure: (any Error)?
+    private let admission: AmbientSendAdmission?
+    var failure: (any Error)? {
+        if let admission, !admission.accepts() { return HostConnectionFailure.notReady }
+        return sendFailure
+    }
 
-    init(maxPending: Int, send: @escaping Send, onFailure: @escaping FailureHandler) {
+    init(maxPending: Int, send: @escaping Send, onFailure: @escaping FailureHandler,
+         admission: AmbientSendAdmission? = nil) {
+        self.admission = admission
         self.maxPending = maxPending
         self.send = send
         self.onFailure = onFailure
     }
 
     var hasFailed: Bool { failure != nil }
+    var pendingCount: Int { pending.count }
 
     private(set) var droppedCaptureBuffers = 0
     /// Counts a capture buffer discarded before conversion (a gap in audio, not in sequence numbers).
@@ -186,13 +194,19 @@ actor AmbientAudioSendQueue {
         while failure == nil, !pending.isEmpty {
             let next = pending.removeFirst()
             do {
-                try await send(next)
+                try await AmbientSendAdmission.$current.withValue(admission) {
+                    guard AmbientSendAdmission.isCurrent else { throw HostConnectionFailure.notReady }
+                    try await send(next)
+                }
             } catch {
-                failure = error
+                sendFailure = error
                 pending.removeAll()
                 await onFailure(self, error)
             }
         }
+        // Admission retirement drops captured audio without notifying onFailure: the caller already owns
+        // that retirement. A thrown send error still notifies through the existing catch path above.
+        if let admission, !admission.accepts() { pending.removeAll() }
         draining = false
         idleWaiters.forEach { $0.resume() }
         idleWaiters.removeAll()
@@ -458,4 +472,12 @@ extension AmbientAudioStreamer {
         decision = (failed, task)
         return task
     }
+}
+
+/// An immutable capture-epoch predicate accompanies queued and in-flight sends through executor hops.
+/// Nil preserves existing send behavior; the restore slice supplies the capture gate and its sampled epoch.
+struct AmbientSendAdmission: Sendable {
+    @TaskLocal static var current: AmbientSendAdmission?
+    let accepts: @Sendable () -> Bool
+    static var isCurrent: Bool { current?.accepts() ?? true }
 }

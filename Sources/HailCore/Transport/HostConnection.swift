@@ -1,3 +1,4 @@
+// swiftlint:disable file_length
 public import Foundation
 import Dispatch
 import HailProtocol
@@ -30,6 +31,7 @@ public actor HostConnection {
     let jitter: Jitter
     let observer: Observer
     let replyObserver: ReplyObserver
+    let reportsAmbientRefusals: Bool
     let pongTimeout: Duration
     let negotiationTimeout: Duration
     let deadlineSleep: Sleep
@@ -71,13 +73,16 @@ public actor HostConnection {
         wallNow: @escaping WallNow = {
             Int64((Date().timeIntervalSince1970 * 1_000).rounded(.down))
         },
+        reportsAmbientRefusals: Bool = false,
+        transportLossObserver: TransportLossObserver? = nil,
         sleep: @escaping Sleep = HostConnection.taskSleep,
         jitter: @escaping Jitter = { Double.random(in: 0...1) },
         observer: @escaping Observer = { _ in },
         replyObserver: @escaping ReplyObserver = { _ in }
     ) {
         self.snapshot = HostConnectionSnapshot(endpoint: endpoint)
-        self.connector = connector
+        self.connector = HostLossReportingConnector.wrapping(connector, observer: transportLossObserver)
+        self.reportsAmbientRefusals = reportsAmbientRefusals
         self.schedule = schedule
         self.deviceName = deviceName
         self.pongTimeout = pongTimeout
@@ -135,7 +140,8 @@ public actor HostConnection {
 
     func retire() async -> Task<Void, Never> {
         let localBarrier = await beginDisconnect()
-        guard let predecessor = (connector as? SerializedWebSocketConnector)?.predecessor else {
+        let base = (connector as? HostLossReportingConnector)?.base ?? connector
+        guard let predecessor = (base as? SerializedWebSocketConnector)?.predecessor else {
             return localBarrier
         }
         return Task {
@@ -194,6 +200,7 @@ extension HostConnection {
 
     /// The default sleeps. A closure literal in this actor's default arguments compiled to a task whose
     /// allocations were freed out of order when a pong deadline woke (`swift_task_dealloc` abort, #206).
+    /// Avoid defaults that run code on this actor; see #991 for async sleep values called from Tasks on macOS 15.
     public nonisolated static func taskSleep(_ duration: Duration) async throws {
         try await Task.sleep(for: duration)
     }

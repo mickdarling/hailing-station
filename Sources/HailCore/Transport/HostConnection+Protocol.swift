@@ -1,4 +1,4 @@
-import Foundation
+public import Foundation
 public import HailProtocol
 
 // The frame dispatch and its ambient and request-refusal cases stay together with negotiation.
@@ -8,6 +8,10 @@ extension HostConnection {
     func negotiate(
         on opened: any WebSocketTransport, token: UInt64
     ) async throws -> (version: Int, capabilities: [String]) {
+        let connectionGeneration = snapshot.connectionGeneration
+        if let reporting = opened as? HostLossReportingSocket {
+            await reporting.bind(connectionGeneration)
+        }
         try await send(
             .hello(HelloInfo(
                 versions: VersionNegotiation.supported,
@@ -48,11 +52,11 @@ extension HostConnection {
              .control(.ambientOverheard), .control(.ownerVoice), .control(.mediaMode), .control(.healthReport),
              .control(.duckMode):
             // Like reply frames, needing no reply capability (#309, #404, #366, #318, rightyo#164, #612, #614, #735).
-            await replyObserver(HostReplyEvent(endpointID: snapshot.id, frame: frame))
+            await publishNotice(frame, streamID: nil)
         case .control(.error(let code, _, _)) where code.isRequestRefusal: // #608: that request is over, not the link
-            await replyObserver(HostReplyEvent(endpointID: snapshot.id, frame: frame))
+            await publishNotice(frame, streamID: nil)
         case .control(let control):
-            try await process(control)
+            try await process(control, frame: frame)
         case .text(let text) where text.isFinal && text.reply != nil:
             try await publishReply(frame)
         case .audio(let audio) where audio.reply != nil:
@@ -62,7 +66,15 @@ extension HostConnection {
         }
     }
 
-    private func process(_ control: ControlPayload) async throws {
+    private func publishNotice(_ frame: Frame, streamID: UUID?) async {
+        let origin = snapshot.connectionGeneration
+        let event = HostReplyEvent(endpointID: snapshot.id, frame: frame)
+        await HostNoticeOrigin.$streamID.withValue(streamID) {
+            await HostNoticeOrigin.$generation.withValue(origin) { await replyObserver(event) }
+        }
+    }
+
+    private func process(_ control: ControlPayload, frame: Frame) async throws {
         switch control {
         case .pong(let nonce):
             guard let began = pendingPings.removeValue(forKey: nonce) else { return }
@@ -80,6 +92,8 @@ extension HostConnection {
             // no stream id, so they are recognised by the gate's "ambient" message prefix.
             guard message.hasPrefix("ambient"), let stream = ambientStream else { throw failure }
             ambientRefusal = (stream.id, failure)
+            // Opt-in for restore-aware callers only. Existing observers receive exactly their old events.
+            if reportsAmbientRefusals { await publishNotice(frame, streamID: stream.id) }
         default:
             throw HostConnectionFailure.malformed("unexpected control frame")
         }
@@ -89,7 +103,7 @@ extension HostConnection {
         guard snapshot.capabilities.contains("receive_replies") else {
             throw HostConnectionFailure.unsupportedCapability("receive_replies")
         }
-        await replyObserver(HostReplyEvent(endpointID: snapshot.id, frame: frame))
+        await publishNotice(frame, streamID: nil)
     }
 }
 
@@ -102,10 +116,16 @@ extension HostConnection {
         try await send(.replyYield(reply: yield.replyID, segment: yield.segment), generation: generation)
     }
 
+    public func sendAudio(_ audio: AudioPayload) async throws {
+        try await sendAudio(audio, bindingGeneration: nil)
+    }
+
     /// Sends one ambient segment (#203) in the existing `.audio` frame, addressed to the selected destination as
     /// the host gate requires. A stream is bound to the socket generation it started on; after a reconnect or
     /// a gate refusal for it, every further segment of that stream throws so the streamer releases the mic.
-    public func sendAudio(_ audio: AudioPayload) async throws {
+    public func sendAudio(_ audio: AudioPayload, bindingGeneration: UUID?) async throws {
+        guard bindingGeneration == nil || bindingGeneration == snapshot.connectionGeneration,
+              AmbientSendAdmission.isCurrent else { throw HostConnectionFailure.notReady }
         try requireReady(capability: Self.streamAudioCapability)
         guard let targetID = desiredTargetID, selectionSettled, socket != nil else {
             throw HostConnectionFailure.notReady
@@ -137,7 +157,8 @@ extension HostConnection {
             version: snapshot.negotiatedVersion ?? ProtocolVersion.current,
             timestamp: wallNow(), target: targetID, source: deviceName, payload: .audio(audio)
         )
-        guard let current = self.socket, snapshot.connectionGeneration == connection else {
+        guard let current = self.socket, snapshot.connectionGeneration == connection,
+              AmbientSendAdmission.isCurrent else {
             throw HostConnectionFailure.notReady
         }
         try await current.send(FrameCoding.encode(frame))
@@ -167,11 +188,15 @@ extension HostConnection {
         if requiresDeadline { schedulePongDeadline(nonce: nonce, generation: token) }
     }
 
+    func confirmRoundTrip(generation token: UInt64) async throws {
+        try await confirmRoundTrip(generation: token, nonce: UUID().uuidString.lowercased())
+    }
+
     /// Confirms that the host processed every frame before this ping, including target selection.
     /// WebSocket message ordering makes the pong a lightweight selection acknowledgement without a
     /// protocol-version change that would break terminals already installed through TestFlight.
-    func confirmRoundTrip(generation token: UInt64) async throws {
-        let nonce = UUID().uuidString.lowercased()
+    /// A caller that supplies `nonce` can ask `hasPong` whether this ping's pong was already received.
+    func confirmRoundTrip(generation token: UInt64, nonce: String) async throws {
         pendingPings[nonce] = monotonicNow()
         do {
             try await send(.ping(nonce: nonce), generation: token)
@@ -187,6 +212,11 @@ extension HostConnection {
             pendingPings.removeValue(forKey: nonce)
             throw error
         }
+    }
+
+    /// Whether ping `nonce`, sent on generation `token`, has had its pong on a still-current ready connection.
+    func hasPong(nonce: String, generation token: UInt64) -> Bool {
+        isCurrent(token) && wantsConnection && snapshot.state == .ready && pendingPings[nonce] == nil
     }
 
     func schedulePongDeadline(nonce: String, generation token: UInt64) {
@@ -215,4 +245,69 @@ extension HostConnection {
         snapshot.state = state
         await observer(snapshot)
     }
+}
+
+/// Provenance survives the observer's executor hop. Refusal delivery is opted into by the connection's stored
+/// `reportsAmbientRefusals` flag, so it survives every loop replacement, timer-born ones included.
+enum HostNoticeOrigin {
+    @TaskLocal static var generation: UUID?
+    @TaskLocal static var streamID: UUID?
+}
+
+extension HostConnection {
+    /// Told the socket's bound generation (and whether a send found it); only CancellationError and
+    /// HostConnectionFailure are ignored. Transport-caused drops report before close or reconnect publication.
+    /// Explicit disconnect or loop replacement can interrupt receive and report after `.disconnected`, so
+    /// callers must veto explicit disconnects before calling disconnect(), as HostConnectionStore does.
+    public typealias TransportLossObserver = @Sendable (_ generation: UUID, _ sending: Bool) async -> Void
+}
+
+/// Installed only for an explicit loss observer. The default connector and transport stay unchanged.
+/// Reporting follows `HostConnection.TransportLossObserver`.
+struct HostLossReportingConnector: WebSocketConnecting {
+    let base: any WebSocketConnecting
+    let observer: HostConnection.TransportLossObserver
+    static func wrapping(_ connector: any WebSocketConnecting,
+                         observer: HostConnection.TransportLossObserver?) -> any WebSocketConnecting {
+        guard let observer else { return connector }
+        return HostLossReportingConnector(base: connector, observer: observer)
+    }
+    func open(url: URL, subprotocol: String) async throws -> any WebSocketTransport {
+        let socket = try await base.open(url: url, subprotocol: subprotocol)
+        return HostLossReportingSocket(base: socket, observer: observer)
+    }
+}
+
+/// Reports the socket's bound generation when a send or receive fails, as `HostConnection.TransportLossObserver`
+/// describes.
+actor HostLossReportingSocket: WebSocketTransport {
+    let base: any WebSocketTransport
+    let observer: HostConnection.TransportLossObserver
+    private var generation: UUID?
+    init(base: any WebSocketTransport, observer: @escaping HostConnection.TransportLossObserver) {
+        self.base = base
+        self.observer = observer
+    }
+    func bind(_ generation: UUID) { self.generation = generation }
+    func send(_ data: Data) async throws {
+        do {
+            try await base.send(data)
+        } catch {
+            await report(error, sending: true)
+            throw error
+        }
+    }
+    func receive() async throws -> Data {
+        do {
+            return try await base.receive()
+        } catch {
+            await report(error, sending: false)
+            throw error
+        }
+    }
+    private func report(_ error: any Error, sending: Bool) async {
+        guard !(error is CancellationError), !(error is HostConnectionFailure), let generation else { return }
+        await observer(generation, sending)
+    }
+    func close() async { await base.close() }
 }
