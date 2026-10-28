@@ -849,3 +849,17 @@ the serial focused core selection passed **5 tests in 4 suites**, 12.569 seconds
 regressions and found only the older unanswered privacy confirmation assumption,
 which was then corrected. Cleanup waits on the sender's explicit gate; the
 privacy test also waits for the new controller generation before supplying PCM.
+
+## Remote authorization refusal follow-up
+
+The independent remote-authorization probe was found in the adjacent refresh
+review evidence and ported as
+`AmbientReconnectAuthorizationRefusalTests.explicitAuthorizationRefusalRequiresAnActionableOwnerNotice`.
+Against unchanged production on the preceding app head, its warnings-as-errors
+test build passed. The serial test failed without a timeout: **1 test in 1 suite,
+3 assertion issues**, 1.240 seconds, at
+`Tests/HailCoreTests/AmbientReconnectAuthorizationRefusalTests.swift:22:9`
+(wrong reason), `:23:9` (missing `reauthorization_needed` token), and `:24:9`
+(missing destination-selection action). Evidence is
+`<scratch>/refusal-fail-before.log`. The core-only version checks notice copy
+instead of the app action; the merged app version restores that action assertion.
