@@ -329,3 +329,17 @@ test('a second configuration cannot erase a foreign lost-ack tombstone before th
   assert.equal(result.state, 'already_attempted');
   assert.equal(interrupts, 1);
 });
+
+test('host discovery uses the pinned tmux executable and fixed system process tools', () => {
+  const calls = [], pinned = '/private/authored-runtime/tmux';
+  assert.throws(() => discover({ target: 'tmux:voice', binding: '$1@2/%3:4' }, (program, args) => {
+    calls.push(program);
+    if (program === pinned) return 'voice|$1@2/%3:4|codex';
+    if (program === '/bin/ps' && args[0] === '-axo') return `1234 4 ${process.getuid()} /private/authored/codex`;
+    if (program === '/bin/ps' && args.at(-1) === 'args=') return '/private/authored/codex app-server';
+    if (program === '/bin/ps') return 'authored birth marker';
+    if (program === '/usr/sbin/lsof') return '';
+    throw new Error('untrusted executable resolution');
+  }, pinned), /ambiguous_socket/);
+  assert.deepEqual(calls, [pinned, '/bin/ps', '/bin/ps', '/bin/ps', '/usr/sbin/lsof']);
+});
