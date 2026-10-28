@@ -202,10 +202,10 @@ extension HostConnection {
             try await send(.ping(nonce: nonce), generation: token)
             schedulePongDeadline(nonce: nonce, generation: token)
             while pendingPings[nonce] != nil {
-                guard isCurrent(token), wantsConnection else { throw HostConnectionFailure.notReady }
+                guard isCurrent(token), wantsConnection, socket != nil else { throw HostConnectionFailure.notReady }
                 try await Task.sleep(for: .milliseconds(10))
             }
-            guard isCurrent(token), wantsConnection, snapshot.state == .ready else {
+            guard isCurrent(token), wantsConnection, socket != nil, snapshot.state == .ready else {
                 throw HostConnectionFailure.notReady
             }
         } catch {
@@ -216,7 +216,8 @@ extension HostConnection {
 
     /// Whether ping `nonce`, sent on generation `token`, has had its pong on a still-current ready connection.
     func hasPong(nonce: String, generation token: UInt64) -> Bool {
-        isCurrent(token) && wantsConnection && snapshot.state == .ready && pendingPings[nonce] == nil
+        isCurrent(token) && wantsConnection && socket != nil
+            && snapshot.state == .ready && pendingPings[nonce] == nil
     }
 
     func schedulePongDeadline(nonce: String, generation token: UInt64) {
