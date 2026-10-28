@@ -13,7 +13,7 @@ import Testing
         let channel = try CodexRecoveryChannel(command: command(echo), request: UUID(), generation: UUID())
         do {
             try await channel.send("prepare")
-            let ready = try await channel.wait(for: [.ready], until: .now.advanced(by: .seconds(3)))
+            let ready = try await channel.wait(for: [.ready], until: .now.advanced(by: .seconds(TestTiming.bound(3))))
             #expect(ready.request == channel.request && ready.generation == channel.generation)
             #expect(!ready.recovered)
         } catch { channel.stop(); await channel.join(); throw error }
@@ -38,7 +38,7 @@ import Testing
                                                 request: UUID(), generation: UUID())
         try? await channel.send("prepare")
         await #expect(throws: (any Error).self) {
-            try await channel.wait(for: [.ready], until: .now.advanced(by: .seconds(3)))
+            try await channel.wait(for: [.ready], until: .now.advanced(by: .seconds(TestTiming.bound(3))))
         }
         channel.stop(); await channel.join()
         #expect(channel.reaped && channel.report == nil)
@@ -58,7 +58,8 @@ import Testing
                 + #"$v->{recovered}=JSON::PP::true; print encode_json($v)."\n";"#
         let channel = try CodexRecoveryChannel(command: command(body), request: UUID(), generation: UUID())
         try await channel.send("prepare")
-        let report = try await channel.wait(for: [.interrupted], until: .now.advanced(by: .seconds(3)))
+        let deadline = ContinuousClock.now.advanced(by: .seconds(TestTiming.bound(3)))
+        let report = try await channel.wait(for: [.interrupted], until: deadline)
         #expect(report.recovered)
         await channel.join()
         #expect(channel.reaped)
@@ -75,7 +76,7 @@ import Testing
         let channel = try CodexRecoveryChannel(command: command(body), request: UUID(), generation: UUID())
         try await channel.send("prepare")
         await #expect(throws: (any Error).self) {
-            try await channel.wait(for: [.interrupted], until: .now.advanced(by: .seconds(3)))
+            try await channel.wait(for: [.interrupted], until: .now.advanced(by: .seconds(TestTiming.bound(3))))
         }
         let began = ContinuousClock().now
         // The safety stop scales with the bound, so it always outlasts it; the test also asserts it never fired (#1012).

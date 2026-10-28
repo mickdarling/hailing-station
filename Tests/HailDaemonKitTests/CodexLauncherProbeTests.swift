@@ -20,17 +20,15 @@ extension CodexLauncherTests {
     @Test func oversizedProbeOutputIsRefused() async throws {
         let folder = try Self.scratch()
         defer { try? FileManager.default.removeItem(at: folder) }
-        let pidFile = folder.appendingPathComponent("pid").path
-        let child = try Self.script(
-            "#!/usr/bin/perl\nopen(F,'>','\(pidFile)'); print F $$; close F; $|=1; print 'x' x 4096; sleep 300;\n",
-            in: folder)
-        let reaper = StrayProbeReaper(pidFile: pidFile, after: TestTiming.bound(20))
-        defer { reaper.stop() }
+        let backstop = try ProbeChildBackstop(in: folder, after: TestTiming.bound(20))
+        defer { backstop.stop() }
+        let child = try Self.script("#!/usr/bin/perl\n$|=1; print 'x' x 4096; \(backstop.wait)\n", in: folder)
         let started = ContinuousClock.now
         await #expect(throws: CodexLaunchError.versionUnavailable) {
             _ = try await CodexLauncher.readVersion(child, deadline: .seconds(60))
         }
-        // With a 60 s deadline and a 300 s child, finishing early proves the byte cap refused it, even on loaded CI.
+        // With a 60 s deadline and a child that runs up to 300 s, finishing early proves the byte cap refused it,
+        // even on loaded CI.
         #expect(ContinuousClock.now - started < .seconds(TestTiming.bound(20)))
     }
 
@@ -38,16 +36,17 @@ extension CodexLauncherTests {
         let folder = try Self.scratch()
         defer { try? FileManager.default.removeItem(at: folder) }
         let pidFile = folder.appendingPathComponent("pid").path
+        let backstop = try ProbeChildBackstop(in: folder, after: TestTiming.bound(20))
+        defer { backstop.stop() }
         let child = try Self.script(
-            "#!/usr/bin/perl\n$SIG{TERM}='IGNORE'; open(F,'>','\(pidFile)'); print F $$; close F; sleep 300;\n",
+            "#!/usr/bin/perl\n$SIG{TERM}='IGNORE'; open(F,'>','\(pidFile)'); print F $$; close F; \(backstop.wait)\n",
             in: folder)
-        let reaper = StrayProbeReaper(pidFile: pidFile, after: TestTiming.bound(20))
-        defer { reaper.stop() }
         let started = ContinuousClock.now
         await #expect(throws: CodexLaunchError.versionUnavailable) {
             _ = try await CodexLauncher.readVersion(child, deadline: .seconds(2))
         }
-        #expect(ContinuousClock.now - started < .seconds(TestTiming.bound(20))) // The child ignores TERM, sleeps 300 s.
+        // The child ignores TERM and runs up to 300 s.
+        #expect(ContinuousClock.now - started < .seconds(TestTiming.bound(20)))
         let pid = try #require(pid_t(String(contentsOfFile: pidFile, encoding: .utf8)))
         #expect(kill(pid, 0) == -1 && errno == ESRCH)
     }
@@ -73,19 +72,22 @@ extension CodexLauncherTests {
     }
 }
 
-/// #1012: the probe children sleep 300 s, so a launcher that leaves one alive must neither hold CI nor leak it.
-/// This SIGKILLs the recorded child after the scaled bound plus 5 s, or at teardown, whichever comes first.
-private struct StrayProbeReaper {
-    let pidFile: String
-    let task: Task<Void, Never>
-    init(pidFile: String, after seconds: Double) {
-        self.pidFile = pidFile
-        task = Task { try? await Task.sleep(for: .seconds(seconds + 5)); Self.reap(pidFile) }
+/// #1012: a probe child runs only while its marker file exists, and for at most 300 s, so the bounds can scale on CI
+/// and still prove the launcher killed it. Removing the scratch folder at teardown ends a child the launcher left
+/// alive, and the backstop removes the marker after the scaled bound plus 5 s, so a launcher regression can neither
+/// hold CI nor leak the child. It sends no signal, so a reused PID is never at risk.
+private struct ProbeChildBackstop {
+    let wait: String
+    private let task: Task<Void, Never>
+    init(in folder: URL, after seconds: Double) throws {
+        let marker = folder.appendingPathComponent("run").path
+        guard FileManager.default.createFile(atPath: marker, contents: nil) else { throw CocoaError(.fileWriteUnknown) }
+        wait = "for (1..3000) { last unless -e '\(marker)'; select(undef, undef, undef, 0.1); }"
+        task = Task {
+            guard (try? await Task.sleep(for: .seconds(seconds + 5))) != nil else { return }
+            try? FileManager.default.removeItem(atPath: marker)
+        }
     }
-    func stop() { task.cancel(); Self.reap(pidFile) }
-    static func reap(_ pidFile: String) {
-        guard let text = try? String(contentsOfFile: pidFile, encoding: .utf8), let pid = pid_t(text) else { return }
-        kill(pid, SIGKILL)
-    }
+    func stop() { task.cancel() }
 }
 #endif
