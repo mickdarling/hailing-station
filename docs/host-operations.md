@@ -1,5 +1,10 @@
 # Host operations
 
+The packaged Codex voice recovery work and next-agent handoff are in
+[Codex voice recovery](codex-voice-recovery.md) (#1002). Its controller is not yet
+installed or composed into the host; the existing audio and reply pipeline remains
+the owner. Do not use agent prompts as a substitute for the missing lifecycle wiring.
+
 How to install, run and check the Mac host daemon (#246). The LaunchAgent and the `haild` on `PATH` always run the same installed release, so a rebuild cannot leave the daemon and `haild reply` on different builds (#115).
 
 ## Configure
