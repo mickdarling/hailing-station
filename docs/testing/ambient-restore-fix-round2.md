@@ -724,3 +724,23 @@ unchanged. Final delivered-head rechecks use `r1-final-build.log`,
 `r1-final-build-tests.log`, `r2-final-build.log`, and `r2-final-build-tests.log`.
 These remain synthetic package checks; native app builds, physical audio/haptic
 delivery, and independent exact-head approval are not claimed.
+
+## Deadline, endpoint refresh, and suspension-order follow-up
+
+The host's sleep change is retained: optional injected sleep values default to
+nil; production waits go through `ambientSleep(for:injected:)` and directly call
+`Task.sleep(for:)`. No stored async closure-literal or static-function default is
+reintroduced on those paths. The macOS 15 / Xcode Swift 6.2.4 abort is tracked
+separately in #991; actor-method overload hygiene did not cause or fix that abort.
+The host recorded five passing repetitions of its formerly crashing test.
+
+### Acceptance deadline fail-before
+
+The reviewer's deadline case is committed as
+`AmbientReconnectAcceptanceDeadlineTests.acceptanceAfterSixtySecondsMustNotCancelRecoveryDeadline`.
+Against unchanged restore production after the infrastructure hygiene merge,
+the warnings-as-errors test build passed. The serial probe then failed without
+a timeout: **1 test in 1 suite, 3 assertion issues** at
+`Tests/HailCoreTests/AmbientReconnectAcceptanceDeadlineTests.swift:28:9`,
+`:30:9`, and `:31:9`: applied instead of blocked, no timedOut reason, and capture
+still listening. Evidence is `<scratch>/deadline-fail-before.log`.
