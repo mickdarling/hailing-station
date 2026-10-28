@@ -1243,11 +1243,11 @@ independent exact-head approval remain unclaimed.
 
 The independent remote-authorization probe was found in the adjacent refresh
 review evidence and ported as
-`AmbientReconnectAuthorizationRefusalTests.explicitAuthorizationRefusalRequiresAnActionableOwnerNotice`.
+`AmbientReconnectAuthRefusalTests.explicitAuthorizationRefusalRequiresAnActionableOwnerNotice`.
 Against unchanged production on the preceding app head, its warnings-as-errors
 test build passed. The serial test failed without a timeout: **1 test in 1 suite,
 3 assertion issues**, 1.240 seconds, at
-`Tests/HailCoreTests/AmbientReconnectAuthorizationRefusalTests.swift:22:9`
+`Tests/HailCoreTests/AmbientReconnectAuthRefusalTests.swift:22:9`
 (wrong reason), `:23:9` (missing `reauthorization_needed` token), and `:24:9`
 (missing destination-selection action). Evidence is
 `<scratch>/refusal-fail-before.log`. The core-only version checks notice copy
@@ -1297,3 +1297,35 @@ Final app-head build logs are `<scratch>/r2-final-build.log` and
 `<scratch>/r2-final-build-tests.log`. Tests use synthetic transport and capture;
 native SwiftUI rendering, physical audio/haptics, host Swift 6.2.4 execution,
 and fresh independent exact-head approval remain unclaimed.
+
+## CI follow-up
+
+At `6e29146bdd718eded60779c738bb7622ff42f93f`, the deterministic
+`AmbientReconnectSelectFailureTests.selectionFailureBeforeObservedDropFlapsAndRestores`
+probe holds the selection ping and injects notReady or cancellation before any
+second socket loss is reported. Both cases failed at
+`Tests/HailCoreTests/AmbientReconnectSelectFailureTests.swift:13:9`, `:14:9`,
+`:15:9`, and `:16:9`: blocked instead of interrupted, reauthorizationNeeded,
+capture no longer armed, and capture stopped. **1 parameterized test in 1 suite,
+2 cases, 8 assertion issues**, 2.745 seconds, no timeout. The warnings-as-errors
+baseline build passed. Evidence is `<scratch>/selection-fail-before.log`.
+The fixture uses held continuations and an injected clock, with deadline checks
+performed explicitly; it introduces no timed race or sleep delay.
+
+The 41-character authorization-refusal suite and matching file are renamed to
+`AmbientReconnectAuthRefusalTests`; all references in this record use the new
+name. The declaration-length check covers struct, class, enum, actor, and
+protocol declarations under Sources, Tests, and Apps, with a maximum of 40.
+
+Restore selection errors now reach a connection-identity-checked handler.
+Transport errors, notReady, and drop cancellation use the existing drop rules:
+one interrupted attempt, retained armed capture and destination, closed PCM
+admission, and the original deadline. Duplicate loss observation is idempotent.
+Late ready snapshots cannot reauthorize the failed socket generation. Only
+unauthorized or missing select_target capability produces the existing
+reauthorizationNeeded reason/action; other non-transport failures fail closed.
+The original flapping test explicitly waits for its interruption notice before
+checking the gap. The deterministic cases also verify a late snapshot cannot
+restart selection and that the original deadline expires at sixty seconds.
+The targeted serial selection passed **6 tests in 4 suites**, 11.880 seconds,
+including both authorization paths (`<scratch>/r1-fix-pass.log`).

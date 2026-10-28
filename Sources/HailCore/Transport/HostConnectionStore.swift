@@ -191,7 +191,7 @@ extension HostConnectionStore {
         guard let connection = connections[id] else { throw HostConnectionFailure.notReady }
         do { try await connection.selectTarget(targetID) } catch {
             if selectionRequests[id] == request {
-                ambientController?.reconnect.veto(restoring ? .reauthorizationNeeded : .bindingChanged, host: id)
+                selectionFailed(error, host: id, restoring: restoring, on: connection)
             }
             throw error
         }
@@ -200,6 +200,13 @@ extension HostConnectionStore {
             selectedTargets[id] = targetID
             ambientController?.reconnect.restore(store: self)
         }
+    }
+    private func selectionFailed(_ error: any Error, host id: HostEndpoint.Identifier,
+                                 restoring: Bool, on connection: HostConnection) {
+        guard let snapshot = snapshots[id], connections[id] === connection,
+              let reconnect = ambientController?.reconnect else { return }
+        guard restoring else { return reconnect.veto(.bindingChanged, host: id) }
+        reconnect.selectionFailed(error, snapshot: snapshot, store: self)
     }
     /// The ambient binding for a destination, or nil unless the host is ready, advertises `stream_audio`, and
     /// `targetID` is the target its connection has confirmed: the connection addresses every segment to that

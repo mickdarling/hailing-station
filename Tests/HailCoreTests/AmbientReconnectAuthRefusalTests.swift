@@ -4,7 +4,7 @@ import Testing
 @testable import HailCore
 
 @MainActor
-@Suite(.serialized) struct AmbientReconnectAuthorizationRefusalTests {
+@Suite(.serialized) struct AmbientReconnectAuthRefusalTests {
     @Test func explicitAuthorizationRefusalRequiresAnActionableOwnerNotice() async throws {
         let rig = try AmbientReconnectRig()
         try await rig.start()
