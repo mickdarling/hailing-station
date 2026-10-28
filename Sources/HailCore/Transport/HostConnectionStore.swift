@@ -122,10 +122,16 @@ public final class HostConnectionStore {
 extension HostConnectionStore {
     public func upsert(_ endpoint: HostEndpoint) async {
         if snapshots[endpoint.id]?.endpoint == endpoint { return }
-        ambientController?.reconnect.veto(.endpointChanged, host: endpoint.id)
+        let restoring = ambientController?.reconnect.refreshEndpoint(
+            endpoint, previous: snapshots[endpoint.id], store: self
+        ) == true
+        if !restoring { ambientController?.reconnect.veto(.endpointChanged, host: endpoint.id) }
         conversation.forgetHeardTurns(endpoint.id)
         let existing = connections.removeValue(forKey: endpoint.id)
-        forgetSelection(endpoint.id)
+        if restoring {
+            selectedTargets[endpoint.id] = nil
+            selectionRequests[endpoint.id] = nil
+        } else { forgetSelection(endpoint.id) }
         let retainedBarrier = retiredBarriers.removeValue(forKey: endpoint.id)
         tokens[endpoint.id] = nil
         let inheritedBarrier = existing.map(drainingTransportBarrier(for:)) ?? retainedBarrier
@@ -136,7 +142,13 @@ extension HostConnectionStore {
         tokens[endpoint.id] = token
         snapshots[endpoint.id] = HostConnectionSnapshot(endpoint: endpoint)
         if !order.contains(endpoint.id) { order.append(endpoint.id) }
-        let connection = HostConnection(
+        let connection = makeConnection(endpoint, connector: connectionConnector, token: token)
+        connections[endpoint.id] = connection
+        if restoring { await connection.connect() }
+    }
+    private func makeConnection(_ endpoint: HostEndpoint, connector connectionConnector: any WebSocketConnecting,
+                                token: UUID) -> HostConnection {
+        HostConnection(
             endpoint: endpoint,
             connector: connectionConnector,
             schedule: schedule,
@@ -155,8 +167,8 @@ extension HostConnectionStore {
             observer: { [weak self] snapshot in await self?.receive(snapshot, token: token) },
             replyObserver: { [weak self] event in await self?.receive(event, token: token) }
         )
-        connections[endpoint.id] = connection
     }
+
     public func connect(_ id: HostEndpoint.Identifier) async {
         await connections[id]?.connect()
     }

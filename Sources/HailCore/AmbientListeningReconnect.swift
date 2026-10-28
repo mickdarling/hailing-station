@@ -149,7 +149,7 @@ public final class AmbientListeningReconnect {
     private struct Pending {
         let id = UUID()
         let droppedGeneration: UUID
-        let endpoint: HostEndpoint
+        var endpoint: HostEndpoint
         let binding: AmbientAudioBinding
         let target: TargetInfo?
         let began: ContinuousClock.Instant
@@ -344,11 +344,29 @@ extension AmbientListeningReconnect {
         }
     }
 
+    /// Keep the owner's destination authorization while replacing this host's transport and confirmation.
+    func refreshEndpoint(_ endpoint: HostEndpoint, previous: HostConnectionSnapshot?,
+                         store: HostConnectionStore) -> Bool {
+        guard let previous, previous.id == endpoint.id else { return false }
+        if !isPending { drop(previous, store: store) }
+        guard !(previous.endpoint.url.scheme?.lowercased() == "wss" && endpoint.url.scheme?.lowercased() == "ws")
+        else { return false }
+        guard pending?.binding.hostID == endpoint.id else { return false }
+        controller?.suspendTransport()
+        cancelAcceptance()
+        privacyConfirmation.cancel()
+        renewed = false
+        selectionGeneration = nil
+        pending?.endpoint = endpoint
+        hostName = endpoint.name
+        return withinDeadline()
+    }
+
     func accepted(_ proof: AmbientResumeAcceptance) {
         guard acceptance === proof else { return }
         acceptance = nil
         acceptanceTask = nil
-        if isPending, renewed { finish(.applied, reason: nil) }
+        if isPending, renewed, withinDeadline() { finish(.applied, reason: nil) }
     }
 
     private func cancelAcceptance() {

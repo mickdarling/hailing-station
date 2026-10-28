@@ -52,9 +52,9 @@ extension HostConnection {
              .control(.ambientOverheard), .control(.ownerVoice), .control(.mediaMode), .control(.healthReport),
              .control(.duckMode):
             // Like reply frames, needing no reply capability (#309, #404, #366, #318, rightyo#164, #612, #614, #735).
-            await publishNotice(frame)
+            await publishNotice(frame, streamID: nil)
         case .control(.error(let code, _, _)) where code.isRequestRefusal: // #608: that request is over, not the link
-            await publishNotice(frame)
+            await publishNotice(frame, streamID: nil)
         case .control(let control):
             try await process(control, frame: frame)
         case .text(let text) where text.isFinal && text.reply != nil:
@@ -66,7 +66,7 @@ extension HostConnection {
         }
     }
 
-    private func publishNotice(_ frame: Frame, streamID: UUID? = nil) async {
+    private func publishNotice(_ frame: Frame, streamID: UUID?) async {
         let origin = snapshot.connectionGeneration
         let event = HostReplyEvent(endpointID: snapshot.id, frame: frame)
         await HostNoticeOrigin.$streamID.withValue(streamID) {
@@ -103,7 +103,7 @@ extension HostConnection {
         guard snapshot.capabilities.contains("receive_replies") else {
             throw HostConnectionFailure.unsupportedCapability("receive_replies")
         }
-        await publishNotice(frame)
+        await publishNotice(frame, streamID: nil)
     }
 }
 
@@ -116,10 +116,14 @@ extension HostConnection {
         try await send(.replyYield(reply: yield.replyID, segment: yield.segment), generation: generation)
     }
 
+    public func sendAudio(_ audio: AudioPayload) async throws {
+        try await sendAudio(audio, bindingGeneration: nil)
+    }
+
     /// Sends one ambient segment (#203) in the existing `.audio` frame, addressed to the selected destination as
     /// the host gate requires. A stream is bound to the socket generation it started on; after a reconnect or
     /// a gate refusal for it, every further segment of that stream throws so the streamer releases the mic.
-    public func sendAudio(_ audio: AudioPayload, bindingGeneration: UUID? = nil) async throws {
+    public func sendAudio(_ audio: AudioPayload, bindingGeneration: UUID?) async throws {
         guard bindingGeneration == nil || bindingGeneration == snapshot.connectionGeneration,
               AmbientSendAdmission.isCurrent else { throw HostConnectionFailure.notReady }
         try requireReady(capability: Self.streamAudioCapability)
@@ -184,11 +188,15 @@ extension HostConnection {
         if requiresDeadline { schedulePongDeadline(nonce: nonce, generation: token) }
     }
 
+    func confirmRoundTrip(generation token: UInt64) async throws {
+        try await confirmRoundTrip(generation: token, nonce: UUID().uuidString.lowercased())
+    }
+
     /// Confirms that the host processed every frame before this ping, including target selection.
     /// WebSocket message ordering makes the pong a lightweight selection acknowledgement without a
     /// protocol-version change that would break terminals already installed through TestFlight.
     /// A caller that supplies `nonce` can ask `hasPong` whether this ping's pong was already received.
-    func confirmRoundTrip(generation token: UInt64, nonce: String = UUID().uuidString.lowercased()) async throws {
+    func confirmRoundTrip(generation token: UInt64, nonce: String) async throws {
         pendingPings[nonce] = monotonicNow()
         do {
             try await send(.ping(nonce: nonce), generation: token)
