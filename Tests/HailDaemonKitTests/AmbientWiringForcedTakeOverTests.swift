@@ -151,7 +151,8 @@ import Testing
         await env.listener.stop(reason: "synthetic stop during a forced stop")
         #expect(env.router.liveRuns == 0)
         #expect(env.router.activeStream == nil)
-        #expect(ContinuousClock.now - started < .seconds(TestTiming.bound(30)))
+        // Not scaled: tripled, it would exceed the suite's one-minute time limit (#1012).
+        #expect(ContinuousClock.now - started < .seconds(30))
         await settle(env.router, step: "settle after shutdown")
     }
 }

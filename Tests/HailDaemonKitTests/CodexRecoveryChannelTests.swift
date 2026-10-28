@@ -78,16 +78,27 @@ import Testing
             try await channel.wait(for: [.interrupted], until: .now.advanced(by: .seconds(3)))
         }
         let began = ContinuousClock().now
-        let safety = Task { try? await Task.sleep(for: .seconds(4)); channel.stop() }
+        // The CI-scaled bound can outlast this safety stop, so the test also asserts it never fired (#1012).
+        let safety = Task { () -> Bool in
+            guard (try? await Task.sleep(for: .seconds(4))) != nil else { return false }
+            channel.stop()
+            return true
+        }
         await channel.join()
         #expect(began.duration(to: .now) < .seconds(TestTiming.bound(2)))
         #expect(channel.report == nil && channel.reaped)
-        safety.cancel(); await safety.value
+        safety.cancel()
+        #expect(await safety.value == false, "the safety stop must not end the channel")
     }
     @Test func cancellingASendToANonreadingWorkerRevokesAndReaps() async throws {
         let channel = try CodexRecoveryChannel(command: command("while(1) { select undef,undef,undef,1; }"),
                                                 request: UUID(), generation: UUID())
-        let safety = Task { try? await Task.sleep(for: .seconds(4)); channel.stop() }
+        // The CI-scaled bound can outlast this safety stop, so the test also asserts it never fired (#1012).
+        let safety = Task { () -> Bool in
+            guard (try? await Task.sleep(for: .seconds(4))) != nil else { return false }
+            channel.stop()
+            return true
+        }
         let send = Task { for _ in 0..<2000 { try await channel.send("prepare") } }
         try await Task.sleep(for: .milliseconds(50))
         let began = ContinuousClock().now
@@ -96,7 +107,8 @@ import Testing
         await channel.join()
         #expect(began.duration(to: .now) < .seconds(TestTiming.bound(2)))
         #expect(channel.stopped && channel.reaped)
-        safety.cancel(); await safety.value
+        safety.cancel()
+        #expect(await safety.value == false, "the safety stop must not end the channel")
     }
 }
 #endif
