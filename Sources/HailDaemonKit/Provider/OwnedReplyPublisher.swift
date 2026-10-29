@@ -158,7 +158,9 @@ public final class OwnedReplyPublisher: Sendable {
             return starts
         }
         for (id, reply) in starts {
-            DispatchQueue.global(qos: .utility).async { self.start(id, reply: reply) }
+            // Labelled serial queues target the overcommit root queue, so startup never waits for a free constrained
+            // worker, as blocks queued on the global queues do (#955). One per start keeps the four slots independent.
+            DispatchQueue(label: "hailing.reply-publisher.start", qos: .utility).async { self.start(id, reply: reply) }
         }
     }
 
