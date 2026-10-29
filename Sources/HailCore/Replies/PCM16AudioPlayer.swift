@@ -1,6 +1,7 @@
 // Reply routing through the capture engine (#269) stays beside the guard/player it changes, within the four-file budget.
 // swiftlint:disable file_length
 import AVFoundation
+import Dispatch
 public import HailProtocol
 
 public enum ReplyAudioPlayerError: Error, Equatable, Sendable {
@@ -17,11 +18,7 @@ extension PCM16AudioPlayer: ReplySegmentPauseEnding {}
 /// AVAudioEngine renderer for the raw signed 16-bit, mono stream produced by the current vbsay bridge.
 @MainActor
 public final class PCM16AudioPlayer: ReplyAudioPlaying {
-    private let ownEngine = AVAudioEngine()
-    /// The engine replies play through: our own, or a voice-processing capture engine while ambient listening runs,
-    /// so its echo canceller hears the reply as the far end (#269).
-    private var engine: AVAudioEngine
-    fileprivate let node = AVAudioPlayerNode()
+    private let rendering: ReplyAudioResourceOwner
     private let sourceFormat: AVAudioFormat
     fileprivate var gapMeter = PlayoutGapMeter()
     /// What is queued, and whether a stalled reply is held until it catches up (#825, `ReplyPlayoutBuffer`).
@@ -40,15 +37,24 @@ public final class PCM16AudioPlayer: ReplyAudioPlaying {
     #endif
 
     public init() {
+        rendering = ReplyAudioResourceOwner(PCM16RenderingResources())
         guard let sourceFormat = PCM16BufferConverter.sourceFormat() else {
             preconditionFailure("Hailing Station PCM playback format is unavailable")
         }
         self.sourceFormat = sourceFormat
-        engine = ownEngine
         engine.attach(node)
         // Player buffers must match this output format. The mixer owns conversion to the current
         // hardware route (normally 48 kHz and possibly stereo on iPhone/iPad).
         engine.connect(node, to: engine.mainMixerNode, format: sourceFormat)
+    }
+
+    /// Engine-free ownership seam for lifetime verification. Rendering uses the public initializer.
+    init(retiring resource: ReplyAudioRenderingResource) {
+        rendering = ReplyAudioResourceOwner(resource)
+        guard let sourceFormat = PCM16BufferConverter.sourceFormat() else {
+            preconditionFailure("Hailing Station PCM playback format is unavailable")
+        }
+        self.sourceFormat = sourceFormat
     }
 
     public func schedule(_ payload: AudioPayload, onPlayed: (@MainActor @Sendable () -> Void)?) throws {
@@ -369,5 +375,81 @@ extension ReplyPlayoutBuffer {
         // nor a clean whole reply, and will not train the adaptive buffer in either direction.
         cleared()
         return false
+    }
+}
+
+/// The rendering graph lives in the retired resource, so the player reaches it through these accessors (#985).
+extension PCM16AudioPlayer {
+    private var resources: PCM16RenderingResources {
+        guard let resources = rendering.value as? PCM16RenderingResources else {
+            preconditionFailure("Unexpected reply rendering resource")
+        }
+        return resources
+    }
+    private var ownEngine: AVAudioEngine { resources.ownEngine }
+    /// The engine replies play through: our own, or a voice-processing capture engine while ambient listening runs,
+    /// so its echo canceller hears the reply as the far end (#269).
+    private var engine: AVAudioEngine {
+        get { resources.engine }
+        set { resources.engine = newValue }
+    }
+    fileprivate var node: AVAudioPlayerNode { resources.node }
+}
+
+/// One retirement lane: route-change teardown must never contend with SwiftUI's main-thread graph updates.
+private let replyEngineRetirementQueue = DispatchQueue(label: "hailing.reply-engine-retire", qos: .utility)
+
+/// Concrete ownership boundary, also usable by engine-free retirement probes. Access is exclusive to the player
+/// until retirement; stop and final release belong exclusively to the serial retirement queue afterwards.
+class ReplyAudioRenderingResource {
+    func stop() {}
+}
+
+private final class PCM16RenderingResources: ReplyAudioRenderingResource {
+    let ownEngine: AVAudioEngine
+    var engine: AVAudioEngine
+    let node = AVAudioPlayerNode()
+
+    override init() {
+        let engine = AVAudioEngine()
+        ownEngine = engine
+        self.engine = engine
+        super.init()
+    }
+    override func stop() { ownEngine.stop() } // Never stop a borrowed capture engine.
+}
+
+/// This nonisolated, nongeneric owner avoids the Swift 6.3.3 optimized isolated-deinit compiler crash.
+final class ReplyAudioResourceOwner {
+    private var resource: ReplyAudioRenderingResource?
+
+    var value: ReplyAudioRenderingResource {
+        guard let resource else { preconditionFailure("Reply resource already retired") }
+        return resource
+    }
+
+    init(_ resource: ReplyAudioRenderingResource) { self.resource = resource }
+
+    deinit {
+        let retired = RetiredReplyAudioResource(taking: &resource)
+        replyEngineRetirementQueue.async { retired.dispose() }
+    }
+}
+
+/// Unchecked Sendable covers a single ownership transfer, never shared access. The call boundary ends all
+/// temporary strong references before enqueueing, even if the retirement queue starts immediately.
+private struct RetiredReplyAudioResource: @unchecked Sendable {
+    private let reference: Unmanaged<ReplyAudioRenderingResource>
+
+    @inline(never)
+    init(taking resource: inout ReplyAudioRenderingResource?) {
+        guard let owned = resource else { preconditionFailure("Reply resource already retired") }
+        reference = Unmanaged.passRetained(owned)
+        resource = nil
+    }
+
+    func dispose() {
+        let resource = reference.takeRetainedValue()
+        resource.stop()
     }
 }

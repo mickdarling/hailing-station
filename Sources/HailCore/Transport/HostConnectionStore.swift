@@ -5,6 +5,7 @@ import AVFAudio
 public import Foundation
 public import HailProtocol
 public import Observation
+import Network
 /// Main-actor model for the UI. Every endpoint owns a separate actor and a separate stale-callback token.
 @MainActor
 @Observable
@@ -29,6 +30,10 @@ public final class HostConnectionStore {
     public let conversation = ConversationLog()
     /// True while ambient listening is streaming; leaving the foreground then keeps the destination authorized (#282).
     public var ambientStreaming = false
+    /// Retained through card disappearance; recovery is inert until the app attaches its controller (#904).
+    public var ambientController: AmbientListeningController? {
+        didSet { ambientController?.reconnect.controller = ambientController }
+    }
     /// Which overheard turns hosts should send (#398): `off`, `owner` or `everyone`; re-sent to each capable host as it
     /// reaches ready. Sends to one host run in order, so the last choice is the one it keeps.
     public private(set) var overheardScope = "off"
@@ -58,6 +63,8 @@ public final class HostConnectionStore {
 
     /// Bumped on every target selection, per host, so an ambient stream ends on any target change (#203).
     private var selectionSerials: [HostEndpoint.Identifier: UInt64] = [:]
+    /// Independent confirmation tokens also retire older overlapping reauthorizations (#904).
+    private var selectionRequests: [HostEndpoint.Identifier: UUID] = [:]
     /// The target each host last confirmed through `selectTarget`, the one its connection addresses audio to.
     /// Ambient bindings exist only for it (#218).
     private var selectedTargets: [HostEndpoint.Identifier: String] = [:]
@@ -75,6 +82,8 @@ public final class HostConnectionStore {
     @ObservationIgnored private let wallNow: HostConnection.WallNow
     @ObservationIgnored private let sleep: HostConnection.Sleep
     @ObservationIgnored private let jitter: HostConnection.Jitter
+    @ObservationIgnored private var pathMonitor: NWPathMonitor?
+    @ObservationIgnored private var receivedInitialPath = false
     @ObservationIgnored private var diagnosticsFlush: Task<Void, Never>?
     /// The device diagnostics log (#234). Connection changes are recorded into it, and its batches go to the first
     /// ready host that advertises `device_diagnostics`; none goes anywhere else. Nil records and sends nothing.
@@ -110,15 +119,36 @@ public final class HostConnectionStore {
         self.wallNow = wallNow
         self.sleep = sleep
         self.jitter = jitter
+        if connector is URLSessionWebSocketConnector {
+            let monitor = NWPathMonitor()
+            pathMonitor = monitor
+            monitor.pathUpdateHandler = { [weak self] _ in
+                Task { @MainActor [weak self] in
+                    guard let self else { return }
+                    if self.receivedInitialPath { await self.networkPathChanged() }
+                    self.receivedInitialPath = true
+                }
+            }
+            monitor.start(queue: DispatchQueue(label: "hail.network-path"))
+        }
     }
+
+    deinit { pathMonitor?.cancel() }
 }
 
 extension HostConnectionStore {
     public func upsert(_ endpoint: HostEndpoint) async {
         if snapshots[endpoint.id]?.endpoint == endpoint { return }
+        let restoring = ambientController?.reconnect.refreshEndpoint(
+            endpoint, previous: snapshots[endpoint.id], store: self
+        ) == true
+        if !restoring { ambientController?.reconnect.veto(.endpointChanged, host: endpoint.id) }
         conversation.forgetHeardTurns(endpoint.id)
         let existing = connections.removeValue(forKey: endpoint.id)
-        forgetSelection(endpoint.id)
+        if restoring {
+            selectedTargets[endpoint.id] = nil
+            selectionRequests[endpoint.id] = nil
+        } else { forgetSelection(endpoint.id) }
         let retainedBarrier = retiredBarriers.removeValue(forKey: endpoint.id)
         tokens[endpoint.id] = nil
         let inheritedBarrier = existing.map(drainingTransportBarrier(for:)) ?? retainedBarrier
@@ -129,6 +159,13 @@ extension HostConnectionStore {
         tokens[endpoint.id] = token
         snapshots[endpoint.id] = HostConnectionSnapshot(endpoint: endpoint)
         if !order.contains(endpoint.id) { order.append(endpoint.id) }
+        let connection = await makeConnection(endpoint, connector: connectionConnector, token: token)
+        guard tokens[endpoint.id] == token else { await connection.disconnect(); return }
+        connections[endpoint.id] = connection
+        if restoring { await connection.connect() }
+    }
+    private func makeConnection(_ endpoint: HostEndpoint, connector connectionConnector: any WebSocketConnecting,
+                                token: UUID) async -> HostConnection {
         let connection = HostConnection(
             endpoint: endpoint,
             connector: connectionConnector,
@@ -139,31 +176,81 @@ extension HostConnectionStore {
             negotiationScheduler: negotiationScheduler,
             monotonicNow: monotonicNow,
             wallNow: wallNow,
+            reportsAmbientRefusals: true,
+            transportLossObserver: { [weak self] generation, sending in
+                await self?.transportLost(host: endpoint.id, generation: generation, sending: sending, token: token)
+            },
             sleep: sleep,
-            jitter: jitter
-        ) { [weak self] snapshot in
-            await self?.receive(snapshot, token: token)
-        } replyObserver: { [weak self] event in
-            await self?.receive(event, token: token)
+            jitter: jitter,
+            observer: { [weak self] snapshot in await self?.receive(snapshot, token: token) },
+            replyObserver: { [weak self] event in await self?.receive(event, token: token) }
+        )
+        await connection.setReconnectPacing { [weak self] in
+            await self?.ambientPacing(host: endpoint.id, token: token)
         }
-        connections[endpoint.id] = connection
+        return connection
     }
-    public func connect(_ id: HostEndpoint.Identifier) async { await connections[id]?.connect() }
-    public func disconnect(_ id: HostEndpoint.Identifier) async { await connections[id]?.disconnect() }
-    public func selectTarget(host id: HostEndpoint.Identifier, targetID: String) async throws {
+    private func ambientPacing(host: HostEndpoint.Identifier, token: UUID) -> AmbientReconnectPacing? {
+        guard tokens[host] == token, let reconnect = ambientController?.reconnect,
+              reconnect.isPending, reconnect.binding?.hostID == host,
+              reconnect.pacing?.isCancelled == false else { return nil }
+        return reconnect.pacing
+    }
+
+    public func connect(_ id: HostEndpoint.Identifier) async {
+        await connections[id]?.connect()
+    }
+    public func disconnect(_ id: HostEndpoint.Identifier) async {
+        ambientController?.reconnect.veto(.explicitDisconnect, host: id)
         forgetSelection(id)
+        await connections[id]?.disconnect()
+    }
+    /// Only reauthorization of the owner's existing destination uses `restoring` (#904).
+    public func selectTarget(host id: HostEndpoint.Identifier, targetID: String,
+                             restoring: Bool = false) async throws {
+        if restoring, let current = ambientBinding(host: id, targetID: targetID),
+           ambientController?.binding == current, ambientController?.isListening == true,
+           ambientController?.reconnect.isPending == false { return }
+        if !restoring { ambientController?.reconnect.block(.ownerSelection); forgetSelection(id) }
+        selectedTargets[id] = nil
+        let request = UUID()
+        selectionRequests[id] = request
         let serial = selectionSerials[id]
         guard let connection = connections[id] else { throw HostConnectionFailure.notReady }
-        try await connection.selectTarget(targetID)
+        do { try await connection.selectTarget(targetID) } catch {
+            if selectionRequests[id] == request {
+                selectionFailed(error, host: id, restoring: restoring, on: connection)
+            }
+            throw error
+        }
         // A later selection, endpoint change or removal owns the outcome.
-        if selectionSerials[id] == serial, connections[id] === connection { selectedTargets[id] = targetID }
+        if selectionSerials[id] == serial, selectionRequests[id] == request, connections[id] === connection {
+            selectedTargets[id] = targetID
+            ambientController?.reconnect.restore(store: self)
+        }
+    }
+    private func selectionFailed(_ error: any Error, host id: HostEndpoint.Identifier,
+                                 restoring: Bool, on connection: HostConnection) {
+        guard let snapshot = snapshots[id], connections[id] === connection,
+              let reconnect = ambientController?.reconnect else { return }
+        guard restoring else { return reconnect.veto(.bindingChanged, host: id) }
+        reconnect.selectionFailed(error, snapshot: snapshot, store: self)
+    }
+    func retryAmbientTransport(host id: HostEndpoint.Identifier, generation: UUID) async -> Bool {
+        guard let connection = connections[id], snapshots[id]?.connectionGeneration == generation,
+              privacyLocal[id]?.request == nil,
+              ambientController?.reconnect.allowsTransportRetry(host: id, generation: generation) == true
+        else { return false }
+        return await connection.retryAmbientTransport(generation: generation)
     }
     /// The ambient binding for a destination, or nil unless the host is ready, advertises `stream_audio`, and
     /// `targetID` is the target its connection has confirmed: the connection addresses every segment to that
     /// selection, so a binding for any other target would misstate where audio goes (#218).
     public func ambientBinding(host id: HostEndpoint.Identifier, targetID: String) -> AmbientAudioBinding? {
         guard selectedTargets[id] == targetID, let snapshot = snapshots[id], snapshot.state == .ready,
-              snapshot.capabilities.contains(HostConnection.streamAudioCapability) else { return nil }
+              snapshot.capabilities.contains(HostConnection.streamAudioCapability),
+              !snapshot.receivedTargetList || snapshot.targets.contains(where: { $0.id == targetID && $0.alive })
+        else { return nil }
         return AmbientAudioBinding(
             hostID: id, targetID: targetID, connectionGeneration: snapshot.connectionGeneration,
             selection: selectionSerials[id, default: 0]
@@ -171,6 +258,7 @@ extension HostConnectionStore {
     }
 
     public func remove(_ id: HostEndpoint.Identifier) async {
+        ambientController?.reconnect.veto(.endpointChanged, host: id)
         conversation.forgetHeardTurns(id)
         tokens[id] = nil
         forgetSelection(id)
@@ -186,11 +274,25 @@ extension HostConnectionStore {
     private func forgetSelection(_ id: HostEndpoint.Identifier) {
         selectionSerials[id, default: 0] &+= 1
         selectedTargets[id] = nil
+        selectionRequests[id] = nil
+    }
+
+    private func transportLost(host: HostEndpoint.Identifier, generation: UUID, sending: Bool, token: UUID) {
+        guard tokens[host] == token, let snapshot = snapshots[host],
+              snapshot.connectionGeneration == generation else { return }
+        // A failed reassert send must settle as privacy failure, even if its notice arrived first.
+        // Receive loss during confirmation remains a distinct transport flap and retains retry pacing.
+        if sending, ambientController?.reconnect.privacyConfirmation.sendFailed(host: host, generation: generation)
+            == true { return }
+        ambientController?.reconnect.drop(snapshot, store: self)
     }
 
     private func receive(_ snapshot: HostConnectionSnapshot, token: UUID) {
         guard tokens[snapshot.id] == token else { return }
-        let previous = snapshots[snapshot.id]?.state
+        let old = snapshots[snapshot.id]
+        let previous = old?.state
+        ambientController?.reconnect.receive(snapshot, previous: old, store: self)
+        if snapshot.state != .ready { selectedTargets[snapshot.id] = nil; selectionRequests[snapshot.id] = nil }
         if snapshot.state != .ready || snapshots[snapshot.id]?.connectionGeneration != snapshot.connectionGeneration {
             conversation.forgetHeardTurns(snapshot.id)
         }
@@ -200,7 +302,17 @@ extension HostConnectionStore {
         if snapshot.state != .ready { forgetModes(snapshot.id) }
     }
 
-    private func receive(_ event: HostReplyEvent, token: UUID) {
+    private func acceptConfirmedResume(on host: HostEndpoint.Identifier) async {
+        guard let proof = ambientController?.reconnect.acceptance, proof.binding.hostID == host,
+              let connection = connections[host], await connection.hasConfirmed(proof) else { return }
+        ambientController?.reconnect.accepted(proof)
+    }
+
+    private func receive(_ event: HostReplyEvent, token: UUID) async {
+        guard tokens[event.endpointID] == token else { return }
+        // The receive loop awaits this callback before processing the next frame. Check the exact probe's
+        // pong on the connection actor, so a stalled polling waiter cannot misclassify a post-pong refusal.
+        if HostNoticeOrigin.streamID != nil { await acceptConfirmedResume(on: event.endpointID) }
         guard tokens[event.endpointID] == token else { return }
         if receiveAmbientNotice(event) { return }
         segmentWiring?.receive(event)
@@ -244,6 +356,10 @@ extension HostConnectionStore {
             await connections[id]?.foregrounded()
         }
     }
+
+    func networkPathChanged() async {
+        for id in order { await connections[id]?.networkPathChanged() }
+    }
 }
 
 /// Ambient notices are not replies: neither joins the reply list.
@@ -270,6 +386,11 @@ extension HostConnectionStore {
             health[event.endpointID] = HostHealthReading(report: report, connectionGeneration: generation)
         case .control(.error(let code, let message, let turn)) where code.isRequestRefusal:
             receiveRequestRefusal(code, message: message, turn: turn, from: event.endpointID)
+        case .control(.error(let code, let message, _)) where message.hasPrefix("ambient"):
+            ambientController?.receiveAmbientRefusal(
+                HostConnectionFailure.remote("\(code.rawValue): \(message)"), host: event.endpointID,
+                generation: HostNoticeOrigin.generation, streamID: HostNoticeOrigin.streamID
+            )
         case .control(.ownerVoice(let state)):
             if state == "unrecognized" {
                 ownerVoiceUnrecognized.insert(event.endpointID)
@@ -287,6 +408,11 @@ extension HostConnectionStore {
         _ code: ErrorCode, message: String, turn: UUID?, from endpointID: HostEndpoint.Identifier
     ) {
         if code == .voiceRouteRefused { conversation.noteHeardRefused(turn, endpointID: endpointID) }
+        if let snapshot = snapshots[endpointID] {
+            ambientController?.reconnect.privacyConfirmation.receive(
+                on: false, host: snapshot.id, generation: HostNoticeOrigin.generation
+            )
+        }
         // The one chat line and the one announcement for every request refusal, whatever its code.
         conversation.noteRefusal(message, endpointID: endpointID,
                                  targetID: selectedTargets[endpointID] ?? "")
@@ -305,8 +431,22 @@ extension HostConnectionStore {
         case .control(.mediaMode(let on, let reason, let expires)):
             mediaMode[event.endpointID] = MediaModeStatus(on: on, reason: reason, expiresMilliseconds: expires)
         case .control(.duckMode(let on, let reason, let expires)):
+            if let origin = HostNoticeOrigin.generation,
+               origin != snapshots[event.endpointID]?.connectionGeneration { return true }
             duckMode[event.endpointID] = DuckModeStatus(on: on, reason: reason, expiresMilliseconds: expires)
+            if let request = privacyLocal[event.endpointID]?.request,
+               request.on != on || (on && duckMode[event.endpointID]?.isOn() != true) {
+                ambientController?.reconnect.veto(.privacy, host: event.endpointID)
+            }
+            ambientController?.reconnect.confirmedPrivacy(on: duckMode[event.endpointID]?.isOn() == true,
+                                                         host: event.endpointID)
             privacyLocal[event.endpointID] = nil
+            if let snapshot = snapshots[event.endpointID] {
+                ambientController?.reconnect.privacyConfirmation.receive(
+                    on: duckMode[event.endpointID]?.isOn() == true, host: snapshot.id,
+                    generation: HostNoticeOrigin.generation
+                )
+            }
         default:
             return false
         }
@@ -321,20 +461,28 @@ extension HostConnectionStore {
     /// or any target selection since it was taken makes every further segment throw and the streamer releases
     /// the mic.
     public func sendAudio(_ audio: AudioPayload, to binding: AmbientAudioBinding) async throws {
-        guard ambientBinding(host: binding.hostID, targetID: binding.targetID) == binding,
+        guard AmbientSendAdmission.isCurrent,
+              ambientBinding(host: binding.hostID, targetID: binding.targetID) == binding,
               let connection = connections[binding.hostID] else { throw HostConnectionFailure.notReady }
         if audio.sequence == 0 {
             await startingStream(on: connection, host: binding.hostID)
             // The route send suspended: a selection or endpoint change since then owns the connection, so this
             // binding's audio must not reach its new target (#491 review).
-            guard ambientBinding(host: binding.hostID, targetID: binding.targetID) == binding,
+            guard AmbientSendAdmission.isCurrent,
+                  ambientBinding(host: binding.hostID, targetID: binding.targetID) == binding,
                   connections[binding.hostID] === connection else { throw HostConnectionFailure.notReady }
         }
         do {
-            try await connection.sendAudio(audio)
+            try await connection.sendAudio(audio, bindingGeneration: binding.connectionGeneration)
         } catch {
+            // A send can observe the refusal before its ordered notice callback reaches the controller.
+            await acceptConfirmedResume(on: binding.hostID)
+            ambientController?.reconnect.sendFailed(error, audio: audio, binding: binding, store: self)
             notePrivateStop(error, binding: binding)
             throw error
+        }
+        if audio.isResume, ambientController?.ownsAudio(audio.streamID, binding: binding) == true {
+            ambientController?.reconnect.confirmAcceptance(of: audio, binding: binding, on: connection)
         }
         if audio.sequence > 0 { privacyLocal[binding.hostID]?.listeningStopped = false }
     }
@@ -444,15 +592,33 @@ extension HostConnectionStore {
     /// Asks host `id` to turn privacy on or off for this device's stream. The switch waits (not private) until the
     /// host's `duck_mode` notice arrives; the tap itself never changes the state shown.
     public func setPrivacy(on: Bool, host id: HostEndpoint.Identifier) async throws {
-        guard let connection = connections[id] else { throw HostConnectionFailure.notReady }
+        // A healthy switch request becomes pre-drop state only when THIS host confirms it. It is not a veto
+        // yet; drop() blocks an unsettled request. Gap taps and failed sends latch until an owner start.
+        if snapshots[id]?.state != .ready || ambientController?.reconnect.isPending == true {
+            ambientController?.reconnect.veto(.privacy, host: id)
+        }
         let request = PrivacyRequest(on: on)
         privacyLocal[id, default: PrivacySwitchLocal()].request = request
         do {
-            try await connection.sendSetPrivacy(on: on)
+            try await sendPrivacy(on: on, host: id)
         } catch {
+            ambientController?.reconnect.veto(.privacy, host: id)
             if privacyLocal[id]?.request == request { privacyLocal[id]?.request = nil }
             throw error
         }
+    }
+
+    /// Restore-originated reassertion uses the same control send, without an owner tap or switch request.
+    func reassertPrivacy(for binding: AmbientAudioBinding) async throws {
+        guard ambientBinding(host: binding.hostID, targetID: binding.targetID) == binding else {
+            throw HostConnectionFailure.notReady
+        }
+        try await sendPrivacy(on: true, host: binding.hostID)
+    }
+
+    private func sendPrivacy(on: Bool, host id: HostEndpoint.Identifier) async throws {
+        guard let connection = connections[id] else { throw HostConnectionFailure.notReady }
+        try await connection.sendSetPrivacy(on: on)
     }
 }
 
@@ -578,7 +744,8 @@ public struct AmbientAudioBinding: Hashable, Sendable {
 public enum AmbientScene: Sendable { case active, inactive, background }
 
 /// The "Ambient listening" toggle (#203). Off on every launch: a binding change (target, reconnect), a send
-/// failure or the microphone ending turns it off, and the user must turn it on again. The one exception (#287):
+/// failure or the microphone ending turns it off, and the user must turn it on again. A guarded transport restore
+/// (#904) keeps capture alive across a drop, discarding gap audio. Another exception (#287):
 /// when the host ends the stream for a transient reason (idle, its listener exiting), the microphone keeps running
 /// and a fresh stream starts after a backoff, a few times at most. Once streaming, it keeps running when the app
 /// leaves the foreground (#282); it only starts in the foreground. Audio is never logged; `stopReason` carries
@@ -603,6 +770,7 @@ public final class AmbientListeningController {
     @ObservationIgnored public var onListeningChange: (@MainActor (Bool) -> Void)?
     /// Told the reason whenever listening stops without the user turning it off, so the app can notify (#287).
     @ObservationIgnored public var onUnexpectedStop: (@MainActor (String) -> Void)?
+    public let reconnect = AmbientListeningReconnect()
     public private(set) var stopReason: String?
     public private(set) var binding: AmbientAudioBinding?
     /// Ambient take-over (#366): where listening went after another device took it (not an error), or, briefly,
@@ -639,7 +807,8 @@ public final class AmbientListeningController {
     @ObservationIgnored private let notificationCenter: NotificationCenter
     /// Watches for capture ended by the system, so the toggle drops before queued audio finishes draining.
     @ObservationIgnored private var systemEndObserver: (any NSObjectProtocol)?
-    @ObservationIgnored private let sleep: @Sendable (Duration) async throws -> Void
+    /// Nil in production: waits then call `Task.sleep(for:)` directly (#904).
+    @ObservationIgnored private let sleep: (@Sendable (Duration) async throws -> Void)?
     @ObservationIgnored private let now: @Sendable () -> ContinuousClock.Instant
     /// Fresh streams started this session since the last quiet spell, and when the latest began (#287).
     @ObservationIgnored private var recoveries = 0
@@ -656,7 +825,7 @@ public final class AmbientListeningController {
         requestPermission: @escaping @MainActor () async -> Bool,
         makeStreamer: @escaping MakeStreamer,
         releaseSession: @escaping @MainActor () async -> Void,
-        sleep: @escaping @Sendable (Duration) async throws -> Void = { try await Task.sleep(for: $0) },
+        sleep: (@Sendable (Duration) async throws -> Void)? = nil,
         now: @escaping @Sendable () -> ContinuousClock.Instant = { ContinuousClock().now },
         send: @escaping Send
     ) {
@@ -671,6 +840,7 @@ public final class AmbientListeningController {
 
     public func turnOn(for binding: AmbientAudioBinding) async {
         guard !isOn, scene == .active else { return }
+        reconnect.ownerStarted()
         let current = UUID()
         session = current
         isOn = true
@@ -693,16 +863,18 @@ public final class AmbientListeningController {
         }
         if scene == .active { await start(current) } else { pendingStart = true }
     }
+}
 
-    public func turnOff() async { await end(session, reason: nil, cause: "user") }
-
-    /// Opens a stream for `current`. A resume after an interruption (#445) may run in the background, and a
+extension AmbientListeningController {
+    /// Opens a stream for `current`. A resume after an interruption (#445) waits for the foreground, and a
     /// failed one leaves listening paused for the next retry instead of ending it.
     @discardableResult
     private func start(_ current: UUID, resuming: Bool = false) async -> Bool {
         guard let binding else { return false }
         await pendingRelease?.value
-        guard session == current, resuming || scene == .active else {
+        guard session == current else { return false }
+        if resuming, scene != .active { pausedReason = Self.foregroundPausedStatus; return false }
+        guard scene == .active else {
             await end(current, reason: "Stopped: Hailing Station left the foreground.", cause: "background")
             return false
         }
@@ -710,8 +882,9 @@ public final class AmbientListeningController {
         do {
             let streamer = try await openStreamer(current, binding: binding)
             streamer.opensAsResume = resuming
-            guard session == current, resuming || scene == .active else {
+            guard session == current, scene == .active else {
                 await release(current)
+                if resuming, session == current { pausedReason = Self.foregroundPausedStatus; return false }
                 await end(current, reason: "Stopped: Hailing Station left the foreground.", cause: "background")
                 return false
             }
@@ -734,9 +907,11 @@ public final class AmbientListeningController {
 
     private func end(_ current: UUID, reason: String?, cause: String, code: String? = nil) async {
         guard session == current, isOn else { return }
+        let restoring = reconnect.isPending
         var fields: [DiagnosticField: DiagnosticValue] = [.reason: .token(cause)]
         if let code { fields[.code] = .token(code) }
         diagnostics?.record(.ambientStop, fields)
+        if restoring { reconnect.finish(.failed, reason: movedAway == nil ? .startFailed : .movedAway) }
         session = UUID()
         isOn = false
         isListening = false
@@ -752,7 +927,9 @@ public final class AmbientListeningController {
         // Moved away (#366) is where listening went, not a failure: no alert, and "Listen here" brings it back.
         handoff = cause == "user" ? nil : movedAway.flatMap { reason == $0.status ? $0 : nil }
         movedAway = nil
-        if cause != "user", handoff == nil, let reason { onUnexpectedStop?(reason) }
+        if cause != "user", !restoring, !reconnect.replacedAppliedNotice, handoff == nil, let reason {
+            onUnexpectedStop?(reason)
+        }
         if let systemEndObserver {
             notificationCenter.removeObserver(systemEndObserver)
             self.systemEndObserver = nil
@@ -770,18 +947,26 @@ extension AmbientListeningController {
             Task { @MainActor in self?.watch(streamer, session: current) }
         }
         // Only the current stream's end stops listening: a paused (#445) or already-replaced stream's does not.
-        guard !streaming, session == current, pausedReason == nil, self.streamer === streamer else { return }
+        guard !streaming, isListening, session == current, pausedReason == nil,
+              self.streamer === streamer else { return }
         Task {
-            guard pausedReason == nil, self.streamer === streamer else { return }
+            guard isListening, pausedReason == nil, self.streamer === streamer else { return }
             await end(current, reason: sendFailure ?? "Stopped: the microphone was interrupted or ended.",
                       cause: sendFailureCause?.cause ?? "capture_ended", code: sendFailureCause?.code)
         }
     }
 
     /// Only the live stream's failure counts: a stream replaced by a pause (#445) still draining is ignored.
-    private func recordSendFailure(_ error: any Error, session current: UUID, from source: AmbientAudioStreamer?) {
-        guard session == current, sendFailure == nil, let source, source === streamer else { return }
+    private func recordSendFailure(_ error: any Error, session current: UUID,
+                                   from source: AmbientAudioStreamer?, streamID: UUID?) {
+        guard AmbientSendAdmission.isCurrent, session == current, sendFailure == nil,
+              let source, source === streamer, source.streamID == streamID else { return }
+        if reconnect.isPending, Self.isTransportError(error) { return }
         movedAway = AmbientHandoff(refusal: error)
+        if case HostConnectionFailure.remote = error, !Self.isTransient(error) {
+            reconnect.refused(reason: movedAway == nil ? .startFailed : .movedAway,
+                              streamID: streamID, binding: binding)
+        }
         sendFailure = movedAway?.status ?? "Stopped: \(Self.describe(error))"
         sendFailureCause = Self.diagnosticCause(error)
         if let code = sendFailureCause?.code { diagnostics?.record(.hostRefusal, [.code: .token(code)]) }
@@ -847,6 +1032,16 @@ extension AmbientListeningController {
         let previous = self.scene
         self.scene = scene
         guard isOn else { return }
+        if reconnect.isPending {
+            if let current, current.hostID != binding?.hostID || current.targetID != binding?.targetID {
+                reconnect.block(.bindingChanged)
+            }
+            return
+        }
+        await updateDestination(current, previous: previous)
+    }
+
+    private func updateDestination(_ current: AmbientAudioBinding?, previous: AmbientScene) async {
         if current != binding {
             return await end(session, reason: "Stopped: the destination or connection changed.",
                              cause: "binding_changed")
@@ -882,7 +1077,7 @@ extension AmbientListeningController {
         handoff = .movedHere(from: kind)
         let sleep = sleep
         Task { [weak self] in
-            try? await sleep(AmbientHandoff.confirmationDuration)
+            try? await ambientSleep(for: AmbientHandoff.confirmationDuration, injected: sleep)
             guard let self, self.confirmation == current, case .movedHere? = self.handoff else { return }
             self.handoff = nil
         }
@@ -894,6 +1089,7 @@ extension AmbientListeningController {
     /// The card went away because the connection or destination did, not because the user turned listening off:
     /// it is reported like any other unexpected stop (#287).
     public func destinationLost() async {
+        guard !reconnect.isPending else { return }
         await end(session, reason: "Stopped: the connection or destination went away.", cause: "binding_changed")
     }
 
@@ -906,7 +1102,8 @@ extension AmbientListeningController {
     /// stream at sequence 0 on the same capture. False lets the failure end listening as before.
     /// Only the live stream recovers: one a pause (#445) replaced, even mid-backoff, never renews.
     func recover(from error: any Error, session current: UUID, streamer: AmbientAudioStreamer?) async -> Bool {
-        guard session == current, isOn, Self.isTransient(error), isLive(streamer) else { return false }
+        guard !reconnect.isPending, session == current, isOn,
+              Self.isTransient(error), isLive(streamer) else { return false }
         if let lastRecovery, now() - lastRecovery >= Self.recoveryQuietPeriod { recoveries = 0 }
         guard recoveries < Self.recoveryBackoff.count else {
             sendFailure = sendFailure.map { "\($0) Gave up after \(recoveries) restarts." }
@@ -915,7 +1112,7 @@ extension AmbientListeningController {
         let sleep = sleep
         let delay = Self.recoveryBackoff[recoveries]
         recoveries += 1
-        let wait = Task { try await sleep(delay) }
+        let wait = Task { try await ambientSleep(for: delay, injected: sleep) }
         recoveryWait = wait
         guard (try? await wait.value) != nil, session == current, isOn, isLive(streamer) else { return false }
         recoveryWait = nil
@@ -948,18 +1145,25 @@ extension AmbientListeningController {
 /// take-over.
 extension AmbientListeningController {
     static let pausedStatus = "Paused: another app is using the mic."
-    static let resumeGaveUp = "Stopped: another app kept the microphone."
-    /// Waits between resume attempts; about five minutes in all, then listening turns off.
+    static let foregroundPausedStatus = "Paused: another app is using the mic. Return to the foreground to retry."
+    /// Waits between resume attempts; the final delay repeats while listening remains on.
     static let resumeBackoff: [Duration] = [2, 5, 10, 20, 30, 60, 60, 60, 60].map { .seconds($0) }
 
     func openStreamer(_ current: UUID, binding: AmbientAudioBinding) async throws -> AmbientAudioStreamer {
         let send = send
         let source = StreamerSource()
+        source.binding = binding
         let streamer = try await makeStreamer { [weak self] payload in
             do {
-                try await send(payload, binding)
+                guard let destination = await self?.sendBinding(payload, session: current, source: source) else {
+                    throw HostConnectionFailure.notReady
+                }
+                try await send(payload, destination)
+                await self?.transportSent(payload, binding: destination)
             } catch {
-                await self?.recordSendFailure(error, session: current, from: source.streamer)
+                await self?.recordSendFailure(
+                    error, session: current, from: source.streamer, streamID: payload.streamID
+                )
                 throw error
             }
         }
@@ -980,6 +1184,7 @@ extension AmbientListeningController {
 
     func markPaused(_ current: UUID) {
         guard session == current, isOn, pausedReason == nil else { return }
+        if reconnect.isPending { return reconnect.block(.modeChanged) }
         pausedReason = Self.pausedStatus
         diagnostics?.record(.ambientStop, [.reason: .token("system_interruption")])
     }
@@ -996,10 +1201,7 @@ extension AmbientListeningController {
         }
         resumer = AmbientResumer(
             center: notificationCenter, sleep: sleep, backoff: Self.resumeBackoff,
-            attempt: { [weak self] trigger in await self?.resume(current, trigger: trigger) ?? true },
-            exhausted: { [weak self] in
-                await self?.end(current, reason: Self.resumeGaveUp, cause: "system_interruption")
-            }
+            attempt: { [weak self] trigger in await self?.resume(current, trigger: trigger) ?? .finished }
         )
         guard let streamer else { return await release(current) }
         self.streamer = nil
@@ -1010,15 +1212,16 @@ extension AmbientListeningController {
         recoveryWait = nil
         await streamer.stop()
         // Released unless a resumed stream or a resume in flight owns the session now. Listening may have ended
-        // meanwhile (turned off, moved, gave up) with nothing else to release it; `release` checks the owner.
+        // meanwhile (turned off or moved) with nothing else to release it; `release` checks the owner.
         if self.streamer == nil, resumer?.attempting != true { await release(current) }
     }
 
-    /// True once nothing is left to resume: listening is back, or it ended. A failed attempt stays paused.
+    /// Foreground deferrals retain the current retry slot; only a failed microphone start advances it.
     @discardableResult
-    func resume(_ current: UUID, trigger: String) async -> Bool {
-        guard session == current, isOn, pausedReason != nil else { return true }
-        guard let resumer, !resumer.attempting else { return false }
+    func resume(_ current: UUID, trigger: String) async -> AmbientResumer.AttemptResult {
+        guard session == current, isOn, pausedReason != nil else { return .finished }
+        guard scene == .active else { pausedReason = Self.foregroundPausedStatus; return .deferred }
+        guard let resumer, !resumer.attempting else { return .deferred }
         resumer.attempting = true
         defer { resumer.attempting = false }
         sendFailure = nil
@@ -1027,41 +1230,46 @@ extension AmbientListeningController {
         if await start(current, resuming: true) {
             resumer.cancel()
             if self.resumer === resumer { self.resumer = nil }
-            return true
+            return .finished
         }
-        guard session == current, isOn else { return true }
+        guard session == current, isOn else { return .finished }
+        guard scene == .active else { pausedReason = Self.foregroundPausedStatus; return .deferred }
         diagnostics?.record(.captureError, [.code: .token("resume_failed")])
-        return false
+        return .retry
     }
 }
 
 /// One paused session's resume triggers (#445): the session's interruption-ended notification, and a backoff.
 @MainActor
 final class AmbientResumer {
-    typealias Attempt = @MainActor (String) async -> Bool
+    enum AttemptResult { case finished, deferred, retry }
+    typealias Attempt = @MainActor (String) async -> AttemptResult
     var attempting = false
     private let center: NotificationCenter
     private var token: (any NSObjectProtocol)?
     private var retries: Task<Void, Never>?
 
     init(
-        center: NotificationCenter, sleep: @escaping @Sendable (Duration) async throws -> Void,
-        backoff: [Duration], attempt: @escaping Attempt, exhausted: @escaping @MainActor () async -> Void
+        center: NotificationCenter, sleep: (@Sendable (Duration) async throws -> Void)?,
+        backoff: [Duration], attempt: @escaping Attempt
     ) {
         self.center = center
         token = center.addObserver(forName: AudioCaptureEndingSignal.Names.interruption, object: nil, queue: nil) {
             guard AudioCaptureEndingSignal($0) == .interruptionEnded else { return }
             Task { @MainActor in _ = await attempt("interruption_ended") }
         }
-        retries = Task { @MainActor [weak self] in
-            for delay in backoff {
-                guard (try? await sleep(delay)) != nil, !Task.isCancelled else { return }
-                if await attempt("retry") { return }
+        retries = Task { @MainActor in
+            guard !backoff.isEmpty else { return }
+            var index = 0
+            while !Task.isCancelled {
+                guard (try? await ambientSleep(for: backoff[index], injected: sleep)) != nil,
+                      !Task.isCancelled else { return }
+                switch await attempt("retry") {
+                case .finished: return
+                case .deferred: break
+                case .retry: index = min(index + 1, backoff.count - 1)
+                }
             }
-            // An interruption-ended attempt may still be running: let it decide before giving up.
-            while self?.attempting == true, !Task.isCancelled { try? await Task.sleep(for: .milliseconds(50)) }
-            guard !Task.isCancelled else { return }
-            await exhausted()
         }
     }
 
@@ -1076,6 +1284,8 @@ final class AmbientResumer {
 /// The streamer a send closure belongs to, filled in once it exists (#445).
 private final class StreamerSource: @unchecked Sendable {
     @MainActor weak var streamer: AmbientAudioStreamer?
+    @MainActor var binding: AmbientAudioBinding?
+    @MainActor var streamID: UUID?
 }
 
 /// The owner's rubber-duck mode (#735) as a host last reported it for this device's ambient stream. State only: the
@@ -1104,6 +1314,67 @@ public struct DuckModeStatus: Equatable, Sendable {
         guard on else { return false }
         guard let expires else { return true }
         return expires > now
+    }
+}
+
+/// Transport restore reuses the live capture and the normal resume wire flag (#904).
+extension AmbientListeningController {
+    public func turnOff() async {
+        reconnect.block(.ownerStop)
+        await end(session, reason: nil, cause: "user")
+    }
+
+    func ownsAudio(_ streamID: UUID?, binding: AmbientAudioBinding) -> Bool {
+        isOn && self.binding == binding && streamID != nil && streamer?.streamID == streamID
+    }
+    private func sendBinding(_ audio: AudioPayload, session current: UUID,
+                             source: StreamerSource) -> AmbientAudioBinding? {
+        guard AmbientSendAdmission.isCurrent, source.streamer?.streamID == audio.streamID else { return nil }
+        if source.streamID != audio.streamID {
+            // A new encoder alone may bind a new generation, and it must open with resume after a restore.
+            guard source.streamID == nil || (audio.sequence == 0 && audio.isResume) else { return nil }
+            if session == current, streamer === source.streamer, let binding {
+                guard source.binding == binding || audio.isResume else { return nil }
+                source.binding = binding
+            }
+            source.streamID = audio.streamID
+        }
+        // Normal teardown still sends its final tail on the last binding; the store rejects any retired binding.
+        return source.binding
+    }
+
+    func receiveAmbientRefusal(_ error: any Error, host: HostEndpoint.Identifier,
+                               generation: UUID?, streamID: UUID?) {
+        guard isOn, binding?.hostID == host, binding?.connectionGeneration == generation,
+              let streamer, streamer.streamID == streamID, !Self.isTransient(error) else { return }
+        recordSendFailure(error, session: session, from: streamer, streamID: streamID)
+        streamer.discardCapture()
+        let current = session
+        Task { await end(current, reason: sendFailure, cause: "host_refused") }
+    }
+
+    private func transportSent(_ audio: AudioPayload, binding: AmbientAudioBinding) {
+        if sendFailure == nil, isOn, self.binding == binding, streamer?.streamID == audio.streamID {
+            reconnect.sent(audio)
+        }
+    }
+    func suspendTransport() { streamer?.suspendTransport() }
+    func restoreTransport(_ binding: AmbientAudioBinding) -> Bool {
+        guard isOn, isListening, pausedReason == nil, let streamer, streamer.isStreaming else { return false }
+        self.binding = binding
+        sendFailure = nil
+        sendFailureCause = nil
+        streamer.resumeTransport()
+        return true
+    }
+    func cancelTransportRestore() {
+        streamer?.discardCapture()
+        isListening = false
+        let current = session
+        Task { await end(current, reason: nil, cause: "binding_changed") }
+    }
+    static func isTransportError(_ error: any Error) -> Bool {
+        !(error is HostConnectionFailure) || (error as? HostConnectionFailure) == .notReady
     }
 }
 
@@ -1277,4 +1548,35 @@ final class ReplySegmentDeviceWiring {
 /// What the last segment yield did to the reply-echo tail (#932).
 enum SegmentTailRelease: Equatable, Sendable {
     case notAttempted, released, kept
+}
+
+// The restore's acceptance proof: the existing confirmed round trip, with a nonce the store can check in receipt
+// order, so a refusal that follows the pong is not misread as a refusal of the unaccepted stream.
+extension HostConnection {
+    /// A failed selection send can leave receive open; restart only that still-current socket's loop.
+    func retryAmbientTransport(generation failed: UUID) async -> Bool {
+        guard !Task.isCancelled, wantsConnection, snapshot.connectionGeneration == failed,
+              snapshot.state == .ready, socket != nil else { return false }
+        await replaceLoop(reconnectAttempt: 1)
+        return true
+    }
+
+    func confirmRoundTrip(for proof: AmbientResumeAcceptance) async throws {
+        guard snapshot.connectionGeneration == proof.binding.connectionGeneration,
+              ambientStream?.id == proof.streamID else { throw HostConnectionFailure.notReady }
+        let token = generation
+        proof.register(token)
+        do {
+            try await confirmRoundTrip(generation: token, nonce: proof.nonce)
+        } catch {
+            proof.register(nil)
+            throw error
+        }
+    }
+
+    func hasConfirmed(_ proof: AmbientResumeAcceptance) -> Bool {
+        guard let token = proof.token else { return false }
+        return hasPong(nonce: proof.nonce, generation: token)
+            && snapshot.connectionGeneration == proof.binding.connectionGeneration
+    }
 }

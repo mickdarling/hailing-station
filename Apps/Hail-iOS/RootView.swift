@@ -2,22 +2,28 @@ import HailCore
 import HailProtocol
 import SwiftUI
 
+// Keep the native type distinct from the existing destination-selection test shell.
+#if !SWIFT_PACKAGE
+typealias RootView = StationRootView
+#endif
+
 /// Shared station state for the adaptive iPhone and iPad interface.
-struct RootView: View {
+struct StationRootView: View {
     private static let savedHostsKey = "hailing-station.host-endpoints.v1"
     let selectionStore: any DestinationSelectionStoring
-    @State var connections = HostConnectionStore()
-    @State var audioSession: ManagedAudioSession
-    @State var audioRoutes: AudioRouteModel
-    @State var playback: ReplyPlaybackController
-    /// Shared by reply playback and ambient capture (#227): the player raises it before audio can be heard.
-    @State var echoGuard: AmbientReplyEchoGuard
-    /// Keeps the station running in the background while connected without ambient listening (#352).
-    @State var keepalive = BackgroundKeepalive(renderer: StationPlatform.keepaliveRenderer())
-    /// The "Diagnostics logging" log (#234): off by default; records and sends nothing until turned on.
-    @State var diagnostics = DeviceDiagnostics()
+    @StateObject var station: StationSceneState<StationResources>
+    var connections: HostConnectionStore { station.value.connections }
+    var audioSession: ManagedAudioSession { station.value.audioSession }
+    var audioRoutes: AudioRouteModel { station.value.audioRoutes }
+    var playback: ReplyPlaybackController { station.value.playback }
+    var echoGuard: AmbientReplyEchoGuard { station.value.echoGuard }
+    var keepalive: BackgroundKeepalive { station.value.keepalive }
+    var diagnostics: DeviceDiagnostics { station.value.diagnostics }
+    var announcementBanners: AnnouncementBanners {
+        get { station.value.announcementBanners }
+        nonmutating set { station.value.announcementBanners = newValue }
+    }
     @State var announcer: Announcer?
-    @State var announcementBanners = AnnouncementBanners()
     @State var selectedHostID: HostEndpoint.Identifier?
     @State var selectedTargetID: String?
     @State var rememberedSelection: DestinationSelection?
@@ -34,16 +40,12 @@ struct RootView: View {
     @Environment(\.dynamicTypeSize) var dynamicTypeSize
 
     @MainActor
-    init(selectionStore: any DestinationSelectionStoring = UserDefaultsDestinationSelectionStore()) {
-        let session = ManagedAudioSession(backend: StationPlatform.audioSessionBackend())
+    init(
+        selectionStore: any DestinationSelectionStoring = UserDefaultsDestinationSelectionStore(),
+        makeResources: @escaping () -> StationResources = { StationResources() }
+    ) {
         self.selectionStore = selectionStore
-        _audioSession = State(initialValue: session)
-        _audioRoutes = State(initialValue: AudioRouteModel(controller: session))
-        let echoGuard = AmbientReplyEchoGuard()
-        let playback = ReplyPlaybackController(player: echoGuard.guarding(PCM16AudioPlayer()))
-        echoGuard.follow(playback)
-        _echoGuard = State(initialValue: echoGuard)
-        _playback = State(initialValue: playback)
+        _station = StateObject(wrappedValue: StationSceneState(makeResources))
     }
 
     var body: some View {
@@ -51,7 +53,7 @@ struct RootView: View {
             content
         }
         .modifier(StationMenuStatusPublisher(connections: connections, destination: destination?.label))
-        .modifier(ReplySegmentNotices(connections: connections, banners: $announcementBanners))
+        .modifier(ReplySegmentNotices(connections: connections, banners: $station.value.announcementBanners))
         .onChange(of: scenePhase) { _, phase in
             scenePhaseRevision &+= 1
             selectionRevision &+= 1
@@ -155,43 +157,5 @@ struct RootView: View {
         guard let rememberedSelection,
               !endpoints.contains(where: rememberedSelection.matches(endpoint:)) else { return }
         Task { await forgetSelection() }
-    }
-}
-
-struct LabsView: View {
-    let audioSession: any AudioSessionDiagnosticsProviding
-
-    var body: some View {
-        List {
-            NavigationLink("Live transcription") {
-                if #available(iOS 26.0, *) {
-                    TranscriptionLabView(audioSession: audioSession)
-                }
-            }
-            #if os(iOS)
-            NavigationLink("Routing spike") { RoutingSpikeView() }
-            #endif
-        }
-        .navigationTitle("Labs")
-    }
-}
-
-#Preview {
-    RootView()
-}
-
-extension RootView {
-    /// Spoken cues the station makes itself, through the reply player (#825 S4b); never lost when unheard (#822).
-    func startAnnouncer() {
-        guard announcer == nil else { return } // Once: a second would announce every existing problem again.
-        let announcer = Announcer(playback: playback, renderer: LocalAnnouncementRenderer()) { announcement, _ in
-            #if os(iOS)
-            UINotificationFeedbackGenerator().notificationOccurred(.warning)
-            #endif
-            announcementBanners.append(announcement.fallbackText)
-            StationPlatform.announce(announcement.fallbackText)
-        }
-        announcer.watchReplyAudio { !StationPlatform.voiceOverRunning } // VoiceOver hears the deferred ones (#86).
-        self.announcer = announcer
     }
 }

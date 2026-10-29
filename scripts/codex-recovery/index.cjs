@@ -139,21 +139,22 @@ function privateSocket(socket) {
   const stat = fs.lstatSync(socket);
   return `${stat.dev}:${stat.ino}`;
 }
-function discover(config, run = command) {
-  const rows = run('tmux', ['list-sessions', '-F', '#{session_name}|#{session_id}@#{session_created}/#{pane_id}:#{pane_pid}|#{pane_current_command}'])
+function discover(config, run = command, tmux = process.env.HAIL_CODEX_RECOVERY_TMUX || 'tmux') {
+  if (tmux !== 'tmux' && (!path.isAbsolute(tmux) || tmux.includes('\0'))) refuse('unsafe_discovery');
+  const rows = run(tmux, ['list-sessions', '-F', '#{session_name}|#{session_id}@#{session_created}/#{pane_id}:#{pane_pid}|#{pane_current_command}'])
     .trim().split('\n').map(line => line.split('|')).filter(row => row[0] === config.target.slice(5));
   if (rows.length !== 1 || rows[0][1] !== config.binding || rows[0][2] !== 'codex') refuse('binding_changed');
   const parent = Number(config.binding.split(':').at(-1));
-  const children = run('ps', ['-axo', 'pid=,ppid=,uid=,comm=']).trim().split('\n')
+  const children = run('/bin/ps', ['-axo', 'pid=,ppid=,uid=,comm=']).trim().split('\n')
     .map(line => line.trim().split(/\s+/, 4))
     .filter(row => Number(row[1]) === parent && Number(row[2]) === process.getuid() && path.basename(row[3] ?? '') === 'codex');
-  const servers = children.filter(row => /(?:^|\s)app-server(?:\s|$)/.test(run('ps', ['-p', row[0], '-o', 'args='])));
+  const servers = children.filter(row => /(?:^|\s)app-server(?:\s|$)/.test(run('/bin/ps', ['-p', row[0], '-o', 'args='])));
   if (servers.length !== 1) refuse('ambiguous_server');
   const pid = servers[0][0];
-  const born = run('ps', ['-p', pid, '-o', 'lstart=']).trim();
+  const born = run('/bin/ps', ['-p', pid, '-o', 'lstart=']).trim();
   if (!born) refuse('server_gone');
   const prefix = `/private/tmp/codex-daemon-${process.getuid()}/`;
-  const sockets = [...new Set(run('lsof', ['-a', '-p', pid, '-U', '-Fn']).split('\n')
+  const sockets = [...new Set(run('/usr/sbin/lsof', ['-a', '-p', pid, '-U', '-Fn']).split('\n')
     .filter(line => line.startsWith(`n${prefix}`)).map(line => line.slice(1)))];
   if (sockets.length !== 1) refuse('ambiguous_socket');
   const socket = sockets[0];
@@ -260,21 +261,22 @@ async function cycle(config, clock = new FirstResponse(), seen = new Set(), { lo
     return { state: outcome, recovered: outcome === 'interrupted' };
   } finally { control.close(); }
 }
+function validateKernelLock(config) {
+  const fd = Number(process.env.HAIL_CODEX_RECOVERY_LOCK_FD);
+  if (!Number.isInteger(fd) || fd < 3) refuse('kernel_lock_required');
+  protectedDirectory(config.stateDirectory);
+  const lock = path.join(config.stateDirectory, 'lock');
+  const held = fs.fstatSync(fd), named = fs.lstatSync(lock);
+  aclFree(lock);
+  if (held.dev !== named.dev || held.ino !== named.ino || held.uid !== process.getuid()
+      || !held.isFile() || (held.mode & 0o077)) refuse('kernel_lock_required');
+}
 async function main() {
   if (process.platform !== 'darwin') refuse('unsupported_platform');
   const [mode, flag, file] = process.argv.slice(2);
   if (!['status', 'recover', 'watch'].includes(mode) || flag !== '--config' || !file) refuse('usage');
   const config = configAt(file);
-  const validateLock = () => {
-    const fd = Number(process.env.HAIL_CODEX_RECOVERY_LOCK_FD);
-    if (!Number.isInteger(fd) || fd < 3) refuse('kernel_lock_required');
-    protectedDirectory(config.stateDirectory);
-    const lock = path.join(config.stateDirectory, 'lock');
-    const held = fs.fstatSync(fd), named = fs.lstatSync(lock);
-    aclFree(lock);
-    if (held.dev !== named.dev || held.ino !== named.ino || held.uid !== process.getuid()
-        || !held.isFile() || (held.mode & 0o077)) refuse('kernel_lock_required');
-  };
+  const validateLock = () => validateKernelLock(config);
   if (mode !== 'status') validateLock();
   const clock = new FirstResponse(), seen = readAttempt(config);
   let failures = 0;
@@ -299,5 +301,5 @@ async function status(config) {
     return { state: new FirstResponse().inspect(await control.snapshot(config.threadId), config.firstResponseSeconds), recovered: false };
   } finally { control.close(); }
 }
-module.exports = { Control, ControlError, FirstResponse, configAt, cycle, discover, privateSocket, readAttempt, recover, visibleActivity, writeStatus };
+module.exports = { Control, ControlError, FirstResponse, configAt, cycle, discover, privateSocket, readAttempt, recover, visibleActivity, writeStatus, validateKernelLock };
 if (require.main === module) main().catch(() => { console.error('codex_recovery_unavailable'); process.exitCode = 1; });
