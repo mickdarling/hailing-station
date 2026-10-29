@@ -46,3 +46,25 @@ import Testing
         await rig.microphoneRetry.release()
     }
 }
+
+extension AmbientCallPolicyTests {
+    @Test func policyRefusalBeforeAnyAudioStillVetoesPausedCall() async throws {
+        let rig = try CallReconnectRig()
+        try await rig.start()
+        let binding = try rig.currentBinding()
+        try await rig.interrupt()
+        try await rig.socket.push(.error(code: .notAllowed, message: "ambient target_policy_changed"))
+        try await callEventually { await MainActor.run {
+            if case .failed = rig.store.snapshots[rig.endpoint.id]?.state {
+                return true
+            }
+            return false
+        } }
+        rig.interruptionEnded()
+        await rig.controller.update(binding: binding, scene: .active)
+        await rig.microphoneRetry.release()
+        try await assertPolicyStopped(rig, starts: 1)
+        #expect(try await audioFrames(rig.socket).isEmpty)
+        await rig.close()
+    }
+}
