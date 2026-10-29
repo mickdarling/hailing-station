@@ -88,7 +88,7 @@ import Testing
         #expect(rig.unexpected.isEmpty && rig.released == 1 && rig.capture.startCount == 1)
         await rig.close()
     }
-    @Test func deadlineAlsoWinsIfItsTaskHasNotBeenScheduled() async throws {
+    @Test func longOutageDoesNotRequireADeadlineTaskToBeScheduled() async throws {
         let rig = try AmbientReconnectRig()
         let clock = TestInstantClock()
         rig.controller.reconnect.now = { clock.now() }
@@ -96,7 +96,8 @@ import Testing
         try await rig.drop()
         clock.advance(by: .seconds(60))
         try await rig.reconnect()
-        try await rig.expectStopped(.timedOut)
+        #expect(rig.notices.map(\.outcome) == [.applied])
+        #expect(rig.controller.isListening)
         await rig.close()
     }
 }

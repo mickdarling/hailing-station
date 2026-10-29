@@ -31,7 +31,7 @@ import Testing
         #expect(rig.notices.count == 1)
         await rig.close()
     }
-    @Test func elapsedDeadlineBeforeFirstSendStopsWithoutSendingNewAudio() async throws {
+    @Test func longOutageBeforeFirstSendStillRestoresAudio() async throws {
         let rig = try AmbientReconnectRig()
         let clock = TestInstantClock()
         rig.controller.reconnect.now = { clock.now() }
@@ -41,10 +41,10 @@ import Testing
         try await rig.select(restoring: true)
         clock.advance(by: .seconds(60))
         for _ in 0..<4 { try rig.capture.yield(sineBuffer()) }
-        try await rig.expectStopped(.timedOut)
-        #expect(try await rig.socket.sentFrames().allSatisfy { if case .audio = $0.payload {
-            return false
-        }; return true })
+        try await rig.feed()
+        #expect(rig.notices.map(\.outcome) == [.applied])
+        #expect(try await !audioFrames(rig.socket).isEmpty)
+        #expect(rig.controller.isOn)
         await rig.close()
     }
     @Test(arguments: [AmbientListeningReconnect.Outcome.applied, .blocked, .failed])

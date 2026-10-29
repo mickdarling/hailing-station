@@ -73,9 +73,11 @@ extension HostConnection {
         scheduleNegotiationDeadline(token: token, reconnectAttempt: timeoutReconnectAttempt)
         openingGeneration = token
         transportBarrier = loopTask
-        let opened: any WebSocketTransport
+        let opened: HostRoundTripSocket
         do {
-            opened = try await connector.open(url: snapshot.endpoint.url, subprotocol: Self.subprotocolName)
+            opened = HostRoundTripSocket(base: try await connector.open(
+                url: snapshot.endpoint.url, subprotocol: Self.subprotocolName
+            ))
         } catch {
             finishOpening(token: token)
             throw error
@@ -115,6 +117,9 @@ extension HostConnection {
         if error is CancellationError { return true }
         guard isCurrent(token), wantsConnection else { return true }
         cancelNegotiationDeadline()
+        if let failure = error as? HostConnectionFailure {
+            (socket as? HostRoundTripSocket)?.recordTerminalFailure(failure)
+        }
         let handoff = beginTransportHandoff()
         clearSocketDiagnostics()
         await handoff.value
