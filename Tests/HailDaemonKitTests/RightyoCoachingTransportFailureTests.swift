@@ -5,30 +5,71 @@ import Testing
 @testable import HailDaemonKit
 
 @Suite(.serialized, .timeLimit(.minutes(1)), .frozenGuardBudget) struct RightyoCoachingTransportFailureTests {
-    @Test(arguments: [false, true])
-    func stdinFailureRevokesOnlyCoachingOutput(coaching: Bool) async throws {
+    @Test(arguments: [false, true], [false, true])
+    func stdinFailureRevokesOnlyCoachingOutput(coaching: Bool, buffered: Bool) async throws {
         let fake = try FakeRightyo("""
         exec 0<&-
         printf 'ready\\n'
-        /bin/sleep 0.2
-        printf 'authored-stale\\n'
+        \(buffered ? "printf 'authored-stale\\n'" : "")
+        IFS= read -r token < release
+        \(buffered ? "" : "printf 'authored-stale\\n'")
+        printf 1 > emitted
         exec /bin/sleep 60
         """)
         defer { fake.cleanUp() }
+        let release = fake.directory.appendingPathComponent("release")
+        try #require(mkfifo(release.path, 0o600) == 0)
         let child = try RightyoChildProcess(executable: FakeRightyo.shared, config: fake.config,
             session: UUID().uuidString.lowercased(), provenance: .synthetic,
             timing: .init(eofGrace: 0.05, termGrace: 0.05), coaching: coaching ? .init() : nil)
         do {
             var iterator = child.lines.makeAsyncIterator()
-            #expect(try await iterator.next() == Data("ready".utf8))
-            #expect(child.write(Data([1, 0]))) // Queue admission succeeds before the asynchronous EPIPE.
+            let ready: Data? = try await iterator.next()
+            try #require(ready == Data("ready".utf8))
+            if buffered {
+                while child.lines.base.queued.withLock({ $0 }) == 0 {
+                    try Task.checkCancellation(); await Task.yield()
+                }
+            }
+            try await observeFailureAndRelease(child, fake: fake)
             if coaching {
                 do { _ = try await iterator.next()
                     Issue.record("Lost coaching stdin still delivered stdout")
                 } catch { #expect(error as? RightyoChildError == .transportLost) }
-            } else { #expect(try await iterator.next() == Data("authored-stale".utf8)) }
+            } else {
+                let line: Data? = try await iterator.next()
+                #expect(line == Data("authored-stale".utf8))
+            }
         } catch { _ = await child.stop(); throw error }
         _ = await child.stop()
+    }
+
+    private func observeFailureAndRelease(_ child: RightyoChildProcess, fake: FakeRightyo) async throws {
+        let frame = Data([1, 0])
+        try #require(child.write(frame)) // Queue admission precedes the asynchronous EPIPE.
+        // Only failure can reject this valid frame: no local close, and the child is held alive at the FIFO.
+        // Rejection takes the writer lock after its synchronous revocation callback has completed.
+        while child.write(frame) { try Task.checkCancellation(); await Task.yield() }
+        #expect(child.counters.writtenBytes == 0)
+        try await releaseOutput(fake.directory.appendingPathComponent("release"))
+        while !FileManager.default.fileExists(atPath: fake.directory.appendingPathComponent("emitted").path) {
+            try Task.checkCancellation(); await Task.yield()
+        }
+        try #require(child.exitStatus == nil)
+    }
+
+    private func releaseOutput(_ fifo: URL) async throws {
+        var descriptor = open(fifo.path, O_WRONLY | O_NONBLOCK | O_CLOEXEC)
+        while descriptor < 0, errno == ENXIO {
+            try Task.checkCancellation(); await Task.yield()
+            descriptor = open(fifo.path, O_WRONLY | O_NONBLOCK | O_CLOEXEC)
+        }
+        try #require(descriptor >= 0)
+        defer { close(descriptor) }
+        try #require(fcntl(descriptor, F_SETNOSIGPIPE, 1) == 0)
+        let token = Data("1\n".utf8)
+        let written: Int = token.withUnsafeBytes { Darwin.write(descriptor, $0.baseAddress, $0.count) }
+        try #require(written == token.count)
     }
 
     @Test func observedLeaderExitRefusesBufferedOutputWhileDescendantHoldsControl() async throws {
