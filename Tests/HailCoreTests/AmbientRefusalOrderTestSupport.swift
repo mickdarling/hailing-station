@@ -17,7 +17,7 @@ final class AmbientRefusalOrderRun {
         closing = AmbientClosingSocket(base: base)
     }
 
-    func startSelection() async throws -> Task<Void, any Error> {
+    func startSelection(sendError: RefusalPingSendError? = nil) async throws -> Task<Void, any Error> {
         let clock = clock
         rig.controller.reconnect.now = { clock.now() }
         rig.controller.reconnect.sleep = { _ in throw CancellationError() }
@@ -25,7 +25,7 @@ final class AmbientRefusalOrderRun {
         var refreshed = rig.endpoint
         refreshed.name = "Refreshed owner-authorized host"
         rig.socket = base
-        let held = AmbientHeldSelectionPing(base: closing, gate: ping)
+        let held = AmbientHeldSelectionPing(base: closing, gate: ping, sendError: sendError)
         await rig.connector.enqueue(.socket(held), for: refreshed.url)
         await rig.store.upsert(refreshed)
         try await handshakeWithoutAutomaticSelection()
@@ -89,11 +89,14 @@ final class AmbientRefusalOrderRun {
     }
 }
 
-private actor AmbientHeldSelectionPing: WebSocketTransport {
+actor AmbientHeldSelectionPing: WebSocketTransport {
     let base: any WebSocketTransport
     let gate: SleepGate
+    let sendError: RefusalPingSendError?
     private var selecting = false
-    init(base: any WebSocketTransport, gate: SleepGate) { self.base = base; self.gate = gate }
+    init(base: any WebSocketTransport, gate: SleepGate, sendError: RefusalPingSendError?) {
+        self.base = base; self.gate = gate; self.sendError = sendError
+    }
     func send(_ data: Data) async throws {
         let frame = try FrameCoding.decode(data)
         if case .control(.select) = frame.payload { selecting = true }
@@ -101,8 +104,19 @@ private actor AmbientHeldSelectionPing: WebSocketTransport {
         if selecting, case .control(.ping) = frame.payload {
             selecting = false
             try await gate.sleep(.zero)
+            try sendError?.fail()
         }
     }
     func receive() async throws -> Data { try await base.receive() }
     func close() async { await base.close() }
+}
+
+enum RefusalPingSendError: CaseIterable, Sendable {
+    case cancellation, urlCancellation
+    func fail() throws {
+        switch self {
+        case .cancellation: throw CancellationError()
+        case .urlCancellation: throw URLError(.cancelled)
+        }
+    }
 }
