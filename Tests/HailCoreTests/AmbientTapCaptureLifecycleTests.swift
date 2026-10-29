@@ -43,6 +43,8 @@ import Testing
         // Advance only its sleep and await the heal itself, independently of main-actor scheduling delays.
         #expect(await livenessClock.advanceUntilHeal(using: rig.playback) == 1)
         #expect(!rig.playback.isCaptureSuppressed)
+        #expect(CapturePlaybackSuppression.liveness[rig.view.captureOwnerID] == nil)
+        #expect(CapturePlaybackSuppression.reconcile(using: rig.playback) == 0)
         #expect(livenessClock.intervals == [.seconds(1)])
         rig.expectReleased(labFinished: false)
         #expect(rig.view.sent.isEmpty)
@@ -170,6 +172,8 @@ private final class TapCaptureLifecycleRig {
     init(capture: any AudioCapturing, transcriber: any Transcriber = FakeTranscriber()) {
         let echoGuard = AmbientReplyEchoGuard(now: { [clock] in clock.now })
         let playback = ReplyPlaybackController(player: echoGuard.guarding(DuplexPlayer()))
+        // These tests reconcile explicitly. Watcher tests install their own manual clock before capture starts.
+        playback.captureLivenessSleep = { _ in throw CancellationError() }
         self.echoGuard = echoGuard
         self.playback = playback
         view = TranscriptionLabView(capture: capture, playback: playback, transcriber: transcriber)

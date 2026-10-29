@@ -14,6 +14,8 @@ import Testing
         let clock = EchoGuardClock()
         let echoGuard = AmbientReplyEchoGuard(now: { clock.now })
         let playback = ReplyPlaybackController(player: echoGuard.guarding(DuplexPlayer()))
+        // This test reconciles explicitly. Disable the automatic liveness watcher before capture starts.
+        playback.captureLivenessSleep = { _ in throw CancellationError() }
         let view = TranscriptionLabView(capture: source, playback: playback, transcriber: transcriber)
         await view.begin()
         let oldConsumer = try #require(view.bufferTask)
