@@ -37,7 +37,10 @@ let package = Package(
         .target(name: "HailTestSupport", path: "Tests/HailTestSupport", swiftSettings: strict),
 
         .target(name: "HailCore", dependencies: ["HailProtocol"], swiftSettings: strict),
-        .testTarget(name: "HailCoreTests", dependencies: ["HailCore", "HailTestSupport"], swiftSettings: strict),
+        .testTarget(
+            name: "HailCoreTests", dependencies: ["HailCore", "HailDaemonKit", "HailTestSupport"],
+            swiftSettings: strict
+        ),
 
         .target(name: "HailDaemonKit", dependencies: ["HailProtocol"], swiftSettings: strict),
         .testTarget(

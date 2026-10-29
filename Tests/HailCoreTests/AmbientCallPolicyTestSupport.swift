@@ -15,13 +15,26 @@ func deliverPolicyNotice(_ message: String, to rig: CallReconnectRig) async thro
 }
 
 @MainActor
-func assertPolicyStopped(_ rig: CallReconnectRig, starts: Int) async throws {
+func assertPolicyStopped(_ rig: CallReconnectRig, starts: Int, resumed: Bool = false) async throws {
+    try await callEventually { await MainActor.run {
+        !rig.controller.isOn || rig.capture.startCount > starts
+    } }
     #expect(!rig.controller.isOn && !rig.controller.isListening && rig.controller.pausedReason == nil)
     #expect(!rig.controller.reconnect.isPending && rig.capture.startCount == starts)
-    #expect(rig.controller.stopReason == "listening stopped: target policy changed during call")
+    if resumed {
+        let reason = rig.controller.stopReason ?? ""
+        #expect(reason.contains("target policy changed") || reason.contains("ambient target is not allowed"))
+    } else {
+        #expect(!rig.controller.reconnect.canResumeCapture)
+        #expect(rig.controller.stopReason == "listening stopped: target policy changed during call")
+    }
     #expect(rig.unexpected.last == rig.controller.stopReason || rig.notices.last?.text == rig.controller.stopReason)
     #expect(rig.capture.stopCount >= starts)
     #expect(!(await rig.retry.isWaiting()))
+    #expect(await rig.connector.openCount(for: rig.endpoint.url) == 1)
+    if rig.store.snapshots[rig.endpoint.id]?.state == .ready {
+        #expect(rig.store.selectedTargets[rig.endpoint.id] == rig.target.id)
+    }
 }
 
 actor CallPolicyRefusingSocket: WebSocketTransport {
@@ -41,7 +54,10 @@ actor CallPolicyRefusingSocket: WebSocketTransport {
             resumedAttempts += 1
             refused = true
             try await base.push(.error(code: .notAllowed, message: "ambient target is not allowed"))
-            try await sendGate.sleep(.zero)
+            try await base.push(.targets([callPolicyBarrier]))
+            if resumedAttempts == 1 {
+                try await sendGate.sleep(.zero)
+            }
         }
     }
 
@@ -52,4 +68,31 @@ actor CallPolicyRefusingSocket: WebSocketTransport {
     func close() async {
         await base.close()
     }
+}
+
+let callPolicyBarrier = TargetInfo(id: "tmux:synthetic", kind: "tmux", name: "Refusal processed", alive: true)
+
+@MainActor
+func finishCallPolicyRefusal(_ rig: CallReconnectRig, gate: SleepGate, before: Int) async throws {
+    try await callEventually { await MainActor.run {
+        rig.store.snapshots[rig.endpoint.id]?.targets == [callPolicyBarrier]
+    } }
+    await gate.fire()
+    try await callEventually {
+        let waiting = await rig.microphoneRetry.pending > 0
+        return await MainActor.run { !rig.controller.isOn || waiting }
+    }
+    try await assertPolicyStopped(rig, starts: 2, resumed: true)
+    if !rig.controller.isOn {
+        try await callEventually { await MainActor.run { rig.released == 2 } }
+    }
+    await rig.microphoneRetry.release()
+    await rig.controller.update(binding: try rig.currentBinding(), scene: .active)
+    rig.interruptionEnded()
+    for _ in 0..<6 {
+        try rig.capture.yield(sineBuffer())
+    }
+    #expect(try await audioFrames(rig.socket).count == before + 1)
+    #expect(!rig.controller.isOn && rig.capture.startCount == 2)
+    #expect(!(await rig.retry.isWaiting()))
 }
