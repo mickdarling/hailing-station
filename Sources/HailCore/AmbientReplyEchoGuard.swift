@@ -29,6 +29,7 @@ public final class AmbientReplyEchoGuard: Sendable {
 
     /// P4b1 is opt-in and inert: P4b2 must supply fresh flags/window and handle the content-free signal.
     public let segmentOnsetGate: ReplySegmentOnsetGate
+    let proactiveActivity: ProactiveAudioActivity
     private let onsetTap = Mutex<ReplySegmentOnsetTap?>(nil)
     private let state = Mutex(State())
     private let route = ReplyRoute()
@@ -40,6 +41,7 @@ public final class AmbientReplyEchoGuard: Sendable {
         self.tail = tail
         self.now = now
         segmentOnsetGate = ReplySegmentOnsetGate(tail: tail, now: now)
+        proactiveActivity = ProactiveAudioActivity(now: now)
     }
 
     /// Records whether reply audio is audible now. Becoming inaudible starts the tail; it never shortens one.
@@ -376,6 +378,7 @@ final class EchoMaskedCapture: AudioCapturing {
     private let capture: any AudioCapturing
     private let echoGuard: AmbientReplyEchoGuard
     let routing: CaptureReplyRouting?
+    @MainActor private var proactiveToken: UUID?
 
     init(capture: any AudioCapturing, echoGuard: AmbientReplyEchoGuard, routing: CaptureReplyRouting? = nil) {
         self.capture = capture
@@ -386,16 +389,21 @@ final class EchoMaskedCapture: AudioCapturing {
     @MainActor
     func start() throws -> AsyncStream<AudioCaptureBuffer> {
         let source = try capture.start()
+        let captureToken = echoGuard.proactiveActivity.beginCapture()
+        proactiveToken = captureToken
         routing?.attach()
         let routing = routing
         let echoGuard = echoGuard
         let (stream, continuation) = AsyncStream<AudioCaptureBuffer>.makeStream(bufferingPolicy: .unbounded)
         let forward = Task.detached {
             for await buffer in source {
+                echoGuard.proactiveActivity.observe(buffer.pcmBuffer, capturedAt: buffer.capturedAt,
+                                                    capture: captureToken)
                 echoGuard.observeSegmentOnset(buffer.pcmBuffer)
                 echoGuard.silenceIfMasking(buffer.pcmBuffer)
                 continuation.yield(buffer)
             }
+            echoGuard.proactiveActivity.endCapture(captureToken)
             await routing?.detach()
             continuation.finish()
         }
@@ -411,6 +419,8 @@ final class EchoMaskedCapture: AudioCapturing {
 
     @MainActor
     func stop() {
+        if let proactiveToken { echoGuard.proactiveActivity.endCapture(proactiveToken) }
+        proactiveToken = nil
         capture.stop()
         routing?.detach()
     }
