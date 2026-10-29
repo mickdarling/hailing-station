@@ -51,12 +51,18 @@ run_haild_tty() {
     '
 }
 
-set +e
-run_haild send tmux:cli "echo denied" 2> "$scratch/denied.err"
-status=$?
-set -e
-[[ $status -eq 7 ]]
-grep -q "target tmux:cli is not allowed" "$scratch/denied.err"
+for directory in absent present; do
+  if [[ "$directory" == present && ! -d "$scratch/config" ]]; then mkdir -m 700 "$scratch/config"; fi
+  run_haild targets > "$scratch/targets-$directory.out"
+  grep -q $'^tmux:cli\talive\tdenied\tcli$' "$scratch/targets-$directory.out"
+  set +e
+  run_haild send tmux:cli "echo denied" 2> "$scratch/denied-$directory.err"
+  status=$?
+  set -e
+  [[ $status -eq 7 ]]
+  grep -q "target tmux:cli is not allowed" "$scratch/denied-$directory.err"
+  [[ ! -e "$scratch/config/policy.json" ]]
+done
 
 run_haild targets allow tmux:cli > /dev/null
 set +e

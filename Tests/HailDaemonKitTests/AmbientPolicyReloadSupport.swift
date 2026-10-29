@@ -5,10 +5,15 @@ import Testing
 
 /// Each blocking actor call uses its own queue, leaving the cooperative pool free to retire and release it.
 final class PolicyWriteGate: Sendable {
-    let executor = RecipientPublicationExecutor()
+    let executor: RecipientPublicationExecutor
     private let gate: RecipientPublicationGate
 
-    init(timeout: DispatchTimeInterval = .seconds(15)) { gate = RecipientPublicationGate(timeout: timeout) }
+    init(
+        timeout: DispatchTimeInterval = .seconds(15), executor: RecipientPublicationExecutor = .init()
+    ) {
+        self.executor = executor
+        gate = RecipientPublicationGate(timeout: timeout)
+    }
 
     func suspend() {
         guard executor.isExecuting else {
@@ -43,6 +48,20 @@ final class PolicyWriteGate: Sendable {
 struct PolicyReloadStore: PolicyChangeTracking {
     final class Hook: Sendable {
         private let pending = Mutex<PolicyWriteGate?>(nil)
+        private let observation = Mutex<PolicyWriteGate?>(nil)
+        private let loadCount = Mutex(0)
+
+        var loads: Int { loadCount.withLock { $0 } }
+        func willLoad() { loadCount.withLock { $0 += 1 } }
+        func armObservation(_ gate: PolicyWriteGate) { observation.withLock { $0 = gate } }
+        func afterObservation() {
+            let gate = observation.withLock { value in
+                let gate = value
+                value = nil
+                return gate
+            }
+            gate?.suspend()
+        }
 
         func arm(_ gate: PolicyWriteGate) { pending.withLock { $0 = gate } }
 
@@ -59,8 +78,16 @@ struct PolicyReloadStore: PolicyChangeTracking {
     let file: PolicyFile
     let hook: Hook
     var summary: String { file.summary }
-    func identity() throws -> PolicyFileIdentity { try file.identity() }
-    func load() throws -> Policy { try file.load(beforeDecode: { hook.beforeDecode() }) }
+    func observation() throws -> PolicyObservation {
+        let observation = try file.observation()
+        hook.afterObservation()
+        return observation
+    }
+    func load() throws -> Policy { try loadObserved().policy }
+    func loadObserved() throws -> ObservedPolicy {
+        hook.willLoad()
+        return try file.loadObserved(beforeDecode: { hook.beforeDecode() })
+    }
     func update(_ change: (inout Policy) throws -> Void) throws -> PolicyUpdate { try file.update(change) }
 }
 

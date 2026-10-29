@@ -40,8 +40,11 @@ private struct PolicyRestartSink: AmbientAudioSink {
             try #require(chmod(rig.file.path.path, 0o000) == 0)
         }
         previous.observePolicy()
-        let unavailable: TargetPolicyGeneration = rig.host.targetPolicy.snapshot(for: "tmux:a")
-        try #require(!unavailable.wasGranted)
+        let denied: TargetPolicyGeneration = rig.host.targetPolicy.snapshot(for: "tmux:a")
+        try #require(!denied.wasGranted)
+        if failure == "missing" {
+            #expect(throws: HostError.denied(.notAllowed("tmux:a"))) { try denied.requireCurrent() }
+        }
         let failed: HostSessionResult = await rig.segment(0)
         let control: ControlPayload = try onlyControl(failed)
         #expect(control == .error(code: .notAllowed,

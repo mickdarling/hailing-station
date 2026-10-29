@@ -73,13 +73,37 @@ struct AmbientPolicyProcessRig {
         }
     }
 
+    func removePolicy() async throws {
+        try await withTaskExecutorPreference(HeavyTestExecutor.shared) {
+            try runProcess(URL(fileURLWithPath: "/bin/rm"), arguments: [file.path.path])
+        }
+    }
+
+    func mutateDirectory(_ mutation: String) async throws {
+        let script: String
+        switch mutation {
+        case "permissions": script = "chmod 750 \"$1\""
+        case "symlink": script = "mv \"$1\" \"$2\" && ln -s \"$2\" \"$1\""
+        default:
+            script = "mv \"$1\" \"$2\" && mkdir -m 700 \"$1\" && ln \"$2/policy.json\" \"$1/policy.json\""
+        }
+        try await withTaskExecutorPreference(HeavyTestExecutor.shared) {
+            try runProcess(URL(fileURLWithPath: "/bin/sh"),
+                           arguments: ["-c", script, "synthetic", directory.path, directory.path + ".moved"])
+        }
+    }
+
     private func runCLI(_ operation: String, target: String, tier: String?) throws {
-        let process = Process()
         let executable = URL(fileURLWithPath: #filePath).deletingLastPathComponent()
             .deletingLastPathComponent().deletingLastPathComponent().appendingPathComponent(".build/debug/haild")
-        process.executableURL = executable
         var arguments = ["targets", operation, target]
         if let tier { arguments += operation == "allow" ? ["--tier", tier] : [tier] }
+        try runProcess(executable, arguments: arguments)
+    }
+
+    private func runProcess(_ executable: URL, arguments: [String]) throws {
+        let process = Process()
+        process.executableURL = executable
         process.arguments = arguments
         process.environment = ["PATH": "/usr/bin:/bin", "HAIL_CONFIG_DIR": directory.path,
                                "HAIL_TMUX": directory.appendingPathComponent("tmux").path]
@@ -92,10 +116,10 @@ struct AmbientPolicyProcessRig {
         if !finished {
             kill(process.processIdentifier, SIGKILL)
             let killed: Bool = exited.wait(timeout: .now() + .seconds(5)) == .success
-            try #require(killed, "The killed policy CLI did not terminate within its cleanup bound")
+            try #require(killed, "The killed policy process did not terminate within its cleanup bound")
         }
         // Foundation reaps before its termination handler signals; both waits use this dedicated queue (#1023).
-        try #require(finished, "The policy CLI timed out")
-        try #require(process.terminationStatus == 0, "The policy CLI failed")
+        try #require(finished, "The policy process timed out")
+        try #require(process.terminationStatus == 0, "The policy process failed")
     }
 }

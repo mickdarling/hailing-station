@@ -67,7 +67,7 @@ import Testing
     }
 
     @Test(arguments: ["missing", "unreadable", "malformed"])
-    func failedObservationRetiresStreamAndRefusesFreshInput(_ failure: String) async throws {
+    func removedOrUnusablePolicyRetiresStreamAndRefusesFreshInput(_ failure: String) async throws {
         let rig = try await AmbientPolicyProcessRig.make()
         defer { rig.cleanUp() }
         switch failure {
@@ -77,6 +77,17 @@ import Testing
         }
         let result: HostSessionResult = await rig.segment(1)
         try terminal(result, rig: rig)
+        let policy: Policy? = await rig.host.refreshedPolicy()
+        if failure == "missing" {
+            #expect(policy == Policy())
+            #expect(await rig.host.policyFailure == nil)
+            let other = rig.host.targetPolicy.snapshot(for: "tmux:b")
+            #expect(!other.wasGranted, "Deleting the policy retires every target's grant")
+            #expect(throws: HostError.denied(.notAllowed("tmux:b"))) { try other.requireCurrent() }
+        } else {
+            #expect(policy == nil)
+            #expect(await rig.host.policyFailure != nil)
+        }
         let fresh: HostSessionResult = await rig.session.receive(sessionFrame(
             target: "tmux:a", payload: .audio(ambientSegment(stream: UUID(), sequence: 0))
         ))
@@ -84,6 +95,11 @@ import Testing
         #expect(control == .error(code: .notAllowed,
                                  message: "ambient target is not allowed — run haild targets allow on the Mac"))
         let input: AuthorizedInput = try await rig.input()
+        if failure == "missing" {
+            await #expect(throws: HostError.denied(.notAllowed("tmux:a"))) {
+                try await rig.host.send("synthetic", to: "tmux:a")
+            }
+        }
         let outcome: HostDeliveryOutcome = await rig.session.deliver(input)
         #expect(outcome == .refused(.notAllowed, "target action was refused"))
         let deliveries: [FakeAdapter.Delivery] = await rig.adapter.deliveries

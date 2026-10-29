@@ -13,9 +13,9 @@ import Testing
         try await blocked.waitUntilSuspended()
         let receiving = Task { await rig.segment(0) }
         try await rig.session.waitForPolicyAdmission()
-        let before: PolicyFileIdentity = try rig.file.identity()
+        let before: PolicyFileIdentity = try #require(try rig.file.identity())
         try await rig.write("deny")
-        let after: PolicyFileIdentity = try rig.file.identity()
+        let after: PolicyFileIdentity = try #require(try rig.file.identity())
         blocked.fire()
         await holding.value
         let result: HostSessionResult = try await blocked.finish(receiving)
@@ -51,9 +51,9 @@ import Testing
             } catch { return true }
         }
         try await blocked.waitUntilSuspended()
-        let before: PolicyFileIdentity = try rig.file.identity()
+        let before: PolicyFileIdentity = try #require(try rig.file.identity())
         try await rig.write("deny")
-        let after: PolicyFileIdentity = try rig.file.identity()
+        let after: PolicyFileIdentity = try #require(try rig.file.identity())
         let refused: Bool = try await blocked.finish(checking)
         try #require(before.inode != after.inode)
         #expect(refused, "A policy replaced between open and decode must never be adopted")

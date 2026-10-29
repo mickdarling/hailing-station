@@ -34,15 +34,22 @@ final class InMemoryPolicyStore: PolicyStore, PolicyChangeTracking {
     var stored: Policy { state.withLock { $0.policy } }
     var loads: Int { state.withLock { $0.loads } }
 
-    func identity() -> PolicyFileIdentity {
-        state.withLock { PolicyFileIdentity(device: 0, inode: 0, modified: .zero, size: $0.revision) }
+    func observation() -> PolicyObservation {
+        state.withLock { PolicyObservation(identity: Self.identity($0.revision)) }
     }
 
-    func load() throws -> Policy {
+    private static func identity(_ revision: Int64) -> PolicyFileIdentity {
+        PolicyFileIdentity(device: 0, inode: 0, modified: .zero, size: revision)
+    }
+
+    func load() throws -> Policy { try loadObserved().policy }
+
+    func loadObserved() throws -> ObservedPolicy {
         try state.withLock { state in
             state.loads += 1
             if let error = state.loadError { throw error }
-            return state.policy
+            return ObservedPolicy(policy: state.policy,
+                                  observation: PolicyObservation(identity: Self.identity(state.revision)))
         }
     }
 

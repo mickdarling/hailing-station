@@ -404,12 +404,8 @@ extension HailHost {
     private func refreshPolicy() throws {
         do {
             let tracking = store as? any PolicyChangeTracking
-            let identity = try tracking?.identity()
-            let next = try store.load()
+            let next = try tracking?.loadStable().policy ?? store.load()
             let compiled = try PolicyEvaluator(policy: next)
-            guard try tracking?.identity() == identity else {
-                throw HostError.policyUnavailable("policy_changed_during_reload")
-            }
             if next != policy { revokeAuthority() }
             targetPolicy.update(next)
             policy = next
@@ -492,7 +488,8 @@ final class TargetPolicyAuthority: Sendable {
         var retiring: Set<String> = []
     }
     private let state = Mutex(State())
-    private let observation = Mutex<PolicyFileIdentity?>(nil)
+    // No observation differs from a successful observation of an absent policy file.
+    private let observation = Mutex<PolicyObservation?>(nil)
     private let store: any PolicyStore
 
     init(store: any PolicyStore) { self.store = store }
@@ -503,15 +500,16 @@ final class TargetPolicyAuthority: Sendable {
         guard let tracking = store as? any PolicyChangeTracking else { return }
         try observation.withLock { observed in
             do {
-                let identity = try tracking.identity()
-                guard identity != observed else { return }
-                let next = try store.load()
-                _ = try PolicyEvaluator(policy: next)
-                guard try tracking.identity() == identity else {
-                    throw HostError.policyUnavailable("policy_changed_during_reload")
+                let location = try tracking.observation()
+                if let observed, observed == location { return }
+                // First creation has no directory identity to retain; an observed directory must stay the same.
+                if let directory = observed?.directory, directory != location.directory {
+                    throw HostError.policyUnavailable("policy_directory_changed")
                 }
-                apply(next, completingWrite: false)
-                observed = identity
+                let read = try tracking.loadStable(after: location)
+                _ = try PolicyEvaluator(policy: read.policy)
+                apply(read.policy, completingWrite: false)
+                observed = read.observation
             } catch {
                 apply(nil, completingWrite: false)
                 observed = nil
