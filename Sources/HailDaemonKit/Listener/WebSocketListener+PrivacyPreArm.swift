@@ -17,7 +17,7 @@ extension AmbientRightyoRouter {
     ///   ended never reaches here (`refused=ended`), and an arming for a device gone anyway is parked (`disarmIfGone`);
     /// - already private: nothing at all, as a switch that matches the state held (S-6);
     /// - privacy held elsewhere (another live connection, a park, or a park overflow, #961): taken exactly as
-    ///   `restorePrivacy` takes it, with its source, its heard state and its notice; logged `source=<live|park>`;
+    ///   `restorePrivacy` takes it, with its heard state and its notice; logged `source=<live|park>`;
     /// - otherwise armed here, logged `source=none`: the connection's own mode ends (never in both), the agent's replies
     ///   are held and its pending ones dropped, and the device is told `duck_mode` on with reason `device`. No clip and
     ///   no announcement: a status answers nothing until privacy is announced (6362119223).
@@ -51,7 +51,7 @@ extension AmbientRightyoRouter {
     /// is still that arming (`token`), never a newer one. An unsourced pre-arm's (`park`) is parked first, by teardown's
     /// own `parkPrivacy` (Jarvis: privacy wins ties; the device may already hold its confirmation), so the next start
     /// anywhere restores it, private; a restore's is only dropped, since its park or live source is never consumed.
-    /// Then the connection's privacy, its reply hold and the live source it recorded go, with a privacy ledger nothing
+    /// Then the connection's privacy and its reply hold go, with a privacy ledger nothing
     /// announced on, as teardown drops them. Nothing else changes. Logged `ambient_privacy_disarmed
     /// reason=no_connection parked=<bool>`, beside the park's own `ambient_privacy_parked`.
     func disarmIfGone(_ connection: UUID, token: UUID, sent: String?, park: Bool = false) {
@@ -61,7 +61,6 @@ extension AmbientRightyoRouter {
             // The device's claims are gone with it (nil, unknown), as for any park whose claims were not read.
             if park { parkPrivacy(connection: connection, device: nil, in: &state) }
             state.duck[connection] = nil
-            state.privacySources[connection] = nil
             if state.privacy[connection]?.entries.isEmpty != false { state.privacy[connection] = nil }
             state.listener?.value?.replyHold.set(false, connection: connection)
             return (true, state.parks[connection]?.token == token)

@@ -5,13 +5,13 @@ import Testing
 @testable import HailDaemonKit
 
 /// #904 (Jarvis, #967 round 1): a pre-armed connection's own off is the owner's off, exactly as #941 rules it. It clears
-/// every park and the overflow, and it judges only the live source its pre-arm took privacy from (#945); any other
+/// every existing park and the overflow; every other private connection keeps contributing (#1041). Any other
 /// private connection keeps its privacy, its reply hold and its children as they are. Real loopback listener and fake
 /// RightyO; every device claim is synthetic, every wait bounded.
 @Suite(.serialized, .timeLimit(.minutes(1)), .frozenGuardBudget)
 struct AmbientPrivacyPreArmOffTests {
     /// B pre-arms with no source while A streams in public; then A goes private and parks and the overflow are held.
-    /// B's off clears the parks and the overflow, and A is `not_source`: still ducked, its replies still held, and
+    /// B's off clears the parks and the overflow; A stays ducked, its replies still held, and
     /// nothing more written to its child.
     @Test func aPreArmedOffLeavesAnotherPrivateStreamAlone() async throws {
         let rig = try await RestoreRig(phrase: nil)
@@ -33,9 +33,6 @@ struct AmbientPrivacyPreArmOffTests {
         #expect(!router.duckMode(connection: connection) && router.duckMode(connection: holder))
         #expect(router.state.withLock { $0.parks.isEmpty && !$0.parkOverflow })
         #expect(await eventually {
-            rig.details("ambient_privacy_off_scoped") == ["cleared=0 kept=1 \(holder)=not_source"]
-        }, "off scope marker")
-        #expect(await eventually {
             rig.details("ambient_park_discarded") == ["reason=off mode=privacy count=1 overflow=true"]
         }, "parks cleared marker")
         #expect(await eventually { await !listener.replyHold.holds(connection) }, "its own hold released marker")
@@ -45,7 +42,7 @@ struct AmbientPrivacyPreArmOffTests {
     }
 
     /// A private by the owner's voice, then its stream ended (a final segment), so no child of it still listens and
-    /// only a ping can show it alive: a device with the app's own transport, which answers pings, or a silent peer.
+    /// it keeps contributing whether its transport answers pings or stays silent.
     static func privateSourceDone(_ rig: RestoreRig, silent: Bool) async throws -> (SilentPeer?, UUID) {
         let stream = UUID(), router = rig.router
         var (peer, socket): (SilentPeer?, URLSessionWebSocketTask?) = (nil, nil)
@@ -71,26 +68,22 @@ struct AmbientPrivacyPreArmOffTests {
         return (peer, source)
     }
 
-    /// B pre-arms while A is a live private source, so it takes A as its source (`source=live`). B's off then judges A
-    /// as an owner's off on a restored connection does (#945): A answers the ping and keeps counting (`live`), or a
-    /// silent A is judged `stale`. Either way A itself stays private, its replies held.
+    /// B's pre-arm inherits A's privacy. Its own off leaves A contributing, with replies held, even when silent.
     @Test(arguments: [false, true])
-    func aPreArmedOffJudgesItsLiveSource(silent: Bool) async throws {
-        let rig = try await RestoreRig(phrase: "stop recording", privacy: silent ? .silent : .init())
+    func aPreArmedOffPreservesItsLiveSource(silent: Bool) async throws {
+        let rig = try await RestoreRig(phrase: "stop recording")
         defer { rig.close() }
         let (peer, source) = try await Self.privateSourceDone(rig, silent: silent)
         defer { peer?.cancel() }
         let router = rig.router
         let (socket, connection) = try await AmbientPrivacyPreArmTests.preArmed(rig, name: RestoreRig.appName)
         #expect(rig.details("ambient_privacy_prearmed") == ["source=live"])
-        #expect(router.state.withLock { $0.privacySources[connection]?.connection } == source)
+        #expect(router.duckMode(connection: connection))
         try await AmbientPrivacySwitchTests.send(false, on: socket)
         try await AmbientPrivacyPreArmTests.until(.duckMode(on: false, reason: "device"), on: socket, step: "B off")
-        let verdict = silent ? "cleared=1 kept=0 \(source)=stale" : "cleared=0 kept=1 \(source)=live"
-        #expect(await eventually { rig.details("ambient_privacy_off_scoped") == [verdict] }, "off scope marker")
         #expect(router.duckMode(connection: source))
         #expect(await rig.env.listener.replyHold.holds(source))
-        await rig.finish()
+        try await AmbientPrivacyFalseStaleTests.expectPrivateFreshStream(rig, spawn: 2)
     }
 }
 #endif
