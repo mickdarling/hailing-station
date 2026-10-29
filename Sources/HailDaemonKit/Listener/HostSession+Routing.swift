@@ -138,10 +138,11 @@ extension HostSession {
         guard admitsInput(to: input.target) else {
             return .refused(.notAllowed, "select the destination before speaking")
         }
+        // Local dispatch's final selection check relies on no suspension before this snapshot.
+        let generation = selectionGeneration
         do {
             try await host.requireSendPreflight()
             try input.policyGeneration.requireCurrent()
-            let generation = selectionGeneration
             let owner = try await replyOwnership(for: input, generation: generation)
             // Legacy generic input has no retained record, so the captured selection is checked here and
             // again after the handoff; a caller outside the peer's serialized receive loop can race `select`.
