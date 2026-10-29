@@ -58,10 +58,6 @@ import Testing
             versions: [ProtocolVersion.current], capabilities: capabilities, deviceName: "Mac"
         )))
         try await waitUntil { await connection.currentSnapshot().state == .ready }
-        // Ready is published before startup controls; frame-count assertions need the complete prefix.
-        try await waitUntil { try await socket.sentFrames().contains {
-            if case .control(.listTargets) = $0.payload { return true }; return false
-        } }
         return (connection, socket)
     }
 
