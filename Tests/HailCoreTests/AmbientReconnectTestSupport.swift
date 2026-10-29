@@ -16,6 +16,7 @@ final class AmbientReconnectRig {
     var wrapReconnect: (ScriptedSocket) -> any WebSocketTransport = { $0 }
     var echoGuard: AmbientReplyEchoGuard?
     var released = 0
+    var onSessionRelease: (() -> Void)?
     var unexpected: [String] = []
     var permission = true
     var failStart = false
@@ -42,7 +43,10 @@ final class AmbientReconnectRig {
             if self.failStart { throw AudioCaptureError.alreadyRunning }
             return AmbientAudioStreamer(capture: self.echoGuard?.masking(self.capture) ?? self.capture, send: send)
         },
-        releaseSession: { [weak self] in self?.released += 1 }, send: { [weak self] payload, binding in
+        releaseSession: { [weak self] in
+            self?.released += 1
+            self?.onSessionRelease?()
+        }, send: { [weak self] payload, binding in
             guard let store = self?.store else { throw HostConnectionFailure.notReady }
             try await store.sendAudio(payload, to: binding)
         }

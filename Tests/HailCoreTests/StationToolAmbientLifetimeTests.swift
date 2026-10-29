@@ -46,6 +46,8 @@ import SwiftUI
     @Test(arguments: Loss.allCases)
     func destinationLossWhileToolIsVisibleStillEndsListening(_ loss: Loss) async throws {
         let rig = try AmbientReconnectRig()
+        let release = AsyncStream<Void>.makeStream()
+        rig.onSessionRelease = { release.continuation.yield(()) }
         let (log, cleanup) = try makeLog()
         defer { cleanup() }
         rig.controller.diagnostics = log
@@ -63,6 +65,10 @@ import SwiftUI
         }
         // The root callback must also work after the card has left the screen, with no second disappearance.
         await root.reconcileAmbientDestination()
+        // Disconnect can end listening before the stream has drained and released the session.
+        for await _ in release.stream {
+            break
+        }
         #expect(root.destination == nil)
         #expect(!rig.controller.isOn && !rig.controller.isListening && rig.released == 1)
         let stops = (log.nextBatch()?.events ?? []).filter { $0.name == .ambientStop }
