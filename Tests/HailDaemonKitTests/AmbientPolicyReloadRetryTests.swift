@@ -15,7 +15,7 @@ import Testing
         // A new inode with identical content forces a reload without changing either target's authority.
         try rig.file.save(rig.file.load())
         let before = hook.loads
-        let blocked = PolicyWriteGate()
+        let blocked = PolicyWriteGate(timeout: .seconds(45))
         defer { blocked.fire() }
         hook.arm(blocked)
         let checking = Task(executorPreference: blocked.executor) {
@@ -51,8 +51,9 @@ import Testing
         let retained = ["tmux:a", "tmux:b"].map { rig.host.targetPolicy.snapshot(for: $0) }
         try rig.file.save(rig.file.load())
         let before = hook.loads
-        let first = PolicyWriteGate()
-        let gates = [first, PolicyWriteGate(executor: first.executor), PolicyWriteGate(executor: first.executor)]
+        let first = PolicyWriteGate(timeout: .seconds(45))
+        // Each hold spans a real `haild targets` process; a loaded runner needs more than the default (#1046).
+        let gates = [first] + (0..<2).map { _ in PolicyWriteGate(timeout: .seconds(45), executor: first.executor) }
         defer { for gate in gates { gate.fire() } }
         hook.armReads(gates)
         let checking = Task(executorPreference: first.executor) { await rig.segment(1) }
@@ -84,8 +85,8 @@ import Testing
         }
         let retained = ["tmux:a", "tmux:b"].map { rig.host.targetPolicy.snapshot(for: $0) }
         try rig.file.save(rig.file.load())
-        let decoded = PolicyWriteGate()
-        let observed = PolicyWriteGate(executor: decoded.executor)
+        let decoded = PolicyWriteGate(timeout: .seconds(45))
+        let observed = PolicyWriteGate(timeout: .seconds(45), executor: decoded.executor)
         defer { decoded.fire(); observed.fire() }
         hook.arm(decoded)
         let checking = Task(executorPreference: decoded.executor) { await rig.segment(1) }
