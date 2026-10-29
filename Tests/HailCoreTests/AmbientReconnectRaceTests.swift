@@ -18,6 +18,7 @@ import Testing
         try? await rig.store.setPrivacy(on: on, host: rig.endpoint.id)
         #expect(rig.store.privacyLocal[rig.endpoint.id]?.request == nil)
         await closing.gate.fire()
+        try await waitUntil { await rig.retry.isWaiting() }
         try await rig.expectStopped(.privacy)
         try await rig.reconnect()
         #expect(rig.notices.count == 1)
