@@ -561,6 +561,9 @@ public actor RightyoInputConsumer {
     private(set) var lastVoiceMute: VoiceMute.Command?
     /// The owner's spoken media mode (#551), held back like `lastVoiceMute`. Nil for any other line.
     private(set) var lastVoiceMedia: VoiceMedia.Command?
+    /// Exact owner cadence control applied to an active host task; otherwise it remains an ordinary request.
+    private(set) var lastTaskProgressOwner: TaskProgressOwnerControl?
+    private let taskProgressOwner: (@Sendable (TaskProgressOwnerControl) async -> Bool)?
     /// #735 meeting mode (rightyo#227), held back like media mode. Nil for any other line.
     private(set) var lastVoiceMeeting: VoiceMeeting.Command?
     /// Whether media (#551) and meeting (#735 meeting mode (rightyo#227)) phrases are commands: only with control.
@@ -603,7 +606,8 @@ public actor RightyoInputConsumer {
                 allowSynthetic: Bool = false, streamBudgetMs: Int? = nil,
                 dispatcher: (any RightyoDispatching)? = nil, echoFilter: (@Sendable (String) -> Bool)? = nil,
                 mediaCommands: Bool = false, destinations: VoiceDestinations? = nil,
-                routing: RightyoVoiceRouting? = nil, duckActive: (@Sendable () -> Bool)? = nil) throws {
+                routing: RightyoVoiceRouting? = nil, duckActive: (@Sendable () -> Bool)? = nil,
+                taskProgressOwner: (@Sendable (TaskProgressOwnerControl) async -> Bool)? = nil) throws {
         guard !binding.isEmpty, RightyoInputEvent.identifier(session), streamBudgetMs.map({ $0 >= 0 }) ?? true else {
             throw RightyoInputError.unavailableBinding
         }
@@ -611,34 +615,17 @@ public actor RightyoInputConsumer {
         self.dispatcher = dispatcher ?? host.map { RightyoHostDispatcher(host: $0) }
         (self.echoFilter, self.mediaCommands, self.destinations) = (echoFilter, mediaCommands, destinations)
         (self.routing, self.duckActive) = (routing, duckActive)
+        self.taskProgressOwner = taskProgressOwner
         self.allowSynthetic = allowSynthetic
         (self.target, self.binding, self.session) = (target, binding, session)
         self.streamBudgetMs = streamBudgetMs
-    }
-    /// The reply block is a shell-shaped instruction that names the target verbatim, so the id must match the
-    /// allowlist `[A-Za-z0-9][A-Za-z0-9._:-]{0,95}`: every listed `kind:name` shape the adapters produce
-    /// (`tmux:demo`, `tmux-reply:main.0`, `tmux:dev.2:0`) and nothing a shell could read as syntax. tmux names may
-    /// legally contain spaces or `;`; such a target is unusable for `haild rightyo` until it is renamed. The block
-    /// for the id is then matched against the default guard rules, so an authorized name carrying a guarded word
-    /// (`tmux:sudo`) is refused here with a diagnostic instead of turning every request into
-    /// `confirmationRequired`; a daemon policy with custom guard patterns can still require confirmation, which
-    /// the consumer refuses per request as before. The block is fixed host text around the allowlisted id, so it is
-    /// matched without the guard's time budget (#658): a stalled scheduler at login or stream start must not refuse a
-    /// benign id. Delivered requests keep the budget and its timeout-is-a-hit rule (#208).
-    public static func validateTarget(_ target: String) throws {
-        let alphanumeric = Set("ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789")
-        guard let first = target.first, alphanumeric.contains(first), target.count <= 96,
-              target.allSatisfy({ alphanumeric.contains($0) || "._:-".contains($0) }) else {
-            throw RightyoTargetError.unsafeIdentifier
-        }
-        let hits = DangerousPatternGuard.targetBlockMatches(target: target)
-        guard hits.isEmpty else { throw RightyoTargetError.guarded(hits) }
     }
     /// True means handled: guarded delivery, or validation only when initialized with no host. An admitted `dismiss`
     /// delivers nothing and returns false; `lastDismissal` then says what it did.
     public func consume(_ event: RightyoInputEvent) async throws -> Bool {
         lastReceipt = nil
         lastDismissal = nil
+        lastTaskProgressOwner = nil
         (lastVoiceMute, lastVoiceMeeting) = (nil, nil)
         (lastVoiceMedia, lastVoiceDestination, lastRouteRefusal, lastPrivacy) = (nil, nil, nil, nil)
         (lastPrivacyAck, lastDeliveryRefusal) = (nil, nil)
@@ -662,6 +649,7 @@ public actor RightyoInputConsumer {
             // Busy from addressing on: the route's binding lookup suspends, and no event may enter meanwhile.
             busy = true
             defer { busy = false }
+            if let turn = event.turn, await holdsTaskProgress(turn) { return false }
             guard let address = await address(event.turn) else { return false }
             return try await deliver(event, to: address, with: dispatcher)
         } catch {
@@ -730,6 +718,51 @@ public actor RightyoInputConsumer {
 }
 
 extension RightyoInputConsumer {
+    /// The reply block is a shell-shaped instruction that names the target verbatim, so the id must match the
+    /// allowlist `[A-Za-z0-9][A-Za-z0-9._:-]{0,95}`: every listed `kind:name` shape the adapters produce
+    /// (`tmux:demo`, `tmux-reply:main.0`, `tmux:dev.2:0`) and nothing a shell could read as syntax. tmux names may
+    /// legally contain spaces or `;`; such a target is unusable for `haild rightyo` until it is renamed. The block
+    /// for the id is then matched against the default guard rules, so an authorized name carrying a guarded word
+    /// (`tmux:sudo`) is refused here with a diagnostic instead of turning every request into
+    /// `confirmationRequired`; a daemon policy with custom guard patterns can still require confirmation, which
+    /// the consumer refuses per request as before. The block is fixed host text around the allowlisted id, so it is
+    /// matched without the guard's time budget (#658): a stalled scheduler at login or stream start must not refuse a
+    /// benign id. Delivered requests keep the budget and its timeout-is-a-hit rule (#208).
+    public static func validateTarget(_ target: String) throws {
+        let alphanumeric = Set("ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789")
+        guard let first = target.first, alphanumeric.contains(first), target.count <= 96,
+              target.allSatisfy({ alphanumeric.contains($0) || "._:-".contains($0) }) else {
+            throw RightyoTargetError.unsafeIdentifier
+        }
+        let hits = DangerousPatternGuard.targetBlockMatches(target: target)
+        guard hits.isEmpty else { throw RightyoTargetError.guarded(hits) }
+    }
+}
+
+extension RightyoInputConsumer {
+    /// Cadence is an owner setting, so a role label alone grants nothing. Only a current live enrolled
+    /// voiceprint may reach the hook; echo/withdrawal/correlation/privacy checks ran before this step.
+    /// The awaited hook rechecks the host task and stream. An unavailable/disabled task consumes nothing.
+    private func holdsTaskProgress(_ turn: RightyoInputEvent.Turn) async -> Bool {
+        guard let taskProgressOwner, speakers == "enrolled", owners.contains(turn.utteranceId),
+              voiceprintOwners.contains(turn.utteranceId), turn.provenance == "live-microphone",
+              let command = progressCommand(turn.text), await taskProgressOwner(command) else {
+            return false
+        }
+        lastTaskProgressOwner = command
+        return true
+    }
+
+    private func progressCommand(_ text: String) -> TaskProgressOwnerControl? {
+        var words = text.lowercased().split {
+            !$0.isLetter && !$0.isNumber && $0 != "'" && $0 != "-" && $0 != "\""
+        }.map(String.init)
+        while words.last == "please" { words.removeLast() }
+        return VoiceMute.candidates(words, names: voiceNames).compactMap {
+            TaskProgressOwnerControl.parse($0.joined(separator: " "))
+        }.first
+    }
+
     /// Leaves a spoken mute (#404), media (#551) or meeting (#735 meeting mode (rightyo#227)) command in its `lastVoice`
     /// slot; true when `turn` was
     /// one. Media mode follows the mute's rule: it only changes what this host's RightyO attends to. Without
