@@ -184,6 +184,7 @@ public final class AmbientReplyEchoGuard: Sendable {
             return !state.following
         }) else { return }
         (playback.player as? EchoGuardedReplyPlayer)?.playback = playback
+        playback.wireProactiveActivity(self)
         track(playback)
     }
 

@@ -28,6 +28,7 @@ extension ReplyPlaybackController {
             status = "Paused"
             return
         }
+        if !prepareProactiveAudibility() { drain(); return }
         if activeKey != nil {
             do {
                 try player.resume()
@@ -53,6 +54,7 @@ extension ReplyPlaybackController {
             return
         }
         if isPaused {
+            if !prepareProactiveAudibility() { isPaused = false; drain(); return }
             do {
                 try player.resume()
                 isPaused = false
@@ -68,16 +70,18 @@ extension ReplyPlaybackController {
         }
     }
     public func toggleMute() {
+        let canUnmute = !isMuted || prepareProactiveAudibility()
         isMuted.toggle()
         player.setMuted(isMuted)
         status = isCaptureSuppressed ? "Paused while listening" : playingStatus
+        if !canUnmute { drain() }
     }
     public func replayLatest() {
         guard !isCaptureSuppressed else {
             status = "Replay available after listening"
             return
         }
-        guard !lastAudio.isEmpty, let lastKey else { return }
+        guard !lastAudio.isEmpty, let lastKey, allowProactiveReplay() else { return }
         guard activeKey == nil || activeKey == lastKey else {
             status = "Replay available when this reply finishes"
             return
@@ -135,11 +139,14 @@ extension ReplyPlaybackController {
         if case .text(let text) = event.frame.payload { transcript = text.text } else { transcript = nil }
         if let index = replies.firstIndex(where: { $0.id == id }) {
             if let transcript { replies[index].transcript = transcript }
+            if descriptor.sessionUpdateID != nil { replies[index].isSessionUpdate = true }
         } else {
-            replies.append(ReplyPresentation(
+            var presentation = ReplyPresentation(
                 id: id, endpointID: event.endpointID, host: descriptor.hostID,
                 target: descriptor.targetID, transcript: transcript
-            ))
+            )
+            presentation.isSessionUpdate = descriptor.sessionUpdateID != nil
+            replies.append(presentation)
             trimPresentations(retainingPresentationID: id)
         }
         return id
@@ -171,13 +178,6 @@ extension ReplyPlaybackController {
             seenFrames.removeFirst(seenFrames.count - Self.seenFrameLimit)
         }
         return true
-    }
-    func descriptor(in frame: Frame) -> ReplyDescriptor? {
-        switch frame.payload {
-        case .text(let text): text.reply
-        case .audio(let audio): audio.reply
-        default: nil
-        }
     }
 }
 extension ReplyPlaybackController {

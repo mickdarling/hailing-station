@@ -72,6 +72,7 @@ public final class ReplyPlaybackController {
     var seenFrameSet: Set<UUID> = []
     var presentationStatuses: [String: String] = [:]
     /// The head stream's idle watch, its injectable clock and scheduler, and its diagnostics hook (#469, `+Idle`).
+    @ObservationIgnored let proactive = ProactiveReplyPlaybackState()
     @ObservationIgnored var idleWatch = ReplyIdleWatch()
     @ObservationIgnored var firstAudio: [ReplyStreamKey: ReplyIdleWatch] = [:] // arrival deadlines (#825)
     @ObservationIgnored var firstAudioByEndpoint: [HostEndpoint.Identifier: Set<ReplyStreamKey>] = [:]
@@ -106,7 +107,8 @@ public final class ReplyPlaybackController {
     public func ingest(_ event: HostReplyEvent) {
         if case .audio = event.frame.payload { noteEndpointAudio(event.endpointID) }
         if case .control(let control) = event.frame.payload { return handlePlaybackControl(control, event) }
-        guard remember(event.frame.id), let descriptor = descriptor(in: event.frame) else { return }
+        guard remember(event.frame.id), let descriptor = descriptor(in: event.frame),
+              acceptProactiveFrame(event, descriptor: descriptor) else { return }
         guard case .audio(let audio) = event.frame.payload else {
             receiveText(event, descriptor: descriptor)
             return
@@ -123,7 +125,7 @@ public final class ReplyPlaybackController {
         expiredFirstAudio.remove(key)
         undeliveredLosses.remove(key) // Accepted late audio clears the loss without another notice.
         stream.segments[audio.sequence] = audio
-        if streams[key] == nil { supersedePausedReplies(); queue.append(key) }
+        enqueueStreamIfNeeded(key, descriptor: descriptor)
         streams[key] = stream
         let presentationID = upsertPresentation(event, descriptor: descriptor)
         presentationStatuses[presentationID] = nil
@@ -136,6 +138,7 @@ public final class ReplyPlaybackController {
     func playbackFinished(_ key: ReplyStreamKey, generation: UInt) {
         guard generation == playbackGeneration,
               let index = playbackOrder.firstIndex(of: key) else { return }
+        if proactive.identities[key] != nil { proactive.cancelWatch?(); proactive.cancelWatch = nil }
         setPresentationStatus("Played", for: key)
         playbackOrder.remove(at: index)
         if activeKey == key { activeKey = playbackOrder.first }
@@ -150,10 +153,7 @@ public final class ReplyPlaybackController {
         }
     }
     func drain() {
-        watchHeadIfChanged() // before any segment of a new head is scheduled (#469)
-        guard segmentBoundary == nil else { return } // Nothing past a marker enters the player yet.
-        dropAbandonedHold() // an abandoned reply's held tail never plays before the next (#825)
-        applyPendingMuteIfDue() // before the next reply starts, so it plays silently (#404)
+        guard prepareDrain() else { return }
         guard !isCaptureSuppressed, !isPaused else {
             status = isCaptureSuppressed ? "Paused while listening" : "Paused"
             return
@@ -161,10 +161,7 @@ public final class ReplyPlaybackController {
         while let key = queue.first, var stream = streams[key],
               let segment = stream.segments[stream.nextSequence] {
             let beginsPlayback = stream.nextSequence == 0 && !playbackOrder.contains(key)
-            if beginsPlayback {
-                playbackOrder.append(key)
-                if activeKey == nil { activeKey = key }
-            }
+            guard beginPlaybackIfNeeded(key, begins: beginsPlayback) else { return }
             let generation = playbackGeneration
             let onPlayed = completion(for: segment, key: key, generation: generation)
             do {
@@ -189,6 +186,15 @@ public final class ReplyPlaybackController {
             }
             completed.insert(key)
             return
+        }
+    }
+}
+extension ReplyPlaybackController {
+    func descriptor(in frame: Frame) -> ReplyDescriptor? {
+        switch frame.payload {
+        case .text(let text): text.reply
+        case .audio(let audio): audio.reply
+        default: nil
         }
     }
 }
