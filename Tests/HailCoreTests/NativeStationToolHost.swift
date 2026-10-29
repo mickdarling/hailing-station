@@ -56,6 +56,16 @@ final class NativeStationToolHost {
         try await waitUntil { await MainActor.run { self.path.appearances > 0 } }
     }
 
+    /// Drain native updates and observer tasks without elapsed-time waits.
+    func render() async {
+        for _ in 0..<4 {
+            window.contentView?.layoutSubtreeIfNeeded()
+            await withCheckedContinuation { continuation in
+                DispatchQueue.main.async { continuation.resume() }
+            }
+        }
+    }
+
     func push() { path.values = [1] }
     func pop() { path.values = [] }
 

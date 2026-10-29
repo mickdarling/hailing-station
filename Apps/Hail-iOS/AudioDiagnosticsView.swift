@@ -89,7 +89,7 @@ struct AudioDiagnosticsView: View {
         .navigationTitle("Audio session")
         .stationToolBackNavigation()
         .task { await model.refresh() }
-        .onDisappear { session.disappear(model) { connections.ambientController?.isOn == true } }
+        .onDisappear { session.disappear(model) { connections.ambientController } }
     }
 }
 private extension AudioDiagnosticsView {
@@ -181,12 +181,19 @@ final class AudioDiagnosticsSession {
         }
     }
 
-    func disappear(_ model: AudioRouteModel, captureOwnsSession: @escaping @MainActor () -> Bool) {
+    func disappear(_ model: AudioRouteModel,
+                   ambientController: @escaping @MainActor () -> AmbientListeningController? = { nil }) {
         disappearance = Task {
             await activation?.value
             guard ownsActivation else { return }
+            // A permission request has not acquired capture yet. Cancel its startup before releasing the
+            // tool's activation, so either a later grant or denial cannot leave idle audio behind.
+            if let controller = ambientController(), controller.isOn,
+               !controller.isListening, controller.pausedReason == nil {
+                await controller.turnOff()
+            }
             ownsActivation = false
-            guard !captureOwnsSession() else { return }
+            guard ambientController()?.isOn != true else { return }
             await model.deactivate()
         }
     }

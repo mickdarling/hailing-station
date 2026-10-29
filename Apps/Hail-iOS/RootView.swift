@@ -53,6 +53,9 @@ struct StationRootView: View, AmbientDestinationOwner {
         .environment(connections)
         .modifier(StationMenuStatusPublisher(connections: connections, destination: destination?.label))
         .modifier(ReplySegmentNotices(connections: connections, banners: $station.value.announcementBanners))
+        .onChange(of: [selectedHostID, selectedTargetID]) { _, _ in
+            Task { await reconcileAmbientDestination() }
+        }
         .onChange(of: ambientDestinationBinding) { _, _ in
             Task { await reconcileAmbientDestination() }
         }
@@ -178,8 +181,16 @@ extension AmbientDestinationOwner {
     }
 
     func reconcileAmbientDestination() async {
-        guard let controller = connections.ambientController, controller.isOn,
-              controller.binding != ambientDestinationBinding else { return }
+        guard let controller = connections.ambientController, controller.isOn else { return }
+        if controller.reconnect.isPending {
+            // A transport gap alone preserves capture. An owner change must veto the pending restore;
+            // destinationLost deliberately ignores pending recovery, so use the existing owner-stop path.
+            guard let binding = controller.reconnect.binding,
+                  selectedHostID != binding.hostID || selectedTargetID != binding.targetID else { return }
+            await controller.turnOff()
+            return
+        }
+        guard controller.binding != ambientDestinationBinding else { return }
         await controller.destinationLost()
     }
 }

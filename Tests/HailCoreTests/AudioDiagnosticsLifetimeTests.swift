@@ -52,7 +52,7 @@ import Testing
         let model = AudioRouteModel(controller: ManagedAudioSession(backend: backend))
         let session = AudioDiagnosticsSession()
         session.activate(model)
-        session.disappear(model, captureOwnsSession: { false })
+        session.disappear(model)
         await session.disappearance?.value
         #expect(!model.diagnostics.isActive)
         #expect(await backend.activationHistory == [true, false])
