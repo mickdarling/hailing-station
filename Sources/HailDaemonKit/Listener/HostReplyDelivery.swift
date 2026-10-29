@@ -5,6 +5,28 @@ import Synchronization
 // Correlated and single-terminal fallback publication share one admission-and-enqueue boundary.
 // swiftlint:disable file_length
 
+/// Revocable task lifetime only; it never replaces host policy or binding authority.
+final class TaskProgressOutputFence: Sendable {
+    private let open = Mutex(true)
+    func close() { open.withLock { $0 = false } }
+    var isOpen: Bool { open.withLock { $0 } }
+    func perform(_ operation: () -> Bool) -> Bool { open.withLock { $0 && operation() } }
+}
+
+struct TaskProgressPublicationAuthority: Sendable {
+    let generation: TargetPolicyGeneration
+    let binding: String
+    var taskFence: TaskProgressOutputFence?
+    var isCurrent: Bool { generation.performIfCurrent { taskFence?.isOpen ?? true } == true }
+    func perform(_ operation: () -> Bool) -> Bool {
+        generation.performIfCurrent { taskFence?.perform(operation) ?? operation() } == true
+    }
+}
+
+enum TaskProgressPublicationScope {
+    @TaskLocal static var authority: TaskProgressPublicationAuthority?
+}
+
 enum ReplyPublicationStatus: Equatable, Sendable {
     case absent, pending, ready
 }
@@ -28,20 +50,47 @@ enum ReplyFrameDelivery<Receipt: Sendable>: Sendable {
 /// pass it (#913), each clip whole under one check; the privacy clips (on, off, status) and the other confirmations
 /// never consult it.
 final class PrivateReplyHold: Sendable {
-    private let held = Mutex<Set<UUID>>([])
+    typealias EntryObserver = @Sendable (UInt64) -> Void
+    private struct State {
+        var held: Set<UUID> = []
+        var entries: UInt64 = 0
+        var observer: EntryObserver?
+    }
+    private let held = Mutex(State())
 
     func set(_ on: Bool, connection: UUID) {
-        held.withLock { _ = on ? $0.insert(connection).inserted : $0.remove(connection) != nil }
+        let notice = held.withLock { value -> (EntryObserver, UInt64)? in
+            if on {
+                value.entries &+= 1; value.held.insert(connection)
+                return value.observer.map { ($0, value.entries) }
+            }
+            value.held.remove(connection)
+            return nil
+        }
+        // The callback schedules actor work only. Never call back while holding this lock or wait for transport.
+        if let (observer, revision) = notice { observer(revision) }
     }
 
-    func holds(_ connection: UUID) -> Bool { held.withLock { $0.contains(connection) } }
+    func observeEntries(_ observer: @escaping EntryObserver) { held.withLock { $0.observer = observer } }
+
+    /// A privacy entry cannot be hidden by an on/off pair between listener actor turns.
+    var entryRevision: UInt64 { held.withLock { $0.entries } }
+    var anyHeld: Bool { held.withLock { !$0.held.isEmpty } }
+
+    func unlessAnyHeld(expectedRevision: UInt64? = nil, _ enqueue: () -> Bool) -> Bool {
+        held.withLock { state in
+            state.held.isEmpty && (expectedRevision == nil || expectedRevision == state.entries) && enqueue()
+        }
+    }
+
+    func holds(_ connection: UUID) -> Bool { held.withLock { $0.held.contains(connection) } }
 
     /// Runs `enqueue` unless `connection` is held, under the lock `set` takes (#913), so an entry lands wholly before
     /// or wholly after it; false, without running it, when held. `enqueue` only hands frames to the transport
     /// (`NWConnection.send`, which returns at once) and never waits for their completion, so a privacy entry never
     /// waits behind a slow socket; nor does it take the router's lock, which `set` is called under.
     func unlessHeld(_ connection: UUID, _ enqueue: () -> Bool) -> Bool {
-        held.withLock { $0.contains(connection) ? false : enqueue() }
+        held.withLock { $0.held.contains(connection) ? false : enqueue() }
     }
 }
 
@@ -248,6 +297,7 @@ extension HostSession {
         stopSegmentedRepliesForRequest()
         let entry = LastInputLedger.Entry(connection: connectionID, generation: generation, at: requestClock())
         lastInputLedger?.record(entry, for: target)
+        replyEvent(WebSocketListenerEvent(event: "session_update_interaction", sessionID: connectionID))
     }
 
     /// The route still names this connection on the same selection, which still covers `target` (a voice-routed

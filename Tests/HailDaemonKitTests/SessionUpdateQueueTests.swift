@@ -29,7 +29,6 @@ import Testing
         #expect(queue.submit(try update(.action), audience: listening, now: at(0)) == .refused(.disabled))
         #expect(queue.held.isEmpty)
     }
-
     @Test func targetIsTheListeningDeviceElseTheLastActive() {
         #expect(SessionUpdateAudience(listeningDevice: phone, lastActiveDevice: pad).target == phone)
         #expect(SessionUpdateAudience(lastActiveDevice: pad).target == pad)
