@@ -114,12 +114,14 @@ private final class AmbientBackoffRun {
 /// #904: a previous host's cancelled pacing must not poison its ordinary transport retries.
 @MainActor
 @Suite(.serialized) struct AmbientReconnectOwnerRegressionTests {
-    @Test func startingOnAnotherHostAfterRecoveryLeavesTheOldHostAbleToReconnect() async throws {
+    @Test(arguments: [false, true])
+    func endingRecoveredOwnerLeavesTransportOnOrdinarySchedule(startAnotherHost: Bool) async throws {
         let steps = AmbientRetrySteps()
         let rig = try AmbientReconnectRig(retrySleep: { try await steps.sleep($0) })
         try await rig.start()
         await rig.socket.fail()
         try await waitUntil { await steps.started == 1 }
+        let pacing = try #require(rig.controller.reconnect.pacing)
         rig.socket = ScriptedSocket()
         await rig.connector.enqueue(.socket(rig.socket), for: rig.endpoint.url)
         await steps.release(0)
@@ -127,12 +129,11 @@ private final class AmbientBackoffRun {
         try await rig.select(restoring: true)
         try await rig.feed()
         #expect(rig.notices.last?.outcome == .applied)
-        let pacing = try #require(rig.controller.reconnect.pacing)
+        #expect(pacing.isCancelled && rig.controller.reconnect.pacing == nil)
         await rig.controller.turnOff()
-        #expect(!pacing.isCancelled) // The next owner start, rather than an active recovery veto, revokes it.
         let other = AmbientAudioBinding(hostID: "second-synthetic-host", targetID: rig.target.id,
                                         connectionGeneration: UUID(), selection: 0)
-        await rig.controller.turnOn(for: other)
+        if startAnotherHost { await rig.controller.turnOn(for: other) }
         #expect(pacing.isCancelled && rig.controller.reconnect.pacing == nil)
         await rig.socket.fail()
         try await waitUntil {
@@ -145,7 +146,8 @@ private final class AmbientBackoffRun {
         await rig.connector.enqueue(.socket(rig.socket), for: rig.endpoint.url)
         await steps.release(1)
         try await rig.handshake(rig.socket)
-        #expect(rig.controller.isOn && rig.controller.isListening && rig.controller.binding == other)
+        #expect(rig.controller.isOn == startAnotherHost && rig.controller.isListening == startAnotherHost)
+        if startAnotherHost { #expect(rig.controller.binding == other) }
         await rig.close()
         await steps.releaseAll()
     }
@@ -164,9 +166,10 @@ private final class AmbientBackoffRun {
         #expect(await connection.ambientPacing === pacing)
         pacing.cancel()
         source.pacing = nil
-        if trigger == "path" { await connection.networkPathChanged() } else { await connection.foregrounded() }
-        #expect(await connection.ambientPacing == nil)
         try await waitUntil { await steps.started == 2 }
+        if trigger == "path" { await connection.networkPathChanged() } else { await connection.foregrounded() }
+        try await waitUntil { await steps.started == 3 }
+        #expect(await connection.ambientPacing == nil)
         #expect(await steps.durations.last == .seconds(1))
         await connection.disconnect()
         await steps.releaseAll()

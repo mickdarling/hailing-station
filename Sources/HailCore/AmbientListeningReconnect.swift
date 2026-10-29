@@ -13,7 +13,7 @@ func ambientSleep(for duration: Duration, injected sleep: (@Sendable (Duration) 
     try await sleep(duration)
 }
 
-/// Shared across transport flaps. Only the connection actor spends waits; an owner veto revokes its waiter.
+/// Shared across transport flaps. A veto revokes only the ambient wait, never the connection's retry loop.
 final class AmbientReconnectPacing: Sendable {
     static let initialDelay: TimeInterval = 1.5
     static let maximumDelay: TimeInterval = 60
@@ -259,8 +259,10 @@ public final class AmbientListeningReconnect {
         retryTask?.cancel()
         retryTask = nil
         privacyConfirmation.cancel()
-        if outcome == .applied { pacing?.reset() }
-        if outcome == .blocked || outcome == .failed { pacing?.cancel() }
+        if outcome != .interrupted {
+            pacing?.cancel()
+            pacing = nil
+        }
         notice = Notice(outcome: outcome, reason: reason)
         let elapsed = pending.began.duration(to: now()).components
         controller?.diagnostics?.record(.captureState, [

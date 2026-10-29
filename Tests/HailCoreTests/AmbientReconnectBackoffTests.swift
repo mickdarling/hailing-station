@@ -99,18 +99,26 @@ import Testing
         try await rig.start()
         await rig.socket.fail()
         try await waitUntil { await steps.started == 1 }
+        let pacing = try #require(rig.controller.reconnect.pacing)
         if privacy { try? await rig.store.setPrivacy(on: true, host: rig.endpoint.id) } else {
             await rig.controller.turnOff()
         }
         try await waitUntil { await MainActor.run { !rig.controller.isOn && rig.released == 1 } }
-        #expect(await steps.pending == 1) // Off completed even though the sleeper has not cooperated.
+        try await waitUntil { await steps.started == 2 }
+        #expect(pacing.isCancelled && rig.controller.reconnect.pacing == nil)
+        #expect(await steps.pending == 2) // Ordinary retry begins without waiting for the obsolete sleeper.
+        #expect(await steps.durations.last == .seconds(1))
         #expect(rig.controller.reconnect.status == nil)
+        let notices = rig.notices
         await steps.release(0)
         await settle()
         #expect(await rig.connector.openCount(for: rig.endpoint.url) == 1)
-        #expect(await steps.started == 1)
+        #expect(await steps.started == 2)
+        #expect(rig.store.snapshots[rig.endpoint.id]?.state == .reconnecting(attempt: 1, nextDelay: 1))
+        #expect(rig.notices == notices && !rig.controller.isOn && !rig.controller.isListening)
         #expect(rig.notices.last?.reason == (privacy ? .privacy : .ownerStop))
         await rig.close()
+        await steps.releaseAll()
     }
 }
 

@@ -192,7 +192,8 @@ extension HostConnectionStore {
     }
     private func ambientPacing(host: HostEndpoint.Identifier, token: UUID) -> AmbientReconnectPacing? {
         guard tokens[host] == token, let reconnect = ambientController?.reconnect,
-              reconnect.binding?.hostID == host else { return nil }
+              reconnect.isPending, reconnect.binding?.hostID == host,
+              reconnect.pacing?.isCancelled == false else { return nil }
         return reconnect.pacing
     }
 
