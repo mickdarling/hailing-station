@@ -56,6 +56,7 @@ let usageText = """
            haild ambient reload|status [--socket <path>]
       (reload restarts the active ambient stream's RightyO child; never starts listening)
     \(NotifyText.usage)
+    \(ProgressOptions.usage)
            haild coaching --rightyo <absolute-path> --rightyo-config <absolute-path>
       --listener-profile <private-absolute-path> --listener <id> --private-output <local-device-id>
       --room-microphone <distinct-local-device-id> --renderer-output-root <private-absolute-directory>
@@ -78,6 +79,9 @@ let usageText = """
            haild run ... --personal-terminal --device-diagnostics
       (opt-in device diagnostics log: enumerated events only, owner-only, capped at 5 MiB)
            haild run ... --personal-terminal --host-health  (opt-in: doctor check names and outcomes to the device)
+           haild run ... --personal-terminal --session-updates [--task-progress]
+      [--session-update-speech-root <private-existing-absolute-directory>]
+      (separate opt-ins; no APNs, installation, restart or request renewal)
 
     """
 
@@ -361,6 +365,7 @@ do {
     case "reply": try await reply(arguments.dropFirst())
     case "ambient": try await ambient(arguments.dropFirst())
     case "notify": try await notify(arguments.dropFirst())
+    case "progress": try await progress(arguments.dropFirst())
     case "coaching": try await CoachingCommand.run(Array(arguments.dropFirst()))
     case "rightyo": try await rightyo(arguments.dropFirst())
     case "audit": try audit(arguments.dropFirst())
