@@ -33,7 +33,7 @@ func assertPolicyStopped(_ rig: CallReconnectRig, starts: Int, resumed: Bool = f
     #expect(!(await rig.retry.isWaiting()))
     #expect(await rig.connector.openCount(for: rig.endpoint.url) == 1)
     if rig.store.snapshots[rig.endpoint.id]?.state == .ready {
-        #expect(rig.store.selectedTargets[rig.endpoint.id] == rig.target.id)
+        #expect(rig.store.ambientBinding(host: rig.endpoint.id, targetID: rig.target.id)?.targetID == rig.target.id)
     }
 }
 

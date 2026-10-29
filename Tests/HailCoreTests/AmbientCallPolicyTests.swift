@@ -25,6 +25,9 @@ import Testing
         await rig.controller.update(binding: try rig.currentBinding(), scene: .active)
         await rig.microphoneRetry.release()
         await rig.controller.update(binding: try rig.currentBinding(), scene: .active)
+        for _ in 0..<6 {
+            try rig.capture.yield(sineBuffer())
+        }
         try await assertPolicyStopped(rig, starts: 1)
         #expect(try await audioFrames(rig.socket).count == sent)
         await rig.close()
