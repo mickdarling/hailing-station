@@ -39,7 +39,7 @@ extension StationRootView {
 extension EnvironmentValues {
     var stationCompactTalk: Bool {
         get { false }
-        set {}
+        set { _ = newValue }
     }
 }
 

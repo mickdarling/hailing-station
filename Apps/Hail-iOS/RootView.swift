@@ -2,12 +2,12 @@ import HailCore
 import HailProtocol
 import SwiftUI
 
-/// Shared station state for the adaptive iPhone and iPad interface.
 // Keep the native type distinct from the existing destination-selection test shell.
 #if !SWIFT_PACKAGE
 typealias RootView = StationRootView
 #endif
 
+/// Shared station state for the adaptive iPhone and iPad interface.
 struct StationRootView: View {
     private static let savedHostsKey = "hailing-station.host-endpoints.v1"
     let selectionStore: any DestinationSelectionStoring
