@@ -20,6 +20,7 @@ extension WebSocketListener {
     /// Quiet retracts all known proactive audio. A privacy entry retracts only identities admitted before that
     /// entry, so an asynchronously delivered old entry cannot cancel a newer public update after the owner's exit.
     func cancelProactiveSessionUpdateAudio(beforePrivacyRevision revision: UInt64? = nil) async {
+        await refreshTaskProgressEnvironment()
         if revision != nil { purgePrivateSessionUpdates() }
         let receipts = sessionUpdateFence.cancelProactive(olderThan: revision)
         for receipt in receipts {
