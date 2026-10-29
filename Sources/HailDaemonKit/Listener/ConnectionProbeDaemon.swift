@@ -68,6 +68,9 @@ public enum ConnectionProbeDaemon {
         /// `--session-updates` (#609), only with `--personal-terminal`: sessions may send unsolicited updates
         /// through `haild notify`. Off by default.
         var sessionUpdates = false
+        /// Task deadlines require the separately enabled connected-update path. Both remain off by default.
+        var taskProgress = false
+        var sessionUpdateSpeechRoot: URL?
         /// `--host-health` (#614), only with `--personal-terminal`: answer a device's `health` with the doctor
         /// summary. Without the flag `host_health` is not advertised and the request is refused.
         var health = false
@@ -84,6 +87,7 @@ public enum ConnectionProbeDaemon {
         var authorizer: (any HostSessionAuthorizing)?, personalTerminal = false
         // Value-free switches: `--single-terminal-reply-fallback`, `--device-diagnostics` (#234), and the rest below.
         var switches: Set<String> = [], replySocket: URL?, ambient: [String: String] = [:], voiceRoutes: URL?
+        var speechRoot: URL?
         var rest = arguments[...]
         while let flag = rest.popFirst() {
             switch flag {
@@ -99,8 +103,11 @@ public enum ConnectionProbeDaemon {
                 personalTerminal = true
             case "--reply-socket": replySocket = try path(from: &rest)
             case "--voice-routes" where voiceRoutes == nil: voiceRoutes = try path(from: &rest, absolute: true)
+            case "--session-update-speech-root" where speechRoot == nil:
+                speechRoot = try path(from: &rest, absolute: true)
             case "--single-terminal-reply-fallback", "--device-diagnostics",
-                 "--ambient-reply-control", "--session-updates", "--host-health": switches.insert(flag)
+                 "--ambient-reply-control", "--session-updates", "--task-progress", "--host-health":
+                switches.insert(flag)
             case "--ambient-rightyo", "--ambient-rightyo-config", "--ambient-target", "--ambient-ack-clips",
                  "--ambient-destinations", "--ambient-duck-timeout":
                 try parseAmbient(flag, from: &rest, into: &ambient)
@@ -108,19 +115,34 @@ public enum ConnectionProbeDaemon {
             }
         }
         guard let address, let port, let authorizer,
-              personalTerminal || (replySocket == nil && switches.isEmpty && voiceRoutes == nil),
+              personalTerminal || (replySocket == nil && switches.isEmpty && voiceRoutes == nil && speechRoot == nil),
+              !switches.contains("--task-progress") || switches.contains("--session-updates"),
+              speechRoot == nil || switches.contains("--session-updates"),
               ambient.isEmpty || (personalTerminal && switches.contains("--single-terminal-reply-fallback")) else {
             throw WebSocketListenerError.invalidArguments
         }
-        return Options(
-            address: address, port: port, authorizer: authorizer,
-            personalTerminal: personalTerminal ? (replySocket ?? LocalReplyEndpoint.standardSocket()) : nil,
-            singleTerminalReplyFallback: switches.contains("--single-terminal-reply-fallback"),
-            ambient: try ambientOptions(ambient, switches),
-            diagnostics: switches.contains("--device-diagnostics") ? DiagnosticLog.standardDirectory() : nil,
-            sessionUpdates: switches.contains("--session-updates"), health: switches.contains("--host-health"),
-            voiceRoutes: voiceRoutes
-        )
+        return try finishOptions(Options(address: address, port: port, authorizer: authorizer),
+            personalTerminal: personalTerminal, switches: switches,
+            paths: ExtraPaths(reply: replySocket, voice: voiceRoutes, speech: speechRoot), ambient: ambient)
+    }
+
+    private struct ExtraPaths { var reply: URL?, voice: URL?, speech: URL? }
+
+    private static func finishOptions(
+        _ seed: Options, personalTerminal: Bool, switches: Set<String>,
+        paths: ExtraPaths, ambient: [String: String]
+    ) throws -> Options {
+        var options = seed
+        options.personalTerminal = personalTerminal ? (paths.reply ?? LocalReplyEndpoint.standardSocket()) : nil
+        options.singleTerminalReplyFallback = switches.contains("--single-terminal-reply-fallback")
+        options.ambient = try ambientOptions(ambient, switches)
+        options.diagnostics = switches.contains("--device-diagnostics") ? DiagnosticLog.standardDirectory() : nil
+        options.sessionUpdates = switches.contains("--session-updates")
+        options.taskProgress = switches.contains("--task-progress")
+        options.sessionUpdateSpeechRoot = paths.speech
+        options.health = switches.contains("--host-health")
+        options.voiceRoutes = paths.voice
+        return options
     }
 }
 
@@ -166,11 +188,27 @@ extension ConnectionProbeDaemon {
             authorizer: authorizer, hostName: hostName,
             singleTerminalReplyFallback: options.singleTerminalReplyFallback, ambient: ambient, log: log
         )
-        if options.sessionUpdates { await listener.enableSessionUpdates() }
+        try await configureProactive(listener, options: options)
         let replyEndpoint = try options.personalTerminal.map { socket in
             try LocalReplyEndpoint(socketURL: socket, destination: listener, audit: audit)
         }
         return (listener, replyEndpoint)
+    }
+
+    private static func configureProactive(_ listener: WebSocketListener, options: Options) async throws {
+        guard options.personalTerminal != nil else {
+            guard !options.sessionUpdates, !options.taskProgress, options.sessionUpdateSpeechRoot == nil else {
+                throw WebSocketListenerError.invalidArguments
+            }
+            return
+        }
+        if options.sessionUpdates { await listener.enableSessionUpdates() }
+        #if os(macOS)
+        if let root = options.sessionUpdateSpeechRoot {
+            await listener.configureSessionUpdateSpeech(try OwnedSessionUpdateSpeechRenderer(outputRoot: root))
+        }
+        #endif
+        if options.taskProgress { await listener.enableTaskProgress() }
     }
 
     struct AmbientOptions: Equatable {
