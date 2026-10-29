@@ -77,8 +77,12 @@ public final class MacDefaultAudioSessionBackend: AudioSessionBackend {
         -> (route: AudioSessionDiagnostics, inputReadFailed: Bool) {
         let input: (port: AudioPort, sampleRate: Double)?
         var inputReadFailed = false
-        do { input = try Self.defaultDevice(kAudioHardwarePropertyDefaultInputDevice) }
-        catch { input = nil; inputReadFailed = true }
+        do {
+            input = try Self.defaultDevice(kAudioHardwarePropertyDefaultInputDevice)
+        } catch {
+            input = nil
+            inputReadFailed = true
+        }
         let output = try? Self.defaultDevice(kAudioHardwarePropertyDefaultOutputDevice)
         return (AudioSessionDiagnostics(isActive: isActive, input: input?.port,
             outputs: output.map { [$0.port] } ?? [], sampleRate: input?.sampleRate ?? 0), inputReadFailed)

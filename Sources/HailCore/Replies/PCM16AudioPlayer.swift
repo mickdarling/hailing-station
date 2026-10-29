@@ -19,20 +19,6 @@ extension PCM16AudioPlayer: ReplySegmentPauseEnding {}
 @MainActor
 public final class PCM16AudioPlayer: ReplyAudioPlaying {
     private let rendering: ReplyAudioResourceOwner
-    private var resources: PCM16RenderingResources {
-        guard let resources = rendering.value as? PCM16RenderingResources else {
-            preconditionFailure("Unexpected reply rendering resource")
-        }
-        return resources
-    }
-    private var ownEngine: AVAudioEngine { resources.ownEngine }
-    /// The engine replies play through: our own, or a voice-processing capture engine while ambient listening runs,
-    /// so its echo canceller hears the reply as the far end (#269).
-    private var engine: AVAudioEngine {
-        get { resources.engine }
-        set { resources.engine = newValue }
-    }
-    fileprivate var node: AVAudioPlayerNode { resources.node }
     private let sourceFormat: AVAudioFormat
     fileprivate var gapMeter = PlayoutGapMeter()
     /// What is queued, and whether a stalled reply is held until it catches up (#825, `ReplyPlayoutBuffer`).
@@ -390,6 +376,24 @@ extension ReplyPlayoutBuffer {
         cleared()
         return false
     }
+}
+
+/// The rendering graph lives in the retired resource, so the player reaches it through these accessors (#985).
+extension PCM16AudioPlayer {
+    private var resources: PCM16RenderingResources {
+        guard let resources = rendering.value as? PCM16RenderingResources else {
+            preconditionFailure("Unexpected reply rendering resource")
+        }
+        return resources
+    }
+    private var ownEngine: AVAudioEngine { resources.ownEngine }
+    /// The engine replies play through: our own, or a voice-processing capture engine while ambient listening runs,
+    /// so its echo canceller hears the reply as the far end (#269).
+    private var engine: AVAudioEngine {
+        get { resources.engine }
+        set { resources.engine = newValue }
+    }
+    fileprivate var node: AVAudioPlayerNode { resources.node }
 }
 
 /// One retirement lane: route-change teardown must never contend with SwiftUI's main-thread graph updates.
