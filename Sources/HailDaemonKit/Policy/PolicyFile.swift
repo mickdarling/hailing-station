@@ -20,6 +20,8 @@ protocol PolicyChangeTracking: PolicyStore {
     func observation() throws -> PolicyObservation
     /// Metadata comes from the descriptors used for this read, never a separate path lookup.
     func loadObserved() throws -> ObservedPolicy
+    /// Monotonic time, injectable so replacement-race tests can exclude process coordination waits.
+    var reloadNow: ContinuousClock.Instant { get }
 }
 
 struct PolicyDirectoryIdentity: Equatable, Sendable {
@@ -36,17 +38,42 @@ struct PolicyObservation: Equatable, Sendable {
 struct ObservedPolicy: Sendable {
     let policy: Policy
     let observation: PolicyObservation
+    /// Grant differences seen even in discarded attempts of this reload.
+    var changedTargets: Set<String> = []
 }
 
 extension PolicyChangeTracking {
-    func loadStable(after before: PolicyObservation? = nil) throws -> ObservedPolicy {
-        let before = try before ?? observation()
-        let read = try loadObserved()
-        let after = try observation()
-        guard read.observation == before, read.observation == after else {
-            throw HostError.policyUnavailable("policy_changed_during_reload")
+    var reloadNow: ContinuousClock.Instant { .now }
+
+    func loadStable(
+        after before: PolicyObservation? = nil, comparedTo applied: Policy? = nil
+    ) throws -> ObservedPolicy {
+        let deadline = reloadNow.advanced(by: .milliseconds(50))
+        var before = try before ?? observation()
+        let directory = before.directory
+        let grants = applied?.targets ?? [:]
+        var changedTargets: Set<String> = []
+        // Stay in this synchronous observation turn, outside the generation lock. No sleeps or stale admission.
+        for attempt in 0..<3 {
+            guard reloadNow < deadline else { break }
+            var read = try loadObserved()
+            let targets = Set(grants.keys).union(read.policy.targets.keys)
+            changedTargets.formUnion(targets.filter { grants[$0] != read.policy.targets[$0] })
+            // A synchronous read cannot be preempted; do no further I/O once its budget has elapsed.
+            guard reloadNow < deadline else { break }
+            let after = try observation()
+            guard reloadNow < deadline else { break }
+            // Retain the original directory across retries, including a swap between two observations.
+            if let directory,
+               read.observation.directory != directory || after.directory != directory { break }
+            if read.observation == before, read.observation == after {
+                read.changedTargets = changedTargets
+                return read
+            }
+            guard reloadNow < deadline else { break }
+            if attempt < 2 { before = try observation() }
         }
-        return read
+        throw HostError.policyUnavailable("policy_changed_during_reload")
     }
 }
 

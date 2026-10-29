@@ -62,7 +62,7 @@ import Testing
         hook.armObservation(observed)
         hook.arm(decoded)
         let checking = Task(executorPreference: observed.executor) {
-            if hostReload { return await rig.host.refreshedPolicy() == nil }
+            if hostReload { return await rig.host.refreshedPolicy() == Policy() }
             do { try retained.requireCurrent(); return false } catch { return true }
         }
         try await observed.waitUntilSuspended()
@@ -73,12 +73,13 @@ import Testing
         // Bytes and fstat came from the allowing descriptor; the path is absent again before decode returns.
         try await rig.removePolicy()
         let refused = try await decoded.finish(checking)
-        #expect(refused, "The read descriptor must not match the final absent path")
+        #expect(refused, "The retry must adopt the final absent path, never the replaced allowing descriptor")
         #expect(!rig.host.targetPolicy.snapshot(for: "tmux:a").wasGranted)
         #expect(retained.performIfCurrent({ true }) == nil)
         let loads = hook.loads
         try rig.host.targetPolicy.refreshIfChanged()
-        #expect(hook.loads == loads + 1, "A failed reload must leave the cache unobserved")
+        // Host refreshes invalidate the admission cache; admission's own stable read retains its final stamp.
+        #expect(hook.loads == loads + (hostReload ? 1 : 0))
         #expect(!rig.host.targetPolicy.snapshot(for: "tmux:a").wasGranted)
         let result = await rig.segment(1)
         let control = try onlyControl(result)

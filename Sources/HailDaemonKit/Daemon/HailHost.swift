@@ -404,10 +404,11 @@ extension HailHost {
     private func refreshPolicy() throws {
         do {
             let tracking = store as? any PolicyChangeTracking
-            let next = try tracking?.loadStable().policy ?? store.load()
+            let read = try tracking?.loadStable(comparedTo: targetPolicy.appliedPolicy)
+            let next = try read?.policy ?? store.load()
             let compiled = try PolicyEvaluator(policy: next)
             if next != policy { revokeAuthority() }
-            targetPolicy.update(next)
+            targetPolicy.update(next, retiring: read?.changedTargets ?? [])
             policy = next
             evaluator = compiled
             policyFailure = nil
@@ -494,6 +495,8 @@ final class TargetPolicyAuthority: Sendable {
 
     init(store: any PolicyStore) { self.store = store }
 
+    var appliedPolicy: Policy? { state.withLock { $0.policy } }
+
     /// File I/O uses a separate lock, never the compare-and-admit lock. Daemon transactions do not hold
     /// this lock while persisting, so unrelated segment admission can continue during a suspended write.
     func refreshIfChanged() throws {
@@ -506,9 +509,9 @@ final class TargetPolicyAuthority: Sendable {
                 if let directory = observed?.directory, directory != location.directory {
                     throw HostError.policyUnavailable("policy_directory_changed")
                 }
-                let read = try tracking.loadStable(after: location)
+                let read = try tracking.loadStable(after: location, comparedTo: appliedPolicy)
                 _ = try PolicyEvaluator(policy: read.policy)
-                apply(read.policy, completingWrite: false)
+                apply(read.policy, completingWrite: false, retiring: read.changedTargets)
                 observed = read.observation
             } catch {
                 apply(nil, completingWrite: false)
@@ -529,15 +532,15 @@ final class TargetPolicyAuthority: Sendable {
         }
     }
 
-    func update(_ policy: Policy?) {
+    func update(_ policy: Policy?, retiring changedTargets: Set<String> = []) {
         observation.withLock { observed in
             // An actor read/transaction may predate a concurrent observation; never cache its stamp for that view.
             if state.withLock({ $0.policy != policy }) { observed = nil }
-            apply(policy, completingWrite: true)
+            apply(policy, completingWrite: true, retiring: changedTargets)
         }
     }
 
-    private func apply(_ policy: Policy?, completingWrite: Bool) {
+    private func apply(_ policy: Policy?, completingWrite: Bool, retiring changedTargets: Set<String> = []) {
         state.withLock { state in
             if completingWrite { state.retiring.removeAll() }
             state.generation += 1
@@ -546,6 +549,8 @@ final class TargetPolicyAuthority: Sendable {
                 let unchanged = state.policy?.targets[target] == allowed
                 generations[target] = unchanged ? state.targets[target] ?? state.generation : state.generation
             }
+            // A restored final grant cannot resurrect a generation revoked by an earlier read.
+            for target in changedTargets where generations[target] != nil { generations[target] = state.generation }
             state.targets = generations
             state.policy = policy
         }

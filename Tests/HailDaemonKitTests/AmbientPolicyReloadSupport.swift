@@ -47,7 +47,8 @@ final class PolicyWriteGate: Sendable {
 /// Captures bytes from the old open descriptor, then pauses decoding while the real CLI renames a new policy.
 struct PolicyReloadStore: PolicyChangeTracking {
     final class Hook: Sendable {
-        private let pending = Mutex<PolicyWriteGate?>(nil)
+        private let pending = Mutex<[PolicyWriteGate]>([])
+        let clock = PolicyReloadTestClock()
         private let observation = Mutex<PolicyWriteGate?>(nil)
         private let loadCount = Mutex(0)
 
@@ -63,13 +64,12 @@ struct PolicyReloadStore: PolicyChangeTracking {
             gate?.suspend()
         }
 
-        func arm(_ gate: PolicyWriteGate) { pending.withLock { $0 = gate } }
+        func arm(_ gate: PolicyWriteGate) { armReads([gate]) }
+        func armReads(_ gates: [PolicyWriteGate]) { pending.withLock { $0 = gates } }
 
         func beforeDecode() {
             let gate = pending.withLock { value in
-                let gate = value
-                value = nil
-                return gate
+                value.isEmpty ? nil : value.removeFirst()
             }
             gate?.suspend()
         }
@@ -78,6 +78,7 @@ struct PolicyReloadStore: PolicyChangeTracking {
     let file: PolicyFile
     let hook: Hook
     var summary: String { file.summary }
+    var reloadNow: ContinuousClock.Instant { hook.clock.now }
     func observation() throws -> PolicyObservation {
         let observation = try file.observation()
         hook.afterObservation()

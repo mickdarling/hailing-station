@@ -43,7 +43,7 @@ import Testing
         let checking = Task(executorPreference: blocked.executor) {
             if hostReload {
                 let policy: Policy? = await rig.host.refreshedPolicy()
-                return policy == nil
+                return policy?.targets["tmux:a"] == nil
             }
             do {
                 try generation.requireCurrent()
@@ -56,10 +56,10 @@ import Testing
         let after: PolicyFileIdentity = try #require(try rig.file.identity())
         let refused: Bool = try await blocked.finish(checking)
         try #require(before.inode != after.inode)
-        #expect(refused, "A policy replaced between open and decode must never be adopted")
+        #expect(refused, "The stable retry must adopt A's denial instead of the replaced allowing read")
         let current: Bool = generation.performIfCurrent({ true }) == true
         #expect(!current)
-        // The failed observation must not cache B's old identity; retry must see A's denial.
+        // The completed retry must cache A's denial, never the replaced allowing descriptor.
         let result: HostSessionResult = await rig.segment(1)
         let fresh = rig.host.targetPolicy.snapshot(for: "tmux:a")
         #expect(!fresh.wasGranted)
