@@ -17,6 +17,8 @@ import Testing
         let fresh = try rig.currentBinding()
         try await callEventually { await MainActor.run { rig.controller.binding == fresh } }
         #expect(fresh.connectionGeneration != old.connectionGeneration)
+        // A view update captured during selection may still carry nil after the transport is authorized.
+        await rig.controller.update(binding: nil, scene: .background)
         #expect(rig.controller.isOn && !rig.controller.isListening && rig.capture.startCount == 1)
         rig.interruptionEnded()
         await rig.controller.update(binding: fresh, scene: .active)

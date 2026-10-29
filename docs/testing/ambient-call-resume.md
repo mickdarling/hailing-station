@@ -38,7 +38,9 @@ generation changes terminating the pause, privacy actions retaining resume inten
 
 Fixtures use scripted transports, held replies, hand-stepped waits and clocks, and explicit system notifications.
 Their scheduling watchdog yields while checking signals; it does not sleep or make elapsed-time assertions.
-Additional guards cover background reauthorization, destination/selection loss, route reconfiguration, and rejected,
+The prior guard that made a microphone interruption during a transport gap terminal is superseded by the call
+resume ruling. Its replacement proves that transport-first interruptions also pause and resume. Additional guards
+cover background reauthorization, destination/selection loss, route reconfiguration, and rejected,
 timed-out or late private confirmations. These are macOS SwiftPM tests of device logic, not physical iPhone proof.
 The host's existing privacy park/admission tests cover the daemon side of resumed starts.
 

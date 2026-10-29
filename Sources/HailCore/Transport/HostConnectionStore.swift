@@ -1041,7 +1041,7 @@ extension AmbientListeningController {
             if let current, current.hostID != binding?.hostID || current.targetID != binding?.targetID {
                 reconnect.block(.bindingChanged)
             }
-            if pausedReason != nil, reconnect.canResumeCapture {
+            if let current, pausedReason != nil, reconnect.canResumeCapture {
                 await updateDestination(current, previous: previous)
             }
             return

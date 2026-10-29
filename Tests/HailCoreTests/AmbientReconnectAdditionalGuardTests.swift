@@ -14,15 +14,23 @@ import Testing
         try await rig.expectStopped(.privacy)
         await rig.close()
     }
-    @Test func stoppingInterruptionDuringGapEndsInsteadOfStartingAnInterruptionResumer() async throws {
-        let rig = try AmbientReconnectRig()
+    /// #982: a call also retains intent when the transport drops just before the microphone is interrupted.
+    @Test func interruptionDuringGapPausesAndResumesAfterTransportReturns() async throws {
+        let rig = try CallReconnectRig()
         try await rig.start()
         try await rig.drop()
         rig.capture.stop()
-        rig.center.post(name: AVAudioEngineCapture.endedBySystem, object: nil,
-                        userInfo: [AVAudioEngineCapture.endedCauseKey: AVAudioEngineCapture.interruptionCause])
-        try await rig.expectStopped(.modeChanged)
-        #expect(rig.controller.pausedReason == nil && rig.unexpected.isEmpty)
+        try await rig.interrupt()
+        #expect(rig.controller.isOn && !rig.controller.isListening && rig.controller.reconnect.isPending)
+        #expect(rig.controller.pausedReason != nil && rig.notices.isEmpty && rig.unexpected.isEmpty)
+        await rig.controller.update(binding: nil, scene: .background)
+        try await rig.reconnect()
+        rig.interruptionEnded()
+        await rig.controller.update(binding: try rig.currentBinding(), scene: .active)
+        #expect(rig.controller.isListening && rig.capture.startCount == 2)
+        try await rig.feed()
+        try await callEventually { await MainActor.run { !rig.controller.reconnect.isPending } }
+        #expect(rig.notices.map(\.outcome) == [.applied])
         await rig.close()
     }
     @Test func captureEndingDuringGapReportsFailureOnce() async throws {
