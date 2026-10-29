@@ -100,6 +100,8 @@ public final class AVAudioEngineCapture: AudioCapturing {
     /// Buffers delivered this run, counted on the audio thread; the watchdog only compares it with its last read.
     private let delivered = DeliveredBuffers()
     private var watchdog: Task<Void, Never>?
+    private var routeEnd: Task<Void, Never>?
+    private let routeInterruptionWindow: Duration
 
     public convenience init(
         engine: AVAudioEngine = AVAudioEngine(), notificationCenter: NotificationCenter = .default,
@@ -113,6 +115,7 @@ public final class AVAudioEngineCapture: AudioCapturing {
         routeInputChanged: @escaping AudioCaptureEndingSignal.RouteInputChange = AudioCaptureEndingSignal.inputChanged,
         routeOverrideWindow: AppRouteOverrideWindow = .shared,
         stallPolicy: StallPolicy? = nil,
+        routeInterruptionWindow: Duration = .milliseconds(200),
         now: @escaping @Sendable () -> ContinuousClock.Instant = { ContinuousClock().now },
         sleep: @escaping @Sendable (Duration) async throws -> Void = { try await Task.sleep(for: $0) }
     ) {
@@ -122,6 +125,7 @@ public final class AVAudioEngineCapture: AudioCapturing {
         self.routeInputChanged = routeInputChanged
         self.routeOverrideWindow = routeOverrideWindow
         self.stallPolicy = stallPolicy
+        self.routeInterruptionWindow = routeInterruptionWindow
         self.now = now
         self.sleep = sleep
     }
@@ -163,6 +167,8 @@ public final class AVAudioEngineCapture: AudioCapturing {
 
     public func stop() {
         runID = nil // Retire before finishing the stream can enqueue its termination callback.
+        routeEnd?.cancel()
+        routeEnd = nil
         watchdog?.cancel()
         watchdog = nil
         observer = nil
@@ -178,6 +184,20 @@ public final class AVAudioEngineCapture: AudioCapturing {
     /// Only the observer of the current run may end it; a late signal from an earlier run is ignored.
     private func systemSignal(_ signal: AudioCaptureEndingSignal, observer id: UUID) {
         guard observer?.id == id, signal.endsCapture(engineRunning: operations.isRunning(engine)) else { return }
+        // A call can change the route before declaring its interruption. Keep the observer and stream alive
+        // briefly so the interruption can supply the pause cause. Do not extend the window for more routes or
+        // let the resulting engine reconfiguration preempt it. The existing running/self-override guards above
+        // still decide whether a route needs an end at all.
+        if case .routeChanged = signal {
+            guard routeEnd == nil else { return }
+            routeEnd = Task { @MainActor [weak self, sleep, routeInterruptionWindow] in
+                guard (try? await sleep(routeInterruptionWindow)) != nil, !Task.isCancelled,
+                      let self, self.observer?.id == id else { return }
+                self.endBySystem(reason: signal.endReason)
+            }
+            return
+        }
+        if signal == .engineConfigurationChanged, routeEnd != nil { return }
         endBySystem(reason: signal.endReason, interrupted: signal == .interruptionBegan)
     }
 

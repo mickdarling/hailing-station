@@ -5,6 +5,7 @@ import Testing
 
 @MainActor
 final class CallReconnectRig {
+    let clock = TestInstantClock()
     let center = NotificationCenter()
     let connector = ScriptedConnector()
     let retry = SleepGate()
@@ -43,7 +44,9 @@ final class CallReconnectRig {
             if self.failStart { throw AudioCaptureError.alreadyRunning }
             return AmbientAudioStreamer(capture: self.echoGuard?.masking(self.capture) ?? self.capture, send: send)
         },
-        releaseSession: { [weak self] in self?.released += 1 }, sleep: { [microphoneRetry] in await microphoneRetry.sleep($0) }, send: { [weak self] payload, binding in
+        releaseSession: { [weak self] in self?.released += 1 },
+        sleep: { [microphoneRetry] in await microphoneRetry.sleep($0) }, now: { [clock] in clock.now() },
+        send: { [weak self] payload, binding in
             guard let store = self?.store else { throw HostConnectionFailure.notReady }
             try await store.sendAudio(payload, to: binding)
         }
@@ -78,6 +81,7 @@ final class CallReconnectRig {
     }
 
     func start(listening: Bool = true) async throws {
+        controller.reconnect.now = { [clock] in clock.now() }
         store.ambientController = controller
         controller.onUnexpectedStop = { [weak self] in self?.unexpected.append($0) }
         controller.reconnect.onNotice = { [weak self] in self?.notices.append($0) }

@@ -19,18 +19,31 @@ func callEventually(_ condition: @escaping @Sendable () async throws -> Bool) as
     @Test(arguments: [UInt(4), UInt(3)])
     func routeBeforeInterruptionPausesAndResumes(reason: UInt) async throws {
         let rig = CallCaptureRig()
+        let suite = "AmbientCallResumeTests.\(UUID())"
+        let defaults = try #require(UserDefaults(suiteName: suite))
+        defer { defaults.removePersistentDomain(forName: suite) }
+        let instant = ContinuousClock.now
+        let log = DeviceDiagnostics(defaults: defaults, appInfo: [:], wallNow: { 1 }, clock: { instant })
+        log.setEnabled(true)
+        rig.controller.diagnostics = log
         await rig.controller.turnOn(for: try binding())
         rig.fakes[0].running = reason != 3 // A category change ends capture only when the engine stopped.
         rig.route(reason)
         // Wait for the actual route evaluation before posting the interruption: the reported device ordering.
         try await callEventually { await MainActor.run { rig.routeEvaluated } }
         rig.interruption(true)
-        try await callEventually { await MainActor.run { rig.controller.pausedReason != nil || !rig.controller.isOn } }
+        try await callEventually { await MainActor.run {
+            (rig.controller.pausedReason != nil && !rig.controller.isListening) || !rig.controller.isOn
+        } }
         try #require(rig.controller.isOn && rig.controller.pausedReason != nil)
         #expect(!rig.controller.isListening)
         rig.interruption(false)
         try await callEventually { await MainActor.run { rig.controller.isListening } }
         #expect(rig.fakes.count == 2)
+        let events = try #require(log.nextBatch()).events
+        #expect(events.filter { $0.name == .ambientStop }.map { $0.fields[.reason] }
+                == [.token("system_interruption")])
+        #expect(events.filter { $0.name == .ambientStart }.count == 2)
         await rig.close()
     }
 
@@ -53,7 +66,9 @@ func callEventually(_ condition: @escaping @Sendable () async throws -> Bool) as
         let old = try binding()
         await rig.controller.turnOn(for: old)
         rig.interruption(true)
-        try await callEventually { await MainActor.run { rig.controller.pausedReason != nil && !rig.controller.isListening } }
+        try await callEventually { await MainActor.run {
+            rig.controller.pausedReason != nil && !rig.controller.isListening
+        } }
         let new = AmbientAudioBinding(hostID: old.hostID, targetID: old.targetID,
                                      connectionGeneration: UUID(), selection: old.selection)
         await rig.controller.update(binding: new, scene: .background)
@@ -71,6 +86,8 @@ func callEventually(_ condition: @escaping @Sendable () async throws -> Bool) as
         rig.interruption(true)
         for _ in 0..<15 {
             try await callEventually { await rig.retry.pending == 1 }
+            let delay = try #require(await rig.retry.durations.last)
+            rig.clock.advance(by: delay)
             await rig.retry.release()
         }
         try await callEventually { await rig.retry.pending == 1 }
@@ -99,15 +116,22 @@ func callEventually(_ condition: @escaping @Sendable () async throws -> Bool) as
         await rig.close()
     }
 
+}
+
+extension AmbientCallResumeTests {
     @Test(arguments: [true, false])
     func privacyTapDuringCallCancelsResume(on: Bool) async throws {
         let rig = try CallReconnectRig()
         try await rig.start()
-        try await rig.confirmPrivacy()
+        if !on { try await rig.confirmPrivacy() }
         try await rig.interrupt()
         try await rig.store.setPrivacy(on: on, host: rig.endpoint.id)
         try await rig.socket.push(.duckMode(on: on, reason: "device"))
         try await callEventually { await MainActor.run { !rig.controller.isOn } }
+        try await callEventually { await MainActor.run {
+            rig.store.duckMode[rig.endpoint.id]?.on == on && rig.store.privacyLocal[rig.endpoint.id] == nil
+        } }
+        #expect(rig.store.privacySwitch(rig.endpoint.id).isPrivate == on)
         rig.interruptionEnded()
         await rig.controller.update(binding: try rig.currentBinding(), scene: .active)
         #expect(!rig.controller.isOn && rig.capture.startCount == 1)

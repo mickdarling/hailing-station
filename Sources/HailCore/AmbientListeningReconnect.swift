@@ -185,6 +185,9 @@ public final class AmbientListeningReconnect {
     public private(set) var notice: Notice?
     @ObservationIgnored public var onNotice: (@MainActor (Notice) -> Void)?
     @ObservationIgnored weak var controller: AmbientListeningController?
+    @ObservationIgnored weak var store: HostConnectionStore?
+    private var captureRequiresPrivacy = false
+    private var capturePrivacyBinding: AmbientAudioBinding?
     @ObservationIgnored var sleep: (@Sendable (Duration) async throws -> Void)?
     @ObservationIgnored var now: @Sendable () -> ContinuousClock.Instant = { ContinuousClock().now }
     @ObservationIgnored let privacyConfirmation = AmbientRestorePrivacy()
@@ -213,6 +216,7 @@ public final class AmbientListeningReconnect {
     var isReauthorizing: Bool { isPending && !renewed && selectionGeneration != nil }
     func ownerStarted() {
         veto = nil; notice = nil; replacedAppliedNotice = false
+        captureResumed()
         pacing?.cancel()
         pacing = nil
         cancelAcceptance()
@@ -220,12 +224,14 @@ public final class AmbientListeningReconnect {
     func block(_ reason: Reason) {
         veto = veto ?? reason // Includes a privacy tap before the receive loop publishes the close, even if send fails.
         cancelAcceptance()
-        guard isPending else { return }
-        finish(.blocked, reason: veto)
-        controller?.cancelTransportRestore()
+        privacyConfirmation.cancel()
+        let stopping = isPending || controller?.pausedReason != nil
+        if isPending { finish(.blocked, reason: veto) }
+        if stopping { controller?.cancelTransportRestore() }
     }
     func drop(_ snapshot: HostConnectionSnapshot, store: HostConnectionStore) {
-        guard let controller, controller.isListening, let current = controller.binding,
+        guard let controller, controller.isOn, controller.isListening || controller.pausedReason != nil,
+              let current = controller.binding,
               current.hostID == snapshot.id else { return }
         // A send failure and the receive loop may report the SAME drop. Only a different socket is a flap.
         guard pending?.droppedGeneration != snapshot.connectionGeneration else { return }
@@ -343,7 +349,8 @@ extension AmbientListeningReconnect {
     }
     func allowsTransportRetry(host id: HostEndpoint.Identifier, generation: UUID) -> Bool {
         guard veto == nil, let pending, pending.binding.hostID == id, pending.droppedGeneration == generation,
-              controller?.isOn == true, controller?.isListening == true else { return false }
+              controller?.isOn == true,
+              controller?.isListening == true || controller?.pausedReason != nil else { return false }
         return true
     }
     /// Reauthorize the same selection on a new generation. No fresh capture start or foreground requirement.
@@ -377,6 +384,7 @@ extension AmbientListeningReconnect {
         guard let controller else { return }
         renewed = true // Host notices after this are normal listening state, never an owner action during the gap.
         binding = current
+        if pending?.privateBeforeDrop == true { capturePrivacyBinding = current }
         if !controller.restoreTransport(current) {
             finish(.failed, reason: .startFailed)
             controller.cancelTransportRestore()
@@ -490,4 +498,47 @@ final class AmbientResumeAcceptance: Sendable {
 public extension AmbientListeningReconnect.Reason {
     /// Fixed local log vocabulary; device diagnostics retain the numeric reason for older hosts.
     var diagnosticToken: String? { self == .reauthorizationNeeded ? "reauthorization_needed" : nil }
+}
+
+/// Fresh microphone streams use the same generation-bound reassertion as transport restoration (#904).
+extension AmbientListeningReconnect {
+    var canResumeCapture: Bool { veto == nil && (!isPending || renewed) }
+
+    func capturePaused() {
+        capturePrivacyBinding = nil
+        if let host = controller?.binding?.hostID {
+            captureRequiresPrivacy = store?.duckMode[host]?.isOn() == true || pending?.privateBeforeDrop == true
+        }
+    }
+
+    func captureResumed() {
+        privacyConfirmation.cancel()
+        captureRequiresPrivacy = false
+        capturePrivacyBinding = nil
+    }
+
+    func prepareCaptureResume(_ current: AmbientAudioBinding) -> Bool {
+        guard canResumeCapture else { return false }
+        if store?.privacyLocal[current.hostID]?.request != nil {
+            block(.privacy)
+            return false
+        }
+        let privateNow = store?.duckMode[current.hostID]?.isOn() == true
+        guard captureRequiresPrivacy || privateNow else { return true }
+        if capturePrivacyBinding == current { return true }
+        guard let store else { return false }
+        privacyConfirmation.sleep = sleep
+        privacyConfirmation.now = now
+        privacyConfirmation.begin(current, store: store) { [weak self] confirmed in
+            guard let self, self.canResumeCapture, self.controller?.isOn == true,
+                  self.controller?.pausedReason != nil, self.controller?.binding == current else { return }
+            guard confirmed else {
+                self.controller?.diagnostics?.record(.captureError, [.code: .token("resume_failed")])
+                return self.block(.privacy)
+            }
+            self.capturePrivacyBinding = current
+            self.controller?.retryPausedCapture()
+        }
+        return false
+    }
 }
