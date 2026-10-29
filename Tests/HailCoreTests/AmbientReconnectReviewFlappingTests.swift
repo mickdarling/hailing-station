@@ -72,19 +72,17 @@ import Testing
         await rig.close()
     }
 
-    @Test func selectionCompletionDuringCloseKeepsTheOriginalDeadline() async throws {
+    @Test func selectionCompletionDuringCloseStillRecoversAfterALongOutage() async throws {
         let run = try AmbientClosingSelectionRun()
         let original = try await run.holdCloseDuringSelection()
         let rig = run.rig
         #expect(rig.controller.binding == original)
         try await run.releaseClose()
         run.clock.advance(by: .seconds(5))
-        #expect(!rig.controller.reconnect.withinDeadline())
-        try await rig.reconnect(selectTarget: false)
-        try await waitUntil { await MainActor.run { !rig.controller.isOn && rig.released == 1 } }
-        #expect(rig.notices.map(\.outcome) == [.interrupted, .blocked])
-        #expect(rig.notices.last?.reason == .timedOut)
-        #expect(!rig.controller.isListening && rig.capture.stopCount >= 1 && rig.capture.startCount == 1)
+        #expect(rig.controller.reconnect.status == "Reconnecting…")
+        try await rig.reconnect()
+        #expect(rig.notices.map(\.outcome) == [.interrupted, .applied])
+        #expect(rig.controller.isListening && rig.capture.stopCount == 0 && rig.capture.startCount == 1)
         try await run.expectNoGapAudioOrPrivacyOff()
         await rig.close()
     }

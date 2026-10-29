@@ -13,6 +13,52 @@ func ambientSleep(for duration: Duration, injected sleep: (@Sendable (Duration) 
     try await sleep(duration)
 }
 
+/// Shared across transport flaps. A veto revokes only the ambient wait, never the connection's retry loop.
+final class AmbientReconnectPacing: Sendable {
+    static let initialDelay: TimeInterval = 1.5
+    static let maximumDelay: TimeInterval = 60
+    private struct State {
+        var next = AmbientReconnectPacing.initialDelay
+        var cancelled = false
+        var waiter: (id: UUID, task: Task<Void, Never>)?
+    }
+    private let state = Mutex(State())
+
+    var isCancelled: Bool { state.withLock { $0.cancelled } }
+
+    func delay(jitterUnit: Double) -> TimeInterval {
+        state.withLock {
+            let delay = min(Self.maximumDelay, $0.next * (0.8 + 0.4 * min(max(jitterUnit, 0), 1)))
+            $0.next = min(Self.maximumDelay, $0.next * 2)
+            return delay
+        }
+    }
+
+    func reset() { state.withLock { $0.next = Self.initialDelay } }
+
+    func register(_ task: Task<Void, Never>?, id: UUID) -> Bool {
+        state.withLock {
+            guard !$0.cancelled, let task else { return false }
+            $0.waiter = (id, task)
+            return true
+        }
+    }
+
+    func release(_ id: UUID) {
+        state.withLock { if $0.waiter?.id == id { $0.waiter = nil } }
+    }
+
+    func cancel() {
+        let waiter = state.withLock {
+            $0.cancelled = true
+            let waiter = $0.waiter
+            $0.waiter = nil
+            return waiter
+        }
+        waiter?.task.cancel()
+    }
+}
+
 /// Device-side confirmation for the retained capture. A host notice is never an owner veto.
 @MainActor
 final class AmbientRestorePrivacy {
@@ -145,12 +191,12 @@ public final class AmbientListeningReconnect {
     private(set) var acceptance: AmbientResumeAcceptance?
     @ObservationIgnored private var acceptanceTask: Task<Void, Never>?
     @ObservationIgnored private var retryTask: Task<Void, Never>?
+    @ObservationIgnored private(set) var pacing: AmbientReconnectPacing?
     private var pending: Pending?
     private var veto: Reason?
     private var renewed = false
     private(set) var replacedAppliedNotice = false
     private var selectionGeneration: UUID?
-    @ObservationIgnored private var deadline: Task<Void, Never>?
     private struct Pending {
         let id = UUID()
         let droppedGeneration: UUID
@@ -162,10 +208,13 @@ public final class AmbientListeningReconnect {
     }
     public init() {}
     public var isPending: Bool { pending != nil }
+    public var status: String? { isPending ? "Reconnecting…" : nil }
     public var wantsListening: Bool { isPending }
     var isReauthorizing: Bool { isPending && !renewed && selectionGeneration != nil }
     func ownerStarted() {
         veto = nil; notice = nil; replacedAppliedNotice = false
+        pacing?.cancel()
+        pacing = nil
         cancelAcceptance()
     }
     func block(_ reason: Reason) {
@@ -184,7 +233,7 @@ public final class AmbientListeningReconnect {
         controller.suspendTransport() // Every gap closes admission, including a renewed stream with no PCM yet.
         let interrupted = pending
         // Flapping: each interrupted attempt ends once as interrupted; the next drop owns a new attempt and notice.
-        // All attempts in this unsettled run share the ORIGINAL 60 s bound; a flap never buys more capture time.
+        // Flaps retain the same pacing owner, including an unconfirmed private restore.
         if interrupted != nil { finish(.interrupted, reason: .startFailed) }
         binding = current
         hostName = snapshot.endpoint.name
@@ -199,17 +248,9 @@ public final class AmbientListeningReconnect {
                           began: began,
                           privateBeforeDrop: interrupted?.privateBeforeDrop == true
                               || store.duckMode[snapshot.id]?.isOn() == true)
+        if pacing == nil { pacing = AmbientReconnectPacing() }
         if let veto { return block(veto) }
         if store.privacyLocal[snapshot.id]?.request != nil { return block(.privacy) }
-        guard withinDeadline() else { return }
-        let elapsed: Duration = now() - began
-        armDeadline(interrupted == nil ? .seconds(60) : .seconds(60) - elapsed)
-    }
-    private func armDeadline(_ remaining: Duration) {
-        deadline = Task { [weak self, sleep] in
-            guard (try? await ambientSleep(for: remaining, injected: sleep)) != nil, !Task.isCancelled else { return }
-            self?.block(.timedOut)
-        }
     }
 
     func finish(_ outcome: Outcome, reason: Reason?) {
@@ -218,8 +259,10 @@ public final class AmbientListeningReconnect {
         retryTask?.cancel()
         retryTask = nil
         privacyConfirmation.cancel()
-        deadline?.cancel()
-        deadline = nil
+        if outcome != .interrupted {
+            pacing?.cancel()
+            pacing = nil
+        }
         notice = Notice(outcome: outcome, reason: reason)
         let elapsed = pending.began.duration(to: now()).components
         controller?.diagnostics?.record(.captureState, [
@@ -301,7 +344,7 @@ extension AmbientListeningReconnect {
     func allowsTransportRetry(host id: HostEndpoint.Identifier, generation: UUID) -> Bool {
         guard veto == nil, let pending, pending.binding.hostID == id, pending.droppedGeneration == generation,
               controller?.isOn == true, controller?.isListening == true else { return false }
-        return withinDeadline()
+        return true
     }
     /// Reauthorize the same selection on a new generation. No fresh capture start or foreground requirement.
     func restore(store: HostConnectionStore) {
@@ -310,7 +353,6 @@ extension AmbientListeningReconnect {
               let current = store.ambientBinding(host: intent.binding.hostID, targetID: intent.binding.targetID),
               current.connectionGeneration != intent.binding.connectionGeneration,
               current.connectionGeneration != intent.droppedGeneration else { return }
-        guard withinDeadline() else { return }
         guard current.selection == intent.binding.selection,
               store.snapshots[current.hostID]?.endpoint == intent.endpoint else { return block(.bindingChanged) }
         if store.privacyLocal[current.hostID]?.request != nil {
@@ -326,8 +368,7 @@ extension AmbientListeningReconnect {
                     self.controller?.cancelTransportRestore()
                     return
                 }
-                guard store.ambientBinding(host: current.hostID, targetID: current.targetID) == current,
-                      self.withinDeadline() else { return }
+                guard store.ambientBinding(host: current.hostID, targetID: current.targetID) == current else { return }
                 self.resume(current)
             }
         } else { resume(current) }
@@ -354,13 +395,7 @@ extension AmbientListeningReconnect {
         if let notice { onNotice?(notice) }
     }
     func sent(_ audio: AudioPayload) {
-        if isPending, renewed, audio.isResume, withinDeadline() { finish(.applied, reason: nil) }
-    }
-    func withinDeadline() -> Bool {
-        guard let pending else { return true }
-        let elapsed: Duration = now() - pending.began
-        if elapsed >= .seconds(60) { block(.timedOut); return false }
-        return true
+        if isPending, renewed, audio.isResume { finish(.applied, reason: nil) }
     }
     func sendFailed(_ error: any Error, audio: AudioPayload, binding: AmbientAudioBinding,
                     store: HostConnectionStore) {
@@ -380,11 +415,12 @@ extension AmbientListeningReconnect {
 // Acceptance is scoped to one restored stream, never to the listening run or a scheduling delay.
 extension AmbientListeningReconnect {
     func confirmAcceptance(of audio: AudioPayload, binding: AmbientAudioBinding, on connection: HostConnection) {
-        guard audio.isResume, renewed, let pending, self.binding == binding, let streamID = audio.streamID else {
+        guard audio.isResume, renewed, isPending, self.binding == binding, let streamID = audio.streamID else {
             return
         }
         cancelAcceptance()
-        let proof = AmbientResumeAcceptance(streamID: streamID, binding: binding, began: pending.began)
+        // The refusal backstop starts at this stream's restoration, independently of outage duration.
+        let proof = AmbientResumeAcceptance(streamID: streamID, binding: binding, began: now())
         acceptance = proof
         acceptanceTask = Task { [weak self] in
             do { try await connection.confirmRoundTrip(for: proof) } catch { return }
@@ -410,7 +446,7 @@ extension AmbientListeningReconnect {
         selectionGeneration = nil
         pending?.endpoint = endpoint
         hostName = endpoint.name
-        return withinDeadline()
+        return true
     }
 
     /// A confirmed private point in this recovery remains a requirement for every replacement transport.
@@ -423,7 +459,7 @@ extension AmbientListeningReconnect {
         guard acceptance === proof else { return }
         acceptance = nil
         acceptanceTask = nil
-        if isPending, renewed, withinDeadline() { finish(.applied, reason: nil) }
+        if isPending, renewed { finish(.applied, reason: nil) }
     }
 
     private func cancelAcceptance() {

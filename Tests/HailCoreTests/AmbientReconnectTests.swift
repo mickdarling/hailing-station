@@ -49,18 +49,18 @@ import Testing
         #expect(frames.count <= 5) // Only the six post-restore buffers, less the renewal buffer and encoder hold.
         await rig.close()
     }
-    @Test func sixtySecondDeadlineStopsCaptureWithoutReconnectAndNotifiesOnce() async throws {
+    @Test func longOutageRetainsCaptureAndReconnectsWithoutGivingUp() async throws {
         let rig = try AmbientReconnectRig()
-        let timeout = SleepGate()
-        rig.controller.reconnect.sleep = { try await timeout.sleep($0) }
+        let clock = TestInstantClock()
+        rig.controller.reconnect.now = { clock.now() }
         try await rig.start()
         try await rig.drop()
-        try await waitUntil { await timeout.isWaiting() }
-        await timeout.fire()
-        try await rig.expectStopped(.timedOut)
-        #expect(rig.released == 1)
+        clock.advance(by: .seconds(3_600))
+        #expect(rig.controller.reconnect.status == "Reconnecting…")
+        #expect(rig.controller.isOn && rig.controller.isListening && rig.released == 0)
         try await rig.reconnect()
-        #expect(rig.notices.count == 1 && rig.capture.startCount == 1)
+        #expect(rig.notices.map(\.outcome) == [.applied])
+        #expect(rig.controller.reconnect.status == nil && rig.capture.startCount == 1)
         await rig.close()
     }
     @Test func flappingReportsEachDropOnceWithoutRestartLoops() async throws {

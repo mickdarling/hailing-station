@@ -9,8 +9,12 @@ private typealias Names = AudioCaptureEndingSignal.Names
 /// Each backoff wait parks until the test releases it.
 actor BackoffSteps {
     private var waiters: [CheckedContinuation<Void, Never>] = []
+    private(set) var durations: [Duration] = []
     var pending: Int { waiters.count }
-    func sleep() async { await withCheckedContinuation { waiters.append($0) } }
+    func sleep(_ duration: Duration = .zero) async {
+        durations.append(duration)
+        await withCheckedContinuation { waiters.append($0) }
+    }
     func release() { if !waiters.isEmpty { waiters.removeFirst().resume() } }
 }
 
@@ -60,7 +64,7 @@ final class InterruptionPauseHarness {
                 return AmbientAudioStreamer(capture: capture, send: send)
             },
             releaseSession: { [weak self] in self?.releases += 1 },
-            sleep: { _ in await steps.sleep() },
+            sleep: { await steps.sleep($0) },
             now: { ContinuousClock().now },
             send: { [weak self] payload, _ in try await self?.deliver(payload) }
         )
