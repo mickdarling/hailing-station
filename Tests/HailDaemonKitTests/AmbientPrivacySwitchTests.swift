@@ -57,12 +57,15 @@ import Testing
     }
 
     /// Sends a ping and returns every payload before the pong: whatever the host sent back meanwhile.
-    static func untilPong(_ socket: URLSessionWebSocketTask, step: String) async throws -> [FramePayload] {
+    static func untilPong(_ socket: URLSessionWebSocketTask, step: String,
+                          within: Duration = .seconds(15)) async throws -> [FramePayload] {
+        let deadline = ContinuousClock.now + within
         let nonce = UUID().uuidString
-        try await recipientSocketSend(sessionFrame(payload: .control(.ping(nonce: nonce))), on: socket)
+        try await recipientSocketSend(sessionFrame(payload: .control(.ping(nonce: nonce))), on: socket, within: within)
         var payloads: [FramePayload] = []
         for _ in 0..<32 {
-            let payload = try await receiveFrame(on: socket, step: step).payload
+            let payload = try await receiveFrame(on: socket, step: step,
+                                                 within: ContinuousClock.now.duration(to: deadline)).payload
             if payload == .control(.pong(nonce: nonce)) { return payloads }
             payloads.append(payload)
         }
@@ -139,8 +142,8 @@ import Testing
     }
 
     /// Only the own connection: the command carries no connection, and another device without the stream can neither
-    /// end this one's privacy nor start it. Its on, before any stream of its own, is its own pre-arm (#904, R3), and its
-    /// off ends only that.
+    /// end this one's privacy nor start it. Its on, before any stream of its own, is its own pre-arm (#904, R3).
+    /// Its off ends only that.
     @Test func anotherConnectionCannotSwitchIt() async throws {
         let rig = try await Self.startedRig()
         defer { rig.close() }

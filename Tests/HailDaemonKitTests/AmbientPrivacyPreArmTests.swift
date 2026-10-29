@@ -20,13 +20,18 @@ struct AmbientPrivacyPreArmTests {
         return (socket, connection)
     }
 
-    /// Waits, bounded, for `control` on `socket`, a ping at a time.
+    /// Waits up to ten seconds for the queued notice, draining with pings. Pongs do not drain the notice task chain.
     static func until(_ control: ControlPayload, on socket: URLSessionWebSocketTask, step: String) async throws {
-        var replies: [FramePayload] = []
-        for _ in 0..<20 where !replies.contains(.control(control)) {
-            replies += try await AmbientPrivacySwitchTests.untilPong(socket, step: step)
+        let deadline = ContinuousClock.now + .seconds(10)
+        var received = false, count = 0
+        while !received, ContinuousClock.now < deadline {
+            let replies = try await AmbientPrivacySwitchTests.untilPong(
+                socket, step: step, within: ContinuousClock.now.duration(to: deadline))
+            count += replies.count
+            received = replies.contains(.control(control))
+            if !received { try await Task.sleep(for: .milliseconds(10)) }
         }
-        try #require(replies.contains(.control(control)), "\(step): \(replies)")
+        try #require(received, "\(step): frames=\(count)")
     }
 
     /// A normal start after the pre-arm is launched start-private, the agent's replies are held from the pre-arm on,
