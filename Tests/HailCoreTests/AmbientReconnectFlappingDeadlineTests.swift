@@ -5,7 +5,7 @@ import Testing
 
 @MainActor
 @Suite(.serialized) struct AmbientReconnectFlappingDeadlineTests {
-    @Test func secondDropHasItsOwnOutcomeButCannotExtendOriginalCaptureDeadline() async throws {
+    @Test func secondDropKeepsItsOwnOutcomeAndCanRecoverAfterALongOutage() async throws {
         let rig = try AmbientReconnectRig()
         let clock = TestInstantClock()
         rig.controller.reconnect.now = { clock.now() }
@@ -17,15 +17,11 @@ import Testing
         try await rig.drop() // Renewed, but no first PCM: must close capture admission again.
         try rig.discardWhileWaiting()
         #expect(rig.notices.map(\.outcome) == [.interrupted])
-        clock.advance(by: .seconds(5))
-        rig.controller.reconnect.restore(store: rig.store)
-        #expect(!rig.controller.reconnect.withinDeadline())
-        try await waitUntil { await MainActor.run { !rig.controller.isOn && rig.released == 1 } }
-        #expect(rig.notices.map(\.outcome) == [.interrupted, .blocked])
-        #expect(rig.notices.last?.reason == .timedOut)
-        rig.controller.reconnect.block(.timedOut)
-        #expect(rig.notices.count == 2) // One interrupted outcome and one terminal outcome, no repeat loop.
-        #expect(rig.capture.startCount == 1 && rig.released == 1)
+        clock.advance(by: .seconds(3_600))
+        #expect(rig.controller.reconnect.status == "Reconnecting…")
+        try await rig.reconnect()
+        #expect(rig.notices.map(\.outcome) == [.interrupted, .applied])
+        #expect(rig.capture.startCount == 1 && rig.released == 0)
         await rig.close()
     }
 

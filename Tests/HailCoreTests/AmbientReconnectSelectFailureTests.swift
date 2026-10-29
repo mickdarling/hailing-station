@@ -34,22 +34,21 @@ import Testing
         await rig.close()
     }
 
-    @Test func selectionFailureNeverExtendsTheOriginalDeadline() async throws {
+    @Test func selectionFailureCanRecoverBeyondTheFormerDeadline() async throws {
         let run = try SelectionFailureRun()
         try await run.failSelection(.notReady)
         let rig = run.rig
         try await waitUntil { await rig.retry.isWaiting() }
         #expect(rig.controller.reconnect.isPending && rig.controller.isListening)
         run.clock.advance(by: .seconds(5))
-        #expect(!rig.controller.reconnect.withinDeadline())
+        #expect(rig.controller.reconnect.status == "Reconnecting…")
         rig.wrapReconnect = { $0 }
-        try await rig.reconnect(selectTarget: false)
-        #expect(rig.notices.map(\.outcome) == [.interrupted, .blocked])
-        #expect(rig.notices.last?.reason == .timedOut)
-        #expect(!rig.controller.isOn && !rig.controller.isListening && rig.capture.stopCount >= 1)
-        #expect(rig.store.ambientBinding(host: rig.endpoint.id, targetID: rig.target.id) == nil)
+        try await rig.reconnect()
+        #expect(rig.notices.map(\.outcome) == [.interrupted, .applied])
+        #expect(rig.controller.isOn && rig.controller.isListening && rig.capture.stopCount == 0)
+        #expect(rig.store.ambientBinding(host: rig.endpoint.id, targetID: rig.target.id) != nil)
         #expect(try await rig.socket.sentFrames().allSatisfy { frame in
-            if case .audio = frame.payload { return false }; return true
+            if case .control(.setPrivacy(on: false)) = frame.payload { return false }; return true
         })
         await rig.close()
     }
