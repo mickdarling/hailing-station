@@ -109,8 +109,8 @@ private struct PolicyBlockingSink: AmbientAudioSink {
         #expect(recording.endings == [.notAllowed])
     }
 
-    @Test(arguments: ["tmux:a", "tmux:b"])
-    func admissionDuringSuspendedPersist(_ target: String) async throws {
+    @Test(arguments: ["tmux:a", "tmux:b"], [false, true])
+    func admissionDuringSuspendedPersist(_ target: String, _ externalChange: Bool) async throws {
         let persist = PolicyWriteGate()
         defer { persist.fire() }
         let rig = try await AmbientPolicyRig.make(beforeUpdate: { persist.suspend() })
@@ -119,6 +119,12 @@ private struct PolicyBlockingSink: AmbientAudioSink {
         // The store has entered update, but its policy has not changed and persistence cannot finish yet.
         let stored: Policy = rig.store.stored
         #expect(stored.targets[target]?.tier == .open)
+        if externalChange {
+            // Force the backstop to reload while the daemon's target is retired but persistence is suspended.
+            var changed = stored
+            changed.deliveriesPerMinute += 1
+            rig.store.overwrite(changed)
+        }
         let next: HostSessionResult = await rig.segment(1)
         let active: UUID? = await rig.gate.activeStream
         if target == "tmux:a" {

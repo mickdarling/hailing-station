@@ -14,6 +14,18 @@ public protocol PolicyStore: Sendable {
     /// One line for `haild status`: where the policy is and whether it is signed.
     var summary: String { get }
 }
+
+/// Optional change tracking for stores that can observe a separate writer without reading policy content.
+protocol PolicyChangeTracking: PolicyStore {
+    func identity() throws -> PolicyFileIdentity
+}
+
+struct PolicyFileIdentity: Equatable, Sendable {
+    let device: Int32
+    let inode: UInt64
+    let modified: Duration
+    let size: Int64
+}
 /// What a policy transaction committed. A rename changes the policy atomically; a later directory-sync
 /// failure means the new entry may not survive a crash, but callers must still adopt what readers now see.
 public struct PolicyUpdate: Sendable, Equatable {
@@ -43,7 +55,7 @@ public enum PolicyFileError: Error, Equatable, Sendable {
 /// host key exists (#39); the threat model records the residual: any process running as the user can
 /// edit it undetected. What this does catch: another user (permissions), a swapped-in symlink, a file
 /// that no longer parses, and any key the daemon does not know (`Policy+Codable`).
-public struct PolicyFile: PolicyStore {
+public struct PolicyFile: PolicyStore, PolicyChangeTracking {
     public static let fileName = "policy.json"
     /// More than this is not a policy this daemon wrote; refused before any decoding work.
     public static let maxBytes = 1 << 20
@@ -65,9 +77,13 @@ public struct PolicyFile: PolicyStore {
     }
     public var summary: String { "\(path.path) (unsigned until #39)" }
     public func load() throws -> Policy {
+        try load(beforeDecode: {})
+    }
+    /// Internal read boundary for deterministic replacement-race tests; normal reads install no hook.
+    func load(beforeDecode: () -> Void) throws -> Policy {
         guard let dir = try openDirectory() else { return Policy() }
         defer { close(dir) }
-        return try load(in: dir)
+        return try load(in: dir, beforeDecode: beforeDecode)
     }
     /// Holds an exclusive `flock` on the directory for the whole load, change, write.
     public func update(_ change: (inout Policy) throws -> Void) throws -> PolicyUpdate {
@@ -105,7 +121,21 @@ public struct PolicyFile: PolicyStore {
 }
 
 extension PolicyFile {
-    private func load(in dir: Int32) throws -> Policy {
+    /// One lstat, no open or read. Check permissions even when inode, mtime and size are unchanged.
+    func identity() throws -> PolicyFileIdentity {
+        guard let info = try Self.info(path) else { throw PolicyFileError.malformed(path.path) }
+        try Self.check(info, at: path, type: S_IFREG)
+        guard info.st_mode & 0o400 != 0 else {
+            throw PolicyFileError.wrongPermissions(path: path.path, mode: String(info.st_mode & 0o777, radix: 8))
+        }
+        return PolicyFileIdentity(
+            device: info.st_dev, inode: info.st_ino,
+            modified: .seconds(info.st_mtimespec.tv_sec) + .nanoseconds(info.st_mtimespec.tv_nsec),
+            size: info.st_size
+        )
+    }
+
+    private func load(in dir: Int32, beforeDecode: () -> Void = {}) throws -> Policy {
         // Opened relative to the checked directory, never following a link, never blocking on a FIFO; then
         // the descriptor itself is checked: what is checked is what is read.
         let descriptor = openat(dir, Self.fileName, O_RDONLY | O_NOFOLLOW | O_NONBLOCK | O_CLOEXEC)
@@ -125,6 +155,7 @@ extension PolicyFile {
             throw PolicyFileError.malformed("\(path.path): \(error.localizedDescription)")
         }
         guard data.count <= Self.maxBytes else { throw PolicyFileError.malformed("\(path.path): over 1 MiB") }
+        beforeDecode()
         do {
             return try JSONDecoder().decode(Policy.self, from: data)
         } catch {

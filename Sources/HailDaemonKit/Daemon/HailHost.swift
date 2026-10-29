@@ -48,7 +48,7 @@ public actor HailHost {
     private let window: Duration
     private var policy: Policy
     private var policyRevision = UUID()
-    nonisolated let targetPolicy = TargetPolicyAuthority()
+    nonisolated let targetPolicy: TargetPolicyAuthority
     private let replyPublicationAuthority = ReplyPublicationAuthority()
     private var evaluator: PolicyEvaluator
     private var limiter = RateLimiter()
@@ -65,6 +65,7 @@ public actor HailHost {
         dispatchSanitizing = sanitizing.widened(to: Self.localPromptSanitizing)
         pasteSanitizing = sanitizing.widened(to: Self.pastedSanitizing)
         self.store = store
+        targetPolicy = TargetPolicyAuthority(store: store)
         window = confirmationWindow
         var loaded = Policy()
         do {
@@ -208,6 +209,7 @@ extension HailHost {
     /// Only fresh inputs retry a failed policy read; retained grants remain retired after recovery (#1028).
     func inputPolicyGeneration(for target: String) -> TargetPolicyGeneration {
         try? requirePolicy()
+        try? targetPolicy.refreshIfChanged()
         return targetPolicy.snapshot(for: target)
     }
 
@@ -401,8 +403,13 @@ extension HailHost {
     }
     private func refreshPolicy() throws {
         do {
+            let tracking = store as? any PolicyChangeTracking
+            let identity = try tracking?.identity()
             let next = try store.load()
             let compiled = try PolicyEvaluator(policy: next)
+            guard try tracking?.identity() == identity else {
+                throw HostError.policyUnavailable("policy_changed_during_reload")
+            }
             if next != policy { revokeAuthority() }
             targetPolicy.update(next)
             policy = next
@@ -482,22 +489,62 @@ final class TargetPolicyAuthority: Sendable {
         var generation: UInt64 = 0
         var policy: Policy?
         var targets: [String: UInt64] = [:]
+        var retiring: Set<String> = []
     }
     private let state = Mutex(State())
+    private let observation = Mutex<PolicyFileIdentity?>(nil)
+    private let store: any PolicyStore
+
+    init(store: any PolicyStore) { self.store = store }
+
+    /// File I/O uses a separate lock, never the compare-and-admit lock. Daemon transactions do not hold
+    /// this lock while persisting, so unrelated segment admission can continue during a suspended write.
+    func refreshIfChanged() throws {
+        guard let tracking = store as? any PolicyChangeTracking else { return }
+        try observation.withLock { observed in
+            do {
+                let identity = try tracking.identity()
+                guard identity != observed else { return }
+                let next = try store.load()
+                _ = try PolicyEvaluator(policy: next)
+                guard try tracking.identity() == identity else {
+                    throw HostError.policyUnavailable("policy_changed_during_reload")
+                }
+                apply(next, completingWrite: false)
+                observed = identity
+            } catch {
+                apply(nil, completingWrite: false)
+                observed = nil
+                throw HostError.policyUnavailable("\(error)")
+            }
+        }
+    }
 
     /// Removing the grant also refuses fresh snapshots until the transaction has been adopted.
     func retire(_ target: String) {
-        state.withLock { state in
-            state.generation += 1
-            state.targets[target] = nil
+        observation.withLock { _ in
+            state.withLock { state in
+                state.generation += 1
+                state.targets[target] = nil
+                state.retiring.insert(target)
+            }
         }
     }
 
     func update(_ policy: Policy?) {
+        observation.withLock { observed in
+            // An actor read/transaction may predate a concurrent observation; never cache its stamp for that view.
+            if state.withLock({ $0.policy != policy }) { observed = nil }
+            apply(policy, completingWrite: true)
+        }
+    }
+
+    private func apply(_ policy: Policy?, completingWrite: Bool) {
         state.withLock { state in
+            if completingWrite { state.retiring.removeAll() }
             state.generation += 1
             var generations: [String: UInt64] = [:]
-            for (target, allowed) in policy?.targets ?? [:] {
+            for (target, allowed) in policy?.targets ?? [:] where !state.retiring.contains(target) {
                 let unchanged = state.policy?.targets[target] == allowed
                 generations[target] = unchanged ? state.targets[target] ?? state.generation : state.generation
             }
@@ -535,7 +582,11 @@ struct TargetPolicyGeneration: Sendable {
         try authority.performIfCurrent(self, operation: operation)
     }
 
+    /// Admission calls this in the gate's own turn; failures retire grants before its normal refusal check.
+    func observePolicy() { try? authority.refreshIfChanged() }
+
     func requireCurrent() throws {
+        try authority.refreshIfChanged()
         guard performIfCurrent({ true }) == true else { throw HostError.denied(.notAllowed(target)) }
     }
 }
