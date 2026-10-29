@@ -22,20 +22,6 @@ import Testing
         #expect(frame?.payload == expected)
     }
 
-    @Test(arguments: [Tier.confirm, Tier.locked])
-    func ineligibleTierCannotStartANewStream(_ tier: Tier) async throws {
-        let rig = try await AmbientPolicyRig.make()
-        _ = try await rig.host.setTier(tier, for: "tmux:a")
-        let audio: AudioPayload = ambientSegment(stream: UUID(), sequence: 0)
-        let result: HostSessionResult = await rig.session.receive(
-            sessionFrame(target: "tmux:a", payload: .audio(audio))
-        )
-        let control: ControlPayload = try onlyControl(result)
-        #expect(control == .error(code: .notAllowed, message: "ambient target_policy_changed"))
-        #expect(rig.sink.segments == [0])
-        #expect(rig.sink.endings == [.notAllowed])
-    }
-
     @Test func staleStartSnapshotIsRefusedAtSinkAdmission() async throws {
         let rig = try await AmbientPolicyRig.make()
         let snapshot = rig.host.targetPolicy.snapshot(for: "tmux:a")

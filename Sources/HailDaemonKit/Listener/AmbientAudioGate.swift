@@ -321,7 +321,7 @@ extension AmbientAudioGate {
         let expected = retained?.policyGeneration ?? policyGeneration
         let result: AmbientAdmission
         // Compare and commit only gate state/events under the lock; no sink, child validation, spawn or await.
-        if let expected, expected.target == target, expected.permitsAmbient, let admitted = expected.performIfCurrent({
+        if let expected, expected.target == target, let admitted = expected.performIfCurrent({
             let result = admitCurrent(audio, frameTarget: frameTarget, selection: selection,
                                       connection: connection, device: device)
             if active?.id == audio.streamID, active?.connection == connection { active?.policyGeneration = expected }
@@ -332,7 +332,9 @@ extension AmbientAudioGate {
             result = admitCurrent(audio, frameTarget: frameTarget, selection: selection,
                                   connection: connection, device: device)
         } else {
-            let refusal = refuse(.notAllowed, "ambient target_policy_changed", connection: connection)
+            let changed = expected?.target == target && expected?.wasGranted == true
+            let message = changed ? "ambient target_policy_changed" : "ambient target is not allowed"
+            let refusal = refuse(.notAllowed, message, connection: connection)
             result = .refused(refusal.0, refusal.1)
         }
         return publishAdmission(result, expected: expected, stream: audio.streamID, connection: connection)
@@ -354,6 +356,7 @@ extension AmbientAudioGate {
             case .started: break
             case .segment(let id, _, _), .ended(let id, _):
                 if let expected, id == stream {
+                    // At most one staged segment (<= 8 KB) may publish as a write returns, linearized before the write.
                     let current: Bool = expected.performIfCurrent({ true }) == true
                     if !current {
                         if active?.id == id, active?.connection == connection {

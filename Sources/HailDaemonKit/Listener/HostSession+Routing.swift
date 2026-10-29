@@ -72,19 +72,25 @@ extension HostSession {
         // A stream this segment opens keeps the selection generation it opened on (#636).
         let selection = AmbientSelection(target: selectedTarget, generation: selectionGeneration)
         let policyGeneration = host.targetPolicy.snapshot(for: gate.target)
-        if ambientPolicyGeneration == nil { ambientPolicyGeneration = policyGeneration }
+        let retained = ambientPolicyGeneration
+        let opening = audio.sequence == 0 && audio.streamID != ambientPolicyStream
+        // A child can refuse startup before admission returns; its error belongs to this attempt's grant.
+        if opening { ambientPolicyGeneration = policyGeneration.wasGranted ? policyGeneration : nil }
         switch await gate.admission(
             audio, frameTarget: target, selection: selection, connection: connectionID, device: peerDeviceKind,
             policyGeneration: policyGeneration
         ) {
         case .admitted:
-            if audio.sequence == 0 { ambientPolicyGeneration = policyGeneration }
+            if opening { ambientPolicyStream = audio.streamID }
             return HostSessionResult(frames: [])
         case .tookOver(let from):
             ambientPolicyGeneration = policyGeneration
+            ambientPolicyStream = audio.streamID
             guard peerCapabilities.contains(AmbientTakeOver.capability) else { return HostSessionResult(frames: []) }
             return HostSessionResult(frames: [response(.ambientMovedHere(from: from), version: version)])
         case .refused(let code, let message):
+            // Answer under the refused attempt's grant, then preserve any older child's retained authority.
+            defer { if opening { ambientPolicyGeneration = retained } }
             return failure(code, message, close: false, version: version)
         }
     }
@@ -133,6 +139,7 @@ extension HostSession {
             return .refused(.notAllowed, "select the destination before speaking")
         }
         do {
+            try await host.requireSendPreflight()
             try input.policyGeneration.requireCurrent()
             let generation = selectionGeneration
             let owner = try await replyOwnership(for: input, generation: generation)

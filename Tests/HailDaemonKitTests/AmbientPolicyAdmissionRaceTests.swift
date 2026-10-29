@@ -4,7 +4,7 @@ import Testing
 @testable import HailDaemonKit
 
 /// Injected synchronous waits for the store and sink; the production generation lock must be released first.
-private final class PolicyWriteGate: @unchecked Sendable {
+final class PolicyWriteGate: @unchecked Sendable {
     private let condition = NSCondition()
     private var waiting = false
     private var released = false

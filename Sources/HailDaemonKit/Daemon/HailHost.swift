@@ -124,8 +124,8 @@ public actor HailHost {
 
     private func dispatch(_ text: String, request dispatch: DispatchRequest) async throws -> SendOutcome {
         let id = dispatch.target
-        try dispatch.policyGeneration?.requireCurrent()
         try requireSendPreflight()
+        try dispatch.policyGeneration?.requireCurrent()
         var lines = try sanitizedLines(text)
         let listed = try await dispatchListing(dispatch, lineCount: lines.count)
         try dispatch.policyGeneration?.requireCurrent()
@@ -529,7 +529,7 @@ struct TargetPolicyGeneration: Sendable {
     fileprivate let generation: UInt64?
     fileprivate let policy: TargetPolicy?
     var binding: String? { policy?.binding }
-    var permitsAmbient: Bool { policy?.tier == .open }
+    var wasGranted: Bool { generation != nil }
 
     func performIfCurrent<Result>(_ operation: () throws -> Result) rethrows -> Result? {
         try authority.performIfCurrent(self, operation: operation)

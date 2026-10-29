@@ -33,14 +33,15 @@ struct AmbientPolicyRig {
     let sink: RecordingAmbientSink
     let stream: UUID
 
-    static func make(allowB: Bool = true, beforeUpdate: @escaping @Sendable () -> Void = {}) async throws -> Self {
+    static func make(allowB: Bool = true, tier: Tier = .open,
+                     beforeUpdate: @escaping @Sendable () -> Void = {}) async throws -> Self {
         let adapter = FakeAdapter(kind: "tmux", targets: [
             AdapterTarget(name: "a", binding: "binding-a"), AdapterTarget(name: "b", binding: "binding-b")
         ])
         let registry = Registry()
         try await registry.register(adapter)
         var policy = Policy()
-        try policy.allow("tmux:a", binding: "binding-a", tier: .open)
+        try policy.allow("tmux:a", binding: "binding-a", tier: tier)
         if allowB { try policy.allow("tmux:b", binding: "binding-b", tier: .open) }
         let store = InMemoryPolicyStore(policy, beforeUpdate: beforeUpdate)
         let host = try HailHost(registry: registry, store: store)

@@ -223,6 +223,7 @@ public actor HostSession {
     var replyEvent: @Sendable (WebSocketListenerEvent) -> Void = { _ in }
     var selectedTarget: String?
     var ambientPolicyGeneration: TargetPolicyGeneration?
+    var ambientPolicyStream: UUID?
     /// Which overheard turns this connection asked for (#398), one of `AmbientOverheard.scopes`. Every connection
     /// starts at `off`, so nothing overheard is sent until the device asks on this connection.
     var overheardScope = "off"
