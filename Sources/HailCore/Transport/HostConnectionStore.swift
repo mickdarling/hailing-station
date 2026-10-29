@@ -28,8 +28,12 @@ public final class HostConnectionStore {
     @ObservationIgnored var segmentWiring: ReplySegmentDeviceWiring?
     /// The station chat (#288): requests as they are sent and replies as they arrive, in the background too.
     public let conversation = ConversationLog()
+    @ObservationIgnored var proactiveSpeechReceipts: [SessionUpdateSpeechReceipt] = []
+    var proactivePolicyRevision: UInt64 = 0
     /// True while ambient listening is streaming; leaving the foreground then keeps the destination authorized (#282).
-    public var ambientStreaming = false
+    public var ambientStreaming = false {
+        didSet { if oldValue && !ambientStreaming { revokeProactiveSpeech(nil) } }
+    }
     /// Retained through card disappearance; recovery is inert until the app attaches its controller (#904).
     public var ambientController: AmbientListeningController? {
         didSet { ambientController?.reconnect.controller = ambientController }
@@ -201,6 +205,7 @@ extension HostConnectionStore {
         await connections[id]?.connect()
     }
     public func disconnect(_ id: HostEndpoint.Identifier) async {
+        revokeProactiveSpeech(id)
         ambientController?.reconnect.veto(.explicitDisconnect, host: id)
         forgetSelection(id)
         await connections[id]?.disconnect()
@@ -290,6 +295,10 @@ extension HostConnectionStore {
     private func receive(_ snapshot: HostConnectionSnapshot, token: UUID) {
         guard tokens[snapshot.id] == token else { return }
         let old = snapshots[snapshot.id]
+        if snapshot.state != .ready || old?.connectionGeneration != snapshot.connectionGeneration {
+            revokeProactiveSpeech(snapshot.id)
+        }
+        retireUnavailableProactiveTargets(snapshot)
         let previous = old?.state
         ambientController?.reconnect.receive(snapshot, previous: old, store: self)
         if snapshot.state != .ready { selectedTargets[snapshot.id] = nil; selectionRequests[snapshot.id] = nil }
@@ -300,6 +309,20 @@ extension HostConnectionStore {
         recordDiagnostics(from: previous, to: snapshot.state)
         if snapshot.state == .ready, previous != .ready { hostBecameReady(snapshot.id) }
         if snapshot.state != .ready { forgetModes(snapshot.id) }
+    }
+
+    /// Availability losses retire permits at the edge, even if a restore arrives before observers run.
+    func retireUnavailableProactiveTargets(_ snapshot: HostConnectionSnapshot) {
+        var changed = false
+        for index in proactiveSpeechReceipts.indices {
+            let receipt = proactiveSpeechReceipts[index]
+            if receipt.endpoint == snapshot.id, receipt.allowed,
+               !snapshot.targets.contains(where: { $0.id == receipt.target && $0.alive }) {
+                proactiveSpeechReceipts[index].allowed = false
+                changed = true
+            }
+        }
+        if changed { proactivePolicyRevision &+= 1 }
     }
 
     private func acceptConfirmedResume(on host: HostEndpoint.Identifier) async {
@@ -314,7 +337,7 @@ extension HostConnectionStore {
         // pong on the connection actor, so a stalled polling waiter cannot misclassify a post-pong refusal.
         if HostNoticeOrigin.streamID != nil { await acceptConfirmedResume(on: event.endpointID) }
         guard tokens[event.endpointID] == token else { return }
-        if receiveSessionUpdate(event) || receiveAmbientNotice(event) { return }
+        if receiveSessionUpdateSpeech(event) || receiveSessionUpdate(event) || receiveAmbientNotice(event) { return }
         segmentWiring?.receive(event)
         replyFrames.append(event)
         conversation.noteReply(event, selected: selectedTargets[event.endpointID],
@@ -332,15 +355,9 @@ extension HostConnectionStore {
     /// Pending privacy-on and transport restoration suppress cards before a later host confirmation can arrive.
     func receiveSessionUpdate(_ event: HostReplyEvent) -> Bool {
         guard case .control(.sessionUpdate) = event.frame.payload else { return false }
-        guard let snapshot = snapshots[event.endpointID], snapshot.state == .ready,
-              snapshot.capabilities.contains(SessionUpdateCard.capability),
-              HostNoticeOrigin.generation == snapshot.connectionGeneration,
-              duckMode[event.endpointID]?.isOn() != true,
-              privacyLocal[event.endpointID]?.request?.on != true,
-              ambientController?.reconnect.isPending != true,
-              let target = event.frame.target,
-              snapshot.targets.contains(where: { $0.id == target && $0.alive }) else { return true }
-        conversation.noteSessionUpdate(event)
+        let allowed = permitsSessionUpdate(event)
+        recordSessionUpdateSpeech(event, allowed: allowed)
+        if allowed { conversation.noteSessionUpdate(event) }
         return true
     }
 }
@@ -448,10 +465,12 @@ extension HostConnectionStore {
     private func receiveModeNotice(_ event: HostReplyEvent) -> Bool {
         switch event.frame.payload {
         case .control(.mediaMode(let on, let reason, let expires)):
+            if on { revokeProactiveSpeech(event.endpointID) }
             mediaMode[event.endpointID] = MediaModeStatus(on: on, reason: reason, expiresMilliseconds: expires)
         case .control(.duckMode(let on, let reason, let expires)):
             if let origin = HostNoticeOrigin.generation,
                origin != snapshots[event.endpointID]?.connectionGeneration { return true }
+            if on { revokeProactiveSpeech(event.endpointID) }
             duckMode[event.endpointID] = DuckModeStatus(on: on, reason: reason, expiresMilliseconds: expires)
             if let request = privacyLocal[event.endpointID]?.request,
                request.on != on || (on && duckMode[event.endpointID]?.isOn() != true) {
@@ -611,6 +630,7 @@ extension HostConnectionStore {
     /// Asks host `id` to turn privacy on or off for this device's stream. The switch waits (not private) until the
     /// host's `duck_mode` notice arrives; the tap itself never changes the state shown.
     public func setPrivacy(on: Bool, host id: HostEndpoint.Identifier) async throws {
+        if on { revokeProactiveSpeech(id) }
         // A healthy switch request becomes pre-drop state only when THIS host confirms it. It is not a veto
         // yet; drop() blocks an unsettled request. Gap taps and failed sends latch until an owner start.
         if snapshots[id]?.state != .ready || ambientController?.reconnect.isPending == true {
