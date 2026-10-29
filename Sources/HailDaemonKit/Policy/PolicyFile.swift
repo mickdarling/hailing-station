@@ -14,6 +14,74 @@ public protocol PolicyStore: Sendable {
     /// One line for `haild status`: where the policy is and whether it is signed.
     var summary: String { get }
 }
+
+/// Optional change tracking for stores that can observe a separate writer without reading policy content.
+protocol PolicyChangeTracking: PolicyStore {
+    func observation() throws -> PolicyObservation
+    /// Metadata comes from the descriptors used for this read, never a separate path lookup.
+    func loadObserved() throws -> ObservedPolicy
+    /// Monotonic time, injectable so replacement-race tests can exclude process coordination waits.
+    var reloadNow: ContinuousClock.Instant { get }
+}
+
+struct PolicyDirectoryIdentity: Equatable, Sendable {
+    let device: Int32
+    let inode: UInt64
+}
+
+struct PolicyObservation: Equatable, Sendable {
+    /// Nil always accompanies the empty policy in an observed read.
+    let identity: PolicyFileIdentity?
+    var directory: PolicyDirectoryIdentity?
+}
+
+struct ObservedPolicy: Sendable {
+    let policy: Policy
+    let observation: PolicyObservation
+    /// Grant differences seen even in discarded attempts of this reload.
+    var changedTargets: Set<String> = []
+}
+
+extension PolicyChangeTracking {
+    var reloadNow: ContinuousClock.Instant { .now }
+
+    func loadStable(
+        after before: PolicyObservation? = nil, comparedTo applied: Policy? = nil
+    ) throws -> ObservedPolicy {
+        let deadline = reloadNow.advanced(by: .milliseconds(50))
+        var before = try before ?? observation()
+        let directory = before.directory
+        let grants = applied?.targets ?? [:]
+        var changedTargets: Set<String> = []
+        // Stay in this synchronous observation turn, outside the generation lock. No sleeps or stale admission.
+        for attempt in 0..<3 {
+            guard attempt == 0 || reloadNow < deadline else { break }
+            var read = try loadObserved()
+            let targets = Set(grants.keys).union(read.policy.targets.keys)
+            changedTargets.formUnion(targets.filter { grants[$0] != read.policy.targets[$0] })
+            // Always finish checking a started attempt: elapsed time cannot invalidate a stable read.
+            let after = try observation()
+            // Retain the original directory across retries, including a swap between two observations.
+            if let directory,
+               read.observation.directory != directory || after.directory != directory { break }
+            if read.observation == before, read.observation == after {
+                read.changedTargets = changedTargets
+                return read
+            }
+            // The budget gates only retries, including their extra initial observation.
+            guard attempt < 2, reloadNow < deadline else { break }
+            before = try observation()
+        }
+        throw HostError.policyUnavailable("policy_changed_during_reload")
+    }
+}
+
+struct PolicyFileIdentity: Equatable, Sendable {
+    let device: Int32
+    let inode: UInt64
+    let modified: Duration
+    let size: Int64
+}
 /// What a policy transaction committed. A rename changes the policy atomically; a later directory-sync
 /// failure means the new entry may not survive a crash, but callers must still adopt what readers now see.
 public struct PolicyUpdate: Sendable, Equatable {
@@ -43,7 +111,7 @@ public enum PolicyFileError: Error, Equatable, Sendable {
 /// host key exists (#39); the threat model records the residual: any process running as the user can
 /// edit it undetected. What this does catch: another user (permissions), a swapped-in symlink, a file
 /// that no longer parses, and any key the daemon does not know (`Policy+Codable`).
-public struct PolicyFile: PolicyStore {
+public struct PolicyFile: PolicyStore, PolicyChangeTracking {
     public static let fileName = "policy.json"
     /// More than this is not a policy this daemon wrote; refused before any decoding work.
     public static let maxBytes = 1 << 20
@@ -65,9 +133,19 @@ public struct PolicyFile: PolicyStore {
     }
     public var summary: String { "\(path.path) (unsigned until #39)" }
     public func load() throws -> Policy {
-        guard let dir = try openDirectory() else { return Policy() }
+        try load(beforeDecode: {})
+    }
+    /// Internal read boundary for deterministic replacement-race tests; normal reads install no hook.
+    func load(beforeDecode: () -> Void) throws -> Policy {
+        try loadObserved(beforeDecode: beforeDecode).policy
+    }
+    func loadObserved() throws -> ObservedPolicy { try loadObserved(beforeDecode: {}) }
+    func loadObserved(beforeDecode: () -> Void) throws -> ObservedPolicy {
+        guard let dir = try openDirectory() else {
+            return ObservedPolicy(policy: Policy(), observation: PolicyObservation(identity: nil))
+        }
         defer { close(dir) }
-        return try load(in: dir)
+        return try read(in: dir, beforeDecode: beforeDecode)
     }
     /// Holds an exclusive `flock` on the directory for the whole load, change, write.
     public func update(_ change: (inout Policy) throws -> Void) throws -> PolicyUpdate {
@@ -105,19 +183,50 @@ public struct PolicyFile: PolicyStore {
 }
 
 extension PolicyFile {
-    private func load(in dir: Int32) throws -> Policy {
+    func identity() throws -> PolicyFileIdentity? { try observation().identity }
+
+    /// Two lstats, no opens or content reads. Validate the directory even when the file is unchanged.
+    func observation() throws -> PolicyObservation {
+        let directoryInfo = try Self.info(directory)
+        if let directoryInfo { try Self.check(directoryInfo, at: directory, type: S_IFDIR) }
+        let info = try Self.info(path)
+        if let info { try Self.checkReadable(info, at: path) }
+        return PolicyObservation(identity: info.map(Self.identity),
+                                 directory: directoryInfo.map { .init(device: $0.st_dev, inode: $0.st_ino) })
+    }
+
+    private static func identity(_ info: stat) -> PolicyFileIdentity {
+        PolicyFileIdentity(device: info.st_dev, inode: info.st_ino,
+                           modified: .seconds(info.st_mtimespec.tv_sec) + .nanoseconds(info.st_mtimespec.tv_nsec),
+                           size: info.st_size)
+    }
+
+    private static func checkReadable(_ info: stat, at path: URL) throws {
+        try check(info, at: path, type: S_IFREG)
+        guard info.st_mode & 0o400 != 0 else {
+            throw PolicyFileError.wrongPermissions(path: path.path, mode: String(info.st_mode & 0o777, radix: 8))
+        }
+    }
+
+    private func load(in dir: Int32) throws -> Policy { try read(in: dir).policy }
+
+    private func read(in dir: Int32, beforeDecode: () -> Void = {}) throws -> ObservedPolicy {
+        var directoryInfo = stat()
+        guard fstat(dir, &directoryInfo) == 0 else { throw PolicyFileError.malformed(directory.path) }
+        let location = PolicyObservation(identity: nil,
+                                         directory: .init(device: directoryInfo.st_dev, inode: directoryInfo.st_ino))
         // Opened relative to the checked directory, never following a link, never blocking on a FIFO; then
         // the descriptor itself is checked: what is checked is what is read.
         let descriptor = openat(dir, Self.fileName, O_RDONLY | O_NOFOLLOW | O_NONBLOCK | O_CLOEXEC)
         guard descriptor >= 0 else {
-            if errno == ENOENT { return Policy() }
+            if errno == ENOENT { return ObservedPolicy(policy: Policy(), observation: location) }
             if errno == ELOOP { throw PolicyFileError.wrongType(path.path) }
             throw PolicyFileError.malformed("\(path.path): \(String(cString: strerror(errno)))")
         }
         let handle = FileHandle(fileDescriptor: descriptor, closeOnDealloc: true)
         var fileInfo = stat()
         guard fstat(descriptor, &fileInfo) == 0 else { throw PolicyFileError.malformed(path.path) }
-        try Self.check(fileInfo, at: path, type: S_IFREG)
+        try Self.checkReadable(fileInfo, at: path)
         let data: Data
         do {
             data = try handle.read(upToCount: Self.maxBytes + 1) ?? Data()
@@ -125,8 +234,15 @@ extension PolicyFile {
             throw PolicyFileError.malformed("\(path.path): \(error.localizedDescription)")
         }
         guard data.count <= Self.maxBytes else { throw PolicyFileError.malformed("\(path.path): over 1 MiB") }
+        var after = stat()
+        guard fstat(descriptor, &after) == 0, Self.identity(after) == Self.identity(fileInfo),
+              data.count == fileInfo.st_size else { throw PolicyFileError.malformed(path.path) }
+        beforeDecode()
         do {
-            return try JSONDecoder().decode(Policy.self, from: data)
+            let policy = try JSONDecoder().decode(Policy.self, from: data)
+            return ObservedPolicy(policy: policy, observation: PolicyObservation(
+                identity: Self.identity(fileInfo), directory: location.directory
+            ))
         } catch {
             throw PolicyFileError.malformed("\(path.path): \(error)")
         }
