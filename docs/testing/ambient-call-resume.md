@@ -130,3 +130,53 @@ The new tests were committed before production edits. Against unchanged reviewed
 regression functions failed (five parameterized cases, eight issues): route PCM escaped, same-socket recovery
 never reached a fresh transport, and both URL-change paths kept listening intent. Evidence remains host-local in
 `hs-982-evidence/review-fail-before.log`. The earlier baseline fail-before evidence remains recorded above.
+
+## PR 1034 round 3: policy refusals
+
+Part of #982. Input production head: `deb5de626890d036a39eac08489db3faa65a297c`.
+The coordinator permits first-segment admission, as on a fresh start. PCM-free admission belongs to #1042.
+An unannounced write may therefore reach admission; these tests do not claim zero capture before that refusal.
+
+`AmbientRefusal.isPolicyStop(code:message:)`, next to `isTransient`, requires `.notAllowed` and either policy
+prefix: `ambient target_policy_changed` or `ambient target is not allowed`. Its erased-error overload delegates
+to that predicate. The code alone is insufficient; `ambient stopped:` and `ambient unavailable:` stay transient.
+A delivered policy refusal latches the existing reconnect veto, even with no streamer during a call pause.
+`prepareCaptureResume` observes that veto. The failed-snapshot path handles a refusal before any audio was sent.
+Both paths show `listening stopped: target policy changed during call` and cannot resume automatically.
+A resumed first-segment policy refusal discards capture immediately, before asynchronous teardown can drain
+queued PCM or a final tail. It shows `listening stopped: target policy changed`, without recovery or fallback.
+
+New suites: `AmbientCallPolicyTests`, `AmbientCallPolicyAdmissionTests`, `AmbientCallPolicyResumeTests` and
+`AmbientRefusalPolicyTests`. Their cases include delivered policy-changed and not-allowed refusals, a real
+unannounced host deny during the pause, a real deny retained from before it, and a first-resumed-segment refusal.
+The latter three allow one admitting segment, then require capture stopped, a visible reason, no retry,
+reconnect or fallback, and no subsequent PCM. The real host sink receives none of the refused segment.
+The suites also cover both transient prefixes, a no-prior-audio refusal and the helper's code/prefix truth table.
+`Package.swift` adds only a test dependency on the daemon for real gate evidence. The PR has four files under
+PR-shape's production-count rules, including the capture file changed in previous rounds.
+
+Against unchanged input production sources, seven functions ran: cases 1 and 2 plus the no-prior-audio refusal
+failed with fourteen assertions. Cases 3, 4 and 5 already passed, as did both transient arguments.
+After implementation, all nine functions in four suites passed, including the helper tests.
+The initial fixture compile error and synchronous readiness watchdog were corrected before counting the baseline.
+Readiness now crosses the host actor. All test ordering uses signals, receive barriers and held sends, with no
+elapsed-time sleeps. The focused command uses the CLT framework/linker flags documented above plus:
+
+```text
+swift test -j 4 -Xswiftc -j1 --disable-automatic-resolution -Xswiftc -warnings-as-errors
+  --no-parallel --filter AmbientCallPolicy --skip DiagnosticReplyComposition
+```
+
+The fixed run adds `|AmbientRefusalPolicyTests` to the filter. Exact commands and results remain host-local in
+`hs-982-evidence/r3-fail-before.log` and `r3-fixed.log`. Every Swift invocation uses a shared-process gate,
+`taskpolicy -b` and an individual 590-second bound.
+
+Host source confirmation, without host source edits: receipt at `WebSocketPeer.swift:154` reaches
+`HostSession.swift:264` and `HostSession+Routing.swift:79`. Policy refusal at `AmbientAudioGate.swift:335`
+publishes no segment; a grant retired during admission is checked again at line 359 before publication at 373.
+The refused PCM is never transcribed or forwarded to RightyO or an agent: `WebSocketListener.swift:977` feeds
+RightyO only for a segment event. It cannot reach the child write at `RightyoAmbientPipeline.swift:372`, so the
+refused segment is never written to disk. Receipt at `WebSocketPeer.swift:153` and refusal construction at
+`HostSession.swift:351` log no payload; `WebSocketListener.swift:17` limits lifecycle logs to structured metadata.
+No PCM or transcript text from the refused segment is logged. This is source and synthetic SwiftPM evidence,
+not physical-device proof.

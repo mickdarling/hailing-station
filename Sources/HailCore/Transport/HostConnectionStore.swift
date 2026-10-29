@@ -966,6 +966,10 @@ extension AmbientListeningController {
                                    from source: AmbientAudioStreamer?, streamID: UUID?) {
         guard AmbientSendAdmission.isCurrent, session == current, sendFailure == nil,
               let source, source === streamer, source.streamID == streamID else { return }
+        if AmbientRefusal.isPolicyStop(error) {
+            stopForPolicy()
+            return
+        }
         if reconnect.isPending, Self.isTransportError(error) { return }
         movedAway = AmbientHandoff(refusal: error)
         if case HostConnectionFailure.remote = error, !Self.isTransient(error) {
@@ -1150,8 +1154,42 @@ extension AmbientListeningController {
         guard case HostConnectionFailure.remote(let message) = error else { return false }
         return [
             "malformed: ambient stream must be new", "malformed: ambient sequence must increase",
-            "not_allowed: ambient stopped:", "rate_limited: ambient rate exceeded"
+            "not_allowed: ambient stopped:", "not_allowed: ambient unavailable:", "rate_limited: ambient rate exceeded"
         ].contains { message.hasPrefix($0) }
+    }
+}
+
+/// The terminal policy vocabulary is shared by notices and send failures.
+enum AmbientRefusal {
+    static let policyStopReason = "listening stopped: target policy changed"
+    static let callPolicyStopReason = "listening stopped: target policy changed during call"
+
+    static func isPolicyStop(code: ErrorCode, message: String) -> Bool {
+        code == .notAllowed && (message.hasPrefix("ambient target_policy_changed")
+            || message.hasPrefix("ambient target is not allowed"))
+    }
+
+    static func isPolicyStop(_ error: any Error) -> Bool {
+        guard case HostConnectionFailure.remote(let text) = error,
+              text.hasPrefix("not_allowed: ") else {
+            return false
+        }
+        return isPolicyStop(code: .notAllowed, message: String(text.dropFirst("not_allowed: ".count)))
+    }
+}
+
+extension AmbientListeningController {
+    private func stopForPolicy() {
+        let reason: AmbientListeningReconnect.Reason = pausedReason == nil ? .targetPolicyChanged : .callPolicyChanged
+        let stopping = reconnect.isPending || pausedReason != nil
+        sendFailure = pausedReason == nil ? AmbientRefusal.policyStopReason : AmbientRefusal.callPolicyStopReason
+        sendFailureCause = ("host_refused", "not_allowed")
+        diagnostics?.record(.hostRefusal, [.code: .token("not_allowed")])
+        // Discard now, before the async teardown can yield or the encoder can send its tail.
+        reconnect.block(reason)
+        if !stopping {
+            cancelTransportRestore(reason: reason)
+        }
     }
 }
 
@@ -1372,8 +1410,16 @@ extension AmbientListeningController {
 
     func receiveAmbientRefusal(_ error: any Error, host: HostEndpoint.Identifier,
                                generation: UUID?, streamID: UUID?) {
-        guard isOn, binding?.hostID == host, binding?.connectionGeneration == generation,
-              let streamer, streamer.streamID == streamID, !Self.isTransient(error) else { return }
+        guard isOn, binding?.hostID == host, binding?.connectionGeneration == generation else {
+            return
+        }
+        if AmbientRefusal.isPolicyStop(error), pausedReason != nil || streamer?.streamID == streamID {
+            stopForPolicy()
+            return
+        }
+        guard let streamer, streamer.streamID == streamID, !Self.isTransient(error) else {
+            return
+        }
         recordSendFailure(error, session: session, from: streamer, streamID: streamID)
         streamer.discardCapture()
         let current = session
@@ -1408,9 +1454,18 @@ extension AmbientListeningController {
         streamer?.discardCapture()
         isListening = false
         let current = session
-        let message = reason == .callAddressChanged
-            ? "listening stopped: host address changed during call" : nil
-        Task { await end(current, reason: message, cause: "binding_changed") }
+        let message: String?
+        switch reason {
+        case .callAddressChanged: message = "listening stopped: host address changed during call"
+        case .callPolicyChanged: message = AmbientRefusal.callPolicyStopReason
+        case .targetPolicyChanged: message = AmbientRefusal.policyStopReason
+        default: message = nil
+        }
+        let policyStop = reason == .callPolicyChanged || reason == .targetPolicyChanged
+        Task {
+            await end(current, reason: message, cause: policyStop ? "host_refused" : "binding_changed",
+                      code: policyStop ? "not_allowed" : nil)
+        }
     }
     static func isTransportError(_ error: any Error) -> Bool {
         !(error is HostConnectionFailure) || (error as? HostConnectionFailure) == .notReady

@@ -156,7 +156,7 @@ public final class AmbientListeningReconnect {
     public enum Reason: Int64, Sendable {
         case ownerStop = 1, ownerSelection, endpointChanged, explicitDisconnect, privacy, modeChanged
         case bindingChanged, targetChanged, startFailed, nonTransport, timedOut, movedAway, reauthorizationNeeded
-        case callAddressChanged
+        case callAddressChanged, callPolicyChanged, targetPolicyChanged
     }
     public enum Outcome: Sendable { case applied, blocked, failed, interrupted }
     public struct Notice: Equatable, Sendable {
@@ -175,6 +175,12 @@ public final class AmbientListeningReconnect {
         public var text: String {
             if reason == .callAddressChanged {
                 return "listening stopped: host address changed during call"
+            }
+            if reason == .callPolicyChanged {
+                return AmbientRefusal.callPolicyStopReason
+            }
+            if reason == .targetPolicyChanged {
+                return AmbientRefusal.policyStopReason
             }
             if reason == .reauthorizationNeeded {
                 return "Listening stopped; re-authorization needed. Choose a destination to continue."
@@ -293,6 +299,13 @@ public final class AmbientListeningReconnect {
 extension AmbientListeningReconnect {
     func receive(_ snapshot: HostConnectionSnapshot, previous: HostConnectionSnapshot?, store: HostConnectionStore) {
         recordDrop(snapshot, previous: previous, store: store)
+        if case .failed(let reason) = snapshot.state, reason.hasPrefix("host error: "),
+           controller?.pausedReason != nil, controller?.binding?.hostID == snapshot.id,
+           controller?.binding?.connectionGeneration == snapshot.connectionGeneration,
+           AmbientRefusal.isPolicyStop(HostConnectionFailure.remote(String(reason.dropFirst("host error: ".count)))) {
+            block(.callPolicyChanged)
+            return
+        }
         guard let intent = pending, intent.binding.hostID == snapshot.id else { return }
         if case .failed(let reason) = snapshot.state {
             return block(reason.hasPrefix("host error: unauthorized:") ? .reauthorizationNeeded : .nonTransport)

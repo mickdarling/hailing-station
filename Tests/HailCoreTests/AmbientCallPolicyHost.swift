@@ -45,7 +45,9 @@ actor CallPolicyHost: WebSocketTransport {
     func send(_ data: Data) async throws {
         let frame = try FrameCoding.decode(data)
         await base.send(data)
-        guard case .audio(let audio) = frame.payload else { return }
+        guard case .audio(let audio) = frame.payload else {
+            return
+        }
         if audio.isResume {
             resumedAttempts += 1
         }
