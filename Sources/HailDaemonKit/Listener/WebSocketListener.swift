@@ -67,6 +67,7 @@ public actor WebSocketListener {
     let (lastInput, replyHold) = (LastInputLedger(), PrivateReplyHold())
     /// Sessions' unsolicited updates (#609): off unless `--session-updates`. The quiet switch lasts until restart.
     var sessionUpdates = SessionUpdateQueue(), sessionUpdatesQuiet = false
+    var taskProgressController: ListenerTaskProgress?
     var sessionUpdateTaskAuthorities: [UUID: TaskProgressPublicationAuthority] = [:]
     var sessionUpdatesDelivering = false, sessionUpdatePrivacyRevision: UInt64 = 0
     let sessionUpdateFence = SessionUpdateFence()
@@ -143,6 +144,8 @@ extension WebSocketListener {
     public func stop(reason: String = "requested") async {
         guard !stopped else { return }
         stopped = true
+        sessionUpdateFence.close()
+        await taskProgressController?.stop()
         sessionUpdateFence.close()
         networkListener.cancel()
         let active = Array(peers.values)
@@ -375,6 +378,7 @@ extension WebSocketListener {
         heardTurns.removeValue(forKey: peer.session.connectionID)?.close()
         lastInput.forget(connection: peer.session.connectionID)
         await endAmbient(of: peer)
+        await refreshTaskProgressEnvironment()
     }
 
     /// Ends every stream, then waits (bounded) for each ambient child to be reaped and each in-flight dispatch
@@ -733,6 +737,8 @@ public final class AmbientRightyoRouter: AmbientAudioSink, AmbientListenerWiring
     let state = Mutex(State())
     /// #735 meeting mode (rightyo#227): MM-C's hooks in the order state changed; never a clip (review round 2).
     let meetingChanges = SerialTaskChain()
+    /// Lifecycle changes only, never PCM segments or a clock poll. Ordered refreshes read current owner state.
+    let taskProgressChanges = SerialTaskChain()
     fileprivate let log: @Sendable (WebSocketListenerEvent) -> Void
     /// Wakes the worker; signals coalesce, the events themselves are in `State.queue`.
     fileprivate let wake: AsyncStream<Void>.Continuation
@@ -804,6 +810,13 @@ public final class AmbientRightyoRouter: AmbientAudioSink, AmbientListenerWiring
         state.withLock { $0.listener = WeakListener(value: listener) }
     }
 
+    /// Called after the state lock is released. Even a delayed callback re-reads current admission; it cannot
+    /// resurrect an old stream, owner or task. Public starts do not depend on reply diagnostics being enabled.
+    func taskProgressOwnerChanged() {
+        guard let listener = state.withLock({ $0.listener?.value }) else { return }
+        taskProgressChanges.enqueue { await listener.refreshTaskProgressEnvironment() }
+    }
+
     /// Called in order from the gate's actor; only spawns, enqueues or signals, never awaits. A start that finds
     /// every child slot taken goes to the worker, which forces the oldest retired child out first (#366); until it
     /// is done, every later event queues behind it.
@@ -831,6 +844,7 @@ public final class AmbientRightyoRouter: AmbientAudioSink, AmbientListenerWiring
             return false
         }
         if queued { wake.yield() } else { handle(event) }
+        if queued, case .started = event { taskProgressOwnerChanged() }
     }
 
     /// With reply control on, every admitted diagnostic batch passes through `replyPlayback` (rightyo#124).
@@ -895,6 +909,7 @@ public final class AmbientRightyoRouter: AmbientAudioSink, AmbientListenerWiring
             return streams
         }
         streams.forEach { retire($0) }
+        taskProgressOwnerChanged()
     }
 
     public func shutdown() async {
@@ -910,6 +925,7 @@ public final class AmbientRightyoRouter: AmbientAudioSink, AmbientListenerWiring
             state.latest = [:]
             return state.runs.values.map(\.pipeline)
         }
+        taskProgressOwnerChanged()
         await withTaskGroup(of: Void.self) { group in
             for pipeline in pipelines { group.addTask { await pipeline.stop() } }
         }
@@ -933,6 +949,29 @@ public final class AmbientRightyoRouter: AmbientAudioSink, AmbientListenerWiring
             return Self.ambientOwner(stream: state.active?.stream, connection: connection,
                                      newestStart: state.newestStart, queued: state.queue)
         }
+    }
+
+    public func taskProgressAudience() -> TaskProgressAmbientAudience? {
+        state.withLock { Self.taskProgressAudience(in: $0) }
+    }
+
+    public func withTaskProgressPermission(
+        _ audience: TaskProgressAmbientAudience, commit: @Sendable () -> Bool
+    ) -> Bool {
+        state.withLock { state in
+            guard Self.taskProgressAudience(in: state) == audience, !state.shuttingDown,
+                  !state.closed.contains(audience.connection), state.duck.isEmpty,
+                  state.parks.isEmpty, !state.parkOverflow,
+                  state.media[audience.connection] == nil else { return false }
+            return commit()
+        }
+    }
+
+    private static func taskProgressAudience(in state: State) -> TaskProgressAmbientAudience? {
+        guard let active = state.active, let connection = state.runs[active.run]?.connection,
+              Self.ambientOwner(stream: active.stream, connection: connection,
+                                newestStart: state.newestStart, queued: state.queue) == connection else { return nil }
+        return TaskProgressAmbientAudience(connection: connection, stream: active.stream)
     }
 
     var peakQueue: Int { state.withLock { $0.peakQueue } }
@@ -1017,6 +1056,12 @@ extension AmbientRightyoRouter {
 
     /// The gate's events, in order: spawn, feed, retire.
     fileprivate func handle(_ event: AmbientAudioEvent) {
+        defer {
+            switch event {
+            case .started, .ended: taskProgressOwnerChanged()
+            case .segment: break
+            }
+        }
         switch event {
         case .started(let stream, let connection, let selection):
             start(stream, connection: connection, selection: selection)
@@ -1151,6 +1196,7 @@ extension AmbientRightyoRouter {
             return (active.run, connection)
         }
         guard let (run, connection) = closed else { return }
+        taskProgressOwnerChanged()
         let listener = state.withLock { $0.listener?.value }
         retire(run)
         emit("ambient_input_closed", detail: nil)
@@ -1191,7 +1237,10 @@ extension AmbientRightyoRouter {
             return refuse(stream, connection: connection, reason: refusal ?? "stopping")
         }
         let pipeline: RightyoAmbientPipeline
-        do { pipeline = try makePipeline(connection: connection, selection: selection, listener: listener) } catch {
+        do {
+            pipeline = try makePipeline(connection: connection, stream: stream,
+                                        selection: selection, listener: listener)
+        } catch {
             return refuse(stream, connection: connection, reason: Self.describe(error))
         }
         configuration.childMade?(connection)
@@ -1214,7 +1263,7 @@ extension AmbientRightyoRouter {
     /// One child for `connection`'s stream, launched now; a refusal launches nothing. Shared by a start and a
     /// reload (#405), so a reloaded child is configured exactly as a fresh one, on the stream's `selection` (#636).
     fileprivate func makePipeline(
-        connection: UUID, selection: UUID?, listener: WebSocketListener
+        connection: UUID, stream: UUID, selection: UUID?, listener: WebSocketListener
     ) throws -> RightyoAmbientPipeline {
         // One chain for this child's not-sent notices, behind its latest acknowledgement (#894 review).
         let notices = AmbientRefusalNotices()
@@ -1231,6 +1280,7 @@ extension AmbientRightyoRouter {
         settings.onOverheard = overheard(on: connection, listener: listener)
         settings.onVoiceMute = voiceMuted(on: connection, listener: listener)
         settings.onVoiceMedia = voiceMedia(on: connection, listener: listener)
+        settings.onTaskProgressOwner = taskProgressControls(connection: connection, stream: stream, listener: listener)
         settings.onVoiceMeeting = voiceMeeting(on: connection, listener: listener)
         // The child's privacy state, held once it exists, so its refusal is said by the state rule (round 4).
         let mark = AmbientRunMark()
@@ -1259,6 +1309,14 @@ extension AmbientRightyoRouter {
                                                   ))
         mark.set(pipeline.privacyControl)
         return pipeline
+    }
+
+    private func taskProgressControls(
+        connection: UUID, stream: UUID, listener: WebSocketListener
+    ) -> @Sendable (TaskProgressOwnerControl) async -> Bool {
+        { [weak listener] command in
+            await listener?.taskProgressOwner(command, connection: connection, stream: stream) ?? false
+        }
     }
 
     /// Registers a run for `pipeline` under the caller's lock and returns its id. The task is created under the lock,
@@ -1482,6 +1540,7 @@ extension AmbientRightyoRouter {
             return (active, replaced, state.shuttingDown ? nil : state.listener?.value, waiters)
         }
         waiters.forEach { $0.resume() }
+        if stillActive { taskProgressOwnerChanged() }
         // A clean run whose stream already ended is the normal path; anything else ends the stream and tells
         // the phone, even a refusal after the stream ended (for example confirmation required). A run a reload
         // replaced is only logged above: its stream lives on in the new child, so even a non-zero exit stays here.
@@ -1556,7 +1615,10 @@ extension AmbientRightyoRouter {
         }
         defer { state.withLock { $0.reloading = false } }
         let pipeline: RightyoAmbientPipeline
-        do { pipeline = try makePipeline(connection: connection, selection: old.selection, listener: listener) } catch {
+        do {
+            pipeline = try makePipeline(connection: connection, stream: old.stream,
+                                        selection: old.selection, listener: listener)
+        } catch {
             let reason = Self.describe(error)
             emit("ambient_reload_refused", detail: reason)
             return .refused(reason)
@@ -1574,7 +1636,7 @@ extension AmbientRightyoRouter {
 
     /// Swaps `pipeline` in under one lock, only if `old` is still the active child and a slot is still free.
     private func swap(_ old: Active, for pipeline: RightyoAmbientPipeline, connection: UUID) -> AmbientReloadOutcome {
-        state.withLock { state -> AmbientReloadOutcome in
+        let outcome = state.withLock { state -> AmbientReloadOutcome in
             if state.shuttingDown { return .stopping }
             guard let active = state.active else { return .idle }
             // The stream ended, moved or failed meanwhile; this child is not wanted.
@@ -1589,6 +1651,8 @@ extension AmbientRightyoRouter {
                                   selection: old.selection)
             return .reloaded
         }
+        if outcome == .reloaded { taskProgressOwnerChanged() }
+        return outcome
     }
 
     /// Ids, times and counts only (#405). `installedAt` is the configured executable's (symlink-resolved) mtime.
