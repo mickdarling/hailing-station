@@ -46,7 +46,8 @@ import Testing
         }
         try await waitUntil { await steps.started == 25 }
         #expect(rig.notices.isEmpty && rig.capture.startCount == 1)
-        #expect(await steps.durations.prefix(8) == [1.5, 3, 6, 12, 24, 48, 60, 60].map { .seconds($0) })
+        let expected: [Duration] = [1.5, 3, 6, 12, 24, 48, 60, 60].map { .seconds($0) }
+        #expect(Array(await steps.durations.prefix(8)) == expected)
         await rig.close()
         await steps.releaseAll()
     }
