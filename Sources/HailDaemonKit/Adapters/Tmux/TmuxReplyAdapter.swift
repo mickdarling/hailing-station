@@ -1,6 +1,9 @@
 import Foundation
 import HailProtocol
 
+// #1028 part 4 removes this opt-in when TmuxAdapter checks authority at paste and Enter.
+extension TmuxAdapter: CheckedHandoffDelivering {}
+
 public enum TmuxReplyAdapterError: Error, Sendable, Equatable {
     case invalidConfiguration, contextRequired, invalidText
 }
@@ -61,6 +64,18 @@ public actor TmuxReplyAdapter: ProviderContextDelivering {
     public func deliver(
         _ text: String, to target: String, binding: String, context: ProviderTurnContext
     ) async throws {
+        try await deliverEnvelope(text, to: target, binding: binding, context: context, authority: nil)
+    }
+
+    public func deliver(
+        _ text: String, to target: String, binding: String, context: ProviderTurnContext, authority: DeliveryAuthority
+    ) async throws {
+        try await deliverEnvelope(text, to: target, binding: binding, context: context, authority: authority)
+    }
+
+    private func deliverEnvelope(
+        _ text: String, to target: String, binding: String, context: ProviderTurnContext, authority: DeliveryAuthority?
+    ) async throws {
         try Task.checkCancellation()
         guard targets.contains(target) else { throw AdapterError.unknownTarget(target) }
         guard !binding.isEmpty, context.binding.providerID == kind,
@@ -77,7 +92,11 @@ public actor TmuxReplyAdapter: ProviderContextDelivering {
         guard data.count <= PayloadLimits.defaultMaxFrameBytes,
               let line = String(data: data, encoding: .utf8) else { throw TmuxReplyAdapterError.invalidText }
         // TmuxAdapter serializes complete deliveries and rechecks the exact pane binding before Enter.
-        try await terminal.deliver(line, to: target, binding: binding)
+        if let authority {
+            try await terminal.deliver(line, to: target, binding: binding, authority: authority)
+        } else {
+            try await terminal.deliver(line, to: target, binding: binding)
+        }
     }
 
     public func escape(_ target: String, binding: String?) async throws {

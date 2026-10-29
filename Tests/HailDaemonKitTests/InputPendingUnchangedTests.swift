@@ -85,6 +85,10 @@ private actor GatedPendingAdapter: Adapter {
 
     func listTargets() async throws -> [AdapterTarget] { [AdapterTarget(name: "codex", binding: binding)] }
     func capture(_ target: String) async throws -> String { "" }
+    func deliver(_ text: String, to target: String, binding: String?, authority: DeliveryAuthority) async throws {
+        try authority.requireCurrent()
+        try await deliver(text, to: target, binding: binding)
+    }
     func deliver(_ text: String, to target: String, binding: String?) async throws {
         entered = true
         arrival?.resume()

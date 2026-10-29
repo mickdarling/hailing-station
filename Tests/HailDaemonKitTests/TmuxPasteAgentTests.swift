@@ -107,6 +107,10 @@ struct TmuxPasteAgentTests {
 private actor ShellPaneAdapter: Adapter {
     nonisolated let kind = "tmux"
     func listTargets() async throws -> [AdapterTarget] { [AdapterTarget(name: "shell", binding: "binding-s")] }
+    func deliver(_ text: String, to target: String, binding: String?, authority: DeliveryAuthority) async throws {
+        try authority.requireCurrent()
+        try await deliver(text, to: target, binding: binding)
+    }
     func deliver(_ text: String, to target: String, binding: String?) async throws {
         if text.hasPrefix(PastedContent.begin("")) { throw AdapterError.deliveryFailed(PastedContent.agentOnlyRefusal) }
     }
