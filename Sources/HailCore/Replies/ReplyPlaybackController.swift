@@ -28,6 +28,7 @@ public struct ReplyPresentation: Identifiable, Equatable, Sendable {
     public var host: String
     public var target: String
     public var transcript: String?
+    public var isSessionUpdate = false
 }
 /// Terminal-owned FIFO arbitration for identified reply streams. Frames may arrive out of order;
 /// only a contiguous sequence is scheduled, and the next reply cannot enter the player until the

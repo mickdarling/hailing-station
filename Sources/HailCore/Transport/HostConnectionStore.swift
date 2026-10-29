@@ -314,7 +314,7 @@ extension HostConnectionStore {
         // pong on the connection actor, so a stalled polling waiter cannot misclassify a post-pong refusal.
         if HostNoticeOrigin.streamID != nil { await acceptConfirmedResume(on: event.endpointID) }
         guard tokens[event.endpointID] == token else { return }
-        if receiveAmbientNotice(event) { return }
+        if receiveSessionUpdate(event) || receiveAmbientNotice(event) { return }
         segmentWiring?.receive(event)
         replyFrames.append(event)
         conversation.noteReply(event, selected: selectedTargets[event.endpointID],
@@ -323,6 +323,25 @@ extension HostConnectionStore {
         if replyFrames.count > Self.replyFrameLimit {
             replyFrames.removeFirst(replyFrames.count - Self.replyFrameLimit)
         }
+    }
+}
+
+/// Proactive cards do not grant input/reply authority and never enter the audio player's ingress history.
+extension HostConnectionStore {
+    /// A socket's TaskLocal provenance survives the actor hop; a replaced or disconnected socket cannot publish.
+    /// Pending privacy-on and transport restoration suppress cards before a later host confirmation can arrive.
+    func receiveSessionUpdate(_ event: HostReplyEvent) -> Bool {
+        guard case .control(.sessionUpdate) = event.frame.payload else { return false }
+        guard let snapshot = snapshots[event.endpointID], snapshot.state == .ready,
+              snapshot.capabilities.contains(SessionUpdateCard.capability),
+              HostNoticeOrigin.generation == snapshot.connectionGeneration,
+              duckMode[event.endpointID]?.isOn() != true,
+              privacyLocal[event.endpointID]?.request?.on != true,
+              ambientController?.reconnect.isPending != true,
+              let target = event.frame.target,
+              snapshot.targets.contains(where: { $0.id == target && $0.alive }) else { return true }
+        conversation.noteSessionUpdate(event)
+        return true
     }
 }
 

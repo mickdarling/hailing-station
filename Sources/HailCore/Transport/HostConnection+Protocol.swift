@@ -21,7 +21,7 @@ extension HostConnection {
                                AmbientHeard.capability, AmbientOverheard.capability, ReplyMute.capability,
                                AmbientOverheard.namesCapability, OwnerVoice.capability, MediaMode.capability,
                                RequestRefusals.capability, HeardTurns.capability, ReplySegments.capability,
-                               DuckMode.capability],
+                               DuckMode.capability, SessionUpdateCard.capability],
                 // The device's class only (#366), so a host can say "moved to iPad"; never its name.
                 deviceName: deviceName, deviceKind: AmbientHandoff.localDeviceKind
             )),
@@ -57,6 +57,8 @@ extension HostConnection {
             await publishNotice(frame, streamID: nil)
         case .control(.error(let code, _, _)) where code.isRequestRefusal: // #608: that request is over, not the link
             await publishNotice(frame, streamID: nil)
+        case .control(.sessionUpdate):
+            try await publishSessionUpdate(frame, generation: token)
         case .control(let control):
             try await process(control, frame: frame)
         case .text(let text) where text.isFinal && text.reply != nil:
@@ -66,6 +68,14 @@ extension HostConnection {
         default:
             throw HostConnectionFailure.malformed("unexpected host frame")
         }
+    }
+
+    private func publishSessionUpdate(_ frame: Frame, generation token: UInt64) async throws {
+        guard isCurrent(token) else { throw CancellationError() }
+        guard snapshot.capabilities.contains(SessionUpdateCard.capability) else {
+            throw HostConnectionFailure.unsupportedCapability(SessionUpdateCard.capability)
+        }
+        await publishNotice(frame, streamID: nil)
     }
 
     private func publishNotice(_ frame: Frame, streamID: UUID?) async {
