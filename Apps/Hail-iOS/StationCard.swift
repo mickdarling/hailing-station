@@ -155,7 +155,6 @@ extension RootView {
             .state: .token("tap_to_talk_end"), .reason: .token("other"), .count: .integer(Int64(count))
         ])
     }
-
 }
 #endif
 

@@ -20,8 +20,11 @@ private struct StationToolNavigationScene<Content: View>: View {
         NavigationStack(path: Binding(get: { path.values }, set: { path.values = $0 })) {
             Group {
                 // macOS retains navigation roots. Mirror iOS visibility so the shipped card actually disappears.
-                if isTool || !path.values.isEmpty { Text("Station") }
-                else { content.onAppear { path.appearances += 1 } }
+                if isTool || !path.values.isEmpty {
+                    Text("Station")
+                } else {
+                    content.onAppear { path.appearances += 1 }
+                }
             }
             .navigationDestination(for: Int.self) { _ in
                 if isTool { content.onAppear { path.appearances += 1 } } else { Text("Station tool") }

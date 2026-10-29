@@ -33,8 +33,9 @@ struct NativeSceneStationContent: View {
         Group {
             if let probe {
                 // macOS retains navigation roots; model the iOS card's visibility while using the real root stack.
-                if probe.toolShown { Text("Station") }
-                else {
+                if probe.toolShown {
+                    Text("Station")
+                } else {
                     root.ambientListeningSurface.onDisappear { probe.disappearances += 1 }
                 }
             } else { Text("Station") }

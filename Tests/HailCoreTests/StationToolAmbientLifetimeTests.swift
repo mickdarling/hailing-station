@@ -94,5 +94,4 @@ import SwiftUI
         log.setEnabled(true)
         return (log, { defaults.removePersistentDomain(forName: suite) })
     }
-
 }
