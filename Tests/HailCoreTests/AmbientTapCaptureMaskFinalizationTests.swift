@@ -60,6 +60,8 @@ actor ReviewAnalyzerStopTranscriber: Transcriber {
         let analyzer = ReviewSyntheticAnalyzer()
         let transcriber = ReviewAnalyzerStopTranscriber(analyzer)
         let playback = ReplyPlaybackController(player: AmbientReplyEchoGuard().guarding(DuplexPlayer()))
+        // This test reconciles explicitly. Disable the automatic liveness watcher before capture starts.
+        playback.captureLivenessSleep = { _ in throw CancellationError() }
         let view = TranscriptionLabView(capture: source, playback: playback, transcriber: transcriber)
         view.onFinalized = { _ in }
         await view.begin()
@@ -90,6 +92,8 @@ actor ReviewAnalyzerStopTranscriber: Transcriber {
         await backend.blockNextEndAudio()
         let transcriber = SFSpeechRecognizerTranscriber(backend: backend)
         let playback = ReplyPlaybackController(player: AmbientReplyEchoGuard().guarding(DuplexPlayer()))
+        // This test reconciles explicitly. Disable the automatic liveness watcher before capture starts.
+        playback.captureLivenessSleep = { _ in throw CancellationError() }
         let view = TranscriptionLabView(capture: source, playback: playback, transcriber: transcriber)
         view.onFinalized = { _ in }
         await view.begin()
