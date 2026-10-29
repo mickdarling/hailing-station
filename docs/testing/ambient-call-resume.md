@@ -93,7 +93,10 @@ also rejects already queued capture, converter output and sends. Ambient's pause
 capture wrappers too. Capture retains only its observer and ending decision for the 200 ms window; gap PCM is
 never retained for later replay. The original route guards and isolated-route terminal reason still apply.
 `endingSignalDiscardsPCMThroughoutRouteWindow` feeds a saved fake tap before and during the held window, then
-fully drains the streamer and requires zero sent frames, with both interruption and expiry outcomes.
+fully drains the streamer and requires zero sent frames, with both interruption and expiry outcomes. It also
+reopens the transport gate during the held window: a separate per-capture-run veto keeps that ended capture shut.
+That added ordering failed against the first review correction before the per-run veto was added
+(`review-window-reopen-fail-before.log`); an ending route must not be undone by a fast transport restore.
 `interruptionImmediatelyDiscardsPCMFromAYieldingTap` covers the immediate interruption boundary.
 
 P1-2: an already-private host deliberately sends no notice for a duplicate same-socket privacy-on request.

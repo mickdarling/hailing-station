@@ -231,7 +231,9 @@ public final class AmbientListeningReconnect {
         privacyConfirmation.cancel()
         let stopping = isPending || controller?.pausedReason != nil
         if isPending { finish(.blocked, reason: veto) }
-        if stopping { controller?.cancelTransportRestore(reason: veto) }
+        if stopping {
+            controller?.cancelTransportRestore(reason: veto)
+        }
     }
     func drop(_ snapshot: HostConnectionSnapshot, store: HostConnectionStore) {
         guard let controller, controller.isOn, controller.isListening || controller.pausedReason != nil,

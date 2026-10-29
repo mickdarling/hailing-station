@@ -89,6 +89,8 @@ public final class AVAudioEngineCapture: AudioCapturing {
     private var continuation: AsyncStream<AudioCaptureBuffer>.Continuation?
     private var runID: UUID?
     private var admission: AudioCaptureAdmission?
+    /// A system-ending run stays shut even if transport restoration reopens its shared admission.
+    private var endingAdmission: AudioCaptureAdmission?
     private var hasTap = false
     private var observer: AudioCaptureEndingObserver?
     /// Read when a run starts; set it before `start` to watch that run for stalls (#443).
@@ -146,6 +148,7 @@ public final class AVAudioEngineCapture: AudioCapturing {
         }
 
         admission = AudioCaptureAdmission.current ?? AudioCaptureAdmission()
+        endingAdmission = AudioCaptureAdmission()
         installTap(streamContinuation)
         observeEndingSignals()
         do {
@@ -164,9 +167,10 @@ public final class AVAudioEngineCapture: AudioCapturing {
         observer = AudioCaptureEndingObserver(
             center: notificationCenter, engine: engine, inputChanged: routeInputChanged,
             overrideWindow: routeOverrideWindow
-        ) { [weak self, admission] signal, id in
+        ) { [weak self, admission, endingAdmission] signal, id in
             // Interruption admission closes on the notification thread, before a main-actor hop.
             if signal == .interruptionBegan {
+                endingAdmission?.setPaused(true)
                 admission?.setPaused(true)
             }
             if Thread.isMainThread {
@@ -203,6 +207,7 @@ public final class AVAudioEngineCapture: AudioCapturing {
         if case .routeChanged = signal {
             guard routeEnd == nil else { return }
             // Discard tap PCM and retire already queued epochs throughout the decision window.
+            endingAdmission?.setPaused(true)
             admission?.setPaused(true)
             routeEnd = Task { @MainActor [weak self, sleep, routeInterruptionWindow] in
                 guard (try? await sleep(routeInterruptionWindow)) != nil, !Task.isCancelled,
@@ -229,9 +234,11 @@ public final class AVAudioEngineCapture: AudioCapturing {
     private func installTap(_ continuation: AsyncStream<AudioCaptureBuffer>.Continuation) {
         let delivered = delivered
         let admission = admission
+        let endingAdmission = endingAdmission
         operations.installTap(engine) { @Sendable buffer, _ in
             delivered.increment()
-            guard let ownedBuffer = AudioCaptureAdmission.copy(buffer, through: admission) else { return }
+            guard endingAdmission?.isPaused != true,
+                  let ownedBuffer = AudioCaptureAdmission.copy(buffer, through: admission) else { return }
             continuation.yield(ownedBuffer)
         }
         hasTap = true
