@@ -11,8 +11,13 @@ import Testing
     func ownerSelectionDuringPendingRestoreVetoesResumeWhileToolCoversCard(_ change: OwnerChange) async throws {
         let rig = try AmbientReconnectRig()
         try await rig.start(listening: false)
+        let suite = "hail-native-owner-selection-\(UUID().uuidString)"
+        let defaults = try #require(UserDefaults(suiteName: suite))
+        defer { defaults.removePersistentDomain(forName: suite) }
+        let log = DeviceDiagnostics(defaults: defaults, appInfo: [:])
+        log.setEnabled(true)
         let probe = NativeSceneAmbientProbe(binding: try rig.currentBinding())
-        let host = makeHost(rig, probe)
+        let host = makeHost(rig, probe, diagnostics: log)
         defer { host.finish() }
         await host.render()
         let root = try #require(probe.root)
@@ -31,13 +36,23 @@ import Testing
         await host.render()
         #expect(root.ambientDestinationBinding == nil)
         #expect(!rig.controller.isOn && !rig.controller.isListening && !rig.controller.reconnect.isPending)
+        let reason = "Stopped: the connection or destination went away."
+        #expect(rig.controller.stopReason == reason)
+        let startsAfterOwnerChange = rig.capture.startCount
+        #expect(startsAfterOwnerChange == 1)
         try await rig.reconnect()
         await host.render()
         #expect(!rig.controller.isOn && !rig.controller.isListening && rig.released == 1)
-        #expect(rig.capture.startCount == 1)
+        #expect(rig.capture.startCount == startsAfterOwnerChange)
         probe.toolShown = false
         await host.render()
         #expect(!rig.controller.isOn)
+        #expect(rig.capture.startCount == startsAfterOwnerChange)
+        #expect(rig.controller.stopReason == reason)
+        #expect(host.visibleText().joined(separator: " ").contains(reason))
+        let stops = (log.nextBatch()?.events ?? []).filter { $0.name == .ambientStop }
+        #expect(stops.map { $0.fields[.reason] } == [.token("binding_changed")])
+        #expect(!stops.contains { $0.fields[.reason] == .token("user") })
         await rig.close()
     }
 
@@ -73,10 +88,11 @@ import Testing
         await rig.close()
     }
 
-    private func makeHost(_ rig: AmbientReconnectRig, _ probe: NativeSceneAmbientProbe) -> NativeSceneAmbientHost {
+    private func makeHost(_ rig: AmbientReconnectRig, _ probe: NativeSceneAmbientProbe,
+                          diagnostics: DeviceDiagnostics = DeviceDiagnostics()) -> NativeSceneAmbientHost {
         NativeSceneAmbientHost(resources: StationResources(connections: rig.store,
             backend: FakeAudioSessionBackend(inputs: []), player: FormatTestPlayer(),
-            keepaliveRenderer: FakeKeepaliveRenderer()), probe: probe)
+            keepaliveRenderer: FakeKeepaliveRenderer(), diagnostics: diagnostics), probe: probe)
     }
 }
 #endif
