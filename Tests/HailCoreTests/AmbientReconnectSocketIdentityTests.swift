@@ -11,8 +11,11 @@ import Testing
         rig.transport = first
         try await rig.start()
         let original = try #require(rig.store.snapshots[rig.endpoint.id]?.connectionGeneration)
-        do { try await rig.store.sendAudio(ambientSegment(), to: rig.currentBinding()) }
-        catch { #expect(error is URLError) }
+        do {
+            try await rig.store.sendAudio(ambientSegment(), to: rig.currentBinding())
+        } catch {
+            #expect(error is URLError)
+        }
         #expect(await first.sendLosses == 1)
         #expect(rig.controller.reconnect.isPending && rig.notices.isEmpty)
         await rig.socket.fail()
