@@ -7,7 +7,7 @@ import Testing
     @Test func secondProcessDenyWhileAdmissionQueued() async throws {
         let rig = try await AmbientPolicyProcessRig.make(startStream: false)
         defer { rig.cleanUp() }
-        let blocked = PolicyWriteGate()
+        let blocked = PolicyWriteGate(timeout: .seconds(45))
         defer { blocked.fire() }
         let holding = Task(executorPreference: blocked.executor) { await rig.gate.holdPolicyAdmission(blocked) }
         try await blocked.waitUntilSuspended()
@@ -16,10 +16,10 @@ import Testing
         let before: PolicyFileIdentity = try rig.file.identity()
         try await rig.write("deny")
         let after: PolicyFileIdentity = try rig.file.identity()
-        try #require(before.inode != after.inode)
         blocked.fire()
         await holding.value
-        let result: HostSessionResult = await receiving.value
+        let result: HostSessionResult = try await blocked.finish(receiving)
+        try #require(before.inode != after.inode)
         let controls: [FramePayload] = result.frames.map(\.payload)
         let expected: FramePayload = .control(.error(code: .notAllowed, message: "ambient target_policy_changed"))
         #expect(controls == [expected])
@@ -34,7 +34,7 @@ import Testing
         let hook = PolicyReloadStore.Hook()
         let rig = try await AmbientPolicyProcessRig.make(reload: hook)
         defer { rig.cleanUp() }
-        let blocked = PolicyWriteGate()
+        let blocked = PolicyWriteGate(timeout: .seconds(45))
         defer { blocked.fire() }
         let generation = rig.host.targetPolicy.snapshot(for: "tmux:a")
         // Only B changes first: adopting this stale read would preserve A's grant.
@@ -54,9 +54,8 @@ import Testing
         let before: PolicyFileIdentity = try rig.file.identity()
         try await rig.write("deny")
         let after: PolicyFileIdentity = try rig.file.identity()
+        let refused: Bool = try await blocked.finish(checking)
         try #require(before.inode != after.inode)
-        blocked.fire()
-        let refused: Bool = await checking.value
         #expect(refused, "A policy replaced between open and decode must never be adopted")
         let current: Bool = generation.performIfCurrent({ true }) == true
         #expect(!current)

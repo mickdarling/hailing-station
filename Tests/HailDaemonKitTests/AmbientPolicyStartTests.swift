@@ -71,9 +71,8 @@ private struct PolicyRestartSink: AmbientAudioSink {
         // A synchronous child startup refusal arrives before the session's admission await returns.
         let frame: Frame? = await session.ambientFailureFrame("ambient stopped: synthetic startup")
         let expected: FramePayload = .control(.error(code: .notAllowed, message: "ambient stopped: synthetic startup"))
+        let result: HostSessionResult = try await waiting.finish(receiving)
         #expect(frame?.payload == expected)
-        waiting.fire()
-        let result: HostSessionResult = await receiving.value
         #expect(result.frames.isEmpty)
         await gate.end(connection: session.connectionID)
     }
