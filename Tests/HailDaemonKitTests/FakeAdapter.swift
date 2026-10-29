@@ -170,7 +170,7 @@ actor GatedListingFakeAdapter: Adapter {
 }
 
 extension GatedFakeAdapter {
-    // Check at handoff only: the existing part-4 residual intentionally completes an in-flight line.
+    // Handoff-only host-boundary fake; tmux side-effect races use TmuxAuthorityRig.
     func deliver(_ text: String, to target: String, binding: String?, authority: DeliveryAuthority) async throws {
         try authority.requireCurrent()
         try await deliver(text, to: target, binding: binding)

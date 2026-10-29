@@ -132,10 +132,10 @@ extension TmuxAdapter {
     /// confirm window gets one more Enter only if the pane changed meanwhile (identity re-checked first); an
     /// unchanged pane gets none. Still held in a live pane after the retry fails the delivery (taint).
     func attemptSubmit(
-        _ session: Session, target: String, tail: PayloadTail, acceptance: TmuxSubmitProbe.Acceptance
+        _ session: Session, control: TmuxDeliveryControl, tail: PayloadTail, acceptance: TmuxSubmitProbe.Acceptance
     ) async throws -> TmuxSubmitOutcome {
         // After a framed paste (#608) the Enter goes only to a pane still running an agent.
-        try await pressEnter(session.paneID)
+        try await pressEnter(session.paneID, control: control)
         let observe: TmuxSubmitProbe.Observe = { await self.observePane(session.paneID) }
         let before: PaneObservation?
         switch acceptance {
@@ -154,14 +154,14 @@ extension TmuxAdapter {
         case .ambiguous, .unreadable, .pending(alive: false): return undecided
         case .pending(alive: true):
             let late: TmuxSubmitOutcome = wasHolding ? .confirmed : undecided
-            return try await retry(session, target: target, tail: tail, if: (late, undecided), observe: observe)
+            return try await retry(session, control: control, tail: tail, if: (late, undecided), observe: observe)
         }
     }
 
     /// The one retry, once the live pane holds the text steady again; otherwise the outcome for a target that took
     /// the first Enter late (`late`) or a pane that never held still (`restless`).
     private func retry(
-        _ session: Session, target: String, tail: PayloadTail,
+        _ session: Session, control: TmuxDeliveryControl, tail: PayloadTail,
         if outcomes: (late: TmuxSubmitOutcome, restless: TmuxSubmitOutcome), observe: TmuxSubmitProbe.Observe
     ) async throws -> TmuxSubmitOutcome {
         let steady: PaneObservation
@@ -170,8 +170,8 @@ extension TmuxAdapter {
         case .restless: return outcomes.restless
         case .holding(let seen): steady = seen
         }
-        _ = try await verified(target, binding: session.binding)
-        try await pressEnter(session.paneID)
+        _ = try await verified(control.target, binding: session.binding)
+        try await pressEnter(session.paneID, control: control)
         let reaction = await TmuxSubmitProbe.reaction(
             submitTiming, tail: tail, before: steady, wasHolding: true, clock: submitClock, observe: observe
         )
@@ -179,7 +179,7 @@ extension TmuxAdapter {
         case .submitted: return .retried
         case .ambiguous, .unreadable, .pending(alive: false): return .unverifiable
         case .pending(alive: true):
-            throw AdapterError.deliveryFailed("the Enter was not observed to submit the text in \(target)")
+            throw AdapterError.deliveryFailed("the Enter was not observed to submit the text in \(control.target)")
         }
     }
 
