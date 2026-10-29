@@ -118,3 +118,46 @@ import Testing
         try await callEventually { await host.receivedRequest() }
     }
 }
+
+extension AmbientCallReviewTests {
+    @Test(arguments: [false, true])
+    func startupSignalsUseTheRunningStateAfterEngineStart(category: Bool) async throws {
+        let center = NotificationCenter()
+        let engine = AVAudioEngine()
+        let fake = FakeEngineOperations()
+        let routeWait = BackoffSteps()
+        let notes = PostedNotes(center, [AVAudioEngineCapture.endedBySystem])
+        let sent = SentAudio()
+        let evaluated = AudioEngineCaptureStartupSignalTests.EndedFlag()
+        var evaluations = 0
+        var operations = fake.operations
+        operations.isRunning = { _ in
+            evaluations += 1
+            if evaluations >= 2 {
+                evaluated.set()
+            }
+            return fake.running
+        }
+        operations.start = { _ in
+            if category {
+                center.post(name: AudioCaptureEndingSignal.Names.routeChange, object: nil,
+                            userInfo: [AudioCaptureEndingSignal.Names.routeChangeReasonKey: UInt(3)])
+            } else {
+                center.post(name: .AVAudioEngineConfigurationChange, object: engine)
+            }
+            fake.running = true
+        }
+        let capture = AVAudioEngineCapture(
+            engine: engine, notificationCenter: center, operations: operations,
+            routeInputChanged: { _ in true }, sleep: { await routeWait.sleep($0) }
+        )
+        let streamer = AmbientAudioStreamer(capture: capture, send: { await sent.send($0) })
+        try streamer.start()
+        try await callEventually { evaluated.value }
+        for _ in 0..<6 { fake.feed(try sineBuffer()) }
+        await streamer.stop()
+        #expect(notes.named(AVAudioEngineCapture.endedBySystem).isEmpty)
+        #expect(!(await sent.payloads).isEmpty)
+        await routeWait.release()
+    }
+}
