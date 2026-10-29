@@ -1139,6 +1139,14 @@ extension AmbientListeningController {
     }
 }
 
+extension AmbientListeningController {
+    /// Ends listening for owner-initiated destination changes.
+    public func ownerChangedDestination() async {
+        if reconnect.isPending { reconnect.block(.bindingChanged) }
+        await destinationLost()
+    }
+}
+
 /// Another app took the microphone (#445): dictation, a voice memo, a call. Listening pauses instead of turning off,
 /// shows why, and resumes when the interruption ends, on returning to the foreground, or on a capped backoff for
 /// apps that never say they are done. A resume opens a fresh stream from this same connection, so the host sees no
