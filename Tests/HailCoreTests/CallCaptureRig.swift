@@ -4,6 +4,8 @@ import Foundation
 
 @MainActor
 final class CallCaptureRig {
+    let sent = SentAudio()
+    var streamers: [AmbientAudioStreamer] = []
     let clock = TestInstantClock()
     let center = NotificationCenter()
     let routeWait = BackoffSteps()
@@ -35,9 +37,11 @@ final class CallCaptureRig {
                 engine: engine, notificationCenter: center, operations: operations,
                 routeInputChanged: { _ in true }, sleep: { [routeWait] in await routeWait.sleep($0) }
             )
-            return AmbientAudioStreamer(capture: capture, send: send)
+            let streamer = AmbientAudioStreamer(capture: capture, send: send)
+            streamers.append(streamer)
+            return streamer
         }, releaseSession: { [weak self] in self?.releases += 1 },
-        sleep: { [retry] in await retry.sleep($0) }, now: { [clock] in clock.now() }, send: { _, _ in }
+        sleep: { [retry] in await retry.sleep($0) }, now: { [clock] in clock.now() }, send: { [sent] audio, _ in await sent.send(audio) }
         )
     }
 
