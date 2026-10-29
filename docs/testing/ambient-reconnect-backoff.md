@@ -1,6 +1,6 @@
 # Ambient reconnect backoff
 
-Part of #850. Uncommitted follow-up to main at
+Part of #904 (ask 3 follow-up, after #968, #969 and #970). Based on main at
 `3c4c86829d56178e1a0159ed40119797945268a5`, implementing Mick's 2026-10-27 rulings.
 
 Transport recovery has no total deadline. The existing connection loop remains

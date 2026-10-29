@@ -2,7 +2,7 @@ import Foundation
 import Testing
 @testable import HailCore
 
-/// #850: scripted transport and hand-stepped waits, with no elapsed-time assertion.
+/// #904: scripted transport and hand-stepped waits, with no elapsed-time assertion.
 @MainActor
 @Suite(.serialized) struct AmbientReconnectBackoffTests {
     @Test func doublesToNamedCapAndClampsInjectedJitter() {

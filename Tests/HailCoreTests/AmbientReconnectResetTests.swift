@@ -111,7 +111,7 @@ private final class AmbientBackoffRun {
     }
 }
 
-/// #850: a previous host's cancelled pacing must not poison its ordinary transport retries.
+/// #904: a previous host's cancelled pacing must not poison its ordinary transport retries.
 @MainActor
 @Suite(.serialized) struct AmbientReconnectOwnerRegressionTests {
     @Test func startingOnAnotherHostAfterRecoveryLeavesTheOldHostAbleToReconnect() async throws {
