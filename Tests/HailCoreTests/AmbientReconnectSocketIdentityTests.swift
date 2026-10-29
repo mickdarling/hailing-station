@@ -11,7 +11,7 @@ import Testing
         rig.transport = first
         try await rig.start()
         let original = try #require(rig.store.snapshots[rig.endpoint.id]?.connectionGeneration)
-        do { try await rig.store.sendEscape(host: rig.endpoint.id, targetID: rig.target.id) }
+        do { try await rig.store.sendAudio(ambientSegment(), to: rig.currentBinding()) }
         catch { #expect(error is URLError) }
         #expect(await first.sendLosses == 1)
         #expect(rig.controller.reconnect.isPending && rig.notices.isEmpty)
@@ -37,7 +37,7 @@ private actor IdentityLossSocket: WebSocketTransport {
     private(set) var receiveLosses = 0
     init(base: ScriptedSocket) { self.base = base }
     func send(_ data: Data) async throws {
-        if case .control(.escape) = try FrameCoding.decode(data).payload {
+        if case .audio = try FrameCoding.decode(data).payload {
             sendLosses += 1
             throw URLError(.networkConnectionLost)
         }

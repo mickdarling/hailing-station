@@ -89,7 +89,7 @@ final class AmbientRefusalOrderRun {
     }
 }
 
-actor AmbientHeldSelectionPing: WebSocketTransport {
+private actor AmbientHeldSelectionPing: WebSocketTransport {
     let base: any WebSocketTransport
     let gate: SleepGate
     let sendError: RefusalPingSendError?
