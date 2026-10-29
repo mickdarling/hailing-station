@@ -86,6 +86,20 @@ actor RecipientContextAdapter: ProviderContextDelivering, ProviderReplyBindingLe
     }
 }
 
+extension RecipientContextAdapter {
+    func deliver(_ text: String, to target: String, binding: String?, authority: DeliveryAuthority) async throws {
+        try authority.requireCurrent()
+        try await deliver(text, to: target, binding: binding)
+    }
+
+    func deliver(
+        _ text: String, to target: String, binding: String, context: ProviderTurnContext, authority: DeliveryAuthority
+    ) async throws {
+        try authority.requireCurrent()
+        try await deliver(text, to: target, binding: binding, context: context)
+    }
+}
+
 // Direct admission tests use a synthetic synchronous enqueue, never a production authorization Boolean.
 extension HostSession {
     func acceptsHostReply(_ frame: Frame) -> Bool { enqueueHostReply(frame, enqueue: { true }) }
