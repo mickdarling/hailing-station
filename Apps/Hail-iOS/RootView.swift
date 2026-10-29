@@ -104,6 +104,7 @@ struct StationRootView: View, AmbientDestinationOwner {
             }
             // Directly from the store, not a view update, so replies also play in the background (#282).
             let playback = playback
+            connections.wireProactivePlayback(playback)
             connections.onReplyFrame = { playback.ingest($0) }
             // One announcement per refused request, whatever its code (#608, #636); the chat shows it too.
             connections.onRequestRefusal = { StationPlatform.announce($0) }
