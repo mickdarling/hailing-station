@@ -6,6 +6,34 @@ import Testing
 
 @MainActor
 @Suite(.serialized) struct AmbientCallResumeGuardTests {
+    @Test(arguments: [false, true])
+    func ownerStopDuringTransportGapNeverResumes(interruptedFirst: Bool) async throws {
+        let rig = try CallReconnectRig()
+        try await rig.start()
+        try await rig.drop()
+        if interruptedFirst { try await rig.interrupt() }
+        await rig.controller.turnOff()
+        if !interruptedFirst {
+            rig.center.post(name: AVAudioEngineCapture.endedBySystem, object: nil, userInfo: [
+                AVAudioEngineCapture.endedCauseKey: AVAudioEngineCapture.interruptionCause
+            ])
+        }
+        #expect(!rig.controller.isOn && !rig.controller.isListening && rig.controller.pausedReason == nil)
+        #expect(!rig.controller.reconnect.isPending)
+        #expect(rig.notices.map(\.reason) == [.ownerStop])
+        #expect(rig.notices.map(\.outcome) == [.blocked])
+        try await rig.reconnect()
+        rig.interruptionEnded()
+        await rig.microphoneRetry.release()
+        await rig.controller.update(binding: try rig.currentBinding(), scene: .active)
+        #expect(!rig.controller.isOn && !rig.controller.isListening && rig.controller.pausedReason == nil)
+        #expect(rig.capture.startCount == 1 && rig.unexpected.isEmpty)
+        #expect(try await rig.socket.sentFrames().allSatisfy {
+            if case .audio = $0.payload { return false }; return true
+        })
+        await rig.close()
+    }
+
     @Test func transportDropRetainsPausedIntentThroughBackgroundSelectionAndResume() async throws {
         let rig = try CallReconnectRig()
         try await rig.start()

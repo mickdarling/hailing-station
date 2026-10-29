@@ -44,6 +44,17 @@ cover background reauthorization, destination/selection loss, route reconfigurat
 timed-out or late private confirmations. These are macOS SwiftPM tests of device logic, not physical iPhone proof.
 The host's existing privacy park/admission tests cover the daemon side of resumed starts.
 
+The original `stoppingInterruptionDuringGapEndsInsteadOfStartingAnInterruptionResumer` body was temporarily
+restored verbatim against production at `11f9eb91dfe715ee1c2ba8c2c570c6a800d155dd`. It reproduced the timeout at
+`AmbientReconnectTestSupport.swift:158`: that body stops the fake capture and posts a **system interruption**,
+but never calls the owner's `turnOff()`. Its terminal `.modeChanged` expectation conflicts with the call-resume
+ruling; this is not a scheduling timeout or evidence that an owner stop was ignored. The transport-first
+replacement requires automatic resume. Separate `ownerStopDuringTransportGapNeverResumes` cases now call
+`turnOff()` both before and after interruption publication, then reconnect, publish interruption-ended, release
+the injected retry and cross the foreground resume entry point. Both require off/unpaused state, one original
+capture start, an owner-stop veto, and no audio on the replacement socket. The owner-stop assertion is retained
+and strengthened, not converted into a resume expectation.
+
 Every Swift command uses `taskpolicy -b`, `-j 4 -Xswiftc -j1`, a shared-process gate for `swift-build`, `swift-test`
 and `xcodebuild`, and a 590-second process-group kill bound. Commands run to completion. SwiftPM automatic resolution
 is disabled. The already-installed Command Line Tools Testing framework requires these additional flags:
@@ -55,6 +66,12 @@ is disabled. The already-installed Command Line Tools Testing framework requires
 -Xlinker -rpath -Xlinker /Library/Developer/CommandLineTools/Library/Developer/usr/lib
 ```
 
-`DiagnosticReplyComposition` is excluded from every test selection. No network, tool installation, push or GitHub
-operation is involved. SwiftLint is unavailable and remains a host check. Full Xcode and simulator/device validation
-are unavailable on this VM.
+`DiagnosticReplyComposition` is excluded from every test selection. Transport fixtures are synthetic or loopback;
+no external network, tool installation, push or GitHub operation is involved. SwiftLint is unavailable and remains
+a host check. Full Xcode and simulator/device validation are unavailable on this VM.
+
+The first unsharded serial family run was stopped after its obsolete terminal-gap assertion failed; no result from
+that obsolete binary is counted as a completed sweep. The requested family selection is partitioned by module and
+suite into disjoint groups to keep every serial command within its 590-second bound. Each completed sweep covers
+the union of `Ambient|Capture|Interruption|Resume|HostConnection|Privacy`, with only
+`DiagnosticReplyComposition` excluded. This preserves all selected tests without overlapping test processes.

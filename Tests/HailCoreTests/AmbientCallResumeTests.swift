@@ -181,4 +181,3 @@ extension AmbientCallResumeTests {
         await privacyWait.release()
     }
 }
-
