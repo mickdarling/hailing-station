@@ -180,3 +180,8 @@ refused segment is never written to disk. Receipt at `WebSocketPeer.swift:153` a
 `HostSession.swift:351` log no payload; `WebSocketListener.swift:17` limits lifecycle logs to structured metadata.
 No PCM or transcript text from the refused segment is logged. This is source and synthetic SwiftPM evidence,
 not physical-device proof.
+
+The first broad sweep exposed `AmbientListeningRecoveryTests.onlyHostEndedStreamsAreTransient` classifying
+`ambient unavailable:` as terminal. Its existing truth table is aligned with the brief's explicit recoverable
+classification, retaining its assertions for busy, unselected and malformed failures. Full verification is
+repeated after this test-only alignment; the production source stays unchanged.
