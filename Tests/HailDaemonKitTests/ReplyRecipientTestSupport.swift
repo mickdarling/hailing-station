@@ -15,6 +15,11 @@ actor RecipientContextAdapter: ProviderContextDelivering, ProviderReplyBindingLe
     private var authorities: [String: ReplyPublicationAuthority] = [:]
     private(set) var contexts: [ProviderTurnContext] = []
     private(set) var legacy: [String] = []
+    let legacyEvents = AsyncStream<String>.makeStream()
+    private var legacyFailure: (any Error)?
+    private var nextListingHeld = false
+    let listingEvents = AsyncStream<Void>.makeStream()
+    private var listingRelease: CheckedContinuation<Void, Never>?
     private var held = false
     private var failure: (any Error)?
     private var entered = false
@@ -22,9 +27,23 @@ actor RecipientContextAdapter: ProviderContextDelivering, ProviderReplyBindingLe
     private var release: CheckedContinuation<Void, Never>?
     var handoffWaiterCount: Int { arrivals.count }
 
-    func listTargets() async throws -> [AdapterTarget] { targets }
+    func listTargets() async throws -> [AdapterTarget] {
+        if nextListingHeld {
+            nextListingHeld = false
+            listingEvents.continuation.yield(())
+            await withCheckedContinuation { listingRelease = $0 }
+        }
+        return targets
+    }
     func capture(_ target: String) async throws -> String { "" }
-    func deliver(_ text: String, to target: String, binding: String?) async throws { legacy.append(text) }
+    func deliver(_ text: String, to target: String, binding: String?) async throws {
+        legacy.append(text)
+        legacyEvents.continuation.yield(text)
+        if let legacyFailure { throw legacyFailure }
+    }
+    func failLegacyHandoff(with error: any Error) { legacyFailure = error }
+    func holdNextListing() { nextListingHeld = true }
+    func releaseListing() { listingRelease?.resume(); listingRelease = nil }
     func deliver(_ text: String, to target: String, binding: String, context: ProviderTurnContext) async throws {
         guard targets.contains(where: { $0.name == target && $0.binding == binding }) else {
             throw AdapterError.rebound(target)

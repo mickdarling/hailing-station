@@ -18,6 +18,7 @@ import Testing
         func isLatest(stream: UUID, connection: UUID) -> Bool { false }
         func activeConnection() -> UUID? { listening.withLock { $0 } }
         func mediaMode(connection: UUID) -> Bool { media.withLock { $0 } }
+        var sessionUpdatesPrivate: Bool { false }
     }
 
     private func request(

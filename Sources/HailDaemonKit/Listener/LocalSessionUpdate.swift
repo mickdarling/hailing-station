@@ -9,8 +9,8 @@ public struct LocalSessionUpdateRequest: Codable, Sendable, Equatable {
     public static let kind = "update"
 
     public enum Action: String, Codable, Sendable, CaseIterable {
-        /// Holds the update by the policy. Speaking now (an `action` on a listening device, and #605's announce)
-        /// waits for haild to deliver to the device it decided on itself; until then nothing is spoken from here.
+        /// Holds first, then offers an action card to the host-decided exact recipient. Speech requires the
+        /// separately negotiated device admission capability and an explicitly configured host renderer.
         case submit
         /// Turns do-not-disturb on until haild restarts. A session may only turn it on: turning it off is the user's
         /// own control, not something a session can do over this socket.
@@ -73,7 +73,7 @@ public struct LocalSessionUpdateReport: Codable, Sendable, Equatable {
     public enum Outcome: String, Codable, Sendable {
         /// `held`: kept for a natural pause, "any updates?", or the next interaction. `status`: a status or quiet
         /// answer. `not_enabled`: haild runs without `--session-updates`.
-        case held, refused, status, notEnabled = "not_enabled"
+        case held, delivered, dropped, refused, status, notEnabled = "not_enabled"
     }
 
     public var outcome: Outcome
@@ -85,6 +85,9 @@ public struct LocalSessionUpdateReport: Codable, Sendable, Equatable {
     public var push = false
     public var held = 0
     public var quiet = false
+    /// Cards are available independently of spoken admission. This is capability status, never hearing proof.
+    public var speechUnavailable: String? = "attention_signal_missing"
+    public var speechStatus: String?
 
     public init(outcome: Outcome, reason: String? = nil) { (self.outcome, self.reason) = (outcome, reason) }
 }
@@ -96,18 +99,24 @@ extension WebSocketListener {
     /// Applies the update policy to a local request (#609). The text is neither logged nor audited.
     public func sessionUpdate(_ request: LocalSessionUpdateRequest) async -> LocalSessionUpdateReport {
         guard sessionUpdates.policy.enabled else { return LocalSessionUpdateReport(outcome: .notEnabled) }
+        purgePrivateSessionUpdates()
         guard !stopped else { return updateReport(.refused, reason: "stopping") }
         switch request.action {
         case .status: return updateReport(.status)
         case .quietOn:
             sessionUpdatesQuiet = true
+            sessionUpdateFence.quiet()
             return updateReport(.status)
         case .submit: return await sessionUpdate(carried: request)
         }
     }
 
     private func sessionUpdate(carried request: LocalSessionUpdateRequest) async -> LocalSessionUpdateReport {
-        guard let target = request.target, let listing = try? await host.registry.listing(),
+        let revision = SessionUpdatePrivacyScope.expectedRevision ?? replyHold.entryRevision
+        guard !sessionUpdatesPrivate else { return updateReport(.dropped, reason: "private") }
+        guard let target = request.target else { return updateReport(.refused, reason: "unknown_target") }
+        let authority = await sessionUpdateAuthority(for: target)
+        guard let listing = try? await host.registry.listing(),
               listing.contains(where: { $0.info.id == target && $0.info.alive }) else {
             return updateReport(.refused, reason: "unknown_target")
         }
@@ -118,13 +127,29 @@ extension WebSocketListener {
         ) else {
             return updateReport(.refused, reason: stopped ? "stopping" : "invalid")
         }
-        // Nothing is spoken from here: the reply path's request-less routing may pick another device than the
-        // listening one the policy would approve (#605, #551). Until haild delivers to the decided device itself, the
-        // listening device is offered only as the target to push to, so the policy holds the update, and spends the
-        // session's budget only once it is held (a full queue costs nothing).
+        if revision != replyHold.entryRevision {
+            return updateReport(.dropped, reason: "private")
+        }
+        authority?.generation.observePolicy()
+        guard let authority, authority.isCurrent,
+              authority.binding == listing.first(where: { $0.info.id == target })?.binding else {
+            return updateReport(.refused, reason: "retired_authority")
+        }
+        guard !sessionUpdatesPrivate else { return updateReport(.dropped, reason: "private") }
+        // Hold before delivery so a failed exact-peer hand-off cannot consume an update or spend its budget twice.
         var audience = updateAudience(for: target)
         (audience.lastActiveDevice, audience.listeningDevice) = (audience.target, nil)
-        return decided(sessionUpdates.submit(update, audience: audience, now: now))
+        let decision = sessionUpdates.submit(update, audience: audience, now: now)
+        guard case .held = decision else { return decided(decision) }
+        sessionUpdateTaskAuthorities[update.id] = authority
+        // Routine information waits for a real interaction/playback pause. Action cards may be delivered now;
+        // neither path borrows a request reference or asks the uncorrelated reply router to choose a device.
+        let deliverCard = update.priority == .action
+        let delivered = deliverCard
+            ? await drainSessionUpdates(.interaction, only: update.id).contains(update.id) : false
+        purgePrivateSessionUpdates()
+        if sessionUpdates.held.contains(where: { $0.id == update.id }) { return decided(decision) }
+        return updateReport(delivered ? .delivered : .dropped, reason: delivered ? nil : "private")
     }
 
     /// The listening device, else the device that last sent `target` input (#370), and that device's media mode.
@@ -154,10 +179,12 @@ extension WebSocketListener {
         }
     }
 
-    private func updateReport(_ outcome: LocalSessionUpdateReport.Outcome, reason: String? = nil)
+    func updateReport(_ outcome: LocalSessionUpdateReport.Outcome, reason: String? = nil)
         -> LocalSessionUpdateReport {
         var report = LocalSessionUpdateReport(outcome: outcome, reason: reason)
         (report.held, report.quiet) = (sessionUpdates.held.count, sessionUpdatesQuiet)
+        report.speechStatus = sessionUpdateFence.speechStatus
+        report.speechUnavailable = report.speechStatus == "not_configured" ? "renderer_not_configured" : nil
         return report
     }
 }

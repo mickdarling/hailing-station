@@ -67,6 +67,9 @@ public actor WebSocketListener {
     let (lastInput, replyHold) = (LastInputLedger(), PrivateReplyHold())
     /// Sessions' unsolicited updates (#609): off unless `--session-updates`. The quiet switch lasts until restart.
     var sessionUpdates = SessionUpdateQueue(), sessionUpdatesQuiet = false
+    var sessionUpdateTaskAuthorities: [UUID: TaskProgressPublicationAuthority] = [:]
+    var sessionUpdatesDelivering = false, sessionUpdatePrivacyRevision: UInt64 = 0
+    let sessionUpdateFence = SessionUpdateFence()
 
     public init(
         bindAddress: String, port: UInt16, host: HailHost,
@@ -137,6 +140,7 @@ extension WebSocketListener {
     public func stop(reason: String = "requested") async {
         guard !stopped else { return }
         stopped = true
+        sessionUpdateFence.close()
         networkListener.cancel()
         let active = Array(peers.values)
         (peers, transports) = ([:], [:])
@@ -191,6 +195,7 @@ extension WebSocketListener {
     private func accept(_ connection: NWConnection) async {
         // Attached before the admission checks, so no suspension separates them from the insertion below (#370).
         let session = HostSession(host: host, authorizer: authorizer, hostName: hostName,
+                                  sessionUpdatesEnabled: sessionUpdates.policy.enabled,
                                   modeSnapshot: { [ambient] in
             ambient?.modeSnapshot(connection: $0) ?? [.duckMode(on: false), .mediaMode(on: false)]
         }, snapshotPrivacyOff: { [weak self] in
@@ -198,7 +203,12 @@ extension WebSocketListener {
         })
         await session.attachLastInput(lastInput, recordStoppedReply: { [stoppedReplyIDs] id in
             stoppedReplyIDs.record(id)
-        }, replyEvent: log)
+        }, replyEvent: { [weak self, log] event in
+            log(event)
+            if event.event == "session_update_interaction", let connection = event.sessionID {
+                Task { await self?.drainSessionUpdates(.interaction, connection: connection) }
+            }
+        })
         guard !stopped else { return connection.cancel() }
         let id = UUID()
         guard peers.count < maxConnections else {
@@ -273,6 +283,7 @@ public protocol AmbientListenerWiring: AnyObject, Sendable {
     /// Synchronous final enqueue gate for proactive updates. Unknown wiring fails closed. No callback may wait
     /// or re-enter the router: only a prepared transport hand-off runs while privacy/media state is locked.
     func withSessionUpdatePermission(connection: UUID, enqueue: @Sendable () -> Bool) -> Bool
+    var sessionUpdatesPrivate: Bool { get }
 }
 
 extension AmbientListenerWiring {
@@ -312,6 +323,7 @@ extension AmbientListenerWiring {
     public func activeConnection() -> UUID? { nil }
     public func mediaMode(connection: UUID) -> Bool { false }
     public func withSessionUpdatePermission(connection: UUID, enqueue: @Sendable () -> Bool) -> Bool { false }
+    public var sessionUpdatesPrivate: Bool { true }
 }
 
 /// What `haild ambient reload` did (#405). `refused` carries a content-free rule name.
@@ -836,6 +848,10 @@ public final class AmbientRightyoRouter: AmbientAudioSink, AmbientListenerWiring
         let asked = phase == .ended && replyAsked
         emit("ambient_reply",
              detail: "phase=\(phase.rawValue) asked=\(asked) reported=\(pipeline.reportReply(phase, asked: asked))")
+        if phase == .ended, !asked {
+            let listener = state.withLock { $0.listener?.value }
+            Task { await listener?.drainSessionUpdates(.naturalPause, connection: connection) }
+        }
     }
 
     public func stop(connection: UUID) { stop(connection: connection, device: nil) }
@@ -911,6 +927,9 @@ public final class AmbientRightyoRouter: AmbientAudioSink, AmbientListenerWiring
                   state.parks.isEmpty, !state.parkOverflow, state.media[connection] == nil else { return false }
             return enqueue()
         }
+    }
+    public var sessionUpdatesPrivate: Bool {
+        state.withLock { !$0.duck.isEmpty || !$0.parks.isEmpty || $0.parkOverflow }
     }
     /// Whether the owner's spoken duck mode (#735) is on for `connection` (tests).
     func duckMode(connection: UUID) -> Bool { state.withLock { $0.duck[connection] != nil } }
